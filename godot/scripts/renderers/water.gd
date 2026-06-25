@@ -2,6 +2,7 @@
 ##
 ## Rust methods called: get_water_patch(), get_water_patch_debug(),
 ##   get_water_patch_authored_fill_debug(), get_dirty_water_patches(), get_water_border_depths(),
+##   request_water_patch_payloads(), poll_ready_water_patch_payloads(),
 ##   request_water_patch_meshes(), poll_ready_water_patch_meshes(),
 ##   clear_water_patch_mesh_cache(), is_water_dirty(), clear_water_dirty()
 extends Node3D
@@ -30,7 +31,13 @@ const WATER_BORDER_MIN_DEPTH_M := 0.02
 const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
 const WATER_PATCH_MUTATION_MAX_PER_FRAME := 256
+const WATER_PATCH_ADD_ATTEMPT_MAX_PER_FRAME := 64
+const WATER_PATCH_ADD_APPLY_MAX_PER_FRAME := 2
 const WATER_PATCH_MUTATION_BUDGET_MS := 1.5
+const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
+const WATER_PATCH_RESOURCE_POOL_MAX := 96
+const WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 64
+const WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const WATER_PATCH_PREWARM_MAX_PER_FRAME := 4
 const WATER_PATCH_PREWARM_BUDGET_MS := 0.75
 const WATER_PATCH_PREWARM_HALO_PATCHES := 1
@@ -56,6 +63,10 @@ const WATER_PATCH_MESH_APPLY_MAX_PER_FRAME := 2
 const WATER_PATCH_MESH_APPLY_HEADROOM_MAX_PER_FRAME := 3
 const WATER_PATCH_MESH_APPLY_BUDGET_MS := 1.5
 const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_MS := 2.0
+const WATER_PATCH_MESH_APPLY_BUDGET_BYTES := 700000
+const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_BYTES := 1100000
+const WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES := 1600000
+const WATER_PATCH_MESH_APPLY_QUEUE_HARD_BYTES := 3200000
 const WATER_PATCH_MESH_APPLY_HEADROOM_FRAME_MS := 5.0
 const WATER_PATCH_MESH_APPLY_HEADROOM_PREVIOUS_APPLY_MS := 1.4
 const WATER_PATCH_LOD_START_HEADROOM_MS := 1.25
@@ -76,6 +87,8 @@ const ROAD_CLIP_LOOP_ROLE_HOLE := 1
 
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
+var patch_payload_requested: Dictionary = {}
+var patch_payload_ready: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
 var height_texture_rebind_queue: Array[Vector2i] = []
 var height_texture_rebind_lookup: Dictionary = {}
@@ -85,13 +98,17 @@ var mesh_refresh_queue: Array[Vector2i] = []
 var mesh_refresh_requested_lod: Dictionary = {}
 var mesh_pending_lod: Dictionary = {}
 var mesh_apply_queue: Array[Dictionary] = []
+var full_water_grid_mesh_cache: Dictionary = {}
+var patch_resource_pool: Array[Dictionary] = []
 var patch_lod_refresh_queue: Array[Vector2i] = []
 var patch_lod_refresh_lookup: Dictionary = {}
 var terrain_world_size: Vector2 = Vector2.ZERO
 var terrain_patch_cols: int = 0
 var terrain_patch_rows: int = 0
+var terrain_patch_interval_cells: int = 1
 var terrain_patch_span_m: float = 1.0
 var fallback_height_texture: ImageTexture
+var empty_water_mesh: ArrayMesh
 var water_border_instance: MeshInstance3D
 var water_border_material: ShaderMaterial
 var terrain_border_revision: int = -1
@@ -119,6 +136,12 @@ var _water_residency_last_add_count: int = 0
 var _water_residency_last_remove_count: int = 0
 var _water_residency_last_add_pending_count: int = 0
 var _water_residency_last_remove_pending_count: int = 0
+var _water_resource_pool_hit_count: int = 0
+var _water_resource_pool_miss_count: int = 0
+var _water_resource_pool_release_count: int = 0
+var _water_resource_pool_prewarm_count: int = 0
+var _water_full_grid_mesh_cache_hit_count: int = 0
+var _water_full_grid_mesh_cache_miss_count: int = 0
 var _water_debug_elapsed_s: float = 0.0
 var _water_debug_frames: int = 0
 var _water_debug_frame_ms_total: float = 0.0
@@ -142,9 +165,9 @@ func rebuild_from_simulation_state() -> void:
 	terrain_world_size = simulation_node.get_terrain_world_size()
 	terrain_patch_cols = int(patch_layout.get("patch_cols", 0))
 	terrain_patch_rows = int(patch_layout.get("patch_rows", 0))
-	var patch_interval_cells: int = max(1, int(patch_layout.get("patch_interval_cells", 1)))
+	terrain_patch_interval_cells = max(1, int(patch_layout.get("patch_interval_cells", 1)))
 	var terrain_cell_m: float = float(patch_layout.get("terrain_cell_m", 1.0))
-	terrain_patch_span_m = terrain_cell_m * float(patch_interval_cells)
+	terrain_patch_span_m = terrain_cell_m * float(terrain_patch_interval_cells)
 	_terrain_debug_enabled = _terrain_debug_is_enabled()
 	_terrain_debug_verbose = _terrain_debug_is_verbose()
 	_terrain_force_lod1 = _terrain_debug_force_lod1()
@@ -161,6 +184,8 @@ func rebuild_from_simulation_state() -> void:
 	_clear_patches()
 	_ensure_fallback_height_texture()
 	_ensure_water_border_visual()
+	_prewarm_water_patch_resource_pool()
+	_prewarm_full_water_grid_mesh_variants()
 	_sync_patch_residency(true)
 	_process_height_texture_rebinds(WATER_PATCH_HEIGHT_REBIND_BUDGET_PER_FRAME)
 	_rebuild_water_border()
@@ -175,7 +200,10 @@ func rebuild_from_simulation_state() -> void:
 func _process(delta: float) -> void:
 	var frame_start_us := Time.get_ticks_usec()
 	var perf_enabled := PerfDebug.is_enabled()
-	var patch_sync_start_us := frame_start_us
+	var payload_poll_start_us := frame_start_us
+	var payload_poll_count := _poll_ready_water_patch_payloads(WATER_PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	var payload_poll_elapsed_ms := float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
+	var patch_sync_start_us := Time.get_ticks_usec()
 	var residency_changed := _sync_patch_residency()
 	var patch_sync_elapsed_ms := float(Time.get_ticks_usec() - patch_sync_start_us) / 1000.0
 	var height_rebind_elapsed_ms := 0.0
@@ -195,9 +223,10 @@ func _process(delta: float) -> void:
 	var border_changed := _current_terrain_border_revision() != terrain_border_revision
 	if simulation_node.is_water_dirty():
 		var upload_start_us := Time.get_ticks_usec()
-		update_water_visuals()
+		var water_upload_complete := update_water_visuals(true)
 		upload_elapsed_ms = float(Time.get_ticks_usec() - upload_start_us) / 1000.0
-		simulation_node.clear_water_dirty()
+		if water_upload_complete:
+			simulation_node.clear_water_dirty()
 	elif border_changed:
 		var border_start_us := Time.get_ticks_usec()
 		_rebuild_water_border()
@@ -260,6 +289,18 @@ func _process(delta: float) -> void:
 			"residency_remove_count": float(_water_residency_last_remove_count),
 			"residency_add_pending_count": float(_water_residency_last_add_pending_count),
 			"residency_remove_pending_count": float(_water_residency_last_remove_pending_count),
+			"resource_pool_hit_count": float(_water_resource_pool_hit_count),
+			"resource_pool_miss_count": float(_water_resource_pool_miss_count),
+			"resource_pool_release_count": float(_water_resource_pool_release_count),
+			"resource_pool_prewarm_count": float(_water_resource_pool_prewarm_count),
+			"resource_pool_size": float(patch_resource_pool.size()),
+			"full_grid_mesh_cache_count": float(full_water_grid_mesh_cache.size()),
+			"full_grid_mesh_cache_hit_count": float(_water_full_grid_mesh_cache_hit_count),
+			"full_grid_mesh_cache_miss_count": float(_water_full_grid_mesh_cache_miss_count),
+			"payload_poll": payload_poll_elapsed_ms,
+			"payload_poll_count": float(payload_poll_count),
+			"payload_requested_count": float(patch_payload_requested.size()),
+			"payload_ready_count": float(patch_payload_ready.size()),
 			"upload": upload_elapsed_ms,
 			"border": border_elapsed_ms,
 			"height_rebind": height_rebind_elapsed_ms,
@@ -284,21 +325,29 @@ func _process(delta: float) -> void:
 			water_frame_elapsed_ms,
 			perf_details
 		)
+		_reset_water_resource_pool_perf_counters()
 		_water_mesh_last_frame_elapsed_ms = water_frame_elapsed_ms
 	else:
 		_water_mesh_last_frame_elapsed_ms = float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 
-func update_water_visuals() -> void:
+func update_water_visuals(allow_async: bool = false) -> bool:
 	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_water_patches())
+	var dirty_upload_pending := false
 	if dirty_keys.is_empty():
 		for key in get_resident_patch_keys():
-			_upload_patch(key)
+			if not _upload_patch(key, false, allow_async):
+				dirty_upload_pending = true
 	else:
 		for key in dirty_keys:
 			if patches.has(key):
-				_upload_patch(key)
-				_queue_terrain_patch_binding(key)
+				if _upload_patch(key, false, allow_async):
+					_queue_terrain_patch_binding(key)
+				else:
+					dirty_upload_pending = true
+	if dirty_upload_pending:
+		return false
 	_rebuild_water_border()
+	return true
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -368,6 +417,7 @@ func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 	_sort_patch_keys_by_camera_priority(keys_to_add)
 	_sort_patch_keys_by_camera_priority(keys_to_remove)
 	keys_to_remove.reverse()
+	_request_water_patch_payloads(keys_to_add, WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME)
 
 	var changed := false
 	var mutation_limit := WATER_PATCH_MUTATION_MAX_PER_FRAME
@@ -387,15 +437,28 @@ func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 		processed_removes += 1
 		changed = true
 
+	var attempted_adds := 0
+	var add_attempt_limit: int = mini(
+		WATER_PATCH_ADD_ATTEMPT_MAX_PER_FRAME,
+		max(1, mutation_limit - processed_mutations)
+	)
 	for key in keys_to_add:
 		if processed_mutations >= mutation_limit:
 			break
+		if processed_adds >= WATER_PATCH_ADD_APPLY_MAX_PER_FRAME:
+			break
+		if attempted_adds >= add_attempt_limit:
+			break
 		if _time_budget_exhausted(budget_start_us, WATER_PATCH_MUTATION_BUDGET_MS, processed_mutations):
 			break
-		_activate_patch(key)
-		processed_mutations += 1
-		processed_adds += 1
-		changed = true
+		if not patches.has(key) and not patch_payload_ready.has(key):
+			attempted_adds += 1
+			continue
+		attempted_adds += 1
+		if _activate_patch(key):
+			processed_mutations += 1
+			processed_adds += 1
+			changed = true
 
 	_water_residency_pending_mutations = (
 		processed_adds < keys_to_add.size()
@@ -439,10 +502,10 @@ func _current_terrain_resident_patch_revision() -> int:
 		return int(terrain_node.get_resident_patch_revision())
 	return -1
 
-func _create_patch(key: Vector2i) -> void:
+func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	if patches.has(key):
 		return
-	var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
+	var patch_data: Dictionary = _water_patch_data_for_key(key, allow_async)
 	if patch_data.is_empty():
 		return
 
@@ -457,15 +520,14 @@ func _create_patch(key: Vector2i) -> void:
 	var inner_offset_x := float(patch_data["inner_offset_x"])
 	var inner_offset_z := float(patch_data["inner_offset_z"])
 
-	var depth_image: Image = Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
-	depth_image.set_data(
+	var patch_resources: Dictionary = _acquire_water_patch_resources()
+	var depth_image: Image = patch_resources["depth_image"] as Image
+	var depth_texture: ImageTexture = _upload_water_patch_depth_texture(
+		patch_resources,
 		texture_width,
 		texture_height,
-		false,
-		Image.FORMAT_RF,
-		(patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
+		_water_patch_depth_bytes(patch_data)
 	)
-	var depth_texture: ImageTexture = ImageTexture.create_from_image(depth_image)
 
 	var patch_center_x := world_origin_x + world_size_x * 0.5
 	var patch_center_z := world_origin_z + world_size_z * 0.5
@@ -473,15 +535,10 @@ func _create_patch(key: Vector2i) -> void:
 	var mesh_stats: Dictionary = _empty_water_mesh_stats(initial_lod_step)
 	var depth_signature: int = int(patch_data.get("depth_signature", 0))
 
-	var patch_node: MeshInstance3D = MeshInstance3D.new()
+	var patch_node: MeshInstance3D = patch_resources["node"] as MeshInstance3D
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
-	SceneLightingConfig.apply_shadow_policy(
-		patch_node,
-		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-		"water"
-	)
 	patch_node.extra_cull_margin = WATER_PATCH_EXTRA_CULL_MARGIN_M
-	patch_node.mesh = ArrayMesh.new()
+	patch_node.mesh = _empty_water_mesh_resource()
 	patch_node.visible = false
 	patch_node.position = Vector3(
 		world_origin_x + world_size_x * 0.5,
@@ -489,7 +546,7 @@ func _create_patch(key: Vector2i) -> void:
 		world_origin_z + world_size_z * 0.5
 	)
 
-	var material: ShaderMaterial = ShaderMaterial.new()
+	var material: ShaderMaterial = patch_resources["material"] as ShaderMaterial
 	material.shader = WATER_SHADER
 	var height_texture := _terrain_height_texture(key)
 	material.set_shader_parameter("heightmap", height_texture)
@@ -526,7 +583,7 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
 	material.set_shader_parameter("inner_sample_size_texels", Vector2(sample_width, sample_height))
 	patch_node.material_override = material
-	add_child(patch_node)
+	_ensure_patch_node_parent(patch_node)
 	_water_debug_patch_creates += 1
 
 	patches[key] = {
@@ -561,9 +618,13 @@ func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
 		if patches.has(key):
 			_upload_patch(key, true)
 
-func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
+func _upload_patch(
+	key: Vector2i,
+	road_clip_only: bool = false,
+	allow_async: bool = false
+) -> bool:
 	if not patches.has(key):
-		return
+		return false
 	var total_start_us := Time.get_ticks_usec()
 	var patch: Dictionary = patches[key]
 	var fetch_start_us := total_start_us
@@ -579,7 +640,7 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 		)
 		fetch_elapsed_ms = float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
 		if clip_data.is_empty():
-			return
+			return false
 		var clip_signature := _patch_road_clip_signature(clip_data)
 		var clip_signature_changed := int(patch.get("road_clip_signature", clip_signature - 1)) != clip_signature
 		var cached_depth_nonzero_count := int(patch.get("depth_nonzero_count", 0))
@@ -599,13 +660,15 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 					]
 				)
-			return
+			return true
 		fetch_start_us = Time.get_ticks_usec()
-	var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
+	var patch_data: Dictionary = _water_patch_data_for_key(key, allow_async)
 	fetch_elapsed_ms += float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
 	if patch_data.is_empty():
+		if allow_async:
+			return false
 		_remove_patch(key)
-		return
+		return false
 
 	patch["last_patch_data"] = patch_data
 	var texture_width := int(patch_data["texture_width"])
@@ -628,9 +691,15 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 			texture_height,
 			false,
 			Image.FORMAT_RF,
-			(patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
+			_water_patch_depth_bytes(patch_data)
 		)
-		depth_texture.update(depth_image)
+		if texture_shape_changed:
+			depth_texture = ImageTexture.create_from_image(depth_image)
+			patch["depth_texture"] = depth_texture
+			var texture_material: ShaderMaterial = patch["material"]
+			texture_material.set_shader_parameter("watermap", depth_texture)
+		else:
+			depth_texture.update(depth_image)
 		texture_elapsed_ms = float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 		_water_debug_patch_uploads += 1
 
@@ -658,7 +727,7 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 			if resident_patch_lookup.has(key):
 				_queue_patch_mesh_refresh(key, lod_step)
 		else:
-			patch_node.mesh = ArrayMesh.new()
+			patch_node.mesh = _empty_water_mesh_resource()
 			mesh_refresh_requested_lod.erase(key)
 			mesh_pending_lod.erase(key)
 		mesh_elapsed_ms = float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
@@ -707,15 +776,16 @@ func _upload_patch(key: Vector2i, road_clip_only: bool = false) -> void:
 					total_elapsed_ms,
 				]
 			)
+	return true
 
-func _activate_patch(key: Vector2i) -> void:
+func _activate_patch(key: Vector2i) -> bool:
 	if resident_patch_lookup.has(key):
-		return
+		return false
 	if not patches.has(key):
 		_create_patch(key)
 	var patch: Dictionary = patches.get(key, {})
 	if patch.is_empty():
-		return
+		return false
 	_refresh_one_patch_mesh_lod(key)
 	var patch_node: MeshInstance3D = patch["node"]
 	patch_node.visible = true
@@ -724,6 +794,7 @@ func _activate_patch(key: Vector2i) -> void:
 		_queue_patch_mesh_refresh(key, int(patch.get("lod_step", 1)))
 	_queue_height_texture_rebind(key)
 	_queue_terrain_patch_binding(key)
+	return true
 
 func _deactivate_patch(key: Vector2i) -> void:
 	if not resident_patch_lookup.has(key):
@@ -748,8 +819,7 @@ func _remove_patch(key: Vector2i) -> void:
 		return
 	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
-	var patch_node: MeshInstance3D = patch["node"]
-	patch_node.queue_free()
+	_release_water_patch_resources(patch)
 	patches.erase(key)
 	resident_patch_lookup.erase(key)
 	mesh_refresh_requested_lod.erase(key)
@@ -763,10 +833,11 @@ func _remove_patch(key: Vector2i) -> void:
 func _clear_patches() -> void:
 	for key in patches.keys():
 		var patch: Dictionary = patches[key]
-		var patch_node: MeshInstance3D = patch["node"]
-		patch_node.queue_free()
+		_release_water_patch_resources(patch)
 	patches.clear()
 	resident_patch_lookup.clear()
+	patch_payload_requested.clear()
+	patch_payload_ready.clear()
 	patch_prewarm_queue.clear()
 	height_texture_rebind_queue.clear()
 	height_texture_rebind_lookup.clear()
@@ -787,6 +858,205 @@ func _clear_patches() -> void:
 	_water_mesh_last_apply_elapsed_ms = 0.0
 	_water_residency_pending_mutations = false
 	_terrain_resident_patch_revision_seen = -1
+
+func _prewarm_water_patch_resource_pool() -> void:
+	while patch_resource_pool.size() < WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT:
+		patch_resource_pool.append(_new_water_patch_resources())
+		_water_resource_pool_prewarm_count += 1
+
+func _acquire_water_patch_resources() -> Dictionary:
+	var resources: Dictionary
+	if patch_resource_pool.is_empty():
+		resources = _new_water_patch_resources()
+		_water_resource_pool_miss_count += 1
+	else:
+		resources = patch_resource_pool.pop_back() as Dictionary
+		_water_resource_pool_hit_count += 1
+	var patch_node: MeshInstance3D = resources["node"] as MeshInstance3D
+	patch_node.visible = false
+	patch_node.mesh = _empty_water_mesh_resource()
+	patch_node.position = Vector3.ZERO
+	_ensure_patch_node_parent(patch_node)
+	return resources
+
+func _release_water_patch_resources(patch: Dictionary) -> void:
+	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
+	if patch_node == null:
+		return
+	var material: ShaderMaterial = patch.get("material", null) as ShaderMaterial
+	var depth_image: Image = patch.get("depth_image", null) as Image
+	var depth_texture: ImageTexture = patch.get("depth_texture", null) as ImageTexture
+	patch_node.visible = false
+	patch_node.mesh = _empty_water_mesh_resource()
+	patch_node.position = Vector3.ZERO
+	patch_node.name = "WaterPatchPool"
+	if material != null:
+		material.shader = WATER_SHADER
+		patch_node.material_override = material
+	if patch_resource_pool.size() >= WATER_PATCH_RESOURCE_POOL_MAX:
+		patch_node.queue_free()
+		return
+	patch_resource_pool.append({
+		"node": patch_node,
+		"material": material,
+		"depth_image": depth_image,
+		"depth_texture": depth_texture,
+		"depth_texture_width": int(patch.get("texture_width", 0)),
+		"depth_texture_height": int(patch.get("texture_height", 0)),
+	})
+	_water_resource_pool_release_count += 1
+
+func _new_water_patch_resources() -> Dictionary:
+	var patch_node := MeshInstance3D.new()
+	patch_node.name = "WaterPatchPool"
+	SceneLightingConfig.apply_shadow_policy(
+		patch_node,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"water"
+	)
+	patch_node.extra_cull_margin = WATER_PATCH_EXTRA_CULL_MARGIN_M
+	patch_node.mesh = _empty_water_mesh_resource()
+	patch_node.visible = false
+
+	var material := ShaderMaterial.new()
+	material.shader = WATER_SHADER
+	patch_node.material_override = material
+
+	var texture_size: Vector2i = _water_default_patch_texture_size()
+	var depth_image := Image.create(texture_size.x, texture_size.y, false, Image.FORMAT_RF)
+	depth_image.fill(Color.BLACK)
+	var depth_texture := ImageTexture.create_from_image(depth_image)
+
+	add_child(patch_node)
+	return {
+		"node": patch_node,
+		"material": material,
+		"depth_image": depth_image,
+		"depth_texture": depth_texture,
+		"depth_texture_width": texture_size.x,
+		"depth_texture_height": texture_size.y,
+	}
+
+func _water_default_patch_texture_size() -> Vector2i:
+	var sample_count: int = max(2, terrain_patch_interval_cells + 1)
+	return Vector2i(sample_count + 2, sample_count + 2)
+
+func _upload_water_patch_depth_texture(
+	resources: Dictionary,
+	texture_width: int,
+	texture_height: int,
+	depth_bytes: PackedByteArray
+) -> ImageTexture:
+	var depth_image: Image = resources["depth_image"] as Image
+	depth_image.set_data(texture_width, texture_height, false, Image.FORMAT_RF, depth_bytes)
+	var depth_texture: ImageTexture = resources.get("depth_texture", null) as ImageTexture
+	var old_width: int = int(resources.get("depth_texture_width", 0))
+	var old_height: int = int(resources.get("depth_texture_height", 0))
+	if depth_texture != null and old_width == texture_width and old_height == texture_height:
+		depth_texture.update(depth_image)
+	else:
+		depth_texture = ImageTexture.create_from_image(depth_image)
+		resources["depth_texture"] = depth_texture
+	resources["depth_texture_width"] = texture_width
+	resources["depth_texture_height"] = texture_height
+	return depth_texture
+
+func _empty_water_mesh_resource() -> ArrayMesh:
+	if empty_water_mesh == null:
+		empty_water_mesh = ArrayMesh.new()
+	return empty_water_mesh
+
+func _ensure_patch_node_parent(patch_node: MeshInstance3D) -> void:
+	if patch_node.get_parent() == null:
+		add_child(patch_node)
+
+func _prewarm_full_water_grid_mesh_variants() -> void:
+	if terrain_patch_interval_cells <= 0 or terrain_patch_span_m <= 0.0:
+		return
+	var sample_count: int = terrain_patch_interval_cells + 1
+	var lod_steps: Array[int] = [1, 2, 4, 8]
+	for lod_step: int in lod_steps:
+		var interval_count: int = _water_mesh_interval_count_for_sample_count(
+			sample_count,
+			lod_step
+		)
+		var vertex_count: int = (interval_count + 1) * (interval_count + 1)
+		var index_count: int = interval_count * interval_count * 6
+		var mesh_cells: int = interval_count * interval_count
+		var cache_key: String = _full_water_grid_mesh_cache_key_from_values(
+			lod_step,
+			mesh_cells,
+			vertex_count,
+			index_count,
+			terrain_patch_span_m,
+			terrain_patch_span_m
+		)
+		if full_water_grid_mesh_cache.has(cache_key):
+			continue
+		full_water_grid_mesh_cache[cache_key] = _build_full_water_grid_mesh(
+			interval_count,
+			interval_count,
+			terrain_patch_span_m,
+			terrain_patch_span_m
+		)
+
+func _water_mesh_interval_count_for_sample_count(sample_count: int, lod_step: int) -> int:
+	var interval_count: int = max(0, sample_count - 1)
+	var lod_vertex_count: int = max(
+		2,
+		int(ceili(float(interval_count) / float(max(1, lod_step)))) + 1
+	)
+	return max(1, lod_vertex_count - 1)
+
+func _build_full_water_grid_mesh(
+	x_interval_count: int,
+	z_interval_count: int,
+	world_size_x: float,
+	world_size_z: float
+) -> ArrayMesh:
+	var mesh := ArrayMesh.new()
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for z_index in range(z_interval_count + 1):
+		var z_t: float = float(z_index) / float(max(1, z_interval_count))
+		var local_z: float = (z_t - 0.5) * world_size_z
+		for x_index in range(x_interval_count + 1):
+			var x_t: float = float(x_index) / float(max(1, x_interval_count))
+			var local_x: float = (x_t - 0.5) * world_size_x
+			vertices.append(Vector3(local_x, 0.0, local_z))
+			normals.append(Vector3.UP)
+			uvs.append(Vector2(x_t, z_t))
+	var vertex_cols: int = x_interval_count + 1
+	for z_index in range(z_interval_count):
+		for x_index in range(x_interval_count):
+			var top_left: int = z_index * vertex_cols + x_index
+			var top_right: int = top_left + 1
+			var bottom_left: int = top_left + vertex_cols
+			var bottom_right: int = bottom_left + 1
+			indices.append(top_left)
+			indices.append(bottom_right)
+			indices.append(top_right)
+			indices.append(top_left)
+			indices.append(bottom_left)
+			indices.append(bottom_right)
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _reset_water_resource_pool_perf_counters() -> void:
+	_water_resource_pool_hit_count = 0
+	_water_resource_pool_miss_count = 0
+	_water_resource_pool_release_count = 0
+	_water_resource_pool_prewarm_count = 0
+	_water_full_grid_mesh_cache_hit_count = 0
+	_water_full_grid_mesh_cache_miss_count = 0
 
 func _rebuild_patch_prewarm_queue() -> void:
 	patch_prewarm_queue.clear()
@@ -865,11 +1135,12 @@ func _prewarm_patch_cache() -> void:
 		if patches.has(key):
 			continue
 		_create_patch(key)
-		created_patches += 1
 		var patch: Dictionary = patches.get(key, {})
-		if not patch.is_empty():
-			var patch_node: MeshInstance3D = patch["node"]
-			patch_node.visible = false
+		if patch.is_empty():
+			continue
+		created_patches += 1
+		var patch_node: MeshInstance3D = patch["node"]
+		patch_node.visible = false
 
 func _time_budget_exhausted(start_us: int, budget_ms: float, completed_count: int) -> bool:
 	if completed_count <= 0:
@@ -937,13 +1208,11 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var mesh: Mesh = null
 		if patch_node != null:
 			mesh = patch_node.mesh
-		var depth_stats: Dictionary = _road_geometry_float_stats(
-			patch_data["depth_data"] as PackedFloat32Array
-		)
+		var depth_stats: Dictionary = _water_patch_depth_stats(patch_data)
 		var layer_stats: Dictionary = {}
 		if simulation_node.has_method("get_water_patch_debug"):
 			layer_stats = simulation_node.get_water_patch_debug(key.x, key.y) as Dictionary
-		var depth_sample_count: int = (patch_data["depth_data"] as PackedFloat32Array).size()
+		var depth_sample_count: int = _water_patch_depth_sample_count(patch_data)
 		var layer_sample_count: int = int(layer_stats.get("total_samples", depth_sample_count))
 		var baseline_nonzero_count: int = int(layer_stats.get("baseline_nonzero", -1))
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
@@ -1081,6 +1350,88 @@ func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
 
 func _patch_visible_depth_count(patch_data: Dictionary) -> int:
 	return int(patch_data.get("depth_nonzero_count", 1))
+
+func _request_water_patch_payload(key: Vector2i, include_existing: bool = false) -> bool:
+	var keys: Array[Vector2i] = []
+	keys.append(key)
+	return _request_water_patch_payloads(keys, 1, include_existing) > 0
+
+func _request_water_patch_payloads(
+	keys: Array[Vector2i],
+	budget: int,
+	include_existing: bool = false
+) -> int:
+	if budget <= 0 or not simulation_node.has_method("request_water_patch_payloads"):
+		return 0
+	var flat_requests := PackedInt32Array()
+	var requested_count := 0
+	for key in keys:
+		if requested_count >= budget:
+			break
+		if (
+			(not include_existing and patches.has(key))
+			or patch_payload_ready.has(key)
+			or patch_payload_requested.has(key)
+		):
+			continue
+		flat_requests.push_back(key.x)
+		flat_requests.push_back(key.y)
+		patch_payload_requested[key] = true
+		requested_count += 1
+	if not flat_requests.is_empty():
+		simulation_node.request_water_patch_payloads(flat_requests)
+	return requested_count
+
+func _poll_ready_water_patch_payloads(budget: int) -> int:
+	if budget <= 0 or not simulation_node.has_method("poll_ready_water_patch_payloads"):
+		return 0
+	var result: Dictionary = simulation_node.poll_ready_water_patch_payloads(budget) as Dictionary
+	var payloads: Array = result.get("patches", []) as Array
+	var accepted_count := 0
+	for payload_variant in payloads:
+		var patch_data: Dictionary = payload_variant as Dictionary
+		var key := Vector2i(
+			int(patch_data.get("patch_x", -1)),
+			int(patch_data.get("patch_z", -1))
+		)
+		if key.x < 0 or key.y < 0:
+			continue
+		if not patch_payload_requested.has(key):
+			continue
+		patch_payload_ready[key] = patch_data
+		patch_payload_requested.erase(key)
+		accepted_count += 1
+	return accepted_count
+
+func _water_patch_data_for_key(key: Vector2i, allow_async: bool = false) -> Dictionary:
+	if allow_async and simulation_node.has_method("request_water_patch_payloads"):
+		if patch_payload_ready.has(key):
+			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+			patch_payload_ready.erase(key)
+			patch_payload_requested.erase(key)
+			return ready_patch_data
+		_request_water_patch_payload(key, patches.has(key))
+		return {}
+	return simulation_node.get_water_patch(key.x, key.y)
+
+func _water_patch_depth_bytes(patch_data: Dictionary) -> PackedByteArray:
+	var depth_bytes: PackedByteArray = (
+		patch_data.get("depth_bytes", PackedByteArray())
+		as PackedByteArray
+	)
+	if not depth_bytes.is_empty():
+		return depth_bytes
+	return (patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
+
+func _water_patch_depth_stats(patch_data: Dictionary) -> Dictionary:
+	if patch_data.has("depth_data"):
+		return _road_geometry_float_stats(patch_data["depth_data"] as PackedFloat32Array)
+	return _road_geometry_float_stats(PackedFloat32Array())
+
+func _water_patch_depth_sample_count(patch_data: Dictionary) -> int:
+	if patch_data.has("depth_data"):
+		return (patch_data["depth_data"] as PackedFloat32Array).size()
+	return int(patch_data.get("texture_width", 0)) * int(patch_data.get("texture_height", 0))
 
 func _patch_road_clip_signature(patch_data: Dictionary) -> int:
 	return int(patch_data.get("road_clip_signature", 0))
@@ -1346,7 +1697,7 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 	if int(patch.get("depth_nonzero_count", 0)) > 0:
 		_queue_patch_mesh_refresh(key, target_lod_step)
 	else:
-		patch_node.mesh = ArrayMesh.new()
+		patch_node.mesh = _empty_water_mesh_resource()
 	patch["mesh_stats"] = mesh_stats
 	return true
 
@@ -1424,6 +1775,9 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 			"mesh_apply_processed_count": 0.0,
 			"mesh_apply_limit_count": 0.0,
 			"mesh_apply_budget_ms": 0.0,
+			"mesh_apply_budget_bytes": 0.0,
+			"mesh_apply_processed_bytes": 0.0,
+			"mesh_apply_queue_bytes": float(_water_mesh_apply_queue_estimated_bytes()),
 			"mesh_apply_boost_active_count": 0.0,
 			"mesh_apply_headroom_frame_ms": _water_mesh_last_frame_elapsed_ms,
 			"mesh_apply_previous_ms": _water_mesh_last_apply_elapsed_ms,
@@ -1448,14 +1802,25 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 	var refresh_work_start_us: int = Time.get_ticks_usec()
 	var deferred_stage_count := 0
 	var completed_stage_count := 0
+	var polled_count := 0
+	var poll_start_us := Time.get_ticks_usec()
+	polled_count = _poll_water_patch_mesh_results(perf_stats)
+	if polled_count > 0:
+		completed_stage_count += 1
+	if collect_perf_stats:
+		perf_stats["mesh_poll"] = float(Time.get_ticks_usec() - poll_start_us) / 1000.0
+		perf_stats["mesh_polled_count"] = float(polled_count)
+
 	var apply_start_us := Time.get_ticks_usec()
 	var previous_apply_elapsed_ms: float = _water_mesh_last_apply_elapsed_ms
 	var apply_boost_active: bool = _water_patch_mesh_apply_boost_active()
 	var apply_limit: int = _water_patch_mesh_apply_limit(apply_boost_active)
 	var apply_budget_ms: float = _water_patch_mesh_apply_budget_ms(apply_boost_active)
+	var apply_budget_bytes: int = _water_patch_mesh_apply_budget_bytes(apply_boost_active)
 	var apply_queue_before: int = mesh_apply_queue.size()
 	var applied_count: int = _apply_ready_water_patch_meshes(
 		apply_budget_ms,
+		apply_budget_bytes,
 		apply_limit,
 		perf_stats
 	)
@@ -1468,22 +1833,10 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 		perf_stats["mesh_applied_count"] = float(applied_count)
 		perf_stats["mesh_apply_limit_count"] = float(apply_limit)
 		perf_stats["mesh_apply_budget_ms"] = apply_budget_ms
+		perf_stats["mesh_apply_budget_bytes"] = float(apply_budget_bytes)
 		perf_stats["mesh_apply_boost_active_count"] = 1.0 if apply_boost_active else 0.0
 		perf_stats["mesh_apply_headroom_frame_ms"] = _water_mesh_last_frame_elapsed_ms
 		perf_stats["mesh_apply_previous_ms"] = previous_apply_elapsed_ms
-
-	var polled_count := 0
-	if _water_mesh_refresh_stage_budget_exhausted(refresh_work_start_us, completed_stage_count):
-		if not mesh_pending_lod.is_empty():
-			deferred_stage_count += 1
-	else:
-		var poll_start_us := Time.get_ticks_usec()
-		polled_count = _poll_water_patch_mesh_results(perf_stats)
-		if polled_count > 0:
-			completed_stage_count += 1
-		if collect_perf_stats:
-			perf_stats["mesh_poll"] = float(Time.get_ticks_usec() - poll_start_us) / 1000.0
-			perf_stats["mesh_polled_count"] = float(polled_count)
 
 	var submit_backlog_active := false
 	var submit_budget := 0
@@ -1513,6 +1866,7 @@ func _process_mesh_refresh_queue(budget: int, collect_perf_stats: bool = false) 
 		perf_stats["mesh_queue_after_count"] = float(mesh_refresh_queue.size())
 		perf_stats["mesh_pending_after_count"] = float(mesh_pending_lod.size())
 		perf_stats["mesh_apply_queue_after_count"] = float(mesh_apply_queue.size())
+		perf_stats["mesh_apply_queue_bytes"] = float(_water_mesh_apply_queue_estimated_bytes())
 	return perf_stats
 
 func _water_patch_mesh_queue_compaction_needed() -> bool:
@@ -1614,7 +1968,7 @@ func _submit_water_patch_mesh_requests(
 				continue
 			if int(patch.get("depth_nonzero_count", 0)) <= 0:
 				var patch_node: MeshInstance3D = patch["node"]
-				patch_node.mesh = ArrayMesh.new()
+				patch_node.mesh = _empty_water_mesh_resource()
 				patch["mesh_stats"] = _empty_water_mesh_stats(int(patch.get("lod_step", 1)))
 				mesh_pending_lod.erase(key)
 				dry_count += 1
@@ -1661,6 +2015,9 @@ func _water_patch_mesh_poll_budget() -> int:
 	var apply_queue_count: int = mesh_apply_queue.size()
 	if apply_queue_count >= WATER_PATCH_MESH_APPLY_QUEUE_HARD_LIMIT:
 		return 0
+	var apply_queue_bytes: int = _water_mesh_apply_queue_estimated_bytes()
+	if apply_queue_bytes >= WATER_PATCH_MESH_APPLY_QUEUE_HARD_BYTES:
+		return 0
 	var apply_queue_room: int = WATER_PATCH_MESH_APPLY_QUEUE_HARD_LIMIT - apply_queue_count
 	var pending_count: int = mesh_pending_lod.size()
 	if pending_count <= 0:
@@ -1672,7 +2029,11 @@ func _water_patch_mesh_poll_budget() -> int:
 	var target_budget := WATER_PATCH_MESH_POLL_BUDGET_PER_FRAME
 	if backlog_active and _water_patch_mesh_apply_boost_active():
 		target_budget = WATER_PATCH_MESH_POLL_HEADROOM_BUDGET_PER_FRAME
-	elif backlog_active and apply_queue_count < WATER_PATCH_MESH_APPLY_QUEUE_SOFT_LIMIT:
+	elif (
+		backlog_active
+		and apply_queue_count < WATER_PATCH_MESH_APPLY_QUEUE_SOFT_LIMIT
+		and apply_queue_bytes < WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES
+	):
 		target_budget = WATER_PATCH_MESH_POLL_BACKLOG_BUDGET_PER_FRAME
 	return mini(pending_count, mini(apply_queue_room, target_budget))
 
@@ -1680,6 +2041,7 @@ func _water_patch_mesh_ready_backlog_active() -> bool:
 	return (
 		_water_mesh_ready_backlog_estimate >= WATER_PATCH_MESH_READY_BACKLOG_BOOST_THRESHOLD
 		or mesh_apply_queue.size() >= WATER_PATCH_MESH_APPLY_QUEUE_SOFT_LIMIT
+		or _water_mesh_apply_queue_estimated_bytes() >= WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES
 	)
 
 func _water_patch_mesh_apply_boost_active() -> bool:
@@ -1700,6 +2062,11 @@ func _water_patch_mesh_apply_budget_ms(boost_active: bool) -> float:
 		return WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_MS
 	return WATER_PATCH_MESH_APPLY_BUDGET_MS
 
+func _water_patch_mesh_apply_budget_bytes(boost_active: bool) -> int:
+	if boost_active:
+		return WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_BYTES
+	return WATER_PATCH_MESH_APPLY_BUDGET_BYTES
+
 func _poll_water_patch_mesh_results(perf_stats: Dictionary) -> int:
 	if not simulation_node.has_method("poll_ready_water_patch_meshes") or mesh_pending_lod.is_empty():
 		_water_mesh_ready_backlog_estimate = 0
@@ -1711,6 +2078,7 @@ func _poll_water_patch_mesh_results(perf_stats: Dictionary) -> int:
 		var headroom_active: bool = _water_patch_mesh_apply_boost_active()
 		perf_stats["mesh_poll_requested_count"] = float(mesh_pending_lod.size())
 		perf_stats["mesh_poll_return_budget_count"] = float(poll_budget)
+		perf_stats["mesh_poll_apply_queue_bytes"] = float(_water_mesh_apply_queue_estimated_bytes())
 		perf_stats["mesh_poll_backlog_active_count"] = (
 			1.0
 			if (
@@ -1789,6 +2157,7 @@ func _sort_mesh_apply_queue_by_camera_priority() -> void:
 
 func _apply_ready_water_patch_meshes(
 	apply_budget_ms: float,
+	apply_budget_bytes: int,
 	max_patches: int,
 	perf_stats: Dictionary
 ) -> int:
@@ -1797,16 +2166,21 @@ func _apply_ready_water_patch_meshes(
 	var apply_start_us := Time.get_ticks_usec()
 	var processed_count: int = 0
 	var applied_count: int = 0
+	var processed_bytes: int = 0
 	while processed_count < max_patches and not mesh_apply_queue.is_empty():
 		var mesh_data: Dictionary = mesh_apply_queue.pop_front()
+		processed_bytes += _water_mesh_data_estimated_bytes(mesh_data)
 		if _apply_water_patch_mesh_data(mesh_data):
 			applied_count += 1
 		processed_count += 1
 		var elapsed_ms := float(Time.get_ticks_usec() - apply_start_us) / 1000.0
 		if processed_count > 0 and elapsed_ms >= apply_budget_ms:
 			break
+		if processed_count > 0 and processed_bytes >= apply_budget_bytes:
+			break
 	if not perf_stats.is_empty():
 		perf_stats["mesh_apply_processed_count"] = float(processed_count)
+		perf_stats["mesh_apply_processed_bytes"] = float(processed_bytes)
 		perf_stats["mesh_apply_stale_count"] = float(processed_count - applied_count)
 	return applied_count
 
@@ -1854,6 +2228,12 @@ func _baked_water_patch_mesh(mesh_data: Dictionary) -> ArrayMesh:
 	var normals: PackedVector3Array = mesh_data.get("normals", PackedVector3Array()) as PackedVector3Array
 	var uvs: PackedVector2Array = mesh_data.get("uvs", PackedVector2Array()) as PackedVector2Array
 	var indices: PackedInt32Array = mesh_data.get("indices", PackedInt32Array()) as PackedInt32Array
+	var full_grid_cache_key: String = _full_water_grid_mesh_cache_key(mesh_data, vertices, indices)
+	if not full_grid_cache_key.is_empty():
+		if full_water_grid_mesh_cache.has(full_grid_cache_key):
+			_water_full_grid_mesh_cache_hit_count += 1
+			return full_water_grid_mesh_cache[full_grid_cache_key] as ArrayMesh
+		_water_full_grid_mesh_cache_miss_count += 1
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
@@ -1864,7 +2244,76 @@ func _baked_water_patch_mesh(mesh_data: Dictionary) -> ArrayMesh:
 	if indices.size() >= 3:
 		arrays[Mesh.ARRAY_INDEX] = indices
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	if not full_grid_cache_key.is_empty():
+		full_water_grid_mesh_cache[full_grid_cache_key] = mesh
 	return mesh
+
+func _full_water_grid_mesh_cache_key(
+	mesh_data: Dictionary,
+	vertices: PackedVector3Array,
+	indices: PackedInt32Array
+) -> String:
+	var mesh_cells: int = int(mesh_data.get("mesh_cells", 0))
+	if mesh_cells <= 0:
+		return ""
+	if int(mesh_data.get("mesh_full_cells", 0)) != mesh_cells:
+		return ""
+	if int(mesh_data.get("mesh_partial_cells", 0)) != 0:
+		return ""
+	if int(mesh_data.get("mesh_conservative_cells", 0)) != 0:
+		return ""
+	if int(mesh_data.get("mesh_dry_cells", 0)) != 0:
+		return ""
+	if int(mesh_data.get("mesh_road_clipped_cells", 0)) != 0:
+		return ""
+	if indices.size() < 3 or vertices.size() < 3:
+		return ""
+	var width: float = float(mesh_data.get("mesh_world_size_x", 0.0))
+	var depth: float = float(mesh_data.get("mesh_world_size_z", 0.0))
+	if width <= 0.0 or depth <= 0.0:
+		return ""
+	var lod_step: int = int(mesh_data.get("lod_step", 1))
+	return _full_water_grid_mesh_cache_key_from_values(
+		lod_step,
+		mesh_cells,
+		vertices.size(),
+		indices.size(),
+		width,
+		depth
+	)
+
+func _full_water_grid_mesh_cache_key_from_values(
+	lod_step: int,
+	mesh_cells: int,
+	vertex_count: int,
+	index_count: int,
+	width: float,
+	depth: float
+) -> String:
+	return "%d:%d:%d:%d:%.3f:%.3f" % [
+		lod_step,
+		mesh_cells,
+		vertex_count,
+		index_count,
+		width,
+		depth,
+	]
+
+func _water_mesh_data_estimated_bytes(mesh_data: Dictionary) -> int:
+	var estimated_bytes: int = int(mesh_data.get("mesh_estimated_bytes", 0))
+	if estimated_bytes > 0:
+		return estimated_bytes
+	var vertices: PackedVector3Array = mesh_data.get("vertices", PackedVector3Array()) as PackedVector3Array
+	var normals: PackedVector3Array = mesh_data.get("normals", PackedVector3Array()) as PackedVector3Array
+	var uvs: PackedVector2Array = mesh_data.get("uvs", PackedVector2Array()) as PackedVector2Array
+	var indices: PackedInt32Array = mesh_data.get("indices", PackedInt32Array()) as PackedInt32Array
+	return vertices.size() * 12 + normals.size() * 12 + uvs.size() * 8 + indices.size() * 4
+
+func _water_mesh_apply_queue_estimated_bytes() -> int:
+	var total_bytes: int = 0
+	for mesh_data: Dictionary in mesh_apply_queue:
+		total_bytes += _water_mesh_data_estimated_bytes(mesh_data)
+	return total_bytes
 
 func _water_mesh_stats_from_baked_data(mesh_data: Dictionary) -> Dictionary:
 	return {

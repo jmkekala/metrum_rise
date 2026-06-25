@@ -120,8 +120,10 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
     build_road_touched_terrain_patch,
 };
-use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
-use crate::simulation::water::WaterSystem;
+use crate::simulation::terrain::{
+    TerrainPatchSnapshot, TerrainSystem, terrain_cdt_local_sample_margin_m,
+};
+use crate::simulation::water::{WaterPatchSnapshot, WaterSystem};
 use crate::simulation::zoning::ZoningSystem;
 
 use crate::debug_log;
@@ -253,6 +255,8 @@ pub struct SimulationNode {
     pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
+    terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
+    water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
     pub(crate) road_preview_request_counter: AtomicU64,
     /// True when running in headless benchmark mode.
@@ -317,6 +321,167 @@ impl WaterPatchMeshAsyncState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct TerrainPatchPayloadKey {
+    patch_x: usize,
+    patch_z: usize,
+    render_step_mm: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct WaterPatchPayloadKey {
+    patch_x: usize,
+    patch_z: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TerrainPatchPayloadRequest {
+    key: TerrainPatchPayloadKey,
+    request_id: u64,
+}
+
+#[derive(Clone, Copy)]
+struct WaterPatchPayloadRequest {
+    key: WaterPatchPayloadKey,
+    request_id: u64,
+}
+
+enum TerrainPatchPayloadData {
+    Regular {
+        patch: TerrainPatchSnapshot,
+        height_bytes: Vec<u8>,
+    },
+    Refined {
+        patch: CachedRefinedTerrainPatch,
+    },
+}
+
+struct TerrainPatchPayload {
+    key: TerrainPatchPayloadKey,
+    request_id: u64,
+    data: TerrainPatchPayloadData,
+}
+
+struct WaterPatchPayload {
+    key: WaterPatchPayloadKey,
+    request_id: u64,
+    patch: WaterPatchSnapshot,
+    depth_bytes: Vec<u8>,
+    road_clip_query: RoadClipLoopQuery,
+}
+
+struct TerrainPatchPayloadAsyncState {
+    next_request_id: u64,
+    requested: HashMap<TerrainPatchPayloadKey, u64>,
+    in_flight: HashMap<TerrainPatchPayloadKey, u64>,
+    ready: Vec<TerrainPatchPayloadKey>,
+    ready_lookup: HashSet<TerrainPatchPayloadKey>,
+    payloads: HashMap<TerrainPatchPayloadKey, TerrainPatchPayload>,
+    completed: Vec<TerrainPatchPayload>,
+}
+
+impl TerrainPatchPayloadAsyncState {
+    fn new() -> Self {
+        Self {
+            next_request_id: 1,
+            requested: HashMap::new(),
+            in_flight: HashMap::new(),
+            ready: Vec::new(),
+            ready_lookup: HashSet::new(),
+            payloads: HashMap::new(),
+            completed: Vec::new(),
+        }
+    }
+
+    fn request(&mut self, key: TerrainPatchPayloadKey) -> u64 {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        self.requested.insert(key, request_id);
+        self.in_flight.insert(key, request_id);
+        self.payloads.remove(&key);
+        self.ready_lookup.remove(&key);
+        self.ready.retain(|ready_key| *ready_key != key);
+        request_id
+    }
+
+    fn queue_ready(&mut self, key: TerrainPatchPayloadKey) {
+        if self.ready_lookup.insert(key) {
+            self.ready.push(key);
+        }
+    }
+
+    fn ingest_completed(&mut self, completed: Vec<TerrainPatchPayload>) {
+        for payload in completed {
+            let key = payload.key;
+            let request_id = payload.request_id;
+            if self.in_flight.get(&key).copied() == Some(request_id) {
+                self.in_flight.remove(&key);
+            }
+            if self.requested.get(&key).copied() != Some(request_id) {
+                continue;
+            }
+            self.payloads.insert(key, payload);
+            self.queue_ready(key);
+        }
+    }
+}
+
+struct WaterPatchPayloadAsyncState {
+    next_request_id: u64,
+    requested: HashMap<WaterPatchPayloadKey, u64>,
+    in_flight: HashMap<WaterPatchPayloadKey, u64>,
+    ready: Vec<WaterPatchPayloadKey>,
+    ready_lookup: HashSet<WaterPatchPayloadKey>,
+    payloads: HashMap<WaterPatchPayloadKey, WaterPatchPayload>,
+    completed: Vec<WaterPatchPayload>,
+}
+
+impl WaterPatchPayloadAsyncState {
+    fn new() -> Self {
+        Self {
+            next_request_id: 1,
+            requested: HashMap::new(),
+            in_flight: HashMap::new(),
+            ready: Vec::new(),
+            ready_lookup: HashSet::new(),
+            payloads: HashMap::new(),
+            completed: Vec::new(),
+        }
+    }
+
+    fn request(&mut self, key: WaterPatchPayloadKey) -> u64 {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        self.requested.insert(key, request_id);
+        self.in_flight.insert(key, request_id);
+        self.payloads.remove(&key);
+        self.ready_lookup.remove(&key);
+        self.ready.retain(|ready_key| *ready_key != key);
+        request_id
+    }
+
+    fn queue_ready(&mut self, key: WaterPatchPayloadKey) {
+        if self.ready_lookup.insert(key) {
+            self.ready.push(key);
+        }
+    }
+
+    fn ingest_completed(&mut self, completed: Vec<WaterPatchPayload>) {
+        for payload in completed {
+            let key = payload.key;
+            let request_id = payload.request_id;
+            if self.in_flight.get(&key).copied() == Some(request_id) {
+                self.in_flight.remove(&key);
+            }
+            if self.requested.get(&key).copied() != Some(request_id) {
+                continue;
+            }
+            self.payloads.insert(key, payload);
+            self.queue_ready(key);
+        }
+    }
+}
+
 struct RoadClipLoopQuery {
     cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
@@ -372,8 +537,42 @@ impl SimulationNode {
         }
     }
 
+    fn lock_terrain_patch_payload_jobs(
+        &self,
+    ) -> std::sync::MutexGuard<'_, TerrainPatchPayloadAsyncState> {
+        match self.terrain_patch_payload_jobs.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                godot_error!("[sim] terrain patch payload mutex poisoned — recovering");
+                e.into_inner()
+            }
+        }
+    }
+
+    fn lock_water_patch_payload_jobs(
+        &self,
+    ) -> std::sync::MutexGuard<'_, WaterPatchPayloadAsyncState> {
+        match self.water_patch_payload_jobs.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                godot_error!("[sim] water patch payload mutex poisoned — recovering");
+                e.into_inner()
+            }
+        }
+    }
+
     fn drain_completed_water_patch_mesh_jobs(&self) -> Vec<CachedWaterPatchMesh> {
         let mut jobs = self.lock_water_patch_mesh_jobs();
+        std::mem::take(&mut jobs.completed)
+    }
+
+    fn drain_completed_terrain_patch_payload_jobs(&self) -> Vec<TerrainPatchPayload> {
+        let mut jobs = self.lock_terrain_patch_payload_jobs();
+        std::mem::take(&mut jobs.completed)
+    }
+
+    fn drain_completed_water_patch_payload_jobs(&self) -> Vec<WaterPatchPayload> {
+        let mut jobs = self.lock_water_patch_payload_jobs();
         std::mem::take(&mut jobs.completed)
     }
 
@@ -396,6 +595,146 @@ impl SimulationNode {
             requests.push((patch_x, patch_z, lod_step));
         }
         requests
+    }
+
+    fn terrain_patch_payload_keys_from_flat(
+        flat_requests: &PackedInt32Array,
+    ) -> Vec<TerrainPatchPayloadKey> {
+        let request_values = flat_requests.as_slice();
+        if request_values.len() < 3 {
+            return Vec::new();
+        }
+        let mut requests = Vec::new();
+        for chunk in request_values.chunks_exact(3) {
+            let Ok(patch_x) = usize::try_from(chunk[0]) else {
+                continue;
+            };
+            let Ok(patch_z) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            let render_step_mm = u32::try_from(chunk[2]).unwrap_or(0);
+            requests.push(TerrainPatchPayloadKey {
+                patch_x,
+                patch_z,
+                render_step_mm,
+            });
+        }
+        requests
+    }
+
+    fn water_patch_payload_keys_from_flat(
+        flat_requests: &PackedInt32Array,
+    ) -> Vec<WaterPatchPayloadKey> {
+        let request_values = flat_requests.as_slice();
+        if request_values.len() < 2 {
+            return Vec::new();
+        }
+        let mut requests = Vec::new();
+        for chunk in request_values.chunks_exact(2) {
+            let Ok(patch_x) = usize::try_from(chunk[0]) else {
+                continue;
+            };
+            let Ok(patch_z) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            requests.push(WaterPatchPayloadKey { patch_x, patch_z });
+        }
+        requests
+    }
+
+    fn terrain_patch_payload_for_request(
+        core: &mut SimCore,
+        request: TerrainPatchPayloadRequest,
+    ) -> Option<TerrainPatchPayload> {
+        if request.key.render_step_mm == 0 {
+            let patch = core
+                .heightmap
+                .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+            let height_bytes = Self::f32_bytes_vec(&patch.height_data);
+            return Some(TerrainPatchPayload {
+                key: request.key,
+                request_id: request.request_id,
+                data: TerrainPatchPayloadData::Regular {
+                    patch,
+                    height_bytes,
+                },
+            });
+        }
+
+        let cache_key = RefinedTerrainPatchCacheKey {
+            patch_x: request.key.patch_x,
+            patch_z: request.key.patch_z,
+            render_step_mm: request.key.render_step_mm,
+        };
+        if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
+            return Some(TerrainPatchPayload {
+                key: request.key,
+                request_id: request.request_id,
+                data: TerrainPatchPayloadData::Refined {
+                    patch: cached.clone(),
+                },
+            });
+        }
+
+        let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
+        let base_patch = core
+            .heightmap
+            .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+        let road_clip_query = Self::road_clip_loop_query_for_bounds(
+            core,
+            base_patch.world_origin_x,
+            base_patch.world_origin_z,
+            base_patch.world_origin_x + base_patch.world_size_x,
+            base_patch.world_origin_z + base_patch.world_size_z,
+        );
+        let previous = core.refined_terrain_patch_cache.get(&cache_key);
+        let windows = Self::terrain_cdt_window_build_inputs(
+            &core.heightmap,
+            &base_patch,
+            &road_clip_query.cdt_road_loops,
+            render_step_m,
+            previous,
+        );
+        let input = RefinedTerrainPatchBuildInput {
+            key: cache_key,
+            patch: base_patch,
+            windows,
+            road_clip_source_count: road_clip_query.source_count,
+            clip_error_label: road_clip_query.clip_error_label,
+        };
+        let mut entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
+        let entry = entries.pop()?;
+        core.refined_terrain_patch_cache
+            .insert(cache_key, entry.clone());
+        Some(TerrainPatchPayload {
+            key: request.key,
+            request_id: request.request_id,
+            data: TerrainPatchPayloadData::Refined { patch: entry },
+        })
+    }
+
+    fn water_patch_payload_for_request(
+        core: &SimCore,
+        request: WaterPatchPayloadRequest,
+    ) -> Option<WaterPatchPayload> {
+        let patch = core
+            .watermap
+            .visible_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+        let road_clip_query = Self::road_clip_loop_query_for_bounds(
+            core,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        let depth_bytes = Self::f32_bytes_vec(&patch.depth_data);
+        Some(WaterPatchPayload {
+            key: request.key,
+            request_id: request.request_id,
+            patch,
+            depth_bytes,
+            road_clip_query,
+        })
     }
 
     fn water_patch_mesh_build_input_for_request(
@@ -578,6 +917,18 @@ impl SimulationNode {
     fn terrain_patch_dict(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
     ) -> VarDictionary {
+        let mut dict = Self::terrain_patch_metadata_dict(patch);
+        dict.set(
+            "height_data",
+            PackedFloat32Array::from_iter(patch.height_data.iter().copied()),
+        );
+        dict.set("height_bytes", Self::packed_f32_bytes(&patch.height_data));
+        dict
+    }
+
+    fn terrain_patch_metadata_dict(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
@@ -609,11 +960,20 @@ impl SimulationNode {
         dict.set("world_origin_z", f64::from(patch.world_origin_z));
         dict.set("world_size_x", f64::from(patch.world_size_x));
         dict.set("world_size_z", f64::from(patch.world_size_z));
-        dict.set(
-            "height_data",
-            PackedFloat32Array::from_iter(patch.height_data.iter().copied()),
-        );
         dict
+    }
+
+    fn f32_bytes_vec(values: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(values.len().saturating_mul(std::mem::size_of::<f32>()));
+        for value in values {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        bytes
+    }
+
+    fn packed_f32_bytes(values: &[f32]) -> PackedByteArray {
+        let bytes = Self::f32_bytes_vec(values);
+        PackedByteArray::from_iter(bytes)
     }
 
     fn refined_terrain_patch_dict(
@@ -738,6 +1098,27 @@ impl SimulationNode {
         };
         Self::append_road_clip_status(&mut dict, &road_clip_query);
         Self::append_cached_cdt_terrain_mesh(&mut dict, cached, include_debug);
+        dict
+    }
+
+    fn terrain_patch_payload_dict(payload: &TerrainPatchPayload) -> VarDictionary {
+        let mut dict = match &payload.data {
+            TerrainPatchPayloadData::Regular {
+                patch,
+                height_bytes,
+            } => {
+                let mut dict = Self::terrain_patch_metadata_dict(patch);
+                dict.set(
+                    "height_bytes",
+                    PackedByteArray::from_iter(height_bytes.iter().copied()),
+                );
+                dict
+            }
+            TerrainPatchPayloadData::Refined { patch } => {
+                Self::cached_refined_terrain_patch_dict(patch, false)
+            }
+        };
+        dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
         dict
     }
 
@@ -2977,6 +3358,18 @@ impl SimulationNode {
     }
 
     fn water_patch_dict(patch: &crate::simulation::water::WaterPatchSnapshot) -> VarDictionary {
+        let mut dict = Self::water_patch_metadata_dict(patch);
+        dict.set(
+            "depth_data",
+            PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
+        );
+        dict.set("depth_bytes", Self::packed_f32_bytes(&patch.depth_data));
+        dict
+    }
+
+    fn water_patch_metadata_dict(
+        patch: &crate::simulation::water::WaterPatchSnapshot,
+    ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
@@ -3016,10 +3409,16 @@ impl SimulationNode {
             "depth_signature",
             i64::from_ne_bytes(water_patch_depth_signature(patch).to_ne_bytes()),
         );
+        dict
+    }
+
+    fn water_patch_payload_dict(payload: &WaterPatchPayload) -> VarDictionary {
+        let mut dict = Self::water_patch_metadata_dict(&payload.patch);
         dict.set(
-            "depth_data",
-            PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
+            "depth_bytes",
+            PackedByteArray::from_iter(payload.depth_bytes.iter().copied()),
         );
+        Self::append_road_clip_query(&mut dict, &payload.road_clip_query);
         dict
     }
 
@@ -3028,6 +3427,8 @@ impl SimulationNode {
         dict.set("patch_x", i64::try_from(mesh.key.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(mesh.key.patch_z).unwrap_or(0));
         dict.set("lod_step", i64::try_from(mesh.key.lod_step).unwrap_or(1));
+        dict.set("mesh_world_size_x", f64::from(mesh.world_size_x));
+        dict.set("mesh_world_size_z", f64::from(mesh.world_size_z));
         dict.set("road_clip_signature", mesh.key.road_clip_signature);
         dict.set(
             "depth_signature",
@@ -3080,6 +3481,29 @@ impl SimulationNode {
         dict.set(
             "mesh_emitted_triangles",
             i64::try_from(mesh.stats.emitted_triangles).unwrap_or(i64::MAX),
+        );
+        let estimated_bytes = mesh
+            .vertices
+            .len()
+            .saturating_mul(std::mem::size_of::<Vector3>())
+            .saturating_add(
+                mesh.normals
+                    .len()
+                    .saturating_mul(std::mem::size_of::<Vector3>()),
+            )
+            .saturating_add(
+                mesh.uvs
+                    .len()
+                    .saturating_mul(std::mem::size_of::<Vector2>()),
+            )
+            .saturating_add(
+                mesh.indices
+                    .len()
+                    .saturating_mul(std::mem::size_of::<i32>()),
+            );
+        dict.set(
+            "mesh_estimated_bytes",
+            i64::try_from(estimated_bytes).unwrap_or(i64::MAX),
         );
         dict
     }
@@ -3454,6 +3878,182 @@ impl SimulationNode {
         Self::terrain_patch_dict(&patch)
     }
 
+    /// Requests async terrain patch payload preparation for flat `(patch_x, patch_z, render_step_mm)` tuples.
+    #[func]
+    pub fn request_terrain_patch_payloads(
+        &mut self,
+        flat_requests: PackedInt32Array,
+    ) -> VarDictionary {
+        let requests = Self::terrain_patch_payload_keys_from_flat(&flat_requests);
+        let raw_count = requests.len();
+        let mut stats = VarDictionary::new();
+        stats.set("raw_count", i64::try_from(raw_count).unwrap_or(i64::MAX));
+        stats.set("accepted_count", 0_i64);
+        stats.set("duplicate_count", 0_i64);
+        stats.set("in_flight_count", 0_i64);
+        stats.set("build_queued_count", 0_i64);
+        if requests.is_empty() {
+            return stats;
+        }
+
+        let mut accepted_count = 0_usize;
+        let mut duplicate_count = 0_usize;
+        let mut in_flight_count = 0_usize;
+        let mut build_queued_count = 0_usize;
+        let mut build_requests = Vec::new();
+        {
+            let mut jobs = self.lock_terrain_patch_payload_jobs();
+            let mut requested_key_lookup = HashSet::new();
+            for key in requests {
+                if !requested_key_lookup.insert(key) {
+                    duplicate_count += 1;
+                    continue;
+                }
+                in_flight_count += usize::from(jobs.in_flight.contains_key(&key));
+                let request_id = jobs.request(key);
+                build_requests.push(TerrainPatchPayloadRequest { key, request_id });
+                accepted_count += 1;
+                build_queued_count += 1;
+            }
+        }
+
+        if !build_requests.is_empty() {
+            let core = Arc::clone(&self.core);
+            let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
+            rayon::spawn(move || {
+                let mut built = Vec::with_capacity(build_requests.len());
+                {
+                    let mut core = match core.lock() {
+                        Ok(g) => g,
+                        Err(e) => e.into_inner(),
+                    };
+                    for request in build_requests {
+                        if let Some(payload) =
+                            SimulationNode::terrain_patch_payload_for_request(&mut core, request)
+                        {
+                            built.push(payload);
+                        }
+                    }
+                }
+                let mut job_state = match jobs.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                job_state.completed.extend(built);
+            });
+        }
+
+        stats.set(
+            "accepted_count",
+            i64::try_from(accepted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "duplicate_count",
+            i64::try_from(duplicate_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "in_flight_count",
+            i64::try_from(in_flight_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "build_queued_count",
+            i64::try_from(build_queued_count).unwrap_or(i64::MAX),
+        );
+        stats
+    }
+
+    /// Returns ready async terrain patch payloads without blocking on patch extraction.
+    #[func]
+    pub fn poll_ready_terrain_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
+        let completed_payloads = self.drain_completed_terrain_patch_payload_jobs();
+        let completed_count = completed_payloads.len();
+        let max_patches = usize::try_from(max_patches).unwrap_or(0);
+        let mut patches = VarArray::new();
+        let mut stats = VarDictionary::new();
+        stats.set("patches", patches.to_variant());
+        stats.set(
+            "completed_count",
+            i64::try_from(completed_count).unwrap_or(i64::MAX),
+        );
+        stats.set("ready_before_count", 0_i64);
+        stats.set("emitted_count", 0_i64);
+        stats.set("stale_ready_count", 0_i64);
+        stats.set("missing_ready_count", 0_i64);
+        stats.set("requested_before_count", 0_i64);
+        stats.set("requested_after_count", 0_i64);
+
+        let mut jobs = self.lock_terrain_patch_payload_jobs();
+        if !completed_payloads.is_empty() {
+            jobs.ingest_completed(completed_payloads);
+        }
+        let ready_before_count = jobs.ready.len();
+        let requested_before_count = jobs.requested.len();
+        if max_patches == 0 {
+            stats.set(
+                "ready_before_count",
+                i64::try_from(ready_before_count).unwrap_or(i64::MAX),
+            );
+            stats.set(
+                "requested_before_count",
+                i64::try_from(requested_before_count).unwrap_or(i64::MAX),
+            );
+            stats.set(
+                "requested_after_count",
+                i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+            );
+            return stats;
+        }
+
+        let mut emitted_count = 0_usize;
+        let mut stale_ready_count = 0_usize;
+        let mut missing_ready_count = 0_usize;
+        while emitted_count < max_patches {
+            let Some(key) = jobs.ready.pop() else {
+                break;
+            };
+            jobs.ready_lookup.remove(&key);
+            let Some(payload) = jobs.payloads.remove(&key) else {
+                missing_ready_count += 1;
+                jobs.requested.remove(&key);
+                continue;
+            };
+            if jobs.requested.get(&key).copied() != Some(payload.request_id) {
+                stale_ready_count += 1;
+                continue;
+            }
+            jobs.requested.remove(&key);
+            patches.push(&Self::terrain_patch_payload_dict(&payload).to_variant());
+            emitted_count += 1;
+        }
+
+        stats.set("patches", patches.to_variant());
+        stats.set(
+            "ready_before_count",
+            i64::try_from(ready_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "emitted_count",
+            i64::try_from(emitted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "stale_ready_count",
+            i64::try_from(stale_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "missing_ready_count",
+            i64::try_from(missing_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_before_count",
+            i64::try_from(requested_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_after_count",
+            i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+        );
+        stats
+    }
+
     /// Returns one visible-terrain render patch resampled at a finer render step.
     #[func]
     pub fn get_refined_terrain_patch(
@@ -3571,6 +4171,182 @@ impl SimulationNode {
             patch.world_origin_z + patch.world_size_z,
         );
         dict
+    }
+
+    /// Requests async water patch payload preparation for flat `(patch_x, patch_z)` pairs.
+    #[func]
+    pub fn request_water_patch_payloads(
+        &mut self,
+        flat_requests: PackedInt32Array,
+    ) -> VarDictionary {
+        let requests = Self::water_patch_payload_keys_from_flat(&flat_requests);
+        let raw_count = requests.len();
+        let mut stats = VarDictionary::new();
+        stats.set("raw_count", i64::try_from(raw_count).unwrap_or(i64::MAX));
+        stats.set("accepted_count", 0_i64);
+        stats.set("duplicate_count", 0_i64);
+        stats.set("in_flight_count", 0_i64);
+        stats.set("build_queued_count", 0_i64);
+        if requests.is_empty() {
+            return stats;
+        }
+
+        let mut accepted_count = 0_usize;
+        let mut duplicate_count = 0_usize;
+        let mut in_flight_count = 0_usize;
+        let mut build_queued_count = 0_usize;
+        let mut build_requests = Vec::new();
+        {
+            let mut jobs = self.lock_water_patch_payload_jobs();
+            let mut requested_key_lookup = HashSet::new();
+            for key in requests {
+                if !requested_key_lookup.insert(key) {
+                    duplicate_count += 1;
+                    continue;
+                }
+                in_flight_count += usize::from(jobs.in_flight.contains_key(&key));
+                let request_id = jobs.request(key);
+                build_requests.push(WaterPatchPayloadRequest { key, request_id });
+                accepted_count += 1;
+                build_queued_count += 1;
+            }
+        }
+
+        if !build_requests.is_empty() {
+            let core = Arc::clone(&self.core);
+            let jobs = Arc::clone(&self.water_patch_payload_jobs);
+            rayon::spawn(move || {
+                let mut built = Vec::with_capacity(build_requests.len());
+                {
+                    let core = match core.lock() {
+                        Ok(g) => g,
+                        Err(e) => e.into_inner(),
+                    };
+                    for request in build_requests {
+                        if let Some(payload) =
+                            SimulationNode::water_patch_payload_for_request(&core, request)
+                        {
+                            built.push(payload);
+                        }
+                    }
+                }
+                let mut job_state = match jobs.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                job_state.completed.extend(built);
+            });
+        }
+
+        stats.set(
+            "accepted_count",
+            i64::try_from(accepted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "duplicate_count",
+            i64::try_from(duplicate_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "in_flight_count",
+            i64::try_from(in_flight_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "build_queued_count",
+            i64::try_from(build_queued_count).unwrap_or(i64::MAX),
+        );
+        stats
+    }
+
+    /// Returns ready async water patch payloads without blocking on patch extraction.
+    #[func]
+    pub fn poll_ready_water_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
+        let completed_payloads = self.drain_completed_water_patch_payload_jobs();
+        let completed_count = completed_payloads.len();
+        let max_patches = usize::try_from(max_patches).unwrap_or(0);
+        let mut patches = VarArray::new();
+        let mut stats = VarDictionary::new();
+        stats.set("patches", patches.to_variant());
+        stats.set(
+            "completed_count",
+            i64::try_from(completed_count).unwrap_or(i64::MAX),
+        );
+        stats.set("ready_before_count", 0_i64);
+        stats.set("emitted_count", 0_i64);
+        stats.set("stale_ready_count", 0_i64);
+        stats.set("missing_ready_count", 0_i64);
+        stats.set("requested_before_count", 0_i64);
+        stats.set("requested_after_count", 0_i64);
+
+        let mut jobs = self.lock_water_patch_payload_jobs();
+        if !completed_payloads.is_empty() {
+            jobs.ingest_completed(completed_payloads);
+        }
+        let ready_before_count = jobs.ready.len();
+        let requested_before_count = jobs.requested.len();
+        if max_patches == 0 {
+            stats.set(
+                "ready_before_count",
+                i64::try_from(ready_before_count).unwrap_or(i64::MAX),
+            );
+            stats.set(
+                "requested_before_count",
+                i64::try_from(requested_before_count).unwrap_or(i64::MAX),
+            );
+            stats.set(
+                "requested_after_count",
+                i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+            );
+            return stats;
+        }
+
+        let mut emitted_count = 0_usize;
+        let mut stale_ready_count = 0_usize;
+        let mut missing_ready_count = 0_usize;
+        while emitted_count < max_patches {
+            let Some(key) = jobs.ready.pop() else {
+                break;
+            };
+            jobs.ready_lookup.remove(&key);
+            let Some(payload) = jobs.payloads.remove(&key) else {
+                missing_ready_count += 1;
+                jobs.requested.remove(&key);
+                continue;
+            };
+            if jobs.requested.get(&key).copied() != Some(payload.request_id) {
+                stale_ready_count += 1;
+                continue;
+            }
+            jobs.requested.remove(&key);
+            patches.push(&Self::water_patch_payload_dict(&payload).to_variant());
+            emitted_count += 1;
+        }
+
+        stats.set("patches", patches.to_variant());
+        stats.set(
+            "ready_before_count",
+            i64::try_from(ready_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "emitted_count",
+            i64::try_from(emitted_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "stale_ready_count",
+            i64::try_from(stale_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "missing_ready_count",
+            i64::try_from(missing_ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_before_count",
+            i64::try_from(requested_before_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "requested_after_count",
+            i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+        );
+        stats
     }
 
     /// Clears cached water mesh variants for flat `(patch_x, patch_z)` patch keys.
@@ -6198,6 +6974,8 @@ impl INode3D for SimulationNode {
             Arc::new(RwLock::new(RoadToolQuerySnapshot::from_core(&core)));
         let road_preview_result = Arc::new(RwLock::new(None));
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
+        let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
+        let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
         let (road_preview_tx, road_preview_rx) = std::sync::mpsc::channel();
         let _road_preview_thread = {
             let context = Arc::clone(&road_preview_context);
@@ -6228,6 +7006,8 @@ impl INode3D for SimulationNode {
             road_preview_result,
             road_tool_query_snapshot,
             water_patch_mesh_jobs,
+            terrain_patch_payload_jobs,
+            water_patch_payload_jobs,
             road_preview_request_counter: AtomicU64::new(0),
             benchmark_mode,
             asset_editor_mode,

@@ -39,6 +39,10 @@ pub(crate) struct CachedWaterPatchMesh {
     pub(crate) uvs: Vec<Vector2>,
     /// Optional triangle indices. Empty means the vertex buffer is already expanded.
     pub(crate) indices: Vec<i32>,
+    /// Local X span covered by this patch mesh.
+    pub(crate) world_size_x: f32,
+    /// Local Z span covered by this patch mesh.
+    pub(crate) world_size_z: f32,
     /// Mesh generation counters used by water debug output.
     pub(crate) stats: WaterPatchMeshStats,
 }
@@ -217,6 +221,8 @@ fn build_water_patch_mesh(input: WaterPatchMeshBuildInput) -> CachedWaterPatchMe
             normals: Vec::new(),
             uvs: Vec::new(),
             indices: Vec::new(),
+            world_size_x: input.patch.world_size_x,
+            world_size_z: input.patch.world_size_z,
             stats: WaterPatchMeshStats {
                 lod_step: input.key.lod_step,
                 ..WaterPatchMeshStats::default()
@@ -364,6 +370,8 @@ impl WaterMeshBuilder {
             normals: std::mem::take(&mut self.normals),
             uvs: std::mem::take(&mut self.uvs),
             indices: Vec::new(),
+            world_size_x: self.patch.world_size_x,
+            world_size_z: self.patch.world_size_z,
             stats: self.stats,
         }
     }
@@ -437,6 +445,8 @@ impl WaterMeshBuilder {
             normals: std::mem::take(&mut self.normals),
             uvs: std::mem::take(&mut self.uvs),
             indices,
+            world_size_x: self.patch.world_size_x,
+            world_size_z: self.patch.world_size_z,
             stats: self.stats,
         }
     }

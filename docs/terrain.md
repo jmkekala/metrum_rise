@@ -344,6 +344,8 @@ Current deterministic rules:
 - terrain material shoreline/depth sampling reuses the Water renderer's resident patch depth
   texture binding; it must not request a second terrain-aligned water snapshot or duplicate
   `ImageTexture` upload from GDScript
+- terrain and water patch snapshots expose texture-ready `PackedByteArray` height/depth payloads
+  so Godot image uploads do not convert `PackedFloat32Array` data on the render path
 - the terrain shader keeps separate terrain-height and water-depth UV layouts because terrain and
   water patch textures may use different border widths
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
@@ -362,10 +364,21 @@ Current deterministic rules:
 - the water mesh queue exports request/cache/job/ready/stale perf counters and compacts stale queued
   patch keys before submission when the queue grows beyond the deduped request set
 - water mesh uploads apply under a measured per-frame time budget with pending-job backpressure,
-  and Godot rejects stale ready meshes whose road/depth signatures no longer match the current
-  resident patch before `ArrayMesh` upload
+  estimated payload-byte limits, and pending-job backpressure; Godot rejects stale ready meshes
+  whose road/depth signatures no longer match the current resident patch before `ArrayMesh` upload
 - fully wet unclipped water patches use indexed grid mesh buffers instead of expanded per-cell
-  triangles so large still-water interiors upload less duplicate vertex data
+  triangles so large still-water interiors upload less duplicate vertex data, and Godot reuses
+  shared `ArrayMesh` resources for matching full-grid LOD/topology/size variants; regular
+  full-grid variants are prewarmed during renderer load so the first matching lake patch can hit
+  the cache instead of creating the mesh on the visible apply path
+- regular rectangular terrain `PlaneMesh` variants are prewarmed from the active world layout so
+  ordinary LOD changes assign cached meshes instead of constructing predictable resources mid-frame
+- terrain and water patch `MeshInstance3D`, `ShaderMaterial`, `Image`, and `ImageTexture`
+  resources are pooled and prewarmed before first visible residency activation, keeping cold
+  resource construction out of the first streaming frames where possible
+- perf summaries include viewport size, draw calls, rendered objects/primitives, video/texture/
+  buffer memory, vsync mode, the `Engine.max_fps` cap, and terrain/water resource-pool counters
+  before deeper renderer architecture work
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit
@@ -1168,11 +1181,20 @@ What is implemented now:
   texture directly instead of materializing a second terrain-aligned water texture
 - water mesh refresh now uses async Rust/Rayon preparation plus a Rust-owned ready queue,
   Godot-side ready polling, pending-job backpressure, stale road/depth signature rejection, and a
-  measured apply budget, with indexed buffers for fully wet unclipped patches and Godot-side stale
-  queue compaction guided by request/cache/job perf counters; ready polling is adaptive and fills a
-  bounded camera-sorted apply queue, ready/apply drainage receives a conservative headroom boost
-  only while backlog is high, and ready mesh uploads now run before poll/submit stages so cache-hit
-  request work does not stack after expensive `ArrayMesh` uploads in the same frame
+  measured time/byte apply budget, with indexed buffers for fully wet unclipped patches, shared
+  Godot `ArrayMesh` reuse for matching full-grid variants, and Godot-side stale queue compaction
+  guided by request/cache/job perf counters; ready polling is adaptive and fills a bounded
+  camera-sorted apply queue, ready/apply drainage receives a conservative headroom boost only while
+  backlog is high, and the mesh refresh scheduler polls ready work, applies ready uploads, then
+  submits new work last so cache-hit request work does not compete with expensive `ArrayMesh`
+  uploads in the same frame
+- terrain/water non-mesh patch payloads for residency, speculative prewarm, and resident dirty
+  uploads now prepare asynchronously in Rust and are polled by Godot before main-thread resource
+  apply; patch texture uploads consume Rust-provided byte payloads, regular terrain mesh variants
+  are prewarmed by active layout, terrain/water patch resources are pooled/prewarmed before first
+  visible residency activation, water prewarms shared full-grid `ArrayMesh` variants, and perf
+  summaries include render stats for viewport, draw calls, primitives, memory buckets, vsync,
+  FPS cap, and resource-pool counters
 - gameplay world-load refresh now clears terrain/water/network render-dirty flags after rebuilding
   those visuals, avoiding a duplicate first-frame resident patch upload
 - terrain and water patch residency plus speculative cache prewarm now use elapsed-time budgets

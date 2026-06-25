@@ -15,6 +15,7 @@ const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
 const WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 
 /// One deterministic render-patch snapshot of visible water.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WaterPatchSnapshot {
     /// Patch X index on the render-patch grid.
     pub patch_x: usize,

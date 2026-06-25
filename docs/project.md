@@ -54,8 +54,15 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 - Terrain/water streaming now smooths remaining activation spikes by keeping speculative prewarm
   local to the resident halo, deferring LOD/prewarm work when earlier render stages have already
-  consumed the frame, skipping no-op baked/CDT terrain LOD mesh rebuilds, and applying ready water
-  meshes before poll/submit work. See [`terrain.md`](terrain.md).
+  consumed the frame, skipping no-op baked/CDT terrain LOD mesh rebuilds, and running water mesh
+  refresh as poll-ready, apply-ready, submit-new work. Water mesh apply/poll now also reports and
+  gates by estimated payload bytes, fully wet unclipped water grids reuse shared Godot mesh
+  resources by LOD/topology and prewarm the regular full-grid variants during load, regular
+  terrain mesh variants are prewarmed from the active world layout, terrain/water patch
+  nodes/materials/images/textures are pooled before first visible activation, Rust asynchronously
+  prepares terrain/water non-mesh patch payloads for residency and resident dirty uploads, and perf
+  summaries include viewport, draw-call, primitive, memory, vsync, FPS-cap, and resource-pool
+  stats. See [`terrain.md`](terrain.md).
 - Terrain/water presentation now has a documented runtime contract: terrain and building-site
   grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
   detail fade, water uses the tuned depth/Fresnel/foam/normal material path, and scene lighting /

@@ -89,13 +89,14 @@ static func _print_summary(now_us: int) -> void:
 	if _frame_count > 0:
 		frame_avg_ms = _frame_total_ms / float(_frame_count)
 	print(
-		"[DEBUG:perf] fps=%.1f frames=%d frame_cpu_avg_ms=%.3f frame_cpu_max_ms=%.3f frame_spikes=%d renderer_ms=%s detail_ms=%s"
+		"[DEBUG:perf] fps=%.1f frames=%d frame_cpu_avg_ms=%.3f frame_cpu_max_ms=%.3f frame_spikes=%d render_info=%s renderer_ms=%s detail_ms=%s"
 		% [
 			Engine.get_frames_per_second(),
 			_frame_count,
 			frame_avg_ms,
 			_frame_max_ms,
 			_frame_spikes,
+			_render_info_label(),
 			_format_stats(_renderer_stats),
 			_format_stats(_detail_stats),
 		]
@@ -107,6 +108,55 @@ static func _print_summary(now_us: int) -> void:
 	_frame_spikes = 0
 	_renderer_stats.clear()
 	_detail_stats.clear()
+
+static func _render_info_label() -> String:
+	var viewport_size: Vector2i = Vector2i.ZERO
+	var main_loop: MainLoop = Engine.get_main_loop()
+	if main_loop is SceneTree:
+		var tree: SceneTree = main_loop as SceneTree
+		var viewport: Window = tree.root
+		if viewport != null:
+			var visible_rect: Rect2 = viewport.get_visible_rect()
+			viewport_size = Vector2i(visible_rect.size)
+	var draw_calls: int = int(
+		RenderingServer.get_rendering_info(
+			RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME
+		)
+	)
+	var objects: int = int(
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME)
+	)
+	var primitives: int = int(
+		RenderingServer.get_rendering_info(
+			RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME
+		)
+	)
+	var video_mem_mb: float = float(
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED)
+	) / (1024.0 * 1024.0)
+	var texture_mem_mb: float = float(
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED)
+	) / (1024.0 * 1024.0)
+	var buffer_mem_mb: float = float(
+		RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED)
+	) / (1024.0 * 1024.0)
+	var vsync_mode: int = int(DisplayServer.window_get_vsync_mode())
+	var max_fps: int = Engine.max_fps
+	return (
+		"viewport=%dx%d,draw_calls=%d,objects=%d,primitives=%d,video_mem_mb=%.1f,texture_mem_mb=%.1f,buffer_mem_mb=%.1f,vsync=%d,max_fps=%d"
+		% [
+			viewport_size.x,
+			viewport_size.y,
+			draw_calls,
+			objects,
+			primitives,
+			video_mem_mb,
+			texture_mem_mb,
+			buffer_mem_mb,
+			vsync_mode,
+			max_fps,
+		]
+	)
 
 static func _format_stats(stats: Dictionary) -> String:
 	if stats.is_empty():
