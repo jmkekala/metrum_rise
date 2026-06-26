@@ -6,7 +6,6 @@
 // Rendering Limits
 
 /// Target render frame rate cap. The Godot engine's `max_fps` is set to this value at startup.
-/// 60 is sufficient — the sim thread ticks at ~60 Hz so rendering faster wastes GPU.
 /// Set to 0 to uncap (not recommended; causes unnecessary GPU load).
 pub const TARGET_FPS: u32 = 60;
 
