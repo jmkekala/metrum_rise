@@ -17,6 +17,8 @@ mod site;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use placement::ExplicitServicePlacementPreview;
+
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
 use crate::simulation::economy::definitions::{
@@ -64,6 +66,31 @@ pub(crate) enum DemandSpawnPlacementRejection {
     FrontageRoadSurfaceMissing,
     /// The selected flat-site height conflicts with an already placed neighboring site.
     NeighborSiteHeightConflict,
+}
+
+/// Final allocator-side reason an explicit service placement could not be committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExplicitServicePlacementRejection {
+    /// The selected asset is not present in the loaded registry.
+    AssetUnavailable,
+    /// The selected asset is not an explicit service-building asset.
+    NotServiceBuilding,
+    /// The selected utility asset references an unsupported or missing runtime profile.
+    UtilityProfileUnavailable,
+    /// No road frontage near the requested point can accept the building footprint.
+    RoadFrontageUnavailable,
+    /// A driveway anchor could not resolve an adjacent road surface height.
+    DrivewayRoadSurfaceMissing,
+    /// Multiple driveway anchors required incompatible flat-site heights.
+    DrivewayHeightConflict,
+    /// The asset has driveway anchors, but none touch the claimed road edge.
+    DrivewayConnectionMissing,
+    /// The frontage fallback could not resolve an adjacent road surface height.
+    FrontageRoadSurfaceMissing,
+    /// The selected flat-site height conflicts with an already placed neighboring site.
+    NeighborSiteHeightConflict,
+    /// The selected footprint overlaps an existing building site.
+    SiteOverlap,
 }
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
@@ -764,6 +791,11 @@ impl BuildingAllocator {
         }
         self.worker_capacity_for_asset_with_catalog(&b.asset_id, catalog)
             .unwrap_or(0)
+    }
+
+    /// Returns whether the placed building is a city-funded explicit service building.
+    pub(crate) fn is_city_service_building(&self, building: &Building) -> bool {
+        self.registry.is_city_service_asset(&building.asset_id)
     }
 
     /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.

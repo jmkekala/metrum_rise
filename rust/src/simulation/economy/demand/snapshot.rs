@@ -699,8 +699,11 @@ impl BuildingSnapshotAccumulator {
                 let filled_workers = building.worker_count.min(worker_capacity);
                 self.filled_job_count = self.filled_job_count.saturating_add(filled_workers);
                 if average_daily_wage > 0.1 {
-                    let budget_capacity =
-                        (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
+                    let budget_capacity = if allocator.is_city_service_building(building) {
+                        worker_capacity
+                    } else {
+                        (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
+                    };
                     let effective_capacity = worker_capacity.min(budget_capacity);
                     let open_slots = effective_capacity.saturating_sub(filled_workers);
                     let net_daily_wage =

@@ -5,11 +5,13 @@ use crate::assets::asset::PlacementMode;
 use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
-    resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
-    zone_type_to_zone_class,
+    Building, BuildingAllocator, DemandSpawnPlacementRejection, ExplicitServicePlacementRejection,
+    baseline_private_zone_slot, resolve_building_economy_profile_binding_with_catalog,
+    zone_class_to_zone_type, zone_type_to_zone_class,
 };
-use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+};
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
@@ -19,9 +21,13 @@ use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
+
+const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
+const EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M: f32 = 20.0;
+const EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M: f32 = 0.05;
 
 impl BuildingAllocator {
     pub(crate) fn collect_demand_spawn_candidates_by_use(
@@ -372,6 +378,248 @@ impl BuildingAllocator {
         Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
+    pub(crate) fn preview_explicit_service_placement(
+        &self,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let params = self.explicit_service_placement_params(asset_id, catalog)?;
+        let mut placement =
+            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
+        placement.support_height_m = self
+            .resolve_site_support_height(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+        self.validate_explicit_site_overlap(&placement)?;
+        Ok(ExplicitServicePlacementPreview {
+            corners: self.placement_site_corners(&placement),
+            support_height_m: placement.support_height_m,
+        })
+    }
+
+    pub(crate) fn execute_explicit_service_placement(
+        &mut self,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let params = self.explicit_service_placement_params(asset_id, catalog)?;
+        let mut placement =
+            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
+        placement.support_height_m = self
+            .resolve_site_support_height(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+        self.validate_explicit_site_overlap(&placement)?;
+
+        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        self.bump_building_ref_revision();
+        self.dirty = true;
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        debug_log!(
+            "economy",
+            "explicit service placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
+            building_idx,
+            self.buildings[building_idx].asset_id,
+            self.buildings[building_idx].edge_idx,
+            self.buildings[building_idx].center_x,
+            self.buildings[building_idx].center_y,
+            self.buildings[building_idx].support_height_m,
+        );
+        Ok(building_idx)
+    }
+
+    fn explicit_service_placement_params(
+        &self,
+        asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<AssetPlacementParams, ExplicitServicePlacementRejection> {
+        let entry = self
+            .registry
+            .get(asset_id)
+            .ok_or(ExplicitServicePlacementRejection::AssetUnavailable)?;
+        let building = entry
+            .manifest
+            .building
+            .as_ref()
+            .ok_or(ExplicitServicePlacementRejection::NotServiceBuilding)?;
+        if !self.registry.is_city_service_asset(asset_id) {
+            return Err(ExplicitServicePlacementRejection::NotServiceBuilding);
+        }
+
+        let service_class = self
+            .registry
+            .service_class(asset_id)
+            .ok_or(ExplicitServicePlacementRejection::NotServiceBuilding)?;
+        if let Some(expected_service) = expected_utility_service_for_class(service_class) {
+            let economy_binding = resolve_building_economy_profile_binding_with_catalog(
+                &self.registry,
+                catalog,
+                asset_id,
+            );
+            let profile = catalog
+                .profile_by_runtime_id(economy_binding.runtime_id)
+                .filter(|profile| {
+                    !economy_binding.economy_broken
+                        && profile.utility_service.as_deref() == Some(expected_service)
+                        && matches!(
+                            profile.kind,
+                            EconomyProfileRuntimeKind::UtilityProducer
+                                | EconomyProfileRuntimeKind::UtilityProcessor
+                        )
+                })
+                .ok_or(ExplicitServicePlacementRejection::UtilityProfileUnavailable)?;
+            if profile.worker_capacity == 0 {
+                return Err(ExplicitServicePlacementRejection::UtilityProfileUnavailable);
+            }
+        }
+
+        Ok(AssetPlacementParams {
+            zone_type: ZoneType::None,
+            density: String::new(),
+            tags: entry.manifest.tags.clone(),
+            width_cells: building.lot_width_cells as usize,
+            depth_cells: building.lot_depth_cells as usize,
+            initial_level: building.level,
+        })
+    }
+
+    fn resolve_explicit_service_placement(
+        &self,
+        asset_id: &str,
+        params: &AssetPlacementParams,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+    ) -> Result<ResolvedPlacement, ExplicitServicePlacementRejection> {
+        let width_m = params.width_cells as f32 * zone_cell_m;
+        let depth_m = params.depth_cells as f32 * zone_cell_m;
+        if width_m <= 0.0 || depth_m <= 0.0 {
+            return Err(ExplicitServicePlacementRejection::RoadFrontageUnavailable);
+        }
+
+        let projection = self
+            .closest_explicit_service_frontage(point, width_m, depth_m, graph)
+            .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
+        let edge = graph
+            .get_edge(projection.edge_idx)
+            .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
+        let centerline = Self::sample_pos_on_edge(graph, projection.edge_idx, projection.t);
+        let tangent = Self::sample_tangent_on_edge(graph, projection.edge_idx, projection.t);
+        if tangent.length_squared() <= 1e-12 {
+            return Err(ExplicitServicePlacementRejection::RoadFrontageUnavailable);
+        }
+        let outward = Vector2::new(tangent.y, -tangent.x).normalized() * projection.side as f32;
+        let frontage_center = centerline + outward * (edge.width * 0.5 + SIDEWALK_WIDTH);
+        let center_2d = frontage_center + outward * (depth_m * 0.5);
+
+        Ok(ResolvedPlacement {
+            asset_id: asset_id.to_owned(),
+            zone_profile_runtime_id: 0,
+            zone_type: params.zone_type,
+            initial_level: params.initial_level,
+            parcel_id: 0,
+            edge_idx: projection.edge_idx,
+            side: projection.side,
+            cell_x: 0,
+            width_cells: params.width_cells,
+            depth_cells: params.depth_cells,
+            zone_cell_m,
+            center_2d,
+            support_height_m: 0.0,
+            facing_dir: -outward,
+            frontage_t: projection.t,
+            edge_width: edge.width,
+        })
+    }
+
+    fn closest_explicit_service_frontage(
+        &self,
+        point: Vector2,
+        width_m: f32,
+        depth_m: f32,
+        graph: &RegionGraph,
+    ) -> Option<ExplicitServiceRoadProjection> {
+        let search_radius = (width_m * 0.5 + depth_m + EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M)
+            .max(EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M);
+        let mut candidates =
+            graph.get_edges_near_point(Vector3::new(point.x, 0.0, point.y), search_radius);
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        let mut best: Option<ExplicitServiceRoadProjection> = None;
+        for edge_idx in candidates {
+            let Some(edge) = graph.get_edge(edge_idx) else {
+                continue;
+            };
+            if edge.deleted
+                || edge.no_building_spawn
+                || edge.physical_length < width_m.max(1.0)
+                || edge.physical_geometry.len() < 2
+            {
+                continue;
+            }
+            let projection = project_point_to_edge_centerline(edge_idx, edge, point)?;
+            let half_width_t = (width_m * 0.5 / edge.physical_length).clamp(0.0, 0.49);
+            let t = projection.t.clamp(half_width_t, 1.0 - half_width_t);
+            let centerline = Self::sample_pos_on_edge(graph, edge_idx, t);
+            let dist_sq = centerline.distance_squared_to(point);
+            if dist_sq > search_radius * search_radius {
+                continue;
+            }
+            let candidate = ExplicitServiceRoadProjection {
+                edge_idx,
+                t,
+                side: projection.side,
+                dist_sq,
+            };
+            if best.as_ref().is_none_or(|best| {
+                candidate
+                    .dist_sq
+                    .total_cmp(&best.dist_sq)
+                    .then(candidate.edge_idx.cmp(&best.edge_idx))
+                    .is_lt()
+            }) {
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    fn validate_explicit_site_overlap(
+        &self,
+        placement: &ResolvedPlacement,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
+        for building_idx in
+            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z)
+        {
+            let Some((site_min_x, site_min_z, site_max_x, site_max_z)) =
+                self.site_world_bounds(building_idx)
+            else {
+                continue;
+            };
+            let overlaps = site_min_x < max_x - EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
+                && site_max_x > min_x + EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
+                && site_min_z < max_z - EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
+                && site_max_z > min_z + EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M;
+            if overlaps {
+                return Err(ExplicitServicePlacementRejection::SiteOverlap);
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_site_support_height(
         &self,
         placement: &ResolvedPlacement,
@@ -665,7 +913,7 @@ impl BuildingAllocator {
         candidates
     }
 
-    fn placement_site_bounds(&self, placement: &ResolvedPlacement) -> (f32, f32, f32, f32) {
+    fn placement_site_corners(&self, placement: &ResolvedPlacement) -> [Vector2; 4] {
         let anchor_forward = self
             .registry
             .get(&placement.asset_id)
@@ -683,12 +931,16 @@ impl BuildingAllocator {
             );
         let half_width = placement.width_cells as f32 * placement.zone_cell_m * 0.5;
         let half_depth = placement.depth_cells as f32 * placement.zone_cell_m * 0.5;
-        let points = [
+        [
             placement.center_2d + basis_x * -half_width + basis_z * -half_depth,
             placement.center_2d + basis_x * -half_width + basis_z * half_depth,
             placement.center_2d + basis_x * half_width + basis_z * half_depth,
             placement.center_2d + basis_x * half_width + basis_z * -half_depth,
-        ];
+        ]
+    }
+
+    fn placement_site_bounds(&self, placement: &ResolvedPlacement) -> (f32, f32, f32, f32) {
+        let points = self.placement_site_corners(placement);
         let mut min_x = f32::INFINITY;
         let mut min_z = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
@@ -867,6 +1119,101 @@ struct DrivewayConnectionCandidate {
     authored_order: usize,
     distance_to_frontage_m: f32,
     height_m: Option<f32>,
+}
+
+/// World-space preview of one explicit service building footprint.
+pub(crate) struct ExplicitServicePlacementPreview {
+    /// Ground-plane footprint corners in metres, ordered around the lot perimeter.
+    pub(crate) corners: [Vector2; 4],
+    /// Flat support height selected for the building site in rendered metres.
+    pub(crate) support_height_m: f32,
+}
+
+struct ExplicitServiceRoadProjection {
+    edge_idx: usize,
+    t: f32,
+    side: i8,
+    dist_sq: f32,
+}
+
+fn expected_utility_service_for_class(service_class: &str) -> Option<&'static str> {
+    match service_class.trim() {
+        "power" => Some("power"),
+        "water" => Some("water"),
+        "waste" => Some("sewage"),
+        _ => None,
+    }
+}
+
+fn project_point_to_edge_centerline(
+    edge_idx: usize,
+    edge: &crate::simulation::network::graph::Edge,
+    point: Vector2,
+) -> Option<ExplicitServiceRoadProjection> {
+    if edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+        return None;
+    }
+    let mut best_dist_sq = f32::INFINITY;
+    let mut best_t = 0.0;
+    let mut best_side = 1;
+    let mut acc_len = 0.0;
+    for segment in edge.physical_geometry.windows(2) {
+        let a = Vector2::new(segment[0].x, segment[0].z);
+        let b = Vector2::new(segment[1].x, segment[1].z);
+        let delta = b - a;
+        let seg_len_sq = delta.length_squared();
+        if seg_len_sq <= 1e-12 {
+            continue;
+        }
+        let local_t = ((point - a).dot(delta) / seg_len_sq).clamp(0.0, 1.0);
+        let closest = a + delta * local_t;
+        let dist_sq = closest.distance_squared_to(point);
+        if dist_sq < best_dist_sq {
+            let seg_len = seg_len_sq.sqrt();
+            let tangent = delta / seg_len;
+            let normal = Vector2::new(tangent.y, -tangent.x);
+            let to_point = point - closest;
+            best_dist_sq = dist_sq;
+            best_t = ((acc_len + seg_len * local_t) / edge.physical_length).clamp(0.0, 1.0);
+            best_side = if to_point.dot(normal) >= 0.0 { 1 } else { -1 };
+        }
+        acc_len += seg_len_sq.sqrt();
+    }
+    best_dist_sq
+        .is_finite()
+        .then_some(ExplicitServiceRoadProjection {
+            edge_idx,
+            t: best_t,
+            side: best_side,
+            dist_sq: best_dist_sq,
+        })
+}
+
+fn explicit_rejection_from_site_rejection(
+    rejection: DemandSpawnPlacementRejection,
+) -> ExplicitServicePlacementRejection {
+    match rejection {
+        DemandSpawnPlacementRejection::DrivewayRoadSurfaceMissing => {
+            ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing
+        }
+        DemandSpawnPlacementRejection::DrivewayHeightConflict => {
+            ExplicitServicePlacementRejection::DrivewayHeightConflict
+        }
+        DemandSpawnPlacementRejection::DrivewayConnectionMissing => {
+            ExplicitServicePlacementRejection::DrivewayConnectionMissing
+        }
+        DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing => {
+            ExplicitServicePlacementRejection::FrontageRoadSurfaceMissing
+        }
+        DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
+            ExplicitServicePlacementRejection::NeighborSiteHeightConflict
+        }
+        DemandSpawnPlacementRejection::AssetUnavailable
+        | DemandSpawnPlacementRejection::ParcelUnavailable
+        | DemandSpawnPlacementRejection::SlotUnavailable => {
+            ExplicitServicePlacementRejection::RoadFrontageUnavailable
+        }
+    }
 }
 
 fn sort_driveway_connection_candidates(candidates: &mut [DrivewayConnectionCandidate]) {

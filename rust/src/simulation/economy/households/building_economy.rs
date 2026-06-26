@@ -19,14 +19,22 @@ use rayon::prelude::*;
 const UTILITY_SERVICE_POWER: &str = "power";
 const UTILITY_SERVICE_WATER: &str = "water";
 const UTILITY_SERVICE_SEWAGE: &str = "sewage";
+const UTILITY_SERVICES: [&str; UTILITY_SERVICE_COUNT] = [
+    UTILITY_SERVICE_POWER,
+    UTILITY_SERVICE_WATER,
+    UTILITY_SERVICE_SEWAGE,
+];
+const UTILITY_SERVICE_COUNT: usize = 3;
 
 impl HouseholdSystem {
     pub(super) fn run_bankruptcy_check(&mut self, allocator: &mut BuildingAllocator) {
+        let registry = &allocator.registry;
         for building in &mut allocator.buildings {
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
                 || building.is_under_construction()
+                || registry.is_city_service_asset(&building.asset_id)
             {
                 continue;
             }
@@ -51,6 +59,7 @@ impl HouseholdSystem {
         &mut self,
         allocator: &mut BuildingAllocator,
         logistics: &ShipmentSystem,
+        treasury_balance: &mut f64,
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -58,10 +67,9 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
 
         // Phase 1: find operational utility provider buildings.
-        let mut utility_provider_indices: Vec<usize> = Vec::new();
-        let mut power_available = false;
-        let mut water_available = false;
-        let mut sewage_available = false;
+        let mut utility_provider_indices: [Vec<usize>; UTILITY_SERVICE_COUNT] =
+            [Vec::new(), Vec::new(), Vec::new()];
+        let local_utility_costs = local_utility_service_costs(&catalog);
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
             if building.broken
@@ -79,21 +87,14 @@ impl HouseholdSystem {
             if !is_staffed_utility_provider(building, profile) {
                 continue;
             }
-            utility_provider_indices.push(idx);
-            match profile.utility_service.as_deref() {
-                Some(UTILITY_SERVICE_POWER) => power_available = true,
-                Some(UTILITY_SERVICE_WATER) => water_available = true,
-                Some(UTILITY_SERVICE_SEWAGE) => sewage_available = true,
-                _ => {}
+            if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref()) {
+                utility_provider_indices[service_idx].push(idx);
             }
         }
 
-        let all_local = power_available && water_available && sewage_available;
-        let local_utility_total = local_utility_total_cost(&catalog);
-
         // Phase 2 (daily): charge each commercial/industrial building the full daily utility
         // cost unconditionally. Budget may go negative.
-        let mut local_utility_revenue = 0.0f32;
+        let mut local_utility_revenue_by_service = [0.0f32; UTILITY_SERVICE_COUNT];
 
         for building in &mut allocator.buildings {
             if building.is_deserted
@@ -104,37 +105,40 @@ impl HouseholdSystem {
             {
                 continue;
             }
-            let (daily_cost, is_local) = match building.zone_type {
-                ZoneType::Commercial => {
-                    if all_local {
-                        (local_utility_total, true)
-                    } else {
-                        (tuning.commercial_owa_utility_cost_per_day, false)
-                    }
-                }
-                ZoneType::Industrial => {
-                    if all_local {
-                        (local_utility_total, true)
-                    } else {
-                        (tuning.industrial_owa_utility_cost_per_day, false)
-                    }
-                }
+            let owa_total = match building.zone_type {
+                ZoneType::Commercial => tuning.commercial_owa_utility_cost_per_day,
+                ZoneType::Industrial => tuning.industrial_owa_utility_cost_per_day,
                 _ => continue,
             };
-            building.operating_budget -= daily_cost;
-            if is_local {
-                local_utility_revenue += daily_cost;
+            let owa_per_service = owa_total / UTILITY_SERVICE_COUNT as f32;
+            let mut daily_cost = 0.0f32;
+            for service_idx in 0..UTILITY_SERVICE_COUNT {
+                if utility_provider_indices[service_idx].is_empty() {
+                    daily_cost += owa_per_service;
+                } else {
+                    let local_cost = local_utility_costs[service_idx];
+                    daily_cost += local_cost;
+                    local_utility_revenue_by_service[service_idx] += local_cost;
+                }
             }
+            building.operating_budget -= daily_cost;
         }
 
-        // Phase 3: distribute local revenue to utility provider buildings.
-        if local_utility_revenue > 0.0 && !utility_provider_indices.is_empty() {
-            let share = local_utility_revenue / utility_provider_indices.len() as f32;
-            for &idx in &utility_provider_indices {
+        // Phase 3: local utility fees go to the city treasury; provider `revenue`
+        // remains telemetry and does not fund municipal payroll.
+        let mut local_utility_revenue_total = 0.0f32;
+        for service_idx in 0..UTILITY_SERVICE_COUNT {
+            let revenue = local_utility_revenue_by_service[service_idx];
+            if revenue <= 0.0 || utility_provider_indices[service_idx].is_empty() {
+                continue;
+            }
+            local_utility_revenue_total += revenue;
+            let share = revenue / utility_provider_indices[service_idx].len() as f32;
+            for &idx in &utility_provider_indices[service_idx] {
                 allocator.buildings[idx].revenue += share;
-                allocator.buildings[idx].operating_budget += share;
             }
         }
+        *treasury_balance += local_utility_revenue_total as f64;
 
         let resource_count = catalog.resource_count();
         let reserved_outbound = logistics.reserved_outbound_view(resource_count);
@@ -150,7 +154,7 @@ impl HouseholdSystem {
                 {
                     false
                 } else {
-                    building_participates_in_budget_distress(&catalog, building)
+                    building_participates_in_budget_distress(building)
                 }
             };
             if !participates {
@@ -329,40 +333,28 @@ fn is_staffed_utility_provider(building: &Building, profile: &EconomyProfileRunt
         && profile.worker_capacity > 0
 }
 
-fn building_participates_in_budget_distress(
-    catalog: &RuntimeEconomyCatalog,
-    building: &Building,
-) -> bool {
-    if matches!(
+fn building_participates_in_budget_distress(building: &Building) -> bool {
+    matches!(
         building.zone_type,
         ZoneType::Commercial | ZoneType::Industrial
-    ) {
-        return true;
-    }
-    catalog
-        .profile_by_runtime_id(building.economy_profile_runtime_id)
-        .is_some_and(|profile| {
-            matches!(
-                profile.kind,
-                EconomyProfileRuntimeKind::UtilityProducer
-                    | EconomyProfileRuntimeKind::UtilityProcessor
-            )
-        })
+    )
 }
 
-fn local_utility_total_cost(catalog: &RuntimeEconomyCatalog) -> f32 {
-    [
-        UTILITY_SERVICE_POWER,
-        UTILITY_SERVICE_WATER,
-        UTILITY_SERVICE_SEWAGE,
-    ]
-    .into_iter()
-    .filter_map(|service| {
-        catalog
-            .all_profiles()
-            .iter()
-            .find(|profile| profile.utility_service.as_deref() == Some(service))
-            .map(|profile| profile.unit_price_currency)
-    })
-    .sum()
+fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; UTILITY_SERVICE_COUNT] {
+    let mut costs = [0.0; UTILITY_SERVICE_COUNT];
+    for profile in catalog.all_profiles() {
+        if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref())
+            && costs[service_idx] == 0.0
+        {
+            costs[service_idx] = profile.unit_price_currency.max(0.0);
+        }
+    }
+    costs
+}
+
+fn utility_service_index(service: Option<&str>) -> Option<usize> {
+    let service = service?;
+    UTILITY_SERVICES
+        .iter()
+        .position(|candidate| *candidate == service)
 }

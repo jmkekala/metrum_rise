@@ -67,6 +67,8 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
 
 /// Currency cost per meter of new road laid, deducted from the city treasury at placement.
 pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
+/// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
+pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
@@ -1451,7 +1453,7 @@ impl SimCore {
         );
     }
 
-    fn mark_building_site_terrain_dirty_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
+    pub(crate) fn mark_building_site_terrain_dirty_bounds(&mut self, bounds: (f32, f32, f32, f32)) {
         let margin_m =
             terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         self.allocator.mark_building_site_terrain_bounds_dirty(

@@ -2,7 +2,15 @@
 
 use crate::config;
 use crate::debug_log;
-use crate::nodes::sim::core::{ROAD_BUILD_COST_PER_METER, SimCore};
+use crate::nodes::sim::core::{
+    ROAD_BUILD_COST_PER_METER, SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
+};
+use crate::simulation::buildings::allocator::{
+    ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
+};
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -395,6 +403,62 @@ impl SimCore {
         // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
         // batching all dirty edges into a single pass instead of N separate passes.
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
+    }
+
+    /// Returns a road-frontage snapped preview for one explicit service building asset.
+    pub(crate) fn get_service_building_placement_preview_internal(
+        &self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.allocator.preview_explicit_service_placement(
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.zoning.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            &self.heightmap,
+            &catalog,
+        )
+    }
+
+    /// Places one explicit service building, charging its build cost to the city treasury.
+    pub(crate) fn place_service_building_internal(
+        &mut self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let building_idx = self.allocator.execute_explicit_service_placement(
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.zoning.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            &self.heightmap,
+            &catalog,
+            &tuning,
+        )?;
+
+        if !self.benchmark_mode {
+            if let Some(building) = self.allocator.buildings.get(building_idx) {
+                let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
+                self.treasury
+                    .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
+            }
+        }
+        self.rebuild_building_entrances_internal();
+        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        Ok(building_idx)
     }
 
     /// Repositions a network node in world space.

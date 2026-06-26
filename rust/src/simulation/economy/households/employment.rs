@@ -269,11 +269,17 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         income_tax_rate: f32,
+        treasury_balance: &mut f64,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         eject_inactive_work_assignments(agents, allocator, &catalog);
+        let city_funded_by_building: Vec<bool> = allocator
+            .buildings
+            .iter()
+            .map(|building| allocator.is_city_service_building(building))
+            .collect();
         let active_worker_capacity_by_building: Vec<u32> = allocator
             .buildings
             .par_iter()
@@ -329,12 +335,21 @@ impl HouseholdSystem {
                     .get(plan.work_building)
                     .copied()
                     .unwrap_or(0);
+            let city_funded = city_funded_by_building
+                .get(plan.work_building)
+                .copied()
+                .unwrap_or(false);
             if within_active_capacity
-                && allocator.buildings[plan.work_building].operating_budget >= plan.wage
+                && (city_funded
+                    || allocator.buildings[plan.work_building].operating_budget >= plan.wage)
             {
                 let income_tax = tax_amount(plan.wage, income_tax_rate);
                 let net_wage = plan.wage - income_tax;
-                allocator.buildings[plan.work_building].operating_budget -= plan.wage;
+                if city_funded {
+                    *treasury_balance -= plan.wage as f64;
+                } else {
+                    allocator.buildings[plan.work_building].operating_budget -= plan.wage;
+                }
                 self.households[plan.household_id].budget += net_wage;
                 self.daily_ledgers[plan.household_id].wage_income += net_wage;
                 income_tax_collected += income_tax;
@@ -574,7 +589,10 @@ fn apply_workplace_plan(
         if worker_capacity == 0 {
             continue;
         }
-        let budget_capacity = if average_daily_wage > 0.1 {
+        let city_funded = allocator.is_city_service_building(building);
+        let budget_capacity = if city_funded {
+            worker_capacity
+        } else if average_daily_wage > 0.1 {
             (building.operating_budget / average_daily_wage).floor() as u32
         } else {
             worker_capacity
@@ -718,7 +736,10 @@ impl JobSupplySnapshot {
                 if worker_capacity == 0 {
                     return None;
                 }
-                let budget_capacity = if average_daily_wage > 0.1 {
+                let city_funded = allocator.is_city_service_building(building);
+                let budget_capacity = if city_funded {
+                    worker_capacity
+                } else if average_daily_wage > 0.1 {
                     (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
                 } else {
                     worker_capacity
@@ -1147,7 +1168,10 @@ fn build_current_job_option_for_key(
     )?;
     let average_daily_wage = profile.average_daily_wage();
     let worker_capacity = active_worker_capacity_for_profile(catalog, work, profile);
-    let budget_capacity = if average_daily_wage > 0.1 {
+    let city_funded = allocator.is_city_service_building(work);
+    let budget_capacity = if city_funded {
+        worker_capacity
+    } else if average_daily_wage > 0.1 {
         (work.operating_budget.max(0.0) / average_daily_wage).floor() as u32
     } else {
         worker_capacity

@@ -68,6 +68,9 @@
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
+//! | **Services** | `get_service_building_assets` | `main_ui.gd` |
+//! | | `get_service_building_placement_preview` | `service_building_tool.gd` |
+//! | | `place_service_building` | `service_building_tool.gd` |
 //! | **Zoning** | `get_zone_profiles` | `zoning_tool.gd`, `asset_editor.gd` |
 //! | | `get_zoning_parcel_preview` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_at` | `zoning_tool.gd` |
@@ -102,11 +105,15 @@ use crate::nodes::sim::render::water::{
     CachedWaterPatchMesh, WaterPatchMeshBuildInput, WaterPatchMeshCacheKey,
     water_patch_depth_signature,
 };
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, ExplicitServicePlacementRejection,
+};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -4723,6 +4730,158 @@ impl SimulationNode {
             arr.push(&dict.to_variant());
         }
         arr
+    }
+
+    fn service_placement_error_message(
+        rejection: ExplicitServicePlacementRejection,
+    ) -> &'static str {
+        match rejection {
+            ExplicitServicePlacementRejection::AssetUnavailable => "service asset unavailable",
+            ExplicitServicePlacementRejection::NotServiceBuilding => {
+                "selected asset is not an explicit service building"
+            }
+            ExplicitServicePlacementRejection::UtilityProfileUnavailable => {
+                "service building has no supported utility profile"
+            }
+            ExplicitServicePlacementRejection::RoadFrontageUnavailable => {
+                "no nearby road frontage can fit this building"
+            }
+            ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
+                "driveway cannot resolve road surface height"
+            }
+            ExplicitServicePlacementRejection::DrivewayHeightConflict => {
+                "driveway anchors require incompatible site heights"
+            }
+            ExplicitServicePlacementRejection::DrivewayConnectionMissing => {
+                "driveway anchors do not connect to the frontage road"
+            }
+            ExplicitServicePlacementRejection::FrontageRoadSurfaceMissing => {
+                "frontage road surface height is unavailable"
+            }
+            ExplicitServicePlacementRejection::NeighborSiteHeightConflict => {
+                "building site height conflicts with a neighbor"
+            }
+            ExplicitServicePlacementRejection::SiteOverlap => {
+                "building footprint overlaps an existing site"
+            }
+        }
+    }
+
+    fn empty_service_preview_dict(error: &str) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("valid", false);
+        dict.set("error", GString::from(error));
+        dict.set("corners", PackedVector3Array::new());
+        dict.set("support_height_m", 0.0f64);
+        dict
+    }
+
+    /// Returns explicit service-building assets available for the Services toolbar.
+    #[func]
+    pub fn get_service_building_assets(&self) -> VarArray {
+        let core = self.lock_core();
+        let catalog = load_runtime_economy_catalog().ok();
+        let mut ids = core
+            .allocator
+            .registry
+            .qualified_ids()
+            .filter(|asset_id| core.allocator.registry.is_city_service_asset(asset_id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+
+        let mut arr = VarArray::new();
+        for asset_id in ids {
+            let Some(entry) = core.allocator.registry.get(asset_id) else {
+                continue;
+            };
+            let Some(building) = entry.manifest.building.as_ref() else {
+                continue;
+            };
+            let Some(service_class) = core.allocator.registry.service_class(asset_id) else {
+                continue;
+            };
+            let worker_capacity = catalog
+                .as_ref()
+                .and_then(|catalog| {
+                    core.allocator
+                        .worker_capacity_for_asset_with_catalog(asset_id, catalog)
+                })
+                .unwrap_or_else(|| core.allocator.worker_capacity_for_asset(asset_id));
+
+            let mut dict = VarDictionary::new();
+            dict.set("asset_id", GString::from(asset_id));
+            dict.set(
+                "display_name",
+                GString::from(entry.manifest.display_name.as_str()),
+            );
+            dict.set("service_class", GString::from(service_class));
+            dict.set("lot_width_cells", i64::from(building.lot_width_cells));
+            dict.set("lot_depth_cells", i64::from(building.lot_depth_cells));
+            dict.set("worker_capacity", i64::from(worker_capacity));
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
+    /// Returns a road-frontage snapped footprint preview for one service building asset.
+    #[func]
+    pub fn get_service_building_placement_preview(
+        &self,
+        asset_id: GString,
+        world_x: f32,
+        world_z: f32,
+    ) -> VarDictionary {
+        let asset_id = asset_id.to_string();
+        if asset_id.is_empty() {
+            return Self::empty_service_preview_dict("no service building selected");
+        }
+        let core = self.lock_core();
+        match core.get_service_building_placement_preview_internal(&asset_id, world_x, world_z) {
+            Ok(preview) => {
+                let mut corners = PackedVector3Array::new();
+                for corner in preview.corners {
+                    corners.push(Vector3::new(
+                        corner.x,
+                        preview.support_height_m + 0.08,
+                        corner.y,
+                    ));
+                }
+                let mut dict = VarDictionary::new();
+                dict.set("valid", true);
+                dict.set("error", GString::new());
+                dict.set("corners", corners);
+                dict.set("support_height_m", f64::from(preview.support_height_m));
+                dict
+            }
+            Err(rejection) => {
+                Self::empty_service_preview_dict(Self::service_placement_error_message(rejection))
+            }
+        }
+    }
+
+    /// Places one explicit service building and returns an empty string on success.
+    #[func]
+    pub fn place_service_building(
+        &mut self,
+        asset_id: GString,
+        world_x: f32,
+        world_z: f32,
+    ) -> GString {
+        let asset_id = asset_id.to_string();
+        if asset_id.is_empty() {
+            return GString::from("no service building selected");
+        }
+        let result = {
+            let mut core = self.lock_core();
+            core.place_service_building_internal(&asset_id, world_x, world_z)
+        };
+        match result {
+            Ok(_) => {
+                self.refresh_snapshot_from_core();
+                GString::new()
+            }
+            Err(rejection) => GString::from(Self::service_placement_error_message(rejection)),
+        }
     }
 
     /// Creates or rezones a road-aligned zoning parcel at one world-space point.

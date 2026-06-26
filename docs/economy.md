@@ -342,6 +342,7 @@ Buildings own the money used for production and operations.
 - **Solvency-Based Hiring**: Buildings may only offer open recruitment slots if their current `operating_budget` can sustain the daily wages of all existing employees plus the new hire. This prevents bankrupt businesses from functioning as "zombie employers."
 - non-residential utility consumption and sewage-management charges should count as building operating cost in `v0.1`
 - utility-producing or utility-processing buildings are normal economic operators that earn service revenue from those utility charges
+- city-owned service buildings are the municipal exception: their wages and placement costs are paid by the city treasury, and their local utility fees deposit into the treasury rather than into the building operating budget
 - producers buy or reserve required inputs through the building-level economy
 
 This gives the simulation a readable money loop without requiring every essential purchase to be modeled as an individual per-agent checkout event.
@@ -391,7 +392,7 @@ Rules:
 - startup treasury funds initialize that ledger at game start
 - income tax, construction property tax, household `VAT`, business purchase tax, business profit tax, tariffs, and
   similar city-owned fiscal inflows deposit into the city treasury
-- ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
+- ordinary private utility service payments do not deposit into the city treasury by default; city-owned utility service payments do
 - subsidies and other city-funded support measures withdraw from the city treasury
 - road building, infrastructure placement, and city-owned facility construction withdraw from the city treasury
 
@@ -1252,13 +1253,14 @@ Rules:
 - `sewage` is a baseline generated utility load produced automatically by occupied buildings and households
 - utility-producing and utility-processing buildings such as power plants, water plants, pump stations, or wastewater-treatment facilities should use normal asset-backed `economy_profile` definitions
 - utility-producing and utility-processing assets are explicit service buildings, not ordinary zoned-private assets; they must carry a utility `service_class` plus an `economy_profile` for the matching service
-- utility-producing and utility-processing buildings may be privately operated or city-owned
+- utility-producing and utility-processing buildings may later be privately operated or city-owned; live explicit service assets are city-owned municipal facilities by default
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
 - `v0.1` utility service is a connected-service on/off model, not an aggregate-capacity simulation and not a detailed line-by-line grid simulation
-- if a valid connected local utility producer or processor exists for the required service, that service is treated as locally available to eligible consumers in `v0.1`
-- if no valid connected local utility producer or processor exists, the service is unavailable locally and must either fall back to `OWA` or remain unserved
+- utility availability resolves independently per service; a local `power` provider does not satisfy `water` or `sewage`
+- if a valid connected local utility producer or processor exists for a required service, that service is treated as locally available to eligible consumers in `v0.1`
+- if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula therefore treats resolved utility service as a binary building-level gate in `v0.1`
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
@@ -1266,6 +1268,7 @@ Rules:
 - non-residential utility and sewage charges post to building operating budgets in `v0.1`
 - those utility charges become revenue for the local utility operator or processor rather than for the city treasury
 - if the utility operator is city-owned, that operator revenue deposits into the city treasury instead of a private building budget
+- city-owned utility wages and one-time placement costs withdraw from the city treasury rather than from a provider operating budget
 - utility-producing and utility-processing buildings should therefore behave like ordinary economic buildings that sell a service rather than like invisible free infrastructure
 - any `VAT` or other future fiscal levy on utility service is separate from the operator's service revenue and follows the normal tax rules into the city treasury
 - if no local utility service is available, `OWA` may provide that service as an external service purchase
@@ -2336,15 +2339,16 @@ Current status:
   field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
 - three profiles landed in `economy/profiles.toml`: `power_plant_basic` (power, 4 workers, three-shift),
   `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
-- `resolve_building_utilities` rewritten as a three-phase pass: (1) scan for active staffed
-  providers and determine service availability, (2) charge consumers at local rates (6.5/day total)
-  when all three services are locally present, or OWA rates (8.0/12.0/day) otherwise, (3)
-  distribute local revenue evenly to active utility providers
+- daily utility settlement scans active staffed providers per service, charges commercial and
+  industrial consumers independently for `power`, `water`, and `sewage`, falls back to that
+  service's OWA share when a local provider is missing, and records local city-owned utility fees
+  in the city treasury
 - active utility providers must be non-broken, non-deserted, connected to the network, and staffed
   by at least one worker
-- `ensure_building_startup_float` extended to seed `STARTUP_OPERATING_FLOAT` for utility buildings
-  (ZoneType::None with UtilityProducer or UtilityProcessor profile) so they can pay wages on spawn
-- city assets for these profiles must be added via the asset editor; no invisible buildings exist
+- explicit city service assets are registry-discovered, road-frontage placed through the Services
+  toolbar, charged to the treasury at placement, and staffed through the normal job system with
+  city-funded wages
+- no invisible utility buildings exist
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
 
@@ -2530,21 +2534,25 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 (`run_bankruptcy_check`, `daily_settlement` four-step sequence). `budget_distress: bool` is
 persisted in the SQLite schema and loaded by `world.rs`.
 
-This section is the authoritative spec for how commercial, industrial, and utility buildings manage
-their operating budget, pay obligations, and enter bankruptcy. The previous system used an hourly
-utility gate (`utility_service_available`) that permanently froze any building whose budget dipped
-below a single hourly charge — see ECON-01 in the Current Simulation Status section for the
-incident record. This spec replaced that system entirely.
+This section is the authoritative spec for how commercial, industrial, and privately operated
+utility buildings manage their operating budget, pay obligations, and enter bankruptcy. City-owned
+explicit service buildings are treasury-funded municipal facilities in the live `v0.1` path; they
+provide staffed service and city revenue but do not enter the private-building bankruptcy loop. The
+previous system used an hourly utility gate (`utility_service_available`) that permanently froze
+any building whose budget dipped below a single hourly charge — see ECON-01 in the Current
+Simulation Status section for the incident record. This spec replaced that system entirely.
 
 ### Operating Budget
 
-Each commercial, industrial, and utility building holds an `operating_budget: f32` cash balance.
-It is separate from household budgets and the city treasury.
+Each commercial, industrial, and privately operated utility building holds an `operating_budget:
+f32` cash balance. It is separate from household budgets and the city treasury. City-owned service
+buildings still have runtime telemetry fields, but their payroll and local operator receipts settle
+against the city treasury.
 
 Money enters the budget from:
 
 - sales revenue when households or other buildings purchase the building's output
-- utility service revenue distributed to local provider buildings when consumers pay charges
+- utility service revenue distributed to private local provider buildings when consumers pay charges
 
 Money leaves the budget from:
 
@@ -2595,23 +2603,28 @@ the OWA sale attempt) before bankruptcy is declared.
 
 **Step 2 — Pay wages.**
 
-For each employed worker, deduct `daily_wage` from `operating_budget` and credit the worker's
-household. If `operating_budget < daily_wage` for a given worker, that worker goes unpaid for the
-day (`consecutive_unpaid_days` increments). Workers self-terminate after `JOB_UNPAID_ABANDON_DAYS`
-(currently 2) consecutive unpaid days. Budget does not go negative from wage payments — a building
-that cannot pay a worker simply fails to pay, not force-debits.
+For each employed worker, deduct `daily_wage` from the employer budget and credit the worker's
+household. Private employers pay from `operating_budget`; city-owned service buildings pay gross
+wages from the city treasury. If a private employer's `operating_budget < daily_wage` for a given
+worker, that worker goes unpaid for the day (`consecutive_unpaid_days` increments). Workers
+self-terminate after `JOB_UNPAID_ABANDON_DAYS` (currently 2) consecutive unpaid days. Private
+building budget does not go negative from wage payments — a building that cannot pay a worker
+simply fails to pay, not force-debits. The city treasury may go negative as a fiscal state.
 
 **Step 3 — Pay utility cost.**
 
-Deduct the full daily utility cost unconditionally. Budget may go negative from this step.
+Deduct the daily utility cost unconditionally. Budget may go negative from this step.
 
-| Zone type   | OWA rate (no local utility buildings) | Local rate (all three present) |
-|-------------|---------------------------------------|--------------------------------|
-| Commercial  | 8.0 / day                             | ~8.0 / day (local split)       |
-| Industrial  | 12.0 / day                            | ~8.0 / day (local split)       |
+| Zone type   | OWA rate if all services are missing | OWA fallback per missing service |
+|-------------|--------------------------------------|----------------------------------|
+| Commercial  | 8.0 / day                            | 1/3 of commercial OWA rate       |
+| Industrial  | 12.0 / day                           | 1/3 of industrial OWA rate       |
 
-When local utility providers exist, the collected cost is distributed to those provider buildings
-as revenue. When no local providers exist, the cost leaves the simulation (OWA rate).
+`power`, `water`, and `sewage` resolve independently. If a staffed local provider exists for a
+service, consumers pay that service's local authored utility price. If that service is missing
+locally, consumers pay that service's share of the OWA fallback rate. Local service fees for
+city-owned providers deposit into the city treasury; provider `revenue` remains telemetry. OWA
+fallback spend leaves the local economy.
 
 Residential buildings pay household utility costs from the household budget on the existing hourly
 cadence and are not part of this sequence.

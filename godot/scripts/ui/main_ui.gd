@@ -2,7 +2,8 @@
 ##
 ## Rust methods called: set_simulation_speed(), undo_action(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
-##   get_demand_pressures(), get_treasury_balance(), get_agent_count()
+##   get_demand_pressures(), get_treasury_balance(), get_agent_count(),
+##   get_service_building_assets()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
@@ -43,6 +44,11 @@ var zoning_mode_menu: HBoxContainer
 var zoning_type_menu: HBoxContainer
 var zoning_profile_panel: PanelContainer
 var zoning_profile_menu: HBoxContainer
+var services_main_btn: Button
+var services_combined_hbox: VBoxContainer
+var service_category_menu: HBoxContainer
+var service_asset_panel: PanelContainer
+var service_asset_menu: HBoxContainer
 var zoning_options_btn: Button
 var zoning_options_popup: PopupPanel
 var zoning_width_spin: SpinBox
@@ -53,6 +59,10 @@ var _zoning_profiles_by_zone_type: Dictionary = {}
 var _zoning_type_buttons: Dictionary = {}
 var _zoning_profile_buttons: Dictionary = {}
 var _active_zoning_zone_type := ""
+var _service_assets_by_class: Dictionary = {}
+var _service_class_buttons: Dictionary = {}
+var _service_asset_buttons: Dictionary = {}
+var _active_service_class := ""
 var select_main_btn: Button
 var road_properties_panel: Node
 var clock_panel: PanelContainer
@@ -366,6 +376,51 @@ func _build_ui():
 
 	_rebuild_zoning_profiles_index()
 	_collapse_zoning_profiles()
+
+	# --- Combined Services Sub-Menu Row ---
+	services_combined_hbox = VBoxContainer.new()
+	services_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	services_combined_hbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	services_combined_hbox.add_theme_constant_override("separation", 8)
+	services_combined_hbox.visible = false
+	vbox.add_child(services_combined_hbox)
+
+	var service_panel_style = StyleBoxFlat.new()
+	service_panel_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
+	service_panel_style.set_corner_radius_all(15)
+
+	service_asset_panel = PanelContainer.new()
+	service_asset_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
+	service_asset_panel.visible = false
+
+	var service_asset_padding = MarginContainer.new()
+	service_asset_padding.add_theme_constant_override("margin_left", 12)
+	service_asset_padding.add_theme_constant_override("margin_right", 12)
+	service_asset_padding.add_theme_constant_override("margin_top", 8)
+	service_asset_padding.add_theme_constant_override("margin_bottom", 8)
+	service_asset_panel.add_child(service_asset_padding)
+
+	service_asset_menu = HBoxContainer.new()
+	service_asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
+	service_asset_menu.add_theme_constant_override("separation", 10)
+	service_asset_padding.add_child(service_asset_menu)
+	services_combined_hbox.add_child(service_asset_panel)
+
+	var service_category_panel = PanelContainer.new()
+	service_category_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
+
+	var service_category_padding = MarginContainer.new()
+	service_category_padding.add_theme_constant_override("margin_left", 12)
+	service_category_padding.add_theme_constant_override("margin_right", 12)
+	service_category_padding.add_theme_constant_override("margin_top", 8)
+	service_category_padding.add_theme_constant_override("margin_bottom", 8)
+	service_category_panel.add_child(service_category_padding)
+
+	service_category_menu = HBoxContainer.new()
+	service_category_menu.alignment = BoxContainer.ALIGNMENT_CENTER
+	service_category_menu.add_theme_constant_override("separation", 10)
+	service_category_padding.add_child(service_category_menu)
+	services_combined_hbox.add_child(service_category_panel)
 	
 	# 1. Main Toolbar (Bottom stack layer)
 	main_toolbar = HBoxContainer.new()
@@ -394,6 +449,14 @@ func _build_ui():
 	_apply_hud_toolbar_text_style(zoning_main_btn)
 	zoning_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(zoning_main_btn)
+
+	services_main_btn = Button.new()
+	services_main_btn.text = "Services"
+	services_main_btn.custom_minimum_size = Vector2(110, toolbar_button_height)
+	services_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(services_main_btn)
+	services_main_btn.add_theme_stylebox_override("normal", style.duplicate())
+	main_toolbar.add_child(services_main_btn)
 
 	terrain_main_btn = Button.new()
 	terrain_main_btn.text = "Terrain"
@@ -543,6 +606,7 @@ func _connect_signals():
 	road_main_btn.pressed.connect(_on_road_main_pressed)
 	terrain_main_btn.pressed.connect(_on_terrain_main_pressed)
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
+	services_main_btn.pressed.connect(_on_services_main_pressed)
 	select_main_btn.pressed.connect(_on_select_main_pressed)
 	
 	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
@@ -557,6 +621,8 @@ func _connect_signals():
 func _on_road_main_pressed():
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
 	road_combined_hbox.visible = !road_combined_hbox.visible
 	if not road_combined_hbox.visible:
 		get_meta("options_panel").visible = false
@@ -566,6 +632,8 @@ func _on_road_main_pressed():
 func _on_terrain_main_pressed():
 	road_combined_hbox.visible = false
 	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
 	terrain_sub_menu.visible = !terrain_sub_menu.visible
 	if not terrain_sub_menu.visible:
 		input_manager._cancel_active_tool()
@@ -573,12 +641,31 @@ func _on_terrain_main_pressed():
 func _on_zoning_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
 	zoning_combined_hbox.visible = !zoning_combined_hbox.visible
 	if zoning_combined_hbox.visible:
 		_collapse_zoning_profiles()
 	else:
 		_collapse_zoning_profiles()
 	input_manager._toggle_zoning_overlay()
+
+func _on_services_main_pressed():
+	road_combined_hbox.visible = false
+	terrain_sub_menu.visible = false
+	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = !services_combined_hbox.visible
+	if services_combined_hbox.visible:
+		_rebuild_service_assets_index()
+		_rebuild_service_category_menu()
+		var service_classes := _sorted_service_classes()
+		if service_classes.is_empty():
+			input_manager._cancel_active_tool()
+		else:
+			_open_service_class(str(service_classes[0]), true)
+	else:
+		_collapse_service_assets()
+		input_manager._cancel_active_tool()
 
 func _select_road_type(fwd: int, bkw: int):
 	# Show options panel and separator
@@ -617,6 +704,8 @@ func _on_select_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
 
 ## Shows the road properties panel for one or more selected edges.
@@ -866,6 +955,175 @@ func _current_zoning_profile_runtime_id() -> int:
 	if input_manager and input_manager.zoning_tool:
 		return int(input_manager.zoning_tool.current_profile_runtime_id)
 	return 0
+
+func _rebuild_service_assets_index() -> void:
+	_service_assets_by_class.clear()
+	var payload = simulation_node.get_service_building_assets()
+	if not (payload is Array):
+		return
+	for entry in payload:
+		if not (entry is Dictionary):
+			continue
+		var asset: Dictionary = entry
+		var service_class := str(asset.get("service_class", "")).strip_edges()
+		if service_class.is_empty():
+			continue
+		if not _service_assets_by_class.has(service_class):
+			_service_assets_by_class[service_class] = []
+		var assets: Array = _service_assets_by_class[service_class]
+		assets.append(asset.duplicate(true))
+		_service_assets_by_class[service_class] = assets
+
+	for service_class in _service_assets_by_class.keys():
+		var assets: Array = _service_assets_by_class[service_class]
+		assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			var a_name := str(a.get("display_name", a.get("asset_id", "")))
+			var b_name := str(b.get("display_name", b.get("asset_id", "")))
+			if a_name == b_name:
+				return str(a.get("asset_id", "")) < str(b.get("asset_id", ""))
+			return a_name < b_name
+		)
+		_service_assets_by_class[service_class] = assets
+
+func _sorted_service_classes() -> Array:
+	var classes := _service_assets_by_class.keys()
+	classes.sort()
+	return classes
+
+func _rebuild_service_category_menu() -> void:
+	while service_category_menu.get_child_count() > 0:
+		var child := service_category_menu.get_child(0)
+		service_category_menu.remove_child(child)
+		child.queue_free()
+	_service_class_buttons.clear()
+
+	var classes := _sorted_service_classes()
+	if classes.is_empty():
+		var empty_btn := Button.new()
+		empty_btn.text = "No Services"
+		empty_btn.custom_minimum_size = Vector2(145, 50)
+		empty_btn.disabled = true
+		empty_btn.focus_mode = Control.FOCUS_NONE
+		service_category_menu.add_child(empty_btn)
+		service_asset_panel.visible = false
+		return
+
+	for service_class in classes:
+		var class_id := str(service_class)
+		var button := Button.new()
+		button.text = _service_class_label(class_id)
+		button.custom_minimum_size = Vector2(145, 50)
+		button.toggle_mode = true
+		_apply_colored_button_style(button, _service_class_color(class_id))
+		button.pressed.connect(func(): _toggle_service_class(class_id))
+		service_category_menu.add_child(button)
+		_service_class_buttons[class_id] = button
+
+func _toggle_service_class(service_class: String) -> void:
+	if service_asset_panel.visible and _active_service_class == service_class:
+		_collapse_service_assets()
+		return
+	_open_service_class(service_class, true)
+
+func _open_service_class(service_class: String, auto_select_first_asset: bool = false) -> void:
+	if service_class.is_empty() or not _service_assets_by_class.has(service_class):
+		return
+	_active_service_class = service_class
+	_rebuild_service_asset_menu(service_class)
+	service_asset_panel.visible = true
+	if auto_select_first_asset:
+		var assets: Array = _service_assets_by_class.get(service_class, [])
+		if not assets.is_empty():
+			var first_asset: Dictionary = assets[0]
+			_select_service_asset(service_class, str(first_asset.get("asset_id", "")))
+			return
+	_refresh_service_class_button_states()
+	_refresh_service_asset_button_states()
+
+func _collapse_service_assets() -> void:
+	_active_service_class = ""
+	if service_asset_panel:
+		service_asset_panel.visible = false
+	_refresh_service_class_button_states()
+
+func _rebuild_service_asset_menu(service_class: String) -> void:
+	while service_asset_menu.get_child_count() > 0:
+		var child := service_asset_menu.get_child(0)
+		service_asset_menu.remove_child(child)
+		child.queue_free()
+	_service_asset_buttons.clear()
+
+	var assets: Array = _service_assets_by_class.get(service_class, [])
+	for entry in assets:
+		var asset: Dictionary = entry
+		var asset_id := str(asset.get("asset_id", ""))
+		if asset_id.is_empty():
+			continue
+		var button := Button.new()
+		button.text = str(asset.get("display_name", asset_id))
+		button.tooltip_text = asset_id
+		button.custom_minimum_size = Vector2(190, 50)
+		button.toggle_mode = true
+		_apply_colored_button_style(button, _service_class_color(service_class).lightened(0.04))
+		button.pressed.connect(func(): _select_service_asset(service_class, asset_id))
+		service_asset_menu.add_child(button)
+		_service_asset_buttons[asset_id] = button
+
+func _select_service_asset(service_class: String, asset_id: String) -> void:
+	if asset_id.is_empty():
+		return
+	_active_service_class = service_class
+	if service_asset_panel:
+		service_asset_panel.visible = true
+	input_manager.select_service_asset(asset_id)
+	_refresh_service_class_button_states()
+	_refresh_service_asset_button_states()
+
+func _refresh_service_class_button_states() -> void:
+	for service_class in _service_class_buttons.keys():
+		var button: Button = _service_class_buttons[service_class]
+		button.set_pressed_no_signal(
+			service_asset_panel.visible and str(service_class) == _active_service_class
+		)
+
+func _refresh_service_asset_button_states() -> void:
+	var current_asset_id := _current_service_asset_id()
+	for asset_id in _service_asset_buttons.keys():
+		var button: Button = _service_asset_buttons[asset_id]
+		button.set_pressed_no_signal(str(asset_id) == current_asset_id)
+
+func _current_service_asset_id() -> String:
+	if input_manager and input_manager.service_building_tool:
+		return str(input_manager.service_building_tool.selected_asset_id)
+	return ""
+
+func _deactivate_services_if_active() -> void:
+	if input_manager and input_manager.current_tool == InputManager.Tool.SERVICES:
+		input_manager._cancel_active_tool()
+
+func _service_class_label(service_class: String) -> String:
+	match service_class:
+		"power":
+			return "Power"
+		"water":
+			return "Water"
+		"waste":
+			return "Waste"
+		"sewage":
+			return "Sewage"
+		_:
+			return service_class.replace("_", " ").capitalize()
+
+func _service_class_color(service_class: String) -> Color:
+	match service_class:
+		"power":
+			return Color(0.78, 0.55, 0.18, 0.72)
+		"water":
+			return Color(0.16, 0.50, 0.70, 0.72)
+		"waste", "sewage":
+			return Color(0.28, 0.52, 0.34, 0.72)
+		_:
+			return Color(0.42, 0.42, 0.46, 0.72)
 
 func _refresh_clock_display(force: bool):
 	if not clock_label or not simulation_node:

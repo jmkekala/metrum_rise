@@ -185,6 +185,29 @@ impl AssetRegistry {
             .and_then(|building| building.economy_profile.as_deref())
     }
 
+    /// Returns the authored service class for an explicit service building asset.
+    pub fn service_class(&self, qualified_id: &str) -> Option<&str> {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.service_class.as_deref())
+            .filter(|service_class| {
+                let service_class = service_class.trim();
+                !service_class.is_empty() && service_class != "none"
+            })
+    }
+
+    /// Returns whether the asset is an explicitly placed city-service building.
+    pub fn is_city_service_asset(&self, qualified_id: &str) -> bool {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .is_some_and(|building| {
+                building.placement_mode == PlacementMode::Explicit
+                    && self.service_class(qualified_id).is_some()
+            })
+    }
+
     /// Returns the target floor area per household in square meters.
     pub fn flat_size_m2(&self, qualified_id: &str) -> f32 {
         self.entries

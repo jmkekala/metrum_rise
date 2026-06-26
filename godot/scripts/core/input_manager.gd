@@ -1,7 +1,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, LaneTool, CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## MoveTool, LaneTool, CulDeSacTool, ServiceBuildingTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
 ## The Building Inspector helper is always present in the scene and can be
@@ -16,13 +16,14 @@ extends Node
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
 var cul_de_sac_tool: Node3D
+var service_building_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const SAVES_DIR := "user://saves"
@@ -46,6 +47,15 @@ func _ready():
 		st.set_script(load("res://scripts/tools/select_tool.gd"))
 		get_parent().call_deferred("add_child", st)
 		select_tool = st
+
+	if not has_node("../ServiceBuildingTool"):
+		var sbt = Node3D.new()
+		sbt.name = "ServiceBuildingTool"
+		sbt.set_script(load("res://scripts/tools/service_building_tool.gd"))
+		get_parent().call_deferred("add_child", sbt)
+		service_building_tool = sbt
+	else:
+		service_building_tool = get_node("../ServiceBuildingTool")
 
 	if has_node("../BuildingInspector"):
 		building_inspector = get_node("../BuildingInspector")
@@ -238,6 +248,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.ZONING:
 			if zoning_tool: zoning_tool.active = enabled
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+		Tool.SERVICES:
+			if service_building_tool: service_building_tool.active = enabled
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 
@@ -386,6 +398,14 @@ func select_zone_profile(runtime_id: int) -> void:
 		_toggle_tool(Tool.ZONING)
 	if zoning_tool:
 		zoning_tool.select_profile(runtime_id)
+
+func select_service_asset(asset_id: String) -> void:
+	if current_tool != Tool.SERVICES:
+		_cancel_active_tool()
+		current_tool = Tool.SERVICES
+		_activate_tool_logic(current_tool, true)
+	if service_building_tool:
+		service_building_tool.select_asset(asset_id)
 
 func set_zoning_parcel_options(width_cells: int, depth_cells: int, gap_m: float) -> void:
 	if current_tool != Tool.ZONING:

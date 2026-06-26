@@ -71,11 +71,16 @@ impl HouseholdSystem {
         // still negative. Must run before wages so workers are ejected on the same day.
         self.run_bankruptcy_check(allocator);
         // Step 2: pay wages (budget does not go negative from this step).
-        let income_tax = self.pay_daily_wages(agents, allocator, tuning.fiscal.income_tax_rate);
+        let income_tax = self.pay_daily_wages(
+            agents,
+            allocator,
+            tuning.fiscal.income_tax_rate,
+            treasury_balance,
+        );
         // Step 3: pay unemployment benefit to eligible households from the city treasury.
         self.pay_unemployment_benefits(agents, allocator, treasury_balance);
         // Steps 4 + 5: charge utility, then liquidate if still negative.
-        self.settle_daily_utilities(allocator, logistics);
+        self.settle_daily_utilities(allocator, logistics, treasury_balance);
         // Step 6: collect tax on positive daily business operating-budget growth.
         let business_profit_tax =
             self.settle_business_profit_tax(allocator, tuning.fiscal.business_profit_tax_rate);

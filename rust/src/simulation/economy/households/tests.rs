@@ -361,6 +361,12 @@ fn register_test_utility_asset(
     asset_id: &str,
     profile_id: &str,
 ) -> String {
+    let service_class = match profile_id {
+        "power_plant_basic" => Some("power".to_owned()),
+        "water_plant_basic" => Some("water".to_owned()),
+        "wastewater_treatment_basic" => Some("waste".to_owned()),
+        _ => None,
+    };
     allocator.registry.register(
         pack_id,
         AssetManifest {
@@ -393,7 +399,7 @@ fn register_test_utility_asset(
                 level: 1,
                 household_capacity: None,
                 worker_capacity: Some(4),
-                service_class: None,
+                service_class,
                 economy_profile: Some(profile_id.to_owned()),
             }),
             prop: None,
@@ -1500,7 +1506,8 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
     });
 
     let mut households = HouseholdSystem::new();
-    households.settle_daily_utilities(&mut allocator, &logistics);
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
 
     assert_eq!(
         allocator.buildings[0].inventory_units(household_supplies),
@@ -1641,6 +1648,29 @@ fn same_day_bankruptcy_preserves_yesterday_profit_for_inspector() {
 }
 
 #[test]
+fn city_service_buildings_do_not_enter_private_bankruptcy() {
+    let mut allocator = BuildingAllocator::new();
+    let utility_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "municipal_power",
+        "power_plant_basic",
+    );
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::None, &utility_asset, 0.0));
+    allocator.buildings[0].operating_budget = -50.0;
+    allocator.buildings[0].budget_distress = true;
+
+    let mut households = HouseholdSystem::new();
+    households.run_bankruptcy_check(&mut allocator);
+
+    assert!(!allocator.buildings[0].is_deserted);
+    assert!(allocator.buildings[0].budget_distress);
+    assert_eq!(allocator.buildings[0].operating_budget, -50.0);
+}
+
+#[test]
 fn nearby_building_search_sorts_before_truncating_candidates() {
     let mut allocator = BuildingAllocator::new();
     let residential_asset =
@@ -1716,19 +1746,75 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
 
     let logistics = ShipmentSystem::new();
     let mut households = HouseholdSystem::new();
-    households.settle_daily_utilities(&mut allocator, &logistics);
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert_eq!(allocator.buildings[1].revenue, 0.0);
     assert_eq!(allocator.buildings[2].revenue, 0.0);
     assert_eq!(allocator.buildings[3].revenue, 0.0);
+    assert_eq!(treasury_balance, 0.0);
 
     allocator.buildings[0].operating_budget = 500.0;
     for idx in 1..=3 {
         allocator.buildings[idx].worker_count = 1;
     }
-    households.settle_daily_utilities(&mut allocator, &logistics);
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert!(allocator.buildings[1].revenue > 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
     assert!(allocator.buildings[3].revenue > 0.0);
+    assert!(treasury_balance > 0.0);
+}
+
+#[test]
+fn city_service_wages_debit_treasury_not_building_budget() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "city_service_wage_home",
+        ZoneClass::Residential,
+    );
+    let power_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "city_service_wage_power",
+        "power_plant_basic",
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let mut service_building = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+    let power_profile = catalog
+        .profile_for_id("power_plant_basic")
+        .expect("power profile");
+    service_building.economy_profile_runtime_id = power_profile.runtime_id;
+    service_building.worker_count = 1;
+    service_building.operating_budget = 0.0;
+    allocator.buildings.push(service_building);
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+
+    let mut treasury_balance = 1_000.0;
+    let wage = power_profile.average_daily_wage();
+    let income_tax =
+        households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+
+    assert_eq!(income_tax, 0.0);
+    assert!((treasury_balance - (1_000.0 - wage as f64)).abs() < 0.001);
+    assert!((households.households[0].budget - wage).abs() < 0.001);
+    assert_eq!(allocator.buildings[1].operating_budget, 0.0);
+    assert_eq!(agents.consecutive_unpaid_days[agent], 0);
 }
 
 #[test]
@@ -2055,7 +2141,8 @@ fn deserted_employer_is_ejected_before_wages() {
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
 
-    households.pay_daily_wages(&mut agents, &mut allocator, 0.0);
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
     assert_eq!(agents.work_building[agent], usize::MAX);
     assert_eq!(allocator.buildings[1].worker_count, 0);
@@ -2104,7 +2191,8 @@ fn insolvent_self_fire_decrements_worker_count() {
     agents.assign_work_building(agent, 1, 0);
     agents.consecutive_unpaid_days[agent] = 1;
 
-    households.pay_daily_wages(&mut agents, &mut allocator, 0.0);
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
     assert_eq!(agents.work_building[agent], usize::MAX);
     assert_eq!(allocator.buildings[1].worker_count, 0);
