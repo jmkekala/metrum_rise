@@ -437,7 +437,7 @@ Runtime use in v1:
   not create asphalt, concrete, paths, pads, yards, parking markings, loading markings, or other
   visuals by themselves.
 - Building yard polygons are authored explicitly through `[[site_surfaces]]`. Live gameplay treats
-  them as material/layout regions on the flat whole-lot building-site client.
+  them as material/layout regions on the flat building-site support plane.
 - Driveway anchors are the preferred runtime connection points used to choose a single flat site
   height from the road/world surface. They still do not create surfaces by themselves; authored
   `[[site_surfaces]]` polygons provide the local material/layout regions on the flat lot.
@@ -464,13 +464,13 @@ Rules:
 - Site surfaces are authored visual-ground metadata. Live gameplay renders them on the flat
   building-site client and queries their authored `y_m` offset, but they never become independent
   terrain-cut footprints.
-- The runtime terrain-ownership footprint is still the whole occupied lot rectangle.
-  `[[site_surfaces]]` polygons are material/layout regions on top of that flat lot.
+- The runtime terrain-ownership footprint is an inset pad inside the occupied lot rectangle.
+  `[[site_surfaces]]` polygons are material/layout regions on the selected site plane.
 - Site surfaces do not imply access, parking capacity, freight capacity, service eligibility,
   pedestrian paths, or vehicle routing.
 - Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
-- If an asset exports no site surfaces, the live site still has a flat whole-lot ground plane, but
-  no authored asphalt/concrete material regions.
+- If an asset exports no site surfaces, the live site still has a flat site-pad ground plane, but no
+  authored asphalt/concrete material regions.
 - The editor can create rectangular starting surfaces, then authors can move the whole polygon,
   drag vertices, right-click an edge to add a vertex, and right-click an existing vertex to delete it
   while preserving the minimum three-vertex polygon.
@@ -830,7 +830,7 @@ Anchor requirements by asset class:
   freight stop behavior remain later runtime hooks.
 - Buildings may define optional `[[site_surfaces]]` polygons for authored yard materials: asphalt
   and concrete. Live gameplay renders/queries these polygons as material/layout regions on the flat
-  whole-lot building site.
+  building-site support plane.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
 - Props use their exported origin as the placement point and do not require a separate anchor in v1.
 - Characters use the exported feet-center origin as the placement point and do not require additional anchors in v1.

@@ -150,6 +150,13 @@ const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
 
+#[derive(Clone, Copy)]
+struct TerrainCdtSiteGradingContext<'a> {
+    allocator: &'a BuildingAllocator,
+    graph: &'a crate::simulation::network::graph::RegionGraph,
+    road_surface: &'a RoadSurfaceSystem,
+}
+
 #[derive(Default)]
 struct TerrainCdtSourceExport {
     counts: Vec<i32>,
@@ -687,6 +694,9 @@ impl SimulationNode {
         let base_patch = core
             .heightmap
             .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+        core.transit_network
+            .road_surface
+            .compile_dirty(&core.region_graph, &core.heightmap);
         let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,
             base_patch.world_origin_x,
@@ -700,6 +710,11 @@ impl SimulationNode {
             &base_patch,
             &road_clip_query.cdt_road_loops,
             render_step_m,
+            Some(TerrainCdtSiteGradingContext {
+                allocator: &core.allocator,
+                graph: &core.region_graph,
+                road_surface: &core.transit_network.road_surface,
+            }),
             previous,
         );
         let input = RefinedTerrainPatchBuildInput {
@@ -1038,6 +1053,11 @@ impl SimulationNode {
             &base_patch,
             &road_clip_query.cdt_road_loops,
             safe_render_step_m,
+            Some(TerrainCdtSiteGradingContext {
+                allocator: &core.allocator,
+                graph: &core.region_graph,
+                road_surface: &core.transit_network.road_surface,
+            }),
         );
         let cdt_input_ms = cdt_input_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -2059,6 +2079,7 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
+        site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
     ) -> TerrainCdtInput {
         if road_loops.is_empty() {
             return TerrainCdtInput::new(
@@ -2098,6 +2119,23 @@ impl SimulationNode {
             &mut tie_in_guide_constraints,
             &mut sample_keys,
         );
+        if let Some(site_grading) = site_grading {
+            site_grading
+                .allocator
+                .append_terrain_cdt_site_grading_guides_for_world_bounds(
+                    terrain,
+                    site_grading.graph,
+                    site_grading.road_surface,
+                    min_x,
+                    min_z,
+                    max_x,
+                    max_z,
+                    safe_render_step_m,
+                    &mut tie_in_guide_samples,
+                    &mut tie_in_guide_constraints,
+                    &mut sample_keys,
+                );
+        }
         Self::append_terrain_cdt_grid_samples(
             terrain,
             patch,
@@ -2130,6 +2168,7 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
+        site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
         previous: Option<&CachedRefinedTerrainPatch>,
     ) -> Vec<RefinedTerrainCdtWindowBuildInput> {
         if road_loops.is_empty() {
@@ -2172,6 +2211,7 @@ impl SimulationNode {
                     &draft.loops,
                     safe_render_step_m,
                     draft.bounds,
+                    site_grading,
                 );
                 if cdt_input.road_loops.is_empty() {
                     return None;
@@ -2234,6 +2274,7 @@ impl SimulationNode {
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
         bounds: (f32, f32, f32, f32),
+        site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
     ) -> TerrainCdtInput {
         let (min_x, min_z, max_x, max_z) = bounds;
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
@@ -2252,6 +2293,23 @@ impl SimulationNode {
             &mut tie_in_guide_constraints,
             &mut sample_keys,
         );
+        if let Some(site_grading) = site_grading {
+            site_grading
+                .allocator
+                .append_terrain_cdt_site_grading_guides_for_world_bounds(
+                    terrain,
+                    site_grading.graph,
+                    site_grading.road_surface,
+                    min_x,
+                    min_z,
+                    max_x,
+                    max_z,
+                    safe_render_step_m,
+                    &mut tie_in_guide_samples,
+                    &mut tie_in_guide_constraints,
+                    &mut sample_keys,
+                );
+        }
         Self::append_terrain_cdt_grid_samples(
             terrain,
             patch,
@@ -7333,6 +7391,11 @@ impl SimCore {
                 &base_patch,
                 &road_clip_query.cdt_road_loops,
                 safe_render_step_m,
+                Some(TerrainCdtSiteGradingContext {
+                    allocator: &self.allocator,
+                    graph: &self.region_graph,
+                    road_surface: &self.transit_network.road_surface,
+                }),
                 previous,
             );
             inputs.push(RefinedTerrainPatchBuildInput {
@@ -7751,6 +7814,7 @@ mod tests {
             &[],
             5.0,
             (3.0, 4.0, 23.0, 29.0),
+            None,
         );
 
         assert!(
@@ -7812,6 +7876,7 @@ mod tests {
             &[road_loop],
             2.0,
             (0.0, 0.0, 40.0, 40.0),
+            None,
         );
 
         assert!(
@@ -7916,6 +7981,7 @@ mod tests {
             &road_loops,
             2.0,
             (0.0, 0.0, 60.0, 60.0),
+            None,
         );
 
         assert!(

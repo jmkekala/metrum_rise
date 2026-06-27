@@ -192,6 +192,31 @@ impl ParcelStore {
         false
     }
 
+    pub(crate) fn overlaps_existing_except(
+        &self,
+        geometry: &ParcelGeometry,
+        ignored_id: ParcelId,
+    ) -> bool {
+        let mut visited = HashSet::new();
+        for chunk in chunks_for_aabb(geometry.aabb_min, geometry.aabb_max) {
+            let Some(ids) = self.chunk_index.get(&chunk) else {
+                continue;
+            };
+            for &id in ids {
+                if id == ignored_id || !visited.insert(id) {
+                    continue;
+                }
+                let Some(parcel) = self.get(id) else {
+                    continue;
+                };
+                if rectangles_overlap_geometry(geometry, parcel) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn set_zone_profile_runtime_id(&mut self, id: ParcelId, runtime_id: u16) -> bool {
         let Some(parcel) = self.get_mut(id) else {
             return false;
@@ -231,6 +256,15 @@ impl ParcelStore {
         for parcel in &mut self.parcels {
             parcel.set_occupied_building(None);
         }
+    }
+
+    pub(crate) fn replace_geometry(&mut self, id: ParcelId, geometry: ParcelGeometry) -> bool {
+        let Some(parcel) = self.get_mut(id) else {
+            return false;
+        };
+        parcel.replace_geometry(geometry);
+        self.rebuild_chunk_index();
+        true
     }
 
     fn index_parcel(&mut self, index: usize) {

@@ -302,9 +302,9 @@ rule, and writes are applied in canonical chunk order.
 
 Shared engineered-ground rules live in [`earthworks.md`](earthworks.md).
 
-Future building-site earthworks consume road-owned visible-surface/query heights for driveway or
-frontage connections, but roads do not own lot grading, flat-site height selection, or authored
-yard material regions.
+Building-site earthworks consume road-owned visible-surface/query heights for driveway or frontage
+connections, but roads do not own lot grading, flat-site height selection, or authored yard material
+regions.
 
 ## Preview, Query, And Editing
 

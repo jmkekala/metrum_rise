@@ -3,9 +3,11 @@
 //! Handles building instance transform generation and plot/construction-site visuals.
 
 use crate::assets::{AnchorType, AssetEntry, MeshPart, SiteSurfaceMaterial};
-use crate::config::HEIGHT_SCALE;
+use crate::config::{HEIGHT_SCALE, SIDEWALK_WIDTH};
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::buildings::allocator::Building;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::network::graph::Edge;
+use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::*;
 
@@ -15,6 +17,10 @@ const SITE_PAD_HEIGHT_M: f32 = 0.08;
 const FOUNDATION_PAD_HEIGHT_M: f32 = 0.18;
 const SCAFFOLD_POST_THICKNESS_M: f32 = 0.28;
 const SCAFFOLD_RAIL_THICKNESS_M: f32 = 0.22;
+const BUILDING_SITE_DEBUG_EDGE_SAMPLE_STEP_M: f32 = 5.0;
+const BUILDING_SITE_DEBUG_EDGE_SAMPLE_MAX: usize = 9;
+const BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M: f32 = 0.05;
+const BUILDING_SITE_DEBUG_NEAREST_ROAD_SURFACE_RADIUS_M: f32 = 8.0;
 
 impl SimCore {
     // ── Building Renderer ──
@@ -363,6 +369,20 @@ impl SimCore {
                 building.map(|b| b.facing_dir).unwrap_or(Vector2::ZERO),
             );
             dict.set(
+                "edge_idx",
+                i64::try_from(building.map(|b| b.edge_idx).unwrap_or(usize::MAX))
+                    .unwrap_or(i64::MAX),
+            );
+            dict.set("side", i64::from(building.map(|b| b.side).unwrap_or(0)));
+            dict.set(
+                "frontage_t",
+                building.map(|b| b.frontage_t).unwrap_or_default(),
+            );
+            dict.set(
+                "side_offset_m",
+                building.map(|b| b.side_offset).unwrap_or_default(),
+            );
+            dict.set(
                 "width_cells",
                 i64::from(building.map(|b| b.width_cells).unwrap_or_default()),
             );
@@ -397,6 +417,63 @@ impl SimCore {
                 "samples",
                 self.building_site_debug_samples(site.support_height_m, &site.footprint_world),
             );
+            let edge_debug = self.building_site_debug_edge_samples(
+                site.support_height_m,
+                &site.footprint_world,
+                building,
+            );
+            dict.set(
+                "road_sample_count",
+                i64::try_from(edge_debug.road_sample_count).unwrap_or(i64::MAX),
+            );
+            dict.set(
+                "road_height_min_m",
+                edge_debug.road_height_min_m.unwrap_or(0.0),
+            );
+            dict.set(
+                "road_height_max_m",
+                edge_debug.road_height_max_m.unwrap_or(0.0),
+            );
+            dict.set("road_height_range_m", edge_debug.road_height_range_m());
+            dict.set(
+                "max_abs_support_delta_road_m",
+                edge_debug.max_abs_support_delta_road_m,
+            );
+            dict.set(
+                "terrain_visual_height_min_m",
+                edge_debug.terrain_visual_height_min_m.unwrap_or(0.0),
+            );
+            dict.set(
+                "terrain_visual_height_max_m",
+                edge_debug.terrain_visual_height_max_m.unwrap_or(0.0),
+            );
+            dict.set(
+                "terrain_visual_height_range_m",
+                edge_debug.terrain_visual_height_range_m(),
+            );
+            dict.set(
+                "max_abs_support_delta_visual_m",
+                edge_debug.max_abs_support_delta_visual_m,
+            );
+            if let Some((point, road_height_m)) = edge_debug.claimed_road_sample {
+                dict.set("claimed_road_probe_valid", true);
+                dict.set("claimed_road_probe_point", point);
+                dict.set("claimed_road_probe_has_height", road_height_m.is_some());
+                dict.set("claimed_road_probe_height_m", road_height_m.unwrap_or(0.0));
+                dict.set(
+                    "claimed_road_probe_support_delta_m",
+                    road_height_m
+                        .map(|height_m| site.support_height_m - height_m)
+                        .unwrap_or(0.0),
+                );
+            } else {
+                dict.set("claimed_road_probe_valid", false);
+                dict.set("claimed_road_probe_point", Vector2::ZERO);
+                dict.set("claimed_road_probe_has_height", false);
+                dict.set("claimed_road_probe_height_m", 0.0);
+                dict.set("claimed_road_probe_support_delta_m", 0.0);
+            }
+            dict.set("edge_samples", edge_debug.samples);
 
             let mut surfaces = VarArray::new();
             for (surface_idx, surface) in site.surfaces.iter().enumerate() {
@@ -441,6 +518,362 @@ impl SimCore {
             push_site_debug_sample(&mut samples, &label, point, support_height_m, self);
         }
         samples
+    }
+
+    fn building_site_debug_edge_samples(
+        &self,
+        support_height_m: f32,
+        footprint: &[Vector2],
+        building: Option<&Building>,
+    ) -> BuildingSiteEdgeDebug {
+        let mut edge_debug = BuildingSiteEdgeDebug::default();
+        if footprint.len() < 2 {
+            return edge_debug;
+        }
+
+        let center = polygon_centroid(footprint);
+        let facing_dir = building
+            .map(|building| normalized_or_zero(building.facing_dir))
+            .unwrap_or(Vector2::ZERO);
+        let roles = building_site_edge_roles(footprint, center, facing_dir);
+
+        for edge_idx in 0..footprint.len() {
+            let start = footprint[edge_idx];
+            let end = footprint[(edge_idx + 1) % footprint.len()];
+            let edge_vec = end - start;
+            let length_m = edge_vec.length();
+            let sample_count = ((length_m / BUILDING_SITE_DEBUG_EDGE_SAMPLE_STEP_M).ceil()
+                as usize)
+                .clamp(2, BUILDING_SITE_DEBUG_EDGE_SAMPLE_MAX);
+            let role = roles
+                .get(edge_idx)
+                .copied()
+                .unwrap_or(BuildingSiteDebugEdgeRole::Side);
+
+            for sample_idx in 0..sample_count {
+                let t = if sample_count > 1 {
+                    sample_idx as f32 / (sample_count - 1) as f32
+                } else {
+                    0.0
+                };
+                let point = start.lerp(end, t);
+                let requested_road_probe_point = if role == BuildingSiteDebugEdgeRole::Frontage {
+                    point + facing_dir * BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M
+                } else {
+                    point
+                };
+                let road_sample = building_site_debug_visible_road_sample(
+                    self,
+                    requested_road_probe_point,
+                    BUILDING_SITE_DEBUG_NEAREST_ROAD_SURFACE_RADIUS_M,
+                );
+                let road_probe_point = road_sample
+                    .map(|(probe, _)| probe)
+                    .unwrap_or(requested_road_probe_point);
+                let road_height_m = road_sample.map(|(_, height_m)| height_m);
+                let source_height_m =
+                    self.heightmap.sample_height_world(point.x, point.y) * HEIGHT_SCALE;
+                let visual_height_m =
+                    self.heightmap.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE;
+
+                edge_debug.record_terrain_visual_height(support_height_m, visual_height_m);
+                if let Some(height_m) = road_height_m {
+                    edge_debug.record_road_height(support_height_m, height_m);
+                }
+
+                let mut dict = VarDictionary::new();
+                dict.set("edge_index", i64::try_from(edge_idx).unwrap_or(i64::MAX));
+                dict.set("edge_role", role.label());
+                dict.set(
+                    "sample_index",
+                    i64::try_from(sample_idx).unwrap_or(i64::MAX),
+                );
+                dict.set(
+                    "sample_count",
+                    i64::try_from(sample_count).unwrap_or(i64::MAX),
+                );
+                dict.set("t", t);
+                dict.set("point", point);
+                dict.set("road_probe_point", road_probe_point);
+                dict.set("road_visible", road_height_m.is_some());
+                dict.set("road_visible_height_m", road_height_m.unwrap_or(0.0));
+                dict.set(
+                    "support_delta_road_m",
+                    road_height_m
+                        .map(|height_m| support_height_m - height_m)
+                        .unwrap_or(0.0),
+                );
+                dict.set("terrain_source_height_m", source_height_m);
+                dict.set("terrain_visual_height_m", visual_height_m);
+                dict.set("support_delta_source_m", support_height_m - source_height_m);
+                dict.set("support_delta_visual_m", support_height_m - visual_height_m);
+                edge_debug.samples.push(&dict.to_variant());
+            }
+        }
+
+        if let Some(building) = building
+            && building.edge_idx < self.region_graph.edge_count()
+        {
+            let edge = self.region_graph.edge(building.edge_idx);
+            edge_debug.claimed_road_sample =
+                claimed_road_side_connection_sample(self, edge, building).map(|sample| {
+                    let road_height_m = self
+                        .transit_network
+                        .road_surface
+                        .sample_visible_surface_height(
+                            &self.region_graph,
+                            &self.heightmap,
+                            sample.x,
+                            sample.y,
+                        );
+                    (sample, road_height_m)
+                });
+        }
+
+        edge_debug
+    }
+}
+
+#[derive(Default)]
+struct BuildingSiteEdgeDebug {
+    samples: VarArray,
+    road_sample_count: usize,
+    road_height_min_m: Option<f32>,
+    road_height_max_m: Option<f32>,
+    max_abs_support_delta_road_m: f32,
+    terrain_visual_height_min_m: Option<f32>,
+    terrain_visual_height_max_m: Option<f32>,
+    max_abs_support_delta_visual_m: f32,
+    claimed_road_sample: Option<(Vector2, Option<f32>)>,
+}
+
+impl BuildingSiteEdgeDebug {
+    fn record_road_height(&mut self, support_height_m: f32, road_height_m: f32) {
+        self.road_sample_count += 1;
+        self.road_height_min_m = Some(
+            self.road_height_min_m
+                .map(|current| current.min(road_height_m))
+                .unwrap_or(road_height_m),
+        );
+        self.road_height_max_m = Some(
+            self.road_height_max_m
+                .map(|current| current.max(road_height_m))
+                .unwrap_or(road_height_m),
+        );
+        self.max_abs_support_delta_road_m = self
+            .max_abs_support_delta_road_m
+            .max((support_height_m - road_height_m).abs());
+    }
+
+    fn record_terrain_visual_height(&mut self, support_height_m: f32, visual_height_m: f32) {
+        self.terrain_visual_height_min_m = Some(
+            self.terrain_visual_height_min_m
+                .map(|current| current.min(visual_height_m))
+                .unwrap_or(visual_height_m),
+        );
+        self.terrain_visual_height_max_m = Some(
+            self.terrain_visual_height_max_m
+                .map(|current| current.max(visual_height_m))
+                .unwrap_or(visual_height_m),
+        );
+        self.max_abs_support_delta_visual_m = self
+            .max_abs_support_delta_visual_m
+            .max((support_height_m - visual_height_m).abs());
+    }
+
+    fn road_height_range_m(&self) -> f32 {
+        match (self.road_height_min_m, self.road_height_max_m) {
+            (Some(min), Some(max)) => max - min,
+            _ => 0.0,
+        }
+    }
+
+    fn terrain_visual_height_range_m(&self) -> f32 {
+        match (
+            self.terrain_visual_height_min_m,
+            self.terrain_visual_height_max_m,
+        ) {
+            (Some(min), Some(max)) => max - min,
+            _ => 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BuildingSiteDebugEdgeRole {
+    Frontage,
+    Rear,
+    Left,
+    Right,
+    Side,
+}
+
+impl BuildingSiteDebugEdgeRole {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Frontage => "frontage",
+            Self::Rear => "rear",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Side => "side",
+        }
+    }
+}
+
+fn building_site_edge_roles(
+    footprint: &[Vector2],
+    center: Vector2,
+    facing_dir: Vector2,
+) -> Vec<BuildingSiteDebugEdgeRole> {
+    let mut roles = vec![BuildingSiteDebugEdgeRole::Side; footprint.len()];
+    if footprint.len() < 2 || facing_dir.length_squared() <= 1e-12 {
+        return roles;
+    }
+
+    let mut frontage_idx = 0usize;
+    let mut rear_idx = 0usize;
+    let mut best_front_score = f32::NEG_INFINITY;
+    let mut best_rear_score = f32::INFINITY;
+    for edge_idx in 0..footprint.len() {
+        let midpoint = (footprint[edge_idx] + footprint[(edge_idx + 1) % footprint.len()]) * 0.5;
+        let score = (midpoint - center).dot(facing_dir);
+        if score > best_front_score {
+            best_front_score = score;
+            frontage_idx = edge_idx;
+        }
+        if score < best_rear_score {
+            best_rear_score = score;
+            rear_idx = edge_idx;
+        }
+    }
+    roles[frontage_idx] = BuildingSiteDebugEdgeRole::Frontage;
+    roles[rear_idx] = BuildingSiteDebugEdgeRole::Rear;
+
+    let right_dir = Vector2::new(facing_dir.y, -facing_dir.x);
+    for edge_idx in 0..footprint.len() {
+        if edge_idx == frontage_idx || edge_idx == rear_idx {
+            continue;
+        }
+        let midpoint = (footprint[edge_idx] + footprint[(edge_idx + 1) % footprint.len()]) * 0.5;
+        roles[edge_idx] = if (midpoint - center).dot(right_dir) >= 0.0 {
+            BuildingSiteDebugEdgeRole::Right
+        } else {
+            BuildingSiteDebugEdgeRole::Left
+        };
+    }
+    roles
+}
+
+fn claimed_road_side_connection_sample(
+    core: &SimCore,
+    edge: &Edge,
+    building: &Building,
+) -> Option<Vector2> {
+    if edge.deleted || edge.physical_length <= 1e-6 || edge.physical_geometry.len() < 2 {
+        return None;
+    }
+    let center =
+        core.allocator
+            .get_pos_on_edge(&core.region_graph, building.edge_idx, building.frontage_t);
+    let tangent = core.allocator.get_tangent_on_edge(
+        &core.region_graph,
+        building.edge_idx,
+        building.frontage_t,
+    );
+    if tangent.length_squared() <= 1e-12 {
+        return None;
+    }
+    let normal = Vector2::new(tangent.y, -tangent.x) * building.side as f32;
+    Some(center + normal * road_connection_lateral_offset_m(edge))
+}
+
+fn building_site_debug_visible_road_sample(
+    core: &SimCore,
+    point: Vector2,
+    nearest_radius_m: f32,
+) -> Option<(Vector2, f32)> {
+    if let Some(height_m) = core
+        .transit_network
+        .road_surface
+        .sample_visible_surface_height(&core.region_graph, &core.heightmap, point.x, point.y)
+    {
+        return Some((point, height_m));
+    }
+    let radius_m = nearest_radius_m.max(0.0);
+    if radius_m <= f32::EPSILON {
+        return None;
+    }
+
+    let mut candidates = core
+        .region_graph
+        .get_edges_near_point(Vector3::new(point.x, 0.0, point.y), radius_m);
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    let mut best: Option<(f32, usize, Vector2, f32)> = None;
+    for edge_idx in candidates {
+        let Some(edge) = core.region_graph.get_edge(edge_idx) else {
+            continue;
+        };
+        if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+            continue;
+        }
+        let Some(projection) =
+            BuildingAllocator::project_point_to_edge_centerline(edge_idx, edge, point)
+        else {
+            continue;
+        };
+        let center =
+            BuildingAllocator::sample_pos_on_edge(&core.region_graph, edge_idx, projection.t);
+        let tangent =
+            BuildingAllocator::sample_tangent_on_edge(&core.region_graph, edge_idx, projection.t);
+        if tangent.length_squared() <= 1e-12 {
+            continue;
+        }
+        let normal = Vector2::new(tangent.y, -tangent.x) * projection.side as f32;
+        let probe = center + normal * road_connection_lateral_offset_m(edge);
+        let dist_sq = probe.distance_squared_to(point);
+        if dist_sq > radius_m * radius_m {
+            continue;
+        }
+        let Some(height_m) = core
+            .transit_network
+            .road_surface
+            .sample_visible_surface_height(&core.region_graph, &core.heightmap, probe.x, probe.y)
+        else {
+            continue;
+        };
+        let replace = best
+            .as_ref()
+            .is_none_or(|(best_dist_sq, best_edge_idx, _, _)| {
+                dist_sq
+                    .total_cmp(best_dist_sq)
+                    .then(edge_idx.cmp(best_edge_idx))
+                    .is_lt()
+            });
+        if replace {
+            best = Some((dist_sq, edge_idx, probe, height_m));
+        }
+    }
+    best.map(|(_, _, probe, height_m)| (probe, height_m))
+}
+
+fn road_connection_lateral_offset_m(edge: &Edge) -> f32 {
+    let sidewalk_m = if edge.primary_type == TransitType::Foot
+        || (edge.allowed_types & TransitFlags::FOOT) == 0
+    {
+        0.0
+    } else {
+        SIDEWALK_WIDTH
+    };
+    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M).max(0.0)
+}
+
+fn normalized_or_zero(value: Vector2) -> Vector2 {
+    if value.length_squared() <= 1e-12 {
+        Vector2::ZERO
+    } else {
+        value.normalized()
     }
 }
 

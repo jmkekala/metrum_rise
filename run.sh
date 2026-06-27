@@ -28,6 +28,9 @@
 #   --debug buildings    Building-site mesh/material diagnostics (log only).
 #   --debug building-sites-visual [mode]
 #                        Building-site material-source overlay. Modes: material
+#   --debug site-grading
+#                        Best combo for building/road yard seams: road geometry dump,
+#                        building-site diagnostics, and building-site material overlay.
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -55,6 +58,7 @@ VISUAL_DEBUG_MODE="material"
 TERRAIN_VISUAL_DEBUG=0
 TERRAIN_VISUAL_DEBUG_MODE="patch"
 DEBUG_CATEGORY=""
+GODOT_ENGINE_ARGS=()
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
 i=1
@@ -77,6 +81,17 @@ while [ $i -le $# ]; do
         fi
     elif [ "$arg" = "--debug-sim" ]; then
         DEBUG_SIM=1
+    elif [ "$arg" = "--headless" ]; then
+        GODOT_ENGINE_ARGS+=("$arg")
+    elif [ "$arg" = "--quit-after" ]; then
+        GODOT_ENGINE_ARGS+=("$arg")
+        next_index=$((i + 1))
+        if [ $next_index -le $# ]; then
+            GODOT_ENGINE_ARGS+=("${!next_index}")
+            i=$((i + 1))
+        fi
+    elif [[ "$arg" == --quit-after=* ]]; then
+        GODOT_ENGINE_ARGS+=("$arg")
     elif [ "$arg" = "--debug-traffic" ]; then
         DEBUG_TRAFFIC=1
     elif [ "$arg" = "--debug-world-editor" ]; then
@@ -89,6 +104,11 @@ while [ $i -le $# ]; do
             if [[ "$next_arg" != --* ]]; then
                 if [ "$next_arg" = "traffic" ]; then
                     DEBUG_TRAFFIC=1
+                elif [ "$next_arg" = "site-grading" ] || [ "$next_arg" = "building-site-grading" ]; then
+                    DEBUG=1
+                    DEBUG_BUILDINGS=1
+                    BUILDING_SITE_VISUAL_DEBUG=1
+                    DEBUG_CATEGORY="road"
                 elif [ "$next_arg" = "buildings" ] || [ "$next_arg" = "building-sites" ]; then
                     DEBUG=1
                     DEBUG_BUILDINGS=1
@@ -303,6 +323,9 @@ if [ $DEBUG_SIM -eq 1 ]; then
 fi
 if [ $DEBUG_BUILDINGS -eq 1 ]; then
     export METRUM_DEBUG_BUILDINGS=1
+    if [ "$DEBUG_CATEGORY" != "buildings" ]; then
+        echo "Building-site diagnostics enabled: [DEBUG:buildings] site, edge, material, and grading samples."
+    fi
 fi
 if [ $BUILDING_SITE_VISUAL_DEBUG -eq 1 ]; then
     export METRUM_DEBUG_BUILDING_SITES_VISUAL="$BUILDING_SITE_VISUAL_DEBUG_MODE"
@@ -362,4 +385,4 @@ mkdir -p ../godot/bin
 cp $LIB ../godot/bin/libmetrum_rise.so
 
 echo "Launching Metrum Rise..."
-cd ../godot && godot -- "${GODOT_ARGS[@]}"
+cd ../godot && godot "${GODOT_ENGINE_ARGS[@]}" -- "${GODOT_ARGS[@]}"

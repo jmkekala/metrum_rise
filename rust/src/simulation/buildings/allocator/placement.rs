@@ -549,7 +549,7 @@ impl BuildingAllocator {
         width_m: f32,
         depth_m: f32,
         graph: &RegionGraph,
-    ) -> Option<ExplicitServiceRoadProjection> {
+    ) -> Option<super::geometry::RoadFrontageProjection> {
         let search_radius = (width_m * 0.5 + depth_m + EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M)
             .max(EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M);
         let mut candidates =
@@ -557,7 +557,7 @@ impl BuildingAllocator {
         candidates.sort_unstable();
         candidates.dedup();
 
-        let mut best: Option<ExplicitServiceRoadProjection> = None;
+        let mut best: Option<super::geometry::RoadFrontageProjection> = None;
         for edge_idx in candidates {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
@@ -569,7 +569,10 @@ impl BuildingAllocator {
             {
                 continue;
             }
-            let projection = project_point_to_edge_centerline(edge_idx, edge, point)?;
+            let Some(projection) = Self::project_point_to_edge_centerline(edge_idx, edge, point)
+            else {
+                continue;
+            };
             let half_width_t = (width_m * 0.5 / edge.physical_length).clamp(0.0, 0.49);
             let t = projection.t.clamp(half_width_t, 1.0 - half_width_t);
             let centerline = Self::sample_pos_on_edge(graph, edge_idx, t);
@@ -577,7 +580,7 @@ impl BuildingAllocator {
             if dist_sq > search_radius * search_radius {
                 continue;
             }
-            let candidate = ExplicitServiceRoadProjection {
+            let candidate = super::geometry::RoadFrontageProjection {
                 edge_idx,
                 t,
                 side: projection.side,
@@ -1129,13 +1132,6 @@ pub(crate) struct ExplicitServicePlacementPreview {
     pub(crate) support_height_m: f32,
 }
 
-struct ExplicitServiceRoadProjection {
-    edge_idx: usize,
-    t: f32,
-    side: i8,
-    dist_sq: f32,
-}
-
 fn expected_utility_service_for_class(service_class: &str) -> Option<&'static str> {
     match service_class.trim() {
         "power" => Some("power"),
@@ -1143,50 +1139,6 @@ fn expected_utility_service_for_class(service_class: &str) -> Option<&'static st
         "waste" => Some("sewage"),
         _ => None,
     }
-}
-
-fn project_point_to_edge_centerline(
-    edge_idx: usize,
-    edge: &crate::simulation::network::graph::Edge,
-    point: Vector2,
-) -> Option<ExplicitServiceRoadProjection> {
-    if edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
-        return None;
-    }
-    let mut best_dist_sq = f32::INFINITY;
-    let mut best_t = 0.0;
-    let mut best_side = 1;
-    let mut acc_len = 0.0;
-    for segment in edge.physical_geometry.windows(2) {
-        let a = Vector2::new(segment[0].x, segment[0].z);
-        let b = Vector2::new(segment[1].x, segment[1].z);
-        let delta = b - a;
-        let seg_len_sq = delta.length_squared();
-        if seg_len_sq <= 1e-12 {
-            continue;
-        }
-        let local_t = ((point - a).dot(delta) / seg_len_sq).clamp(0.0, 1.0);
-        let closest = a + delta * local_t;
-        let dist_sq = closest.distance_squared_to(point);
-        if dist_sq < best_dist_sq {
-            let seg_len = seg_len_sq.sqrt();
-            let tangent = delta / seg_len;
-            let normal = Vector2::new(tangent.y, -tangent.x);
-            let to_point = point - closest;
-            best_dist_sq = dist_sq;
-            best_t = ((acc_len + seg_len * local_t) / edge.physical_length).clamp(0.0, 1.0);
-            best_side = if to_point.dot(normal) >= 0.0 { 1 } else { -1 };
-        }
-        acc_len += seg_len_sq.sqrt();
-    }
-    best_dist_sq
-        .is_finite()
-        .then_some(ExplicitServiceRoadProjection {
-            edge_idx,
-            t: best_t,
-            side: best_side,
-            dist_sq: best_dist_sq,
-        })
 }
 
 fn explicit_rejection_from_site_rejection(

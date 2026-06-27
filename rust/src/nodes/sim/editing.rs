@@ -82,6 +82,8 @@ impl SimCore {
 
     fn rebuild_building_entrances_internal(&mut self) {
         self.allocator
+            .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
+        self.allocator
             .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
     }
 

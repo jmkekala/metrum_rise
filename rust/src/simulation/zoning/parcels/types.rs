@@ -139,6 +139,21 @@ impl ZoningParcel {
         self.edge_idx = edge_idx;
     }
 
+    pub(crate) fn replace_geometry(&mut self, geometry: ParcelGeometry) {
+        self.edge_idx = geometry.edge_idx;
+        self.side = geometry.side;
+        self.frontage_center_t = geometry.frontage_center_t;
+        self.frontage_m = geometry.frontage_m;
+        self.depth_m = geometry.depth_m;
+        self.front_center = geometry.front_center;
+        self.center = geometry.center;
+        self.tangent = geometry.tangent;
+        self.normal = geometry.normal;
+        self.corners = geometry.corners;
+        self.aabb_min = geometry.aabb_min;
+        self.aabb_max = geometry.aabb_max;
+    }
+
     pub(super) fn new(
         id: ParcelId,
         geometry: ParcelGeometry,

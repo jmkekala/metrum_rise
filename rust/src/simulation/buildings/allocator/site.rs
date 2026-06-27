@@ -1,20 +1,33 @@
 //! Building-site footprint, surface, and terrain-query helpers.
 
 use crate::assets::SiteSurfaceMaterial;
+use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::entrance::{
     building_local_xz_basis, building_local_xz_pos, main_entrance_anchor,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::cdt::{
-    TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtRoadLoopSourceEdge,
+    MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop,
+    TerrainCdtRoadLoopSourceEdge, TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
     TerrainCdtVertex,
 };
+use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use godot::prelude::{Vector2, Vector3};
+use std::collections::BTreeMap;
 
 const DEFAULT_ANCHOR_FORWARD: [f32; 3] = [0.0, 0.0, 1.0];
 const BUILDING_SITE_FOOTPRINT_GROUP_MASK: u64 = 0x8000_0000_0000_0000;
+const BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
+const BUILDING_SITE_GRADING_RING_MULTIPLIERS: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
+const BUILDING_SITE_PAD_TIE_IN_INSET_FRACTION: f32 = 0.5;
+const BUILDING_SITE_PAD_TIE_IN_INSET_MAX_M: f32 = 5.0;
+const BUILDING_SITE_PAD_MIN_HALF_EXTENT_M: f32 = 4.0;
+const BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M: f32 = 3.0;
+const BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M: f32 = 8.0;
+const BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M: f32 = 0.05;
 const SITE_POINT_EPS_M: f32 = 0.001;
 
 /// Runtime surface polygon authored inside a building site.
@@ -30,12 +43,12 @@ pub(crate) struct BuildingSiteSurfaceClient {
     pub(crate) vertices_world: Vec<Vector2>,
 }
 
-/// Runtime client that owns the flat whole-lot building-site surface.
+/// Runtime client that owns the inset flat building-site pad surface.
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {
-    /// World-space lot footprint corners.
+    /// World-space flat pad footprint corners.
     pub(crate) footprint_world: [Vector2; 4],
-    /// Flat support height of the whole site.
+    /// Flat support height shared by the building and site pad.
     pub(crate) support_height_m: f32,
     /// Authored site surface polygons transformed into world space.
     pub(crate) surfaces: Vec<BuildingSiteSurfaceClient>,
@@ -265,6 +278,43 @@ impl BuildingAllocator {
         loops
     }
 
+    pub(crate) fn append_terrain_cdt_site_grading_guides_for_world_bounds(
+        &self,
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        render_step_m: f32,
+        tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+        tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    ) {
+        let safe_step_m = render_step_m.max(f32::EPSILON);
+        let max_distance_m = terrain_cdt_local_sample_margin_m(terrain, safe_step_m);
+        for building_idx in self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z) {
+            let Some(site) = self.building_sites.get(building_idx) else {
+                continue;
+            };
+            if !site.overlaps_bounds(min_x, min_z, max_x, max_z) {
+                continue;
+            }
+            append_building_site_grading_guides(
+                site,
+                terrain,
+                graph,
+                road_surface,
+                safe_step_m,
+                max_distance_m,
+                tie_in_guide_samples,
+                tie_in_guide_constraints,
+                sample_keys,
+            );
+        }
+    }
+
     fn site_candidate_indices_for_bounds(
         &self,
         min_x: f32,
@@ -314,8 +364,11 @@ impl BuildingAllocator {
             .unwrap_or(DEFAULT_ANCHOR_FORWARD);
         let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, anchor_forward);
         let center = Vector2::new(building.center_x, building.center_y);
-        let half_width = building.width_cells as f32 * zone_cell_m * 0.5;
-        let half_depth = building.depth_cells as f32 * zone_cell_m * 0.5;
+        let lot_half_width = building.width_cells as f32 * zone_cell_m * 0.5;
+        let lot_half_depth = building.depth_cells as f32 * zone_cell_m * 0.5;
+        let inset_m = building_site_pad_tie_in_inset_m(zone_cell_m, lot_half_width, lot_half_depth);
+        let half_width = lot_half_width - inset_m;
+        let half_depth = lot_half_depth - inset_m;
         let footprint_world = [
             center + basis_x * -half_width + basis_z * -half_depth,
             center + basis_x * -half_width + basis_z * half_depth,
@@ -358,6 +411,18 @@ impl BuildingAllocator {
     }
 }
 
+fn building_site_pad_tie_in_inset_m(
+    zone_cell_m: f32,
+    lot_half_width_m: f32,
+    lot_half_depth_m: f32,
+) -> f32 {
+    let target_m = (zone_cell_m * BUILDING_SITE_PAD_TIE_IN_INSET_FRACTION)
+        .min(BUILDING_SITE_PAD_TIE_IN_INSET_MAX_M);
+    let max_inset_m =
+        (lot_half_width_m.min(lot_half_depth_m) - BUILDING_SITE_PAD_MIN_HALF_EXTENT_M).max(0.0);
+    target_m.min(max_inset_m)
+}
+
 fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
     let stable_piece_id = BUILDING_SITE_FOOTPRINT_GROUP_MASK | building_idx as u64;
     let vertices = site
@@ -387,6 +452,339 @@ fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> Ter
         vertices,
         source_edges,
     )
+}
+
+fn append_building_site_grading_guides(
+    site: &BuildingSiteClient,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    safe_step_m: f32,
+    max_distance_m: f32,
+    tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+) {
+    let signed_area = signed_polygon_area(site.footprint_world);
+    if signed_area.abs() <= f32::EPSILON {
+        return;
+    }
+    let loop_is_ccw = signed_area > 0.0;
+    let mut edge_outward_dirs = Vec::with_capacity(site.footprint_world.len());
+
+    for edge_idx in 0..site.footprint_world.len() {
+        let start = site.footprint_world[edge_idx];
+        let end = site.footprint_world[(edge_idx + 1) % site.footprint_world.len()];
+        let delta = end - start;
+        let length_m = delta.length();
+        if length_m <= f32::EPSILON {
+            continue;
+        }
+        let mut outward = if loop_is_ccw {
+            Vector2::new(delta.y, -delta.x)
+        } else {
+            Vector2::new(-delta.y, delta.x)
+        } / length_m;
+        outward = corrected_site_outward(site, (start + end) * 0.5, outward);
+        edge_outward_dirs.push(outward);
+
+        let sample_count = ((length_m / safe_step_m).ceil() as u32).max(1);
+        let mut previous_ring_vertices = Vec::new();
+        for sample_idx in 0..=sample_count {
+            let t = sample_idx as f32 / sample_count as f32;
+            let seam = start.lerp(end, t);
+            let ring_vertices = building_site_grading_ray_vertices(
+                site.support_height_m,
+                seam,
+                outward,
+                terrain,
+                graph,
+                road_surface,
+                safe_step_m,
+                max_distance_m,
+            );
+            for vertex in &ring_vertices {
+                push_building_site_grading_sample(*vertex, tie_in_guide_samples, sample_keys);
+            }
+            for (previous, current) in previous_ring_vertices.iter().zip(ring_vertices.iter()) {
+                push_building_site_grading_constraint(
+                    *previous,
+                    *current,
+                    tie_in_guide_constraints,
+                );
+            }
+            previous_ring_vertices = ring_vertices;
+        }
+    }
+
+    if edge_outward_dirs.len() != site.footprint_world.len() {
+        return;
+    }
+    for vertex_idx in 0..site.footprint_world.len() {
+        let previous = edge_outward_dirs
+            [(vertex_idx + site.footprint_world.len() - 1) % site.footprint_world.len()];
+        let next = edge_outward_dirs[vertex_idx];
+        let bisector = previous + next;
+        if bisector.length_squared() <= f32::EPSILON {
+            continue;
+        }
+        let vertex = site.footprint_world[vertex_idx];
+        let outward = corrected_site_outward(site, vertex, bisector.normalized());
+        append_building_site_grading_ray(
+            site.support_height_m,
+            vertex,
+            outward,
+            terrain,
+            graph,
+            road_surface,
+            safe_step_m,
+            max_distance_m,
+            tie_in_guide_samples,
+            sample_keys,
+        );
+    }
+}
+
+fn append_building_site_grading_ray(
+    seam_height_m: f32,
+    seam: Vector2,
+    outward: Vector2,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    safe_step_m: f32,
+    max_distance_m: f32,
+    tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+) {
+    for vertex in building_site_grading_ray_vertices(
+        seam_height_m,
+        seam,
+        outward,
+        terrain,
+        graph,
+        road_surface,
+        safe_step_m,
+        max_distance_m,
+    ) {
+        push_building_site_grading_sample(vertex, tie_in_guide_samples, sample_keys);
+    }
+}
+
+fn building_site_grading_ray_vertices(
+    seam_height_m: f32,
+    seam: Vector2,
+    outward: Vector2,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    safe_step_m: f32,
+    max_distance_m: f32,
+) -> Vec<TerrainCdtVertex> {
+    let mut vertices = Vec::new();
+    let mut previous_distance_m = 0.0_f32;
+    for multiplier in BUILDING_SITE_GRADING_RING_MULTIPLIERS {
+        let distance_m = (safe_step_m * multiplier).min(max_distance_m);
+        if distance_m <= previous_distance_m + f32::EPSILON {
+            continue;
+        }
+        previous_distance_m = distance_m;
+        let pos = seam + outward * distance_m;
+        let height_m = building_site_grading_target_height(
+            seam_height_m,
+            pos,
+            distance_m,
+            terrain,
+            graph,
+            road_surface,
+        );
+        vertices.push(TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64));
+    }
+    vertices
+}
+
+fn building_site_grading_target_height(
+    seam_height_m: f32,
+    pos: Vector2,
+    distance_m: f32,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+) -> f32 {
+    let nearest_radius_m = distance_m
+        .max(BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M)
+        .min(BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M);
+    if let Some(road_height_m) =
+        building_site_visible_road_height(terrain, graph, road_surface, pos, nearest_radius_m)
+    {
+        return road_height_m;
+    }
+    let terrain_height_m =
+        terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
+    grade_limited_site_tie_in_height(seam_height_m, terrain_height_m, distance_m)
+}
+
+fn building_site_visible_road_height(
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    pos: Vector2,
+    nearest_radius_m: f32,
+) -> Option<f32> {
+    if let Some(height_m) = road_surface.sample_visible_surface_height(graph, terrain, pos.x, pos.y)
+    {
+        return Some(height_m);
+    }
+    nearest_building_site_road_surface_sample(terrain, graph, road_surface, pos, nearest_radius_m)
+        .map(|(_, height_m)| height_m)
+}
+
+fn nearest_building_site_road_surface_sample(
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    pos: Vector2,
+    nearest_radius_m: f32,
+) -> Option<(Vector2, f32)> {
+    let radius_m = nearest_radius_m.max(0.0);
+    if radius_m <= f32::EPSILON {
+        return None;
+    }
+    let mut candidates = graph.get_edges_near_point(Vector3::new(pos.x, 0.0, pos.y), radius_m);
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    let mut best: Option<(f32, usize, Vector2, f32)> = None;
+    for edge_idx in candidates {
+        let Some(edge) = graph.get_edge(edge_idx) else {
+            continue;
+        };
+        if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+            continue;
+        }
+        let Some(projection) =
+            BuildingAllocator::project_point_to_edge_centerline(edge_idx, edge, pos)
+        else {
+            continue;
+        };
+        let center = BuildingAllocator::sample_pos_on_edge(graph, edge_idx, projection.t);
+        let tangent = BuildingAllocator::sample_tangent_on_edge(graph, edge_idx, projection.t);
+        if tangent.length_squared() <= 1e-12 {
+            continue;
+        }
+        let normal = Vector2::new(tangent.y, -tangent.x) * projection.side as f32;
+        let probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
+        let dist_sq = probe.distance_squared_to(pos);
+        if dist_sq > radius_m * radius_m {
+            continue;
+        }
+        let Some(height_m) =
+            road_surface.sample_visible_surface_height(graph, terrain, probe.x, probe.y)
+        else {
+            continue;
+        };
+        let replace = best
+            .as_ref()
+            .is_none_or(|(best_dist_sq, best_edge_idx, _, _)| {
+                dist_sq
+                    .total_cmp(best_dist_sq)
+                    .then(edge_idx.cmp(best_edge_idx))
+                    .is_lt()
+            });
+        if replace {
+            best = Some((dist_sq, edge_idx, probe, height_m));
+        }
+    }
+    best.map(|(_, _, probe, height_m)| (probe, height_m))
+}
+
+fn building_site_road_connection_lateral_offset_m(
+    edge: &crate::simulation::network::graph::Edge,
+) -> f32 {
+    let sidewalk_m = if edge.primary_type == TransitType::Foot
+        || (edge.allowed_types & TransitFlags::FOOT) == 0
+    {
+        0.0
+    } else {
+        SIDEWALK_WIDTH
+    };
+    (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M).max(0.0)
+}
+
+fn grade_limited_site_tie_in_height(
+    seam_height_m: f32,
+    terrain_height_m: f32,
+    distance_m: f32,
+) -> f32 {
+    let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+    let delta_m = terrain_height_m - seam_height_m;
+    if delta_m.abs() <= max_delta_m {
+        terrain_height_m
+    } else {
+        seam_height_m + delta_m.signum() * max_delta_m
+    }
+}
+
+fn corrected_site_outward(site: &BuildingSiteClient, seam: Vector2, outward: Vector2) -> Vector2 {
+    if site.contains_point(seam + outward * SITE_POINT_EPS_M * 8.0) {
+        -outward
+    } else {
+        outward
+    }
+}
+
+fn push_building_site_grading_sample(
+    vertex: TerrainCdtVertex,
+    tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+) {
+    if !vertex.x.is_finite() || !vertex.z.is_finite() || !vertex.height_m.is_finite() {
+        return;
+    }
+    let key = building_site_grading_sample_key(vertex.x, vertex.z);
+    if sample_keys.insert(key, ()).is_some() {
+        return;
+    }
+    tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });
+}
+
+fn push_building_site_grading_constraint(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+) {
+    if !start.x.is_finite()
+        || !start.z.is_finite()
+        || !start.height_m.is_finite()
+        || !end.x.is_finite()
+        || !end.z.is_finite()
+        || !end.height_m.is_finite()
+    {
+        return;
+    }
+    if building_site_grading_sample_key(start.x, start.z)
+        == building_site_grading_sample_key(end.x, end.z)
+    {
+        return;
+    }
+    tie_in_guide_constraints.push(TerrainCdtTieInGuideConstraint { start, end });
+}
+
+fn building_site_grading_sample_key(x: f64, z: f64) -> (i64, i64) {
+    (
+        (x * BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE).round() as i64,
+        (z * BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE).round() as i64,
+    )
+}
+
+fn signed_polygon_area<const N: usize>(points: [Vector2; N]) -> f32 {
+    let mut area = 0.0;
+    for idx in 0..points.len() {
+        let start = points[idx];
+        let end = points[(idx + 1) % points.len()];
+        area += start.x * end.y - end.x * start.y;
+    }
+    area * 0.5
 }
 
 fn polygon_bounds<const N: usize>(points: [Vector2; N]) -> (f32, f32, f32, f32) {
@@ -525,5 +923,156 @@ mod tests {
             .expect("ray should hit site surface");
 
         assert!((hit.y - 2.4).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn site_grading_guides_start_outside_flat_pad() {
+        let site = BuildingSiteClient {
+            support_height_m: 4.0,
+            surfaces: Vec::new(),
+            ..square_site_with_surface()
+        };
+        let terrain = TerrainSystem::with_chunking(8, 8, 1.0, 4, 0.0);
+        let graph = RegionGraph::new();
+        let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        let mut samples = Vec::new();
+        let mut constraints = Vec::new();
+        let mut sample_keys = BTreeMap::new();
+
+        append_building_site_grading_guides(
+            &site,
+            &terrain,
+            &graph,
+            &road_surface,
+            2.0,
+            16.0,
+            &mut samples,
+            &mut constraints,
+            &mut sample_keys,
+        );
+
+        assert!(
+            samples.iter().any(|sample| {
+                (sample.vertex.x + 6.0).abs() <= 0.001
+                    && sample.vertex.z.abs() <= 1.001
+                    && (sample.vertex.height_m - 3.5).abs() <= 0.001
+            }),
+            "first apron ring should sit outside the footprint and respect the tie-in slope budget"
+        );
+        assert!(samples.iter().all(|sample| {
+            !site.contains_point(Vector2::new(sample.vertex.x as f32, sample.vertex.z as f32))
+        }));
+        assert!(
+            !constraints.is_empty(),
+            "apron guide rails should be constrained so the CDT cannot collapse the frontage strip into one cap"
+        );
+    }
+
+    #[test]
+    fn site_pad_inset_reserves_tie_in_strip() {
+        assert_eq!(building_site_pad_tie_in_inset_m(10.0, 10.0, 10.0), 5.0);
+        assert_eq!(building_site_pad_tie_in_inset_m(10.0, 4.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn derived_site_client_uses_inset_pad_footprint() {
+        let allocator = BuildingAllocator::new();
+        let building = Building {
+            center_x: 0.0,
+            center_y: 0.0,
+            support_height_m: 7.0,
+            width_cells: 2,
+            depth_cells: 2,
+            zone_profile_runtime_id: 0,
+            parcel_id: 0,
+            zone_type: crate::simulation::zoning::ZoneType::Residential,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.0,
+            side_offset: 0.0,
+            is_deserted: false,
+            budget_distress: false,
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            cell_y: 0,
+            occupancy: 0,
+            worker_count: 0,
+            asset_id: String::new(),
+            level: 1,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
+            broken: false,
+            economy_profile_runtime_id: 0,
+            economy_broken: false,
+            resource_inventory: Vec::new(),
+            revenue: 0.0,
+            operating_budget: 0.0,
+            profit_tax_budget_baseline: 0.0,
+            last_day_profit: 0.0,
+            shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
+            daily_household_sales_value: 0.0,
+            recent_household_sales_value: 0.0,
+            commercial_activity_floor_scale: 0.0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
+        };
+
+        let site = allocator.derive_building_site_client(&building, 10.0);
+
+        assert!((signed_polygon_area(site.footprint_world).abs() - 100.0).abs() <= 0.001);
+        assert!(site.contains_point(Vector2::new(4.9, 0.0)));
+        assert!(!site.contains_point(Vector2::new(5.1, 0.0)));
+        assert_eq!(site.support_height_m, 7.0);
+    }
+
+    #[test]
+    fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
+        use crate::simulation::core::config::WorldConfig;
+        use crate::simulation::network::TransitNetwork;
+        use crate::simulation::network::types::EdgeClass;
+        use crate::simulation::zoning::ZoningSystem;
+
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut allocator = BuildingAllocator::new();
+        network.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 6.0, 20.0), Vector3::new(60.0, 6.0, 20.0)],
+            1,
+            1,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        let terrain = TerrainSystem::with_chunking(96, 96, 1.0, 16, 0.0);
+        network.road_surface.compile_dirty(&graph, &terrain);
+
+        let edge_idx = graph.edge_count() - 1;
+        let edge = graph.edge(edge_idx);
+        let center = BuildingAllocator::sample_pos_on_edge(&graph, edge_idx, 0.5);
+        let tangent = BuildingAllocator::sample_tangent_on_edge(&graph, edge_idx, 0.5);
+        let normal = Vector2::new(tangent.y, -tangent.x).normalized();
+        let road_edge_probe =
+            center + normal * building_site_road_connection_lateral_offset_m(edge);
+        let apron_probe = road_edge_probe + normal * 0.5;
+        let expected_height_m = network
+            .road_surface
+            .sample_visible_surface_height(&graph, &terrain, road_edge_probe.x, road_edge_probe.y)
+            .expect("road surface edge should be queryable");
+
+        let (probe, height_m) = nearest_building_site_road_surface_sample(
+            &terrain,
+            &graph,
+            &network.road_surface,
+            apron_probe,
+            BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M,
+        )
+        .expect("nearby apron guide should find the road surface edge");
+
+        assert!(probe.distance_to(road_edge_probe) <= 0.001);
+        assert!((height_m - expected_height_m).abs() <= 0.001);
     }
 }

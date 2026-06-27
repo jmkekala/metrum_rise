@@ -228,8 +228,9 @@ Current runtime client state:
 - terrain-only queries still read source terrain, while visible-world queries use the client-owned
   surface first, structural local earthwork geometry second, and visual terrain third; ordinary
   grounded seams are terrain topology, not a separate road-owned query surface
-- future flat building pads and other engineered-ground clients should extend the same shared model
-  from [`earthworks.md`](earthworks.md) instead of inventing a separate terrain-flattening path
+- flat building pads now use the same Rust-side stitched terrain patch model for local site
+  tie-ins; future engineered-ground clients should extend [`earthworks.md`](earthworks.md) instead
+  of inventing a separate terrain-flattening path
 
 Current deterministic editor rule:
 
@@ -542,8 +543,8 @@ Current deterministic rules:
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
 - completing a terrain brush stroke rebuilds touched engineered-ground clients and derived terrain
   outputs from the updated source terrain
-- terrain brushes must not directly deform road top surfaces, future flat foundation pads, or
-  future local earthwork meshes
+- terrain brushes must not directly deform road top surfaces, placed flat pads, or future local
+  earthwork meshes
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting

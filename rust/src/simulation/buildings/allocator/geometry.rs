@@ -1,9 +1,22 @@
 //! Geometry helpers for sampling world-space positions along road edges.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::lanes::Lane;
 use godot::prelude::{Vector2, Vector3};
+
+/// Closest road-centerline projection used to bind a building frontage to an edge.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoadFrontageProjection {
+    /// Projected road edge index.
+    pub(crate) edge_idx: usize,
+    /// Fractional distance along the edge physical geometry.
+    pub(crate) t: f32,
+    /// Road side relative to the edge tangent, encoded as `-1` or `1`.
+    pub(crate) side: i8,
+    /// Squared distance from the source point to the projected centerline point.
+    pub(crate) dist_sq: f32,
+}
 
 impl BuildingAllocator {
     /// Returns the world-space (X, Z) position at fractional distance `t` along an edge.
@@ -75,6 +88,48 @@ impl BuildingAllocator {
         }
 
         best_s
+    }
+
+    pub(crate) fn project_point_to_edge_centerline(
+        edge_idx: usize,
+        edge: &Edge,
+        point: Vector2,
+    ) -> Option<RoadFrontageProjection> {
+        if edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+            return None;
+        }
+        let mut best_dist_sq = f32::INFINITY;
+        let mut best_t = 0.0;
+        let mut best_side = 1;
+        let mut acc_len = 0.0;
+        for segment in edge.physical_geometry.windows(2) {
+            let a = Vector2::new(segment[0].x, segment[0].z);
+            let b = Vector2::new(segment[1].x, segment[1].z);
+            let delta = b - a;
+            let seg_len_sq = delta.length_squared();
+            if seg_len_sq <= 1e-12 {
+                continue;
+            }
+            let local_t = ((point - a).dot(delta) / seg_len_sq).clamp(0.0, 1.0);
+            let closest = a + delta * local_t;
+            let dist_sq = closest.distance_squared_to(point);
+            if dist_sq < best_dist_sq {
+                let seg_len = seg_len_sq.sqrt();
+                let tangent = delta / seg_len;
+                let normal = Vector2::new(tangent.y, -tangent.x);
+                let to_point = point - closest;
+                best_dist_sq = dist_sq;
+                best_t = ((acc_len + seg_len * local_t) / edge.physical_length).clamp(0.0, 1.0);
+                best_side = if to_point.dot(normal) >= 0.0 { 1 } else { -1 };
+            }
+            acc_len += seg_len_sq.sqrt();
+        }
+        best_dist_sq.is_finite().then_some(RoadFrontageProjection {
+            edge_idx,
+            t: best_t,
+            side: best_side,
+            dist_sq: best_dist_sq,
+        })
     }
 
     pub(crate) fn sample_pos_on_polyline(points: &[Vector3], total_len: f32, s_m: f32) -> Vector2 {

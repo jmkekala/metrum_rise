@@ -5,9 +5,10 @@
 This document owns the shared engineered-ground contract for local terrain overrides such as road
 cuts, embankments, flat building pads, and future retaining structures.
 
-The first live road client was closed under [`ROAD-01`](roadmap.md). Future terrain closure,
-building-pad, or plot-foundation work should extend this document under its own tracked ID instead
-of duplicating the same terrain-override rules elsewhere.
+The first live road client was closed under [`ROAD-01`](roadmap.md). Building-site pad tie-ins now
+share the road-touched terrain CDT carrier; future terrain closure, plot-foundation, or retaining
+work should extend this document under its own tracked ID instead of duplicating the same
+terrain-override rules elsewhere.
 
 It answers these questions:
 
@@ -107,8 +108,8 @@ Required rule:
 - moving, regrading, or deleting the client remains an explicit client-edit operation, not a side
   effect of terrain brushes
 
-This rule applies equally to linear clients such as roads and to area clients such as future flat
-building foundations.
+This rule applies equally to linear clients such as roads and to area clients such as placed flat
+building-site pads.
 
 ### 5. Earthworks Derive From The Client Support Surface
 
@@ -332,7 +333,7 @@ The current runtime ships roads and flat building sites as live engineered-groun
 That means:
 
 - `RoadSurfaceSystem` owns the roadbed support surface
-- `BuildingAllocator` owns flat whole-lot building-site clients registered at construction start
+- `BuildingAllocator` owns inset flat building-site pad clients registered at construction start
 - authored `[[site_surfaces]]` polygons render/query as material regions on top of the flat site
   plane, but do not define separate terrain ownership footprints
 - live gameplay must not render authored yard surfaces as loose decal / overlay meshes over terrain;
@@ -390,8 +391,8 @@ Current compatibility gap:
   terrain
 - structural visual terrain is then rebuilt from that moved roadbed, so the road can shift instead
   of the terrain alone reshaping around it
-- building-site clients now ship as fixed flat whole-lot surfaces; detailed perimeter grading and
-  richer foundation meshes remain later work
+- building-site clients now ship as fixed flat in-lot pad surfaces with deterministic perimeter
+  tie-in guides; richer foundation meshes remain later work
 
 ### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
@@ -690,21 +691,23 @@ area clients; it is not a substitute for the road-to-terrain boundary that alrea
 ## Building-Site Target (`EARTH-02`)
 
 `EARTH-02` is the live first-pass target for building yards, pads, and authored site surfaces.
-Buildings register a flat whole-lot site client at construction start, and visual terrain is clipped
+Buildings register an inset flat site pad at construction start, and visual terrain is clipped
 through the same terrain-patch / CDT ownership model used by grounded roads.
 
-### 1. The Runtime Site Footprint Is The Whole Lot
+### 1. The Runtime Site Pad Is Inset Inside The Lot
 
-The v1 runtime building-site footprint is the whole occupied lot rectangle:
+The v1 runtime building-site authoring envelope is the occupied lot rectangle:
 
 - for zoned private buildings, the claimed zoning parcel area occupied by the asset's
   `lot_width_cells` and `lot_depth_cells`
 - for explicit buildings, the explicit placement footprint defined by the asset and allocator
 
-The whole footprint becomes one flat engineered-ground client when a building is actually placed or
-construction starts. Authored `[[site_surfaces]]` polygons do not define the terrain-ownership
-footprint. They define visible/material regions on the already flat lot plane, such as asphalt,
-concrete, paved yards, or walkways.
+The terrain-ownership footprint is an inset pad inside that envelope. The reserved perimeter strip
+between the pad and surrounding terrain/roads is stitched through deterministic apron and tie-in
+guides, so the flat site does not clip directly against a sloped sidewalk or road edge. Authored
+`[[site_surfaces]]` polygons do not define the terrain-ownership footprint. They define
+visible/material regions on the selected site plane, such as asphalt, concrete, paved yards, or
+walkways.
 
 Zoning is not an engineered-ground client:
 
@@ -778,14 +781,14 @@ rejected. The runtime must not average road and neighbor heights.
 
 ### 5. Terrain Integration Uses The Same Topology Ownership As Roads
 
-The placed building site replaces visible terrain inside the whole lot footprint.
+The placed building site replaces visible terrain inside the inset flat pad footprint.
 
 Required runtime behavior:
 
 - source terrain remains unchanged
-- the site footprint is clipped out of visual terrain topology
+- the inset pad footprint is clipped out of visual terrain topology
 - site top surfaces render on the flat support plane
-- terrain outside the footprint stitches to the site boundary through the same Rust-owned
+- terrain outside the pad footprint stitches to the site boundary through the same Rust-owned
   terrain-patch / CDT ownership model used by grounded roads
 - boundary vertices at the site seam reuse the site plane height, not resampled source terrain
   heights
@@ -855,12 +858,12 @@ That means:
   geometry
 - terrain becomes the far-field ground that the local geometry ties back into
 
-### 2. Roads And Future Foundations Use The Same Rules
+### 2. Roads And Building Pads Use The Same Rules
 
 This shared subsystem must work for both:
 
 - linear corridor clients such as roads
-- area / pad clients such as future flat building foundations
+- area / pad clients such as flat building-site pads
 
 The client shape differs, but the shared ownership model is the same:
 

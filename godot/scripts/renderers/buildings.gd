@@ -581,7 +581,7 @@ func _add_building_site_surface(mesh: ArrayMesh, vertices: PackedVector3Array, m
 func _building_site_ground_material() -> Material:
 	if not _building_site_visual_debug_enabled():
 		return WorldMaterials.site_ground_material()
-	return _building_site_debug_material("ground", Color(0.0, 0.95, 0.25, 0.55))
+	return _building_site_debug_material("ground", Color(0.0, 0.95, 0.25, 1.0))
 
 func _building_site_surface_material(material_name: String) -> Material:
 	if not _building_site_visual_debug_enabled():
@@ -598,7 +598,7 @@ func _building_site_debug_material(role: String, color: Color) -> StandardMateri
 	var mat := StandardMaterial3D.new()
 	mat.resource_name = "debug_building_site_" + role
 	mat.albedo_color = color
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED if color.a >= 0.99 else BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.roughness = 1.0
@@ -665,13 +665,17 @@ func _print_building_site_debug(
 func _print_building_site_record(site: Dictionary) -> void:
 	var site_index := int(site.get("site_index", -1))
 	print(
-		"[DEBUG:buildings] site index=%d asset_id=%s zone=%s center=%s facing=%s cells=%dx%d lot_m=(%.3f,%.3f) support_y=%.3f area_m2=%.3f bounds=[%s..%s] footprint=%s surfaces=%d"
+		"[DEBUG:buildings] site index=%d asset_id=%s zone=%s edge=%d side=%d frontage_t=%.3f center=%s facing=%s side_offset_m=%.3f cells=%dx%d lot_m=(%.3f,%.3f) support_y=%.3f area_m2=%.3f bounds=[%s..%s] footprint=%s surfaces=%d"
 		% [
 			site_index,
 			str(site.get("asset_id", "")),
 			str(site.get("zone_type", "")),
+			int(site.get("edge_idx", -1)),
+			int(site.get("side", 0)),
+			float(site.get("frontage_t", 0.0)),
 			_vector2_label(site.get("center", Vector2.ZERO)),
 			_vector2_label(site.get("facing_dir", Vector2.ZERO)),
+			float(site.get("side_offset_m", 0.0)),
 			int(site.get("width_cells", 0)),
 			int(site.get("depth_cells", 0)),
 			float(site.get("lot_width_m", 0.0)),
@@ -682,6 +686,27 @@ func _print_building_site_record(site: Dictionary) -> void:
 			_vector2_label(site.get("bounds_max", Vector2.ZERO)),
 			_packed_vector2_label(site.get("footprint", PackedVector2Array())),
 			(site.get("surfaces", []) as Array).size(),
+		]
+	)
+	var road_sample_count := int(site.get("road_sample_count", 0))
+	print(
+		"[DEBUG:buildings] site_grading site=%d road_samples=%d road_y=[%.3f..%.3f] road_range=%.3f max_abs_support_delta_road=%.3f terrain_visual_y=[%.3f..%.3f] terrain_visual_range=%.3f max_abs_support_delta_visual=%.3f claimed_probe_valid=%s claimed_probe_point=%s claimed_probe_has_height=%s claimed_probe_y=%.3f claimed_probe_delta=%.3f"
+		% [
+			site_index,
+			road_sample_count,
+			float(site.get("road_height_min_m", 0.0)),
+			float(site.get("road_height_max_m", 0.0)),
+			float(site.get("road_height_range_m", 0.0)),
+			float(site.get("max_abs_support_delta_road_m", 0.0)),
+			float(site.get("terrain_visual_height_min_m", 0.0)),
+			float(site.get("terrain_visual_height_max_m", 0.0)),
+			float(site.get("terrain_visual_height_range_m", 0.0)),
+			float(site.get("max_abs_support_delta_visual_m", 0.0)),
+			str(site.get("claimed_road_probe_valid", false)),
+			_vector2_label(site.get("claimed_road_probe_point", Vector2.ZERO)),
+			str(site.get("claimed_road_probe_has_height", false)),
+			float(site.get("claimed_road_probe_height_m", 0.0)),
+			float(site.get("claimed_road_probe_support_delta_m", 0.0)),
 		]
 	)
 	var samples: Array = site.get("samples", [])
@@ -697,6 +722,29 @@ func _print_building_site_record(site: Dictionary) -> void:
 				float(sample.get("terrain_visual_height_m", 0.0)),
 				float(sample.get("support_delta_source_m", 0.0)),
 				float(sample.get("support_delta_visual_m", 0.0)),
+			]
+		)
+	var edge_samples: Array = site.get("edge_samples", [])
+	for edge_sample_variant in edge_samples:
+		var edge_sample: Dictionary = edge_sample_variant as Dictionary
+		print(
+			"[DEBUG:buildings] site_edge_sample site=%d edge=%d role=%s sample=%d/%d t=%.3f point=%s road_probe=%s road_visible=%s road_y=%.3f support_delta_road=%.3f terrain_source_y=%.3f terrain_visual_y=%.3f support_delta_source=%.3f support_delta_visual=%.3f"
+			% [
+				site_index,
+				int(edge_sample.get("edge_index", -1)),
+				str(edge_sample.get("edge_role", "")),
+				int(edge_sample.get("sample_index", 0)) + 1,
+				int(edge_sample.get("sample_count", 0)),
+				float(edge_sample.get("t", 0.0)),
+				_vector2_label(edge_sample.get("point", Vector2.ZERO)),
+				_vector2_label(edge_sample.get("road_probe_point", Vector2.ZERO)),
+				str(edge_sample.get("road_visible", false)),
+				float(edge_sample.get("road_visible_height_m", 0.0)),
+				float(edge_sample.get("support_delta_road_m", 0.0)),
+				float(edge_sample.get("terrain_source_height_m", 0.0)),
+				float(edge_sample.get("terrain_visual_height_m", 0.0)),
+				float(edge_sample.get("support_delta_source_m", 0.0)),
+				float(edge_sample.get("support_delta_visual_m", 0.0)),
 			]
 		)
 	var surfaces: Array = site.get("surfaces", [])

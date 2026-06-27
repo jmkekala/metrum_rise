@@ -1,5 +1,6 @@
 //! Building removal, demand-owned household admission, and coordinate restoration.
 
+use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
@@ -24,9 +25,12 @@ use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::ZoningSystem;
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 
 const REZONE_GRACE_DAYS: u8 = 3;
+const FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M: f32 = 50.0;
+const FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M: f32 = 20.0;
+const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
 
 /// Summary of building mutations performed by one demand-owned building action pass.
 pub(crate) struct DemandBuildingActionExecution {
@@ -574,6 +578,274 @@ impl BuildingAllocator {
         self.bump_building_ref_revision();
         Ok(())
     }
+
+    /// Re-projects stale building frontage references onto nearby live road edges.
+    pub(crate) fn repair_road_attachments_after_topology_edit(
+        &mut self,
+        graph: &RegionGraph,
+        zoning: &mut ZoningSystem,
+    ) -> usize {
+        let zone_cell_m = zoning.config.zone_cell_m;
+        let mut repaired = 0usize;
+        for building_idx in 0..self.buildings.len() {
+            if self.buildings[building_idx].parcel_id != 0 {
+                if self.align_building_attachment_to_parcel(building_idx, graph, zoning) {
+                    repaired += 1;
+                }
+                continue;
+            }
+
+            let frontage_center =
+                building_frontage_center(&self.buildings[building_idx], zone_cell_m);
+            if self.frontage_attachment_is_plausible(
+                &self.buildings[building_idx],
+                graph,
+                frontage_center,
+                zone_cell_m,
+            ) {
+                continue;
+            }
+
+            let width_m = self.buildings[building_idx].width_cells as f32 * zone_cell_m;
+            let depth_m = self.buildings[building_idx].depth_cells as f32 * zone_cell_m;
+            let Some(projection) =
+                self.closest_repair_frontage(frontage_center, width_m, depth_m, graph)
+            else {
+                continue;
+            };
+
+            let edge_width = graph.edge(projection.edge_idx).width;
+            let building = &mut self.buildings[building_idx];
+            let changed = building.edge_idx != projection.edge_idx
+                || building.side != projection.side
+                || (building.frontage_t - projection.t).abs() > 0.001;
+            if !changed {
+                continue;
+            }
+            building.edge_idx = projection.edge_idx;
+            building.side = projection.side;
+            building.frontage_t = projection.t;
+            building.side_offset = edge_width * 0.5 + SIDEWALK_WIDTH;
+            repaired += 1;
+        }
+
+        if repaired > 0 {
+            self.dirty = true;
+            self.entrances_dirty = true;
+            self.bump_building_ref_revision();
+            debug_log!(
+                "buildings",
+                "frontage_attachment_repair repaired={}",
+                repaired
+            );
+        }
+        repaired
+    }
+
+    fn align_building_attachment_to_parcel(
+        &mut self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        zoning: &mut ZoningSystem,
+    ) -> bool {
+        let parcel_id = self.buildings[building_idx].parcel_id;
+        let Some(parcel) = zoning.parcel_by_raw_id(parcel_id) else {
+            return false;
+        };
+        let parcel_edge_idx = parcel.edge_idx();
+        let parcel_side = parcel.side();
+        let parcel_frontage_t = parcel.frontage_center_t();
+        let parcel_frontage_m = parcel.frontage_m();
+        let parcel_depth_m = parcel.depth_m();
+        let frontage_center =
+            building_frontage_center(&self.buildings[building_idx], zoning.config.zone_cell_m);
+
+        let mut target_edge_idx = parcel_edge_idx;
+        let mut target_side = parcel_side;
+        let mut target_frontage_t = parcel_frontage_t;
+        let mut repaired_parcel = false;
+
+        if !self.parcel_attachment_is_plausible(
+            graph,
+            parcel_edge_idx,
+            parcel_side,
+            parcel_frontage_t,
+            frontage_center,
+            zoning.config.zone_cell_m,
+        ) {
+            let Some(projection) = self.closest_repair_frontage(
+                frontage_center,
+                parcel_frontage_m,
+                parcel_depth_m,
+                graph,
+            ) else {
+                return false;
+            };
+            if zoning
+                .repair_parcel_attachment(
+                    parcel_id,
+                    projection.edge_idx,
+                    projection.side,
+                    projection.t,
+                    graph,
+                )
+                .is_err()
+            {
+                return false;
+            }
+            target_edge_idx = projection.edge_idx;
+            target_side = projection.side;
+            target_frontage_t = projection.t;
+            repaired_parcel = true;
+        };
+
+        let Some(edge) = graph.get_edge(target_edge_idx) else {
+            return false;
+        };
+
+        let building = &mut self.buildings[building_idx];
+        let changed = building.edge_idx != target_edge_idx
+            || building.side != target_side
+            || (building.frontage_t - target_frontage_t).abs() > 0.001;
+        if !changed {
+            return repaired_parcel;
+        }
+        building.edge_idx = target_edge_idx;
+        building.side = target_side;
+        building.frontage_t = target_frontage_t;
+        building.side_offset = edge.width * 0.5 + SIDEWALK_WIDTH;
+        true
+    }
+
+    fn parcel_attachment_is_plausible(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        side: i8,
+        frontage_t: f32,
+        frontage_center: Vector2,
+        zone_cell_m: f32,
+    ) -> bool {
+        let Some(connection_pos) =
+            Self::road_side_connection_pos(graph, edge_idx, side, frontage_t)
+        else {
+            return false;
+        };
+        let tolerance_m = (zone_cell_m * 2.0).max(FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M);
+        connection_pos.distance_squared_to(frontage_center) <= tolerance_m * tolerance_m
+    }
+
+    fn frontage_attachment_is_plausible(
+        &self,
+        building: &crate::simulation::buildings::allocator::Building,
+        graph: &RegionGraph,
+        frontage_center: Vector2,
+        zone_cell_m: f32,
+    ) -> bool {
+        let Some(connection_pos) = Self::road_side_connection_pos(
+            graph,
+            building.edge_idx,
+            building.side,
+            building.frontage_t,
+        ) else {
+            return false;
+        };
+        let tolerance_m = (zone_cell_m * 2.0).max(FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M);
+        connection_pos.distance_squared_to(frontage_center) <= tolerance_m * tolerance_m
+    }
+
+    fn closest_repair_frontage(
+        &self,
+        frontage_center: Vector2,
+        width_m: f32,
+        depth_m: f32,
+        graph: &RegionGraph,
+    ) -> Option<super::geometry::RoadFrontageProjection> {
+        let search_radius = (width_m * 0.5 + depth_m + FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M)
+            .max(FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M);
+        let mut candidates = graph.get_edges_near_point(
+            Vector3::new(frontage_center.x, 0.0, frontage_center.y),
+            search_radius,
+        );
+        candidates.sort_unstable();
+        candidates.dedup();
+
+        let mut best: Option<super::geometry::RoadFrontageProjection> = None;
+        for edge_idx in candidates {
+            let Some(edge) = graph.get_edge(edge_idx) else {
+                continue;
+            };
+            if edge.deleted
+                || edge.no_building_spawn
+                || edge.physical_geometry.len() < 2
+                || edge.physical_length <= 1e-6
+            {
+                continue;
+            }
+            let Some(projection) =
+                Self::project_point_to_edge_centerline(edge_idx, edge, frontage_center)
+            else {
+                continue;
+            };
+            let Some(connection_pos) =
+                Self::road_side_connection_pos(graph, edge_idx, projection.side, projection.t)
+            else {
+                continue;
+            };
+            let dist_sq = connection_pos.distance_squared_to(frontage_center);
+            if dist_sq > search_radius * search_radius {
+                continue;
+            }
+            let candidate = super::geometry::RoadFrontageProjection {
+                edge_idx,
+                t: projection.t,
+                side: projection.side,
+                dist_sq,
+            };
+            if best.as_ref().is_none_or(|best| {
+                candidate
+                    .dist_sq
+                    .total_cmp(&best.dist_sq)
+                    .then(candidate.edge_idx.cmp(&best.edge_idx))
+                    .is_lt()
+            }) {
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    fn road_side_connection_pos(
+        graph: &RegionGraph,
+        edge_idx: usize,
+        side: i8,
+        edge_t: f32,
+    ) -> Option<Vector2> {
+        let edge = graph.get_edge(edge_idx)?;
+        if edge.deleted || edge.no_building_spawn || edge.physical_geometry.len() < 2 {
+            return None;
+        }
+        let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);
+        let tangent = Self::sample_tangent_on_edge(graph, edge_idx, edge_t);
+        if tangent.length_squared() <= 1e-12 {
+            return None;
+        }
+        let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
+        Some(center + normal * (edge.width * 0.5 + SIDEWALK_WIDTH))
+    }
+}
+
+fn building_frontage_center(
+    building: &crate::simulation::buildings::allocator::Building,
+    zone_cell_m: f32,
+) -> Vector2 {
+    let center = Vector2::new(building.center_x, building.center_y);
+    let facing = if building.facing_dir.length_squared() > 1e-12 {
+        building.facing_dir.normalized()
+    } else {
+        Vector2::ZERO
+    };
+    center + facing * (building.depth_cells as f32 * zone_cell_m * 0.5)
 }
 
 impl BuildingAllocator {
