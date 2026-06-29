@@ -66,6 +66,8 @@ pub(crate) enum DemandSpawnPlacementRejection {
     FrontageRoadSurfaceMissing,
     /// The selected flat-site height conflicts with an already placed neighboring site.
     NeighborSiteHeightConflict,
+    /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
+    SiteSupportTieInInvalid,
 }
 
 /// Final allocator-side reason an explicit service placement could not be committed.
@@ -89,6 +91,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     FrontageRoadSurfaceMissing,
     /// The selected flat-site height conflicts with an already placed neighboring site.
     NeighborSiteHeightConflict,
+    /// The flat support footprint cannot tie into surrounding terrain or roads within slope limits.
+    SiteSupportTieInInvalid,
     /// The selected footprint overlaps an existing building site.
     SiteOverlap,
 }

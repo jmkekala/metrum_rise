@@ -168,7 +168,7 @@ impl TransitNetwork {
         allocator.clear();
     }
 
-    /// Adds a new road segment to the network, handling snapping, smoothing, and subdivision.
+    /// Adds a new road segment to the network from pre-prepared physical geometry.
     pub fn add_road(
         &mut self,
         graph: &mut RegionGraph,
@@ -179,42 +179,37 @@ impl TransitNetwork {
         zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
-        // 1. Simplify points using the same threshold shared with preview compilation.
-        let mut simplified_points = RoadSurfaceSystem::simplify_road_input_points(&points);
-
-        let count = simplified_points.len();
+        let mut physical_points = points;
+        let count = physical_points.len();
         if count < 2 {
             return;
         }
 
         // Robust Snapping
         let start_id = graph.find_or_add_node(
-            simplified_points[0],
+            physical_points[0],
             config::SNAP_TOLERANCE,
             NodeType::Junction,
         );
         let end_id = graph.find_or_add_node(
-            simplified_points[count - 1],
+            physical_points[count - 1],
             config::SNAP_TOLERANCE,
             NodeType::Junction,
         );
 
         // Snap geometry to nodes
-        simplified_points[0] = graph.node(start_id).pos;
-        simplified_points[count - 1] = graph.node(end_id).pos;
+        physical_points[0] = graph.node(start_id).pos;
+        physical_points[count - 1] = graph.node(end_id).pos;
 
-        // 2. Apply the same Taubin height-smoothing pass shared with preview compilation.
-        RoadSurfaceSystem::taubin_smooth_road_heights(&mut simplified_points);
-
-        // 3. Create a single edge from start to end with the full simplified geometry.
+        // Create a single edge from start to end with the solved dense physical profile.
         {
-            let last_idx = simplified_points.len() - 1;
-            simplified_points[last_idx] = graph.node(end_id).pos;
+            let last_idx = physical_points.len() - 1;
+            physical_points[last_idx] = graph.node(end_id).pos;
             self.create_edge_internal(
                 graph,
                 start_id,
                 end_id,
-                simplified_points,
+                physical_points,
                 fwd_lanes,
                 bkw_lanes,
                 class,
@@ -494,6 +489,9 @@ impl TransitNetwork {
 
         for &index in &to_remove {
             graph.edges[index].deleted = true;
+        }
+        if !to_remove.is_empty() {
+            graph.rebuild_adjacency_list();
         }
     }
 }

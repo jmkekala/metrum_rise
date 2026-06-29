@@ -648,6 +648,13 @@ impl TerrainSystem {
         &self.dirty_render_patches
     }
 
+    /// Marks one render patch dirty if it exists on the terrain patch grid.
+    pub(crate) fn mark_render_patch_dirty(&mut self, patch_x: usize, patch_z: usize) {
+        if patch_x < self.render_patch_cols() && patch_z < self.render_patch_rows() {
+            self.dirty_render_patches.insert((patch_x, patch_z));
+        }
+    }
+
     /// Returns the render-patch keys whose sample bounds overlap the given world-space rectangle.
     pub(crate) fn render_patch_keys_for_world_bounds(
         &self,

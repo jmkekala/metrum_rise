@@ -74,6 +74,8 @@ pub(crate) struct DemandSpawnPlacementRejectionCounts {
     pub(crate) frontage_road_surface_missing: usize,
     /// The selected flat-site height conflicted with an existing neighboring site.
     pub(crate) neighbor_site_height_conflict: usize,
+    /// The flat support footprint could not tie into terrain/roads within slope limits.
+    pub(crate) site_support_tie_in_invalid: usize,
 }
 
 impl DemandBuildingActionExecution {
@@ -108,6 +110,9 @@ impl DemandSpawnPlacementRejectionCounts {
             DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
                 self.neighbor_site_height_conflict += 1;
             }
+            DemandSpawnPlacementRejection::SiteSupportTieInInvalid => {
+                self.site_support_tie_in_invalid += 1;
+            }
         }
     }
 
@@ -120,6 +125,7 @@ impl DemandSpawnPlacementRejectionCounts {
             + self.driveway_connection_missing
             + self.frontage_road_surface_missing
             + self.neighbor_site_height_conflict
+            + self.site_support_tie_in_invalid
     }
 
     pub(crate) fn geometry_total(self) -> usize {

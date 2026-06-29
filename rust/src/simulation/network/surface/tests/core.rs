@@ -50,18 +50,52 @@ fn hill_crossing_input_stays_standard_instead_of_auto_tunnel() {
         ),
     ];
 
-    let (grounded_points, class) =
-        RoadSurfaceSystem::classify_and_ground_road_points(&raw_points, &terrain);
+    let (prepared_points, class) =
+        RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
 
     assert_eq!(class, EdgeClass::Standard);
-    for point in grounded_points {
+    assert!(
+        prepared_points.len() > raw_points.len(),
+        "standard road preparation should densify long alignment spans"
+    );
+    let first_terrain_y = terrain.sample_height_world(prepared_points[0].x, prepared_points[0].z)
+        * crate::config::HEIGHT_SCALE;
+    let last = prepared_points.last().unwrap();
+    let last_terrain_y = terrain.sample_height_world(last.x, last.z) * crate::config::HEIGHT_SCALE;
+    assert!((prepared_points[0].y - first_terrain_y).abs() <= 0.001);
+    assert!((last.y - last_terrain_y).abs() <= 0.001);
+}
+
+#[test]
+fn two_point_standard_input_densifies_against_open_terrain() {
+    let terrain = planar_world_terrain(97, 33, 1.0, 0.0, 0.04, 0.0);
+    let raw_points = vec![
+        Vector3::new(
+            -24.0,
+            terrain.sample_height_world(-24.0, 0.0) * crate::config::HEIGHT_SCALE + 0.2,
+            0.0,
+        ),
+        Vector3::new(
+            24.0,
+            terrain.sample_height_world(24.0, 0.0) * crate::config::HEIGHT_SCALE + 0.2,
+            0.0,
+        ),
+    ];
+
+    let (prepared_points, class) =
+        RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
+
+    assert_eq!(class, EdgeClass::Standard);
+    assert!(
+        prepared_points.len() > 2,
+        "long two-point road strokes must become dense physical geometry"
+    );
+    for point in prepared_points {
         let terrain_y = terrain.sample_height_world(point.x, point.z) * crate::config::HEIGHT_SCALE;
         assert!(
-            (point.y - terrain_y).abs() <= 0.001,
-            "standard grounding should snap to terrain at x={:.2}: point_y={:.3} terrain_y={:.3}",
-            point.x,
-            point.y,
-            terrain_y
+            (point.y - terrain_y).abs() <= 0.05,
+            "solved road profile should stay on a gentle source-terrain slope: point={:.3} terrain={terrain_y:.3}",
+            point.y
         );
     }
 }
@@ -75,8 +109,7 @@ fn uniformly_submerged_input_stays_auto_tunnel() {
         Vector3::new(10.0, -2.5, 0.0),
     ];
 
-    let (_points, class) =
-        RoadSurfaceSystem::classify_and_ground_road_points(&raw_points, &terrain);
+    let (_points, class) = RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
     assert_eq!(class, EdgeClass::Tunnel);
 }
 
@@ -89,8 +122,7 @@ fn uniformly_elevated_input_stays_auto_bridge() {
         Vector3::new(10.0, 2.5, 0.0),
     ];
 
-    let (_points, class) =
-        RoadSurfaceSystem::classify_and_ground_road_points(&raw_points, &terrain);
+    let (_points, class) = RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
     assert_eq!(class, EdgeClass::Bridge);
 }
 

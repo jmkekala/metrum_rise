@@ -127,9 +127,7 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
     build_road_touched_terrain_patch,
 };
-use crate::simulation::terrain::{
-    TerrainPatchSnapshot, TerrainSystem, terrain_cdt_local_sample_margin_m,
-};
+use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
 use crate::simulation::water::{WaterPatchSnapshot, WaterSystem};
 use crate::simulation::zoning::ZoningSystem;
 
@@ -217,6 +215,9 @@ struct TerrainCdtTriangleBufferExport {
     indices: Vec<i32>,
     face_sources: TerrainCdtSourceExport,
     emitted_faces: usize,
+    max_face_y_delta_m: f32,
+    max_face_slope_ratio: f32,
+    longest_triangle_edge_m: f32,
 }
 
 impl TerrainCdtTriangleBufferExport {
@@ -228,8 +229,17 @@ impl TerrainCdtTriangleBufferExport {
             indices: Vec::new(),
             face_sources: TerrainCdtSourceExport::default(),
             emitted_faces: 0,
+            max_face_y_delta_m: 0.0,
+            max_face_slope_ratio: 0.0,
+            longest_triangle_edge_m: 0.0,
         }
     }
+}
+
+struct TerrainCdtMeshBufferSummary {
+    max_face_y_delta_m: f32,
+    max_face_slope_ratio: f32,
+    longest_triangle_edge_m: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -697,12 +707,30 @@ impl SimulationNode {
         core.transit_network
             .road_surface
             .compile_dirty(&core.region_graph, &core.heightmap);
+        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            &core.heightmap,
+            render_step_m,
+        );
+        let road_locked_patch_margins = core
+            .transit_network
+            .road_surface
+            .terrain_render_patch_grading_margins_for_visible_roads(
+                &core.region_graph,
+                &core.heightmap,
+                render_step_m,
+            );
+        let request_key = (request.key.patch_x, request.key.patch_z);
+        let road_locked_margin_m = road_locked_patch_margins
+            .get(&request_key)
+            .copied()
+            .unwrap_or(site_margin_m)
+            .max(site_margin_m);
         let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,
-            base_patch.world_origin_x,
-            base_patch.world_origin_z,
-            base_patch.world_origin_x + base_patch.world_size_x,
-            base_patch.world_origin_z + base_patch.world_size_z,
+            base_patch.world_origin_x - road_locked_margin_m,
+            base_patch.world_origin_z - road_locked_margin_m,
+            base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
+            base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
         );
         let previous = core.refined_terrain_patch_cache.get(&cache_key);
         let windows = Self::terrain_cdt_window_build_inputs(
@@ -1237,6 +1265,10 @@ impl SimulationNode {
             f64::from(stats.max_face_slope_ratio),
         );
         dict.set(
+            "terrain_cdt_longest_triangle_edge_m",
+            f64::from(stats.longest_triangle_edge_m),
+        );
+        dict.set(
             "terrain_cdt_road_seam_faces",
             i64::try_from(stats.road_seam_faces).unwrap_or(0),
         );
@@ -1314,6 +1346,7 @@ impl SimulationNode {
             invalid_constraint_edges: 0,
             max_face_y_delta_m: 0.0,
             max_face_slope_ratio: 0.0,
+            longest_triangle_edge_m: 0.0,
             road_seam_faces: 0,
             road_seam_max_y_delta_m: 0.0,
             road_seam_max_slope_ratio: 0.0,
@@ -1348,6 +1381,9 @@ impl SimulationNode {
             aggregate.max_face_slope_ratio = aggregate
                 .max_face_slope_ratio
                 .max(stats.max_face_slope_ratio);
+            aggregate.longest_triangle_edge_m = aggregate
+                .longest_triangle_edge_m
+                .max(stats.longest_triangle_edge_m);
             aggregate.road_seam_faces += stats.road_seam_faces;
             aggregate.road_seam_max_y_delta_m = aggregate
                 .road_seam_max_y_delta_m
@@ -1435,6 +1471,15 @@ impl SimulationNode {
         let retaining_indices = retaining_buffers.indices.len();
         let terrain_emitted_faces = terrain_buffers.emitted_faces;
         let retaining_emitted_faces = retaining_buffers.emitted_faces;
+        let final_max_face_y_delta_m = terrain_buffers
+            .max_face_y_delta_m
+            .max(retaining_buffers.max_face_y_delta_m);
+        let final_max_face_slope_ratio = terrain_buffers
+            .max_face_slope_ratio
+            .max(retaining_buffers.max_face_slope_ratio);
+        let final_longest_triangle_edge_m = terrain_buffers
+            .longest_triangle_edge_m
+            .max(retaining_buffers.longest_triangle_edge_m);
 
         let dict_start = road_debug.then(Instant::now);
         dict.set(
@@ -1444,6 +1489,18 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_retaining_wall_emitted_faces",
             i64::try_from(retaining_emitted_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_max_face_y_delta_m",
+            f64::from(final_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_max_face_slope_ratio",
+            f64::from(final_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_longest_triangle_edge_m",
+            f64::from(final_longest_triangle_edge_m),
         );
         dict.set(
             "terrain_mesh_vertices",
@@ -1497,7 +1554,7 @@ impl SimulationNode {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_cdt_window_mesh_buffers key=({},{}) include_debug={} windows={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} terrain_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                "terrain_cdt_window_mesh_buffers key=({},{}) include_debug={} windows={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
                 patch.patch_x,
                 patch.patch_z,
                 include_debug,
@@ -1508,6 +1565,9 @@ impl SimulationNode {
                 retaining_vertices,
                 retaining_indices,
                 retaining_emitted_faces,
+                final_max_face_y_delta_m,
+                final_max_face_slope_ratio,
+                final_longest_triangle_edge_m,
                 terrain_buffer_ms,
                 dict_ms,
                 total_start
@@ -1515,6 +1575,58 @@ impl SimulationNode {
                     .unwrap_or(0.0)
             );
         }
+    }
+
+    fn terrain_cdt_window_final_buffer_stats(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        windows: &[(
+            &CachedRefinedTerrainCdtWindow,
+            &crate::simulation::terrain::cdt::TerrainCdtMesh,
+        )],
+        boundary_step_m: f32,
+    ) -> (f32, f32, f32) {
+        let mut terrain_buffers = TerrainCdtTriangleBufferExport::empty();
+        let mut retaining_buffers = TerrainCdtTriangleBufferExport::empty();
+        let mut cdt_windows = Vec::with_capacity(windows.len());
+        for (window, mesh) in windows {
+            let window_terrain_buffers = Self::terrain_cdt_triangle_buffers(
+                patch,
+                &mesh.vertices,
+                &mesh.triangles,
+                &mesh.terrain_triangle_sources,
+                false,
+            );
+            Self::append_triangle_buffer_export(&mut terrain_buffers, window_terrain_buffers);
+            let window_retaining_buffers = Self::terrain_cdt_triangle_buffers(
+                patch,
+                &mesh.vertices,
+                &mesh.retaining_wall_triangles,
+                &mesh.retaining_wall_triangle_sources,
+                false,
+            );
+            Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
+            if let Some(bounds) =
+                Self::terrain_cdt_window_bounds(patch, window.cdt_patch, boundary_step_m)
+            {
+                cdt_windows.push(bounds);
+            }
+        }
+        Self::append_regular_terrain_mesh_outside_cdt_windows(
+            &mut terrain_buffers,
+            patch,
+            &cdt_windows,
+        );
+        (
+            terrain_buffers
+                .max_face_y_delta_m
+                .max(retaining_buffers.max_face_y_delta_m),
+            terrain_buffers
+                .max_face_slope_ratio
+                .max(retaining_buffers.max_face_slope_ratio),
+            terrain_buffers
+                .longest_triangle_edge_m
+                .max(retaining_buffers.longest_triangle_edge_m),
+        )
     }
 
     fn append_road_clip_loops_for_bounds(
@@ -1759,7 +1871,7 @@ impl SimulationNode {
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
                 let mesh_export_start = road_debug.then(Instant::now);
-                Self::append_cdt_mesh_buffers(
+                let mesh_buffer_summary = Self::append_cdt_mesh_buffers(
                     dict,
                     patch,
                     cdt_patch,
@@ -1773,7 +1885,7 @@ impl SimulationNode {
                 if road_debug {
                     debug_log!(
                         "road",
-                        "terrain_cdt key=({},{}) include_debug={} status={} input_vertices={} road_loops={} source_samples={} constraints={} accepted_faces={} cdt_ms={:.3} metadata_ms={:.3} debug_sidecars_ms={:.3} mesh_export_ms={:.3} total_ms={:.3}",
+                        "terrain_cdt key=({},{}) include_debug={} status={} input_vertices={} road_loops={} source_samples={} constraints={} accepted_faces={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3} metadata_ms={:.3} debug_sidecars_ms={:.3} mesh_export_ms={:.3} total_ms={:.3}",
                         patch.patch_x,
                         patch.patch_z,
                         include_debug,
@@ -1783,6 +1895,11 @@ impl SimulationNode {
                         input_source_samples,
                         mesh.stats.constraint_edges,
                         mesh.stats.accepted_faces,
+                        mesh_buffer_summary.max_face_y_delta_m,
+                        mesh_buffer_summary.max_face_slope_ratio,
+                        mesh.stats.tie_in_widened_source_samples,
+                        mesh.stats.retaining_wall_faces,
+                        mesh_buffer_summary.longest_triangle_edge_m,
                         cdt_ms,
                         metadata_ms,
                         debug_sidecars_ms,
@@ -1848,6 +1965,7 @@ impl SimulationNode {
         dict.set("terrain_cdt_retaining_wall_emitted_faces", 0i64);
         dict.set("terrain_cdt_max_face_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_max_face_slope_ratio", 0.0f64);
+        dict.set("terrain_cdt_longest_triangle_edge_m", 0.0f64);
         dict.set("terrain_cdt_road_seam_faces", 0i64);
         dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
@@ -2479,7 +2597,11 @@ impl SimulationNode {
             return None;
         }
 
-        let margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        let margin_m = RoadSurfaceSystem::terrain_cdt_required_grading_margin_m(
+            terrain,
+            road_loops,
+            render_step_m,
+        );
         let patch_min_x = patch.world_origin_x;
         let patch_min_z = patch.world_origin_z;
         let patch_max_x = patch.world_origin_x + patch.world_size_x;
@@ -2659,7 +2781,7 @@ impl SimulationNode {
         mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
         boundary_step_m: f32,
         include_debug: bool,
-    ) {
+    ) -> TerrainCdtMeshBufferSummary {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let terrain_buffer_start = road_debug.then(Instant::now);
@@ -2698,6 +2820,15 @@ impl SimulationNode {
         let retaining_indices = retaining_buffers.indices.len();
         let terrain_emitted_faces = terrain_buffers.emitted_faces;
         let retaining_emitted_faces = retaining_buffers.emitted_faces;
+        let final_max_face_y_delta_m = terrain_buffers
+            .max_face_y_delta_m
+            .max(retaining_buffers.max_face_y_delta_m);
+        let final_max_face_slope_ratio = terrain_buffers
+            .max_face_slope_ratio
+            .max(retaining_buffers.max_face_slope_ratio);
+        let final_longest_triangle_edge_m = terrain_buffers
+            .longest_triangle_edge_m
+            .max(retaining_buffers.longest_triangle_edge_m);
 
         let dict_start = road_debug.then(Instant::now);
         dict.set(
@@ -2707,6 +2838,18 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_retaining_wall_emitted_faces",
             i64::try_from(retaining_emitted_faces).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_max_face_y_delta_m",
+            f64::from(final_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_max_face_slope_ratio",
+            f64::from(final_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_longest_triangle_edge_m",
+            f64::from(final_longest_triangle_edge_m),
         );
         dict.set(
             "terrain_mesh_vertices",
@@ -2760,7 +2903,7 @@ impl SimulationNode {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_cdt_mesh_buffers key=({},{}) include_debug={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} terrain_buffer_ms={:.3} retaining_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                "terrain_cdt_mesh_buffers key=({},{}) include_debug={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} retaining_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
                 patch.patch_x,
                 patch.patch_z,
                 include_debug,
@@ -2770,6 +2913,9 @@ impl SimulationNode {
                 retaining_vertices,
                 retaining_indices,
                 retaining_emitted_faces,
+                final_max_face_y_delta_m,
+                final_max_face_slope_ratio,
+                final_longest_triangle_edge_m,
                 terrain_buffer_ms,
                 retaining_buffer_ms,
                 dict_ms,
@@ -2777,6 +2923,11 @@ impl SimulationNode {
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
             );
+        }
+        TerrainCdtMeshBufferSummary {
+            max_face_y_delta_m: final_max_face_y_delta_m,
+            max_face_slope_ratio: final_max_face_slope_ratio,
+            longest_triangle_edge_m: final_longest_triangle_edge_m,
         }
     }
 
@@ -2801,6 +2952,9 @@ impl SimulationNode {
         let mut vertex_remap = vec![usize::MAX; vertices_source.len()];
         let mut source_export = TerrainCdtSourceExport::with_sample_capacity(triangles.len());
         let mut emitted_faces = 0usize;
+        let mut max_face_y_delta_m = 0.0_f32;
+        let mut max_face_slope_ratio = 0.0_f32;
+        let mut longest_triangle_edge_m = 0.0_f32;
 
         for (triangle_index, triangle) in triangles.iter().enumerate() {
             let mut source_indices = *triangle;
@@ -2819,6 +2973,11 @@ impl SimulationNode {
                 raw_normal = (points[1] - points[0]).cross(points[2] - points[0]);
             }
             let normal = raw_normal.normalized();
+            let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
+                Self::terrain_buffer_triangle_metrics(points);
+            max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
+            max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
+            longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
             emitted_faces += 1;
             if include_debug {
                 let triangle_face_sources = triangle_sources
@@ -2865,6 +3024,9 @@ impl SimulationNode {
             indices,
             face_sources: source_export,
             emitted_faces,
+            max_face_y_delta_m,
+            max_face_slope_ratio,
+            longest_triangle_edge_m,
         }
     }
 
@@ -2928,6 +3090,11 @@ impl SimulationNode {
             .s_ranges
             .extend(source.face_sources.s_ranges);
         target.emitted_faces += source.emitted_faces;
+        target.max_face_y_delta_m = target.max_face_y_delta_m.max(source.max_face_y_delta_m);
+        target.max_face_slope_ratio = target.max_face_slope_ratio.max(source.max_face_slope_ratio);
+        target.longest_triangle_edge_m = target
+            .longest_triangle_edge_m
+            .max(source.longest_triangle_edge_m);
     }
 
     fn append_regular_terrain_mesh_outside_cdt_patch(
@@ -3196,6 +3363,11 @@ impl SimulationNode {
             return;
         }
         let normal = normal.normalized();
+        let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
+            Self::terrain_buffer_triangle_metrics(points);
+        export.max_face_y_delta_m = export.max_face_y_delta_m.max(face_y_delta_m);
+        export.max_face_slope_ratio = export.max_face_slope_ratio.max(face_slope_ratio);
+        export.longest_triangle_edge_m = export.longest_triangle_edge_m.max(face_longest_edge_m);
         for index in triangle {
             export.normals[index] = export.normals[index] + normal;
             export
@@ -3204,6 +3376,38 @@ impl SimulationNode {
         }
         export.emitted_faces += 1;
         export.face_sources.push_sources(&[]);
+    }
+
+    fn terrain_buffer_triangle_metrics(points: [Vector3; 3]) -> (f32, f32, f32) {
+        let max_y_delta_m = (points[1].y - points[0].y)
+            .abs()
+            .max((points[2].y - points[1].y).abs())
+            .max((points[0].y - points[2].y).abs());
+        let longest_edge_m = Self::terrain_buffer_edge_length_xz(points[0], points[1])
+            .max(Self::terrain_buffer_edge_length_xz(points[1], points[2]))
+            .max(Self::terrain_buffer_edge_length_xz(points[2], points[0]));
+        let slope_ratio = Self::terrain_buffer_triangle_plane_slope_ratio(points);
+        (max_y_delta_m, slope_ratio, longest_edge_m)
+    }
+
+    fn terrain_buffer_edge_length_xz(a: Vector3, b: Vector3) -> f32 {
+        let dx = b.x - a.x;
+        let dz = b.z - a.z;
+        (dx * dx + dz * dz).sqrt()
+    }
+
+    fn terrain_buffer_triangle_plane_slope_ratio(points: [Vector3; 3]) -> f32 {
+        let a = points[1] - points[0];
+        let b = points[2] - points[0];
+        let normal = a.cross(b);
+        let horizontal_normal = (normal.x * normal.x + normal.z * normal.z).sqrt();
+        if horizontal_normal <= 0.000_001 {
+            return 0.0;
+        }
+        if normal.y.abs() <= 0.000_001 {
+            return 1_000_000.0;
+        }
+        horizontal_normal / normal.y.abs()
     }
 
     fn append_cdt_road_seam_face_samples(
@@ -4819,6 +5023,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::NeighborSiteHeightConflict => {
                 "building site height conflicts with a neighbor"
             }
+            ExplicitServicePlacementRejection::SiteSupportTieInInvalid => {
+                "building site cannot tie into surrounding terrain"
+            }
             ExplicitServicePlacementRejection::SiteOverlap => {
                 "building footprint overlaps an existing site"
             }
@@ -4905,8 +5112,12 @@ impl SimulationNode {
                     ));
                 }
                 let mut dict = VarDictionary::new();
-                dict.set("valid", true);
-                dict.set("error", GString::new());
+                dict.set("valid", preview.valid);
+                let error = preview
+                    .rejection
+                    .map(Self::service_placement_error_message)
+                    .unwrap_or("");
+                dict.set("error", GString::from(error));
                 dict.set("corners", corners);
                 dict.set("support_height_m", f64::from(preview.support_height_m));
                 dict
@@ -6143,11 +6354,28 @@ impl SimulationNode {
         if road_debug {
             debug_log!(
                 "road",
-                "preview_surface_immediate points={} prepared_points={} surface_vertices={} valid={} clone_ms={:.3} compile_ms={:.3} total_ms={:.3}",
+                "preview_surface_immediate points={} prepared_points={} surface_vertices={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) run={:.3} dy={:.3} span_y=({:.3},{:.3}) span_terrain=({:.3},{:.3}) span_delta=({:.3},{:.3}) endpoint_snap=({},{}) endpoint_delta=({:.3},{:.3}) clone_ms={:.3} compile_ms={:.3} total_ms={:.3}",
                 point_count,
                 preview.prepared_points.len(),
                 preview.surface_vertices.len(),
                 preview.is_valid,
+                preview.validation.invalid_reason,
+                preview.validation.max_grade,
+                preview.validation.allowed_grade,
+                preview.validation.offending_span_start_m,
+                preview.validation.offending_span_end_m,
+                preview.validation.offending_span_run_m,
+                preview.validation.offending_span_height_delta_m,
+                preview.validation.offending_span_start_height_m,
+                preview.validation.offending_span_end_height_m,
+                preview.validation.offending_span_start_terrain_height_m,
+                preview.validation.offending_span_end_terrain_height_m,
+                preview.validation.offending_span_start_support_delta_m,
+                preview.validation.offending_span_end_support_delta_m,
+                preview.validation.start_endpoint_snapped_node_id,
+                preview.validation.end_endpoint_snapped_node_id,
+                preview.validation.start_endpoint_support_delta_m,
+                preview.validation.end_endpoint_support_delta_m,
                 clone_ms,
                 compile_ms,
                 total_start
@@ -6190,6 +6418,86 @@ impl SimulationNode {
             PackedVector3Array::from_iter(preview.surface_vertices.iter().copied()),
         );
         dict.set("is_valid", preview.is_valid);
+        dict.set("invalid_reason", preview.validation.invalid_reason);
+        dict.set("max_grade", preview.validation.max_grade);
+        dict.set("allowed_grade", preview.validation.allowed_grade);
+        dict.set(
+            "offending_span_start_m",
+            preview.validation.offending_span_start_m,
+        );
+        dict.set(
+            "offending_span_end_m",
+            preview.validation.offending_span_end_m,
+        );
+        dict.set(
+            "offending_span_run_m",
+            preview.validation.offending_span_run_m,
+        );
+        dict.set(
+            "offending_span_height_delta_m",
+            preview.validation.offending_span_height_delta_m,
+        );
+        dict.set(
+            "offending_span_start_height_m",
+            preview.validation.offending_span_start_height_m,
+        );
+        dict.set(
+            "offending_span_end_height_m",
+            preview.validation.offending_span_end_height_m,
+        );
+        dict.set(
+            "offending_span_start_terrain_height_m",
+            preview.validation.offending_span_start_terrain_height_m,
+        );
+        dict.set(
+            "offending_span_end_terrain_height_m",
+            preview.validation.offending_span_end_terrain_height_m,
+        );
+        dict.set(
+            "offending_span_start_support_delta_m",
+            preview.validation.offending_span_start_support_delta_m,
+        );
+        dict.set(
+            "offending_span_end_support_delta_m",
+            preview.validation.offending_span_end_support_delta_m,
+        );
+        dict.set(
+            "start_endpoint_snapped_node_id",
+            preview.validation.start_endpoint_snapped_node_id,
+        );
+        dict.set(
+            "end_endpoint_snapped_node_id",
+            preview.validation.end_endpoint_snapped_node_id,
+        );
+        dict.set(
+            "start_endpoint_height_m",
+            preview.validation.start_endpoint_height_m,
+        );
+        dict.set(
+            "end_endpoint_height_m",
+            preview.validation.end_endpoint_height_m,
+        );
+        dict.set(
+            "start_endpoint_terrain_height_m",
+            preview.validation.start_endpoint_terrain_height_m,
+        );
+        dict.set(
+            "end_endpoint_terrain_height_m",
+            preview.validation.end_endpoint_terrain_height_m,
+        );
+        dict.set(
+            "start_endpoint_support_delta_m",
+            preview.validation.start_endpoint_support_delta_m,
+        );
+        dict.set(
+            "end_endpoint_support_delta_m",
+            preview.validation.end_endpoint_support_delta_m,
+        );
+        dict.set("clearance_m", preview.validation.clearance_m);
+        dict.set(
+            "required_clearance_m",
+            preview.validation.required_clearance_m,
+        );
         dict.to_variant()
     }
 
@@ -7328,6 +7636,69 @@ impl SimCore {
     ) -> Vec<RefinedTerrainPatchBuildInput> {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let road_locked_start = road_debug.then(Instant::now);
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        let max_road_locked_margin_m = self
+            .transit_network
+            .road_surface
+            .terrain_cdt_required_grading_margin_for_visible_roads(
+                &self.region_graph,
+                &self.heightmap,
+                safe_render_step_m,
+            );
+        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            &self.heightmap,
+            safe_render_step_m,
+        );
+        let mut road_locked_patch_margins = self
+            .transit_network
+            .road_surface
+            .terrain_render_patch_grading_margins_for_visible_roads(
+                &self.region_graph,
+                &self.heightmap,
+                safe_render_step_m,
+            );
+        for key in self
+            .allocator
+            .terrain_render_patch_keys_with_building_site_margin(&self.heightmap, site_margin_m)
+        {
+            road_locked_patch_margins
+                .entry(key)
+                .and_modify(|existing| *existing = existing.max(site_margin_m))
+                .or_insert(site_margin_m);
+        }
+        let mut road_locked_key_vec = road_locked_patch_margins
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        road_locked_key_vec.sort_unstable();
+        road_locked_key_vec.dedup();
+        let old_road_locked_keys: HashSet<(usize, usize)> = self
+            .road_locked_terrain_patch_keys
+            .iter()
+            .copied()
+            .collect();
+        let road_locked_keys: HashSet<(usize, usize)> =
+            road_locked_key_vec.iter().copied().collect();
+        let mut road_locked_changed_patches = 0usize;
+        for key in old_road_locked_keys.symmetric_difference(&road_locked_keys) {
+            self.heightmap.mark_render_patch_dirty(key.0, key.1);
+            self.refined_terrain_patch_cache
+                .remove(&SimulationNode::refined_patch_cache_key(
+                    key.0,
+                    key.1,
+                    safe_render_step_m,
+                ));
+            road_locked_changed_patches += 1;
+        }
+        self.road_locked_terrain_patch_keys = road_locked_key_vec;
+        let road_locked_ms = road_locked_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+
         let dirty_patches: Vec<(usize, usize)> = self
             .heightmap
             .dirty_render_patches()
@@ -7338,37 +7709,6 @@ impl SimCore {
             return Vec::new();
         }
 
-        let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let road_locked_margin_m =
-            terrain_cdt_local_sample_margin_m(&self.heightmap, safe_render_step_m);
-        let road_locked_start = road_debug.then(Instant::now);
-        self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
-        let mut road_locked_key_vec = self
-            .transit_network
-            .road_surface
-            .terrain_render_patch_keys_with_visible_road_margin(
-                &self.region_graph,
-                &self.heightmap,
-                road_locked_margin_m,
-            );
-        road_locked_key_vec.extend(
-            self.allocator
-                .terrain_render_patch_keys_with_building_site_margin(
-                    &self.heightmap,
-                    road_locked_margin_m,
-                ),
-        );
-        road_locked_key_vec.sort_unstable();
-        road_locked_key_vec.dedup();
-        let road_locked_keys: HashSet<(usize, usize)> =
-            road_locked_key_vec.iter().copied().collect();
-        self.road_locked_terrain_patch_keys = road_locked_key_vec;
-        let road_locked_ms = road_locked_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-
         let mut inputs = Vec::new();
         for (patch_x, patch_z) in dirty_patches.iter().copied() {
             if !road_locked_keys.contains(&(patch_x, patch_z)) {
@@ -7377,12 +7717,17 @@ impl SimCore {
             let Some(base_patch) = self.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
                 continue;
             };
+            let patch_margin_m = road_locked_patch_margins
+                .get(&(patch_x, patch_z))
+                .copied()
+                .unwrap_or(site_margin_m)
+                .max(site_margin_m);
             let road_clip_query = SimulationNode::road_clip_loop_query_for_bounds(
                 self,
-                base_patch.world_origin_x - road_locked_margin_m,
-                base_patch.world_origin_z - road_locked_margin_m,
-                base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
-                base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
+                base_patch.world_origin_x - patch_margin_m,
+                base_patch.world_origin_z - patch_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + patch_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
             );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
             let previous = self.refined_terrain_patch_cache.get(&key);
@@ -7410,11 +7755,13 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "refined_patch_precompute_inputs dirty_patches={} road_locked_patches={} inputs={} road_locked_margin_m={:.3} road_locked_ms={:.3} total_ms={:.3}",
+                "refined_patch_precompute_inputs dirty_patches={} road_locked_patches={} changed_locked_patches={} inputs={} max_road_locked_margin_m={:.3} site_margin_m={:.3} road_locked_ms={:.3} total_ms={:.3}",
                 dirty_patches.len(),
                 road_locked_keys.len(),
+                road_locked_changed_patches,
                 inputs.len(),
-                road_locked_margin_m,
+                max_road_locked_margin_m,
+                site_margin_m,
                 road_locked_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -7512,9 +7859,41 @@ impl SimCore {
                 } else {
                     "ok"
                 };
+                let mut max_face_y_delta_m = 0.0_f32;
+                let mut max_face_slope_ratio = 0.0_f32;
+                let mut longest_triangle_edge_m = 0.0_f32;
+                let mut tie_in_widened_source_samples = 0usize;
+                let mut retaining_wall_faces = 0usize;
+                let successful_windows = entry
+                    .windows
+                    .iter()
+                    .filter_map(|window| {
+                        window.mesh_result.as_ref().ok().map(|mesh| (window, mesh))
+                    })
+                    .collect::<Vec<_>>();
+                for (_, mesh) in &successful_windows {
+                    max_face_y_delta_m = max_face_y_delta_m.max(mesh.stats.max_face_y_delta_m);
+                    max_face_slope_ratio =
+                        max_face_slope_ratio.max(mesh.stats.max_face_slope_ratio);
+                    longest_triangle_edge_m =
+                        longest_triangle_edge_m.max(mesh.stats.longest_triangle_edge_m);
+                    tie_in_widened_source_samples += mesh.stats.tie_in_widened_source_samples;
+                    retaining_wall_faces += mesh.stats.retaining_wall_faces;
+                }
+                if !successful_windows.is_empty() {
+                    (
+                        max_face_y_delta_m,
+                        max_face_slope_ratio,
+                        longest_triangle_edge_m,
+                    ) = SimulationNode::terrain_cdt_window_final_buffer_stats(
+                        &entry.patch,
+                        &successful_windows,
+                        (entry.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
+                    );
+                }
                 debug_log!(
                     "road",
-                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} reused_windows={} road_loops={} source_samples={} cdt_ms={:.3}",
+                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} reused_windows={} road_loops={} source_samples={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3}",
                     entry.key.patch_x,
                     entry.key.patch_z,
                     entry.key.render_step_mm,
@@ -7523,6 +7902,11 @@ impl SimCore {
                     entry.reused_windows,
                     entry.input_road_loops,
                     entry.input_source_samples,
+                    max_face_y_delta_m,
+                    max_face_slope_ratio,
+                    tie_in_widened_source_samples,
+                    retaining_wall_faces,
+                    longest_triangle_edge_m,
                     entry.cdt_ms
                 );
             }
@@ -7687,6 +8071,42 @@ mod tests {
         assert_eq!(export.face_sources.primary_ids, vec![123, 77]);
         assert_eq!(export.face_sources.section_ranges, vec![2, 5, -1, -1]);
         assert_eq!(export.face_sources.s_ranges, vec![10.5, 14.0, -1.0, -1.0]);
+    }
+
+    #[test]
+    fn terrain_cdt_triangle_buffer_stats_measure_emitted_faces() {
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(4.0, 2.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 3.0),
+            ],
+            &[[0, 1, 2]],
+            &[Vec::new()],
+            false,
+        );
+
+        assert_eq!(export.emitted_faces, 1);
+        assert!((export.max_face_y_delta_m - 2.0).abs() <= 0.0001);
+        assert!((export.longest_triangle_edge_m - 5.0).abs() <= 0.0001);
+        assert!(export.max_face_slope_ratio > 0.0);
+    }
+
+    #[test]
+    fn terrain_cdt_regular_filler_stats_measure_emitted_faces() {
+        let mut export = TerrainCdtTriangleBufferExport::empty();
+        let patch = TerrainPatchSnapshot {
+            height_data: vec![0.0, 2.0, 0.0, 0.0],
+            ..test_patch()
+        };
+
+        SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[]);
+
+        assert!(export.emitted_faces > 0);
+        assert!(export.max_face_y_delta_m >= 2.0);
+        assert!(export.longest_triangle_edge_m > 0.0);
+        assert!(export.max_face_slope_ratio > 0.0);
     }
 
     #[test]
@@ -7918,6 +8338,45 @@ mod tests {
             .expect("grade-limited grounded road tie-in should triangulate");
         assert_eq!(mesh.stats.retaining_wall_faces, 0);
         assert!(mesh.retaining_wall_triangles.is_empty());
+    }
+
+    #[test]
+    fn terrain_cdt_local_bounds_expand_for_required_grading_distance() {
+        let terrain = TerrainSystem::with_chunking(101, 101, 1.0, 100, 0.0);
+        let patch = TerrainPatchSnapshot {
+            patch_x: 0,
+            patch_z: 0,
+            sample_width: 101,
+            sample_height: 101,
+            texture_width: 101,
+            texture_height: 101,
+            inner_offset_x: 0,
+            inner_offset_z: 0,
+            world_origin_x: 0.0,
+            world_origin_z: 0.0,
+            world_size_x: 100.0,
+            world_size_z: 100.0,
+            height_data: vec![0.0; 101 * 101],
+        };
+        let road_loop = TerrainCdtRoadLoop::new(
+            17,
+            0,
+            vec![
+                TerrainCdtVertex::new(45.0, 16.0, 45.0),
+                TerrainCdtVertex::new(55.0, 16.0, 45.0),
+                TerrainCdtVertex::new(55.0, 16.0, 55.0),
+                TerrainCdtVertex::new(45.0, 16.0, 55.0),
+            ],
+        );
+
+        let bounds =
+            SimulationNode::terrain_cdt_local_sample_bounds(&terrain, &patch, &[road_loop], 2.0)
+                .expect("raised road loop should produce local CDT bounds");
+
+        assert!(
+            bounds.0 < 12.0 && bounds.1 < 12.0 && bounds.2 > 88.0 && bounds.3 > 88.0,
+            "high fill should expand local CDT bounds to the required grading distance; bounds={bounds:?}"
+        );
     }
 
     #[test]

@@ -25,6 +25,8 @@ use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
+use super::site::building_site_support_tie_in_is_valid;
+
 const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
 const EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M: f32 = 20.0;
 const EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M: f32 = 0.05;
@@ -375,6 +377,7 @@ impl BuildingAllocator {
         };
         resolved.support_height_m =
             self.resolve_site_support_height(&resolved, graph, road_surface, terrain)?;
+        self.validate_site_support_tie_in(&resolved, graph, road_surface, terrain)?;
         Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
@@ -394,10 +397,30 @@ impl BuildingAllocator {
         placement.support_height_m = self
             .resolve_site_support_height(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
-        self.validate_explicit_site_overlap(&placement)?;
+        if let Err(rejection) = self.validate_explicit_site_overlap(&placement) {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                support_height_m: placement.support_height_m,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
+        if let Err(rejection) = self
+            .validate_site_support_tie_in(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)
+        {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                support_height_m: placement.support_height_m,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
         Ok(ExplicitServicePlacementPreview {
             corners: self.placement_site_corners(&placement),
             support_height_m: placement.support_height_m,
+            valid: true,
+            rejection: None,
         })
     }
 
@@ -419,6 +442,8 @@ impl BuildingAllocator {
             .resolve_site_support_height(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
         self.validate_explicit_site_overlap(&placement)?;
+        self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
 
         let building_idx = self.place_building_instance(placement, catalog, tuning);
         self.bump_building_ref_revision();
@@ -621,6 +646,39 @@ impl BuildingAllocator {
             }
         }
         Ok(())
+    }
+
+    fn validate_site_support_tie_in(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Result<(), DemandSpawnPlacementRejection> {
+        let footprint_world = self.placement_site_corners(placement);
+        if building_site_support_tie_in_is_valid(
+            footprint_world,
+            placement.support_height_m,
+            terrain,
+            graph,
+            road_surface,
+        ) {
+            return Ok(());
+        }
+
+        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
+        debug_log!(
+            "economy",
+            "building placement rejected: asset={} parcel={} flat support footprint cannot tie into surrounding terrain/road within slope budget bounds=({:.1},{:.1})-({:.1},{:.1}) support_height_m={:.2}",
+            placement.asset_id,
+            placement.parcel_id,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+            placement.support_height_m,
+        );
+        Err(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)
     }
 
     fn resolve_site_support_height(
@@ -1130,6 +1188,10 @@ pub(crate) struct ExplicitServicePlacementPreview {
     pub(crate) corners: [Vector2; 4],
     /// Flat support height selected for the building site in rendered metres.
     pub(crate) support_height_m: f32,
+    /// True when the preview can be committed without changing its current placement.
+    pub(crate) valid: bool,
+    /// Rejection reason for snapable previews that cannot be committed.
+    pub(crate) rejection: Option<ExplicitServicePlacementRejection>,
 }
 
 fn expected_utility_service_for_class(service_class: &str) -> Option<&'static str> {
@@ -1159,6 +1221,9 @@ fn explicit_rejection_from_site_rejection(
         }
         DemandSpawnPlacementRejection::NeighborSiteHeightConflict => {
             ExplicitServicePlacementRejection::NeighborSiteHeightConflict
+        }
+        DemandSpawnPlacementRejection::SiteSupportTieInInvalid => {
+            ExplicitServicePlacementRejection::SiteSupportTieInInvalid
         }
         DemandSpawnPlacementRejection::AssetUnavailable
         | DemandSpawnPlacementRejection::ParcelUnavailable

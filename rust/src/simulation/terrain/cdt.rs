@@ -563,6 +563,7 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) invalid_constraint_edges: usize,
     pub(crate) max_face_y_delta_m: f32,
     pub(crate) max_face_slope_ratio: f32,
+    pub(crate) longest_triangle_edge_m: f32,
     pub(crate) road_seam_faces: usize,
     pub(crate) road_seam_max_y_delta_m: f32,
     pub(crate) road_seam_max_slope_ratio: f32,
@@ -782,6 +783,7 @@ pub(crate) fn build_road_touched_terrain_patch(
             invalid_constraint_edges,
             max_face_y_delta_m: diagnostics.max_face_y_delta_m,
             max_face_slope_ratio: diagnostics.max_face_slope_ratio,
+            longest_triangle_edge_m: diagnostics.longest_triangle_edge_m,
             road_seam_faces: diagnostics.road_seam_faces,
             road_seam_max_y_delta_m: diagnostics.road_seam_max_y_delta_m,
             road_seam_max_slope_ratio: diagnostics.road_seam_max_slope_ratio,
@@ -825,6 +827,7 @@ struct TerrainCdtDiagnostics {
     emitted_faces: Vec<TerrainCdtEmittedFace>,
     max_face_y_delta_m: f32,
     max_face_slope_ratio: f32,
+    longest_triangle_edge_m: f32,
     road_seam_faces: usize,
     road_seam_max_y_delta_m: f32,
     road_seam_max_slope_ratio: f32,
@@ -2473,6 +2476,7 @@ fn terrain_face_diagnostics(
         emitted_faces: Vec::new(),
         max_face_y_delta_m: 0.0,
         max_face_slope_ratio: 0.0,
+        longest_triangle_edge_m: 0.0,
         road_seam_faces: 0,
         road_seam_max_y_delta_m: 0.0,
         road_seam_max_slope_ratio: 0.0,
@@ -2502,6 +2506,11 @@ fn terrain_face_diagnostics(
         diagnostics.max_face_slope_ratio = diagnostics
             .max_face_slope_ratio
             .max(metrics.max_slope_ratio);
+        diagnostics.longest_triangle_edge_m = diagnostics.longest_triangle_edge_m.max(
+            edge_length_xz_m(points[0], points[1])
+                .max(edge_length_xz_m(points[1], points[2]))
+                .max(edge_length_xz_m(points[2], points[0])) as f32,
+        );
 
         match kind {
             TerrainCdtTieInKind::OrdinaryTerrain => {}

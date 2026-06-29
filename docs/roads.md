@@ -33,6 +33,8 @@ The roadbed rewrite is shipped for the current surface-road scope:
   around the final unioned road-owned footprint; only a single clean non-hole convex footprint may
   constrain its guide rails, while holed, concave, or multi-loop footprint sets stay sample-only so
   guide rails cannot cross the final roadbed
+- road-locked terrain coverage follows each grounded footprint's required tie-in envelope; a large
+  cut / fill envelope on one road must not widen unrelated road patches
 - ordinary grounded-road tie-ins do not emit retaining-wall mesh as a visual cleanup path
 - Godot is a thin input/render bridge: it uploads cached payloads and must not decide road
   topology, heights, terrain holes, or material ownership
@@ -311,6 +313,23 @@ regions.
 Editor preview must use the same road-surface solve rules as committed placement. Preview and
 commit may differ in cache lifetime or display detail, but not in geometry ownership.
 
+Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
+before graph commit or preview compilation: long spans are densified every few metres, samples are
+grounded against source terrain or existing visible road support, true endpoints and road
+connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
+respecting road grade / curvature limits. The dense solved profile is stored on
+`physical_geometry`; section compilation, terrain clips, and earthworks interpolate that stored
+profile instead of drawing a straight vertical line between sparse endpoints. Earthworks own only
+the remaining local cut/fill around that solved roadbed.
+When a road is extended from a degree-1 standard-road terminal, preview and commit solve the
+existing terminal edge plus the new edge as one vertical corridor; the shared terminal becomes an
+internal profile point, while the far old endpoint, far new endpoint, and true junctions stay pinned.
+
+Placement validity also includes local road-surface compileability. A preview or commit that would
+fail to compile the new span or its required endpoint `Terminal` / `Bend` / `JunctionN` pieces is
+rejected before it reaches the live graph; tight switchbacks are allowed only when the compiled
+surface topology can actually represent them.
+
 Visible-world queries use this precedence:
 
 1. road-owned top surface
@@ -362,8 +381,12 @@ the roadbed ownership contract itself.
 - rail, ownership, arrangement, triangulation, export, and validation timings
 - contact candidate counts and emitted constraint counts
 - terrain CDT input/output counters
+- per-patch final terrain mesh face-delta, face-slope, tie-in widening, retaining-wall face, and
+  longest-triangle-edge summaries after the regular filler mesh has been appended
 - retained road seam constraint counters
 - final span / node top-region polygons and triangles with owner, material, and provenance keys
+- compact cut/fill summaries for touched roads, including max fill, max cut, max grade, and a
+  `near-grade` / `fill-heavy` / `cut-heavy` / `mixed` mode label
 - post-boolean node footprint / asphalt / non-road shapes, owned-region contours, side-join
   contour provenance, and corner-trim application state when geometry-dump debug capture is active
 - opt-in `METRUM_DEBUG_ROAD_PROBE=1` hover probes that log every final road-surface triangle under

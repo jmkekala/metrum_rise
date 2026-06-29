@@ -62,7 +62,7 @@ func _commit_at_mouse() -> void:
 		return
 	var error: String = simulation_node.place_service_building(selected_asset_id, wp.x, wp.y)
 	if not error.is_empty():
-		push_warning("Service placement failed: " + error)
+		print("Service placement rejected: " + error)
 		_clear_preview_cache()
 		return
 	if buildings_node:
@@ -93,8 +93,10 @@ func _update_preview() -> void:
 		wp.y
 	)
 	var mesh: Mesh = null
-	if bool(payload.get("valid", false)):
-		mesh = _build_preview_mesh(payload.get("corners", PackedVector3Array()))
+	var is_valid := bool(payload.get("valid", false))
+	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
+	if corners.size() == 4:
+		mesh = _build_preview_mesh(corners, is_valid)
 	_preview_cache_valid = true
 	_preview_cache_asset_id = selected_asset_id
 	_preview_cache_pos = wp
@@ -111,12 +113,14 @@ func _clear_preview_cache() -> void:
 	if preview_mesh:
 		preview_mesh.visible = false
 
-func _build_preview_mesh(corners: PackedVector3Array) -> Mesh:
+func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 	if corners.size() != 4:
 		return null
 	var im := ImmediateMesh.new()
+	var fill_color := Color(0.16, 0.72, 0.95, 0.25) if is_valid else Color(1.0, 0.18, 0.12, 0.28)
+	var line_color := Color(0.25, 0.92, 1.0, 0.9) if is_valid else Color(1.0, 0.28, 0.18, 0.95)
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-	im.surface_set_color(Color(0.16, 0.72, 0.95, 0.25))
+	im.surface_set_color(fill_color)
 	im.surface_add_vertex(corners[0])
 	im.surface_add_vertex(corners[1])
 	im.surface_add_vertex(corners[2])
@@ -126,7 +130,7 @@ func _build_preview_mesh(corners: PackedVector3Array) -> Mesh:
 	im.surface_end()
 
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	im.surface_set_color(Color(0.25, 0.92, 1.0, 0.9))
+	im.surface_set_color(line_color)
 	for i in range(4):
 		im.surface_add_vertex(corners[i])
 		im.surface_add_vertex(corners[(i + 1) % 4])

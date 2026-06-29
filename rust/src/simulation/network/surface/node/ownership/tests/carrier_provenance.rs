@@ -405,6 +405,58 @@ fn carrier_provenance_closure_records_nearest_parallel_projection_noise() {
 }
 
 #[test]
+fn carrier_provenance_closure_records_single_exact_same_direction_projection_noise() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 11);
+    let source = (RoadSurfaceBandKind::Sidewalk, 1, 5);
+    let boolean_vertex = (0, 0);
+    let exact_start = (-1_000, 0);
+    let exact_end = (1_000, 0);
+    let noisy_start = (-1_000, -100);
+    let noisy_end = (1_000, 90);
+    let region = region_for_source(
+        owner,
+        source,
+        vec![
+            overlay_point_from_key(boolean_vertex),
+            overlay_point_from_key(exact_start),
+            overlay_point_from_key(exact_end),
+        ],
+    );
+    let rails =
+        rails_with_source_height_keys(source, [exact_start, exact_end, noisy_start, noisy_end]);
+    let rail_points = rail_points_with_source_segments(
+        owner,
+        vec![
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(exact_start, exact_end),
+            ),
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(noisy_start, noisy_end),
+            ),
+        ],
+    );
+
+    let closure = NodeCarrierProvenanceClosure::from_owned_regions(&[region], &rails, &rail_points)
+        .expect("single exact same-direction projection noise should choose the exact carrier");
+
+    assert!(closure.records.iter().any(|record| {
+        record.point.raw_tuple() == boolean_vertex
+            && matches!(
+                record.origin,
+                NodeCarrierProvenanceOrigin::SourceSegment {
+                    canonical_point,
+                    distance_key_units_sq: 0,
+                    ..
+                } if canonical_point.raw_tuple() == boolean_vertex
+            )
+    }));
+}
+
+#[test]
 fn carrier_provenance_closure_tie_breaks_equal_parallel_projection_noise() {
     let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
     let source = (RoadSurfaceBandKind::Carriageway, 1, 2);

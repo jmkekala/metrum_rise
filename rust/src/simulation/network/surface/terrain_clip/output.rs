@@ -223,7 +223,7 @@ impl RoadSurfaceSystem {
         Self::unique_terrain_clip_output_source(candidates, "dust_connector", Some((start, end)))
     }
 
-    fn terrain_clip_source_edges_at_world_xz_point(
+    pub(super) fn terrain_clip_source_edges_at_world_xz_point(
         point: RoadVec3,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Vec<TerrainClipSourceEdge> {
@@ -270,6 +270,15 @@ impl RoadSurfaceSystem {
             .all(|candidate| terrain_clip_source_edges_same_provenance(candidate, first))
         {
             if let Some((start, end)) = canonical_segment
+                && let Some(source) = Self::canonical_matching_span_handoff_output_source(
+                    provenance_candidates,
+                    start,
+                    end,
+                )
+            {
+                return TerrainClipOutputSourceSelection::Source(source);
+            }
+            if let Some((start, end)) = canonical_segment
                 && let Some(source) = Self::canonical_same_owner_node_boundary_output_source(
                     provenance_candidates,
                     start,
@@ -297,6 +306,60 @@ impl RoadSurfaceSystem {
             ));
         }
         TerrainClipOutputSourceSelection::Source(first)
+    }
+
+    fn canonical_matching_span_handoff_output_source(
+        candidates: &[TerrainClipSourceEdge],
+        start: RoadVec3,
+        end: RoadVec3,
+    ) -> Option<TerrainClipSourceEdge> {
+        let mut span_candidates = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
+            .collect::<Vec<_>>();
+        if span_candidates.is_empty() || span_candidates.len() != candidates.len() {
+            return None;
+        }
+
+        let first_key = Self::span_handoff_boundary_match_key(span_candidates[0].source)?;
+        if !span_candidates.iter().copied().all(|candidate| {
+            Self::span_handoff_boundary_match_key(candidate.source) == Some(first_key)
+        }) {
+            return None;
+        }
+
+        span_candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
+        let first = span_candidates[0];
+        Some(TerrainClipSourceEdge {
+            start,
+            end,
+            kind: first.kind,
+            source: first.source,
+            source_index: first.source_index,
+            edge_index: first.edge_index,
+        })
+    }
+
+    fn span_handoff_boundary_match_key(
+        source: RoadSurfaceEarthworkFaceSource,
+    ) -> Option<(
+        crate::simulation::network::types::EdgeClass,
+        super::super::RoadSurfaceEarthworkSupportPolicy,
+        super::super::RoadSurfaceSpanBandOwner,
+        super::super::RoadSurfaceSpanRegionRole,
+    )> {
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_class,
+            support_policy,
+            owner,
+            role,
+            ..
+        } = source
+        else {
+            return None;
+        };
+        Some((edge_class, support_policy, owner, role))
     }
 
     fn canonical_same_owner_node_boundary_output_source(
@@ -341,7 +404,7 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn canonical_same_owner_dust_connector_output_source(
+    pub(super) fn canonical_same_owner_dust_connector_output_source(
         candidates: &[TerrainClipSourceEdge],
         start: RoadVec3,
         end: RoadVec3,
@@ -531,6 +594,65 @@ mod tests {
     };
     use super::*;
     use crate::simulation::network::types::EdgeClass;
+
+    #[test]
+    fn terrain_clip_output_canonicalizes_matching_span_handoff_covered_segment_source() {
+        let start = RoadVec3::new(0.0, 10.0, 0.0);
+        let end = RoadVec3::new(1.0, 10.0, 0.0);
+        let candidates = vec![
+            span_handoff_source_edge(
+                RoadVec3::new(-0.5, 10.0, 0.0),
+                RoadVec3::new(1.5, 10.0, 0.0),
+                0,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                0,
+                38,
+            ),
+            span_handoff_source_edge(
+                RoadVec3::new(-0.5, 10.0, 0.0),
+                RoadVec3::new(1.5, 10.0, 0.0),
+                1,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                1,
+                5,
+            ),
+        ];
+
+        let source = match RoadSurfaceSystem::terrain_clip_output_source_for_segment(
+            start,
+            end,
+            &candidates,
+        ) {
+            TerrainClipOutputSourceSelection::Source(source) => source,
+            TerrainClipOutputSourceSelection::Missing => {
+                panic!("matching span handoff source must be present")
+            }
+            TerrainClipOutputSourceSelection::Ambiguous(context) => {
+                panic!("matching span handoff source must be canonical: {context}")
+            }
+        };
+
+        assert_eq!(source.start, start);
+        assert_eq!(source.end, end);
+        assert_eq!(source.kind, RoadSurfaceTerrainClipEdgeKind::SpanHandoff);
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx,
+            owner,
+            role,
+            ..
+        } = source.source
+        else {
+            panic!("span handoff segment must keep span support provenance");
+        };
+        assert_eq!(edge_idx, 0);
+        assert_eq!(owner.source_band_index, 0);
+        assert_eq!(owner.kind, RoadSurfaceBandKind::Sidewalk);
+        assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
+    }
 
     #[test]
     fn terrain_clip_output_canonicalizes_span_handoff_only_connector_source() {

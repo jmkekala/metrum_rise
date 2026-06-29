@@ -82,7 +82,8 @@ planning, economy, and rendering consume these fields rather than inventing thei
 placement truth.
 
 `support_height_m` is the fixed placement support plane consumed by building rendering, entrance
-derivation, and the engineered-ground building-site client that owns the inset pad surface.
+derivation, and the engineered-ground building-site client that owns the required flat support
+footprint.
 
 `facing_dir` is the road-facing frontage direction: the direction the building's authored front
 points in world space. It is the negative of the zoning parcel `normal`, because parcel `normal`

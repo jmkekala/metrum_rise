@@ -342,6 +342,11 @@ fn source_segment_provenance_for_point(
     {
         return Ok(Some(source_segment_origin(candidate)));
     }
+    if let Some(candidate) =
+        single_exact_same_direction_projection_noise_candidate(point, &candidates)
+    {
+        return Ok(Some(source_segment_origin(candidate)));
+    }
     if let Some(candidate) = nearest_parallel_projection_noise_candidate(point, &candidates) {
         return Ok(Some(source_segment_origin(candidate)));
     }
@@ -940,6 +945,34 @@ fn connected_endpoint_cluster_candidate(
         .min_by_key(|candidate| (candidate.distance_key_units_sq, candidate.canonical_point))
 }
 
+fn single_exact_same_direction_projection_noise_candidate(
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+) -> Option<NodeSourceSegmentAuthorizationCandidate> {
+    if candidates.len() < 2
+        || !candidates
+            .iter()
+            .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+    {
+        return None;
+    }
+
+    let mut exact_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.canonical_point == point);
+    let exact = exact_candidates.next()?;
+    if exact_candidates.next().is_some()
+        || !candidates.iter().all(|candidate| {
+            source_segment_directions_have_same_general_alignment(&exact, candidate)
+        })
+    {
+        return None;
+    }
+
+    Some(exact)
+}
+
 fn nearest_parallel_projection_noise_candidate(
     point: NodeOwnershipPointKey,
     candidates: &[NodeSourceSegmentAuthorizationCandidate],
@@ -969,10 +1002,25 @@ fn nearest_parallel_projection_noise_candidate(
     })
 }
 
+fn source_segment_directions_have_same_general_alignment(
+    left: &NodeSourceSegmentAuthorizationCandidate,
+    right: &NodeSourceSegmentAuthorizationCandidate,
+) -> bool {
+    source_segment_direction_cross_ratio(left, right).is_some_and(|cross_ratio| cross_ratio <= 0.1)
+}
+
 fn source_segment_directions_are_nearly_parallel(
     left: &NodeSourceSegmentAuthorizationCandidate,
     right: &NodeSourceSegmentAuthorizationCandidate,
 ) -> bool {
+    source_segment_direction_cross_ratio(left, right)
+        .is_some_and(|cross_ratio| cross_ratio <= 0.001)
+}
+
+fn source_segment_direction_cross_ratio(
+    left: &NodeSourceSegmentAuthorizationCandidate,
+    right: &NodeSourceSegmentAuthorizationCandidate,
+) -> Option<f64> {
     let left_dx = i128::from(left.segment_end.0 - left.segment_start.0);
     let left_dz = i128::from(left.segment_end.1 - left.segment_start.1);
     let right_dx = i128::from(right.segment_end.0 - right.segment_start.0);
@@ -980,12 +1028,10 @@ fn source_segment_directions_are_nearly_parallel(
     let left_len_sq = left_dx * left_dx + left_dz * left_dz;
     let right_len_sq = right_dx * right_dx + right_dz * right_dz;
     if left_len_sq == 0 || right_len_sq == 0 {
-        return false;
+        return None;
     }
     let cross = left_dx * right_dz - left_dz * right_dx;
-    let cross_ratio =
-        (cross.abs() as f64) / ((left_len_sq as f64).sqrt() * (right_len_sq as f64).sqrt());
-    cross_ratio <= 0.001
+    Some((cross.abs() as f64) / ((left_len_sq as f64).sqrt() * (right_len_sq as f64).sqrt()))
 }
 
 fn projection_cluster_has_connected_source_endpoint_path(

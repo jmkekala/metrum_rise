@@ -3,7 +3,8 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
+    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SERVICE_BUILD_COST_PER_LOT_CELL,
+    SimCore,
 };
 use crate::simulation::buildings::allocator::{
     ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
@@ -11,7 +12,7 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadExtensionReprofile, RoadSurfaceSystem};
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
@@ -353,19 +354,83 @@ impl SimCore {
         fwd_lanes: i32,
         bkw_lanes: i32,
     ) {
+        let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let prepared_input =
+            RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+                &points,
+                &self.heightmap,
+                &self.region_graph,
+                &self.transit_network.road_surface,
+            );
+        let fixed_points = prepared_input.points.clone();
+
+        let new_edge_validation = self
+            .transit_network
+            .road_surface
+            .validate_prepared_road_surface(
+                &prepared_input.points,
+                prepared_input.class,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                &self.heightmap,
+            );
+        let validation = self
+            .transit_network
+            .road_surface
+            .validate_prepared_road_input_against_graph(
+                &prepared_input,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                &self.heightmap,
+                &self.region_graph,
+                new_edge_validation,
+            );
+        if !validation.is_valid {
+            debug_log!(
+                "road",
+                "road_commit_rejected reason={} prepared_points={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) run={:.3} dy={:.3} span_y=({:.3},{:.3}) span_terrain=({:.3},{:.3}) span_delta=({:.3},{:.3}) endpoint_snap=({},{}) endpoint_delta=({:.3},{:.3}) clearance={:.3} required_clearance={:.3}",
+                validation.invalid_reason,
+                fixed_points.len(),
+                validation.max_grade,
+                validation.allowed_grade,
+                validation.offending_span_start_m,
+                validation.offending_span_end_m,
+                validation.offending_span_run_m,
+                validation.offending_span_height_delta_m,
+                validation.offending_span_start_height_m,
+                validation.offending_span_end_height_m,
+                validation.offending_span_start_terrain_height_m,
+                validation.offending_span_end_terrain_height_m,
+                validation.offending_span_start_support_delta_m,
+                validation.offending_span_end_support_delta_m,
+                validation.start_endpoint_snapped_node_id,
+                validation.end_endpoint_snapped_node_id,
+                validation.start_endpoint_support_delta_m,
+                validation.end_endpoint_support_delta_m,
+                validation.clearance_m,
+                validation.required_clearance_m
+            );
+            self.last_road_timing = format!(
+                "rejected={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) endpoint_delta=({:.3},{:.3})",
+                validation.invalid_reason,
+                validation.max_grade,
+                validation.allowed_grade,
+                validation.offending_span_start_m,
+                validation.offending_span_end_m,
+                validation.start_endpoint_support_delta_m,
+                validation.end_endpoint_support_delta_m
+            );
+            return;
+        }
+
         let t_undo = Instant::now();
         if !self.benchmark_mode {
             self.push_undo_state(false, false, true, false);
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
-        let (fixed_points, class) =
-            RoadSurfaceSystem::classify_and_ground_road_points_to_visible_surface(
-                &points,
-                &self.heightmap,
-                &self.region_graph,
-                &self.transit_network.road_surface,
-            );
+        self.apply_road_extension_reprofile(prepared_input.extension.as_ref());
 
         // Compute polyline length before fixed_points is moved into add_road.
         let build_length_m: f64 = fixed_points
@@ -382,9 +447,9 @@ impl SimCore {
         self.transit_network.add_road(
             &mut self.region_graph,
             fixed_points,
-            fwd_lanes as u8,
-            bkw_lanes as u8,
-            class,
+            fwd_lanes_u8,
+            bkw_lanes_u8,
+            prepared_input.class,
             &mut self.zoning,
             &mut self.allocator,
         );
@@ -405,6 +470,89 @@ impl SimCore {
         // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
         // batching all dirty edges into a single pass instead of N separate passes.
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
+    }
+
+    fn apply_road_extension_reprofile(
+        &mut self,
+        extension: Option<&RoadExtensionReprofile>,
+    ) -> HashSet<usize> {
+        let Some(extension) = extension else {
+            return HashSet::new();
+        };
+        if extension.existing_edge_idx >= self.region_graph.edge_count()
+            || (extension.snapped_node_id as usize) >= self.region_graph.node_count()
+            || extension.existing_points.len() < 2
+        {
+            return HashSet::new();
+        }
+
+        let edge_idx = extension.existing_edge_idx;
+        if self.region_graph.edge(edge_idx).deleted {
+            return HashSet::new();
+        }
+
+        let old_node_pos = self.region_graph.node(extension.snapped_node_id).pos;
+        let old_chunks = self.region_graph.get_edge_chunks(edge_idx);
+        self.region_graph
+            .set_node_pos(extension.snapped_node_id, extension.snapped_node_pos);
+        self.region_graph.remove_from_spatial_index(edge_idx);
+        {
+            let edge = self.region_graph.edge_mut(edge_idx);
+            edge.geometry = extension.existing_points.clone();
+            edge.physical_geometry = extension.existing_points.clone();
+            let (cost, length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
+            edge.base_cost = cost;
+            edge.physical_length = length;
+        }
+        self.region_graph.add_to_spatial_index(edge_idx);
+
+        let affected_edges = HashSet::from([edge_idx]);
+        let edge = self.region_graph.edge(edge_idx);
+        let affected_nodes = HashSet::from([
+            self.region_graph.get_valid_node(extension.snapped_node_id),
+            self.region_graph.get_valid_node(edge.start_node),
+            self.region_graph.get_valid_node(edge.end_node),
+        ]);
+
+        for chunk in old_chunks
+            .into_iter()
+            .chain(self.region_graph.get_edge_chunks(edge_idx))
+        {
+            self.transit_network.cch_dirty_chunks.insert(chunk);
+        }
+        self.transit_network.mark_point_dirty(old_node_pos);
+        self.transit_network
+            .mark_point_dirty(extension.snapped_node_pos);
+        self.transit_network.mark_surface_dirty_from_sets(
+            &self.region_graph,
+            &affected_edges,
+            &affected_nodes,
+        );
+        self.transit_network.mark_surface_point_dirty(old_node_pos);
+        self.transit_network
+            .mark_surface_point_dirty(extension.snapped_node_pos);
+
+        if self.transit_network.bulk_load {
+            self.transit_network.bulk_dirty_edges.insert(edge_idx);
+        } else {
+            self.agents
+                .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+            self.transit_network
+                .lane_system
+                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
+        }
+
+        debug_log!(
+            "road",
+            "road_extension_reprofile node={} edge={} old_y={:.3} new_y={:.3} points={}",
+            extension.snapped_node_id,
+            edge_idx,
+            old_node_pos.y,
+            extension.snapped_node_pos.y,
+            extension.existing_points.len()
+        );
+        affected_edges
     }
 
     /// Returns a road-frontage snapped preview for one explicit service building asset.
@@ -675,6 +823,15 @@ impl SimCore {
         let dirty_chunks = self
             .transit_network
             .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+        let road_locked_dirty_patches = self
+            .transit_network
+            .road_surface
+            .mark_render_patches_for_chunk_grading_envelopes(
+                &self.region_graph,
+                &mut self.heightmap,
+                &dirty_chunks,
+                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+            );
         let earthwork_ms = earthwork_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -693,6 +850,13 @@ impl SimCore {
             && !debug_edges.is_empty()
         {
             let dump_start = Instant::now();
+            for line in self
+                .transit_network
+                .road_surface
+                .build_road_cut_fill_debug_lines(&self.region_graph, &self.heightmap, &debug_edges)
+            {
+                debug_log!("road", "{}", line);
+            }
             let dump = self
                 .transit_network
                 .road_surface
@@ -707,9 +871,11 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_rebuild_detail earthworks_ms={:.3} dirty_chunks={} entrances_ms={:.3} dump_edges={} dump_bytes={} dump_build_ms={:.3} dump_print_ms={:.3} total_ms={:.3}",
+                "terrain_rebuild_detail earthworks_ms={:.3} dirty_chunks={} road_locked_dirty_patches={} dirty_render_patches={} entrances_ms={:.3} dump_edges={} dump_bytes={} dump_build_ms={:.3} dump_print_ms={:.3} total_ms={:.3}",
                 earthwork_ms,
                 dirty_chunks.len(),
+                road_locked_dirty_patches,
+                self.heightmap.dirty_render_patches().len(),
                 entrances_ms,
                 debug_edges.len(),
                 dump_bytes,

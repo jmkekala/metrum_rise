@@ -10,7 +10,8 @@ mod profile;
 mod sections;
 
 use handoff::EdgeMouthPolicy;
-pub use preview::PreviewRoadSurfaceResult;
+pub(crate) use input::RoadExtensionReprofile;
+pub use preview::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 use profile::EdgeProfilePlaneBlend;
 
 #[cfg(test)]

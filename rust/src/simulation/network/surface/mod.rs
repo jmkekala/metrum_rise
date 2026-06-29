@@ -27,7 +27,7 @@ mod terrain_clip;
 
 pub use backend::{RoadVec2, RoadVec3};
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
-pub use edge::PreviewRoadSurfaceResult;
+pub use edge::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 pub use node::RoadSurfaceVisualNodePiece;
 pub use span::RoadSurfaceVisualSpanPiece;
 pub use system::RoadSurfaceSystem;
@@ -38,6 +38,7 @@ pub(crate) use earthwork::{
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy,
 };
+pub(crate) use edge::RoadExtensionReprofile;
 pub(crate) use incident::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
     IncidentSurfaceEdge, OrderedIncidentPieceMouth, RoadSurfaceVisualNodeCompileInput,

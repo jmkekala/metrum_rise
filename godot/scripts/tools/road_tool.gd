@@ -323,7 +323,7 @@ func _draw_preview_surface(preview: Dictionary) -> bool:
 
 	var preview_request_id := int(preview.get("request_id", 0))
 	if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
-		_update_preview_measurement_label(preview_verts)
+		_update_preview_measurement_label(preview_verts, preview)
 		return true
 
 	var arr_mesh = ArrayMesh.new()
@@ -333,7 +333,7 @@ func _draw_preview_surface(preview: Dictionary) -> bool:
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	blueprint_mesh.mesh = arr_mesh
 	_preview_drawn_request_id = preview_request_id
-	_update_preview_measurement_label(preview_verts)
+	_update_preview_measurement_label(preview_verts, preview)
 	return true
 
 func _draw_immediate_preview() -> bool:
@@ -363,14 +363,18 @@ func _draw_immediate_preview() -> bool:
 		bool(preview.get("is_valid", false)),
 		baked_ms,
 		rust_ms,
-		total_start_us
+		total_start_us,
+		String(preview.get("invalid_reason", "")),
+		float(preview.get("max_grade", 0.0)),
+		float(preview.get("allowed_grade", 0.0)),
+		preview
 	)
 	_preview_result_pending = false
 	_preview_exact_waiting = false
 	_remember_preview_surface(points, preview)
 	return _draw_preview_surface(preview)
 
-func _update_preview_measurement_label(points: PackedVector3Array) -> void:
+func _update_preview_measurement_label(points: PackedVector3Array, preview: Dictionary = {}) -> void:
 	if not _info_label or points.size() < 2:
 		return
 
@@ -400,13 +404,40 @@ func _update_preview_measurement_label(points: PackedVector3Array) -> void:
 		if angle_deg >= 180.0: angle_deg -= 180.0
 
 	var snap_str := " [snap]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
-	_info_label.text = "%.1f m  %.0f°%s" % [total_m, angle_deg, snap_str]
+	if not bool(preview.get("is_valid", true)):
+		_info_label.add_theme_color_override("font_color", Color(1.0, 0.28, 0.18, 0.98))
+		_info_label.text = _preview_invalid_text(preview)
+	else:
+		_info_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+		_info_label.text = "%.1f m  %.0f°%s" % [total_m, angle_deg, snap_str]
 
 	# Store world midpoint — projected to screen each frame in _process.
 	var mid: Vector3 = points[points.size() / 2]
 	mid.y += 2.0
 	_label_world_pos = mid
 	_info_label.visible = true
+
+func _preview_invalid_text(preview: Dictionary) -> String:
+	var reason := String(preview.get("invalid_reason", ""))
+	match reason:
+		"too_steep":
+			var max_grade := float(preview.get("max_grade", 0.0)) * 100.0
+			var allowed_grade := float(preview.get("allowed_grade", 0.0)) * 100.0
+			return "Too steep %.0f%% / %.0f%%" % [max_grade, allowed_grade]
+		"bridge_clearance":
+			return "Bridge clearance %.1f m / %.1f m" % [
+				float(preview.get("clearance_m", 0.0)),
+				float(preview.get("required_clearance_m", 0.0)),
+			]
+		"tunnel_clearance":
+			return "Tunnel clearance %.1f m / %.1f m" % [
+				float(preview.get("clearance_m", 0.0)),
+				float(preview.get("required_clearance_m", 0.0)),
+			]
+		"surface_geometry_invalid":
+			return "Curve too tight"
+		_:
+			return "Road cannot be placed"
 
 func _commit_segment(end_pos):
 	var total_start_us := Time.get_ticks_usec()
@@ -426,6 +457,23 @@ func _commit_segment(end_pos):
 	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
 	var committed := false
 	var preview_valid := not preview.is_empty() and bool(preview.get("is_valid", false))
+	var invalid_reason := String(preview.get("invalid_reason", ""))
+	var max_grade := float(preview.get("max_grade", 0.0))
+	var allowed_grade := float(preview.get("allowed_grade", 0.0))
+	var span_start := float(preview.get("offending_span_start_m", 0.0))
+	var span_end := float(preview.get("offending_span_end_m", 0.0))
+	var span_run := float(preview.get("offending_span_run_m", 0.0))
+	var span_dy := float(preview.get("offending_span_height_delta_m", 0.0))
+	var span_start_y := float(preview.get("offending_span_start_height_m", 0.0))
+	var span_end_y := float(preview.get("offending_span_end_height_m", 0.0))
+	var span_start_terrain_y := float(preview.get("offending_span_start_terrain_height_m", 0.0))
+	var span_end_terrain_y := float(preview.get("offending_span_end_terrain_height_m", 0.0))
+	var span_start_delta := float(preview.get("offending_span_start_support_delta_m", 0.0))
+	var span_end_delta := float(preview.get("offending_span_end_support_delta_m", 0.0))
+	var start_snap := int(preview.get("start_endpoint_snapped_node_id", -1))
+	var end_snap := int(preview.get("end_endpoint_snapped_node_id", -1))
+	var start_endpoint_delta := float(preview.get("start_endpoint_support_delta_m", 0.0))
+	var end_endpoint_delta := float(preview.get("end_endpoint_support_delta_m", 0.0))
 	var add_road_ms := 0.0
 	var bookkeeping_ms := 0.0
 	var cancel_ms := 0.0
@@ -453,12 +501,29 @@ func _commit_segment(end_pos):
 
 	if _road_debug_enabled:
 		print(
-			"[DEBUG:road] commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s committed=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
+			"[DEBUG:road] commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s invalid_reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) committed=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
 			% [
 				raw_points.size(),
 				points.size(),
 				str(preview.is_empty()),
 				str(preview_valid),
+				invalid_reason,
+				max_grade,
+				allowed_grade,
+				span_start,
+				span_end,
+				span_run,
+				span_dy,
+				span_start_y,
+				span_end_y,
+				span_start_terrain_y,
+				span_end_terrain_y,
+				span_start_delta,
+				span_end_delta,
+				start_snap,
+				end_snap,
+				start_endpoint_delta,
+				end_endpoint_delta,
 				str(committed),
 				preview_ms,
 				baked_ms,
@@ -624,7 +689,11 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 			bool(cached_preview.get("is_valid", false)),
 			baked_ms,
 			0.0,
-			total_start_us
+			total_start_us,
+			String(cached_preview.get("invalid_reason", "")),
+			float(cached_preview.get("max_grade", 0.0)),
+			float(cached_preview.get("allowed_grade", 0.0)),
+			cached_preview
 		)
 		return cached_preview
 	if points.size() <= 1:
@@ -668,7 +737,11 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 		bool(preview.get("is_valid", false)),
 		baked_ms,
 		rust_ms,
-		total_start_us
+		total_start_us,
+		String(preview.get("invalid_reason", "")),
+		float(preview.get("max_grade", 0.0)),
+		float(preview.get("allowed_grade", 0.0)),
+		preview
 	)
 	_remember_preview_surface(points, preview)
 	return preview
@@ -789,23 +862,63 @@ func _log_preview_surface_detail(
 	valid: bool,
 	baked_ms: float,
 	rust_ms: float,
-	total_start_us: int
+	total_start_us: int,
+	invalid_reason: String = "",
+	max_grade: float = 0.0,
+	allowed_grade: float = 0.0,
+	validation: Dictionary = {}
 ) -> void:
 	if not _road_debug_enabled:
 		return
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 	var log_label := label
-	if log_label.is_empty() and total_ms < ROAD_PROFILE_SLOW_MS:
+	if log_label.is_empty() and valid and total_ms < ROAD_PROFILE_SLOW_MS:
 		return
 	if log_label.is_empty():
-		log_label = "slow"
+		if valid:
+			log_label = "slow"
+		elif invalid_reason.is_empty():
+			log_label = "pending"
+		else:
+			log_label = "invalid"
+	var span_start := float(validation.get("offending_span_start_m", 0.0))
+	var span_end := float(validation.get("offending_span_end_m", 0.0))
+	var span_run := float(validation.get("offending_span_run_m", 0.0))
+	var span_dy := float(validation.get("offending_span_height_delta_m", 0.0))
+	var span_start_y := float(validation.get("offending_span_start_height_m", 0.0))
+	var span_end_y := float(validation.get("offending_span_end_height_m", 0.0))
+	var span_start_terrain_y := float(validation.get("offending_span_start_terrain_height_m", 0.0))
+	var span_end_terrain_y := float(validation.get("offending_span_end_terrain_height_m", 0.0))
+	var span_start_delta := float(validation.get("offending_span_start_support_delta_m", 0.0))
+	var span_end_delta := float(validation.get("offending_span_end_support_delta_m", 0.0))
+	var start_snap := int(validation.get("start_endpoint_snapped_node_id", -1))
+	var end_snap := int(validation.get("end_endpoint_snapped_node_id", -1))
+	var start_endpoint_delta := float(validation.get("start_endpoint_support_delta_m", 0.0))
+	var end_endpoint_delta := float(validation.get("end_endpoint_support_delta_m", 0.0))
 	print(
-		"[DEBUG:road] preview_surface_godot label=%s points=%d surface_vertices=%d valid=%s baked_ms=%.3f rust_ms=%.3f total_ms=%.3f"
+		"[DEBUG:road] preview_surface_godot label=%s points=%d surface_vertices=%d valid=%s reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) baked_ms=%.3f rust_ms=%.3f total_ms=%.3f"
 		% [
 			log_label,
 			point_count,
 			surface_vertex_count,
 			str(valid),
+			invalid_reason,
+			max_grade,
+			allowed_grade,
+			span_start,
+			span_end,
+			span_run,
+			span_dy,
+			span_start_y,
+			span_end_y,
+			span_start_terrain_y,
+			span_end_terrain_y,
+			span_start_delta,
+			span_end_delta,
+			start_snap,
+			end_snap,
+			start_endpoint_delta,
+			end_endpoint_delta,
 			baked_ms,
 			rust_ms,
 			total_ms,

@@ -32,7 +32,7 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
 };
@@ -510,6 +510,7 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) request_id: u64,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,
+    pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
 }
 
@@ -666,16 +667,34 @@ pub(crate) fn run_road_preview_worker(
         };
         let prepared_count = preview.prepared_points.len();
         let surface_vertex_count = preview.surface_vertices.len();
+        let validation = preview.validation.clone();
         let is_valid = preview.is_valid;
         *result.write().unwrap() = Some(preview);
         if road_debug {
             debug_log!(
                 "road",
-                "preview_surface_worker points={} prepared_points={} surface_vertices={} valid={} total_ms={:.3}",
+                "preview_surface_worker points={} prepared_points={} surface_vertices={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) run={:.3} dy={:.3} span_y=({:.3},{:.3}) span_terrain=({:.3},{:.3}) span_delta=({:.3},{:.3}) endpoint_snap=({},{}) endpoint_delta=({:.3},{:.3}) total_ms={:.3}",
                 point_count,
                 prepared_count,
                 surface_vertex_count,
                 is_valid,
+                validation.invalid_reason,
+                validation.max_grade,
+                validation.allowed_grade,
+                validation.offending_span_start_m,
+                validation.offending_span_end_m,
+                validation.offending_span_run_m,
+                validation.offending_span_height_delta_m,
+                validation.offending_span_start_height_m,
+                validation.offending_span_end_height_m,
+                validation.offending_span_start_terrain_height_m,
+                validation.offending_span_end_terrain_height_m,
+                validation.offending_span_start_support_delta_m,
+                validation.offending_span_end_support_delta_m,
+                validation.start_endpoint_snapped_node_id,
+                validation.end_endpoint_snapped_node_id,
+                validation.start_endpoint_support_delta_m,
+                validation.end_endpoint_support_delta_m,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
@@ -702,6 +721,7 @@ pub(crate) fn compile_road_preview_from_context(
         request_id: request.request_id,
         prepared_points: preview.prepared_points,
         surface_vertices: preview.surface_vertices,
+        validation: preview.validation,
         is_valid: preview.is_valid,
     }
 }
@@ -1408,7 +1428,7 @@ impl SimCore {
                  spawn_attempted={} spawn_placed={} spawn_failed={} \
                  spawn_failed_geometry={} fail_asset={} fail_parcel={} fail_slot={} \
                  fail_driveway_surface={} fail_driveway_height={} fail_driveway_connection={} \
-                 fail_frontage_surface={} fail_neighbor_height={}",
+                 fail_frontage_surface={} fail_neighbor_height={} fail_site_tie_in={}",
                 day_index,
                 minute_of_day,
                 use_label,
@@ -1424,6 +1444,7 @@ impl SimCore {
                 rejections.driveway_connection_missing,
                 rejections.frontage_road_surface_missing,
                 rejections.neighbor_site_height_conflict,
+                rejections.site_support_tie_in_invalid,
             );
         }
         debug_log!(

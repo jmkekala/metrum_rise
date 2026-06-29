@@ -141,7 +141,7 @@ pub enum SiteSurfaceMaterial {
 
 /// One authored polygon ground-treatment surface inside a building lot.
 ///
-/// Runtime treats this as a material/layout region on the flat whole-lot building site.
+/// Runtime treats this as a material/layout region on the flat building support footprint.
 /// Gameplay must not render it as a loose terrain overlay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

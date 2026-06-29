@@ -464,12 +464,14 @@ Rules:
 - Site surfaces are authored visual-ground metadata. Live gameplay renders them on the flat
   building-site client and queries their authored `y_m` offset, but they never become independent
   terrain-cut footprints.
-- The runtime terrain-ownership footprint is an inset pad inside the occupied lot rectangle.
-  `[[site_surfaces]]` polygons are material/layout regions on the selected site plane.
+- The current runtime terrain-ownership footprint is the required flat support footprint. Until the
+  asset schema exports explicit support extents, the backend treats the authored lot rectangle as
+  that conservative support footprint. `[[site_surfaces]]` polygons remain material/layout regions
+  on the selected site plane.
 - Site surfaces do not imply access, parking capacity, freight capacity, service eligibility,
   pedestrian paths, or vehicle routing.
 - Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
-- If an asset exports no site surfaces, the live site still has a flat site-pad ground plane, but no
+- If an asset exports no site surfaces, the live site still has a flat support ground plane, but no
   authored asphalt/concrete material regions.
 - The editor can create rectangular starting surfaces, then authors can move the whole polygon,
   drag vertices, right-click an edge to add a vertex, and right-click an existing vertex to delete it

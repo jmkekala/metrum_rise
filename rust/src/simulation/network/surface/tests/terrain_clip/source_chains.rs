@@ -2,6 +2,10 @@
 
 use super::*;
 use crate::simulation::network::surface::backend::RoadVec3;
+use crate::simulation::network::surface::{
+    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
+    RoadSurfaceVisualNodePieceKind,
+};
 
 #[test]
 fn terrain_clip_union_splits_union_segment_through_source_owned_boundary_chain() {
@@ -310,4 +314,89 @@ fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
             .all(|point| (point.y - y).abs() <= f64::from(SAMPLE_EPSILON_M)),
         "accepted connector must reuse canonical source endpoint heights"
     );
+}
+
+#[test]
+fn terrain_clip_union_recovers_explicit_same_owner_endpoint_connector() {
+    let y = 7.0;
+    let p0 = RoadVec3::new(0.0, y, 0.0);
+    let partial = RoadVec3::new(0.25, y, 0.0);
+    let p1 = RoadVec3::new(1.0, y, 0.0);
+    let p2 = RoadVec3::new(1.0, y, 0.4);
+    let p3 = RoadVec3::new(0.0, y, 0.4);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            explicit_node_boundary_source_edge_for_test(p0, partial, 11, 0, 1),
+            explicit_node_boundary_source_edge_for_test(p1, p2, 11, 2, 3),
+            explicit_node_boundary_source_edge_for_test(p2, p3, 11, 4, 5),
+            explicit_node_boundary_source_edge_for_test(p3, p0, 11, 6, 7),
+        ],
+        points_world: vec![p0, p1, p2, p3],
+    }];
+
+    let clip_export = RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
+        .expect("explicit same-owner endpoint connector should preserve terrain clip export");
+
+    assert_eq!(
+        clip_export.loops.len(),
+        1,
+        "same-owner endpoint connector must not make the road cutter disappear"
+    );
+    assert!(
+        clip_export.loops[0].source_edges.iter().any(|edge| {
+            road_points_share_xz(edge.start, p0)
+                && road_points_share_xz(edge.end, p1)
+                && matches!(
+                    edge.source,
+                    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                        owner_kind: RoadSurfaceBandKind::Sidewalk,
+                        owner_index: 11,
+                        boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                            start: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
+                            end: NodeFootprintBoundaryVertexSource::CanonicalBoundaryPoint { .. },
+                        }),
+                        ..
+                    }
+                )
+        }),
+        "recovered connector must carry canonical node boundary provenance: {:?}",
+        clip_export.loops[0].source_edges
+    );
+}
+
+fn road_points_share_xz(a: RoadVec3, b: RoadVec3) -> bool {
+    (a.x - b.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+        && (a.z - b.z).abs() <= f64::from(SAMPLE_EPSILON_M)
+}
+
+fn explicit_node_boundary_source_edge_for_test(
+    start: RoadVec3,
+    end: RoadVec3,
+    owner_index: usize,
+    start_grade_authority_index: usize,
+    end_grade_authority_index: usize,
+) -> RoadSurfaceTerrainClipSourceEdge {
+    RoadSurfaceTerrainClipSourceEdge {
+        start,
+        end,
+        kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+            node_id: 7,
+            kind: RoadSurfaceVisualNodePieceKind::Bend,
+            owner_kind: RoadSurfaceBandKind::Sidewalk,
+            owner_index,
+            boundary_source: Some(NodeFootprintBoundarySegmentSource {
+                start: NodeFootprintBoundaryVertexSource::Direct(
+                    NodeFootprintBoundaryDirectSource {
+                        top_surface_source_index: 42,
+                        grade_authority_index: start_grade_authority_index,
+                    },
+                ),
+                end: NodeFootprintBoundaryVertexSource::Direct(NodeFootprintBoundaryDirectSource {
+                    top_surface_source_index: 42,
+                    grade_authority_index: end_grade_authority_index,
+                }),
+            }),
+        },
+    }
 }

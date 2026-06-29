@@ -1,7 +1,9 @@
 //! Terrain-clip segment and source-chain recovery.
 
 use super::super::backend::RoadVec3;
-use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceXzKey};
+use super::super::{
+    NodeOverlayPoint, RoadSurfaceEarthworkFaceSource, RoadSurfaceSystem, keys::SurfaceXzKey,
+};
 use super::geometry::interpolate_height_f64;
 use super::model::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -117,7 +119,11 @@ impl RoadSurfaceSystem {
         }
 
         match candidates.len() {
-            0 => TerrainClipSourceChainRecovery::Missing,
+            0 => Self::terrain_clip_endpoint_owner_connector_points_from_source_edges(
+                start,
+                end,
+                source_edges,
+            ),
             1 => TerrainClipSourceChainRecovery::Covered(
                 candidates.into_values().next().unwrap_or_default(),
             ),
@@ -126,6 +132,96 @@ impl RoadSurfaceSystem {
                 candidates.len()
             )),
         }
+    }
+
+    fn terrain_clip_endpoint_owner_connector_points_from_source_edges(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> TerrainClipSourceChainRecovery {
+        let start_y = match Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
+            start,
+            source_edges,
+        ) {
+            Ok(Some(height)) => height,
+            Ok(None) => return TerrainClipSourceChainRecovery::Missing,
+            Err(context) => {
+                return TerrainClipSourceChainRecovery::Ambiguous(format!(
+                    "endpoint_owner_connector_start_{context}"
+                ));
+            }
+        };
+        let end_y = match Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
+            end,
+            source_edges,
+        ) {
+            Ok(Some(height)) => height,
+            Ok(None) => return TerrainClipSourceChainRecovery::Missing,
+            Err(context) => {
+                return TerrainClipSourceChainRecovery::Ambiguous(format!(
+                    "endpoint_owner_connector_end_{context}"
+                ));
+            }
+        };
+        let start_point = RoadVec3::new(start[0], start_y, start[1]);
+        let end_point = RoadVec3::new(end[0], end_y, end[1]);
+        let start_candidates =
+            Self::explicit_node_boundary_endpoint_sources(start_point, source_edges);
+        let end_candidates = Self::explicit_node_boundary_endpoint_sources(end_point, source_edges);
+        if start_candidates.is_empty() || end_candidates.is_empty() {
+            return TerrainClipSourceChainRecovery::Missing;
+        }
+
+        let Some(start_source) = Self::canonical_same_owner_dust_connector_output_source(
+            &start_candidates,
+            start_point,
+            end_point,
+        ) else {
+            return TerrainClipSourceChainRecovery::Missing;
+        };
+        let Some(end_source) = Self::canonical_same_owner_dust_connector_output_source(
+            &end_candidates,
+            start_point,
+            end_point,
+        ) else {
+            return TerrainClipSourceChainRecovery::Missing;
+        };
+        if !terrain_clip_source_edges_same_provenance(start_source, end_source) {
+            return TerrainClipSourceChainRecovery::Missing;
+        }
+
+        let mut combined_candidates = start_candidates;
+        combined_candidates.extend(end_candidates);
+        let Some(combined_source) = Self::canonical_same_owner_dust_connector_output_source(
+            &combined_candidates,
+            start_point,
+            end_point,
+        ) else {
+            return TerrainClipSourceChainRecovery::Missing;
+        };
+        if !terrain_clip_source_edges_same_provenance(start_source, combined_source) {
+            return TerrainClipSourceChainRecovery::Missing;
+        }
+
+        TerrainClipSourceChainRecovery::Covered(vec![start_point, end_point])
+    }
+
+    fn explicit_node_boundary_endpoint_sources(
+        point: RoadVec3,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Vec<TerrainClipSourceEdge> {
+        Self::terrain_clip_source_edges_at_world_xz_point(point, source_edges)
+            .into_iter()
+            .filter(|edge| {
+                matches!(
+                    edge.source,
+                    RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                        boundary_source: Some(_),
+                        ..
+                    }
+                )
+            })
+            .collect()
     }
 
     fn terrain_clip_source_chain_point_identity(points: &[RoadVec3]) -> Vec<(i64, i64, i64)> {

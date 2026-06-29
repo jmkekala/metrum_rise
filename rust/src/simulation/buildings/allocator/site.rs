@@ -22,9 +22,8 @@ const DEFAULT_ANCHOR_FORWARD: [f32; 3] = [0.0, 0.0, 1.0];
 const BUILDING_SITE_FOOTPRINT_GROUP_MASK: u64 = 0x8000_0000_0000_0000;
 const BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const BUILDING_SITE_GRADING_RING_MULTIPLIERS: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
-const BUILDING_SITE_PAD_TIE_IN_INSET_FRACTION: f32 = 0.5;
-const BUILDING_SITE_PAD_TIE_IN_INSET_MAX_M: f32 = 5.0;
-const BUILDING_SITE_PAD_MIN_HALF_EXTENT_M: f32 = 4.0;
+const BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M: f32 = 2.0;
+const BUILDING_SITE_SUPPORT_TIE_IN_EPS_M: f32 = 0.05;
 const BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M: f32 = 3.0;
 const BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M: f32 = 8.0;
 const BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M: f32 = 0.05;
@@ -43,12 +42,12 @@ pub(crate) struct BuildingSiteSurfaceClient {
     pub(crate) vertices_world: Vec<Vector2>,
 }
 
-/// Runtime client that owns the inset flat building-site pad surface.
+/// Runtime client that owns the required flat building-site support surface.
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {
-    /// World-space flat pad footprint corners.
+    /// World-space flat support footprint corners.
     pub(crate) footprint_world: [Vector2; 4],
-    /// Flat support height shared by the building and site pad.
+    /// Flat support height shared by the building and authored site surfaces.
     pub(crate) support_height_m: f32,
     /// Authored site surface polygons transformed into world space.
     pub(crate) surfaces: Vec<BuildingSiteSurfaceClient>,
@@ -366,14 +365,11 @@ impl BuildingAllocator {
         let center = Vector2::new(building.center_x, building.center_y);
         let lot_half_width = building.width_cells as f32 * zone_cell_m * 0.5;
         let lot_half_depth = building.depth_cells as f32 * zone_cell_m * 0.5;
-        let inset_m = building_site_pad_tie_in_inset_m(zone_cell_m, lot_half_width, lot_half_depth);
-        let half_width = lot_half_width - inset_m;
-        let half_depth = lot_half_depth - inset_m;
         let footprint_world = [
-            center + basis_x * -half_width + basis_z * -half_depth,
-            center + basis_x * -half_width + basis_z * half_depth,
-            center + basis_x * half_width + basis_z * half_depth,
-            center + basis_x * half_width + basis_z * -half_depth,
+            center + basis_x * -lot_half_width + basis_z * -lot_half_depth,
+            center + basis_x * -lot_half_width + basis_z * lot_half_depth,
+            center + basis_x * lot_half_width + basis_z * lot_half_depth,
+            center + basis_x * lot_half_width + basis_z * -lot_half_depth,
         ];
         let surfaces = self
             .registry
@@ -411,18 +407,6 @@ impl BuildingAllocator {
     }
 }
 
-fn building_site_pad_tie_in_inset_m(
-    zone_cell_m: f32,
-    lot_half_width_m: f32,
-    lot_half_depth_m: f32,
-) -> f32 {
-    let target_m = (zone_cell_m * BUILDING_SITE_PAD_TIE_IN_INSET_FRACTION)
-        .min(BUILDING_SITE_PAD_TIE_IN_INSET_MAX_M);
-    let max_inset_m =
-        (lot_half_width_m.min(lot_half_depth_m) - BUILDING_SITE_PAD_MIN_HALF_EXTENT_M).max(0.0);
-    target_m.min(max_inset_m)
-}
-
 fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
     let stable_piece_id = BUILDING_SITE_FOOTPRINT_GROUP_MASK | building_idx as u64;
     let vertices = site
@@ -452,6 +436,91 @@ fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> Ter
         vertices,
         source_edges,
     )
+}
+
+pub(super) fn building_site_support_tie_in_is_valid(
+    footprint_world: [Vector2; 4],
+    support_height_m: f32,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+) -> bool {
+    if !support_height_m.is_finite() {
+        return false;
+    }
+    let signed_area = signed_polygon_area(footprint_world);
+    if signed_area.abs() <= f32::EPSILON {
+        return false;
+    }
+
+    let safe_step_m = BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M.max(f32::EPSILON);
+    let max_distance_m = terrain_cdt_local_sample_margin_m(terrain, safe_step_m);
+    let loop_is_ccw = signed_area > 0.0;
+    let mut edge_outward_dirs = Vec::with_capacity(footprint_world.len());
+
+    for edge_idx in 0..footprint_world.len() {
+        let start = footprint_world[edge_idx];
+        let end = footprint_world[(edge_idx + 1) % footprint_world.len()];
+        let delta = end - start;
+        let length_m = delta.length();
+        if length_m <= f32::EPSILON {
+            return false;
+        }
+        let mut outward = if loop_is_ccw {
+            Vector2::new(delta.y, -delta.x)
+        } else {
+            Vector2::new(-delta.y, delta.x)
+        } / length_m;
+        outward = corrected_footprint_outward(&footprint_world, (start + end) * 0.5, outward);
+        edge_outward_dirs.push(outward);
+
+        let sample_count = ((length_m / safe_step_m).ceil() as u32).max(1);
+        for sample_idx in 0..=sample_count {
+            let t = sample_idx as f32 / sample_count as f32;
+            let seam = start.lerp(end, t);
+            if !building_site_support_tie_in_ray_is_valid(
+                support_height_m,
+                seam,
+                outward,
+                terrain,
+                graph,
+                road_surface,
+                safe_step_m,
+                max_distance_m,
+            ) {
+                return false;
+            }
+        }
+    }
+
+    if edge_outward_dirs.len() != footprint_world.len() {
+        return false;
+    }
+    for vertex_idx in 0..footprint_world.len() {
+        let previous =
+            edge_outward_dirs[(vertex_idx + footprint_world.len() - 1) % footprint_world.len()];
+        let next = edge_outward_dirs[vertex_idx];
+        let bisector = previous + next;
+        if bisector.length_squared() <= f32::EPSILON {
+            continue;
+        }
+        let vertex = footprint_world[vertex_idx];
+        let outward = corrected_footprint_outward(&footprint_world, vertex, bisector.normalized());
+        if !building_site_support_tie_in_ray_is_valid(
+            support_height_m,
+            vertex,
+            outward,
+            terrain,
+            graph,
+            road_surface,
+            safe_step_m,
+            max_distance_m,
+        ) {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn append_building_site_grading_guides(
@@ -513,6 +582,12 @@ fn append_building_site_grading_guides(
                     tie_in_guide_constraints,
                 );
             }
+            push_building_site_grading_ray_constraints(
+                site.support_height_m,
+                seam,
+                &ring_vertices,
+                tie_in_guide_constraints,
+            );
             previous_ring_vertices = ring_vertices;
         }
     }
@@ -540,6 +615,7 @@ fn append_building_site_grading_guides(
             safe_step_m,
             max_distance_m,
             tie_in_guide_samples,
+            tie_in_guide_constraints,
             sample_keys,
         );
     }
@@ -555,9 +631,10 @@ fn append_building_site_grading_ray(
     safe_step_m: f32,
     max_distance_m: f32,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
     sample_keys: &mut BTreeMap<(i64, i64), ()>,
 ) {
-    for vertex in building_site_grading_ray_vertices(
+    let vertices = building_site_grading_ray_vertices(
         seam_height_m,
         seam,
         outward,
@@ -566,9 +643,16 @@ fn append_building_site_grading_ray(
         road_surface,
         safe_step_m,
         max_distance_m,
-    ) {
-        push_building_site_grading_sample(vertex, tie_in_guide_samples, sample_keys);
+    );
+    for vertex in &vertices {
+        push_building_site_grading_sample(*vertex, tie_in_guide_samples, sample_keys);
     }
+    push_building_site_grading_ray_constraints(
+        seam_height_m,
+        seam,
+        &vertices,
+        tie_in_guide_constraints,
+    );
 }
 
 fn building_site_grading_ray_vertices(
@@ -603,8 +687,62 @@ fn building_site_grading_ray_vertices(
     vertices
 }
 
+fn push_building_site_grading_ray_constraints(
+    seam_height_m: f32,
+    seam: Vector2,
+    ring_vertices: &[TerrainCdtVertex],
+    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+) {
+    let mut previous = TerrainCdtVertex::new(seam.x as f64, seam_height_m, seam.y as f64);
+    for &current in ring_vertices {
+        push_building_site_grading_constraint(previous, current, tie_in_guide_constraints);
+        previous = current;
+    }
+}
+
+fn building_site_support_tie_in_ray_is_valid(
+    seam_height_m: f32,
+    seam: Vector2,
+    outward: Vector2,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    safe_step_m: f32,
+    max_distance_m: f32,
+) -> bool {
+    let mut previous_distance_m = 0.0_f32;
+    for multiplier in BUILDING_SITE_GRADING_RING_MULTIPLIERS {
+        let distance_m = (safe_step_m * multiplier).min(max_distance_m);
+        if distance_m <= previous_distance_m + f32::EPSILON {
+            continue;
+        }
+        previous_distance_m = distance_m;
+        let pos = seam + outward * distance_m;
+        let target_height_m =
+            building_site_raw_tie_in_target_height(pos, distance_m, terrain, graph, road_surface);
+        let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO
+            + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M;
+        if (target_height_m - seam_height_m).abs() <= max_delta_m {
+            return true;
+        }
+    }
+    false
+}
+
 fn building_site_grading_target_height(
     seam_height_m: f32,
+    pos: Vector2,
+    distance_m: f32,
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+) -> f32 {
+    let raw_height_m =
+        building_site_raw_tie_in_target_height(pos, distance_m, terrain, graph, road_surface);
+    grade_limited_site_tie_in_height(seam_height_m, raw_height_m, distance_m)
+}
+
+fn building_site_raw_tie_in_target_height(
     pos: Vector2,
     distance_m: f32,
     terrain: &TerrainSystem,
@@ -619,9 +757,7 @@ fn building_site_grading_target_height(
     {
         return road_height_m;
     }
-    let terrain_height_m =
-        terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
-    grade_limited_site_tie_in_height(seam_height_m, terrain_height_m, distance_m)
+    terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE
 }
 
 fn building_site_visible_road_height(
@@ -726,7 +862,15 @@ fn grade_limited_site_tie_in_height(
 }
 
 fn corrected_site_outward(site: &BuildingSiteClient, seam: Vector2, outward: Vector2) -> Vector2 {
-    if site.contains_point(seam + outward * SITE_POINT_EPS_M * 8.0) {
+    corrected_footprint_outward(&site.footprint_world, seam, outward)
+}
+
+fn corrected_footprint_outward<const N: usize>(
+    footprint_world: &[Vector2; N],
+    seam: Vector2,
+    outward: Vector2,
+) -> Vector2 {
+    if point_in_polygon(seam + outward * SITE_POINT_EPS_M * 8.0, footprint_world) {
         -outward
     } else {
         outward
@@ -926,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn site_grading_guides_start_outside_flat_pad() {
+    fn site_grading_guides_start_outside_flat_support() {
         let site = BuildingSiteClient {
             support_height_m: 4.0,
             surfaces: Vec::new(),
@@ -964,18 +1108,53 @@ mod tests {
         }));
         assert!(
             !constraints.is_empty(),
-            "apron guide rails should be constrained so the CDT cannot collapse the frontage strip into one cap"
+            "apron guide rails should be constrained so the CDT cannot collapse the support edge into one cap"
+        );
+        assert!(
+            constraints.iter().any(|constraint| {
+                (constraint.start.x + 5.0).abs() <= 0.001
+                    && constraint.start.z.abs() <= 1.001
+                    && (constraint.start.height_m - 4.0).abs() <= 0.001
+                    && (constraint.end.x + 6.0).abs() <= 0.001
+                    && constraint.end.z.abs() <= 1.001
+                    && (constraint.end.height_m - 3.5).abs() <= 0.001
+            }),
+            "apron rays should be constrained radially from the support edge to the first ring"
         );
     }
 
     #[test]
-    fn site_pad_inset_reserves_tie_in_strip() {
-        assert_eq!(building_site_pad_tie_in_inset_m(10.0, 10.0, 10.0), 5.0);
-        assert_eq!(building_site_pad_tie_in_inset_m(10.0, 4.0, 10.0), 0.0);
+    fn support_tie_in_accepts_flat_surroundings() {
+        let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
+        let graph = RegionGraph::new();
+        let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+
+        assert!(building_site_support_tie_in_is_valid(
+            square_site_with_surface().footprint_world,
+            0.0,
+            &terrain,
+            &graph,
+            &road_surface,
+        ));
     }
 
     #[test]
-    fn derived_site_client_uses_inset_pad_footprint() {
+    fn support_tie_in_rejects_oversteep_surroundings() {
+        let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
+        let graph = RegionGraph::new();
+        let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+
+        assert!(!building_site_support_tie_in_is_valid(
+            square_site_with_surface().footprint_world,
+            5.0,
+            &terrain,
+            &graph,
+            &road_surface,
+        ));
+    }
+
+    #[test]
+    fn derived_site_client_uses_required_flat_support_footprint() {
         let allocator = BuildingAllocator::new();
         let building = Building {
             center_x: 0.0,
@@ -1021,9 +1200,9 @@ mod tests {
 
         let site = allocator.derive_building_site_client(&building, 10.0);
 
-        assert!((signed_polygon_area(site.footprint_world).abs() - 100.0).abs() <= 0.001);
-        assert!(site.contains_point(Vector2::new(4.9, 0.0)));
-        assert!(!site.contains_point(Vector2::new(5.1, 0.0)));
+        assert!((signed_polygon_area(site.footprint_world).abs() - 400.0).abs() <= 0.001);
+        assert!(site.contains_point(Vector2::new(9.9, 0.0)));
+        assert!(!site.contains_point(Vector2::new(10.1, 0.0)));
         assert_eq!(site.support_height_m, 7.0);
     }
 

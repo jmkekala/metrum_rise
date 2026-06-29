@@ -1,7 +1,7 @@
 //! Terrain-patch road loop extraction and CDT source adaptation.
 
 use super::super::{
-    ChunkCacheKind, NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
+    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
     NodeFootprintBoundaryVertexSource, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
     RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipExport,
@@ -21,7 +21,9 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtVertex,
 };
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::HashSet;
 
 mod grading;
 mod loops;

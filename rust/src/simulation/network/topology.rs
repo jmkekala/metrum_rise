@@ -108,9 +108,17 @@ impl RegionGraph {
 
     /// Finds an existing node within `threshold` distance or adds a new one.
     pub fn find_or_add_node(&mut self, pos: Vector3, threshold: f32, node_type: NodeType) -> u32 {
+        if let Some(id) = self.find_node_within(pos, threshold) {
+            return id;
+        }
+        self.add_node(pos, node_type)
+    }
+
+    /// Returns an existing valid node within `threshold` distance without mutating the graph.
+    pub fn find_node_within(&self, pos: Vector3, threshold: f32) -> Option<u32> {
         let chunk_coords = Self::get_node_chunk_coords(pos);
 
-        // Search current and adjacent chunks
+        // Search current and adjacent chunks.
         for dx in -1..=1 {
             for dz in -1..=1 {
                 if let Some(chunk) = self
@@ -119,14 +127,13 @@ impl RegionGraph {
                 {
                     for &node_id in chunk {
                         if self.node(node_id).pos.distance_to(pos) < threshold {
-                            let id = self.get_valid_node(node_id);
-                            return id;
+                            return Some(self.get_valid_node(node_id));
                         }
                     }
                 }
             }
         }
-        self.add_node(pos, node_type)
+        None
     }
 
     /// Adds a new edge to the graph and updates adjacency and spatial indices.
@@ -299,6 +306,10 @@ impl RegionGraph {
         }
 
         for i in affected_edges {
+            self.adjacency[remove as usize].retain(|&edge_idx| edge_idx != i);
+            if !self.adjacency[keep as usize].contains(&i) {
+                self.adjacency[keep as usize].push(i);
+            }
             self.remove_from_spatial_index(i);
             self.add_to_spatial_index(i);
         }
@@ -538,19 +549,33 @@ fn collect_endpoint_snap_splits(
             }
 
             if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
-                let factor_u = find_geo_factor(&edge2_geo_full, best_closest);
+                let mut factor_u = find_geo_factor(&edge2_geo_full, best_closest);
                 let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
                 let t = factor_u.fract();
-                let refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
+                let mut refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
+                for vertex_idx in [seg, seg + 1] {
+                    let vertex = edge2_geo_full[vertex_idx];
+                    if Vector2::new(refined.x - vertex.x, refined.z - vertex.z).length()
+                        <= INTERSECTION_NODE_CAPTURE_EPSILON
+                    {
+                        refined = vertex;
+                        factor_u = vertex_idx as f32;
+                        break;
+                    }
+                }
 
                 if Vector2::new(p.x - refined.x, p.z - refined.z).length()
                     < config::INTERSECTION_TOLERANCE
                 {
+                    // Endpoint snaps are topological centerline connections. Use the refined
+                    // existing-road XZ so dense baked roads split at the true centerline, while
+                    // keeping the new endpoint height as the authored vertical connection pin.
+                    let junction_pos = Vector3::new(refined.x, p.y, refined.z);
                     let junction_id = snap_new_edge_endpoint_to_intersection(
                         graph,
                         edge_id,
                         idx == 0,
-                        best_closest,
+                        junction_pos,
                     );
                     all_splits
                         .entry(edge_id)

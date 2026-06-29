@@ -18,7 +18,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, unemployment benefit disbursement, two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household/business purchase tax, business profit tax, and construction property tax), and first city-owned service-building placement/funding are all live. See [`economy.md`](economy.md).
 - **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure through a strictly organic model. RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry and budget-backed open jobs, while vacant homes only cap actual move-in execution. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households, while output absorption prevents oversupply. Move-in acceptance estimates candidate household search runway from starter savings, budget-backed open jobs, unemployment benefit reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The pioneer demand floor has been removed entirely — unemployment benefit provides early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand is driven by commercial input coverage rather than household `goods_shortage`. See [`demand.md`](demand.md).
-- **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers inset flat site pads at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
+- **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
 
 ## Current Priorities
 
@@ -69,11 +69,21 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   shadow policy is centralized through the Godot rendering bridge. The `run.sh` debug launch flags
   and terrain/water/building visual modes are now listed in [`reference.md`](reference.md), while
   the rendering invariants live in [`terrain.md`](terrain.md).
-- Building-site earthworks now keep an inset site pad flat while reserving a deterministic perimeter
-  tie-in strip and apron guide samples from the actual pad edges. Near-road tie-ins sample the
-  nearest visible road surface, stale parcel/building frontage attachments are repaired after road
-  topology edits, and `--debug site-grading` combines road and site diagnostics. See
+- Building-site earthworks now keep the required support footprint flat, reject placement when the
+  surrounding terrain/road cannot tie in within the deterministic apron envelope, and derive apron
+  guide samples from the actual support edges. Near-road tie-ins sample the nearest visible road
+  surface, stale parcel/building frontage attachments are repaired after road topology edits, and
+  `--debug site-grading` combines road and site diagnostics. See
   [`earthworks.md`](earthworks.md), [`roads.md`](roads.md), and [`reference.md`](reference.md).
+- Standard road placement now prepares a dense terrain-aware vertical profile before preview or
+  commit: the player's XZ alignment is preserved, terrain / visible-road support samples become
+  height targets, endpoints and road connections are pinned, and `physical_geometry` stores the
+  solved dense profile that section compilation and earthworks consume. Degree-1 terminal road
+  extensions re-solve the previous terminal edge plus the new edge as one corridor, so building in
+  pieces and one-stroke placement share the same vertical validity. Placement preview and commit
+  now also dry-run the local surface compile so degenerate tight bends are rejected with a visible
+  reason instead of landing as missing roadbed. Road geometry dumps now include compact cut/fill
+  summaries. See [`roads.md`](roads.md).
 - Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
   and capped car movement through junction connector lanes at `6 m/s`. See
   [`reference.md`](reference.md).
@@ -170,9 +180,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   slope. Terrain under the owned footprint is now specified as road-following support, not as an
   independent visible surface or trench carrier, terrain render patches intersecting compiled road
   ownership now stay at full mesh resolution and use a denser visible mesh step near roads so
-  terrain triangles cannot simplify back through the roadbed. Road-locked terrain patch selection is
-  bounded to the road-owned footprint rather than the wider earthwork envelope, road-locked patches
-  now carry explicit road footprint clip polygons instead of a road-ownership shader mask, and
+  terrain triangles cannot simplify back through the roadbed. Road-locked terrain patch selection
+  is bounded to each road-owned footprint plus its required grade-limited tie-in envelope,
+  road-locked patches now carry explicit road footprint clip polygons instead of a
+  road-ownership shader mask, and
   road-touched terrain patches now build clipped double-sided `ArrayMesh` topology instead of
   relying on fragment discard. The clipped-patch renderer now fast-paths untouched / fully
   road-owned cells, and visible water patches now use depth-owned local topology plus the same road
