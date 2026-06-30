@@ -234,6 +234,10 @@ Deterministic seam contract:
     cross a road-owned footprint loop
   - CDT triangulation failures are hard errors in debug output and must not fall back to cell
     subtraction, seam carpets, closure strips, water, or shader masks
+  - CDT outputs whose ordinary terrain mesh has pathological face slope or triangle span are loud
+    diagnostic failures; the exporter omits only pathological ordinary terrain faces while keeping
+    the clipped baked patch mesh active, records the omitted count, and keeps the status/pathology
+    visible in logs. This containment is not a valid seam closure and must remain visible in logs
   - `Terminal`, `Bend`, and `JunctionN` visual node pieces resolve asphalt / sidewalk /
     outer-footprint ownership through `i_overlay` before Spade triangulation, so sharp-angle
     sidewalks shrink or split instead of overlapping asphalt
@@ -704,13 +708,16 @@ The v1 runtime building-site authoring envelope is the occupied lot rectangle:
   `lot_width_cells` and `lot_depth_cells`
 - for explicit buildings, the explicit placement footprint defined by the asset and allocator
 
-The required flat support footprint is the area that terrain may never enter after placement. Until
-the asset schema exports explicit support extents, runtime derives this footprint conservatively
-from the occupied lot rectangle. Meshes, entrance landings, driveway/loading/parking anchors, and
-authored hard surfaces must fit on that flat support plane. Terrain, road, and apron tie-ins start
-outside the support footprint; they must not cross back through it. Authored `[[site_surfaces]]`
-polygons do not define separate terrain-ownership cuts. They define visible/material regions on the
-selected site plane, such as asphalt, concrete, paved yards, or walkways.
+The required flat support footprint is the area that terrain may never enter after placement. The
+occupied lot rectangle remains the reservation / overlap envelope, while runtime derives the
+required support footprint from mesh parts, entrance landings, driveway/loading/parking anchors,
+and authored hard surfaces. Road-facing access-anchor support stays behind the exact road /
+sidewalk boundary by a deterministic clearance so the frontage strip is a tie-in/apron region
+instead of a second hard terrain-CDT loop sharing the road seam. Terrain, road, and apron tie-ins
+start outside the support footprint; they must not cross back through it. Authored
+`[[site_surfaces]]` polygons do not define separate terrain-ownership cuts. They define
+visible/material regions on the selected site plane, such as asphalt, concrete, paved yards, or
+walkways.
 
 Zoning is not an engineered-ground client:
 
@@ -723,7 +730,8 @@ Zoning is not an engineered-ground client:
 The asset editor previews the asset on a flat local lot with the authored lot dimensions, not
 on an abstract infinite grid. The authoring view should show:
 
-- the lot boundary as the current conservative runtime support footprint
+- the lot boundary as the reservation / overlap footprint
+- the derived required flat support footprint that runtime keeps terrain out of
 - the building mesh parts on that flat plane
 - `entrance`, `driveway`, `parking`, and `loading_bay` anchors in the same local coordinate space
 - authored `[[site_surfaces]]` polygons as material regions on top of the flat lot

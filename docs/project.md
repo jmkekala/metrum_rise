@@ -69,11 +69,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   shadow policy is centralized through the Godot rendering bridge. The `run.sh` debug launch flags
   and terrain/water/building visual modes are now listed in [`reference.md`](reference.md), while
   the rendering invariants live in [`terrain.md`](terrain.md).
-- Building-site earthworks now keep the required support footprint flat, reject placement when the
-  surrounding terrain/road cannot tie in within the deterministic apron envelope, and derive apron
-  guide samples from the actual support edges. Near-road tie-ins sample the nearest visible road
-  surface, stale parcel/building frontage attachments are repaired after road topology edits, and
-  `--debug site-grading` combines road and site diagnostics. See
+- Building-site earthworks now keep the derived required support footprint flat, reject placement
+  when the surrounding terrain/road cannot tie in within the deterministic apron envelope, and
+  derive apron guide samples from the actual support edges. Road-facing access anchors stay behind
+  the exact sidewalk/road boundary so the frontage strip remains tie-in space instead of a
+  conflicting hard site loop. Near-road tie-ins sample the nearest visible road surface, stale
+  parcel/building frontage attachments are repaired after road topology edits, and `--debug
+  site-grading` combines road and site diagnostics. See
   [`earthworks.md`](earthworks.md), [`roads.md`](roads.md), and [`reference.md`](reference.md).
 - Standard road placement now prepares a dense terrain-aware vertical profile before preview or
   commit: the player's XZ alignment is preserved, terrain / visible-road support samples become

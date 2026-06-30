@@ -655,9 +655,9 @@ impl BuildingAllocator {
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
     ) -> Result<(), DemandSpawnPlacementRejection> {
-        let footprint_world = self.placement_site_corners(placement);
+        let footprint_world = self.placement_required_flat_support_footprint(placement);
         if building_site_support_tie_in_is_valid(
-            footprint_world,
+            &footprint_world,
             placement.support_height_m,
             terrain,
             graph,
@@ -1013,6 +1013,20 @@ impl BuildingAllocator {
             max_z = max_z.max(point.y);
         }
         (min_x, min_z, max_x, max_z)
+    }
+
+    fn placement_required_flat_support_footprint(
+        &self,
+        placement: &ResolvedPlacement,
+    ) -> Vec<Vector2> {
+        self.required_flat_support_footprint_world(
+            &placement.asset_id,
+            placement.center_2d,
+            placement.facing_dir,
+            placement.width_cells,
+            placement.depth_cells,
+            placement.zone_cell_m,
+        )
     }
 
     fn place_building_instance(

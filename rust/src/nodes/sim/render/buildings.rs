@@ -108,9 +108,9 @@ impl SimCore {
         let mut concrete_vertices = Vec::new();
 
         for site in &self.allocator.building_sites {
-            push_site_quad_triangles(
+            append_site_polygon_triangles(
                 &mut ground_vertices,
-                site.footprint_world,
+                &site.footprint_world,
                 site.support_height_m,
             );
             for surface in &site.surfaces {
@@ -349,6 +349,8 @@ impl SimCore {
             let building = self.allocator.buildings.get(site_idx);
             let center = polygon_centroid(&site.footprint_world);
             let (min_x, min_z, max_x, max_z) = vector2_bounds(&site.footprint_world);
+            let (lot_min_x, lot_min_z, lot_max_x, lot_max_z) =
+                vector2_bounds(&site.lot_footprint_world);
             let mut dict = VarDictionary::new();
             dict.set("site_index", i64::try_from(site_idx).unwrap_or(i64::MAX));
             dict.set(
@@ -409,6 +411,16 @@ impl SimCore {
             );
             dict.set("bounds_min", Vector2::new(min_x, min_z));
             dict.set("bounds_max", Vector2::new(max_x, max_z));
+            dict.set(
+                "lot_area_m2",
+                polygon_signed_area(&site.lot_footprint_world).abs(),
+            );
+            dict.set("lot_bounds_min", Vector2::new(lot_min_x, lot_min_z));
+            dict.set("lot_bounds_max", Vector2::new(lot_max_x, lot_max_z));
+            dict.set(
+                "lot_footprint",
+                PackedVector2Array::from_iter(site.lot_footprint_world.iter().copied()),
+            );
             dict.set(
                 "footprint",
                 PackedVector2Array::from_iter(site.footprint_world.iter().copied()),
@@ -1096,18 +1108,6 @@ fn push_oriented_box_transform(
     buffer.push(0.0);
     buffer.push(front.y * scale_z);
     buffer.push(center_z);
-}
-
-fn push_site_quad_triangles(buffer: &mut Vec<Vector3>, footprint: [Vector2; 4], y: f32) {
-    let corners = [
-        Vector3::new(footprint[0].x, y, footprint[0].y),
-        Vector3::new(footprint[1].x, y, footprint[1].y),
-        Vector3::new(footprint[2].x, y, footprint[2].y),
-        Vector3::new(footprint[3].x, y, footprint[3].y),
-    ];
-    buffer.extend_from_slice(&[
-        corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
-    ]);
 }
 
 fn append_site_polygon_triangles(buffer: &mut Vec<Vector3>, vertices: &[Vector2], y: f32) {

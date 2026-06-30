@@ -1,6 +1,8 @@
 //! Building-site footprint, surface, and terrain-query helpers.
 
-use crate::assets::SiteSurfaceMaterial;
+use crate::assets::{
+    Anchor, AnchorType, AssetManifest, MeshPart, SiteSurface, SiteSurfaceMaterial,
+};
 use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::entrance::{
     building_local_xz_basis, building_local_xz_pos, main_entrance_anchor,
@@ -27,6 +29,13 @@ const BUILDING_SITE_SUPPORT_TIE_IN_EPS_M: f32 = 0.05;
 const BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M: f32 = 3.0;
 const BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M: f32 = 8.0;
 const BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M: f32 = 0.05;
+const BUILDING_SITE_MESH_PART_SUPPORT_MARGIN_M: f32 = 5.25;
+const BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M: f32 = 0.35;
+const BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M: f32 = 0.25;
+const BUILDING_SITE_ROAD_ACCESS_CLEARANCE_M: f32 = 1.0;
+const BUILDING_SITE_ENTRANCE_SUPPORT_WIDTH_M: f32 = 2.0;
+const BUILDING_SITE_ENTRANCE_SUPPORT_LENGTH_M: f32 = 2.0;
+const BUILDING_SITE_DEFAULT_SUPPORT_INSET_M: f32 = 2.0;
 const SITE_POINT_EPS_M: f32 = 0.001;
 
 /// Runtime surface polygon authored inside a building site.
@@ -46,7 +55,9 @@ pub(crate) struct BuildingSiteSurfaceClient {
 #[derive(Clone, Debug)]
 pub(crate) struct BuildingSiteClient {
     /// World-space flat support footprint corners.
-    pub(crate) footprint_world: [Vector2; 4],
+    pub(crate) footprint_world: Vec<Vector2>,
+    /// World-space lot reservation corners.
+    pub(crate) lot_footprint_world: [Vector2; 4],
     /// Flat support height shared by the building and authored site surfaces.
     pub(crate) support_height_m: f32,
     /// Authored site surface polygons transformed into world space.
@@ -55,7 +66,11 @@ pub(crate) struct BuildingSiteClient {
 
 impl BuildingSiteClient {
     pub(crate) fn bounds(&self) -> (f32, f32, f32, f32) {
-        polygon_bounds(self.footprint_world)
+        polygon_slice_bounds(&self.footprint_world)
+    }
+
+    pub(crate) fn lot_bounds(&self) -> (f32, f32, f32, f32) {
+        polygon_quad_bounds(self.lot_footprint_world)
     }
 
     fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
@@ -64,7 +79,7 @@ impl BuildingSiteClient {
     }
 
     pub(crate) fn contains_point(&self, pos: Vector2) -> bool {
-        point_in_polygon(pos, &self.footprint_world)
+        point_in_polygon_slice(pos, &self.footprint_world)
     }
 
     fn height_at(&self, pos: Vector2) -> Option<f32> {
@@ -168,7 +183,7 @@ impl BuildingAllocator {
     pub(crate) fn site_world_bounds(&self, building_idx: usize) -> Option<(f32, f32, f32, f32)> {
         self.building_sites
             .get(building_idx)
-            .map(|site| site.bounds())
+            .map(|site| site.lot_bounds())
     }
 
     pub(crate) fn accumulate_pending_site_dirty_bounds(
@@ -365,12 +380,20 @@ impl BuildingAllocator {
         let center = Vector2::new(building.center_x, building.center_y);
         let lot_half_width = building.width_cells as f32 * zone_cell_m * 0.5;
         let lot_half_depth = building.depth_cells as f32 * zone_cell_m * 0.5;
-        let footprint_world = [
+        let lot_footprint_world = [
             center + basis_x * -lot_half_width + basis_z * -lot_half_depth,
             center + basis_x * -lot_half_width + basis_z * lot_half_depth,
             center + basis_x * lot_half_width + basis_z * lot_half_depth,
             center + basis_x * lot_half_width + basis_z * -lot_half_depth,
         ];
+        let footprint_world = self.required_flat_support_footprint_world(
+            &building.asset_id,
+            center,
+            building.facing_dir,
+            building.width_cells as usize,
+            building.depth_cells as usize,
+            zone_cell_m,
+        );
         let surfaces = self
             .registry
             .get(&building.asset_id)
@@ -401,10 +424,358 @@ impl BuildingAllocator {
 
         BuildingSiteClient {
             footprint_world,
+            lot_footprint_world,
             support_height_m: building.support_height_m,
             surfaces,
         }
     }
+
+    pub(crate) fn required_flat_support_footprint_world(
+        &self,
+        asset_id: &str,
+        center: Vector2,
+        facing_dir: Vector2,
+        width_cells: usize,
+        depth_cells: usize,
+        zone_cell_m: f32,
+    ) -> Vec<Vector2> {
+        let lot_half_width = width_cells as f32 * zone_cell_m * 0.5;
+        let lot_half_depth = depth_cells as f32 * zone_cell_m * 0.5;
+        let anchor_forward = self
+            .registry
+            .get(asset_id)
+            .and_then(|entry| main_entrance_anchor(&entry.manifest.anchors))
+            .map(|anchor| anchor.forward)
+            .unwrap_or(DEFAULT_ANCHOR_FORWARD);
+        let (basis_x, basis_z) = building_local_xz_basis(facing_dir, anchor_forward);
+        let footprint_local = self
+            .registry
+            .get(asset_id)
+            .map(|entry| {
+                required_flat_support_footprint_local(
+                    &entry.manifest,
+                    lot_half_width,
+                    lot_half_depth,
+                )
+            })
+            .unwrap_or_else(|| lot_footprint_local(lot_half_width, lot_half_depth));
+        footprint_local
+            .into_iter()
+            .map(|point| center + basis_x * point.x + basis_z * point.y)
+            .collect()
+    }
+}
+
+fn required_flat_support_footprint_local(
+    manifest: &AssetManifest,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+) -> Vec<Vector2> {
+    let frontage_dir = asset_frontage_dir_local(manifest);
+    let mut points = Vec::new();
+    for part in &manifest.mesh_parts {
+        append_mesh_part_support_points(part, lot_half_width, lot_half_depth, &mut points);
+    }
+    for anchor in &manifest.anchors {
+        append_anchor_support_points(
+            anchor,
+            frontage_dir,
+            lot_half_width,
+            lot_half_depth,
+            &mut points,
+        );
+    }
+    for surface in &manifest.site_surfaces {
+        append_site_surface_support_points(surface, lot_half_width, lot_half_depth, &mut points);
+    }
+    if points.is_empty() {
+        return default_support_footprint_local(lot_half_width, lot_half_depth);
+    }
+
+    points.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    points.dedup_by(|left, right| left.distance_squared_to(*right) <= SITE_POINT_EPS_M);
+    let mut hull = convex_hull_local(points);
+    if hull.len() < 3 || signed_polygon_area(&hull).abs() <= SITE_POINT_EPS_M * SITE_POINT_EPS_M {
+        hull = default_support_footprint_local(lot_half_width, lot_half_depth);
+    }
+    if signed_polygon_area(&hull) < 0.0 {
+        hull.reverse();
+    }
+    hull
+}
+
+fn asset_frontage_dir_local(manifest: &AssetManifest) -> Vector2 {
+    let front = main_entrance_anchor(&manifest.anchors)
+        .map(|anchor| anchor.forward)
+        .unwrap_or(DEFAULT_ANCHOR_FORWARD);
+    let front = Vector2::new(front[0], front[2]);
+    if front.length_squared() > f32::EPSILON {
+        front.normalized()
+    } else {
+        Vector2::new(DEFAULT_ANCHOR_FORWARD[0], DEFAULT_ANCHOR_FORWARD[2])
+    }
+}
+
+fn append_mesh_part_support_points(
+    part: &MeshPart,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    points: &mut Vec<Vector2>,
+) {
+    let half_extent = (part.scale * 0.75).max(BUILDING_SITE_MESH_PART_SUPPORT_MARGIN_M);
+    append_axis_aligned_support_rect(
+        Vector2::new(part.position[0], part.position[2]),
+        half_extent,
+        half_extent,
+        lot_half_width,
+        lot_half_depth,
+        points,
+    );
+}
+
+fn append_anchor_support_points(
+    anchor: &Anchor,
+    frontage_dir: Vector2,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    points: &mut Vec<Vector2>,
+) {
+    match anchor.anchor_type {
+        AnchorType::Entrance => append_oriented_support_rect(
+            anchor.position,
+            anchor.forward,
+            anchor
+                .width_m
+                .unwrap_or(BUILDING_SITE_ENTRANCE_SUPPORT_WIDTH_M),
+            BUILDING_SITE_ENTRANCE_SUPPORT_LENGTH_M,
+            BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M,
+            lot_half_width,
+            lot_half_depth,
+            frontage_dir,
+            points,
+        ),
+        AnchorType::Driveway => {
+            let width = anchor.width_m.unwrap_or(0.0);
+            append_oriented_support_rect(
+                anchor.position,
+                anchor.forward,
+                width,
+                (width * 1.4).max(1.5),
+                BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M,
+                lot_half_width,
+                lot_half_depth,
+                frontage_dir,
+                points,
+            );
+        }
+        AnchorType::Parking | AnchorType::LoadingBay => append_oriented_support_rect(
+            anchor.position,
+            anchor.forward,
+            anchor.width_m.unwrap_or(0.0),
+            anchor.length_m.unwrap_or(0.0),
+            BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M,
+            lot_half_width,
+            lot_half_depth,
+            frontage_dir,
+            points,
+        ),
+        AnchorType::Wheel | AnchorType::Light => {}
+    }
+}
+
+fn append_site_surface_support_points(
+    surface: &SiteSurface,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    points: &mut Vec<Vector2>,
+) {
+    if surface.vertices.is_empty() {
+        return;
+    }
+    let mut min_x = f32::INFINITY;
+    let mut min_z = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_z = f32::NEG_INFINITY;
+    for vertex in &surface.vertices {
+        min_x = min_x.min(vertex[0]);
+        min_z = min_z.min(vertex[1]);
+        max_x = max_x.max(vertex[0]);
+        max_z = max_z.max(vertex[1]);
+    }
+    min_x -= BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
+    min_z -= BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
+    max_x += BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
+    max_z += BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
+    for point in [
+        Vector2::new(min_x, min_z),
+        Vector2::new(min_x, max_z),
+        Vector2::new(max_x, max_z),
+        Vector2::new(max_x, min_z),
+    ] {
+        points.push(clamp_local_support_point(
+            point,
+            lot_half_width,
+            lot_half_depth,
+        ));
+    }
+}
+
+fn append_axis_aligned_support_rect(
+    center: Vector2,
+    half_width: f32,
+    half_depth: f32,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    points: &mut Vec<Vector2>,
+) {
+    for point in [
+        Vector2::new(center.x - half_width, center.y - half_depth),
+        Vector2::new(center.x - half_width, center.y + half_depth),
+        Vector2::new(center.x + half_width, center.y + half_depth),
+        Vector2::new(center.x + half_width, center.y - half_depth),
+    ] {
+        points.push(clamp_local_support_point(
+            point,
+            lot_half_width,
+            lot_half_depth,
+        ));
+    }
+}
+
+fn append_oriented_support_rect(
+    position: [f32; 3],
+    forward: [f32; 3],
+    width_m: f32,
+    length_m: f32,
+    margin_m: f32,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+    frontage_dir: Vector2,
+    points: &mut Vec<Vector2>,
+) {
+    let forward = Vector2::new(forward[0], forward[2]);
+    if forward.length_squared() <= f32::EPSILON {
+        return;
+    }
+    let forward = forward.normalized();
+    let side = Vector2::new(-forward.y, forward.x);
+    let origin = Vector2::new(position[0], position[2]);
+    let half_width = width_m.max(0.0) * 0.5 + margin_m.max(0.0);
+    let back = margin_m.max(0.0);
+    let front = length_m.max(0.0) + margin_m.max(0.0);
+    for point in [
+        origin - side * half_width - forward * back,
+        origin + side * half_width - forward * back,
+        origin + side * half_width + forward * front,
+        origin - side * half_width + forward * front,
+    ] {
+        points.push(clamp_road_access_support_point(
+            point,
+            frontage_dir,
+            lot_half_width,
+            lot_half_depth,
+        ));
+    }
+}
+
+fn clamp_road_access_support_point(
+    point: Vector2,
+    frontage_dir: Vector2,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+) -> Vector2 {
+    let point = clamp_local_support_point(point, lot_half_width, lot_half_depth);
+    if frontage_dir.length_squared() <= f32::EPSILON {
+        return point;
+    }
+    let frontage_dir = frontage_dir.normalized();
+    let front_limit = frontage_projection_limit(frontage_dir, lot_half_width, lot_half_depth);
+    let clearance = BUILDING_SITE_ROAD_ACCESS_CLEARANCE_M.min(front_limit.max(0.0) * 0.5);
+    let support_limit = front_limit - clearance;
+    let projection = frontage_projection(point, frontage_dir);
+    if projection <= support_limit {
+        return point;
+    }
+    clamp_local_support_point(
+        point - frontage_dir * (projection - support_limit),
+        lot_half_width,
+        lot_half_depth,
+    )
+}
+
+fn frontage_projection(point: Vector2, frontage_dir: Vector2) -> f32 {
+    point.x * frontage_dir.x + point.y * frontage_dir.y
+}
+
+fn frontage_projection_limit(
+    frontage_dir: Vector2,
+    lot_half_width: f32,
+    lot_half_depth: f32,
+) -> f32 {
+    frontage_dir.x.abs() * lot_half_width + frontage_dir.y.abs() * lot_half_depth
+}
+
+fn default_support_footprint_local(lot_half_width: f32, lot_half_depth: f32) -> Vec<Vector2> {
+    let inset = BUILDING_SITE_DEFAULT_SUPPORT_INSET_M
+        .min(lot_half_width.max(0.0) * 0.5)
+        .min(lot_half_depth.max(0.0) * 0.5);
+    lot_footprint_local(lot_half_width - inset, lot_half_depth - inset)
+}
+
+fn lot_footprint_local(lot_half_width: f32, lot_half_depth: f32) -> Vec<Vector2> {
+    vec![
+        Vector2::new(-lot_half_width, -lot_half_depth),
+        Vector2::new(-lot_half_width, lot_half_depth),
+        Vector2::new(lot_half_width, lot_half_depth),
+        Vector2::new(lot_half_width, -lot_half_depth),
+    ]
+}
+
+fn clamp_local_support_point(point: Vector2, lot_half_width: f32, lot_half_depth: f32) -> Vector2 {
+    Vector2::new(
+        point.x.clamp(-lot_half_width, lot_half_width),
+        point.y.clamp(-lot_half_depth, lot_half_depth),
+    )
+}
+
+fn convex_hull_local(points: Vec<Vector2>) -> Vec<Vector2> {
+    if points.len() <= 3 {
+        return points;
+    }
+    let mut lower = Vec::new();
+    for point in points.iter().copied() {
+        while lower.len() >= 2
+            && local_cross(lower[lower.len() - 2], lower[lower.len() - 1], point)
+                <= SITE_POINT_EPS_M
+        {
+            lower.pop();
+        }
+        lower.push(point);
+    }
+    let mut upper = Vec::new();
+    for point in points.iter().rev().copied() {
+        while upper.len() >= 2
+            && local_cross(upper[upper.len() - 2], upper[upper.len() - 1], point)
+                <= SITE_POINT_EPS_M
+        {
+            upper.pop();
+        }
+        upper.push(point);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+fn local_cross(a: Vector2, b: Vector2, c: Vector2) -> f32 {
+    let ab = b - a;
+    let ac = c - a;
+    ab.x * ac.y - ab.y * ac.x
 }
 
 fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
@@ -439,7 +810,7 @@ fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> Ter
 }
 
 pub(super) fn building_site_support_tie_in_is_valid(
-    footprint_world: [Vector2; 4],
+    footprint_world: &[Vector2],
     support_height_m: f32,
     terrain: &TerrainSystem,
     graph: &RegionGraph,
@@ -471,7 +842,7 @@ pub(super) fn building_site_support_tie_in_is_valid(
         } else {
             Vector2::new(-delta.y, delta.x)
         } / length_m;
-        outward = corrected_footprint_outward(&footprint_world, (start + end) * 0.5, outward);
+        outward = corrected_footprint_outward(footprint_world, (start + end) * 0.5, outward);
         edge_outward_dirs.push(outward);
 
         let sample_count = ((length_m / safe_step_m).ceil() as u32).max(1);
@@ -505,7 +876,7 @@ pub(super) fn building_site_support_tie_in_is_valid(
             continue;
         }
         let vertex = footprint_world[vertex_idx];
-        let outward = corrected_footprint_outward(&footprint_world, vertex, bisector.normalized());
+        let outward = corrected_footprint_outward(footprint_world, vertex, bisector.normalized());
         if !building_site_support_tie_in_ray_is_valid(
             support_height_m,
             vertex,
@@ -534,7 +905,7 @@ fn append_building_site_grading_guides(
     tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
     sample_keys: &mut BTreeMap<(i64, i64), ()>,
 ) {
-    let signed_area = signed_polygon_area(site.footprint_world);
+    let signed_area = signed_polygon_area(&site.footprint_world);
     if signed_area.abs() <= f32::EPSILON {
         return;
     }
@@ -865,12 +1236,12 @@ fn corrected_site_outward(site: &BuildingSiteClient, seam: Vector2, outward: Vec
     corrected_footprint_outward(&site.footprint_world, seam, outward)
 }
 
-fn corrected_footprint_outward<const N: usize>(
-    footprint_world: &[Vector2; N],
+fn corrected_footprint_outward(
+    footprint_world: &[Vector2],
     seam: Vector2,
     outward: Vector2,
 ) -> Vector2 {
-    if point_in_polygon(seam + outward * SITE_POINT_EPS_M * 8.0, footprint_world) {
+    if point_in_polygon_slice(seam + outward * SITE_POINT_EPS_M * 8.0, footprint_world) {
         -outward
     } else {
         outward
@@ -921,7 +1292,7 @@ fn building_site_grading_sample_key(x: f64, z: f64) -> (i64, i64) {
     )
 }
 
-fn signed_polygon_area<const N: usize>(points: [Vector2; N]) -> f32 {
+fn signed_polygon_area(points: &[Vector2]) -> f32 {
     let mut area = 0.0;
     for idx in 0..points.len() {
         let start = points[idx];
@@ -931,12 +1302,16 @@ fn signed_polygon_area<const N: usize>(points: [Vector2; N]) -> f32 {
     area * 0.5
 }
 
-fn polygon_bounds<const N: usize>(points: [Vector2; N]) -> (f32, f32, f32, f32) {
+fn polygon_quad_bounds(points: [Vector2; 4]) -> (f32, f32, f32, f32) {
+    polygon_slice_bounds(&points)
+}
+
+fn polygon_slice_bounds(points: &[Vector2]) -> (f32, f32, f32, f32) {
     let mut min_x = f32::INFINITY;
     let mut min_z = f32::INFINITY;
     let mut max_x = f32::NEG_INFINITY;
     let mut max_z = f32::NEG_INFINITY;
-    for point in points {
+    for &point in points {
         min_x = min_x.min(point.x);
         min_z = min_z.min(point.y);
         max_x = max_x.max(point.x);
@@ -948,10 +1323,6 @@ fn polygon_bounds<const N: usize>(points: [Vector2; N]) -> (f32, f32, f32, f32) 
 fn site_radius_m(site: &BuildingSiteClient) -> f32 {
     let (min_x, min_z, max_x, max_z) = site.bounds();
     ((max_x - min_x) * 0.5).hypot((max_z - min_z) * 0.5)
-}
-
-fn point_in_polygon<const N: usize>(pos: Vector2, polygon: &[Vector2; N]) -> bool {
-    point_in_polygon_slice(pos, polygon)
 }
 
 fn update_site_plane_ray_hit(
@@ -1021,7 +1392,13 @@ mod tests {
 
     fn square_site_with_surface() -> BuildingSiteClient {
         BuildingSiteClient {
-            footprint_world: [
+            footprint_world: vec![
+                Vector2::new(-5.0, -5.0),
+                Vector2::new(-5.0, 5.0),
+                Vector2::new(5.0, 5.0),
+                Vector2::new(5.0, -5.0),
+            ],
+            lot_footprint_world: [
                 Vector2::new(-5.0, -5.0),
                 Vector2::new(-5.0, 5.0),
                 Vector2::new(5.0, 5.0),
@@ -1130,7 +1507,7 @@ mod tests {
         let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
 
         assert!(building_site_support_tie_in_is_valid(
-            square_site_with_surface().footprint_world,
+            &square_site_with_surface().footprint_world,
             0.0,
             &terrain,
             &graph,
@@ -1145,7 +1522,7 @@ mod tests {
         let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
 
         assert!(!building_site_support_tie_in_is_valid(
-            square_site_with_surface().footprint_world,
+            &square_site_with_surface().footprint_world,
             5.0,
             &terrain,
             &graph,
@@ -1200,10 +1577,101 @@ mod tests {
 
         let site = allocator.derive_building_site_client(&building, 10.0);
 
-        assert!((signed_polygon_area(site.footprint_world).abs() - 400.0).abs() <= 0.001);
+        assert!((signed_polygon_area(&site.footprint_world).abs() - 400.0).abs() <= 0.001);
+        assert!((signed_polygon_area(&site.lot_footprint_world).abs() - 400.0).abs() <= 0.001);
         assert!(site.contains_point(Vector2::new(9.9, 0.0)));
         assert!(!site.contains_point(Vector2::new(10.1, 0.0)));
         assert_eq!(site.support_height_m, 7.0);
+    }
+
+    #[test]
+    fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
+        use crate::assets::BuildingData;
+        use crate::assets::asset::PlacementMode;
+
+        let mut mesh_part = MeshPart::single_lod0("main", "main.glb");
+        mesh_part.position = [7.0, 0.0, 0.0];
+        mesh_part.scale = 2.0;
+        let manifest = AssetManifest {
+            asset_id: "building.test.site".to_owned(),
+            display_name: "Site Test".to_owned(),
+            asset_set: None,
+            tags: Vec::new(),
+            thumbnail: None,
+            lods: Vec::new(),
+            mesh_parts: vec![mesh_part],
+            anchors: vec![
+                Anchor {
+                    anchor_type: AnchorType::Entrance,
+                    name: "main".to_owned(),
+                    position: [4.0, 0.0, -2.0],
+                    forward: [0.0, 0.0, -1.0],
+                    width_m: None,
+                    length_m: None,
+                    vehicle_class: None,
+                },
+                Anchor {
+                    anchor_type: AnchorType::Driveway,
+                    name: String::new(),
+                    position: [0.0, 0.0, -15.0],
+                    forward: [0.0, 0.0, 1.0],
+                    width_m: Some(3.0),
+                    length_m: None,
+                    vehicle_class: Some("car".to_owned()),
+                },
+            ],
+            site_surfaces: Vec::new(),
+            building: Some(BuildingData {
+                placement_mode: PlacementMode::Explicit,
+                zone_type: None,
+                density: None,
+                lot_width_cells: 4,
+                lot_depth_cells: 3,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity: None,
+                worker_capacity: Some(1),
+                flat_size_m2: None,
+                service_class: None,
+                economy_profile: None,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        };
+
+        let support = required_flat_support_footprint_local(&manifest, 20.0, 15.0);
+        let frontage_dir = Vector2::new(0.0, -1.0);
+        let frontage_limit = frontage_projection_limit(frontage_dir, 20.0, 15.0);
+        let support_limit = frontage_limit - BUILDING_SITE_ROAD_ACCESS_CLEARANCE_M;
+        let max_frontage_projection = support
+            .iter()
+            .map(|point| frontage_projection(*point, frontage_dir))
+            .fold(f32::NEG_INFINITY, f32::max);
+        let access_edge_points = support
+            .iter()
+            .filter(|point| {
+                (frontage_projection(**point, frontage_dir) - support_limit).abs() <= 0.001
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            max_frontage_projection <= support_limit + 0.001,
+            "access support must stay behind the road boundary: {support:?}"
+        );
+        assert!(
+            !access_edge_points.is_empty(),
+            "driveway support should still define an interior access edge: {support:?}"
+        );
+        assert!(
+            access_edge_points.iter().all(|point| point.x.abs() <= 2.0),
+            "road-facing access support should stay near the driveway width: {support:?}"
+        );
+        assert!(
+            signed_polygon_area(&support).abs() < 40.0 * 30.0,
+            "required support must not silently become the full lot"
+        );
     }
 
     #[test]

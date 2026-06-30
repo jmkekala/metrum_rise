@@ -147,6 +147,8 @@ const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
+const TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO: f32 = 256.0;
+const TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M: f32 = 96.0;
 
 #[derive(Clone, Copy)]
 struct TerrainCdtSiteGradingContext<'a> {
@@ -215,6 +217,7 @@ struct TerrainCdtTriangleBufferExport {
     indices: Vec<i32>,
     face_sources: TerrainCdtSourceExport,
     emitted_faces: usize,
+    omitted_pathological_faces: usize,
     max_face_y_delta_m: f32,
     max_face_slope_ratio: f32,
     longest_triangle_edge_m: f32,
@@ -229,6 +232,7 @@ impl TerrainCdtTriangleBufferExport {
             indices: Vec::new(),
             face_sources: TerrainCdtSourceExport::default(),
             emitted_faces: 0,
+            omitted_pathological_faces: 0,
             max_face_y_delta_m: 0.0,
             max_face_slope_ratio: 0.0,
             longest_triangle_edge_m: 0.0,
@@ -236,10 +240,13 @@ impl TerrainCdtTriangleBufferExport {
     }
 }
 
+#[derive(Clone, Copy)]
 struct TerrainCdtMeshBufferSummary {
     max_face_y_delta_m: f32,
     max_face_slope_ratio: f32,
     longest_triangle_edge_m: f32,
+    terrain_max_face_slope_ratio: f32,
+    terrain_longest_triangle_edge_m: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -1210,21 +1217,86 @@ impl SimulationNode {
         let has_conflicts = successful_windows
             .iter()
             .any(|(_, mesh)| mesh.stats.invalid_constraint_edges > 0);
-        dict.set(
-            "terrain_cdt_status",
-            GString::from(if has_conflicts { "conflicted" } else { "ok" }),
-        );
         if include_debug {
             Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
         }
-        Self::append_cdt_stats(dict, Self::aggregate_cdt_window_stats(&successful_windows));
-        Self::append_cdt_window_mesh_buffers(
+        let aggregate_stats = Self::aggregate_cdt_window_stats(&successful_windows);
+        Self::append_cdt_stats(dict, aggregate_stats);
+        let mesh_buffer_summary = Self::append_cdt_window_mesh_buffers(
             dict,
             &cached.patch,
             &successful_windows,
             (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
             include_debug,
         );
+        let max_face_slope_ratio = mesh_buffer_summary.terrain_max_face_slope_ratio;
+        let longest_triangle_edge_m = mesh_buffer_summary.terrain_longest_triangle_edge_m;
+        let pathological_output =
+            Self::terrain_cdt_output_is_pathological(max_face_slope_ratio, longest_triangle_edge_m);
+        dict.set(
+            "terrain_cdt_status",
+            GString::from(Self::terrain_cdt_output_status(
+                has_conflicts,
+                max_face_slope_ratio,
+                longest_triangle_edge_m,
+            )),
+        );
+        dict.set("terrain_cdt_pathological_output", pathological_output);
+    }
+
+    fn terrain_cdt_output_status(
+        has_conflicts: bool,
+        max_face_slope_ratio: f32,
+        longest_triangle_edge_m: f32,
+    ) -> &'static str {
+        if has_conflicts {
+            "conflicted"
+        } else if Self::terrain_cdt_output_is_pathological(
+            max_face_slope_ratio,
+            longest_triangle_edge_m,
+        ) {
+            "pathological"
+        } else {
+            "ok"
+        }
+    }
+
+    fn terrain_cdt_output_is_pathological(
+        max_face_slope_ratio: f32,
+        longest_triangle_edge_m: f32,
+    ) -> bool {
+        (max_face_slope_ratio.is_finite()
+            && max_face_slope_ratio > TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO)
+            || (longest_triangle_edge_m.is_finite()
+                && longest_triangle_edge_m > TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M)
+    }
+
+    fn debug_log_pathological_terrain_cdt_output(
+        label: &str,
+        patch_x: usize,
+        patch_z: usize,
+        status: &'static str,
+        max_face_slope_ratio: f32,
+        longest_triangle_edge_m: f32,
+        road_loops: usize,
+        source_samples: usize,
+    ) {
+        if Self::terrain_cdt_output_is_pathological(max_face_slope_ratio, longest_triangle_edge_m) {
+            debug_log!(
+                "road",
+                "WARNING {} key=({},{}) status={} max_face_slope={:.3} slope_threshold={:.3} longest_triangle_edge_m={:.3} longest_edge_threshold_m={:.3} road_loops={} source_samples={}",
+                label,
+                patch_x,
+                patch_z,
+                status,
+                max_face_slope_ratio,
+                TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO,
+                longest_triangle_edge_m,
+                TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M,
+                road_loops,
+                source_samples
+            );
+        }
     }
 
     fn append_cdt_stats(dict: &mut VarDictionary, stats: TerrainCdtStats) {
@@ -1426,7 +1498,7 @@ impl SimulationNode {
         )],
         boundary_step_m: f32,
         include_debug: bool,
-    ) {
+    ) -> TerrainCdtMeshBufferSummary {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let terrain_buffer_start = road_debug.then(Instant::now);
@@ -1440,6 +1512,7 @@ impl SimulationNode {
                 &mesh.triangles,
                 &mesh.terrain_triangle_sources,
                 include_debug,
+                true,
             );
             Self::append_triangle_buffer_export(&mut terrain_buffers, window_terrain_buffers);
             let window_retaining_buffers = Self::terrain_cdt_triangle_buffers(
@@ -1448,6 +1521,7 @@ impl SimulationNode {
                 &mesh.retaining_wall_triangles,
                 &mesh.retaining_wall_triangle_sources,
                 include_debug,
+                false,
             );
             Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
             if let Some(bounds) =
@@ -1471,6 +1545,13 @@ impl SimulationNode {
         let retaining_indices = retaining_buffers.indices.len();
         let terrain_emitted_faces = terrain_buffers.emitted_faces;
         let retaining_emitted_faces = retaining_buffers.emitted_faces;
+        let omitted_pathological_terrain_faces = terrain_buffers.omitted_pathological_faces;
+        let terrain_max_face_y_delta_m = terrain_buffers.max_face_y_delta_m;
+        let terrain_max_face_slope_ratio = terrain_buffers.max_face_slope_ratio;
+        let terrain_longest_triangle_edge_m = terrain_buffers.longest_triangle_edge_m;
+        let retaining_wall_max_face_y_delta_m = retaining_buffers.max_face_y_delta_m;
+        let retaining_wall_max_face_slope_ratio = retaining_buffers.max_face_slope_ratio;
+        let retaining_wall_longest_triangle_edge_m = retaining_buffers.longest_triangle_edge_m;
         let final_max_face_y_delta_m = terrain_buffers
             .max_face_y_delta_m
             .max(retaining_buffers.max_face_y_delta_m);
@@ -1501,6 +1582,35 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_longest_triangle_edge_m",
             f64::from(final_longest_triangle_edge_m),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_max_face_y_delta_m",
+            f64::from(terrain_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_max_face_slope_ratio",
+            f64::from(terrain_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_longest_triangle_edge_m",
+            f64::from(terrain_longest_triangle_edge_m),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_y_delta_m",
+            f64::from(retaining_wall_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_slope_ratio",
+            f64::from(retaining_wall_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_longest_triangle_edge_m",
+            f64::from(retaining_wall_longest_triangle_edge_m),
+        );
+        dict.set("terrain_cdt_mesh_suppressed", false);
+        dict.set(
+            "terrain_cdt_pathological_faces_omitted",
+            i64::try_from(omitted_pathological_terrain_faces).unwrap_or(0),
         );
         dict.set(
             "terrain_mesh_vertices",
@@ -1554,7 +1664,7 @@ impl SimulationNode {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_cdt_window_mesh_buffers key=({},{}) include_debug={} windows={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                "terrain_cdt_window_mesh_buffers key=({},{}) include_debug={} windows={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} omitted_pathological_terrain_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
                 patch.patch_x,
                 patch.patch_z,
                 include_debug,
@@ -1565,6 +1675,7 @@ impl SimulationNode {
                 retaining_vertices,
                 retaining_indices,
                 retaining_emitted_faces,
+                omitted_pathological_terrain_faces,
                 final_max_face_y_delta_m,
                 final_max_face_slope_ratio,
                 final_longest_triangle_edge_m,
@@ -1575,6 +1686,13 @@ impl SimulationNode {
                     .unwrap_or(0.0)
             );
         }
+        TerrainCdtMeshBufferSummary {
+            max_face_y_delta_m: final_max_face_y_delta_m,
+            max_face_slope_ratio: final_max_face_slope_ratio,
+            longest_triangle_edge_m: final_longest_triangle_edge_m,
+            terrain_max_face_slope_ratio,
+            terrain_longest_triangle_edge_m,
+        }
     }
 
     fn terrain_cdt_window_final_buffer_stats(
@@ -1584,7 +1702,7 @@ impl SimulationNode {
             &crate::simulation::terrain::cdt::TerrainCdtMesh,
         )],
         boundary_step_m: f32,
-    ) -> (f32, f32, f32) {
+    ) -> TerrainCdtMeshBufferSummary {
         let mut terrain_buffers = TerrainCdtTriangleBufferExport::empty();
         let mut retaining_buffers = TerrainCdtTriangleBufferExport::empty();
         let mut cdt_windows = Vec::with_capacity(windows.len());
@@ -1595,6 +1713,7 @@ impl SimulationNode {
                 &mesh.triangles,
                 &mesh.terrain_triangle_sources,
                 false,
+                true,
             );
             Self::append_triangle_buffer_export(&mut terrain_buffers, window_terrain_buffers);
             let window_retaining_buffers = Self::terrain_cdt_triangle_buffers(
@@ -1602,6 +1721,7 @@ impl SimulationNode {
                 &mesh.vertices,
                 &mesh.retaining_wall_triangles,
                 &mesh.retaining_wall_triangle_sources,
+                false,
                 false,
             );
             Self::append_triangle_buffer_export(&mut retaining_buffers, window_retaining_buffers);
@@ -1616,17 +1736,22 @@ impl SimulationNode {
             patch,
             &cdt_windows,
         );
-        (
-            terrain_buffers
-                .max_face_y_delta_m
-                .max(retaining_buffers.max_face_y_delta_m),
-            terrain_buffers
-                .max_face_slope_ratio
-                .max(retaining_buffers.max_face_slope_ratio),
-            terrain_buffers
-                .longest_triangle_edge_m
-                .max(retaining_buffers.longest_triangle_edge_m),
-        )
+        let max_face_y_delta_m = terrain_buffers
+            .max_face_y_delta_m
+            .max(retaining_buffers.max_face_y_delta_m);
+        let max_face_slope_ratio = terrain_buffers
+            .max_face_slope_ratio
+            .max(retaining_buffers.max_face_slope_ratio);
+        let longest_triangle_edge_m = terrain_buffers
+            .longest_triangle_edge_m
+            .max(retaining_buffers.longest_triangle_edge_m);
+        TerrainCdtMeshBufferSummary {
+            max_face_y_delta_m,
+            max_face_slope_ratio,
+            longest_triangle_edge_m,
+            terrain_max_face_slope_ratio: terrain_buffers.max_face_slope_ratio,
+            terrain_longest_triangle_edge_m: terrain_buffers.longest_triangle_edge_m,
+        }
     }
 
     fn append_road_clip_loops_for_bounds(
@@ -1845,13 +1970,8 @@ impl SimulationNode {
                 let cdt_ms = cdt_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
-                let cdt_status = if mesh.stats.invalid_constraint_edges > 0 {
-                    "conflicted"
-                } else {
-                    "ok"
-                };
+                let has_conflicts = mesh.stats.invalid_constraint_edges > 0;
                 let metadata_start = road_debug.then(Instant::now);
-                dict.set("terrain_cdt_status", GString::from(cdt_status));
                 if include_debug {
                     Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
                 }
@@ -1882,7 +2002,30 @@ impl SimulationNode {
                 let mesh_export_ms = mesh_export_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
+                let max_face_slope_ratio = mesh_buffer_summary.terrain_max_face_slope_ratio;
+                let longest_triangle_edge_m = mesh_buffer_summary.terrain_longest_triangle_edge_m;
+                let cdt_status = Self::terrain_cdt_output_status(
+                    has_conflicts,
+                    max_face_slope_ratio,
+                    longest_triangle_edge_m,
+                );
+                let pathological_output = Self::terrain_cdt_output_is_pathological(
+                    max_face_slope_ratio,
+                    longest_triangle_edge_m,
+                );
+                dict.set("terrain_cdt_status", GString::from(cdt_status));
+                dict.set("terrain_cdt_pathological_output", pathological_output);
                 if road_debug {
+                    Self::debug_log_pathological_terrain_cdt_output(
+                        "terrain_cdt_pathological_output",
+                        patch.patch_x,
+                        patch.patch_z,
+                        cdt_status,
+                        max_face_slope_ratio,
+                        longest_triangle_edge_m,
+                        input_road_loops,
+                        input_source_samples,
+                    );
                     debug_log!(
                         "road",
                         "terrain_cdt key=({},{}) include_debug={} status={} input_vertices={} road_loops={} source_samples={} constraints={} accepted_faces={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3} metadata_ms={:.3} debug_sidecars_ms={:.3} mesh_export_ms={:.3} total_ms={:.3}",
@@ -1945,6 +2088,10 @@ impl SimulationNode {
         include_debug: bool,
     ) {
         dict.set("terrain_cdt_status", GString::from("failed"));
+        dict.set("terrain_cdt_pathological_output", false);
+        dict.set("terrain_cdt_mesh_suppressed", false);
+        dict.set("terrain_cdt_render_fallback", GString::new());
+        dict.set("terrain_cdt_pathological_faces_omitted", 0i64);
         dict.set("terrain_cdt_error", GString::from(error_label));
         let backend_label = if error_label == "triangulation_failed" {
             TERRAIN_CDT_BACKEND_SPADE_LABEL
@@ -1966,6 +2113,21 @@ impl SimulationNode {
         dict.set("terrain_cdt_max_face_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_max_face_slope_ratio", 0.0f64);
         dict.set("terrain_cdt_longest_triangle_edge_m", 0.0f64);
+        dict.set("terrain_cdt_ordinary_max_face_y_delta_m", 0.0f64);
+        dict.set("terrain_cdt_ordinary_max_face_slope_ratio", 0.0f64);
+        dict.set("terrain_cdt_ordinary_longest_triangle_edge_m", 0.0f64);
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_y_delta_m",
+            0.0f64,
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_slope_ratio",
+            0.0f64,
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_longest_triangle_edge_m",
+            0.0f64,
+        );
         dict.set("terrain_cdt_road_seam_faces", 0i64);
         dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
         dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
@@ -2791,6 +2953,7 @@ impl SimulationNode {
             &mesh.triangles,
             &mesh.terrain_triangle_sources,
             include_debug,
+            true,
         );
         let mut terrain_buffers = terrain_buffers;
         Self::append_regular_terrain_mesh_outside_cdt_patch(
@@ -2809,6 +2972,7 @@ impl SimulationNode {
             &mesh.retaining_wall_triangles,
             &mesh.retaining_wall_triangle_sources,
             include_debug,
+            false,
         );
         let retaining_buffer_ms = retaining_buffer_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -2820,6 +2984,13 @@ impl SimulationNode {
         let retaining_indices = retaining_buffers.indices.len();
         let terrain_emitted_faces = terrain_buffers.emitted_faces;
         let retaining_emitted_faces = retaining_buffers.emitted_faces;
+        let omitted_pathological_terrain_faces = terrain_buffers.omitted_pathological_faces;
+        let terrain_max_face_y_delta_m = terrain_buffers.max_face_y_delta_m;
+        let terrain_max_face_slope_ratio = terrain_buffers.max_face_slope_ratio;
+        let terrain_longest_triangle_edge_m = terrain_buffers.longest_triangle_edge_m;
+        let retaining_wall_max_face_y_delta_m = retaining_buffers.max_face_y_delta_m;
+        let retaining_wall_max_face_slope_ratio = retaining_buffers.max_face_slope_ratio;
+        let retaining_wall_longest_triangle_edge_m = retaining_buffers.longest_triangle_edge_m;
         let final_max_face_y_delta_m = terrain_buffers
             .max_face_y_delta_m
             .max(retaining_buffers.max_face_y_delta_m);
@@ -2850,6 +3021,35 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_longest_triangle_edge_m",
             f64::from(final_longest_triangle_edge_m),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_max_face_y_delta_m",
+            f64::from(terrain_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_max_face_slope_ratio",
+            f64::from(terrain_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_ordinary_longest_triangle_edge_m",
+            f64::from(terrain_longest_triangle_edge_m),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_y_delta_m",
+            f64::from(retaining_wall_max_face_y_delta_m),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_max_face_slope_ratio",
+            f64::from(retaining_wall_max_face_slope_ratio),
+        );
+        dict.set(
+            "terrain_cdt_retaining_wall_final_longest_triangle_edge_m",
+            f64::from(retaining_wall_longest_triangle_edge_m),
+        );
+        dict.set("terrain_cdt_mesh_suppressed", false);
+        dict.set(
+            "terrain_cdt_pathological_faces_omitted",
+            i64::try_from(omitted_pathological_terrain_faces).unwrap_or(0),
         );
         dict.set(
             "terrain_mesh_vertices",
@@ -2903,7 +3103,7 @@ impl SimulationNode {
         if road_debug {
             debug_log!(
                 "road",
-                "terrain_cdt_mesh_buffers key=({},{}) include_debug={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} retaining_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
+                "terrain_cdt_mesh_buffers key=({},{}) include_debug={} terrain_vertices={} terrain_indices={} terrain_faces={} retaining_vertices={} retaining_indices={} retaining_faces={} omitted_pathological_terrain_faces={} final_max_face_y_delta_m={:.3} final_max_face_slope={:.3} final_longest_triangle_edge_m={:.3} terrain_buffer_ms={:.3} retaining_buffer_ms={:.3} dict_ms={:.3} total_ms={:.3}",
                 patch.patch_x,
                 patch.patch_z,
                 include_debug,
@@ -2913,6 +3113,7 @@ impl SimulationNode {
                 retaining_vertices,
                 retaining_indices,
                 retaining_emitted_faces,
+                omitted_pathological_terrain_faces,
                 final_max_face_y_delta_m,
                 final_max_face_slope_ratio,
                 final_longest_triangle_edge_m,
@@ -2928,6 +3129,8 @@ impl SimulationNode {
             max_face_y_delta_m: final_max_face_y_delta_m,
             max_face_slope_ratio: final_max_face_slope_ratio,
             longest_triangle_edge_m: final_longest_triangle_edge_m,
+            terrain_max_face_slope_ratio,
+            terrain_longest_triangle_edge_m,
         }
     }
 
@@ -2937,6 +3140,7 @@ impl SimulationNode {
         triangles: &[[usize; 3]],
         triangle_sources: &[Vec<TerrainCdtRoadBoundarySource>],
         include_debug: bool,
+        omit_pathological_terrain_faces: bool,
     ) -> TerrainCdtTriangleBufferExport {
         debug_assert_eq!(
             triangles.len(),
@@ -2952,6 +3156,7 @@ impl SimulationNode {
         let mut vertex_remap = vec![usize::MAX; vertices_source.len()];
         let mut source_export = TerrainCdtSourceExport::with_sample_capacity(triangles.len());
         let mut emitted_faces = 0usize;
+        let mut omitted_pathological_faces = 0usize;
         let mut max_face_y_delta_m = 0.0_f32;
         let mut max_face_slope_ratio = 0.0_f32;
         let mut longest_triangle_edge_m = 0.0_f32;
@@ -2978,6 +3183,12 @@ impl SimulationNode {
             max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
             max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
             longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
+            if omit_pathological_terrain_faces
+                && Self::terrain_cdt_output_is_pathological(face_slope_ratio, face_longest_edge_m)
+            {
+                omitted_pathological_faces += 1;
+                continue;
+            }
             emitted_faces += 1;
             if include_debug {
                 let triangle_face_sources = triangle_sources
@@ -3024,6 +3235,7 @@ impl SimulationNode {
             indices,
             face_sources: source_export,
             emitted_faces,
+            omitted_pathological_faces,
             max_face_y_delta_m,
             max_face_slope_ratio,
             longest_triangle_edge_m,
@@ -3090,6 +3302,7 @@ impl SimulationNode {
             .s_ranges
             .extend(source.face_sources.s_ranges);
         target.emitted_faces += source.emitted_faces;
+        target.omitted_pathological_faces += source.omitted_pathological_faces;
         target.max_face_y_delta_m = target.max_face_y_delta_m.max(source.max_face_y_delta_m);
         target.max_face_slope_ratio = target.max_face_slope_ratio.max(source.max_face_slope_ratio);
         target.longest_triangle_edge_m = target
@@ -7841,24 +8054,17 @@ impl SimCore {
 
         if road_debug {
             for entry in &entries {
-                let status = if entry.windows.is_empty() {
-                    "empty"
-                } else if entry.windows.iter().any(|window| {
+                let has_conflicts = entry.windows.iter().any(|window| {
                     window
                         .mesh_result
                         .as_ref()
                         .is_ok_and(|mesh| mesh.stats.invalid_constraint_edges > 0)
-                }) {
-                    "conflicted"
-                } else if let Some(err) = entry
+                });
+                let error_label = entry
                     .windows
                     .iter()
                     .find_map(|window| window.mesh_result.as_ref().err())
-                {
-                    SimulationNode::terrain_cdt_error_label(err)
-                } else {
-                    "ok"
-                };
+                    .map(SimulationNode::terrain_cdt_error_label);
                 let mut max_face_y_delta_m = 0.0_f32;
                 let mut max_face_slope_ratio = 0.0_f32;
                 let mut longest_triangle_edge_m = 0.0_f32;
@@ -7880,17 +8086,49 @@ impl SimCore {
                     tie_in_widened_source_samples += mesh.stats.tie_in_widened_source_samples;
                     retaining_wall_faces += mesh.stats.retaining_wall_faces;
                 }
-                if !successful_windows.is_empty() {
-                    (
-                        max_face_y_delta_m,
-                        max_face_slope_ratio,
-                        longest_triangle_edge_m,
-                    ) = SimulationNode::terrain_cdt_window_final_buffer_stats(
+                let final_buffer_summary = if successful_windows.is_empty() {
+                    None
+                } else {
+                    Some(SimulationNode::terrain_cdt_window_final_buffer_stats(
                         &entry.patch,
                         &successful_windows,
                         (entry.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
-                    );
-                }
+                    ))
+                };
+                if let Some(summary) = final_buffer_summary {
+                    max_face_y_delta_m = summary.max_face_y_delta_m;
+                    max_face_slope_ratio = summary.max_face_slope_ratio;
+                    longest_triangle_edge_m = summary.longest_triangle_edge_m;
+                };
+                let pathological_terrain_slope_ratio = final_buffer_summary
+                    .map(|summary| summary.terrain_max_face_slope_ratio)
+                    .unwrap_or(max_face_slope_ratio);
+                let pathological_terrain_longest_edge_m = final_buffer_summary
+                    .map(|summary| summary.terrain_longest_triangle_edge_m)
+                    .unwrap_or(longest_triangle_edge_m);
+                let status = if entry.windows.is_empty() {
+                    "empty"
+                } else if has_conflicts {
+                    "conflicted"
+                } else if let Some(error_label) = error_label {
+                    error_label
+                } else {
+                    SimulationNode::terrain_cdt_output_status(
+                        false,
+                        pathological_terrain_slope_ratio,
+                        pathological_terrain_longest_edge_m,
+                    )
+                };
+                SimulationNode::debug_log_pathological_terrain_cdt_output(
+                    "refined_patch_precompute_pathological_output",
+                    entry.key.patch_x,
+                    entry.key.patch_z,
+                    status,
+                    pathological_terrain_slope_ratio,
+                    pathological_terrain_longest_edge_m,
+                    entry.input_road_loops,
+                    entry.input_source_samples,
+                );
                 debug_log!(
                     "road",
                     "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} reused_windows={} road_loops={} source_samples={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3}",
@@ -8000,6 +8238,7 @@ mod tests {
             &[[0, 1, 2]],
             &[vec![source]],
             true,
+            false,
         );
 
         assert_eq!(export.emitted_faces, 1);
@@ -8030,6 +8269,7 @@ mod tests {
             &[[0, 1, 2]],
             &[vec![source]],
             true,
+            false,
         );
 
         assert_eq!(export.emitted_faces, 1);
@@ -8062,6 +8302,7 @@ mod tests {
             &[[0, 1, 2], [0, 1, 3]],
             &[vec![span], vec![span, node]],
             true,
+            false,
         );
 
         assert_eq!(export.emitted_faces, 1);
@@ -8085,12 +8326,67 @@ mod tests {
             &[[0, 1, 2]],
             &[Vec::new()],
             false,
+            false,
         );
 
         assert_eq!(export.emitted_faces, 1);
         assert!((export.max_face_y_delta_m - 2.0).abs() <= 0.0001);
         assert!((export.longest_triangle_edge_m - 5.0).abs() <= 0.0001);
         assert!(export.max_face_slope_ratio > 0.0);
+    }
+
+    #[test]
+    fn terrain_cdt_triangle_buffers_can_omit_pathological_faces() {
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(0.01, 10.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 4.0),
+            ],
+            &[[0, 1, 2]],
+            &[Vec::new()],
+            false,
+            true,
+        );
+
+        assert_eq!(export.emitted_faces, 0);
+        assert_eq!(export.omitted_pathological_faces, 1);
+        assert!(export.vertices.is_empty());
+        assert!(export.indices.is_empty());
+        assert!(export.max_face_slope_ratio > TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO);
+    }
+
+    #[test]
+    fn terrain_cdt_output_status_marks_pathological_meshes() {
+        assert_eq!(
+            SimulationNode::terrain_cdt_output_status(false, 45.0, 20.0),
+            "ok"
+        );
+        assert_eq!(
+            SimulationNode::terrain_cdt_output_status(
+                false,
+                TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO + 1.0,
+                20.0,
+            ),
+            "pathological"
+        );
+        assert_eq!(
+            SimulationNode::terrain_cdt_output_status(
+                false,
+                1.0,
+                TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M + 1.0,
+            ),
+            "pathological"
+        );
+        assert_eq!(
+            SimulationNode::terrain_cdt_output_status(
+                true,
+                TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO + 1.0,
+                20.0,
+            ),
+            "conflicted"
+        );
     }
 
     #[test]

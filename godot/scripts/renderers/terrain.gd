@@ -1645,6 +1645,8 @@ func _terrain_patch_mesh_from_data(
 
 func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
 	# Failed CDT keeps diagnostic fields but must not replace the heightmap mesh with an empty bake.
+	if bool(patch_data.get("terrain_cdt_mesh_suppressed", false)):
+		return false
 	return patch_data.has("terrain_cdt_status") and _patch_has_baked_terrain_mesh(patch_data)
 
 func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
@@ -1654,6 +1656,8 @@ func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
 	return vertices.size() >= 3
 
 func _patch_has_retaining_wall_mesh(patch_data: Dictionary) -> bool:
+	if bool(patch_data.get("terrain_cdt_mesh_suppressed", false)):
+		return false
 	if not patch_data.has("terrain_retaining_wall_mesh_vertices"):
 		return false
 	var vertices: PackedVector3Array = patch_data["terrain_retaining_wall_mesh_vertices"] as PackedVector3Array
