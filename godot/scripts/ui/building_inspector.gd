@@ -151,6 +151,9 @@ func _building_key(info: Dictionary) -> String:
 	]
 
 func _display_name(info: Dictionary) -> String:
+	var asset_display_name := str(info.get("asset_display_name", "")).strip_edges()
+	if not asset_display_name.is_empty():
+		return asset_display_name
 	var asset_id: String = info.get("asset_id", "Building")
 	var colon := asset_id.find(":")
 	return asset_id.substr(colon + 1) if colon != -1 else asset_id
@@ -186,7 +189,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 	var stats_body: VBoxContainer = entry["stats_body"]
 	var display_name := _display_name(info)
 
-	window.title = "Building Inspector: %s" % display_name
+	window.title = display_name
 	title_label.text = display_name
 
 	for child in stats_body.get_children():
@@ -253,12 +256,39 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				"Production",
 				"%.0f%%" % (float(info.get("business_production_ratio", 0.0)) * 100.0)
 			)
-			if info.get("business_has_inventory_fill", false):
+			if info.has("utility_fuel_name"):
+				var fuel_units := float(info.get("utility_fuel_units", 0.0))
+				var fuel_days := float(info.get("utility_fuel_days", 0.0))
+				_add_row(
+					stats_body,
+					"Fuel Stock",
+					"%.1f %s / %.1f d" % [
+						fuel_units,
+						str(info.get("utility_fuel_name", "fuel")),
+						fuel_days,
+					]
+				)
+			elif info.get("business_has_inventory_fill", false):
 				_add_row(
 					stats_body,
 					"Inventory",
 					"%.0f%% full" % (float(info.get("business_inventory_fill_ratio", 0.0)) * 100.0)
 				)
+			if info.has("utility_service"):
+				var utility_name := str(info.get("utility_service", "")).capitalize()
+				var utility_state := "active" if info.get("utility_service_available", false) else "inactive"
+				_add_row(stats_body, "Utility", "%s %s" % [utility_name, utility_state])
+				_add_row(stats_body, "Utility Revenue", _money(float(info.get("utility_local_revenue", 0.0))))
+				if str(info.get("utility_service", "")) == "power":
+					var power_produced := float(info.get("utility_power_production_today", 0.0))
+					var power_consumed := float(info.get("utility_power_consumed_today", 0.0))
+					_add_row(
+						stats_body,
+						"Power Output",
+						"%.1f units" % power_produced
+					)
+					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
+				_add_row(stats_body, "City Fuel Today", _money(float(info.get("city_fuel_cost_today", 0.0))))
 		else:
 			_add_row(
 				stats_body,
@@ -266,11 +296,11 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				"%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
 			)
 			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
-		if info.has("utility_service_available"):
+		if info.has("utility_service_available") and not info.has("utility_service"):
 			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
 
 	var inventory: Array = info.get("inventory", [])
-	if inventory.size() > 0 and not info.get("business_summary", false):
+	if inventory.size() > 0 and (not info.get("business_summary", false) or info.has("utility_service")):
 		_add_section(stats_body, "Inventory")
 		for item in inventory:
 			_add_row(stats_body, str(item.get("name", "?")), "%.1f" % float(item.get("amount", 0.0)))
@@ -330,6 +360,54 @@ func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String)
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	value.add_theme_font_size_override("font_size", 12)
 	hbox.add_child(value)
+
+func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float, produced_units: float) -> void:
+	produced_units = maxf(produced_units, 0.0)
+	consumed_units = clampf(consumed_units, 0.0, produced_units)
+	var ratio := 0.0
+	if produced_units > 0.0:
+		ratio = clampf(consumed_units / produced_units, 0.0, 1.0)
+
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	stats_body.add_child(hbox)
+
+	var label := Label.new()
+	label.text = "Power Use"
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	label.add_theme_font_size_override("font_size", 12)
+	hbox.add_child(label)
+
+	var bar_holder := Control.new()
+	bar_holder.custom_minimum_size = Vector2(0.0, 18.0)
+	bar_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(bar_holder)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 1.0
+	bar.value = ratio
+	bar.show_percentage = false
+	bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar.add_theme_stylebox_override(
+		"background",
+		UIStyle.panel_style(Color(0.18, 0.18, 0.20, 0.90), 4, Color.TRANSPARENT, 0)
+	)
+	bar.add_theme_stylebox_override(
+		"fill",
+		UIStyle.panel_style(Color(0.20, 0.62, 0.72, 0.95), 4, Color.TRANSPARENT, 0)
+	)
+	bar_holder.add_child(bar)
+
+	var value := Label.new()
+	value.text = "%.1f / %.1f units" % [consumed_units, produced_units]
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	value.add_theme_font_size_override("font_size", 11)
+	value.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar_holder.add_child(value)
 
 func _add_alert(stats_body: VBoxContainer, text: String) -> void:
 	var label := Label.new()

@@ -250,6 +250,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 		Tool.SERVICES:
 			if service_building_tool: service_building_tool.active = enabled
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 

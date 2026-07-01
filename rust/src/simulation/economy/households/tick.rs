@@ -21,13 +21,20 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         absolute_hour: u32,
         minute_of_day: u16,
+        treasury_balance: &mut f64,
     ) -> FiscalRevenue {
         self.materialize_arrived_household_carriers(agents, allocator);
         self.debug_validate_agent_household_refs(agents);
         self.rebuild_household_and_worker_counts(agents, allocator);
         self.run_building_economy(allocator);
-        let business_purchase_tax =
-            logistics.hourly_tick(allocator, agents, transit_network, graph, minute_of_day);
+        let business_purchase_tax = logistics.hourly_tick(
+            allocator,
+            agents,
+            transit_network,
+            graph,
+            minute_of_day,
+            treasury_balance,
+        );
         let household_vat = self.run_household_operational_hour(
             agents,
             allocator,

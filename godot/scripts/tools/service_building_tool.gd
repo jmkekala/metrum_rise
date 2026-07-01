@@ -12,10 +12,17 @@ var active: bool = false
 var selected_asset_id: String = ""
 
 var preview_mesh: MeshInstance3D
+var preview_part_root: Node3D
+var _preview_part_instances: Array[MeshInstance3D] = []
+var _preview_part_mesh_cache: Dictionary = {}
+var _preview_valid_material: StandardMaterial3D
+var _preview_invalid_material: StandardMaterial3D
 var _preview_cache_valid: bool = false
 var _preview_cache_asset_id: String = ""
 var _preview_cache_pos: Vector2 = Vector2.ZERO
 var _preview_cache_mesh: Mesh = null
+var _preview_cache_part_transforms: PackedFloat32Array = PackedFloat32Array()
+var _preview_cache_placeable: bool = false
 
 const PREVIEW_REFRESH_DISTANCE_M := 1.0
 
@@ -30,10 +37,15 @@ func _ready() -> void:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mat.vertex_color_use_as_albedo = true
-	mat.no_depth_test = true
-	mat.render_priority = 9
+	mat.no_depth_test = false
+	mat.render_priority = 6
 	preview_mesh.material_override = mat
 	add_child(preview_mesh)
+
+	preview_part_root = Node3D.new()
+	add_child(preview_part_root)
+	_preview_valid_material = _make_ghost_material(Color(0.25, 0.95, 0.82, 0.42))
+	_preview_invalid_material = _make_ghost_material(Color(1.0, 0.23, 0.12, 0.48))
 
 func _process(_delta: float) -> void:
 	if not active:
@@ -77,14 +89,18 @@ func _update_preview() -> void:
 		return
 	var wp = _mouse_world_pos()
 	if wp == null:
-		preview_mesh.visible = false
+		_hide_preview_visuals()
 		return
 	if (
 		_preview_cache_valid
 		and _preview_cache_asset_id == selected_asset_id
 		and _preview_cache_pos.distance_to(wp) < PREVIEW_REFRESH_DISTANCE_M
 	):
-		_apply_preview_mesh(_preview_cache_mesh)
+		_apply_preview_payload(
+			_preview_cache_mesh,
+			_preview_cache_part_transforms,
+			_preview_cache_placeable
+		)
 		return
 
 	var payload: Dictionary = simulation_node.get_service_building_placement_preview(
@@ -95,13 +111,24 @@ func _update_preview() -> void:
 	var mesh: Mesh = null
 	var is_valid := bool(payload.get("valid", false))
 	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
+	var part_transforms: PackedFloat32Array = payload.get("part_transforms", PackedFloat32Array())
 	if corners.size() == 4:
 		mesh = _build_preview_mesh(corners, is_valid)
 	_preview_cache_valid = true
 	_preview_cache_asset_id = selected_asset_id
 	_preview_cache_pos = wp
 	_preview_cache_mesh = mesh
-	_apply_preview_mesh(mesh)
+	_preview_cache_part_transforms = part_transforms
+	_preview_cache_placeable = is_valid
+	_apply_preview_payload(mesh, part_transforms, is_valid)
+
+func _apply_preview_payload(
+	support_mesh: Mesh,
+	part_transforms: PackedFloat32Array,
+	is_valid: bool
+) -> void:
+	_apply_preview_mesh(support_mesh)
+	_apply_part_preview(part_transforms, is_valid)
 
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
@@ -110,15 +137,79 @@ func _apply_preview_mesh(mesh: Mesh) -> void:
 func _clear_preview_cache() -> void:
 	_preview_cache_valid = false
 	_preview_cache_mesh = null
+	_preview_cache_part_transforms = PackedFloat32Array()
+	_preview_cache_placeable = false
+	_hide_preview_visuals()
+
+func _hide_preview_visuals() -> void:
 	if preview_mesh:
 		preview_mesh.visible = false
+	for instance in _preview_part_instances:
+		instance.visible = false
+
+func _apply_part_preview(part_transforms: PackedFloat32Array, is_valid: bool) -> void:
+	var count := int(part_transforms.size() / 12)
+	if part_transforms.size() % 12 != 0:
+		count = 0
+	_ensure_preview_part_instances(count)
+	var material := _preview_valid_material if is_valid else _preview_invalid_material
+	for part_index in range(count):
+		var instance := _preview_part_instances[part_index]
+		var mesh := _preview_mesh_for_part(selected_asset_id, part_index)
+		if mesh == null:
+			instance.visible = false
+			continue
+		instance.mesh = mesh
+		instance.transform = _transform_from_preview_buffer(part_transforms, part_index * 12)
+		instance.material_override = material
+		instance.visible = true
+	for part_index in range(count, _preview_part_instances.size()):
+		_preview_part_instances[part_index].visible = false
+
+func _ensure_preview_part_instances(count: int) -> void:
+	while _preview_part_instances.size() < count:
+		var instance := MeshInstance3D.new()
+		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		instance.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		instance.top_level = true
+		instance.visible = false
+		preview_part_root.add_child(instance)
+		_preview_part_instances.append(instance)
+
+func _preview_mesh_for_part(asset_id: String, part_index: int) -> Mesh:
+	var key := "%s|part:%d" % [asset_id, part_index]
+	if _preview_part_mesh_cache.has(key):
+		return _preview_part_mesh_cache[key]
+	var mesh: Mesh = null
+	if buildings_node and buildings_node.has_method("get_building_mesh_for_asset_part"):
+		mesh = buildings_node.get_building_mesh_for_asset_part(asset_id, part_index)
+	_preview_part_mesh_cache[key] = mesh
+	return mesh
+
+func _transform_from_preview_buffer(buffer: PackedFloat32Array, offset: int) -> Transform3D:
+	var basis := Basis(
+		Vector3(buffer[offset], buffer[offset + 4], buffer[offset + 8]),
+		Vector3(buffer[offset + 1], buffer[offset + 5], buffer[offset + 9]),
+		Vector3(buffer[offset + 2], buffer[offset + 6], buffer[offset + 10])
+	)
+	var origin := Vector3(buffer[offset + 3], buffer[offset + 7], buffer[offset + 11])
+	return Transform3D(basis, origin)
+
+func _make_ghost_material(color: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = color
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.render_priority = 8
+	return mat
 
 func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 	if corners.size() != 4:
 		return null
 	var im := ImmediateMesh.new()
-	var fill_color := Color(0.16, 0.72, 0.95, 0.25) if is_valid else Color(1.0, 0.18, 0.12, 0.28)
-	var line_color := Color(0.25, 0.92, 1.0, 0.9) if is_valid else Color(1.0, 0.28, 0.18, 0.95)
+	var fill_color := Color(0.16, 0.72, 0.95, 0.14) if is_valid else Color(1.0, 0.18, 0.12, 0.18)
+	var line_color := Color(0.25, 0.92, 1.0, 0.72) if is_valid else Color(1.0, 0.28, 0.18, 0.82)
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 	im.surface_set_color(fill_color)
 	im.surface_add_vertex(corners[0])

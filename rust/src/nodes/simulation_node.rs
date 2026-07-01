@@ -5242,6 +5242,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::SiteOverlap => {
                 "building footprint overlaps an existing site"
             }
+            ExplicitServicePlacementRejection::RoadOverlap => {
+                "building footprint overlaps an existing road"
+            }
         }
     }
 
@@ -5250,7 +5253,11 @@ impl SimulationNode {
         dict.set("valid", false);
         dict.set("error", GString::from(error));
         dict.set("corners", PackedVector3Array::new());
+        dict.set("center_x", 0.0f64);
+        dict.set("center_z", 0.0f64);
         dict.set("support_height_m", 0.0f64);
+        dict.set("facing_dir", Vector2::ZERO);
+        dict.set("part_transforms", PackedFloat32Array::new());
         dict
     }
 
@@ -5316,6 +5323,12 @@ impl SimulationNode {
         let core = self.lock_core();
         match core.get_service_building_placement_preview_internal(&asset_id, world_x, world_z) {
             Ok(preview) => {
+                let part_transforms = core.get_service_building_preview_part_transforms_internal(
+                    &asset_id,
+                    preview.center_2d,
+                    preview.support_height_m,
+                    preview.facing_dir,
+                );
                 let mut corners = PackedVector3Array::new();
                 for corner in preview.corners {
                     corners.push(Vector3::new(
@@ -5332,7 +5345,11 @@ impl SimulationNode {
                     .unwrap_or("");
                 dict.set("error", GString::from(error));
                 dict.set("corners", corners);
+                dict.set("center_x", f64::from(preview.center_2d.x));
+                dict.set("center_z", f64::from(preview.center_2d.y));
                 dict.set("support_height_m", f64::from(preview.support_height_m));
+                dict.set("facing_dir", preview.facing_dir);
+                dict.set("part_transforms", part_transforms);
                 dict
             }
             Err(rejection) => {
@@ -5386,6 +5403,26 @@ impl SimulationNode {
         else {
             return false;
         };
+        let geometry = if let Some(geometry) = core.zoning.parcel_geometry_at(world_x, world_z) {
+            geometry
+        } else {
+            let Ok(geometry) = core.zoning.preview_parcel_at(
+                world_x,
+                world_z,
+                frontage_m,
+                depth_m,
+                &core.region_graph,
+            ) else {
+                return false;
+            };
+            geometry
+        };
+        if core
+            .allocator
+            .parcel_geometry_overlaps_explicit_site(&geometry)
+        {
+            return false;
+        }
         let result = core.zoning.place_or_rezone_parcel_at(
             world_x,
             world_z,
@@ -5424,6 +5461,12 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         if let Some(geometry) = core.zoning.parcel_geometry_at(world_x, world_z) {
+            if core
+                .allocator
+                .parcel_geometry_overlaps_explicit_site(&geometry)
+            {
+                return VarDictionary::new();
+            }
             return zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0);
         }
         let Ok(geometry) = core.zoning.preview_parcel_at(
@@ -5435,6 +5478,12 @@ impl SimulationNode {
         ) else {
             return VarDictionary::new();
         };
+        if core
+            .allocator
+            .parcel_geometry_overlaps_explicit_site(&geometry)
+        {
+            return VarDictionary::new();
+        }
         zoning_parcel_geometry_dict(&core, &geometry, runtime_id, false, 0)
     }
 
@@ -5488,6 +5537,7 @@ impl SimulationNode {
         ) else {
             return VarArray::new();
         };
+        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
         zoning_parcel_geometries_array(&core, &geometries, runtime_id)
     }
 
@@ -5525,6 +5575,10 @@ impl SimulationNode {
         ) else {
             return VarDictionary::new();
         };
+        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
+        if geometries.is_empty() {
+            return VarDictionary::new();
+        }
         zoning_parcel_geometries_packed_dict(&core, &geometries, runtime_id)
     }
 
@@ -5554,6 +5608,7 @@ impl SimulationNode {
         let geometries = core
             .zoning
             .preview_rezone_stroke(start_x, start_z, end_x, end_z);
+        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
         if geometries.is_empty() {
             return VarDictionary::new();
         }
@@ -5583,17 +5638,22 @@ impl SimulationNode {
         else {
             return false;
         };
-        let result = core.zoning.place_parcel_run_at(
+        let Ok(geometries) = core.zoning.preview_parcel_run_at(
             start_x,
             start_z,
             end_x,
             end_z,
-            runtime_id,
             frontage_m,
             depth_m,
             gap_m,
             &core.region_graph,
-        );
+        ) else {
+            return false;
+        };
+        let geometries = zoning_geometries_without_explicit_sites(core, geometries);
+        let result = core
+            .zoning
+            .place_prevalidated_parcel_geometries(geometries, runtime_id);
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
@@ -5619,9 +5679,16 @@ impl SimulationNode {
         };
         let mut core = self.lock_core();
         let core = &mut *core;
+        let geometries = core
+            .zoning
+            .preview_rezone_stroke(start_x, start_z, end_x, end_z);
+        let geometries = zoning_geometries_without_explicit_sites(core, geometries);
+        if geometries.is_empty() {
+            return false;
+        }
         let result = core
             .zoning
-            .rezone_stroke(start_x, start_z, end_x, end_z, runtime_id);
+            .rezone_prevalidated_parcel_geometries(&geometries, runtime_id);
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
@@ -5983,7 +6050,9 @@ impl SimulationNode {
     /// and `inventory` (Array of `{name, amount}` Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
-        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::economy::definitions::{
+            EconomyProfileRuntimeKind, load_runtime_economy_catalog,
+        };
         use crate::simulation::economy::households::{
             REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
             REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
@@ -6058,6 +6127,13 @@ impl SimulationNode {
 
         let mut dict = VarDictionary::new();
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
+        let asset_display_name = core
+            .allocator
+            .registry
+            .get(&b.asset_id)
+            .map(|entry| entry.manifest.display_name.as_str())
+            .unwrap_or(b.asset_id.as_str());
+        dict.set("asset_display_name", GString::from(asset_display_name));
         dict.set("zone_type", GString::from(zone_type_str));
         dict.set("level", b.level as i32);
         dict.set("under_construction", b.is_under_construction());
@@ -6213,6 +6289,56 @@ impl SimulationNode {
                     inventory_fill.unwrap_or(0.0) as f64,
                 );
                 dict.set("business_has_inventory_fill", inventory_fill.is_some());
+                if matches!(
+                    profile.kind,
+                    EconomyProfileRuntimeKind::UtilityProducer
+                        | EconomyProfileRuntimeKind::UtilityProcessor
+                ) {
+                    let utility_service = profile.utility_service.as_deref().unwrap_or("");
+                    let utility_active = !b.broken
+                        && !b.economy_broken
+                        && !b.is_deserted
+                        && !b.is_under_construction()
+                        && b.edge_idx != usize::MAX
+                        && b.worker_count > 0
+                        && factors.throughput_factor > 0.0;
+                    dict.set("utility_service", GString::from(utility_service));
+                    dict.set("utility_service_available", utility_active);
+                    dict.set("utility_local_revenue", b.revenue as f64);
+                    if let Some(fuel_port) = profile.inputs.first() {
+                        let fuel_name = cat
+                            .resource_id_for_runtime_id(fuel_port.resource_runtime_id)
+                            .unwrap_or("fuel");
+                        let fuel_units = b.inventory_units(fuel_port.resource_runtime_id).max(0.0);
+                        let fuel_days = if fuel_port.units_per_day > 0.0 {
+                            fuel_units / fuel_port.units_per_day
+                        } else {
+                            0.0
+                        };
+                        dict.set("utility_fuel_name", GString::from(fuel_name));
+                        dict.set("utility_fuel_units", fuel_units as f64);
+                        dict.set("utility_fuel_days", fuel_days as f64);
+                    }
+                    let power_production = b.recent_power_service_units.max(0.0);
+                    let power_consumed = b.recent_power_served_units.clamp(0.0, power_production);
+                    let power_unused = (power_production - power_consumed).max(0.0);
+                    let power_consumption_ratio = if power_production > 0.0 {
+                        power_consumed / power_production
+                    } else {
+                        0.0
+                    };
+                    dict.set("utility_power_production_today", power_production as f64);
+                    dict.set("utility_power_consumed_today", power_consumed as f64);
+                    dict.set("utility_power_unused_today", power_unused as f64);
+                    dict.set(
+                        "utility_power_consumption_ratio",
+                        power_consumption_ratio as f64,
+                    );
+                    dict.set(
+                        "city_fuel_cost_today",
+                        b.daily_city_funded_input_cost as f64,
+                    );
+                }
             }
         }
         dict.set("budget_distress", b.budget_distress);
@@ -7563,6 +7689,20 @@ fn zoning_parcel_geometries_array(
         arr.push(&dict.to_variant());
     }
     arr
+}
+
+fn zoning_geometries_without_explicit_sites(
+    core: &SimCore,
+    geometries: Vec<crate::simulation::zoning::ParcelGeometry>,
+) -> Vec<crate::simulation::zoning::ParcelGeometry> {
+    geometries
+        .into_iter()
+        .filter(|geometry| {
+            !core
+                .allocator
+                .parcel_geometry_overlaps_explicit_site(geometry)
+        })
+        .collect()
 }
 
 fn zoning_parcel_geometries_packed_dict(

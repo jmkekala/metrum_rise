@@ -224,7 +224,7 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, recent_household_sales_value, support_height_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -269,6 +269,10 @@ pub(super) fn save_world(
             i64::from(if b.is_deserted { 1 } else { 0 }),
             i64::from(if b.budget_distress { 1 } else { 0 }),
             b.daily_household_sales_value,
+            b.daily_power_service_units,
+            b.daily_power_served_units,
+            b.recent_power_service_units,
+            b.recent_power_served_units,
             b.recent_household_sales_value,
             b.support_height_m
         ])?;
@@ -460,8 +464,10 @@ pub(super) fn load_buildings(
     //      15=width 16=depth 17=asset_id 18=level 19=construction_total_hours
     //      20=construction_remaining_hours 21=broken 22=pending_redevelopment
     //      23=rezone_grace_days_remaining 24=is_deserted 25=budget_distress
-    //      26=daily_household_sales_value 27=recent_household_sales_value 28=support_height_m
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, recent_household_sales_value, support_height_m FROM buildings ORDER BY building_id")?;
+    //      26=daily_household_sales_value 27=daily_power_service_units
+    //      28=daily_power_served_units 29=recent_power_service_units
+    //      30=recent_power_served_units 31=recent_household_sales_value 32=support_height_m
+    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -475,7 +481,7 @@ pub(super) fn load_buildings(
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            support_height_m: row.get(28)?,
+            support_height_m: row.get(32)?,
             width_cells: i64_to_usize(row.get(15)?)? as u16,
             depth_cells: i64_to_usize(row.get(16)?)? as u16,
             zone_profile_runtime_id: profile_runtime_id,
@@ -508,8 +514,13 @@ pub(super) fn load_buildings(
             // Input dependency telemetry is daily-only and starts fresh each session.
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: row.get(26)?,
-            recent_household_sales_value: row.get(27)?,
+            daily_power_service_units: row.get(27)?,
+            daily_power_served_units: row.get(28)?,
+            recent_power_service_units: row.get(29)?,
+            recent_power_served_units: row.get(30)?,
+            recent_household_sales_value: row.get(31)?,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: row.get::<_, i64>(22)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(23)?)?,

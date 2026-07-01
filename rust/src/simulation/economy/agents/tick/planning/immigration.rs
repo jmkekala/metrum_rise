@@ -8,7 +8,9 @@ use super::super::access::{
     projected_lane_distance_for_entrance,
 };
 use super::super::lane_nav::lane_origin_node;
-use super::candidate::{NODE_RANKS, PlannedTripCandidate, candidate_better, candidate_lane_id};
+use super::candidate::{
+    NODE_RANKS, PlannedTripCandidate, candidate_better, candidate_lane_id, mode_choice_cost_for,
+};
 use super::types::BuiltTripPlan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -97,8 +99,10 @@ pub(crate) fn plan_immigration_trip(
             network_path = Some(path);
             travel_seconds
         };
+        let total_cost_s = network_path_time_s + destination_frontage_time_s + ingress_local_time_s;
         let candidate = PlannedTripCandidate {
-            total_cost_s: network_path_time_s + destination_frontage_time_s + ingress_local_time_s,
+            total_cost_s,
+            mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
             origin_rank: 0,
             destination_rank,
             mode: MODE_CAR,

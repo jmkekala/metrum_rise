@@ -17,10 +17,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
 const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
+const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 180.0;
 
 #[derive(Clone)]
 pub(super) struct PlannedTripCandidate {
     pub(super) total_cost_s: f32,
+    pub(super) mode_choice_cost_s: f32,
     pub(super) origin_rank: u8,
     pub(super) destination_rank: u8,
     pub(super) mode: u8,
@@ -41,13 +43,27 @@ pub(super) fn transit_flags_for_mode(mode: u8) -> u8 {
     }
 }
 
+pub(super) fn mode_choice_cost_for(mode: u8, travel_time_s: f32) -> f32 {
+    if mode == MODE_CAR {
+        travel_time_s + CAR_MODE_CHOICE_OVERHEAD_S
+    } else {
+        travel_time_s
+    }
+}
+
 pub(super) fn candidate_better(
     new_candidate: &PlannedTripCandidate,
     best: &PlannedTripCandidate,
 ) -> bool {
-    new_candidate.total_cost_s < best.total_cost_s
-        || (new_candidate.total_cost_s == best.total_cost_s
-            && (
+    match new_candidate
+        .mode_choice_cost_s
+        .total_cmp(&best.mode_choice_cost_s)
+    {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => {
+            (
+                new_candidate.total_cost_s.to_bits(),
                 new_candidate.origin_rank,
                 new_candidate.destination_rank,
                 new_candidate.planned_attach_lane_id,
@@ -55,13 +71,16 @@ pub(super) fn candidate_better(
                 new_candidate.planned_attach_lane_d.to_bits(),
                 new_candidate.planned_detach_lane_d.to_bits(),
             ) < (
+                best.total_cost_s.to_bits(),
                 best.origin_rank,
                 best.destination_rank,
                 best.planned_attach_lane_id,
                 best.planned_detach_lane_id,
                 best.planned_attach_lane_d.to_bits(),
                 best.planned_detach_lane_d.to_bits(),
-            ))
+            )
+        }
+    }
 }
 
 pub(super) fn candidate_lane_id(
@@ -162,8 +181,7 @@ fn evaluate_planned_trip_candidate(
         )?,
         mode,
     );
-    let same_lane_direct_frontage = mode == MODE_CAR
-        && origin_entrance.edge_idx == destination_entrance.edge_idx
+    let same_lane_direct_frontage = origin_entrance.edge_idx == destination_entrance.edge_idx
         && planned_attach_lane_id == planned_detach_lane_id
         && planned_attach_lane_d <= planned_detach_lane_d + 1e-6;
 
@@ -223,6 +241,7 @@ fn evaluate_planned_trip_candidate(
 
     Some(PlannedTripCandidate {
         total_cost_s,
+        mode_choice_cost_s: mode_choice_cost_for(mode, total_cost_s),
         origin_rank,
         destination_rank,
         mode,
@@ -244,8 +263,8 @@ pub(super) fn build_exact_path_for_candidate(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<(Vec<u32>, u8)> {
-    let direct_same_lane_frontage = candidate.mode == MODE_CAR
-        && candidate.planned_attach_lane_id == candidate.planned_detach_lane_id
+    let direct_same_lane_frontage = candidate.planned_attach_lane_id
+        == candidate.planned_detach_lane_id
         && candidate.planned_attach_lane_id != usize::MAX
         && candidate.planned_attach_lane_d <= candidate.planned_detach_lane_d + 1e-6;
     if direct_same_lane_frontage {

@@ -11,7 +11,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::types::VehicleFrontageAccess;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoneType;
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 use rand::SeedableRng;
 
 fn zone_bucket(zone: ZoneType) -> usize {
@@ -175,6 +175,148 @@ fn register_test_asset_with_family_level(
     format!("{pack_id}:{asset_id}")
 }
 
+fn register_test_power_service_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+) -> String {
+    let manifest = AssetManifest {
+        asset_id: asset_id.to_owned(),
+        display_name: "Test Power Service".to_owned(),
+        asset_set: None,
+        tags: vec![],
+        thumbnail: None,
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+        anchors: vec![Anchor {
+            anchor_type: AnchorType::Entrance,
+            name: "main".to_owned(),
+            position: [0.0, 0.0, 0.5],
+            forward: [0.0, 0.0, 1.0],
+            width_m: None,
+            length_m: None,
+            vehicle_class: None,
+        }],
+        site_surfaces: vec![],
+        building: Some(BuildingData {
+            flat_size_m2: None,
+            placement_mode: PlacementMode::Explicit,
+            zone_type: None,
+            density: None,
+            lot_width_cells: 2,
+            lot_depth_cells: 2,
+            min_zone_width_cells: None,
+            min_zone_depth_cells: None,
+            level: 1,
+            household_capacity: None,
+            worker_capacity: Some(20),
+            service_class: Some("power".to_owned()),
+            economy_profile: Some("power_plant_basic".to_owned()),
+        }),
+        prop: None,
+        vehicle: None,
+        character: None,
+    };
+    allocator
+        .registry
+        .register(pack_id, manifest, String::new());
+    format!("{pack_id}:{asset_id}")
+}
+
+#[test]
+fn explicit_service_preview_rejects_site_overlapping_nearby_road() {
+    let map_cfg = WorldConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_power_service_asset(&mut allocator, "base", "building.power.test");
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 20.0), Vector3::new(100.0, 0.0, 20.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+
+    let preview = allocator
+        .preview_explicit_service_placement(
+            &asset_id,
+            Vector2::new(50.0, 8.0),
+            map_cfg.zone_cell_m,
+            &graph,
+            &network.road_surface,
+            &terrain,
+            &catalog,
+        )
+        .expect("service placement should resolve to the nearest frontage");
+
+    assert!(!preview.valid);
+    assert_eq!(
+        preview.rejection,
+        Some(ExplicitServicePlacementRejection::RoadOverlap)
+    );
+}
+
+#[test]
+fn zoning_projection_overlaps_explicit_service_site_is_blocked() {
+    let map_cfg = WorldConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_power_service_asset(&mut allocator, "base", "building.power.test");
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    let terrain = compiled_flat_test_terrain(&mut network, &graph);
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning =
+        crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
+
+    allocator
+        .execute_explicit_service_placement(
+            &asset_id,
+            Vector2::new(50.0, 8.0),
+            map_cfg.zone_cell_m,
+            &graph,
+            &network.road_surface,
+            &terrain,
+            &catalog,
+            &tuning,
+        )
+        .expect("flat service placement should commit");
+    let parcel_geometry = zoning
+        .preview_parcel_at(50.0, 8.0, 20.0, 20.0, &graph)
+        .expect("zoning projection should still resolve geometrically");
+
+    assert!(
+        allocator.parcel_geometry_overlaps_explicit_site(&parcel_geometry),
+        "explicit service lot should reserve land against zoning placement"
+    );
+}
+
 fn stable_hash_bytes(parts: &[&[u8]]) -> u64 {
     let mut state = 0xcbf29ce484222325u64;
     for part in parts {
@@ -206,6 +348,67 @@ fn stable_site_variant_hash(
         &parcel_id.to_le_bytes(),
         qualified_asset_id.as_bytes(),
     ])
+}
+
+#[test]
+fn reset_daily_accumulators_rolls_power_output_for_summaries() {
+    let mut allocator = BuildingAllocator::new();
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        support_height_m: 0.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_profile_runtime_id: 0,
+        parcel_id: 0,
+        zone_type: ZoneType::Industrial,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.0,
+        side_offset: 0.0,
+        is_deserted: false,
+        budget_distress: false,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: "base:power".to_owned(),
+        level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
+        broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
+        resource_inventory: Vec::new(),
+        revenue: 0.0,
+        operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
+        last_day_profit: 0.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 4.0,
+        daily_local_input_value: 3.0,
+        daily_city_funded_input_cost: 2.0,
+        daily_household_sales_value: 1.0,
+        daily_power_service_units: 78.0,
+        daily_power_served_units: 56.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+
+    allocator.reset_daily_input_accumulators();
+
+    let building = &allocator.buildings[0];
+    assert_eq!(building.daily_power_service_units, 0.0);
+    assert_eq!(building.recent_power_service_units, 78.0);
+    assert_eq!(building.daily_power_served_units, 0.0);
+    assert_eq!(building.recent_power_served_units, 56.0);
+    assert_eq!(building.daily_city_funded_input_cost, 0.0);
+    assert_eq!(building.recent_household_sales_value, 1.0);
 }
 
 fn frontage_profile_runtime_id_for_building(
@@ -405,7 +608,12 @@ fn setup_startup_spawn_city_for_rezoning() -> (
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: false,
@@ -494,7 +702,12 @@ fn test_zone_index_consistency() {
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: false,
@@ -582,7 +795,12 @@ fn test_vacancy_index_consistency() {
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: false,
@@ -690,7 +908,12 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -860,7 +1083,12 @@ fn repair_road_attachments_reprojects_far_stored_edge() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -957,7 +1185,12 @@ fn repair_road_attachments_reprojects_stale_parcel_attachment() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1411,7 +1644,12 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1536,7 +1774,12 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1661,7 +1904,12 @@ fn test_building_removal_clears_zoning_occupancy() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1808,7 +2056,12 @@ fn test_immigration_claims_vacant_home() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1860,6 +2113,7 @@ fn test_immigration_claims_vacant_home() {
     agents.target_building[0] = usize::MAX;
     agents.pos_x[0] = expected_door.x;
     agents.pos_y[0] = expected_door.y;
+    let mut treasury_balance = 0.0;
     households.operational_hour_tick(
         &mut agents,
         &mut allocator,
@@ -1868,6 +2122,7 @@ fn test_immigration_claims_vacant_home() {
         &graph,
         0,
         0,
+        &mut treasury_balance,
     );
     assert_eq!(agents.len(), 2);
     assert_eq!(households.households.len(), 1);
@@ -1955,7 +2210,12 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1997,7 +2257,12 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -2224,7 +2489,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -2266,7 +2536,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -2308,7 +2583,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,

@@ -12,7 +12,10 @@ use rayon::prelude::*;
 
 const HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
 const HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
-const STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
+const MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 6;
+const HOUSEHOLD_BASE_AREA_M2: f32 = 25.0;
+const HOUSEHOLD_ADULT_AREA_M2: f32 = 22.0;
+const HOUSEHOLD_CHILD_AREA_M2: f32 = 12.0;
 const MIN_POSITIVE_VALUE: f32 = 0.000_1;
 
 pub(super) const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
@@ -485,14 +488,34 @@ pub(crate) fn expected_adult_members_for_household_size(household_size: f32) -> 
 /// Returns the deterministic starter immigrant household size that fits one residential flat.
 ///
 /// Residential capacity is a household slot count, not a requirement that a new household fills
-/// the whole authored home. Starter admissions therefore use a small baseline household capped by
-/// the home's flat-size capacity.
+/// the whole authored home. Starter admissions use a simple area model: each flat reserves a base
+/// living area, a two-person household may fit as one adult plus one child-weighted member, and
+/// larger households reserve two adult-equivalent members plus child-weighted extra members.
 pub(crate) fn candidate_immigrant_household_size_from_flat_size(flat_size_m2: f32) -> Option<u16> {
     if flat_size_m2 <= 1.0 {
         return None;
     }
-    let flat_capacity = ((flat_size_m2 / 40.0).ceil() as u16).max(1);
-    Some(flat_capacity.min(STARTER_IMMIGRANT_HOUSEHOLD_SIZE))
+    let mut candidate_size = 1u16;
+    for household_size in 2..=MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE {
+        if starter_household_required_area_m2(household_size) > flat_size_m2 {
+            break;
+        }
+        candidate_size = household_size;
+    }
+    Some(candidate_size)
+}
+
+fn starter_household_required_area_m2(household_size: u16) -> f32 {
+    let size = household_size.max(1);
+    let adult_equivalent_members = if size <= 2 {
+        1.0
+    } else {
+        MAX_ADULTS_PER_HOUSEHOLD as f32
+    };
+    let child_equivalent_members = size as f32 - adult_equivalent_members;
+    HOUSEHOLD_BASE_AREA_M2
+        + adult_equivalent_members * HOUSEHOLD_ADULT_AREA_M2
+        + child_equivalent_members * HOUSEHOLD_CHILD_AREA_M2
 }
 
 pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
@@ -591,5 +614,36 @@ pub(crate) fn industrial_output_headroom_factor(
                 }
             })
             .fold(1.0, f32::min)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flat_size_capacity_counts_children_more_lightly_than_adults() {
+        assert_eq!(
+            candidate_immigrant_household_size_from_flat_size(65.5),
+            Some(2)
+        );
+        assert_eq!(
+            candidate_immigrant_household_size_from_flat_size(100.0),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn flat_size_capacity_stays_bounded_for_large_homes() {
+        assert_eq!(
+            candidate_immigrant_household_size_from_flat_size(200.0),
+            Some(MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE)
+        );
+    }
+
+    #[test]
+    fn flat_size_capacity_rejects_missing_area() {
+        assert_eq!(candidate_immigrant_household_size_from_flat_size(0.0), None);
+        assert_eq!(candidate_immigrant_household_size_from_flat_size(1.0), None);
     }
 }

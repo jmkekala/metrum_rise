@@ -132,7 +132,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Resident age groups are live for the baseline economy: adults can work and shop, elders can shop
   only, children consume household resources but do not work or shop, immigrant households cap at
   two adults and two elders, and children only appear with adult households. Demand admission now
-  estimates move-in jobs and benefits from expected adult workers rather than total residents. See
+  estimates move-in jobs and benefits from expected adult workers rather than total residents.
+  Starter household sizing now uses `flat_size_m2` with adult and lighter child area weights, so
+  larger single-family homes can admit larger families while still consuming one household slot. See
   [`economy.md`](economy.md) and
   [`demand.md`](demand.md).
 - Baseline city revenue is live: gross wage payments withhold authored income tax, household store
@@ -143,7 +145,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - First explicit Services placement is live: the bottom toolbar discovers city service assets from
   the asset registry, places them on road frontage through Rust allocator validation, charges the
   city treasury, funds municipal utility wages from the treasury, and routes local city-owned
-  utility fees back to the treasury. See [`economy.md`](economy.md).
+  utility fees back to the treasury. Coal-fired power plants now request coal through ordinary
+  freight, draw fuel/input purchases from the city treasury, accumulate produced power from staffed
+  fueled operation, route covered household utility payments into matching local utility revenue,
+  and expose uncovered private demand as OWA fallback spend. See [`economy.md`](economy.md).
 - Freight shipments now dispatch physical truck carrier agents through the existing lane movement
   system. Local freight, `OWA` imports, and `OWA` exports settle only when the carrier reaches the
   destination building or border terminal; empty carriers then return to their source building or

@@ -1077,6 +1077,12 @@ impl SimCore {
                         .unwrap_or("?");
                     io_parts.push(format!("+{:.1}{}/day", port.units_per_day, name));
                 }
+                if p.utility_service.as_deref() == Some("power") {
+                    io_parts.push(format!(
+                        "power_out_today={:.1}",
+                        b.recent_power_service_units
+                    ));
+                }
             }
             let io_str = if io_parts.is_empty() {
                 "none".to_owned()
@@ -1114,6 +1120,8 @@ impl SimCore {
         let mut total_household_shopping_spend = 0.0f32;
         let mut total_benefits_paid = 0.0f32;
         let mut total_utility_stock_cost = 0.0f32;
+        let mut total_household_supply_use_cost = 0.0f32;
+        let mut total_household_utility_cost = 0.0f32;
 
         for (idx, h) in self.households.households.iter().enumerate() {
             if h.member_count == 0 {
@@ -1141,6 +1149,11 @@ impl SimCore {
             total_household_shopping_spend += ledger.shopping_spend;
             total_benefits_paid += ledger.unemployment_benefit_income;
             total_utility_stock_cost += ledger.utility_stock_consumption_cost;
+            total_household_supply_use_cost += ledger.household_supply_consumption_cost;
+            let household_utility_cost = ledger.power_consumption_cost
+                + ledger.water_consumption_cost
+                + ledger.sewage_consumption_cost;
+            total_household_utility_cost += household_utility_cost;
             let home_asset = self
                 .allocator
                 .buildings
@@ -1166,7 +1179,7 @@ impl SimCore {
                 String::new()
             };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} benefit={:.1} shopping={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} benefit={:.1} shopping={:.1} power={:.1} water={:.1} sewage={:.1} utility={:.1} stock_use={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
                 day_index,
                 idx,
                 h.home_building_id,
@@ -1183,6 +1196,11 @@ impl SimCore {
                 ledger.wage_income,
                 ledger.unemployment_benefit_income,
                 ledger.shopping_spend,
+                ledger.power_consumption_cost,
+                ledger.water_consumption_cost,
+                ledger.sewage_consumption_cost,
+                household_utility_cost,
+                ledger.household_supply_consumption_cost,
                 ledger.utility_stock_consumption_cost,
                 ledger.budget_after,
                 ledger.unemployed_adults,
@@ -1191,7 +1209,7 @@ impl SimCore {
             );
         }
         println!(
-            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} benefits_paid={:.1} utility_stock_cost={:.1}",
+            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} benefits_paid={:.1} utility_cost={:.1} stock_use_cost={:.1} utility_stock_cost={:.1}",
             day_index,
             households_at_budget_floor,
             households_below_1d_stock,
@@ -1200,6 +1218,8 @@ impl SimCore {
             total_wages_paid,
             total_household_shopping_spend,
             total_benefits_paid,
+            total_household_utility_cost,
+            total_household_supply_use_cost,
             total_utility_stock_cost,
         );
         println!(
@@ -1237,6 +1257,7 @@ impl SimCore {
             &self.region_graph,
             absolute_hour,
             minute_of_day,
+            &mut self.treasury.balance,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         if minute_of_day != 0 {

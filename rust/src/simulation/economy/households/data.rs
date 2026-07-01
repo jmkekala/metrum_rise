@@ -26,7 +26,15 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) unemployment_benefit_income: f32,
     /// Net household budget reserved or spent on shopping during the ledger window.
     pub(crate) shopping_spend: f32,
-    /// Value of consumed household stock plus direct utility charges.
+    /// Value of household stock consumed from the home buffer.
+    pub(crate) household_supply_consumption_cost: f32,
+    /// Residential electricity charge paid from the household budget.
+    pub(crate) power_consumption_cost: f32,
+    /// Residential water-service charge paid from the household budget.
+    pub(crate) water_consumption_cost: f32,
+    /// Residential sewage-service charge paid from the household budget.
+    pub(crate) sewage_consumption_cost: f32,
+    /// Value of consumed household stock plus direct utility charges for legacy debug summaries.
     pub(crate) utility_stock_consumption_cost: f32,
     /// Unemployed adult count observed by the daily benefit pass.
     pub(crate) unemployed_adults: u16,

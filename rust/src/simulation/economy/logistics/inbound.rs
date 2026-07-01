@@ -18,6 +18,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         planning: &mut FreightPlanningContext,
+        treasury_balance: &mut f64,
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
@@ -135,6 +136,7 @@ impl ShipmentSystem {
                     tuning.logistics.truck_load_units,
                     planning.max_freight_speed,
                     tuning.fiscal.business_purchase_tax_rate,
+                    treasury_balance,
                 ) {
                     self.clear_request_failure(request_key);
                     continue;
@@ -160,6 +162,7 @@ impl ShipmentSystem {
                     minute_of_day,
                     &tuning.logistics,
                     tuning.fiscal.business_purchase_tax_rate,
+                    treasury_balance,
                 ) {
                     self.clear_request_failure(request_key);
                     continue;

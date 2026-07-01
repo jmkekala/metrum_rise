@@ -136,6 +136,14 @@ func _rebuild_multimeshes() -> void:
 func _part_key(asset_id: String, part_index: int) -> String:
 	return "%s%s%d" % [asset_id, PART_KEY_SEP, part_index]
 
+func get_building_mesh_for_asset_part(asset_id: String, part_index: int) -> Mesh:
+	var key := _part_key(asset_id, part_index)
+	if multimeshes.has(key):
+		var mmi: MultiMeshInstance3D = multimeshes[key]
+		if mmi.multimesh and mmi.multimesh.mesh:
+			return mmi.multimesh.mesh
+	return _load_mesh_for_asset_part(asset_id, part_index)
+
 func _setup_multimesh_for_asset_part(asset_id: String, part_index: int) -> void:
 	var key := _part_key(asset_id, part_index)
 	var mesh := _load_mesh_for_asset_part(asset_id, part_index)

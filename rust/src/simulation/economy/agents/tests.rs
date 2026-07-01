@@ -129,7 +129,12 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -598,6 +603,7 @@ fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
     let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = g.add_node(Vector3::new(500.0, 0.0, 0.0), NodeType::Junction);
     g.add_edge(Edge {
+        allowed_types: TransitFlags::CAR,
         physical_length: 500.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
@@ -667,13 +673,102 @@ fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
 
     assert_eq!(agents.transit[i], TRANSIT_ACCESS_EGRESS);
     assert_eq!(agents.transit_mode[i], MODE_CAR);
+    let selected_lane = agents.planned_attach_lane_id[i] as usize;
+    assert_eq!(selected_lane, agents.planned_detach_lane_id[i] as usize);
+    assert!(
+        selected_lane == home_entrance.car_lane_fwd || selected_lane == home_entrance.car_lane_bkw
+    );
+    assert!(
+        selected_lane == work_entrance.car_lane_fwd || selected_lane == work_entrance.car_lane_bkw
+    );
+    assert!(agents.current_path[i].is_empty());
+    assert_eq!(agents.access_flags[i] & ACCESS_ZERO_HOP_NODE_PATH, 0);
+    assert_ne!(agents.planned_attach_node[i], agents.planned_detach_node[i]);
+    assert!(agents.planned_attach_lane_d[i] < agents.planned_detach_lane_d[i]);
+}
+
+#[test]
+fn test_short_same_edge_trip_prefers_direct_sidewalk_over_car() {
+    let mut g = RegionGraph::new();
+    let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = g.add_node(Vector3::new(500.0, 0.0, 0.0), NodeType::Junction);
+    g.add_edge(Edge {
+        physical_length: 500.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
+        ..create_test_edge(n0, n1)
+    });
+    g.rebuild_adjacency_list();
+
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut g);
+    network.cch_graph = CchGraph::build(&g);
+
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "same_edge_walk_home",
+        ZoneClass::Residential,
+    );
+    let work_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "same_edge_walk_work",
+        ZoneClass::Commercial,
+    );
+
+    let mut home = create_test_building(0, 1);
+    home.center_x = 125.0;
+    home.center_y = -10.0;
+    home.facing_dir = Vector2::new(0.0, -1.0);
+    home.asset_id = home_asset;
+
+    let mut work = create_test_building(0, 1);
+    work.center_x = 225.0;
+    work.center_y = -10.0;
+    work.facing_dir = Vector2::new(0.0, -1.0);
+    work.asset_id = work_asset;
+    work.zone_type = ZoneType::Commercial;
+
+    allocator.buildings.push(home);
+    allocator.buildings.push(work);
+    allocator.rebuild_entrance_cache(&g, &network.lane_system);
+
+    let home_entrance = allocator.entrances[0].clone();
+    let work_entrance = allocator.entrances[1].clone();
+    assert_ne!(home_entrance.foot_lane_fwd, usize::MAX);
+    assert_eq!(home_entrance.foot_lane_fwd, work_entrance.foot_lane_fwd);
+
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_border_arrival_agent(
+        0,
+        n0,
+        0.0,
+        0.0,
+        n0,
+        home_entrance.door_pos.x,
+        home_entrance.door_pos.y,
+    );
+    agents.home_building[i] = 0;
+    agents.work_building[i] = 1;
+    agents.current_building[i] = 0;
+    agents.transit[i] = TRANSIT_IN_BUILDING;
+    agents.has_car[i] = true;
+    agents.planned_activity[i] = 1;
+    agents.planned_target_building[i] = 1;
+
+    agents.tick(&mut allocator, &mut network, &mut g, 0.1, 0, 0);
+
+    assert_eq!(agents.transit[i], TRANSIT_ACCESS_EGRESS);
+    assert_eq!(agents.transit_mode[i], MODE_WALK);
     assert_eq!(
         agents.planned_attach_lane_id[i] as usize,
-        home_entrance.car_lane_fwd
+        home_entrance.foot_lane_fwd
     );
     assert_eq!(
         agents.planned_detach_lane_id[i] as usize,
-        work_entrance.car_lane_fwd
+        work_entrance.foot_lane_fwd
     );
     assert!(agents.current_path[i].is_empty());
     assert_eq!(agents.access_flags[i] & ACCESS_ZERO_HOP_NODE_PATH, 0);

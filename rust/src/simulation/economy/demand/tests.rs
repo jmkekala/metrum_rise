@@ -196,7 +196,12 @@ fn building(
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1074,7 +1079,7 @@ fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_borde
 }
 
 #[test]
-fn hourly_pass_admits_starter_household_into_large_vacant_home_without_jobs() {
+fn hourly_pass_sizes_large_vacant_home_as_larger_family_without_jobs() {
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_family_asset_with_economy_profile_and_flat_size(
         &mut allocator,
@@ -1107,11 +1112,11 @@ fn hourly_pass_admits_starter_household_into_large_vacant_home_without_jobs() {
 
     assert_eq!(
         demand.last_admission_diagnostics.candidate_household_size,
-        2.0
+        6.0
     );
-    assert!(
-        demand.households_to_admit_today > 0,
-        "large homes should admit a starter household instead of requiring a full large-family runway"
+    assert_eq!(
+        demand.households_to_admit_today, 0,
+        "large homes should not force an oversized household into the city without job pull"
     );
 }
 

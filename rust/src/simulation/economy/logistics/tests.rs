@@ -19,7 +19,15 @@ use godot::prelude::{Vector2, Vector3};
 macro_rules! logistics_tick {
     ($shipments:expr, $allocator:expr, $network:expr, $graph:expr, $minute:expr) => {{
         let mut agents = AgentSystem::new();
-        $shipments.hourly_tick($allocator, &mut agents, $network, $graph, $minute)
+        let mut treasury_balance = 0.0;
+        $shipments.hourly_tick(
+            $allocator,
+            &mut agents,
+            $network,
+            $graph,
+            $minute,
+            &mut treasury_balance,
+        )
     }};
 }
 
@@ -30,6 +38,7 @@ fn create_profile_input_shipments_for_test(
     graph: &RegionGraph,
     minute_of_day: u16,
 ) {
+    let mut treasury_balance = 0.0;
     let mut planning = super::planning::FreightPlanningContext::build(shipments, allocator, graph);
     shipments.create_profile_input_shipments(
         allocator,
@@ -37,6 +46,7 @@ fn create_profile_input_shipments_for_test(
         graph,
         minute_of_day,
         &mut planning,
+        &mut treasury_balance,
     );
     planning.finish(shipments);
 }
@@ -57,6 +67,17 @@ fn create_profile_output_exports_for_test(
         &mut planning,
     );
     planning.finish(shipments);
+}
+
+fn progress_shipments_for_test(
+    shipments: &mut ShipmentSystem,
+    allocator: &mut BuildingAllocator,
+    agents: &mut AgentSystem,
+    network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> f32 {
+    let mut treasury_balance = 0.0;
+    shipments.progress_shipments(allocator, agents, network, graph, &mut treasury_balance)
 }
 
 fn mark_carrier_arrived(shipments: &ShipmentSystem, agents: &mut AgentSystem, shipment_idx: usize) {
@@ -164,6 +185,56 @@ fn register_test_asset_with_profile(
     format!("{pack_id}:{asset_id}")
 }
 
+fn register_test_city_service_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    service_class: &str,
+    economy_profile: &str,
+) -> String {
+    let manifest = AssetManifest {
+        asset_id: asset_id.to_owned(),
+        display_name: "Test Service".to_owned(),
+        asset_set: None,
+        tags: vec![],
+        thumbnail: None,
+        lods: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+        anchors: vec![Anchor {
+            anchor_type: AnchorType::Entrance,
+            name: "main".to_owned(),
+            position: [0.0, 0.0, 0.5],
+            forward: [0.0, 0.0, 1.0],
+            width_m: None,
+            length_m: None,
+            vehicle_class: None,
+        }],
+        site_surfaces: vec![],
+        building: Some(BuildingData {
+            flat_size_m2: None,
+            placement_mode: PlacementMode::Explicit,
+            zone_type: None,
+            density: None,
+            lot_width_cells: 2,
+            lot_depth_cells: 2,
+            min_zone_width_cells: None,
+            min_zone_depth_cells: None,
+            level: 1,
+            household_capacity: None,
+            worker_capacity: None,
+            service_class: Some(service_class.to_owned()),
+            economy_profile: Some(economy_profile.to_owned()),
+        }),
+        prop: None,
+        vehicle: None,
+        character: None,
+    };
+    allocator
+        .registry
+        .register(pack_id, manifest, String::new());
+    format!("{pack_id}:{asset_id}")
+}
+
 fn make_building(
     allocator: &BuildingAllocator,
     center_x: f32,
@@ -217,7 +288,12 @@ fn make_building(
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -328,7 +404,13 @@ fn local_supplier_creates_and_delivers_shipment() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
 
     assert_eq!(shipments.shipments.len(), 1);
     assert_eq!(shipments.shipments[0].source, ShipmentEndpoint::Building(0));
@@ -345,7 +427,13 @@ fn local_supplier_creates_and_delivers_shipment() {
     );
 
     mark_carrier_arrived(&shipments, &mut agents, 0);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
 
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Returning);
     assert_eq!(agents.len(), 1);
@@ -360,7 +448,13 @@ fn local_supplier_creates_and_delivers_shipment() {
     );
 
     mark_carrier_returned(&shipments, &mut agents, 0);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Fulfilled);
     assert_eq!(agents.len(), 0);
 }
@@ -437,7 +531,15 @@ fn owa_border_fallback_creates_import_shipment() {
 
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
-    shipments.hourly_tick(&mut allocator, &mut agents, &network, &graph, 480);
+    let mut treasury_balance = 0.0;
+    shipments.hourly_tick(
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+        480,
+        &mut treasury_balance,
+    );
 
     assert_eq!(shipments.shipments.len(), 1);
     assert_eq!(
@@ -446,10 +548,22 @@ fn owa_border_fallback_creates_import_shipment() {
     );
 
     mark_carrier_arrived(&shipments, &mut agents, 0);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Returning);
     mark_carrier_returned(&shipments, &mut agents, 0);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     shipments
         .shipments
         .retain(|shipment| shipment.status.is_open());
@@ -459,6 +573,69 @@ fn owa_border_fallback_creates_import_shipment() {
         .resource_runtime_id_for_id("staple_food")
         .expect("staple food resource");
     assert!(allocator.buildings[0].inventory_units(staple_food) > 0.0);
+}
+
+#[test]
+fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
+    let (graph, network, _industrial_edge, service_edge, border_node) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let power_asset = register_test_city_service_asset(
+        &mut allocator,
+        "test",
+        "municipal_power_with_fuel",
+        "power",
+        "power_plant_basic",
+    );
+    let service_building = make_building(
+        &allocator,
+        50.0,
+        ZoneType::None,
+        service_edge,
+        &power_asset,
+        0.0,
+        0.0,
+    );
+    allocator.buildings.push(service_building);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let coal = catalog
+        .resource_runtime_id_for_id("coal")
+        .expect("coal resource");
+    let mut shipments = ShipmentSystem::new();
+    let mut agents = AgentSystem::new();
+    let mut treasury_balance = 1_000.0;
+    shipments.hourly_tick(
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+        480,
+        &mut treasury_balance,
+    );
+
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(shipments.shipments[0].resource_runtime_id, coal);
+    assert_eq!(
+        shipments.shipments[0].source,
+        ShipmentEndpoint::OwaBorder(border_node)
+    );
+    assert_eq!(shipments.shipments[0].tax_cost, 0.0);
+    assert!(treasury_balance < 1_000.0);
+    assert_eq!(allocator.buildings[0].operating_budget, 0.0);
+    assert!(allocator.buildings[0].daily_city_funded_input_cost > 0.0);
+
+    mark_carrier_arrived(&shipments, &mut agents, 0);
+    shipments.progress_shipments(
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+        &mut treasury_balance,
+    );
+    assert!(allocator.buildings[0].inventory_units(coal) > 0.0);
+    assert!(allocator.buildings[0].daily_owa_input_value > 0.0);
 }
 
 #[test]
@@ -965,7 +1142,13 @@ fn queued_owa_import_expires_and_refunds_destination() {
     });
 
     let mut agents = AgentSystem::new();
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
 
     assert_eq!(shipments.shipments[0].status, ShipmentStatus::Expired);
     assert!((allocator.buildings[0].operating_budget - 340.0).abs() < f32::EPSILON);
@@ -1161,9 +1344,21 @@ fn repeated_owa_exports_saturate_export_revenue() {
 
     let resource_runtime_id = shipments.shipments[0].resource_runtime_id;
     let mut agents = AgentSystem::new();
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     mark_carrier_arrived(&shipments, &mut agents, 0);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     assert!(
         shipments
             .owa_export_saturation_units()
@@ -1213,7 +1408,15 @@ fn owa_export_eta_uses_freight_timing_window() {
 
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
-    shipments.hourly_tick(&mut allocator, &mut agents, &network, &graph, 0);
+    let mut treasury_balance = 0.0;
+    shipments.hourly_tick(
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+        0,
+        &mut treasury_balance,
+    );
 
     let export_idx = shipments
         .shipments
@@ -1223,7 +1426,13 @@ fn owa_export_eta_uses_freight_timing_window() {
     assert!(shipments.shipments[export_idx].eta_hours >= 2);
 
     mark_carrier_arrived(&shipments, &mut agents, export_idx);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     assert_eq!(
         shipments.shipments[export_idx].status,
         ShipmentStatus::Returning
@@ -1231,7 +1440,13 @@ fn owa_export_eta_uses_freight_timing_window() {
     assert!(allocator.buildings[0].revenue > 0.0);
 
     mark_carrier_returned(&shipments, &mut agents, export_idx);
-    shipments.progress_shipments(&mut allocator, &mut agents, &network, &graph);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
     assert_eq!(
         shipments.shipments[export_idx].status,
         ShipmentStatus::Fulfilled

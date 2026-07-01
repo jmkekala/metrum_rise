@@ -270,6 +270,8 @@ pub(crate) struct EconomyProfileRuntime {
     pub freight_timing_profile: Option<String>,
     /// Fixed baseline unit sale price for the profile's main output.
     pub unit_price_currency: f32,
+    /// Authored nominal service or output throughput in units per day.
+    pub base_rate_units_per_day: f32,
     /// Fixed minimum daily wage offered by this profile.
     pub wage_min_currency_per_day: f32,
     /// Fixed maximum daily wage offered by this profile.

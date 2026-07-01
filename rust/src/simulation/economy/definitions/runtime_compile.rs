@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
 const REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
+const LEGACY_RESOURCE_ORDER: [&str; 2] = ["household_supplies", "staple_food"];
 
 pub(super) fn compile_runtime_catalog(
     authored_profiles: &[EconomyProfile],
@@ -37,7 +38,14 @@ pub(super) fn compile_runtime_catalog(
             resource_ids.insert(output.resource.clone());
         }
     }
-    for (idx, resource_id) in resource_ids.into_iter().enumerate() {
+    let mut ordered_resource_ids = Vec::with_capacity(resource_ids.len());
+    for resource_id in LEGACY_RESOURCE_ORDER {
+        if resource_ids.remove(resource_id) {
+            ordered_resource_ids.push(resource_id.to_owned());
+        }
+    }
+    ordered_resource_ids.extend(resource_ids);
+    for (idx, resource_id) in ordered_resource_ids.into_iter().enumerate() {
         let runtime_id = u16::try_from(idx + 1)
             .map_err(|_| "runtime economy catalog exceeds u16 resource id range".to_owned())?;
         catalog
@@ -231,6 +239,7 @@ fn compile_runtime_profile(
         work_schedule_profile: profile.work_schedule_profile.clone(),
         freight_timing_profile: profile.freight_timing_profile.clone(),
         unit_price_currency: profile.unit_price_currency.max(0.0),
+        base_rate_units_per_day: profile.base_rate_units_per_day.max(0.0),
         wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
         wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
         worker_capacity: profile.worker_capacity,

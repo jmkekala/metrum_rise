@@ -14,7 +14,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
 use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
-use super::resource::building_accepts_input_resource;
+use super::resource::{building_accepts_input_resource, refund_input_payment};
 
 enum CarrierProgress {
     Arrived,
@@ -29,6 +29,7 @@ impl ShipmentSystem {
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        treasury_balance: &mut f64,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -38,6 +39,7 @@ impl ShipmentSystem {
         dispatch_queued_shipments(
             &mut self.shipments,
             allocator,
+            treasury_balance,
             usize::from(tuning.logistics.border_active_jobs_per_node),
             tuning.logistics.queued_shipment_expiry_hours,
             retry_cooldown_hours,
@@ -50,6 +52,7 @@ impl ShipmentSystem {
             graph,
             &catalog,
             retry_cooldown_hours,
+            treasury_balance,
         );
 
         let mut business_purchase_tax_collected = 0.0;
@@ -92,6 +95,7 @@ impl ShipmentSystem {
                     fail_shipment_before_dispatch(
                         &mut self.shipments[idx],
                         allocator,
+                        treasury_balance,
                         retry_cooldown_hours,
                     );
                     idx += 1;
@@ -178,8 +182,13 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        allocator.buildings[dest_idx].operating_budget +=
-                            shipment.total_cost + shipment.tax_cost;
+                        refund_input_payment(
+                            allocator,
+                            treasury_balance,
+                            dest_idx,
+                            shipment.total_cost,
+                            shipment.tax_cost,
+                        );
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
                         self.shipments[idx].status = ShipmentStatus::Failed;
@@ -214,8 +223,13 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        allocator.buildings[dest_idx].operating_budget +=
-                            shipment.total_cost + shipment.tax_cost;
+                        refund_input_payment(
+                            allocator,
+                            treasury_balance,
+                            dest_idx,
+                            shipment.total_cost,
+                            shipment.tax_cost,
+                        );
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
                         self.shipments[idx].status = ShipmentStatus::Failed;
@@ -251,6 +265,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         retry_cooldown_hours: u16,
+        treasury_balance: &mut f64,
     ) {
         for idx in 0..self.shipments.len() {
             if self.shipments[idx].status != ShipmentStatus::InTransit
@@ -264,6 +279,7 @@ impl ShipmentSystem {
                 fail_shipment_before_dispatch(
                     &mut self.shipments[idx],
                     allocator,
+                    treasury_balance,
                     retry_cooldown_hours,
                 );
                 continue;
@@ -308,6 +324,7 @@ impl ShipmentSystem {
                 fail_shipment_before_dispatch(
                     &mut self.shipments[idx],
                     allocator,
+                    treasury_balance,
                     retry_cooldown_hours,
                 );
                 continue;
@@ -442,13 +459,19 @@ fn building_can_participate_in_freight(allocator: &BuildingAllocator, building_i
 fn fail_shipment_before_dispatch(
     shipment: &mut Shipment,
     allocator: &mut BuildingAllocator,
+    treasury_balance: &mut f64,
     retry_cooldown_hours: u16,
 ) {
     if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
         && destination_idx < allocator.buildings.len()
     {
-        allocator.buildings[destination_idx].operating_budget +=
-            shipment.total_cost + shipment.tax_cost;
+        refund_input_payment(
+            allocator,
+            treasury_balance,
+            destination_idx,
+            shipment.total_cost,
+            shipment.tax_cost,
+        );
         allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
     }
     if let ShipmentEndpoint::Building(source_idx) = shipment.source
@@ -493,6 +516,7 @@ fn shipment_carrier_progress_to_endpoint(
 fn dispatch_queued_shipments(
     shipments: &mut [Shipment],
     allocator: &mut BuildingAllocator,
+    treasury_balance: &mut f64,
     active_cap: usize,
     expiry_hours: u16,
     retry_cooldown_hours: u16,
@@ -517,7 +541,7 @@ fn dispatch_queued_shipments(
         }
         shipment.queued_hours = shipment.queued_hours.saturating_add(1);
         if shipment.queued_hours >= expiry_hours {
-            expire_queued_shipment(shipment, allocator, retry_cooldown_hours);
+            expire_queued_shipment(shipment, allocator, treasury_balance, retry_cooldown_hours);
             continue;
         }
         let Some(border_node) = shipment
@@ -539,13 +563,19 @@ fn dispatch_queued_shipments(
 fn expire_queued_shipment(
     shipment: &mut Shipment,
     allocator: &mut BuildingAllocator,
+    treasury_balance: &mut f64,
     retry_cooldown_hours: u16,
 ) {
     if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
         && destination_idx < allocator.buildings.len()
     {
-        allocator.buildings[destination_idx].operating_budget +=
-            shipment.total_cost + shipment.tax_cost;
+        refund_input_payment(
+            allocator,
+            treasury_balance,
+            destination_idx,
+            shipment.total_cost,
+            shipment.tax_cost,
+        );
         allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
     }
     shipment.status = ShipmentStatus::Expired;

@@ -15,6 +15,7 @@ use crate::simulation::network::types::TransitFlags;
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::quantization::quantize_requested_amount;
 use super::reservations::ReservationViews;
+use super::resource::{input_purchase_budget, input_purchase_tax_rate, reserve_input_payment};
 use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
@@ -50,12 +51,15 @@ impl ShipmentSystem {
         truck_load_units: f32,
         max_freight_speed: f32,
         business_purchase_tax_rate: f32,
+        treasury_balance: &mut f64,
     ) -> bool {
         if dest_idx >= allocator.entrances.len() {
             return false;
         }
         let destination = &allocator.buildings[dest_idx];
-        let destination_budget = destination.operating_budget;
+        let destination_budget = input_purchase_budget(allocator, dest_idx);
+        let purchase_tax_rate =
+            input_purchase_tax_rate(allocator, dest_idx, business_purchase_tax_rate);
         let Some(buckets) = supplier_index.buckets_for_resource(resource_runtime_id) else {
             return false;
         };
@@ -89,7 +93,7 @@ impl ShipmentSystem {
                         minute_of_day,
                         catalog,
                         truck_load_units,
-                        business_purchase_tax_rate,
+                        purchase_tax_rate,
                     );
                     true
                 }
@@ -106,7 +110,13 @@ impl ShipmentSystem {
         );
 
         if let Some(choice) = best_choice {
-            allocator.buildings[dest_idx].operating_budget -= choice.total_cost + choice.tax_cost;
+            reserve_input_payment(
+                allocator,
+                treasury_balance,
+                dest_idx,
+                choice.total_cost,
+                choice.tax_cost,
+            );
             let shipment_id = self.allocate_shipment_id();
             self.shipments.push(Shipment {
                 id: shipment_id,

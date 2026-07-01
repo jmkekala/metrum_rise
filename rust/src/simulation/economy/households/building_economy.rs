@@ -24,7 +24,28 @@ const UTILITY_SERVICES: [&str; UTILITY_SERVICE_COUNT] = [
     UTILITY_SERVICE_WATER,
     UTILITY_SERVICE_SEWAGE,
 ];
+const UTILITY_SERVICE_POWER_INDEX: usize = 0;
+const UTILITY_SERVICE_WATER_INDEX: usize = 1;
+const UTILITY_SERVICE_SEWAGE_INDEX: usize = 2;
 const UTILITY_SERVICE_COUNT: usize = 3;
+const POWER_PRICE_EPSILON: f32 = 0.0001;
+const POWER_UNIT_EPSILON: f32 = 0.0001;
+const NON_RESIDENTIAL_POWER_DEMAND_UNITS_PER_DAY: f32 = 1.0;
+const CITY_SERVICE_POWER_DEMAND_UNITS_PER_DAY: f32 = 1.0;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PowerSettlement {
+    demand_units: f32,
+    supply_units: f32,
+    coverage: f32,
+    household_bill: f32,
+    household_local_revenue: f32,
+    private_local_revenue: f32,
+    private_owa_cost: f32,
+    city_service_demand_units: f32,
+    city_service_local_cost: f32,
+    city_service_owa_cost: f32,
+}
 
 impl HouseholdSystem {
     pub(super) fn run_bankruptcy_check(&mut self, allocator: &mut BuildingAllocator) {
@@ -65,54 +86,141 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        self.ensure_daily_ledger_len();
+
+        for building in &mut allocator.buildings {
+            building.daily_power_served_units = 0.0;
+        }
 
         // Phase 1: find operational utility provider buildings.
         let mut utility_provider_indices: [Vec<usize>; UTILITY_SERVICE_COUNT] =
             [Vec::new(), Vec::new(), Vec::new()];
         let local_utility_costs = local_utility_service_costs(&catalog);
+        let mut power_supply_units = 0.0f32;
+        let mut private_power_demand_units = 0.0f32;
+        let mut city_service_power_demand_units = 0.0f32;
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
-            if building.broken
-                || building.economy_broken
-                || building.is_deserted
-                || building.is_under_construction()
-                || building.edge_idx == usize::MAX
-            {
+            if !is_active_utility_consumer(building) {
                 continue;
+            }
+            if private_utility_owa_cost_per_day(
+                building.zone_type,
+                tuning.commercial_owa_utility_cost_per_day,
+                tuning.industrial_owa_utility_cost_per_day,
+            )
+            .is_some()
+            {
+                private_power_demand_units += NON_RESIDENTIAL_POWER_DEMAND_UNITS_PER_DAY;
+            } else if allocator.is_city_service_building(building) && building.worker_count > 0 {
+                city_service_power_demand_units += CITY_SERVICE_POWER_DEMAND_UNITS_PER_DAY;
             }
             let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
             else {
                 continue;
             };
-            if !is_staffed_utility_provider(building, profile) {
+            if !is_operational_utility_provider(&catalog, building, profile) {
                 continue;
             }
             if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref()) {
+                if service_idx == UTILITY_SERVICE_POWER_INDEX {
+                    let produced_units = building.daily_power_service_units.max(0.0);
+                    if produced_units <= 0.0 {
+                        continue;
+                    }
+                    power_supply_units += produced_units;
+                }
                 utility_provider_indices[service_idx].push(idx);
             }
         }
 
-        // Phase 2 (daily): charge each commercial/industrial building the full daily utility
+        // Phase 2 (daily): charge private non-residential buildings their daily utility
         // cost unconditionally. Budget may go negative.
         let mut local_utility_revenue_by_service = [0.0f32; UTILITY_SERVICE_COUNT];
+        let power_unit_price = local_utility_costs[UTILITY_SERVICE_POWER_INDEX];
+        let household_power_bill = self
+            .daily_ledgers
+            .iter()
+            .map(|ledger| ledger.power_consumption_cost.max(0.0))
+            .sum::<f32>();
+        let household_water_bill = self
+            .daily_ledgers
+            .iter()
+            .map(|ledger| ledger.water_consumption_cost.max(0.0))
+            .sum::<f32>();
+        let household_sewage_bill = self
+            .daily_ledgers
+            .iter()
+            .map(|ledger| ledger.sewage_consumption_cost.max(0.0))
+            .sum::<f32>();
+        let household_power_demand_units =
+            power_demand_units_from_cost(household_power_bill, power_unit_price);
+        let mut power_settlement = power_settlement(
+            power_supply_units,
+            household_power_demand_units,
+            household_power_bill,
+            private_power_demand_units,
+            city_service_power_demand_units,
+            power_unit_price,
+            tuning.owa_import_price_multiplier,
+        );
+        if power_settlement.household_local_revenue > 0.0 {
+            local_utility_revenue_by_service[UTILITY_SERVICE_POWER_INDEX] +=
+                power_settlement.household_local_revenue;
+        }
+        if household_water_bill > 0.0
+            && !utility_provider_indices[UTILITY_SERVICE_WATER_INDEX].is_empty()
+        {
+            local_utility_revenue_by_service[UTILITY_SERVICE_WATER_INDEX] += household_water_bill;
+        }
+        if household_sewage_bill > 0.0
+            && !utility_provider_indices[UTILITY_SERVICE_SEWAGE_INDEX].is_empty()
+        {
+            local_utility_revenue_by_service[UTILITY_SERVICE_SEWAGE_INDEX] += household_sewage_bill;
+        }
+        if power_settlement.city_service_local_cost > 0.0 {
+            local_utility_revenue_by_service[UTILITY_SERVICE_POWER_INDEX] +=
+                power_settlement.city_service_local_cost;
+            *treasury_balance -= power_settlement.city_service_local_cost as f64;
+        }
+        if power_settlement.city_service_owa_cost > 0.0 {
+            *treasury_balance -= power_settlement.city_service_owa_cost as f64;
+        }
+        let served_power_units = power_settlement.demand_units * power_settlement.coverage;
+        if power_supply_units > POWER_UNIT_EPSILON && served_power_units > 0.0 {
+            for &idx in &utility_provider_indices[UTILITY_SERVICE_POWER_INDEX] {
+                let produced_units = allocator.buildings[idx].daily_power_service_units.max(0.0);
+                let served_units = served_power_units * (produced_units / power_supply_units);
+                allocator.buildings[idx].daily_power_served_units =
+                    served_units.clamp(0.0, produced_units);
+            }
+        }
 
         for building in &mut allocator.buildings {
-            if building.is_deserted
-                || building.broken
-                || building.economy_broken
-                || building.is_under_construction()
-                || building.edge_idx == usize::MAX
-            {
+            if !is_active_utility_consumer(building) {
                 continue;
             }
-            let owa_total = match building.zone_type {
-                ZoneType::Commercial => tuning.commercial_owa_utility_cost_per_day,
-                ZoneType::Industrial => tuning.industrial_owa_utility_cost_per_day,
-                _ => continue,
+            let Some(owa_total) = private_utility_owa_cost_per_day(
+                building.zone_type,
+                tuning.commercial_owa_utility_cost_per_day,
+                tuning.industrial_owa_utility_cost_per_day,
+            ) else {
+                continue;
             };
             let owa_per_service = owa_total / UTILITY_SERVICE_COUNT as f32;
             let mut daily_cost = 0.0f32;
             for service_idx in 0..UTILITY_SERVICE_COUNT {
+                if service_idx == UTILITY_SERVICE_POWER_INDEX {
+                    let power_demand_units = NON_RESIDENTIAL_POWER_DEMAND_UNITS_PER_DAY;
+                    let local_cost =
+                        power_unit_price * power_demand_units * power_settlement.coverage;
+                    let owa_cost = owa_per_service * (1.0 - power_settlement.coverage);
+                    daily_cost += local_cost + owa_cost;
+                    local_utility_revenue_by_service[service_idx] += local_cost;
+                    power_settlement.private_local_revenue += local_cost;
+                    power_settlement.private_owa_cost += owa_cost;
+                    continue;
+                }
                 if utility_provider_indices[service_idx].is_empty() {
                     daily_cost += owa_per_service;
                 } else {
@@ -139,6 +247,24 @@ impl HouseholdSystem {
             }
         }
         *treasury_balance += local_utility_revenue_total as f64;
+        if power_settlement.demand_units > 0.0 || power_settlement.supply_units > 0.0 {
+            debug_log!(
+                "economy",
+                "power settlement: demand_units={:.2} production_units={:.2} served_units={:.2} coverage={:.3} providers={} household_bill={:.2} household_local={:.2} private_local={:.2} private_owa={:.2} city_service_demand={:.2} city_service_local={:.2} city_service_owa={:.2}",
+                power_settlement.demand_units,
+                power_settlement.supply_units,
+                served_power_units,
+                power_settlement.coverage,
+                utility_provider_indices[UTILITY_SERVICE_POWER_INDEX].len(),
+                power_settlement.household_bill,
+                power_settlement.household_local_revenue,
+                power_settlement.private_local_revenue,
+                power_settlement.private_owa_cost,
+                power_settlement.city_service_demand_units,
+                power_settlement.city_service_local_cost,
+                power_settlement.city_service_owa_cost,
+            );
+        }
 
         let resource_count = catalog.resource_count();
         let reserved_outbound = logistics.reserved_outbound_view(resource_count);
@@ -254,6 +380,15 @@ impl HouseholdSystem {
             };
             let factors = building_operation_factors(&catalog, building, profile);
             let throughput_factor = factors.throughput_factor;
+            if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
+                && profile.base_rate_units_per_day > 0.0
+            {
+                let hourly_power_units =
+                    profile.base_rate_units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
+                if hourly_power_units > 0.0 {
+                    building.daily_power_service_units += hourly_power_units;
+                }
+            }
 
             for input_port in &profile.inputs {
                 let hourly_input_units =
@@ -325,19 +460,92 @@ fn forced_owa_liquidation(
     }
 }
 
-fn is_staffed_utility_provider(building: &Building, profile: &EconomyProfileRuntime) -> bool {
-    matches!(
+fn is_active_utility_consumer(building: &Building) -> bool {
+    !building.broken
+        && !building.economy_broken
+        && !building.is_deserted
+        && !building.is_under_construction()
+        && building.edge_idx != usize::MAX
+}
+
+fn is_operational_utility_provider(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    if !matches!(
         profile.kind,
         EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
-    ) && building.worker_count > 0
-        && profile.worker_capacity > 0
+    ) || profile.worker_capacity == 0
+    {
+        return false;
+    }
+    if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER) {
+        return building.daily_power_service_units > 0.0;
+    }
+    building.worker_count > 0
+        && building_operation_factors(catalog, building, profile).throughput_factor > 0.0
+}
+
+fn power_demand_units_from_cost(cost: f32, unit_price: f32) -> f32 {
+    if unit_price <= POWER_PRICE_EPSILON {
+        0.0
+    } else {
+        cost.max(0.0) / unit_price
+    }
+}
+
+fn power_settlement(
+    supply_units: f32,
+    household_demand_units: f32,
+    household_bill: f32,
+    private_demand_units: f32,
+    city_service_demand_units: f32,
+    unit_price: f32,
+    owa_import_price_multiplier: f32,
+) -> PowerSettlement {
+    let demand_units = household_demand_units + private_demand_units + city_service_demand_units;
+    let coverage = if demand_units <= 0.0 {
+        0.0
+    } else {
+        (supply_units.max(0.0) / demand_units).clamp(0.0, 1.0)
+    };
+    let household_local_revenue = household_bill.max(0.0) * coverage;
+    let city_service_local_cost = city_service_demand_units * unit_price.max(0.0) * coverage;
+    let city_service_owa_cost = city_service_demand_units
+        * unit_price.max(0.0)
+        * owa_import_price_multiplier.max(0.0)
+        * (1.0 - coverage);
+    PowerSettlement {
+        demand_units,
+        supply_units: supply_units.max(0.0),
+        coverage,
+        household_bill,
+        household_local_revenue,
+        private_local_revenue: 0.0,
+        private_owa_cost: 0.0,
+        city_service_demand_units,
+        city_service_local_cost,
+        city_service_owa_cost,
+    }
 }
 
 fn building_participates_in_budget_distress(building: &Building) -> bool {
-    matches!(
-        building.zone_type,
-        ZoneType::Commercial | ZoneType::Industrial
-    )
+    private_utility_owa_cost_per_day(building.zone_type, 0.0, 0.0).is_some()
+}
+
+fn private_utility_owa_cost_per_day(
+    zone_type: ZoneType,
+    commercial_owa_cost_per_day: f32,
+    industrial_owa_cost_per_day: f32,
+) -> Option<f32> {
+    match zone_type {
+        ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed => {
+            Some(commercial_owa_cost_per_day)
+        }
+        ZoneType::Industrial => Some(industrial_owa_cost_per_day),
+        ZoneType::None | ZoneType::Residential => None,
+    }
 }
 
 fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; UTILITY_SERVICE_COUNT] {

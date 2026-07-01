@@ -31,6 +31,7 @@ use rayon::prelude::*;
 
 const GROCERY_SEARCH_CANDIDATES: usize = 24;
 const GROCERY_ROUTE_SCAN_CANDIDATES: usize = GROCERY_SEARCH_CANDIDATES * 16;
+const HOUSEHOLD_UTILITY_SERVICE_COUNT: f32 = 3.0;
 
 /// Household stock is healthy and no replenishment is pending.
 pub const REPLENISHMENT_STABLE: u8 = 0;
@@ -536,8 +537,11 @@ impl HouseholdSystem {
                         * utility_cost_per_member_per_day
                         / OPERATIONAL_HOURS_PER_DAY;
                     household.budget = (household.budget - hourly_utility_cost).max(0.0);
+                    let hourly_supply_cost = hourly_consumption * household_supply_unit_price;
+                    ledger.household_supply_consumption_cost += hourly_supply_cost;
+                    record_household_utility_cost(ledger, hourly_utility_cost);
                     ledger.utility_stock_consumption_cost +=
-                        hourly_utility_cost + hourly_consumption * household_supply_unit_price;
+                        hourly_utility_cost + hourly_supply_cost;
                     household.stock_days = stock_days(
                         household.stock,
                         household.member_count,
@@ -625,8 +629,10 @@ impl HouseholdSystem {
                     * tuning.households.utility_cost_per_member_per_day
                     / OPERATIONAL_HOURS_PER_DAY;
                 household.budget = (household.budget - hourly_utility_cost).max(0.0);
-                ledger.utility_stock_consumption_cost +=
-                    hourly_utility_cost + hourly_consumption * supply_unit_price;
+                let hourly_supply_cost = hourly_consumption * supply_unit_price;
+                ledger.household_supply_consumption_cost += hourly_supply_cost;
+                record_household_utility_cost(ledger, hourly_utility_cost);
+                ledger.utility_stock_consumption_cost += hourly_utility_cost + hourly_supply_cost;
                 household.stock_days = stock_days(
                     household.stock,
                     household.member_count,
@@ -1134,6 +1140,13 @@ impl HouseholdSystem {
             ledger.shopper_trips_failed = ledger.shopper_trips_failed.saturating_add(1);
         }
     }
+}
+
+fn record_household_utility_cost(ledger: &mut DailyHouseholdLedger, total_cost: f32) {
+    let service_cost = total_cost.max(0.0) / HOUSEHOLD_UTILITY_SERVICE_COUNT;
+    ledger.power_consumption_cost += service_cost;
+    ledger.water_consumption_cost += service_cost;
+    ledger.sewage_consumption_cost += service_cost;
 }
 
 fn plan_household_replenishment(

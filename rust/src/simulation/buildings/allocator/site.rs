@@ -329,7 +329,8 @@ impl BuildingAllocator {
         }
     }
 
-    fn site_candidate_indices_for_bounds(
+    /// Returns building-site indices whose chunk coverage may overlap the given world bounds.
+    pub(crate) fn site_candidate_indices_for_bounds(
         &self,
         min_x: f32,
         min_z: f32,
@@ -1568,7 +1569,12 @@ mod tests {
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: false,

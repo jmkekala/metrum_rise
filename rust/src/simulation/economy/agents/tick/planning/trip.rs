@@ -10,7 +10,7 @@ use super::super::access::{
 use super::super::lane_nav::lane_terminal_node;
 use super::candidate::{
     PlannedTripCandidate, best_trip_candidate_for_mode, build_exact_path_for_candidate,
-    candidate_better, candidate_lane_id, entrance_pair_supports_mode,
+    candidate_better, candidate_lane_id, entrance_pair_supports_mode, mode_choice_cost_for,
 };
 use super::types::BuiltTripPlan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -72,7 +72,7 @@ pub(crate) fn plan_building_origin_trip(
         (Some(walk), None) => walk,
         (None, Some(car)) => car,
         (Some(walk), Some(car)) => {
-            if walk.total_cost_s <= car.total_cost_s {
+            if walk.mode_choice_cost_s <= car.mode_choice_cost_s {
                 walk
             } else {
                 car
@@ -195,6 +195,7 @@ pub(crate) fn plan_building_to_border_trip(
 
         let candidate = PlannedTripCandidate {
             total_cost_s,
+            mode_choice_cost_s: mode_choice_cost_for(MODE_CAR, total_cost_s),
             origin_rank,
             destination_rank: 0,
             mode: MODE_CAR,
@@ -300,7 +301,7 @@ pub(crate) fn estimate_building_origin_trip_minutes(
     let origin_entrance = &allocator.entrances[current_building];
     let destination_entrance = &allocator.entrances[target_building];
 
-    let mut best_cost_s: Option<f32> = None;
+    let mut best_candidate: Option<PlannedTripCandidate> = None;
     for mode in [MODE_WALK, MODE_CAR] {
         if !entrance_pair_supports_mode(mode, has_car, origin_entrance, destination_entrance) {
             continue;
@@ -312,11 +313,13 @@ pub(crate) fn estimate_building_origin_trip_minutes(
             transit_network,
             graph,
             pathfind_count,
-        ) && best_cost_s.is_none_or(|best| candidate.total_cost_s < best)
+        ) && best_candidate
+            .as_ref()
+            .is_none_or(|best| candidate_better(&candidate, best))
         {
-            best_cost_s = Some(candidate.total_cost_s);
+            best_candidate = Some(candidate);
         }
     }
 
-    best_cost_s.map(|seconds| seconds.ceil().clamp(1.0, u16::MAX as f32) as u16)
+    best_candidate.map(|candidate| candidate.total_cost_s.ceil().clamp(1.0, u16::MAX as f32) as u16)
 }

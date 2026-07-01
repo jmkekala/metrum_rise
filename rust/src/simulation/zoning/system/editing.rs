@@ -2,9 +2,10 @@
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::zoning::parcels::ParcelPlacementError;
+use crate::simulation::zoning::parcels::{ParcelGeometry, ParcelPlacementError};
 use crate::simulation::zoning::{DEFAULT_PARCEL_DEPTH_M, DEFAULT_PARCEL_FRONTAGE_M, ParcelId};
 use godot::prelude::Vector2;
+use std::collections::HashSet;
 
 impl ZoningSystem {
     /// Creates a new parcel or changes the profile of the parcel under the given world position.
@@ -81,6 +82,24 @@ impl ZoningSystem {
         Ok(ids)
     }
 
+    /// Creates parcels from geometries that were projected and validated by a caller-held
+    /// immutable preview pass.
+    pub(crate) fn place_prevalidated_parcel_geometries(
+        &mut self,
+        geometries: Vec<ParcelGeometry>,
+        runtime_id: u16,
+    ) -> Result<Vec<ParcelId>, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        if geometries.is_empty() {
+            return Err(ParcelPlacementError::NoRoadAttachment);
+        }
+        let mut ids = Vec::with_capacity(geometries.len());
+        for geometry in geometries {
+            ids.push(self.parcels.insert_new(geometry, runtime_id));
+        }
+        Ok(ids)
+    }
+
     /// Changes the zoning profile of every authored parcel touched by one world-space stroke.
     pub fn rezone_stroke(
         &mut self,
@@ -99,6 +118,32 @@ impl ZoningSystem {
         }
         for id in &ids {
             self.parcels.set_zone_profile_runtime_id(*id, runtime_id);
+        }
+        Ok(ids)
+    }
+
+    /// Changes the zoning profile of existing parcels identified by a caller-held immutable
+    /// preview pass.
+    pub(crate) fn rezone_prevalidated_parcel_geometries(
+        &mut self,
+        geometries: &[ParcelGeometry],
+        runtime_id: u16,
+    ) -> Result<Vec<ParcelId>, ParcelPlacementError> {
+        self.validate_profile_id(runtime_id)?;
+        let mut seen = HashSet::new();
+        let mut ids = Vec::with_capacity(geometries.len());
+        for geometry in geometries {
+            let Some(id) = self.parcels.find_at_point(geometry.center) else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            self.parcels.set_zone_profile_runtime_id(id, runtime_id);
+            ids.push(id);
+        }
+        if ids.is_empty() {
+            return Err(ParcelPlacementError::NoRoadAttachment);
         }
         Ok(ids)
     }

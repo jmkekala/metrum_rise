@@ -1220,6 +1220,7 @@ Examples:
 - `flour`
 - `staple_food`
 - `household_supplies`
+- `coal`
 - `fuel`
 - `power`
 - `water`
@@ -1233,6 +1234,7 @@ Rules:
 - split a resource only when the distinction creates meaningful logistics or policy gameplay
 - not every resource type must use the same transport model
 - ordinary goods such as food, fuel, and materials use the normal shipment and logistics rules
+- `coal` is an ordinary shipped fuel resource in the starter utility loop
 - utility resources such as `power`, `water`, and `sewage` use the separate `Utility Service Layer` rather than the normal freight-delivery rules in `v0.1`
 
 ### 2. Utility Service Layer
@@ -1257,18 +1259,20 @@ Rules:
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
-- `v0.1` utility service is a connected-service on/off model, not an aggregate-capacity simulation and not a detailed line-by-line grid simulation
+- `v0.1` utility service is not a detailed line-by-line grid simulation; `power` now uses aggregate daily produced units while `water` and `sewage` still use the starter provider-present fallback model
 - utility availability resolves independently per service; a local `power` provider does not satisfy `water` or `sewage`
-- if a valid connected local utility producer or processor exists for a required service, that service is treated as locally available to eligible consumers in `v0.1`
+- a valid connected local `power` producer contributes the service units actually accumulated during hourly operation from `base_rate_units_per_day * current throughput`, capped by fuel/input availability at those hours; end-of-day settlement must not credit unproduced capacity
+- if a valid connected local `water` producer or `sewage` processor exists and has positive current operational throughput, that service is treated as locally available to eligible consumers in `v0.1`
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
-- the downstream production formula therefore treats resolved utility service as a binary building-level gate in `v0.1`
+- the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
+- `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal supplier asset exists, and produces no local `power` when staffed but out of coal
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
-- residential utility and sewage charges post to household budgets in `v0.1`
-- non-residential utility and sewage charges post to building operating budgets in `v0.1`
+- residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
+- non-residential power, water, and sewage charges post to building operating budgets in `v0.1`
 - those utility charges become revenue for the local utility operator or processor rather than for the city treasury
 - if the utility operator is city-owned, that operator revenue deposits into the city treasury instead of a private building budget
-- city-owned utility wages and one-time placement costs withdraw from the city treasury rather than from a provider operating budget
+- city-owned utility wages, one-time placement costs, and required fuel/input purchases withdraw from the city treasury rather than from a provider operating budget
 - utility-producing and utility-processing buildings should therefore behave like ordinary economic buildings that sell a service rather than like invisible free infrastructure
 - any `VAT` or other future fiscal levy on utility service is separate from the operator's service revenue and follows the normal tax rules into the city treasury
 - if no local utility service is available, `OWA` may provide that service as an external service purchase
@@ -1279,7 +1283,7 @@ Rules:
 - in the current `v0.1` bankruptcy model, missing local utility service falls back to paid `OWA`
   service rather than adding a throughput gate; later capacity/outage models may block or degrade
   operation explicitly
-- this baseline utility layer is a connected-service on/off model rather than a trucked-goods model in `v0.1`
+- this baseline utility layer is an aggregate service model rather than a trucked-goods model in `v0.1`
 - if no local utility producer or processor exists yet, the player may place a city-owned utility building or rely on `OWA` fallback until local provision exists
 - city-owned utility buildings do not auto-spawn; only private companies may spawn new utility operators through simulation rules
 - later versions may add explicit utility-network capacity, outages, or service-quality simulation
@@ -1304,7 +1308,7 @@ Example:
   - outputs: `staple_food`
   - variables: `base_cycle_time`, `input_buffer_cap`, `output_buffer_cap`, `schedule_profile`
 
-Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`).
+Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`). Starter move-in sizing treats this as one household's interior area: 25 m2 baseline space, a two-person household may fit as one adult plus one child-weighted member, and larger households reserve two adult-equivalent members at 22 m2 each plus child-weighted extra members at 12 m2 each.
 
 The baseline utility defaults from the `Utility Service Layer` apply unless a profile or building defines a documented special case.
 
@@ -1530,6 +1534,10 @@ remaining members use the baseline deterministic mix within those caps. A single
 always independent: adult or elder, never child-only. There is no aging or lifecycle transition yet.
 The current mix is code-defined starter behavior; if it becomes authored tuning later, this section
 owns that contract.
+
+Starter household size is capped by `flat_size_m2`, not by `household_capacity`. A single-family
+house with `household_capacity = 1` still reserves one family slot, while a larger `flat_size_m2`
+can admit a larger family into that one slot.
 
 Household records cache child/adult/elder counts from the parallel membership reduction. Hot economy
 passes use those counts instead of scanning household members. A valid housed household must have at
@@ -2337,17 +2345,20 @@ Current status:
 - complete
 - `EconomyProfileRuntimeKind::UtilityProducer` and `UtilityProcessor` variants added; `utility_service`
   field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
-- three profiles landed in `economy/profiles.toml`: `power_plant_basic` (power, 4 workers, three-shift),
+- four utility-adjacent profiles landed in `economy/profiles.toml`: `coal_supplier_basic`
+  (`coal` price/source profile), `power_plant_basic` (coal-fueled power, 20 workers, three-shift),
   `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
-- daily utility settlement scans active staffed providers per service, charges commercial and
-  industrial consumers independently for `power`, `water`, and `sewage`, falls back to that
-  service's OWA share when a local provider is missing, and records local city-owned utility fees
-  in the city treasury
-- active utility providers must be non-broken, non-deserted, connected to the network, and staffed
-  by at least one worker
+- daily utility settlement scans active providers per service, resolves `power` from accumulated
+  produced units, charges commercial, office, mixed-use, and industrial consumers independently for
+  `power`, `water`, and `sewage`, routes split household utility ledger payments into matching local
+  utility revenue when covered, falls back to OWA service spend for uncovered private demand, and
+  records city-owned local utility fees in the city treasury
+- active utility providers must be non-broken, non-deserted, and connected to the network; starter
+  `water` and `sewage` providers also require current workers with positive operational throughput,
+  while `power` settlement uses the day's already accumulated produced units
 - explicit city service assets are registry-discovered, road-frontage placed through the Services
   toolbar, charged to the treasury at placement, and staffed through the normal job system with
-  city-funded wages
+  city-funded wages and city-funded fuel/input purchases
 - no invisible utility buildings exist
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
@@ -2523,6 +2534,10 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.construction.residential_hours_by_level` | [6, 12, 18] | Fresh residential construction hours by target level |
 | `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
 | `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
+| `coal_supplier_basic.unit_price_currency` | 4.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
+| `power_plant_basic.base_rate_units_per_day` | 240.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
+| `power_plant_basic.inputs.coal` | 24.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
+| `power_plant_basic.unit_price_currency` | 3.0 | Local power service price per aggregate power unit |
 | `owa_export_price_multiplier` | 0.45 | Scheduled OWA surplus export price multiplier |
 | `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
 | `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
@@ -2620,14 +2635,18 @@ Deduct the daily utility cost unconditionally. Budget may go negative from this 
 | Commercial  | 8.0 / day                            | 1/3 of commercial OWA rate       |
 | Industrial  | 12.0 / day                           | 1/3 of industrial OWA rate       |
 
-`power`, `water`, and `sewage` resolve independently. If a staffed local provider exists for a
-service, consumers pay that service's local authored utility price. If that service is missing
-locally, consumers pay that service's share of the OWA fallback rate. Local service fees for
-city-owned providers deposit into the city treasury; provider `revenue` remains telemetry. OWA
-fallback spend leaves the local economy.
+`power`, `water`, and `sewage` resolve independently. `Power` uses aggregate daily produced units:
+consumers pay the local authored utility price only for the covered share, and uncovered private
+demand pays the OWA fallback share. If a staffed local `water` or `sewage` provider exists,
+consumers pay that service's local authored utility price; otherwise they pay that service's OWA
+fallback share. Local service fees for city-owned providers deposit into the city treasury;
+provider `revenue` remains telemetry. OWA fallback spend leaves the local economy.
 
 Residential buildings pay household utility costs from the household budget on the existing hourly
-cadence and are not part of this sequence.
+cadence. The hourly charge is split into power, water, and sewage ledger buckets. Daily utility
+settlement routes the power bucket into local power revenue only up to aggregate local power
+coverage, and routes water/sewage buckets to local providers only when those services are available,
+without charging households a second time.
 
 **Step 4 — Distress resolution.**
 

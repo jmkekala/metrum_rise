@@ -89,7 +89,12 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -1758,10 +1763,117 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
         allocator.buildings[idx].worker_count = 1;
     }
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+    assert_eq!(allocator.buildings[1].revenue, 0.0);
+    assert!(allocator.buildings[2].revenue > 0.0);
+    assert!(allocator.buildings[3].revenue > 0.0);
+    let treasury_after_unfueled_power = treasury_balance;
+
+    allocator.buildings[0].operating_budget = 500.0;
+    let coal = catalog
+        .resource_runtime_id_for_id("coal")
+        .expect("coal resource");
+    allocator.buildings[1].set_inventory_units(coal, 10.0);
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+    assert_eq!(allocator.buildings[1].revenue, 0.0);
+    assert!(treasury_balance < treasury_after_unfueled_power);
+
+    allocator.buildings[0].operating_budget = 500.0;
+    allocator.buildings[1].daily_power_service_units = 1.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert!(allocator.buildings[1].revenue > 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
     assert!(allocator.buildings[3].revenue > 0.0);
-    assert!(treasury_balance > 0.0);
+}
+
+#[test]
+fn household_utility_payment_flows_to_fueled_power_provider() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "powered_household_home",
+        ZoneClass::Residential,
+    );
+    let power_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "powered_household_plant",
+        "power_plant_basic",
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let mut power_building = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+    let power_profile = catalog
+        .profile_for_id("power_plant_basic")
+        .expect("power profile");
+    power_building.economy_profile_runtime_id = power_profile.runtime_id;
+    power_building.worker_count = power_profile.worker_capacity;
+    power_building.daily_power_service_units = 42.0;
+    allocator.buildings.push(power_building);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 20, 0.0, 0.0));
+    households.ensure_daily_ledger_len();
+    households.daily_ledgers[0].power_consumption_cost = 60.0;
+    households.daily_ledgers[0].utility_stock_consumption_cost = 60.0;
+
+    let logistics = ShipmentSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    assert!((allocator.buildings[1].revenue - 63.0).abs() < 0.001);
+    assert!((allocator.buildings[1].daily_power_served_units - 21.0).abs() < 0.001);
+    assert!((treasury_balance - 60.0).abs() < 0.001);
+}
+
+#[test]
+fn power_settlement_uses_recorded_output_after_coal_is_consumed() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "recorded_power_home",
+        ZoneClass::Residential,
+    );
+    let power_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "recorded_power_plant",
+        "power_plant_basic",
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let mut power_building = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+    let power_profile = catalog
+        .profile_for_id("power_plant_basic")
+        .expect("power profile");
+    power_building.economy_profile_runtime_id = power_profile.runtime_id;
+    power_building.worker_count = 0;
+    power_building.daily_power_service_units = 60.0;
+    allocator.buildings.push(power_building);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 20, 0.0, 0.0));
+    households.ensure_daily_ledger_len();
+    households.daily_ledgers[0].power_consumption_cost = 60.0;
+    households.daily_ledgers[0].utility_stock_consumption_cost = 60.0;
+
+    let logistics = ShipmentSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    assert!((allocator.buildings[1].revenue - 60.0).abs() < 0.001);
+    assert!((treasury_balance - 60.0).abs() < 0.001);
 }
 
 #[test]
@@ -2364,6 +2476,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
     let mut logistics = ShipmentSystem::new();
     let network = TransitNetwork::new();
     let graph = RegionGraph::new();
+    let mut treasury_balance = 0.0;
     households.operational_hour_tick(
         &mut agents,
         &mut allocator,
@@ -2372,6 +2485,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         &graph,
         0,
         0,
+        &mut treasury_balance,
     );
 
     assert_eq!(households.households[0].member_count, 1);

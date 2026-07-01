@@ -120,6 +120,7 @@ Single-parcel placement is all-or-nothing.
 - Every corner must stay within world bounds.
 - The parcel must not overlap existing parcels.
 - The parcel must not overlap another road-owned corridor.
+- The parcel must not overlap an explicit service-building site reservation.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
 - Successful parcel placement records only zoning/legal intent. Terrain integration is deferred
   until `BuildingAllocator` accepts an actual building placement and the `EARTH-02` building-site
@@ -130,8 +131,9 @@ drag span, then keeps the best legal layout. Rust may re-layout the candidate ph
 changes so legal parcels can pack beside existing parcels and near road-corridor blockers. Layout
 selection prefers more legal parcels, then the layout that reaches closest toward the dragged end.
 A blocked candidate caused by a road corridor, world edge, existing parcel, or another accepted
-candidate is skipped rather than cancelling the whole preview or commit. If no generated candidate
-is legal, the drag fails without mutation. On curves, Rust may widen spacing between generated
+candidate, including an explicit service-building site reservation, is skipped rather than
+cancelling the whole preview or commit. If no generated candidate is legal, the drag fails without
+mutation. On curves, Rust may widen spacing between generated
 parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
 
 When dragging from an existing parcel, the first generated parcel starts after:
@@ -169,6 +171,9 @@ Parcel rezone:
 get_zoning_parcel_profile_runtime_id_at(...)
 apply_zoning_parcel_rezone_drag(...)
 ```
+
+Drag rezone preview and commit skip parcels that overlap explicit service-building site
+reservations, so player zoning cannot claim land already reserved by a city service lot.
 
 Parcel overlay:
 
@@ -280,6 +285,7 @@ Hot placement checks use existing bounded spatial structures:
 - road candidates come from `RegionGraph` spatial queries
 - parcel overlap uses `ParcelStore` chunk lookup
 - road-corridor conflict checks query nearby road AABBs before SAT tests
+- explicit service-site blockers use the allocator building-site chunk index before SAT tests
 
 No full-world zoning scan is part of parcel placement, preview, rezone, save/load, or overlay
 generation.

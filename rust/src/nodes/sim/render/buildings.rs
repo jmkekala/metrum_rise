@@ -21,6 +21,10 @@ const BUILDING_SITE_DEBUG_EDGE_SAMPLE_STEP_M: f32 = 5.0;
 const BUILDING_SITE_DEBUG_EDGE_SAMPLE_MAX: usize = 9;
 const BUILDING_SITE_DEBUG_ROAD_SAMPLE_INSET_M: f32 = 0.05;
 const BUILDING_SITE_DEBUG_NEAREST_ROAD_SURFACE_RADIUS_M: f32 = 8.0;
+const CONSTRUCTION_RISE_INITIAL_HEIGHT_FACTOR: f32 = 0.65;
+const CONSTRUCTION_RISE_INITIAL_EXTRA_M: f32 = 2.0;
+const CONSTRUCTION_RISE_INITIAL_MIN_OFFSET_M: f32 = 6.0;
+const CONSTRUCTION_RISE_INITIAL_MAX_OFFSET_M: f32 = 12.0;
 
 impl SimCore {
     // ── Building Renderer ──
@@ -91,6 +95,32 @@ impl SimCore {
 
             let world_y = b.support_height_m;
             push_building_part_transform(&mut buffer, b, entry, part, world_y);
+        }
+
+        PackedFloat32Array::from_iter(buffer)
+    }
+
+    pub(crate) fn get_service_building_preview_part_transforms_internal(
+        &self,
+        asset_id: &str,
+        center_2d: Vector2,
+        support_height_m: f32,
+        facing_dir: Vector2,
+    ) -> PackedFloat32Array {
+        let Some(entry) = self.allocator.registry.get(asset_id) else {
+            return PackedFloat32Array::new();
+        };
+
+        let mut buffer = Vec::with_capacity(entry.manifest.mesh_parts.len() * 12);
+        for part in &entry.manifest.mesh_parts {
+            push_building_part_transform_for_pose(
+                &mut buffer,
+                center_2d,
+                support_height_m,
+                facing_dir,
+                Some(entry),
+                part,
+            );
         }
 
         PackedFloat32Array::from_iter(buffer)
@@ -941,10 +971,27 @@ fn push_building_part_transform(
     part: &MeshPart,
     world_y: f32,
 ) {
-    let world_x = building.center_x;
-    let world_z = building.center_y;
-    let (basis_x, basis_z) =
-        building_local_xz_basis(building.facing_dir, main_anchor_forward(entry));
+    push_building_part_transform_for_pose(
+        buffer,
+        Vector2::new(building.center_x, building.center_y),
+        world_y,
+        building.facing_dir,
+        entry,
+        part,
+    );
+}
+
+fn push_building_part_transform_for_pose(
+    buffer: &mut Vec<f32>,
+    center_2d: Vector2,
+    world_y: f32,
+    facing_dir: Vector2,
+    entry: Option<&AssetEntry>,
+    part: &MeshPart,
+) {
+    let world_x = center_2d.x;
+    let world_z = center_2d.y;
+    let (basis_x, basis_z) = building_local_xz_basis(facing_dir, main_anchor_forward(entry));
 
     let yaw = part.rotation_degrees[1].to_radians();
     let cos_yaw = yaw.cos();
@@ -1267,7 +1314,20 @@ fn building_lot_size_m(cell_size_m: f32, building: &Building) -> (f32, f32) {
 
 fn construction_rise_offset_m(building: &Building, progress: f32) -> f32 {
     let t = progress.clamp(0.0, 1.0);
-    (1.0 - t) * (construction_scaffold_height_m(building) * 1.35 + 6.0)
+    (1.0 - t) * construction_initial_rise_offset_m(building)
+}
+
+fn construction_initial_rise_offset_m(building: &Building) -> f32 {
+    construction_initial_rise_offset_for_height_m(construction_scaffold_height_m(building))
+}
+
+fn construction_initial_rise_offset_for_height_m(scaffold_height_m: f32) -> f32 {
+    (scaffold_height_m.max(0.0) * CONSTRUCTION_RISE_INITIAL_HEIGHT_FACTOR
+        + CONSTRUCTION_RISE_INITIAL_EXTRA_M)
+        .clamp(
+            CONSTRUCTION_RISE_INITIAL_MIN_OFFSET_M,
+            CONSTRUCTION_RISE_INITIAL_MAX_OFFSET_M,
+        )
 }
 
 fn construction_visual_progress(building: &Building, operational_hour_fraction: f32) -> f32 {
@@ -1398,5 +1458,22 @@ mod tests {
         assert!((construction_visual_progress_from_hours(4, 4, 0.5) - 0.125).abs() < 1e-6);
         assert!((construction_visual_progress_from_hours(4, 3, 0.5) - 0.375).abs() < 1e-6);
         assert!((construction_visual_progress_from_hours(4, 1, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn construction_initial_rise_offset_starts_near_surface() {
+        assert!(
+            (construction_initial_rise_offset_for_height_m(7.0) - 6.55).abs() < 1e-5,
+            "low-rise construction should become visible quickly"
+        );
+        assert_eq!(
+            construction_initial_rise_offset_for_height_m(18.0),
+            CONSTRUCTION_RISE_INITIAL_MAX_OFFSET_M,
+            "tall buildings should not start deeply buried"
+        );
+        assert_eq!(
+            construction_initial_rise_offset_for_height_m(0.0),
+            CONSTRUCTION_RISE_INITIAL_MIN_OFFSET_M
+        );
     }
 }

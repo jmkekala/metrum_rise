@@ -20,7 +20,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::zoning::{ZoneType, ZoningParcel, ZoningSystem};
+use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -30,6 +30,7 @@ use super::site::building_site_support_tie_in_is_valid;
 const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
 const EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M: f32 = 20.0;
 const EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M: f32 = 0.05;
+const EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M: f32 = 128.0;
 
 impl BuildingAllocator {
     pub(crate) fn collect_demand_spawn_candidates_by_use(
@@ -300,7 +301,7 @@ impl BuildingAllocator {
 
         let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
-        Some(ResolvedPlacement {
+        let placement = ResolvedPlacement {
             asset_id: asset_id.to_owned(),
             zone_profile_runtime_id: frontage_profile_runtime_id,
             zone_type: params.zone_type,
@@ -317,7 +318,11 @@ impl BuildingAllocator {
             facing_dir: parcel.normal() * -1.0,
             frontage_t: parcel.frontage_center_t(),
             edge_width,
-        })
+        };
+        if self.placement_overlaps_existing_flat_support(&placement) {
+            return None;
+        }
+        Some(placement)
     }
 
     fn commit_resolved_slot(
@@ -400,7 +405,19 @@ impl BuildingAllocator {
         if let Err(rejection) = self.validate_explicit_site_overlap(&placement) {
             return Ok(ExplicitServicePlacementPreview {
                 corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
                 support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
+        if let Err(rejection) = self.validate_explicit_site_road_overlap(&placement, graph) {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
+                support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
                 valid: false,
                 rejection: Some(rejection),
             });
@@ -411,14 +428,18 @@ impl BuildingAllocator {
         {
             return Ok(ExplicitServicePlacementPreview {
                 corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
                 support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
                 valid: false,
                 rejection: Some(rejection),
             });
         }
         Ok(ExplicitServicePlacementPreview {
             corners: self.placement_site_corners(&placement),
+            center_2d: placement.center_2d,
             support_height_m: placement.support_height_m,
+            facing_dir: placement.facing_dir,
             valid: true,
             rejection: None,
         })
@@ -442,6 +463,7 @@ impl BuildingAllocator {
             .resolve_site_support_height(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
         self.validate_explicit_site_overlap(&placement)?;
+        self.validate_explicit_site_road_overlap(&placement, graph)?;
         self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
@@ -646,6 +668,147 @@ impl BuildingAllocator {
             }
         }
         Ok(())
+    }
+
+    fn validate_explicit_site_road_overlap(
+        &self,
+        placement: &ResolvedPlacement,
+        graph: &RegionGraph,
+    ) -> Result<(), ExplicitServicePlacementRejection> {
+        let site_corners = self.placement_site_corners(placement);
+        let (min_x, min_z, max_x, max_z) = polygon_bounds(&site_corners);
+        let nearby_edges = graph.get_edges_near_aabb(
+            Vector3::new(
+                min_x - EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M,
+                0.0,
+                min_z - EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M,
+            ),
+            Vector3::new(
+                max_x + EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M,
+                0.0,
+                max_z + EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M,
+            ),
+        );
+        for edge_idx in nearby_edges {
+            let Some(edge) = graph.get_edge(edge_idx) else {
+                continue;
+            };
+            if edge.deleted || edge.physical_geometry.len() < 2 {
+                continue;
+            }
+            let road_half_width = road_collision_half_width_m(edge);
+            for segment in edge.physical_geometry.windows(2) {
+                let start = Vector2::new(segment[0].x, segment[0].z);
+                let end = Vector2::new(segment[1].x, segment[1].z);
+                let delta = end - start;
+                if delta.length_squared()
+                    <= EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M * EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M
+                {
+                    continue;
+                }
+                let tangent = delta.normalized();
+                let normal = Vector2::new(tangent.y, -tangent.x);
+                let road_corners = [
+                    start - normal * road_half_width,
+                    end - normal * road_half_width,
+                    end + normal * road_half_width,
+                    start + normal * road_half_width,
+                ];
+                if flat_support_footprints_overlap(
+                    &site_corners,
+                    &road_corners,
+                    EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M,
+                ) {
+                    debug_log!(
+                        "economy",
+                        "explicit service placement rejected: asset={} site overlaps road edge={} bounds=({:.1},{:.1})-({:.1},{:.1})",
+                        placement.asset_id,
+                        edge_idx,
+                        min_x,
+                        min_z,
+                        max_x,
+                        max_z,
+                    );
+                    return Err(ExplicitServicePlacementRejection::RoadOverlap);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn parcel_geometry_overlaps_explicit_site(&self, geometry: &ParcelGeometry) -> bool {
+        if self.building_sites.is_empty() {
+            return false;
+        }
+        let candidate_indices = self.site_candidate_indices_for_bounds(
+            geometry.aabb_min.x,
+            geometry.aabb_min.y,
+            geometry.aabb_max.x,
+            geometry.aabb_max.y,
+        );
+        for building_idx in candidate_indices {
+            let Some(building) = self.buildings.get(building_idx) else {
+                continue;
+            };
+            if building.parcel_id != 0 || building.zone_type != ZoneType::None {
+                continue;
+            }
+            let Some(site) = self.building_sites.get(building_idx) else {
+                continue;
+            };
+            let (site_min_x, site_min_z, site_max_x, site_max_z) = site.lot_bounds();
+            if site_min_x > geometry.aabb_max.x
+                || site_max_x < geometry.aabb_min.x
+                || site_min_z > geometry.aabb_max.y
+                || site_max_z < geometry.aabb_min.y
+            {
+                continue;
+            }
+            if flat_support_footprints_overlap(
+                &geometry.corners,
+                &site.lot_footprint_world,
+                EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn placement_overlaps_existing_flat_support(&self, placement: &ResolvedPlacement) -> bool {
+        if self.building_sites.is_empty() {
+            return false;
+        }
+        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
+        let candidate_indices =
+            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z);
+        if candidate_indices.is_empty() {
+            return false;
+        }
+
+        let footprint_world = self.placement_required_flat_support_footprint(placement);
+        let (flat_min_x, flat_min_z, flat_max_x, flat_max_z) = polygon_bounds(&footprint_world);
+        for building_idx in candidate_indices {
+            let Some(site) = self.building_sites.get(building_idx) else {
+                continue;
+            };
+            let (site_min_x, site_min_z, site_max_x, site_max_z) = site.bounds();
+            if site_min_x > flat_max_x + BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_max_x < flat_min_x - BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_min_z > flat_max_z + BUILDING_SITE_NEIGHBOR_EPS_M
+                || site_max_z < flat_min_z - BUILDING_SITE_NEIGHBOR_EPS_M
+            {
+                continue;
+            }
+            if flat_support_footprints_overlap(
+                &footprint_world,
+                &site.footprint_world,
+                BUILDING_SITE_NEIGHBOR_EPS_M,
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     fn validate_site_support_tie_in(
@@ -899,18 +1062,18 @@ impl BuildingAllocator {
         placement: &ResolvedPlacement,
         support_height_m: f32,
     ) -> Result<f32, DemandSpawnPlacementRejection> {
-        let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
+        if self.building_sites.is_empty() {
+            return Ok(support_height_m);
+        }
+        let footprint_world = self.placement_required_flat_support_footprint(placement);
+        let (min_x, min_z, max_x, max_z) = polygon_bounds(&footprint_world);
         let candidate_indices =
             self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z);
         for building_idx in candidate_indices {
             let Some(site) = self.building_sites.get(building_idx) else {
                 continue;
             };
-            let Some((site_min_x, site_min_z, site_max_x, site_max_z)) =
-                self.site_world_bounds(building_idx)
-            else {
-                continue;
-            };
+            let (site_min_x, site_min_z, site_max_x, site_max_z) = site.bounds();
             if site_min_x > max_x + BUILDING_SITE_NEIGHBOR_EPS_M
                 || site_max_x < min_x - BUILDING_SITE_NEIGHBOR_EPS_M
                 || site_min_z > max_z + BUILDING_SITE_NEIGHBOR_EPS_M
@@ -920,10 +1083,15 @@ impl BuildingAllocator {
             }
             if (site.support_height_m - support_height_m).abs()
                 > BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M
+                && flat_support_footprints_overlap(
+                    &footprint_world,
+                    &site.footprint_world,
+                    BUILDING_SITE_NEIGHBOR_EPS_M,
+                )
             {
                 debug_log!(
                     "economy",
-                    "building placement rejected: asset={} parcel={} site height {:.2} conflicts with neighboring building {} height {:.2}",
+                    "building placement rejected: asset={} parcel={} site height {:.2} conflicts with overlapping neighboring building {} height {:.2}",
                     placement.asset_id,
                     placement.parcel_id,
                     support_height_m,
@@ -1155,7 +1323,12 @@ impl BuildingAllocator {
             shipment_cooldown_hours: 0,
             daily_owa_input_value: 0.0,
             daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
             daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
             pending_redevelopment: false,
@@ -1167,6 +1340,63 @@ impl BuildingAllocator {
         self.push_building_site_client(building_idx, zone_cell_m);
         building_idx
     }
+}
+
+fn flat_support_footprints_overlap(left: &[Vector2], right: &[Vector2], eps_m: f32) -> bool {
+    if left.len() < 3 || right.len() < 3 {
+        return false;
+    }
+    !has_separating_axis(left, left, right, eps_m)
+        && !has_separating_axis(right, left, right, eps_m)
+}
+
+fn has_separating_axis(
+    axis_source: &[Vector2],
+    left: &[Vector2],
+    right: &[Vector2],
+    eps_m: f32,
+) -> bool {
+    for idx in 0..axis_source.len() {
+        let start = axis_source[idx];
+        let end = axis_source[(idx + 1) % axis_source.len()];
+        let edge = end - start;
+        let length = edge.length();
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let axis = Vector2::new(-edge.y, edge.x) / length;
+        let (left_min, left_max) = project_polygon(left, axis);
+        let (right_min, right_max) = project_polygon(right, axis);
+        if left_max <= right_min + eps_m || right_max <= left_min + eps_m {
+            return true;
+        }
+    }
+    false
+}
+
+fn project_polygon(points: &[Vector2], axis: Vector2) -> (f32, f32) {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for point in points {
+        let projected = point.dot(axis);
+        min = min.min(projected);
+        max = max.max(projected);
+    }
+    (min, max)
+}
+
+fn polygon_bounds(points: &[Vector2]) -> (f32, f32, f32, f32) {
+    let mut min_x = f32::INFINITY;
+    let mut min_z = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_z = f32::NEG_INFINITY;
+    for point in points {
+        min_x = min_x.min(point.x);
+        min_z = min_z.min(point.y);
+        max_x = max_x.max(point.x);
+        max_z = max_z.max(point.y);
+    }
+    (min_x, min_z, max_x, max_z)
 }
 
 fn construction_duration_hours(
@@ -1200,8 +1430,12 @@ struct DrivewayConnectionCandidate {
 pub(crate) struct ExplicitServicePlacementPreview {
     /// Ground-plane footprint corners in metres, ordered around the lot perimeter.
     pub(crate) corners: [Vector2; 4],
+    /// World-space centre of the snapped candidate footprint.
+    pub(crate) center_2d: Vector2,
     /// Flat support height selected for the building site in rendered metres.
     pub(crate) support_height_m: f32,
+    /// Unit vector pointing from the candidate frontage toward the road.
+    pub(crate) facing_dir: Vector2,
     /// True when the preview can be committed without changing its current placement.
     pub(crate) valid: bool,
     /// Rejection reason for snapable previews that cannot be committed.
@@ -1264,6 +1498,17 @@ fn road_connection_lateral_offset_m(edge: &crate::simulation::network::graph::Ed
         SIDEWALK_WIDTH
     };
     (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SAMPLE_INSET_M).max(0.0)
+}
+
+fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -> f32 {
+    let sidewalk_m = if edge.primary_type == TransitType::Foot
+        || (edge.allowed_types & TransitFlags::FOOT) == 0
+    {
+        0.0
+    } else {
+        SIDEWALK_WIDTH
+    };
+    (edge.width * 0.5 + sidewalk_m).max(0.0)
 }
 
 fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {
@@ -1447,6 +1692,15 @@ fn spawn_side_order(side: i8) -> u8 {
 mod tests {
     use super::*;
 
+    fn square_footprint(min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> Vec<Vector2> {
+        vec![
+            Vector2::new(min_x, min_z),
+            Vector2::new(min_x, max_z),
+            Vector2::new(max_x, max_z),
+            Vector2::new(max_x, min_z),
+        ]
+    }
+
     fn spawn_candidate(parcel_id: u64) -> DemandSpawnCandidate {
         DemandSpawnCandidate {
             action: DemandSpawnAction {
@@ -1455,6 +1709,87 @@ mod tests {
             },
             density: "low".to_owned(),
         }
+    }
+
+    #[test]
+    fn flat_support_footprints_do_not_overlap_when_edges_touch() {
+        let left = square_footprint(0.0, 0.0, 10.0, 10.0);
+        let right = square_footprint(10.0, 0.0, 20.0, 10.0);
+
+        assert!(!flat_support_footprints_overlap(
+            &left,
+            &right,
+            BUILDING_SITE_NEIGHBOR_EPS_M
+        ));
+    }
+
+    #[test]
+    fn flat_support_footprints_overlap_with_positive_area() {
+        let left = square_footprint(0.0, 0.0, 10.0, 10.0);
+        let right = square_footprint(9.0, 0.0, 19.0, 10.0);
+
+        assert!(flat_support_footprints_overlap(
+            &left,
+            &right,
+            BUILDING_SITE_NEIGHBOR_EPS_M
+        ));
+    }
+
+    #[test]
+    fn zoned_spawn_prefilter_allows_touching_flat_supports() {
+        let mut allocator = BuildingAllocator::new();
+        allocator
+            .building_sites
+            .push(super::super::site::BuildingSiteClient {
+                footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),
+                lot_footprint_world: [
+                    Vector2::new(0.0, 0.0),
+                    Vector2::new(0.0, 10.0),
+                    Vector2::new(10.0, 10.0),
+                    Vector2::new(10.0, 0.0),
+                ],
+                support_height_m: 12.0,
+                surfaces: Vec::new(),
+            });
+        let touching = ResolvedPlacement {
+            asset_id: "test:asset".to_owned(),
+            zone_profile_runtime_id: 1,
+            zone_type: ZoneType::Residential,
+            initial_level: 1,
+            parcel_id: 2,
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            width_cells: 1,
+            depth_cells: 1,
+            zone_cell_m: 10.0,
+            center_2d: Vector2::new(15.0, 5.0),
+            support_height_m: 14.0,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.5,
+            edge_width: 8.0,
+        };
+        let overlapping = ResolvedPlacement {
+            asset_id: "test:asset".to_owned(),
+            zone_profile_runtime_id: 1,
+            zone_type: ZoneType::Residential,
+            initial_level: 1,
+            parcel_id: 3,
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            width_cells: 1,
+            depth_cells: 1,
+            zone_cell_m: 10.0,
+            center_2d: Vector2::new(14.0, 5.0),
+            support_height_m: 14.0,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.5,
+            edge_width: 8.0,
+        };
+
+        assert!(!allocator.placement_overlaps_existing_flat_support(&touching));
+        assert!(allocator.placement_overlaps_existing_flat_support(&overlapping));
     }
 
     #[test]

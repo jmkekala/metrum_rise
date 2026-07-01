@@ -18,6 +18,7 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
+        treasury_balance: &mut f64,
     ) -> f32 {
         self.refresh_freight_route_cache(allocator, transit_network);
         self.decrement_building_cooldowns(allocator);
@@ -28,6 +29,7 @@ impl ShipmentSystem {
             graph,
             minute_of_day,
             &mut planning,
+            treasury_balance,
         );
         self.create_profile_output_exports(
             allocator,
@@ -38,7 +40,7 @@ impl ShipmentSystem {
         );
         planning.finish(self);
         let business_purchase_tax_collected =
-            self.progress_shipments(allocator, agents, transit_network, graph);
+            self.progress_shipments(allocator, agents, transit_network, graph, treasury_balance);
         self.shipments.retain(|shipment| shipment.status.is_open());
         business_purchase_tax_collected
     }

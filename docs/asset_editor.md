@@ -1774,7 +1774,7 @@ Optional fields:
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
 - `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential.
 - `worker_capacity`: integer, `>= 0`. Defines the total staffing capacity. Required for commercial/industrial. Note: if an `economy_profile` is selected, this value is read authoritatively from the profile and cannot be overridden at the asset level.
-- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to filter which household sizes (e.g. 1-person vs 5-person) are compatible with the building.
+- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members.
 
 Placement-mode interpretation:
 

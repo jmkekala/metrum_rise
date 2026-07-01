@@ -95,6 +95,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     SiteSupportTieInInvalid,
     /// The selected footprint overlaps an existing building site.
     SiteOverlap,
+    /// The selected footprint overlaps an existing road corridor.
+    RoadOverlap,
 }
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
@@ -193,10 +195,36 @@ pub struct Building {
     ///
     /// Reset once per day after the demand snapshot is taken.
     pub daily_local_input_value: f32,
+    /// City treasury-funded input purchases committed during the current day.
+    ///
+    /// Reset once per day after the demand snapshot is taken. This is separate from
+    /// received-input counters because treasury-backed service purchases are paid at shipment
+    /// reservation time, before the cargo may arrive.
+    pub daily_city_funded_input_cost: f32,
     /// Net sales revenue collected from household shopping during the current day.
     ///
     /// Rolled into [`Self::recent_household_sales_value`] at the daily economy reset.
     pub daily_household_sales_value: f32,
+    /// Aggregate utility power service units produced during the current day.
+    ///
+    /// Daily utility settlement uses this to route electricity payments without re-reading
+    /// end-of-day fuel inventory after the plant has already consumed it.
+    pub daily_power_service_units: f32,
+    /// Aggregate utility power service units consumed from this building during the current day.
+    ///
+    /// Daily settlement derives this from citywide power demand and the plant's share of total
+    /// produced power.
+    pub daily_power_served_units: f32,
+    /// Aggregate utility power service units produced during the last completed day.
+    ///
+    /// Building summaries and inspectors read this after the daily economy reset has cleared the
+    /// live accumulator for the next day.
+    pub recent_power_service_units: f32,
+    /// Aggregate utility power service units consumed from this building last completed day.
+    ///
+    /// The inspector uses this with [`Self::recent_power_service_units`] to show used vs unused
+    /// production.
+    pub recent_power_served_units: f32,
     /// Most recently completed day's household sales revenue.
     ///
     /// Commercial staffing and input targets use this as a cheap demand signal instead of
@@ -733,8 +761,13 @@ impl BuildingAllocator {
         for building in &mut self.buildings {
             building.daily_owa_input_value = 0.0;
             building.daily_local_input_value = 0.0;
+            building.daily_city_funded_input_cost = 0.0;
             building.recent_household_sales_value = building.daily_household_sales_value.max(0.0);
             building.daily_household_sales_value = 0.0;
+            building.recent_power_service_units = building.daily_power_service_units.max(0.0);
+            building.daily_power_service_units = 0.0;
+            building.recent_power_served_units = building.daily_power_served_units.max(0.0);
+            building.daily_power_served_units = 0.0;
         }
     }
 

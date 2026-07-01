@@ -72,25 +72,53 @@ resource = "household_supplies"
 units_per_day = 2.0
 
 [[profiles]]
+id = "coal_supplier_basic"
+display_name = "Coal Supplier"
+kind = "producer"
+description = "External-compatible starter coal source used to price and source coal fuel for power plants."
+worker_capacity = 8
+base_rate_units_per_day = 120.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 4.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 40.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+inputs = []
+
+[[profiles.outputs]]
+resource = "coal"
+units_per_day = 120.0
+
+[[profiles]]
 id = "power_plant_basic"
 display_name = "Power Plant"
 kind = "utility_producer"
-description = "Basic power station providing electricity to commercial and industrial buildings. If absent, the city falls back to OWA power at higher cost."
-worker_capacity = 4
-base_rate_units_per_day = 0.0
+description = "Basic coal-fired power station providing electricity to connected buildings. If absent or unfueled, the city falls back to OWA power at higher cost."
+worker_capacity = 20
+base_rate_units_per_day = 240.0
 wage_min_currency_per_day = 100.0
 wage_max_currency_per_day = 130.0
 unit_price_currency = 3.0
-stock_target_days = 0.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
+stock_target_days = 3.0
+reorder_threshold_days = 1.5
+critical_threshold_days = 0.5
+min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "power"
 work_schedule_profile = "three_shift_work"
-inputs = []
+freight_timing_profile = "always_open"
 outputs = []
+
+[[profiles.inputs]]
+resource = "coal"
+units_per_day = 24.0
 
 [[profiles]]
 id = "water_plant_basic"

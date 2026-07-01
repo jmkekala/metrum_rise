@@ -218,7 +218,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
         daily_household_sales_value: 123.0,
+        daily_power_service_units: 78.0,
+        daily_power_served_units: 77.0,
+        recent_power_service_units: 79.0,
+        recent_power_served_units: 76.0,
         recent_household_sales_value: 456.0,
         commercial_activity_floor_scale: 0.0,
         pending_redevelopment: false,
@@ -524,6 +529,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(
         loaded.allocator.buildings[0].daily_household_sales_value,
         123.0
+    );
+    assert_eq!(
+        loaded.allocator.buildings[0].daily_power_service_units,
+        78.0
+    );
+    assert_eq!(loaded.allocator.buildings[0].daily_power_served_units, 77.0);
+    assert_eq!(
+        loaded.allocator.buildings[0].recent_power_service_units,
+        79.0
+    );
+    assert_eq!(
+        loaded.allocator.buildings[0].recent_power_served_units,
+        76.0
     );
     assert_eq!(
         loaded.allocator.buildings[0].recent_household_sales_value,
