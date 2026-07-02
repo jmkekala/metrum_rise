@@ -22,6 +22,7 @@ impl HouseholdSystem {
         absolute_hour: u32,
         minute_of_day: u16,
         treasury_balance: &mut f64,
+        service_funding_by_building: &[f32],
     ) -> FiscalRevenue {
         self.materialize_arrived_household_carriers(agents, allocator);
         self.debug_validate_agent_household_refs(agents);
@@ -42,7 +43,13 @@ impl HouseholdSystem {
             graph,
             absolute_hour,
         );
-        self.assign_agent_workplaces(agents, allocator, transit_network, graph);
+        self.assign_agent_workplaces_with_service_funding(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            service_funding_by_building,
+        );
         self.sync_agent_money_from_households(agents);
         FiscalRevenue {
             household_vat,
@@ -63,6 +70,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
+        service_funding_by_building: &[f32],
     ) -> FiscalRevenue {
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
@@ -78,11 +86,12 @@ impl HouseholdSystem {
         // still negative. Must run before wages so workers are ejected on the same day.
         self.run_bankruptcy_check(allocator);
         // Step 2: pay wages (budget does not go negative from this step).
-        let income_tax = self.pay_daily_wages(
+        let income_tax = self.pay_daily_wages_with_service_funding(
             agents,
             allocator,
             tuning.fiscal.income_tax_rate,
             treasury_balance,
+            service_funding_by_building,
         );
         // Step 3: pay unemployment benefit to eligible households from the city treasury.
         self.pay_unemployment_benefits(agents, allocator, treasury_balance);
@@ -92,7 +101,13 @@ impl HouseholdSystem {
         let business_profit_tax =
             self.settle_business_profit_tax(allocator, tuning.fiscal.business_profit_tax_rate);
         self.resolve_household_housing(agents, allocator);
-        self.assign_agent_workplaces(agents, allocator, transit_network, graph);
+        self.assign_agent_workplaces_with_service_funding(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            service_funding_by_building,
+        );
         self.sync_agent_money_from_households(agents);
         self.finish_daily_ledger_settlement();
         FiscalRevenue {

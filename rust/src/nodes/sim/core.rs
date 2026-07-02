@@ -22,6 +22,7 @@ use crate::simulation::economy::agents::{
     AGE_ADULT, AGE_CHILD, AGE_ELDER, AgentSystem, MODE_CAR, TRANSIT_IN_BUILDING,
     age_group_can_work, transit_is_visible,
 };
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -73,6 +74,76 @@ pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
+/// Stable service policy id for the city electricity service.
+pub(crate) const SERVICE_POLICY_ELECTRICITY: &str = "electricity";
+/// Number of completed daily budget entries kept for UI trend graphs.
+pub(crate) const ECONOMY_HISTORY_DAYS: usize = 180;
+
+/// Player-controlled city service funding policies.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CityServicePolicy {
+    /// Electricity service funding ratio in `0.0..=1.0`.
+    pub(crate) electricity_funding: f32,
+}
+
+impl Default for CityServicePolicy {
+    fn default() -> Self {
+        Self {
+            electricity_funding: 1.0,
+        }
+    }
+}
+
+/// Completed daily accounting buckets shown by the Economy Overview.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DailyBudgetLedgerEntry {
+    /// Operational day index this completed entry represents.
+    pub(crate) day_index: u32,
+    /// Total city income recorded for the day.
+    pub(crate) income: f64,
+    /// Total city expenses recorded for the day.
+    pub(crate) expenses: f64,
+    /// Net cashflow for the day.
+    pub(crate) net: f64,
+    /// Treasury balance after the daily ledger closed.
+    pub(crate) treasury: f64,
+    /// Combined tax income bucket.
+    pub(crate) tax_income: f64,
+    /// Local utility and service revenue collected by city-owned providers.
+    pub(crate) utility_service_revenue: f64,
+    /// Unemployment benefit expense paid from the treasury.
+    pub(crate) benefits: f64,
+    /// City-owned service payroll expense.
+    pub(crate) city_wages: f64,
+    /// Treasury-funded service input and fuel purchase expense.
+    pub(crate) fuel_input_purchases: f64,
+    /// City-paid OWA fallback expense.
+    pub(crate) imports_owa: f64,
+    /// Construction, road upkeep, and internal service operating costs.
+    pub(crate) construction_service_costs: f64,
+    /// Electricity units produced during the day.
+    pub(crate) power_produced: f64,
+    /// Electricity units consumed from local producers during the day.
+    pub(crate) power_consumed: f64,
+    /// Electricity demand not served by local producers during the day.
+    pub(crate) power_unmet: f64,
+    /// Local electricity coverage ratio in `0.0..=1.0`.
+    pub(crate) power_coverage: f64,
+    /// Coal inventory currently held by city power providers.
+    pub(crate) coal_inventory: f64,
+    /// Estimated coal units bought for city power providers during the day.
+    pub(crate) coal_bought: f64,
+    /// Estimated coal units consumed by city power providers during the day.
+    pub(crate) coal_consumed: f64,
+    /// City fuel/input cost attributable to electricity providers.
+    pub(crate) electricity_fuel_cost: f64,
+    /// City payroll cost attributable to electricity providers.
+    pub(crate) electricity_wage_cost: f64,
+    /// Local electricity revenue collected from consumers.
+    pub(crate) electricity_revenue: f64,
+    /// Local electricity service balance after fuel and payroll.
+    pub(crate) electricity_net: f64,
+}
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
 /// The balance may go negative: deficits are an explicit fiscal state rather than
@@ -431,6 +502,12 @@ pub struct SimCore {
     pub config: WorldConfig,
     /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
     pub treasury: CityTreasury,
+    /// Player-controlled live service funding policies.
+    pub(crate) service_policy: CityServicePolicy,
+    /// Completed daily budget ledger entries for overview windows and trend graphs.
+    pub(crate) budget_history: VecDeque<DailyBudgetLedgerEntry>,
+    /// Lifetime build cost observed when the most recent budget ledger entry was recorded.
+    pub(crate) budget_last_lifetime_build_cost: f64,
     /// Runtime-only economy debug counter reset after each daily diagnostic line.
     pub(crate) debug_household_admissions_since_daily: u32,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
@@ -727,6 +804,245 @@ pub(crate) fn compile_road_preview_from_context(
 }
 
 impl SimCore {
+    /// Applies a live service funding policy change from the UI.
+    pub(crate) fn set_service_funding(&mut self, service_id: &str, funding: f32) -> bool {
+        let funding = funding.clamp(0.0, 1.0);
+        match service_id {
+            SERVICE_POLICY_ELECTRICITY | "power" => {
+                self.service_policy.electricity_funding = funding;
+                self.apply_service_funding_staffing_policy();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Applies a live per-building service funding override from an inspector panel.
+    pub(crate) fn set_building_service_funding_override_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        service_id: &str,
+        funding: f32,
+    ) -> bool {
+        if !matches!(service_id, SERVICE_POLICY_ELECTRICITY | "power") {
+            return false;
+        }
+        let Some(building_idx) = self.nearest_building_idx_at(world_x, world_z, 30.0) else {
+            return false;
+        };
+        if !self.building_provides_service(building_idx, "power") {
+            return false;
+        }
+        self.allocator.buildings[building_idx].service_funding_override = funding.clamp(0.0, 1.0);
+        self.apply_service_funding_staffing_policy();
+        true
+    }
+
+    pub(crate) fn effective_electricity_funding_for_building(&self, building_idx: usize) -> f32 {
+        let Some(building) = self.allocator.buildings.get(building_idx) else {
+            return self.service_policy.electricity_funding;
+        };
+        if building.service_funding_override >= 0.0 {
+            building.service_funding_override.clamp(0.0, 1.0)
+        } else {
+            self.service_policy.electricity_funding
+        }
+    }
+
+    pub(crate) fn electricity_funding_by_building(&self) -> Vec<f32> {
+        let mut funding = vec![1.0; self.allocator.buildings.len()];
+        let Ok(catalog) = load_runtime_economy_catalog() else {
+            return funding;
+        };
+        for (idx, building) in self.allocator.buildings.iter().enumerate() {
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            if profile.utility_service.as_deref() == Some("power") {
+                funding[idx] = self.effective_electricity_funding_for_building(idx);
+            }
+        }
+        funding
+    }
+
+    fn apply_service_funding_staffing_policy(&mut self) {
+        let funding = self.electricity_funding_by_building();
+        self.households.enforce_service_funding_staffing(
+            &mut self.agents,
+            &mut self.allocator,
+            &funding,
+        );
+    }
+
+    fn nearest_building_idx_at(&self, world_x: f32, world_z: f32, radius_m: f32) -> Option<usize> {
+        let mut best_idx = usize::MAX;
+        let mut best_dist_sq = radius_m.max(0.0) * radius_m.max(0.0);
+        for (idx, building) in self.allocator.buildings.iter().enumerate() {
+            let dx = building.center_x - world_x;
+            let dz = building.center_y - world_z;
+            let dist_sq = dx * dx + dz * dz;
+            if dist_sq < best_dist_sq {
+                best_idx = idx;
+                best_dist_sq = dist_sq;
+            }
+        }
+        (best_idx != usize::MAX).then_some(best_idx)
+    }
+
+    fn building_provides_service(&self, building_idx: usize, utility_service: &str) -> bool {
+        let Some(building) = self.allocator.buildings.get(building_idx) else {
+            return false;
+        };
+        let Ok(catalog) = load_runtime_economy_catalog() else {
+            return false;
+        };
+        catalog
+            .profile_by_runtime_id(building.economy_profile_runtime_id)
+            .is_some_and(|profile| profile.utility_service.as_deref() == Some(utility_service))
+    }
+
+    fn record_daily_budget_ledger(&mut self, day_index: u32) {
+        let construction_delta =
+            (self.treasury.lifetime_build_cost - self.budget_last_lifetime_build_cost).max(0.0);
+        self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
+
+        let entry = self.build_budget_ledger_entry(day_index, construction_delta);
+        self.budget_history.push_back(entry);
+        while self.budget_history.len() > ECONOMY_HISTORY_DAYS {
+            self.budget_history.pop_front();
+        }
+
+        debug_log!(
+            "economy",
+            "budget ledger: day={} income={:.1} expenses={:.1} net={:.1} treasury={:.1} power=produced:{:.1} consumed:{:.1} unmet:{:.1} funding={:.2}",
+            entry.day_index,
+            entry.income,
+            entry.expenses,
+            entry.net,
+            entry.treasury,
+            entry.power_produced,
+            entry.power_consumed,
+            entry.power_unmet,
+            self.service_policy.electricity_funding,
+        );
+    }
+
+    fn build_budget_ledger_entry(
+        &self,
+        day_index: u32,
+        construction_delta: f64,
+    ) -> DailyBudgetLedgerEntry {
+        let tax_income = self.treasury.last_daily_income_tax
+            + self.treasury.last_daily_household_vat
+            + self.treasury.last_daily_business_purchase_tax
+            + self.treasury.last_daily_business_profit_tax
+            + self.treasury.last_daily_property_tax;
+        let benefits = self
+            .households
+            .daily_ledgers()
+            .iter()
+            .map(|ledger| f64::from(ledger.unemployment_benefit_income.max(0.0)))
+            .sum::<f64>();
+        let city_wages = f64::from(self.households.last_city_service_wage_cost().max(0.0));
+        let power = self.households.last_power_settlement();
+        let utility_service_revenue = f64::from(
+            power.household_local_revenue
+                + power.private_local_revenue
+                + power.city_service_local_cost,
+        );
+        let imports_owa = f64::from(power.city_service_owa_cost.max(0.0));
+        let construction_service_costs = construction_delta
+            + self.treasury.last_daily_upkeep.max(0.0)
+            + f64::from(power.city_service_local_cost.max(0.0));
+        let (coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost) =
+            self.electricity_provider_daily_fuel_summary();
+        let electricity_wage_cost = city_wages;
+        let power_consumed = f64::from(power.served_units.max(0.0));
+        let power_unmet = f64::from((power.demand_units - power.served_units).max(0.0));
+        let power_produced = f64::from(power.supply_units.max(0.0));
+        let electricity_revenue = utility_service_revenue;
+        let electricity_net = electricity_revenue - electricity_fuel_cost - electricity_wage_cost;
+
+        let income = tax_income + utility_service_revenue;
+        let expenses = benefits
+            + city_wages
+            + electricity_fuel_cost
+            + imports_owa
+            + construction_service_costs;
+        let net = income - expenses;
+
+        DailyBudgetLedgerEntry {
+            day_index,
+            income,
+            expenses,
+            net,
+            treasury: self.treasury.balance,
+            tax_income,
+            utility_service_revenue,
+            benefits,
+            city_wages,
+            fuel_input_purchases: electricity_fuel_cost,
+            imports_owa,
+            construction_service_costs,
+            power_produced,
+            power_consumed,
+            power_unmet,
+            power_coverage: f64::from(power.coverage.clamp(0.0, 1.0)),
+            coal_inventory,
+            coal_bought,
+            coal_consumed,
+            electricity_fuel_cost,
+            electricity_wage_cost,
+            electricity_revenue,
+            electricity_net,
+        }
+    }
+
+    fn electricity_provider_daily_fuel_summary(&self) -> (f64, f64, f64, f64) {
+        let Ok(catalog) = load_runtime_economy_catalog() else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        let coal_runtime_id = catalog.resource_runtime_id_for_id("coal");
+        let mut coal_inventory = 0.0f64;
+        let mut coal_consumed = 0.0f64;
+        let mut fuel_cost = 0.0f64;
+
+        for building in &self.allocator.buildings {
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            if profile.utility_service.as_deref() != Some("power") {
+                continue;
+            }
+            fuel_cost += f64::from(building.daily_city_funded_input_cost.max(0.0));
+            if let Some(coal_runtime_id) = coal_runtime_id {
+                coal_inventory += f64::from(building.inventory_units(coal_runtime_id).max(0.0));
+            }
+            for input_port in &profile.inputs {
+                if Some(input_port.resource_runtime_id) != coal_runtime_id {
+                    continue;
+                }
+                if profile.base_rate_units_per_day <= f32::EPSILON {
+                    continue;
+                }
+                let produced_ratio =
+                    building.daily_power_service_units.max(0.0) / profile.base_rate_units_per_day;
+                coal_consumed += f64::from(input_port.units_per_day.max(0.0) * produced_ratio);
+            }
+        }
+
+        let coal_bought = coal_runtime_id
+            .and_then(|resource| catalog.unit_price_for_resource(resource))
+            .filter(|unit_price| *unit_price > f32::EPSILON)
+            .map(|unit_price| fuel_cost / f64::from(unit_price))
+            .unwrap_or(0.0);
+
+        (coal_inventory, coal_bought, coal_consumed, fuel_cost)
+    }
+
     fn print_sim_console_summary(&self, day_index: u32, minute_of_day: u16) {
         let mut at_home = 0usize;
         let mut at_work = 0usize;
@@ -1249,6 +1565,7 @@ impl SimCore {
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
         self.allocator.advance_construction_hour();
+        let service_funding_by_building = self.electricity_funding_by_building();
         let fiscal_revenue = self.households.operational_hour_tick(
             &mut self.agents,
             &mut self.allocator,
@@ -1258,10 +1575,11 @@ impl SimCore {
             absolute_hour,
             minute_of_day,
             &mut self.treasury.balance,
+            &service_funding_by_building,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         if minute_of_day != 0 {
-            self.execute_hourly_demand_pass(day_index, minute_of_day);
+            self.execute_hourly_demand_pass(day_index, minute_of_day, &service_funding_by_building);
         }
     }
 
@@ -1307,6 +1625,7 @@ impl SimCore {
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability
             .tick(&self.zoning, &self.pollution, &self.noise);
+        let service_funding_by_building = self.electricity_funding_by_building();
         let fiscal_revenue = self.households.daily_settlement_tick(
             &mut self.agents,
             &mut self.allocator,
@@ -1314,6 +1633,7 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
             &mut self.treasury.balance,
+            &service_funding_by_building,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         // City treasury: settle daily road upkeep on the fiscal cadence.
@@ -1326,12 +1646,13 @@ impl SimCore {
             .sum();
         self.treasury
             .settle_daily_upkeep(road_length_m * ROAD_UPKEEP_PER_METER_PER_DAY);
-        self.demand.run_daily_pass(
+        self.demand.run_daily_pass_with_service_funding(
             &self.allocator,
             &self.households,
             &self.region_graph,
             &self.zoning,
             self.treasury.balance,
+            &service_funding_by_building,
         );
         let removed_households = self.households.execute_demand_household_removal(
             self.demand.households_to_remove_today,
@@ -1343,11 +1664,12 @@ impl SimCore {
             .record_household_removal_execution(removed_households);
         self.demand
             .log_daily_household_action_diagnostics(day_index);
-        self.execute_hourly_demand_pass(day_index, 0);
+        self.execute_hourly_demand_pass(day_index, 0, &service_funding_by_building);
         // Minute 0 is the deterministic closing boundary: operational-hour work,
         // daily settlement, and midnight demand all post before the daily tax
         // buckets roll into the report.
         self.treasury.finalize_daily_tax_window();
+        self.record_daily_budget_ledger(day_index);
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
         self.debug_household_admissions_since_daily = 0;
         // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
@@ -1390,13 +1712,19 @@ impl SimCore {
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
     }
 
-    fn execute_hourly_demand_pass(&mut self, day_index: u32, minute_of_day: u16) {
-        self.demand.run_hourly_pass(
+    fn execute_hourly_demand_pass(
+        &mut self,
+        day_index: u32,
+        minute_of_day: u16,
+        service_funding_by_building: &[f32],
+    ) {
+        self.demand.run_hourly_pass_with_service_funding(
             &self.allocator,
             &self.households,
             &self.region_graph,
             &self.zoning,
             self.treasury.balance,
+            service_funding_by_building,
         );
         let launched_households = self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,

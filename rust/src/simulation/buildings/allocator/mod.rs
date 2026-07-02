@@ -154,6 +154,8 @@ pub struct Building {
     pub occupancy: u32,
     /// Total workers currently assigned to this building.
     pub worker_count: u32,
+    /// Per-building service funding override in `0.0..=1.0`; negative means inherit city policy.
+    pub service_funding_override: f32,
     /// Qualified asset ID identifying the model for this building.
     pub asset_id: String,
     /// Current growth tier.

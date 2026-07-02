@@ -1090,6 +1090,7 @@ mod tests {
                 cell_y: 0,
                 occupancy: 0,
                 worker_count: 0,
+                service_funding_override: -1.0,
                 asset_id: residential_asset,
                 level: 1,
                 construction_total_hours: 0,

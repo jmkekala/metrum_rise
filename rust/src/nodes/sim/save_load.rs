@@ -60,6 +60,9 @@ impl SimCore {
         self.logistics = loaded.logistics;
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
+        self.service_policy = Default::default();
+        self.budget_history.clear();
+        self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
         self.time.speed_multiplier = 0.0;
         self.transit_network.flow_fields.mark_all_dirty();

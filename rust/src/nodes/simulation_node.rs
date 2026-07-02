@@ -12,6 +12,8 @@
 //! | | `save_world_definition` | future world-editor UI |
 //! | | `load_world_definition` | future world-editor UI |
 //! | | `get_perf_stats` | `debug_panel.gd` |
+//! | | `get_economy_overview` | `economy_overview.gd` |
+//! | | `set_economy_service_funding` | `economy_overview.gd` |
 //! | | `get_demand_pressures` | `main_ui.gd` |
 //! | | `get_treasury_balance` | `main_ui.gd` |
 //! | | `get_agent_count` | `main_ui.gd` |
@@ -92,11 +94,11 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury,
+    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury, DailyBudgetLedgerEntry,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SimCommand, SimCore,
-    compile_road_preview_from_context, run_road_preview_worker, run_sim_thread,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
+    SimCore, compile_road_preview_from_context, run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -5819,6 +5821,87 @@ impl SimulationNode {
         )
     }
 
+    /// Returns city budget history, service policy, and compact service status for UI windows.
+    #[func]
+    pub fn get_economy_overview(&self) -> VarDictionary {
+        let core = self.lock_core();
+        let mut history = VarArray::new();
+        for entry in &core.budget_history {
+            let dict = budget_ledger_entry_dict(entry);
+            history.push(&dict.to_variant());
+        }
+
+        let latest = core.budget_history.back().copied().unwrap_or_else(|| {
+            let mut entry = DailyBudgetLedgerEntry::default();
+            entry.day_index = core.time.day_index;
+            entry.treasury = core.treasury.balance;
+            entry
+        });
+
+        let mut services = VarArray::new();
+        let mut electricity = VarDictionary::new();
+        electricity.set("id", GString::from(SERVICE_POLICY_ELECTRICITY));
+        electricity.set("name", GString::from("Electricity"));
+        electricity.set("funding", core.service_policy.electricity_funding as f64);
+        electricity.set("coverage", latest.power_coverage);
+        electricity.set("produced", latest.power_produced);
+        electricity.set("consumed", latest.power_consumed);
+        electricity.set("unmet", latest.power_unmet);
+        electricity.set(
+            "active",
+            latest.power_produced > 0.0 && latest.power_consumed > 0.0,
+        );
+        let status = if latest.power_unmet > 0.01 {
+            "shortage"
+        } else if latest.power_produced > 0.01 {
+            "stable"
+        } else {
+            "inactive"
+        };
+        electricity.set("status", GString::from(status));
+        services.push(&electricity.to_variant());
+
+        let mut policy = VarDictionary::new();
+        policy.set(
+            SERVICE_POLICY_ELECTRICITY,
+            core.service_policy.electricity_funding as f64,
+        );
+
+        let mut dict = VarDictionary::new();
+        dict.set("current_day", core.time.day_index as i32);
+        dict.set("treasury", core.treasury.balance);
+        dict.set("history", history);
+        dict.set("latest", budget_ledger_entry_dict(&latest));
+        dict.set("policy", policy);
+        dict.set("services", services);
+        dict
+    }
+
+    /// Applies a live city service funding value. Returns `false` for unknown service ids.
+    #[func]
+    pub fn set_economy_service_funding(&mut self, service_id: GString, funding: f32) -> bool {
+        let mut core = self.lock_core();
+        core.set_service_funding(&service_id.to_string(), funding)
+    }
+
+    /// Applies a live service funding override to the service building nearest the world point.
+    #[func]
+    pub fn set_building_service_funding_override_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        service_id: GString,
+        funding: f32,
+    ) -> bool {
+        let mut core = self.lock_core();
+        core.set_building_service_funding_override_at(
+            world_x,
+            world_z,
+            &service_id.to_string(),
+            funding,
+        )
+    }
+
     // ── Agents ──
 
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
@@ -6305,6 +6388,20 @@ impl SimulationNode {
                     dict.set("utility_service", GString::from(utility_service));
                     dict.set("utility_service_available", utility_active);
                     dict.set("utility_local_revenue", b.revenue as f64);
+                    if utility_service == "power" {
+                        dict.set(
+                            "service_funding_effective",
+                            core.effective_electricity_funding_for_building(best_idx) as f64,
+                        );
+                        dict.set(
+                            "service_funding_city",
+                            core.service_policy.electricity_funding as f64,
+                        );
+                        dict.set(
+                            "service_funding_override",
+                            b.service_funding_override >= 0.0,
+                        );
+                    }
                     if let Some(fuel_port) = profile.inputs.first() {
                         let fuel_name = cat
                             .resource_id_for_runtime_id(fuel_port.resource_runtime_id)
@@ -7636,6 +7733,37 @@ impl SimulationNode {
     }
 }
 
+fn budget_ledger_entry_dict(entry: &DailyBudgetLedgerEntry) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    dict.set("day_index", entry.day_index as i32);
+    dict.set("income", entry.income);
+    dict.set("expenses", entry.expenses);
+    dict.set("net", entry.net);
+    dict.set("treasury", entry.treasury);
+    dict.set("tax_income", entry.tax_income);
+    dict.set("utility_service_revenue", entry.utility_service_revenue);
+    dict.set("benefits", entry.benefits);
+    dict.set("city_wages", entry.city_wages);
+    dict.set("fuel_input_purchases", entry.fuel_input_purchases);
+    dict.set("imports_owa", entry.imports_owa);
+    dict.set(
+        "construction_service_costs",
+        entry.construction_service_costs,
+    );
+    dict.set("power_produced", entry.power_produced);
+    dict.set("power_consumed", entry.power_consumed);
+    dict.set("power_unmet", entry.power_unmet);
+    dict.set("power_coverage", entry.power_coverage);
+    dict.set("coal_inventory", entry.coal_inventory);
+    dict.set("coal_bought", entry.coal_bought);
+    dict.set("coal_consumed", entry.coal_consumed);
+    dict.set("electricity_fuel_cost", entry.electricity_fuel_cost);
+    dict.set("electricity_wage_cost", entry.electricity_wage_cost);
+    dict.set("electricity_revenue", entry.electricity_revenue);
+    dict.set("electricity_net", entry.electricity_net);
+    dict
+}
+
 fn zoning_parcel_geometry_dict(
     core: &SimCore,
     geometry: &crate::simulation::zoning::ParcelGeometry,
@@ -7823,6 +7951,9 @@ impl INode3D for SimulationNode {
                     .map(|t| t.startup_treasury_balance)
                     .unwrap_or(100_000.0),
             ),
+            service_policy: Default::default(),
+            budget_history: VecDeque::new(),
+            budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
             world_lake_fills: Vec::new(),
@@ -8990,6 +9121,9 @@ mod tests {
             logistics: ShipmentSystem::new(),
             config,
             treasury: CityTreasury::new(0.0),
+            service_policy: Default::default(),
+            budget_history: std::collections::VecDeque::new(),
+            budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,
             undo_stack: std::collections::VecDeque::new(),
             world_lake_fills: Vec::new(),

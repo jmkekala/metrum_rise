@@ -148,7 +148,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   utility fees back to the treasury. Coal-fired power plants now request coal through ordinary
   freight, draw fuel/input purchases from the city treasury, accumulate produced power from staffed
   fueled operation, route covered household utility payments into matching local utility revenue,
-  and expose uncovered private demand as OWA fallback spend. See [`economy.md`](economy.md).
+  and expose uncovered private demand as OWA fallback spend. The Economy Overview window now reads
+  Rust-owned daily budget ledgers, graphs city income/expenses/net/treasury, and exposes a live
+  electricity funding slider that sets default staffed power-plant worker slots; individual power
+  plants can override that default from their inspector without being reset by later citywide
+  changes. Production follows the staffed workers and fuel availability. See
+  [`economy.md`](economy.md).
 - Freight shipments now dispatch physical truck carrier agents through the existing lane movement
   system. Local freight, `OWA` imports, and `OWA` exports settle only when the carrier reaches the
   destination building or border terminal; empty carriers then return to their source building or

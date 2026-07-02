@@ -14,6 +14,7 @@ mod replenishment;
 mod tests;
 mod tick;
 
+pub(crate) use data::DailyPowerSettlementSummary;
 pub use data::{Household, HouseholdSystem};
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
@@ -28,4 +29,5 @@ pub(crate) use metrics::{
     commercial_activity_signal_for_city, expected_adult_members_for_household_size,
     household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
     level_tuning_value, scaled_input_inventory_targets_for_building,
+    service_funded_worker_capacity,
 };

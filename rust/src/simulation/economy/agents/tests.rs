@@ -114,6 +114,7 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
+        service_funding_override: -1.0,
         asset_id: "test:placeholder".to_owned(),
         level: 1,
         construction_total_hours: 0,

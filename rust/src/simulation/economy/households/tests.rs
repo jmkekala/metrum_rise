@@ -74,6 +74,7 @@ fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32)
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
+        service_funding_override: -1.0,
         asset_id: asset_id.to_owned(),
         level: 1,
         construction_total_hours: 0,
@@ -1930,6 +1931,56 @@ fn city_service_wages_debit_treasury_not_building_budget() {
 }
 
 #[test]
+fn power_service_funding_sheds_workers_to_funded_capacity() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 2, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "funding_shed_home",
+        ZoneClass::Residential,
+    );
+    let power_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "funding_shed_power",
+        "power_plant_basic",
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let mut service_building = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+    let power_profile = catalog
+        .profile_for_id("power_plant_basic")
+        .expect("power profile");
+    service_building.economy_profile_runtime_id = power_profile.runtime_id;
+    service_building.worker_count = 2;
+    allocator.buildings.push(service_building);
+
+    let mut agents = AgentSystem::new();
+    let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+    for agent in [a0, a1] {
+        agents.household_id[agent] = 0;
+        agents.transit[agent] = TRANSIT_IN_BUILDING;
+        agents.current_building[agent] = 0;
+        agents.assign_work_building(agent, 1, 0);
+    }
+
+    households.enforce_service_funding_staffing(&mut agents, &mut allocator, &[1.0, 0.05]);
+
+    assert_eq!(allocator.buildings[1].worker_count, 1);
+    assert_eq!(agents.work_building[a0], 1);
+    assert_eq!(agents.work_building[a1], usize::MAX);
+}
+
+#[test]
 fn no_car_agent_can_take_walk_reachable_job() {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -2486,6 +2537,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         0,
         0,
         &mut treasury_balance,
+        &[],
     );
 
     assert_eq!(households.households[0].member_count, 1);

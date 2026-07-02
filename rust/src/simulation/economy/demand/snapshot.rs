@@ -22,6 +22,7 @@ use crate::simulation::economy::households::{
     Household, HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
     candidate_immigrant_household_size_from_flat_size, commercial_activity_signal_for_city,
     expected_adult_members_for_household_size, household_reserve_days,
+    service_funded_worker_capacity,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
@@ -195,6 +196,9 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) existing_unemployed_member_count: u32,
     pub(super) open_job_slots: u32,
     pub(super) average_open_job_wage_per_day: f32,
+    pub(super) physical_worker_capacity: u32,
+    pub(super) funded_worker_capacity: u32,
+    pub(super) open_jobs_unfunded: u32,
     pub(super) output_absorption: OutputAbsorptionContext,
     // Fraction of commercial input value sourced from OWA rather than local industrial.
     pub(super) commercial_owa_dependency: f32,
@@ -223,6 +227,7 @@ impl DailyDemandSnapshot {
             catalog.as_ref(),
             tuning.as_ref(),
             treasury_balance,
+            &[],
         )
     }
 
@@ -234,6 +239,7 @@ impl DailyDemandSnapshot {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
         treasury_balance: f64,
+        service_funding_by_building: &[f32],
     ) -> Self {
         let mut commercial_profile_output_resources = Vec::new();
         for profile in catalog.all_profiles() {
@@ -294,6 +300,7 @@ impl DailyDemandSnapshot {
             tuning.fiscal.income_tax_rate,
             &demand_sink_rates_by_resource,
             commercial_activity_signal.activity_floor_scale,
+            service_funding_by_building,
         );
         let total_household_slots = building_accumulator.total_household_slots;
         let occupied_household_slots = building_accumulator.occupied_household_slots;
@@ -308,6 +315,9 @@ impl DailyDemandSnapshot {
         let filled_job_count = building_accumulator.filled_job_count;
         let open_job_slots = building_accumulator.open_job_slots;
         let open_job_wage_sum = building_accumulator.open_job_wage_sum;
+        let physical_worker_capacity = building_accumulator.physical_worker_capacity;
+        let funded_worker_capacity = building_accumulator.funded_worker_capacity;
+        let open_jobs_unfunded = building_accumulator.open_jobs_unfunded;
         let live_commercial_output_capacity_by_resource =
             building_accumulator.live_commercial_output_capacity_by_resource;
         let committed_commercial_output_capacity_by_resource =
@@ -496,7 +506,8 @@ impl DailyDemandSnapshot {
              ind_cap_def={:.2} com_input_need={:.1} local_ind_capacity={:.1} \
              ind_missing={:.1} pending_home_slots={} owa_dep={:.2} owa_input_value={:.1} \
              treasury={:.0} cand_size={:.1} \
-             open_jobs={} existing_unemployed={} \
+             open_jobs={} existing_unemployed={} physical_worker_capacity={} \
+             funded_worker_capacity={} open_jobs_unfunded={} \
              private_buildings={}",
             connected_border_count,
             external_connection_available,
@@ -520,6 +531,9 @@ impl DailyDemandSnapshot {
             candidate_household_size,
             open_job_slots,
             existing_unemployed_member_count,
+            physical_worker_capacity,
+            funded_worker_capacity,
+            open_jobs_unfunded,
             existing_private_building_count,
         );
 
@@ -560,6 +574,9 @@ impl DailyDemandSnapshot {
             existing_unemployed_member_count,
             open_job_slots,
             average_open_job_wage_per_day,
+            physical_worker_capacity,
+            funded_worker_capacity,
+            open_jobs_unfunded,
             output_absorption,
             commercial_owa_dependency,
             #[cfg(test)]
@@ -585,6 +602,9 @@ struct BuildingSnapshotAccumulator {
     filled_job_count: u32,
     open_job_slots: u32,
     open_job_wage_sum: f32,
+    physical_worker_capacity: u32,
+    funded_worker_capacity: u32,
+    open_jobs_unfunded: u32,
     committed_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     live_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     committed_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
@@ -601,6 +621,7 @@ impl BuildingSnapshotAccumulator {
         income_tax_rate: f32,
         demand_sink_rates_by_resource: &[(u16, f32)],
         commercial_activity_floor_scale: f32,
+        service_funding_by_building: &[f32],
         idx: usize,
         building: &Building,
     ) {
@@ -688,23 +709,42 @@ impl BuildingSnapshotAccumulator {
         if let Some(profile) =
             active_profile.filter(|profile| profile_offers_work(building, profile))
         {
-            let worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
+            let physical_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
                 catalog,
                 building,
                 profile,
                 commercial_activity_floor_scale,
             );
-            if worker_capacity > 0 {
+            let funded_worker_capacity = service_funded_worker_capacity(
+                physical_worker_capacity,
+                profile,
+                idx,
+                service_funding_by_building,
+            );
+            if physical_worker_capacity > funded_worker_capacity {
+                self.open_jobs_unfunded = self.open_jobs_unfunded.saturating_add(
+                    physical_worker_capacity.saturating_sub(funded_worker_capacity),
+                );
+            }
+            if physical_worker_capacity > 0 {
+                self.physical_worker_capacity = self
+                    .physical_worker_capacity
+                    .saturating_add(physical_worker_capacity);
+                self.funded_worker_capacity = self
+                    .funded_worker_capacity
+                    .saturating_add(funded_worker_capacity);
+            }
+            if funded_worker_capacity > 0 {
                 let average_daily_wage = profile.average_daily_wage();
-                let filled_workers = building.worker_count.min(worker_capacity);
+                let filled_workers = building.worker_count.min(funded_worker_capacity);
                 self.filled_job_count = self.filled_job_count.saturating_add(filled_workers);
                 if average_daily_wage > 0.1 {
                     let budget_capacity = if allocator.is_city_service_building(building) {
-                        worker_capacity
+                        funded_worker_capacity
                     } else {
                         (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
                     };
-                    let effective_capacity = worker_capacity.min(budget_capacity);
+                    let effective_capacity = funded_worker_capacity.min(budget_capacity);
                     let open_slots = effective_capacity.saturating_sub(filled_workers);
                     let net_daily_wage =
                         average_daily_wage - tax_amount(average_daily_wage, income_tax_rate);
@@ -824,6 +864,15 @@ impl BuildingSnapshotAccumulator {
         self.filled_job_count = self.filled_job_count.saturating_add(other.filled_job_count);
         self.open_job_slots = self.open_job_slots.saturating_add(other.open_job_slots);
         self.open_job_wage_sum += other.open_job_wage_sum;
+        self.physical_worker_capacity = self
+            .physical_worker_capacity
+            .saturating_add(other.physical_worker_capacity);
+        self.funded_worker_capacity = self
+            .funded_worker_capacity
+            .saturating_add(other.funded_worker_capacity);
+        self.open_jobs_unfunded = self
+            .open_jobs_unfunded
+            .saturating_add(other.open_jobs_unfunded);
         merge_resource_amounts(
             &mut self.committed_output_capacity_by_resource,
             other.committed_output_capacity_by_resource,
@@ -867,6 +916,7 @@ fn collect_building_snapshot_accumulator(
     income_tax_rate: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
     commercial_activity_floor_scale: f32,
+    service_funding_by_building: &[f32],
 ) -> BuildingSnapshotAccumulator {
     let mut chunks: Vec<_> = allocator
         .buildings
@@ -882,6 +932,7 @@ fn collect_building_snapshot_accumulator(
                     income_tax_rate,
                     demand_sink_rates_by_resource,
                     commercial_activity_floor_scale,
+                    service_funding_by_building,
                     start_idx + local_idx,
                     building,
                 );

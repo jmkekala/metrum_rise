@@ -8,6 +8,8 @@
 ## load_asset_packs(). This script only manages the config file and the UI.
 extends Window
 
+const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+
 const CFG_PATH := "user://active_packs.cfg"
 const MODS_DIR := "user://mods/"
 
@@ -18,6 +20,7 @@ var _checks: Dictionary = {}   # pack_id -> CheckBox
 func _ready() -> void:
 	title = "Mod Packs"
 	size = Vector2(480, 400)
+	min_size = Vector2i(360, 280)
 	unresizable = false
 	exclusive = true
 	close_requested.connect(hide)
@@ -65,6 +68,7 @@ func _ready() -> void:
 	btn_row.add_child(close_btn)
 
 	_refresh_list(list)
+	WindowResizeHandles.install(self)
 
 func _refresh_list(list: VBoxContainer) -> void:
 	for child in list.get_children():

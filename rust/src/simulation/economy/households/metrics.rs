@@ -17,6 +17,7 @@ const HOUSEHOLD_BASE_AREA_M2: f32 = 25.0;
 const HOUSEHOLD_ADULT_AREA_M2: f32 = 22.0;
 const HOUSEHOLD_CHILD_AREA_M2: f32 = 12.0;
 const MIN_POSITIVE_VALUE: f32 = 0.000_1;
+pub(crate) const UTILITY_SERVICE_POWER: &str = "power";
 
 pub(super) const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
@@ -284,6 +285,45 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
         * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale))
     .ceil() as u32;
     scaled_capacity.clamp(1, worker_capacity)
+}
+
+fn scaled_service_worker_capacity(capacity: u32, funding_factor: f32) -> u32 {
+    if capacity == 0 {
+        return 0;
+    }
+    let funding_factor = funding_factor.clamp(0.0, 1.0);
+    if funding_factor <= f32::EPSILON {
+        0
+    } else {
+        ((capacity as f32) * funding_factor).ceil() as u32
+    }
+}
+
+fn service_funding_factor_for_building(
+    service_funding_by_building: &[f32],
+    building_idx: usize,
+) -> f32 {
+    service_funding_by_building
+        .get(building_idx)
+        .copied()
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0)
+}
+
+pub(crate) fn service_funded_worker_capacity(
+    capacity: u32,
+    profile: &EconomyProfileRuntime,
+    building_idx: usize,
+    service_funding_by_building: &[f32],
+) -> u32 {
+    if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER) {
+        scaled_service_worker_capacity(
+            capacity,
+            service_funding_factor_for_building(service_funding_by_building, building_idx),
+        )
+    } else {
+        capacity
+    }
 }
 
 /// Cheap live production factors for one building/profile pair.

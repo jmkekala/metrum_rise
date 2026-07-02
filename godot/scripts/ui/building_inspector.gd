@@ -7,6 +7,7 @@
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -78,6 +79,7 @@ func _create_window_entry(key: String) -> Dictionary:
 	var window := Window.new()
 	window.title = "Building Inspector"
 	window.size = Vector2i(340, 420)
+	window.min_size = Vector2i(280, 260)
 	window.unresizable = false
 	window.exclusive = false
 	window.visible = false
@@ -118,6 +120,7 @@ func _create_window_entry(key: String) -> Dictionary:
 	scroll.add_child(stats_body)
 
 	add_child(window)
+	WindowResizeHandles.install(window)
 	window.hide()
 
 	return {
@@ -247,9 +250,12 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			var workers := int(info.get("worker_count", 0))
 			var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
 			var max_capacity := int(info.get("worker_capacity", 0))
-			var worker_text := "%d / %d" % [workers, max_capacity]
-			if active_capacity != max_capacity:
-				worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
+			var is_power_utility := str(info.get("utility_service", "")) == "power"
+			var worker_text := str(workers)
+			if not is_power_utility:
+				worker_text = "%d / %d" % [workers, max_capacity]
+				if active_capacity != max_capacity:
+					worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
 			_add_row(stats_body, "Workers", worker_text)
 			_add_row(
 				stats_body,
@@ -278,6 +284,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				var utility_name := str(info.get("utility_service", "")).capitalize()
 				var utility_state := "active" if info.get("utility_service_available", false) else "inactive"
 				_add_row(stats_body, "Utility", "%s %s" % [utility_name, utility_state])
+				if str(info.get("utility_service", "")) == "power":
+					_add_service_funding_slider(stats_body, info)
 				_add_row(stats_body, "Utility Revenue", _money(float(info.get("utility_local_revenue", 0.0))))
 				if str(info.get("utility_service", "")) == "power":
 					var power_produced := float(info.get("utility_power_production_today", 0.0))
@@ -290,10 +298,13 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
 				_add_row(stats_body, "City Fuel Today", _money(float(info.get("city_fuel_cost_today", 0.0))))
 		else:
+			var fallback_worker_text := str(info.get("worker_count", 0))
+			if str(info.get("utility_service", "")) != "power":
+				fallback_worker_text = "%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
 			_add_row(
 				stats_body,
 				"Workers",
-				"%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)]
+				fallback_worker_text
 			)
 			_add_row(stats_body, "Budget", _money(float(info.get("operating_budget", 0.0))))
 		if info.has("utility_service_available") and not info.has("utility_service"):
@@ -360,6 +371,65 @@ func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String)
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	value.add_theme_font_size_override("font_size", 12)
 	hbox.add_child(value)
+
+func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) -> void:
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	stats_body.add_child(hbox)
+
+	var label := Label.new()
+	label.text = "Plant Funding"
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	label.add_theme_font_size_override("font_size", 12)
+	hbox.add_child(label)
+
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step = 0.01
+	slider.value = clampf(float(info.get("service_funding_effective", 1.0)), 0.0, 1.0)
+	slider.custom_minimum_size = Vector2(120.0, 0.0)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(slider)
+
+	var value := Label.new()
+	value.custom_minimum_size = Vector2(42.0, 0.0)
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value.text = "%.0f%%" % (slider.value * 100.0)
+	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	value.add_theme_font_size_override("font_size", 12)
+	hbox.add_child(value)
+
+	slider.value_changed.connect(
+		_on_service_funding_slider_changed.bind(
+			value,
+			float(info.get("center_x", 0.0)),
+			float(info.get("center_z", 0.0)),
+			str(info.get("utility_service", ""))
+		)
+	)
+	slider.drag_ended.connect(_on_service_funding_slider_drag_ended)
+
+func _on_service_funding_slider_changed(
+	new_value: float,
+	value_label: Label,
+	center_x: float,
+	center_z: float,
+	service_id: String
+) -> void:
+	if is_instance_valid(value_label):
+		value_label.text = "%.0f%%" % (new_value * 100.0)
+	if simulation_node != null:
+		simulation_node.set_building_service_funding_override_at(
+			center_x,
+			center_z,
+			service_id,
+			new_value
+		)
+
+func _on_service_funding_slider_drag_ended(_value_changed: bool) -> void:
+	call_deferred("_refresh_open_windows")
 
 func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float, produced_units: float) -> void:
 	produced_units = maxf(produced_units, 0.0)

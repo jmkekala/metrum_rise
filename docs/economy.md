@@ -1262,6 +1262,8 @@ Rules:
 - `v0.1` utility service is not a detailed line-by-line grid simulation; `power` now uses aggregate daily produced units while `water` and `sewage` still use the starter provider-present fallback model
 - utility availability resolves independently per service; a local `power` provider does not satisfy `water` or `sewage`
 - a valid connected local `power` producer contributes the service units actually accumulated during hourly operation from `base_rate_units_per_day * current throughput`, capped by fuel/input availability at those hours; end-of-day settlement must not credit unproduced capacity
+- city service funding policies are runtime simulation state owned by Rust; the live electricity funding policy sets the default funded worker slots for city-owned power plants, and production follows the resulting staffed workers plus fuel/input availability
+- individual city-owned power plants may carry a per-building funding override; citywide electricity funding changes do not clear those plant overrides
 - if a valid connected local `water` producer or `sewage` processor exists and has positive current operational throughput, that service is treated as locally available to eligible consumers in `v0.1`
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
@@ -1273,6 +1275,7 @@ Rules:
 - those utility charges become revenue for the local utility operator or processor rather than for the city treasury
 - if the utility operator is city-owned, that operator revenue deposits into the city treasury instead of a private building budget
 - city-owned utility wages, one-time placement costs, and required fuel/input purchases withdraw from the city treasury rather than from a provider operating budget
+- daily city budget ledger buckets are recorded by Rust after the daily fiscal settlement and before daily building accumulators reset; Godot overview windows render those buckets and may send live policy changes but do not compute accounting outcomes
 - utility-producing and utility-processing buildings should therefore behave like ordinary economic buildings that sell a service rather than like invisible free infrastructure
 - any `VAT` or other future fiscal levy on utility service is separate from the operator's service revenue and follows the normal tax rules into the city treasury
 - if no local utility service is available, `OWA` may provide that service as an external service purchase
@@ -2359,6 +2362,12 @@ Current status:
 - explicit city service assets are registry-discovered, road-frontage placed through the Services
   toolbar, charged to the treasury at placement, and staffed through the normal job system with
   city-funded wages and city-funded fuel/input purchases
+- the gameplay Economy Overview window reads Rust-owned daily budget history, displays city income /
+  expense / net / treasury trends, and exposes a live electricity funding slider whose changes apply
+  without OK/Cancel/Apply confirmation; the slider sets the default staffed power-worker slots
+  instead of directly multiplying production
+- power plant inspectors show actual worker count and can set a per-plant funding override that
+  persists separately from the citywide electricity funding slider
 - no invisible utility buildings exist
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.

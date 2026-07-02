@@ -195,6 +195,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         cell_y: 0,
         occupancy: 2,
         worker_count: 0,
+        service_funding_override: 0.65,
         asset_id: residential_asset,
         level: 1,
         construction_total_hours: 0,
@@ -521,6 +522,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.next_replan_time[0], 9.5);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
+    assert!((loaded.allocator.buildings[0].service_funding_override - 0.65).abs() < 0.001);
     assert_eq!(
         loaded.allocator.buildings[0].profit_tax_budget_baseline,
         375.0

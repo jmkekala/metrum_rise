@@ -44,6 +44,27 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) shopper_trips_failed: u16,
 }
 
+/// Completed daily electricity settlement summary kept for city budget reporting.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct DailyPowerSettlementSummary {
+    /// Total electricity demand considered by the daily utility settlement.
+    pub(crate) demand_units: f32,
+    /// Total local electricity units available from active providers.
+    pub(crate) supply_units: f32,
+    /// Electricity demand served from local providers.
+    pub(crate) served_units: f32,
+    /// Local electricity coverage ratio in `0.0..=1.0`.
+    pub(crate) coverage: f32,
+    /// Household payments routed to local city providers.
+    pub(crate) household_local_revenue: f32,
+    /// Private business payments routed to local city providers.
+    pub(crate) private_local_revenue: f32,
+    /// City-service payments routed to local city providers.
+    pub(crate) city_service_local_cost: f32,
+    /// City-service payments routed to OWA fallback.
+    pub(crate) city_service_owa_cost: f32,
+}
+
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
 pub struct Household {
@@ -117,6 +138,8 @@ pub struct HouseholdSystem {
     pub(super) workplace_route_cache_entrance_revision: u64,
     pub(super) workplace_route_cache_cch_generation: u32,
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
+    pub(super) last_power_settlement: DailyPowerSettlementSummary,
+    pub(super) last_city_service_wage_cost: f32,
 }
 
 impl HouseholdSystem {
@@ -139,6 +162,8 @@ impl HouseholdSystem {
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
             daily_ledgers: Vec::new(),
+            last_power_settlement: DailyPowerSettlementSummary::default(),
+            last_city_service_wage_cost: 0.0,
         }
     }
 
@@ -160,6 +185,8 @@ impl HouseholdSystem {
         self.workplace_route_cache_entrance_revision = u64::MAX;
         self.workplace_route_cache_cch_generation = u32::MAX;
         self.daily_ledgers.clear();
+        self.last_power_settlement = DailyPowerSettlementSummary::default();
+        self.last_city_service_wage_cost = 0.0;
     }
 
     /// Remaps building references after a building swap-remove.
@@ -242,6 +269,16 @@ impl HouseholdSystem {
     /// Returns daily household ledgers for debug output.
     pub(crate) fn daily_ledgers(&self) -> &[DailyHouseholdLedger] {
         &self.daily_ledgers
+    }
+
+    /// Returns the most recently completed daily electricity settlement summary.
+    pub(crate) fn last_power_settlement(&self) -> DailyPowerSettlementSummary {
+        self.last_power_settlement
+    }
+
+    /// Returns the most recent city-funded service wage expense.
+    pub(crate) fn last_city_service_wage_cost(&self) -> f32 {
+        self.last_city_service_wage_cost
     }
 
     /// Clears per-household daily ledgers after they have been emitted.
@@ -351,6 +388,8 @@ impl Clone for HouseholdSystem {
             workplace_route_cache_entrance_revision: u64::MAX,
             workplace_route_cache_cch_generation: u32::MAX,
             daily_ledgers: Vec::new(),
+            last_power_settlement: self.last_power_settlement,
+            last_city_service_wage_cost: self.last_city_service_wage_cost,
         }
     }
 }

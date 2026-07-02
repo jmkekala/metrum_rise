@@ -1,10 +1,10 @@
 //! Building-side production, utility settlement, bankruptcy, and liquidation.
 
-use super::HouseholdSystem;
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
     refresh_commercial_activity_floor,
 };
+use super::{DailyPowerSettlementSummary, HouseholdSystem};
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
@@ -265,6 +265,16 @@ impl HouseholdSystem {
                 power_settlement.city_service_owa_cost,
             );
         }
+        self.last_power_settlement = DailyPowerSettlementSummary {
+            demand_units: power_settlement.demand_units,
+            supply_units: power_settlement.supply_units,
+            served_units: served_power_units,
+            coverage: power_settlement.coverage,
+            household_local_revenue: power_settlement.household_local_revenue,
+            private_local_revenue: power_settlement.private_local_revenue,
+            city_service_local_cost: power_settlement.city_service_local_cost,
+            city_service_owa_cost: power_settlement.city_service_owa_cost,
+        };
 
         let resource_count = catalog.resource_count();
         let reserved_outbound = logistics.reserved_outbound_view(resource_count);

@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
-    active_worker_capacity_for_profile, household_demand_profile, household_supply_unit_price,
-    refresh_commercial_activity_floor,
+    UTILITY_SERVICE_POWER, active_worker_capacity_for_profile, household_demand_profile,
+    household_supply_unit_price, refresh_commercial_activity_floor, service_funded_worker_capacity,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -190,12 +190,30 @@ impl HouseholdSystem {
 
     /// Step 1 of the daily settlement sequence: mark bankrupt any building that ended yesterday
 
+    #[cfg(test)]
     pub(super) fn assign_agent_workplaces(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+    ) {
+        self.assign_agent_workplaces_with_service_funding(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            &[],
+        );
+    }
+
+    pub(crate) fn assign_agent_workplaces_with_service_funding(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        service_funding_by_building: &[f32],
     ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -216,6 +234,7 @@ impl HouseholdSystem {
             &catalog,
             &foot_components,
             &car_components,
+            service_funding_by_building,
         );
         let (home_option_keys, current_job_keys) =
             collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
@@ -236,6 +255,7 @@ impl HouseholdSystem {
             &agents.pathfind_count,
             max_walk_commute_speed,
             max_car_commute_speed,
+            service_funding_by_building,
         );
         for (key, result) in new_route_entries {
             self.workplace_route_cache.insert(key, result);
@@ -259,7 +279,77 @@ impl HouseholdSystem {
             .collect();
         plans.sort_unstable_by_key(|plan| plan.agent_idx);
         for plan in plans {
-            apply_workplace_plan(plan, agents, allocator, &catalog);
+            apply_workplace_plan(
+                plan,
+                agents,
+                allocator,
+                &catalog,
+                service_funding_by_building,
+            );
+        }
+    }
+
+    pub(crate) fn enforce_service_funding_staffing(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        service_funding_by_building: &[f32],
+    ) {
+        if service_funding_by_building.is_empty() {
+            return;
+        }
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
+        let funded_capacity_by_building: Vec<u32> = allocator
+            .buildings
+            .par_iter()
+            .enumerate()
+            .map(|(building_idx, building)| {
+                let Some(profile) = active_work_profile(&catalog, building) else {
+                    return u32::MAX;
+                };
+                if profile.utility_service.as_deref() != Some(UTILITY_SERVICE_POWER) {
+                    return u32::MAX;
+                }
+                let capacity = active_worker_capacity_for_profile(&catalog, building, profile);
+                service_funded_worker_capacity(
+                    capacity,
+                    profile,
+                    building_idx,
+                    service_funding_by_building,
+                )
+            })
+            .collect();
+        let mut kept_by_building = vec![0u32; allocator.buildings.len()];
+        for agent_idx in 0..agents.len() {
+            let work = agents.work_building[agent_idx];
+            if work >= funded_capacity_by_building.len() {
+                continue;
+            }
+            let funded_capacity = funded_capacity_by_building[work];
+            if funded_capacity == u32::MAX {
+                continue;
+            }
+            if !age_group_can_work(agents.age_group[agent_idx]) {
+                continue;
+            }
+            if kept_by_building[work] < funded_capacity {
+                kept_by_building[work] = kept_by_building[work].saturating_add(1);
+                continue;
+            }
+            agents.assign_work_building(agent_idx, usize::MAX, 0);
+            agents.consecutive_unpaid_days[agent_idx] = 0;
+        }
+        for (building_idx, building) in allocator.buildings.iter_mut().enumerate() {
+            if funded_capacity_by_building
+                .get(building_idx)
+                .copied()
+                .unwrap_or(u32::MAX)
+                != u32::MAX
+            {
+                building.worker_count = kept_by_building[building_idx];
+            }
         }
     }
 
@@ -271,10 +361,28 @@ impl HouseholdSystem {
         income_tax_rate: f32,
         treasury_balance: &mut f64,
     ) -> f32 {
+        self.pay_daily_wages_with_service_funding(
+            agents,
+            allocator,
+            income_tax_rate,
+            treasury_balance,
+            &[],
+        )
+    }
+
+    pub(crate) fn pay_daily_wages_with_service_funding(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+        income_tax_rate: f32,
+        treasury_balance: &mut f64,
+        service_funding_by_building: &[f32],
+    ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         eject_inactive_work_assignments(agents, allocator, &catalog);
+        self.last_city_service_wage_cost = 0.0;
         let city_funded_by_building: Vec<bool> = allocator
             .buildings
             .iter()
@@ -283,9 +391,19 @@ impl HouseholdSystem {
         let active_worker_capacity_by_building: Vec<u32> = allocator
             .buildings
             .par_iter()
-            .map(|building| {
+            .enumerate()
+            .map(|(building_idx, building)| {
                 active_work_profile(&catalog, building)
-                    .map(|profile| active_worker_capacity_for_profile(&catalog, building, profile))
+                    .map(|profile| {
+                        let capacity =
+                            active_worker_capacity_for_profile(&catalog, building, profile);
+                        service_funded_worker_capacity(
+                            capacity,
+                            profile,
+                            building_idx,
+                            service_funding_by_building,
+                        )
+                    })
                     .unwrap_or(0)
             })
             .collect();
@@ -347,6 +465,7 @@ impl HouseholdSystem {
                 let net_wage = plan.wage - income_tax;
                 if city_funded {
                     *treasury_balance -= plan.wage as f64;
+                    self.last_city_service_wage_cost += plan.wage;
                 } else {
                     allocator.buildings[plan.work_building].operating_budget -= plan.wage;
                 }
@@ -539,6 +658,7 @@ fn apply_workplace_plan(
     agents: &mut AgentSystem,
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
+    service_funding_by_building: &[f32],
 ) {
     if plan.agent_idx >= agents.len()
         || agents.transit[plan.agent_idx] != TRANSIT_IN_BUILDING
@@ -586,6 +706,12 @@ fn apply_workplace_plan(
         let average_daily_wage = economy_profile.average_daily_wage();
         let worker_capacity =
             active_worker_capacity_for_profile(catalog, building, economy_profile);
+        let worker_capacity = service_funded_worker_capacity(
+            worker_capacity,
+            economy_profile,
+            job,
+            service_funding_by_building,
+        );
         if worker_capacity == 0 {
             continue;
         }
@@ -712,6 +838,7 @@ impl JobSupplySnapshot {
         catalog: &RuntimeEconomyCatalog,
         foot_components: &ModeComponentIndex,
         car_components: &ModeComponentIndex,
+        service_funding_by_building: &[f32],
     ) -> Self {
         let mut entries: Vec<_> = allocator
             .buildings
@@ -733,6 +860,12 @@ impl JobSupplySnapshot {
                 let average_daily_wage = profile.average_daily_wage();
                 let worker_capacity =
                     active_worker_capacity_for_profile(catalog, building, profile);
+                let worker_capacity = service_funded_worker_capacity(
+                    worker_capacity,
+                    profile,
+                    idx,
+                    service_funding_by_building,
+                );
                 if worker_capacity == 0 {
                     return None;
                 }
@@ -868,6 +1001,7 @@ fn build_home_job_options(
     pathfind_count: &AtomicU32,
     max_walk_commute_speed: f32,
     max_car_commute_speed: f32,
+    service_funding_by_building: &[f32],
 ) -> (
     BTreeMap<HomeJobOptionsKey, HomeJobOptions>,
     BTreeMap<CurrentJobOptionKey, HomeJobOption>,
@@ -940,6 +1074,7 @@ fn build_home_job_options(
                 exact_entrance_cache_available,
                 &mut route_entries,
                 &mut route_entry_count,
+                service_funding_by_building,
             );
             CurrentJobOptionBuild {
                 key,
@@ -1149,6 +1284,7 @@ fn build_current_job_option_for_key(
     exact_entrance_cache_available: bool,
     new_route_entries: &mut [WorkplaceRouteCacheEntry; JOB_ROUTE_SCAN_CANDIDATES],
     new_route_entry_count: &mut usize,
+    service_funding_by_building: &[f32],
 ) -> Option<HomeJobOption> {
     let (home_key, work_idx) = key;
     let work = allocator.buildings.get(work_idx)?;
@@ -1168,6 +1304,12 @@ fn build_current_job_option_for_key(
     )?;
     let average_daily_wage = profile.average_daily_wage();
     let worker_capacity = active_worker_capacity_for_profile(catalog, work, profile);
+    let worker_capacity = service_funded_worker_capacity(
+        worker_capacity,
+        profile,
+        work_idx,
+        service_funding_by_building,
+    );
     let city_funded = allocator.is_city_service_building(work);
     let budget_capacity = if city_funded {
         worker_capacity

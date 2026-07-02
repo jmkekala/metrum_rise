@@ -102,6 +102,7 @@ impl DemandSystem {
     }
 
     /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
+    #[cfg(test)]
     pub(crate) fn run_hourly_pass(
         &mut self,
         allocator: &BuildingAllocator,
@@ -109,6 +110,26 @@ impl DemandSystem {
         graph: &RegionGraph,
         zoning: &ZoningSystem,
         treasury_balance: f64,
+    ) {
+        self.run_hourly_pass_with_service_funding(
+            allocator,
+            households,
+            graph,
+            zoning,
+            treasury_balance,
+            &[],
+        );
+    }
+
+    /// Refreshes RCI telemetry and advances hourly demand using the supplied service funding state.
+    pub(crate) fn run_hourly_pass_with_service_funding(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+        treasury_balance: f64,
+        service_funding_by_building: &[f32],
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -121,6 +142,7 @@ impl DemandSystem {
             catalog.as_ref(),
             economy_tuning.as_ref(),
             treasury_balance,
+            service_funding_by_building,
         );
         let residential_occupants = ResidentialOccupantSnapshot::from_runtime_with_catalog(
             allocator,
@@ -262,6 +284,7 @@ impl DemandSystem {
     }
 
     /// Rebuilds the daily settled household-removal output from the post-settlement snapshot.
+    #[cfg(test)]
     pub(crate) fn run_daily_pass(
         &mut self,
         allocator: &BuildingAllocator,
@@ -269,6 +292,26 @@ impl DemandSystem {
         graph: &RegionGraph,
         _zoning: &ZoningSystem,
         treasury_balance: f64,
+    ) {
+        self.run_daily_pass_with_service_funding(
+            allocator,
+            households,
+            graph,
+            _zoning,
+            treasury_balance,
+            &[],
+        );
+    }
+
+    /// Rebuilds daily household-removal output using the supplied service funding state.
+    pub(crate) fn run_daily_pass_with_service_funding(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        _zoning: &ZoningSystem,
+        treasury_balance: f64,
+        service_funding_by_building: &[f32],
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -281,6 +324,7 @@ impl DemandSystem {
             catalog.as_ref(),
             economy_tuning.as_ref(),
             treasury_balance,
+            service_funding_by_building,
         );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
         self.households_to_admit_today = 0;

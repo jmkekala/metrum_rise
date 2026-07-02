@@ -42,6 +42,55 @@ fn register_test_asset(
     register_family_asset(allocator, asset_id, zone_type, None, 1)
 }
 
+fn register_test_utility_asset(
+    allocator: &mut BuildingAllocator,
+    asset_id: &str,
+    profile_id: &str,
+) -> String {
+    allocator.registry.register(
+        "test",
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test Utility".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
+            }],
+            site_surfaces: vec![],
+            building: Some(BuildingData {
+                flat_size_m2: None,
+                placement_mode: PlacementMode::Explicit,
+                zone_type: None,
+                density: None,
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity: None,
+                worker_capacity: Some(20),
+                service_class: Some("power".to_owned()),
+                economy_profile: Some(profile_id.to_owned()),
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        },
+        String::new(),
+    );
+    format!("test:{asset_id}")
+}
+
 fn register_family_asset(
     allocator: &mut BuildingAllocator,
     asset_id: &str,
@@ -181,6 +230,7 @@ fn building(
         cell_y: 0,
         occupancy,
         worker_count,
+        service_funding_override: -1.0,
         asset_id,
         level: 1,
         construction_total_hours: 0,
@@ -332,6 +382,9 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         existing_unemployed_member_count: 0,
         open_job_slots: 0,
         average_open_job_wage_per_day: 0.0,
+        physical_worker_capacity: 0,
+        funded_worker_capacity: 0,
+        open_jobs_unfunded: 0,
         output_absorption: OutputAbsorptionContext::empty(0),
         commercial_owa_dependency: 0.0,
         commercial_owa_input_value: 0.0,
@@ -1376,6 +1429,64 @@ fn open_jobs_make_move_in_viable_without_benefits() {
         inputs.admission_pressure > 0.9,
         "budget-backed open jobs should make the candidate household viable without benefit treasury"
     );
+}
+
+#[test]
+fn service_funding_limits_open_jobs_in_demand_snapshot() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let mut allocator = BuildingAllocator::new();
+    let power_asset =
+        register_test_utility_asset(&mut allocator, "funded_power", "power_plant_basic");
+    let power_profile = catalog
+        .profile_for_id("power_plant_basic")
+        .expect("power profile");
+    let mut power = building(ZoneType::None, 0.0, 0, 2, power_asset);
+    power.economy_profile_runtime_id = power_profile.runtime_id;
+    allocator.buildings.push(power);
+
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+
+    let fully_funded = DailyDemandSnapshot::from_runtime_with_catalog(
+        &allocator,
+        &households,
+        &graph,
+        &config,
+        catalog.as_ref(),
+        tuning.as_ref(),
+        100_000.0,
+        &[1.0],
+    );
+    assert_eq!(
+        fully_funded.open_job_slots,
+        power_profile.worker_capacity - 2
+    );
+    assert_eq!(fully_funded.open_jobs_unfunded, 0);
+
+    let defunded = DailyDemandSnapshot::from_runtime_with_catalog(
+        &allocator,
+        &households,
+        &graph,
+        &config,
+        catalog.as_ref(),
+        tuning.as_ref(),
+        100_000.0,
+        &[0.1],
+    );
+
+    assert_eq!(
+        defunded.physical_worker_capacity,
+        power_profile.worker_capacity
+    );
+    assert_eq!(defunded.funded_worker_capacity, 2);
+    assert_eq!(
+        defunded.open_jobs_unfunded,
+        power_profile.worker_capacity - 2
+    );
+    assert_eq!(defunded.open_job_slots, 0);
+    assert_eq!(defunded.open_job_household_pull, 0.0);
 }
 
 #[test]

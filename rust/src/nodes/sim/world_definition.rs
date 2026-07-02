@@ -513,6 +513,9 @@ impl SimCore {
         self.allocator = allocator;
 
         self.treasury = CityTreasury::new(startup_treasury_balance());
+        self.service_policy = Default::default();
+        self.budget_history.clear();
+        self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
         self.undo_stack.clear();
         self.world_lake_fills.clear();
@@ -998,6 +1001,9 @@ mod tests {
             logistics: ShipmentSystem::new(),
             config,
             treasury: CityTreasury::new(0.0),
+            service_policy: Default::default(),
+            budget_history: VecDeque::new(),
+            budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,
             undo_stack: VecDeque::new(),
             world_lake_fills: Vec::new(),

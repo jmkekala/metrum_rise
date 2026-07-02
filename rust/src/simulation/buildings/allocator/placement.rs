@@ -1308,6 +1308,7 @@ impl BuildingAllocator {
             depth_cells: placement.depth_cells as u16,
             occupancy: 0,
             worker_count: 0,
+            service_funding_override: -1.0,
             asset_id: placement.asset_id,
             level: placement.initial_level,
             construction_total_hours: construction_duration_hours,

@@ -23,6 +23,9 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) candidate_household_size: f32,
     pub(super) candidate_effective_workers: f32,
     pub(super) open_job_slots: u32,
+    pub(super) physical_worker_capacity: u32,
+    pub(super) funded_worker_capacity: u32,
+    pub(super) open_jobs_unfunded: u32,
     pub(super) existing_unemployed_member_count: u32,
     pub(super) expected_employed_members: f32,
     pub(super) expected_unemployed_members: f32,
@@ -157,7 +160,8 @@ impl DemandSystem {
              incoming_need={:.2} job_pull={:.2} \
              afford={:.2} accept={:.2} runway={:.2} runway_factor={:.2} \
              build_accept={:.2} build_runway={:.2} build_runway_factor={:.2} build_viability={:.2} \
-             candidate_size={:.1} workers={:.1} open_jobs={} existing_unemployed={} \
+             candidate_size={:.1} workers={:.1} open_jobs={} physical_worker_capacity={} \
+             funded_worker_capacity={} open_jobs_unfunded={} existing_unemployed={} \
              expected_employed={:.1} expected_unemployed={:.1} entry_wage={:.1} wage_income={:.1} \
              benefit_rel={:.2} existing_benefit_claim={:.1} candidate_benefit_claim={:.1} \
              total_benefit_claim={:.1} benefit_income={:.1} starter={:.1} daily_cost={:.1} \
@@ -186,6 +190,9 @@ impl DemandSystem {
             diagnostics.candidate_household_size,
             diagnostics.candidate_effective_workers,
             diagnostics.open_job_slots,
+            diagnostics.physical_worker_capacity,
+            diagnostics.funded_worker_capacity,
+            diagnostics.open_jobs_unfunded,
             diagnostics.existing_unemployed_member_count,
             diagnostics.expected_employed_members,
             diagnostics.expected_unemployed_members,

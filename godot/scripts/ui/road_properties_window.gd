@@ -5,6 +5,7 @@
 extends Node
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
+const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 var _simulation_node: Node
 var _select_tool: Node
@@ -27,6 +28,7 @@ func _build_window() -> void:
 	_window = Window.new()
 	_window.title = "Road Properties"
 	_window.size = Vector2i(320, 260)
+	_window.min_size = Vector2i(280, 220)
 	_window.unresizable = false
 	_window.exclusive = false
 	_window.visible = false
@@ -70,6 +72,7 @@ func _build_window() -> void:
 	root_vbox.add_child(_no_build_check)
 
 	add_child(_window)
+	WindowResizeHandles.install(_window)
 	_window.hide()
 
 func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO) -> void:

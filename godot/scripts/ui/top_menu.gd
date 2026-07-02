@@ -6,6 +6,8 @@ extends CanvasLayer
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
+const EconomyOverviewWindow = preload("res://scripts/ui/economy_overview.gd")
+const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 const BAR_HEIGHT := 28
 
@@ -296,17 +298,7 @@ func _on_city_menu_pressed(id: int) -> void:
 				Vector2i(420, 220)
 			))
 		ActionId.CITY_ECONOMY:
-			_open_window(_ensure_text_window(
-				"economy_overview",
-				"Economy Overview",
-				[
-					"Placeholder window",
-					"",
-					"Commercial and industrial operating budgets,",
-					"OWA ratios, and freight-facing signals belong here."
-				],
-				Vector2i(440, 220)
-			))
+			_open_window(_ensure_economy_overview_window())
 		ActionId.CITY_DEMAND:
 			_open_window(_ensure_text_window(
 				"demand_overview",
@@ -421,6 +413,7 @@ func _ensure_text_window(key: String, title: String, lines: Array[String], size:
 	var window := Window.new()
 	window.title = title
 	window.size = size
+	window.min_size = Vector2i(220, 160)
 	window.unresizable = false
 	window.exclusive = false
 	window.close_requested.connect(window.hide)
@@ -451,6 +444,20 @@ func _ensure_text_window(key: String, title: String, lines: Array[String], size:
 	margin.add_child(text)
 
 	add_child(window)
+	WindowResizeHandles.install(window)
+	_windows[key] = window
+	return window
+
+func _ensure_economy_overview_window() -> Window:
+	var key := "economy_overview"
+	if _windows.has(key):
+		return _windows[key]
+
+	var window: Window = EconomyOverviewWindow.new()
+	window.simulation_node = _scene_root.get_node_or_null("SimulationNode")
+	add_child(window)
+	WindowResizeHandles.install(window)
+	window.hide()
 	_windows[key] = window
 	return window
 
