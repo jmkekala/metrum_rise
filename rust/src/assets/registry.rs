@@ -330,6 +330,7 @@ mod tests {
                 density: Some("low".to_owned()),
                 lot_width_cells: w,
                 lot_depth_cells: d,
+                frontage_forward: None,
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,

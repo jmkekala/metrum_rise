@@ -24,6 +24,13 @@ use std::sync::atomic::AtomicU32;
 
 const BUILDING_REPLAN_DELAY_S: f32 = 30.0;
 const NETWORK_REPLAN_DELAY_S: f32 = 5.0;
+const WALK_PHASE_CYCLES_PER_METER: f32 = 0.8;
+const WALK_PHASE_MAX_ADVANCE_PER_TICK: f32 = 0.025;
+
+#[inline(always)]
+fn walk_phase_advance(distance_m: f32) -> f32 {
+    (distance_m.max(0.0) * WALK_PHASE_CYCLES_PER_METER).min(WALK_PHASE_MAX_ADVANCE_PER_TICK)
+}
 
 fn transit_mode_label(mode: u8) -> &'static str {
     if mode == MODE_CAR { "car" } else { "foot" }
@@ -53,9 +60,10 @@ impl AgentSystem {
         unsafe {
             let s_cur_n = &slices.cur_n;
             let s_tmode = &slices.tmode;
-            let s_speed = &slices.speed;
             let s_walk_phase = &slices.walk_phase;
             let s_transit = &slices.transit;
+            let s_pos_x = &slices.pos_x;
+            let s_pos_y = &slices.pos_y;
             let s_lane_change_from_lane = &slices.lane_change_from_lane;
             let s_lane_change_start_d = &slices.lane_change_start_d;
             let s_lane_change_length = &slices.lane_change_length;
@@ -69,13 +77,9 @@ impl AgentSystem {
                 *s_overtake_blocked_time.get_mut(i) = 0.0;
             }
 
-            // Update walk animation phase if not in a vehicle.
-            if *s_tmode.get(i) != MODE_CAR {
-                let spd = *s_speed.get(i);
-                let phase = *s_walk_phase.get(i);
-                // Cycle: about 1 time per meter traveled.
-                *s_walk_phase.get_mut(i) = (phase + (spd.abs() * 0.8 * delta)) % 1.0;
-            }
+            let was_walking = *s_tmode.get(i) != MODE_CAR;
+            let previous_x = *s_pos_x.get(i);
+            let previous_z = *s_pos_y.get(i);
 
             match *s_transit.get(i) {
                 TRANSIT_IN_BUILDING => {
@@ -139,6 +143,37 @@ impl AgentSystem {
                     *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                 }
             }
+
+            // Visual-only state: derive the walk cycle from actual movement after
+            // the FSM has advanced the agent. This keeps local access walking and
+            // foot-lane movement animated even when `speed` is not persisted.
+            if was_walking && *s_tmode.get(i) != MODE_CAR {
+                let dx = *s_pos_x.get(i) - previous_x;
+                let dz = *s_pos_y.get(i) - previous_z;
+                let distance_m = dx.hypot(dz);
+                let phase_delta = walk_phase_advance(distance_m);
+                if phase_delta > 0.0 {
+                    let phase = *s_walk_phase.get(i);
+                    *s_walk_phase.get_mut(i) = (phase + phase_delta) % 1.0;
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WALK_PHASE_MAX_ADVANCE_PER_TICK, walk_phase_advance};
+    use crate::config::AGENT_WALK_SPEED_MS;
+
+    #[test]
+    fn walk_phase_advance_caps_fast_forwarded_ticks() {
+        let realtime_delta = 1.0 / 60.0;
+        let normal = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta);
+        assert!(normal > 0.0);
+        assert!(normal < WALK_PHASE_MAX_ADVANCE_PER_TICK);
+
+        let fast_forward = walk_phase_advance(AGENT_WALK_SPEED_MS * realtime_delta * 60.0);
+        assert_eq!(fast_forward, WALK_PHASE_MAX_ADVANCE_PER_TICK);
     }
 }

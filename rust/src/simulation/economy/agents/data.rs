@@ -135,7 +135,7 @@ pub struct Agent {
 
     /// Variant for pedestrian models (0-3: Male A, Male B, Female A, Female B).
     pub pedestrian_type: u8,
-    /// Current cycle of the walk animation [0, 1].
+    /// Visual-only current cycle of the walk animation in `[0, 1]`.
     pub walk_phase: f32,
 }
 

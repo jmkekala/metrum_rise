@@ -5,7 +5,7 @@ use crate::assets::{
 };
 use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::entrance::{
-    building_local_xz_basis, building_local_xz_pos, main_entrance_anchor,
+    building_local_xz_basis, building_local_xz_pos,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::network::graph::RegionGraph;
@@ -208,9 +208,44 @@ impl BuildingAllocator {
     }
 
     pub(crate) fn sample_building_site_height(&self, pos: Vector2) -> Option<f32> {
-        self.site_candidate_indices_for_bounds(pos.x, pos.y, pos.x, pos.y)
-            .into_iter()
-            .find_map(|idx| self.building_sites.get(idx)?.height_at(pos))
+        if self.dirty_index
+            || self.building_sites.len() != self.buildings.len()
+            || self.building_chunks.is_empty()
+        {
+            return self
+                .building_sites
+                .iter()
+                .find_map(|site| site.height_at(pos));
+        }
+
+        let margin_m = self.max_site_radius_m.max(0.0);
+        let chunk_size = RegionGraph::CHUNK_SIZE;
+        let min_chunk_x = ((pos.x - margin_m) / chunk_size).floor() as i32;
+        let max_chunk_x = ((pos.x + margin_m) / chunk_size).floor() as i32;
+        let min_chunk_z = ((pos.y - margin_m) / chunk_size).floor() as i32;
+        let max_chunk_z = ((pos.y + margin_m) / chunk_size).floor() as i32;
+
+        let mut best_idx = usize::MAX;
+        let mut best_height = None;
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                for &idx in indices {
+                    if idx >= best_idx || idx >= self.building_sites.len() {
+                        continue;
+                    }
+                    let Some(height) = self.building_sites[idx].height_at(pos) else {
+                        continue;
+                    };
+                    best_idx = idx;
+                    best_height = Some(height);
+                }
+            }
+        }
+
+        best_height
     }
 
     pub(crate) fn raycast_building_site_surface(
@@ -371,13 +406,12 @@ impl BuildingAllocator {
         building: &Building,
         zone_cell_m: f32,
     ) -> BuildingSiteClient {
-        let anchor_forward = self
+        let frontage_forward = self
             .registry
             .get(&building.asset_id)
-            .and_then(|entry| main_entrance_anchor(&entry.manifest.anchors))
-            .map(|anchor| anchor.forward)
+            .map(|entry| entry.manifest.building_frontage_forward())
             .unwrap_or(DEFAULT_ANCHOR_FORWARD);
-        let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, anchor_forward);
+        let (basis_x, basis_z) = building_local_xz_basis(building.facing_dir, frontage_forward);
         let center = Vector2::new(building.center_x, building.center_y);
         let lot_half_width = building.width_cells as f32 * zone_cell_m * 0.5;
         let lot_half_depth = building.depth_cells as f32 * zone_cell_m * 0.5;
@@ -414,7 +448,7 @@ impl BuildingAllocator {
                                 building_local_xz_pos(
                                     building,
                                     [vertex[0], 0.0, vertex[1]],
-                                    anchor_forward,
+                                    frontage_forward,
                                 )
                             })
                             .collect(),
@@ -442,13 +476,12 @@ impl BuildingAllocator {
     ) -> Vec<Vector2> {
         let lot_half_width = width_cells as f32 * zone_cell_m * 0.5;
         let lot_half_depth = depth_cells as f32 * zone_cell_m * 0.5;
-        let anchor_forward = self
+        let frontage_forward = self
             .registry
             .get(asset_id)
-            .and_then(|entry| main_entrance_anchor(&entry.manifest.anchors))
-            .map(|anchor| anchor.forward)
+            .map(|entry| entry.manifest.building_frontage_forward())
             .unwrap_or(DEFAULT_ANCHOR_FORWARD);
-        let (basis_x, basis_z) = building_local_xz_basis(facing_dir, anchor_forward);
+        let (basis_x, basis_z) = building_local_xz_basis(facing_dir, frontage_forward);
         let footprint_local = self
             .registry
             .get(asset_id)
@@ -510,9 +543,7 @@ fn required_flat_support_footprint_local(
 }
 
 fn asset_frontage_dir_local(manifest: &AssetManifest) -> Vector2 {
-    let front = main_entrance_anchor(&manifest.anchors)
-        .map(|anchor| anchor.forward)
-        .unwrap_or(DEFAULT_ANCHOR_FORWARD);
+    let front = manifest.building_frontage_forward();
     let front = Vector2::new(front[0], front[2]);
     if front.length_squared() > f32::EPSILON {
         front.normalized()
@@ -1634,6 +1665,7 @@ mod tests {
                 density: None,
                 lot_width_cells: 4,
                 lot_depth_cells: 3,
+                frontage_forward: None,
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,

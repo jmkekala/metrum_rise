@@ -138,6 +138,9 @@ pub struct ExportParams {
     /// Footprint depth in 10 m zone cells away from the road.
     #[serde(default)]
     pub lot_depth_cells: u16,
+    /// Asset-local direction of the road-facing frontage.
+    #[serde(default = "default_frontage_forward")]
+    pub frontage_forward: [f32; 3],
     /// Minimum accepted zoned width for this building.
     #[serde(default)]
     pub min_zone_width_cells: Option<u16>,
@@ -182,6 +185,10 @@ fn default_license() -> String {
 }
 fn default_level() -> u8 {
     1
+}
+
+fn default_frontage_forward() -> [f32; 3] {
+    [0.0, 0.0, 1.0]
 }
 
 fn default_part_scale() -> f32 {
@@ -271,6 +278,8 @@ fn build_asset_toml(p: &ExportParams) -> String {
             }
             out.push_str(&format!("lot_width_cells = {}\n", p.lot_width_cells));
             out.push_str(&format!("lot_depth_cells = {}\n", p.lot_depth_cells));
+            let [fx, fy, fz] = p.frontage_forward;
+            out.push_str(&format!("frontage_forward = [{fx}, {fy}, {fz}]\n"));
             if let Some(min_width) = p.min_zone_width_cells {
                 if min_width > 0 && min_width != p.lot_width_cells {
                     out.push_str(&format!("min_zone_width_cells = {min_width}\n"));
@@ -751,6 +760,7 @@ pub fn get_asset_manifest_json_internal(
         };
         obj["lot_width_cells"] = serde_json::json!(b.lot_width_cells);
         obj["lot_depth_cells"] = serde_json::json!(b.lot_depth_cells);
+        obj["frontage_forward"] = serde_json::json!(m.building_frontage_forward());
         obj["min_zone_width_cells"] = serde_json::json!(b.min_zone_width_cells);
         obj["min_zone_depth_cells"] = serde_json::json!(b.min_zone_depth_cells);
         obj["level"] = serde_json::json!(b.level);
@@ -856,6 +866,48 @@ mod tests {
                 .join("asset.toml")
                 .exists()
         );
+    }
+
+    #[test]
+    fn export_writes_frontage_forward_separately_from_entrance_forward() {
+        let dir = std::env::temp_dir().join("metrum_export_frontage_forward");
+        let _ = std::fs::remove_dir_all(&dir);
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.residential.frontage_split",
+            "display_name": "Frontage Split",
+            "placement_mode": "zoned_private",
+            "zone_type": "residential",
+            "density": "low",
+            "lot_width_cells": 2,
+            "lot_depth_cells": 2,
+            "frontage_forward": [1.0, 0.0, 0.0],
+            "level": 1,
+            "household_capacity": 6,
+            "mesh_parts": one_mesh_part_json(),
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 2.0],
+                "forward": [0.0, 0.0, -1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(result.is_empty(), "expected success, got: {result}");
+
+        let asset_toml = std::fs::read_to_string(
+            dir.join("assets")
+                .join("building.residential.frontage_split")
+                .join("asset.toml"),
+        )
+        .unwrap();
+        assert!(asset_toml.contains("frontage_forward = [1, 0, 0]"));
+        assert!(asset_toml.contains("forward = [0, 0, -1]"));
     }
 
     #[test]

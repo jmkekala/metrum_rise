@@ -958,17 +958,11 @@ impl BuildingAllocator {
         if edge.deleted || edge.physical_length <= 1e-6 || edge.physical_geometry.len() < 2 {
             return Vec::new();
         };
-        let Some(main_anchor) =
-            crate::simulation::buildings::allocator::entrance::main_entrance_anchor(
-                &entry.manifest.anchors,
-            )
-        else {
-            return Vec::new();
-        };
+        let frontage_forward = entry.manifest.building_frontage_forward();
         let (basis_x, basis_z) =
             crate::simulation::buildings::allocator::entrance::building_local_xz_basis(
                 placement.facing_dir,
-                main_anchor.forward,
+                frontage_forward,
             );
         let frontage_center = placement.center_2d
             + placement.facing_dir * (placement.depth_cells as f32 * placement.zone_cell_m * 0.5);
@@ -1143,20 +1137,15 @@ impl BuildingAllocator {
     }
 
     fn placement_site_corners(&self, placement: &ResolvedPlacement) -> [Vector2; 4] {
-        let anchor_forward = self
+        let frontage_forward = self
             .registry
             .get(&placement.asset_id)
-            .and_then(|entry| {
-                crate::simulation::buildings::allocator::entrance::main_entrance_anchor(
-                    &entry.manifest.anchors,
-                )
-            })
-            .map(|anchor| anchor.forward)
+            .map(|entry| entry.manifest.building_frontage_forward())
             .unwrap_or([0.0, 0.0, 1.0]);
         let (basis_x, basis_z) =
             crate::simulation::buildings::allocator::entrance::building_local_xz_basis(
                 placement.facing_dir,
-                anchor_forward,
+                frontage_forward,
             );
         let half_width = placement.width_cells as f32 * placement.zone_cell_m * 0.5;
         let half_depth = placement.depth_cells as f32 * placement.zone_cell_m * 0.5;

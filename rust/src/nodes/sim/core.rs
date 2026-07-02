@@ -9,11 +9,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::config::HEIGHT_SCALE;
 use crate::debug_log;
 use crate::nodes::sim::render::lane_pose::sample_lane_pose;
 use crate::nodes::sim::render::water::{CachedWaterPatchMesh, WaterPatchMeshCacheKey};
 use crate::nodes::sim::road_tool::RoadGhostSnapIndex;
-use godot::prelude::{Vector3, godot_error};
+use godot::prelude::{Vector2, Vector3, godot_error};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -32,8 +33,11 @@ use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::{Lane, LaneType};
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
+use crate::simulation::network::surface::{
+    CURB_STEP_HEIGHT_M, RoadPreviewValidation, RoadSurfaceSystem,
+};
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
 };
@@ -66,6 +70,85 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
     }
 }
 
+fn pedestrian_lane_surface_height(lane: &Lane, lane_y: f32) -> f32 {
+    if lane.lane_type == LaneType::Foot
+        && lane.edge_id != usize::MAX
+        && lane.lane_idx.unsigned_abs() == 100
+    {
+        lane_y + CURB_STEP_HEIGHT_M
+    } else {
+        lane_y
+    }
+}
+
+fn pedestrian_needs_access_surface(transit: u8) -> bool {
+    use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
+
+    transit == TRANSIT_ACCESS_EGRESS || transit == TRANSIT_ACCESS_INGRESS
+}
+
+fn pedestrian_access_surface_height(core: &SimCore, world_x: f32, world_z: f32) -> f32 {
+    core.transit_network
+        .road_surface
+        .sample_visible_surface_height(&core.region_graph, &core.heightmap, world_x, world_z)
+        .or_else(|| {
+            core.allocator
+                .sample_building_site_height(Vector2::new(world_x, world_z))
+        })
+        .unwrap_or_else(|| {
+            core.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CURB_STEP_HEIGHT_M, pedestrian_lane_surface_height, pedestrian_needs_access_surface,
+    };
+    use crate::simulation::economy::agents::{
+        TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
+    };
+    use crate::simulation::network::lanes::{Lane, LaneType};
+
+    #[test]
+    fn pedestrian_lane_surface_height_matches_lane_semantics() {
+        let sidewalk = Lane {
+            edge_id: 7,
+            lane_idx: 100,
+            lane_type: LaneType::Foot,
+            ..Lane::default()
+        };
+        assert_eq!(
+            pedestrian_lane_surface_height(&sidewalk, 4.0),
+            4.0 + CURB_STEP_HEIGHT_M
+        );
+
+        let crosswalk = Lane {
+            edge_id: usize::MAX,
+            is_crosswalk: true,
+            lane_type: LaneType::Foot,
+            ..Lane::default()
+        };
+        assert_eq!(pedestrian_lane_surface_height(&crosswalk, 4.0), 4.0);
+
+        let footpath = Lane {
+            edge_id: 7,
+            lane_idx: 0,
+            lane_type: LaneType::Foot,
+            ..Lane::default()
+        };
+        assert_eq!(pedestrian_lane_surface_height(&footpath, 4.0), 4.0);
+    }
+
+    #[test]
+    fn pedestrian_access_surface_is_limited_to_door_transitions() {
+        assert!(pedestrian_needs_access_surface(TRANSIT_ACCESS_EGRESS));
+        assert!(pedestrian_needs_access_surface(TRANSIT_ACCESS_INGRESS));
+        assert!(!pedestrian_needs_access_surface(TRANSIT_NETWORK));
+        assert!(!pedestrian_needs_access_surface(TRANSIT_IN_BUILDING));
+    }
+}
+
 /// Currency cost per meter of new road laid, deducted from the city treasury at placement.
 pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 /// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
@@ -74,6 +157,7 @@ pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
 /// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
 pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
+const PEDESTRIAN_SURFACE_CLEARANCE_M: f32 = 0.02;
 /// Stable service policy id for the city electricity service.
 pub(crate) const SERVICE_POLICY_ELECTRICITY: &str = "electricity";
 /// Number of completed daily budget entries kept for UI trend graphs.
@@ -1882,6 +1966,7 @@ impl SimCore {
             let mut world_x = self.agents.pos_x[i];
             let mut world_z = self.agents.pos_y[i];
             let mut lane_pose = None;
+            let mut pedestrian_lane_surface_y = None;
             let lane_id = self.agents.current_lane_id[i];
             if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
                 let lane = &self.transit_network.lane_system.lanes[lane_id];
@@ -1889,6 +1974,7 @@ impl SimCore {
                 if let Some((pos, _)) = lane_pose {
                     world_x = pos.x;
                     world_z = pos.z;
+                    pedestrian_lane_surface_y = Some(pedestrian_lane_surface_height(lane, pos.y));
                 }
             }
 
@@ -1900,8 +1986,6 @@ impl SimCore {
             {
                 continue;
             }
-            let terrain_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
-
             if self.agents.transit_mode[i] != MODE_CAR {
                 // Pedestrian / walker — use variant MMI and oriented basis.
                 let p_type = self.agents.pedestrian_type[i];
@@ -1911,7 +1995,14 @@ impl SimCore {
                 let mut basis_x = Vector3::RIGHT;
                 let mut basis_y = Vector3::UP;
                 let mut basis_z = Vector3::BACK;
-                let world_y = terrain_y + 0.05; // small lift so feet clear terrain surface
+                let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
+                    if pedestrian_needs_access_surface(self.agents.transit[i]) {
+                        // Door-to-curb walkers are off-lane; keep this point query allocation-free.
+                        pedestrian_access_surface_height(self, world_x, world_z)
+                    } else {
+                        self.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE
+                    }
+                }) + PEDESTRIAN_SURFACE_CLEARANCE_M;
 
                 if let Some((_, tangent)) = lane_pose {
                     // GLTF export converts Blender -Y (character facing) to +Z, so the
@@ -1984,6 +2075,7 @@ impl SimCore {
                 let mut basis_x = Vector3::RIGHT;
                 let mut basis_y = Vector3::UP;
                 let mut basis_z = Vector3::BACK;
+                let terrain_y = self.heightmap.sample_height_world(world_x, world_z) * HEIGHT_SCALE;
                 let mut world_y = terrain_y + 0.02;
 
                 if let Some((pos, tangent)) = lane_pose {

@@ -72,15 +72,16 @@ static func site_ground_material() -> ShaderMaterial:
 static func site_asphalt_material() -> ShaderMaterial:
 	if _site_asphalt_material == null:
 		_site_asphalt_material = ShaderMaterial.new()
+		_site_asphalt_material.resource_name = "site_asphalt_matches_road"
 		_site_asphalt_material.shader = _load_shader(SITE_SURFACE_SHADER)
 		_apply_pbr_textures(_site_asphalt_material, ASPHALT_DIFF, ASPHALT_NORMAL, ASPHALT_ROUGH, ASPHALT_DISP)
 		_site_asphalt_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
 		_site_asphalt_material.set_shader_parameter("uv_scale", 0.05)
 		_site_asphalt_material.set_shader_parameter("macro_uv_scale", 0.007)
-		_site_asphalt_material.set_shader_parameter("macro_influence", 0.18)
-		_site_asphalt_material.set_shader_parameter("brightness", 1.45)
-		_site_asphalt_material.set_shader_parameter("albedo_floor", Vector3(0.24, 0.25, 0.24))
-		_site_asphalt_material.set_shader_parameter("floor_influence", 0.85)
+		_site_asphalt_material.set_shader_parameter("macro_influence", 0.4)
+		_site_asphalt_material.set_shader_parameter("brightness", 1.0)
+		_site_asphalt_material.set_shader_parameter("albedo_floor", Vector3(0.0, 0.0, 0.0))
+		_site_asphalt_material.set_shader_parameter("floor_influence", 0.0)
 	return _site_asphalt_material
 
 static func site_concrete_material() -> ShaderMaterial:

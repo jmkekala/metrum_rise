@@ -715,6 +715,9 @@ Legacy tool retirement rules:
 
 - Existing `tools/bake_vat_blend.py` / `tools/bake_vat.py` are transitional developer tooling and validation references until the self-contained replacement reaches parity. Do not delete them first and then discover the replacement disagrees on output format, orientation, or precision.
 - The replacement does not need byte-for-byte float identity with the legacy output.
+- The legacy Blender VAT baker supports same-file source clips, explicit action selection,
+  target-height normalization, stable vertex-ID UV output, and vertex-color material baking for
+  low-cost runtime crowd meshes.
 - Retire the legacy tools only when all of the following are true:
   - the previewed walk cycle is visually indistinguishable at expected gameplay camera distances
   - exported VAT textures and rest meshes preserve the same orientation and vertex-ID contract
@@ -739,9 +742,9 @@ Canonical local basis:
 - `+Z` = front / forward
 - `+X` = right
 
-Building assets should use canonical `+Z` frontage when practical. The exported `main` entrance
-anchor `forward` vector is still authoritative for runtime alignment, so imported meshes whose
-frontage is not yet canonical can be represented without pack-specific runtime fixes.
+Building assets should use canonical `+Z` frontage when practical. The exported
+`[building].frontage_forward` vector is authoritative for runtime building alignment, so imported
+meshes whose frontage is not yet canonical can be represented without pack-specific runtime fixes.
 
 Vehicle compatibility rule:
 
@@ -1277,6 +1280,8 @@ Runtime output rules:
 
 - V1 runtime output is a VAT-ready rest mesh plus baked animation textures.
 - V1 runtime packs store baked VAT outputs only and do not include character source clips or source meshes.
+- Runtime VAT rest meshes are normalized around a feet-centred origin at their authored target
+  height, with shipped adult pedestrians currently baked to `1.8 m`.
 - A far-distance SDF billboard descriptor is a later crowd LoD tier, not part of the primary v1 runtime path.
 - The bake path is self-contained from the modder's point of view: opening the shipped editor and pressing bake is enough.
 - The bake path does not depend on user-managed external tooling.
@@ -1415,7 +1420,7 @@ V1 inspector and viewport contract:
   live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
   preview loader uses the same import path as the final building preview so the picker cannot show
   a materially different model from the exported asset.
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
 - Building mesh parts can be moved on the X/Z plane by left-dragging the part in the preview
   viewport and rotated freely around Y by right-dragging it horizontally, with a light snap when the
   rotation is close to a 90-degree cardinal angle; the clicked part becomes the selected part and
@@ -1707,9 +1712,8 @@ Optional `[[anchors]]` table:
 - `name`: optional string. Building `entrance/main` requires `name = "main"`; parking and loading
   anchors normally omit names and are shown by deterministic type/index labels in the editor.
 - `position`: `[f32, f32, f32]`
-- `forward`: `[f32, f32, f32]`; for building `main` entrance anchors this is the asset-local
-  frontage direction that the runtime aligns to the placed building's road-facing direction.
-  Manifest validation rejects non-finite, zero, or non-unit vectors.
+- `forward`: `[f32, f32, f32]`; the anchor-local access/gizmo direction. Manifest validation
+  rejects non-finite, zero, or non-unit vectors.
 - `width_m`: optional positive float. Required for building `driveway`, `parking`, and
   `loading_bay` anchors.
 - `length_m`: optional positive float. Required for building `parking` and `loading_bay` anchors.
@@ -1896,8 +1900,9 @@ Building rules:
   resolves to a utility producer or processor for the corresponding runtime utility service. The
   `waste` asset-side service class corresponds to runtime `utility_service = "sewage"`.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
-- The `main` entrance anchor's `forward` vector defines the asset-local frontage direction used by
-  building placement, rendering, and entrance-cache derivation.
+- `[building].frontage_forward` defines the asset-local frontage direction used by building
+  placement, rendering, and entrance-cache derivation. Older assets that omit it fall back to the
+  `main` entrance anchor's `forward` vector.
 - Additional building-side site points use `type = "driveway"`, `type = "parking"`, or
   `type = "loading_bay"`, not a second generic `entrance` anchor.
 - Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
@@ -2001,6 +2006,7 @@ zone_type = "residential"
 density = "low"
 lot_width_cells = 3
 lot_depth_cells = 3
+frontage_forward = [0.0, 0.0, 1.0]
 min_zone_width_cells = 3
 min_zone_depth_cells = 3
 household_capacity = 6

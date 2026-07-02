@@ -35,6 +35,11 @@
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
 #                        reports, agent routing decisions, and visual traffic overlay labels.
+#   --pedestrian-vat-debug <mode>
+#   --pedestrian-vat-debug=<mode>
+#                        Pedestrian VAT material debug. Modes:
+#                        rest = no VAT animation, uv = vertex IDs,
+#                        off = VAT offset magnitude overlay.
 #   --debug-world-editor Alias for --debug world-editor
 #                        Shows world-editor create/open/save/tool activity (stdout)
 #   --debug-sim          Hourly simulation summaries (stdout)
@@ -57,6 +62,7 @@ VISUAL_DEBUG=0
 VISUAL_DEBUG_MODE="material"
 TERRAIN_VISUAL_DEBUG=0
 TERRAIN_VISUAL_DEBUG_MODE="patch"
+PEDESTRIAN_VAT_DEBUG_MODE=""
 DEBUG_CATEGORY=""
 GODOT_ENGINE_ARGS=()
 GODOT_ARGS=()
@@ -94,6 +100,16 @@ while [ $i -le $# ]; do
         GODOT_ENGINE_ARGS+=("$arg")
     elif [ "$arg" = "--debug-traffic" ]; then
         DEBUG_TRAFFIC=1
+    elif [ "$arg" = "--pedestrian-vat-debug" ]; then
+        next_index=$((i + 1))
+        if [ $next_index -le $# ]; then
+            PEDESTRIAN_VAT_DEBUG_MODE="${!next_index}"
+            i=$((i + 1))
+        else
+            PEDESTRIAN_VAT_DEBUG_MODE="rest"
+        fi
+    elif [[ "$arg" == --pedestrian-vat-debug=* ]]; then
+        PEDESTRIAN_VAT_DEBUG_MODE="${arg#--pedestrian-vat-debug=}"
     elif [ "$arg" = "--debug-world-editor" ]; then
         DEBUG=1
         DEBUG_CATEGORY="world-editor"
@@ -250,6 +266,19 @@ case "$BUILDING_SITE_VISUAL_DEBUG_MODE" in
         ;;
 esac
 
+case "$PEDESTRIAN_VAT_DEBUG_MODE" in
+    rest|uv|off|"")
+        ;;
+    offset|offsets)
+        PEDESTRIAN_VAT_DEBUG_MODE="off"
+        ;;
+    *)
+        echo "Error: unknown pedestrian VAT debug mode '$PEDESTRIAN_VAT_DEBUG_MODE'." >&2
+        echo "Valid modes: rest, uv, off" >&2
+        exit 2
+        ;;
+esac
+
 if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
     echo "Error: --debug road-geometry was removed. Use --debug road." >&2
     exit 2
@@ -316,6 +345,13 @@ if [ $DEBUG_TRAFFIC -eq 1 ]; then
     echo "  After CCH rebuild:  [ROAD_NET] connectivity report (1 line if OK, component list if disconnected)"
     echo "  Visual overlay: car lane/connector debug auto-enabled; press P to toggle."
     echo "  Junction logs: [JUNCTION_ENTER], [JUNCTION_EXIT], [JUNCTION_WAIT], [JUNCTION_MISSING_CONN]"
+fi
+if [ -n "$PEDESTRIAN_VAT_DEBUG_MODE" ]; then
+    export METRUM_DEBUG_PEDESTRIAN_VAT="$PEDESTRIAN_VAT_DEBUG_MODE"
+    echo "Pedestrian VAT visual debug enabled: '$PEDESTRIAN_VAT_DEBUG_MODE'"
+    echo "  rest disables animation/VAT offsets; rigid sliding is expected."
+    echo "  uv colors vertex-id UVs; off/offset shows VAT offset magnitude while applying offsets."
+    echo "  Use no --pedestrian-vat-debug flag for normal animated character colors."
 fi
 if [ $DEBUG_SIM -eq 1 ]; then
     export METRUM_DEBUG_SIM=1

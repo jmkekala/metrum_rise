@@ -125,6 +125,7 @@ variables before building Rust, deploying `libmetrum_rise.so`, and launching God
 | `--debug building-sites-visual [mode]` | `METRUM_DEBUG_BUILDING_SITES_VISUAL=<mode>` | Building-site visual overlay. Current mode: `material`. |
 | `--debug site-grading` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_BUILDINGS=1`, `METRUM_DEBUG_BUILDING_SITES_VISUAL=material` | Combined road CDT, building-site edge/grading, and site material diagnostics for road/yard seam debugging. |
 | `--debug traffic` / `--debug-traffic` | `METRUM_DEBUG_TRAFFIC=1` | Traffic/routing and road-network connectivity logging to stderr plus visual lane/connector debug labels. |
+| `--pedestrian-vat-debug=<mode>` | `METRUM_DEBUG_PEDESTRIAN_VAT=<mode>` | Pedestrian VAT material debug. Modes: `rest` disables animation/VAT offsets so rigid sliding is expected, `uv` colors vertex-ID UVs, and `off`/`offset` colors VAT offset magnitude while applying offsets. Use no pedestrian VAT debug flag for normal animated character colors. |
 | `--debug-world-editor` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=world-editor` | WorldEditor create/open/save/tool activity. |
 | `--debug-sim` | `METRUM_DEBUG_SIM=1` | Hourly simulation summaries to stdout. |
 | `--debug visuals [mode]` / `--debug visual [mode]` / `--visuals [mode]` | `METRUM_DEBUG_TERRAIN_GRASS=<mode>` | Terrain grass material diagnostic view. Defaults to `material`. |

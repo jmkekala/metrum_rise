@@ -13,6 +13,7 @@ use serde::Deserialize;
 const ZONE_CELL_M: f32 = 10.0;
 const ANCHOR_FORWARD_UNIT_EPS: f32 = 0.02;
 const ANCHOR_LOT_EPS_M: f32 = 0.001;
+const DEFAULT_BUILDING_FRONTAGE_FORWARD: [f32; 3] = [0.0, 0.0, 1.0];
 
 // ── Shared sub-types ──────────────────────���────────────────────��──────────────
 
@@ -205,6 +206,12 @@ pub struct BuildingData {
     pub lot_width_cells: u16,
     /// Footprint depth in zoning cells (away from the road).
     pub lot_depth_cells: u16,
+    /// Asset-local direction of the road-facing building frontage.
+    ///
+    /// Older manifests may omit this; in that case the main entrance anchor forward is used as
+    /// the legacy frontage direction.
+    #[serde(default)]
+    pub frontage_forward: Option<[f32; 3]>,
     /// Minimum zoned width accepted for this building. Defaults to `lot_width_cells`.
     pub min_zone_width_cells: Option<u16>,
     /// Minimum zoned depth accepted for this building. Defaults to `lot_depth_cells`.
@@ -499,6 +506,22 @@ impl AssetManifest {
         format!("{}:{}", pack_id, self.asset_id)
     }
 
+    /// Returns the building frontage direction, with the legacy main entrance fallback.
+    pub(crate) fn building_frontage_forward(&self) -> [f32; 3] {
+        self.building
+            .as_ref()
+            .and_then(|building| building.frontage_forward)
+            .or_else(|| {
+                self.anchors
+                    .iter()
+                    .find(|anchor| {
+                        anchor.anchor_type == AnchorType::Entrance && anchor.name == "main"
+                    })
+                    .map(|anchor| anchor.forward)
+            })
+            .unwrap_or(DEFAULT_BUILDING_FRONTAGE_FORWARD)
+    }
+
     /// Validates structural and semantic constraints.
     ///
     /// Checks that:
@@ -548,6 +571,9 @@ impl AssetManifest {
                     "asset_id '{}': level must be >= 1",
                     self.asset_id
                 )));
+            }
+            if let Some(frontage_forward) = b.frontage_forward {
+                validate_building_frontage_forward(&self.asset_id, frontage_forward)?;
             }
             if b.effective_min_zone_width_cells() == 0 || b.effective_min_zone_depth_cells() == 0 {
                 return Err(ManifestError::Validation(format!(
@@ -754,6 +780,32 @@ fn validate_anchor_forward(asset_id: &str, anchor: &Anchor) -> Result<(), Manife
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': anchor '{}' forward {:?} must be a non-zero unit vector",
             asset_id, anchor.name, anchor.forward
+        )));
+    }
+    Ok(())
+}
+
+fn validate_building_frontage_forward(
+    asset_id: &str,
+    forward: [f32; 3],
+) -> Result<(), ManifestError> {
+    if forward.iter().any(|component| !component.is_finite()) {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': building frontage_forward {:?} must contain finite values",
+            asset_id, forward
+        )));
+    }
+    let [x, y, z] = forward;
+    let length = (x * x + y * y + z * z).sqrt();
+    let horizontal_length = (x * x + z * z).sqrt();
+    if length <= ANCHOR_FORWARD_UNIT_EPS
+        || (length - 1.0).abs() > ANCHOR_FORWARD_UNIT_EPS
+        || horizontal_length <= ANCHOR_FORWARD_UNIT_EPS
+        || y.abs() > ANCHOR_FORWARD_UNIT_EPS
+    {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': building frontage_forward {:?} must be a horizontal unit vector",
+            asset_id, forward
         )));
     }
     Ok(())
@@ -1142,6 +1194,28 @@ distance_max_m = 600.0
         assert_eq!(m.site_surfaces[0].name, "front_walk");
         assert_eq!(m.site_surfaces[0].y_m, 0.01);
         assert_eq!(m.site_surfaces[0].vertices.len(), 4);
+    }
+
+    #[test]
+    fn building_frontage_forward_defaults_to_main_entrance_forward() {
+        let m = AssetManifest::from_str(BUILDING_TOML).expect("parse failed");
+        assert_eq!(m.building_frontage_forward(), [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn building_frontage_forward_can_differ_from_entrance_forward() {
+        let toml = BUILDING_TOML
+            .replace(
+                "lot_depth_cells = 3",
+                "lot_depth_cells = 3\nfrontage_forward = [1.0, 0.0, 0.0]",
+            )
+            .replace(
+                "name = \"main\"\nposition = [0.0, 0.0, 4.5]\nforward = [0.0, 0.0, 1.0]",
+                "name = \"main\"\nposition = [0.0, 0.0, 4.5]\nforward = [0.0, 0.0, -1.0]",
+            );
+        let m = AssetManifest::from_str(&toml).expect("parse failed");
+        assert_eq!(m.building_frontage_forward(), [1.0, 0.0, 0.0]);
+        assert_eq!(m.anchors[0].forward, [0.0, 0.0, -1.0]);
     }
 
     #[test]

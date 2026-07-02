@@ -38,7 +38,7 @@ pub(crate) use earthwork::{
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy,
 };
-pub(crate) use edge::RoadExtensionReprofile;
+pub(crate) use edge::{CURB_STEP_HEIGHT_M, RoadExtensionReprofile};
 pub(crate) use incident::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
     IncidentSurfaceEdge, OrderedIncidentPieceMouth, RoadSurfaceVisualNodeCompileInput,

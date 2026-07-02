@@ -52,6 +52,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
+  and adult female archetypes. The bake path selects the explicit walk action from the source
+  `.blend`, normalizes the rest mesh to `1.8 m`, preserves outfit color through vertex colors, and
+  keeps the renderer on the existing GPU VAT MultiMesh path instead of per-agent skeleton playback.
+  See [`asset_editor.md`](asset_editor.md).
 - Terrain/water streaming now smooths remaining activation spikes by keeping speculative prewarm
   local to the resident halo, deferring LOD/prewarm work when earlier render stages have already
   consumed the frame, skipping no-op baked/CDT terrain LOD mesh rebuilds, and running water mesh

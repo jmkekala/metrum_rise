@@ -68,7 +68,11 @@ impl BuildingAllocator {
             return entrance;
         };
 
-        entrance.door_pos = world_door_pos(building, anchor.position, anchor.forward);
+        entrance.door_pos = world_door_pos(
+            building,
+            anchor.position,
+            asset_entry.manifest.building_frontage_forward(),
+        );
         entrance.curb_pos = entrance.door_pos;
 
         if building.edge_idx >= graph.edge_count() {

@@ -10,12 +10,12 @@ mod profile;
 mod sections;
 
 use handoff::EdgeMouthPolicy;
+/// Standard vertical step from carriageway/asphalt to raised curb or sidewalk top.
+pub(crate) const CURB_STEP_HEIGHT_M: f32 = profile::CURB_STEP_HEIGHT_M;
+
 pub(crate) use input::RoadExtensionReprofile;
 pub use preview::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 use profile::EdgeProfilePlaneBlend;
-
-#[cfg(test)]
-pub(super) const CURB_STEP_HEIGHT_M: f32 = profile::CURB_STEP_HEIGHT_M;
 
 pub(crate) fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {
     match edge_class {

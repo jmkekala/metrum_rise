@@ -17,6 +17,9 @@ var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
 var texture_cache: Dictionary = {}
+const WALKER_VAT_FRAMES := 30.0
+# Quaternius walk clips are baked in the opposite temporal direction from our distance phase.
+const WALKER_VAT_REVERSE_PHASE := true
 const CAR_TRANSFORM_STRIDE := 12
 const CAR_INTERPOLATION_RATE := 24.0
 const CAR_ROTATION_INTERPOLATION_RATE := 18.0
@@ -33,12 +36,14 @@ var debug_labels: Array = []
 var show_paths = false
 var _traffic_debug_visual := false
 var _debug_overlay_visible := false
+var _pedestrian_vat_debug_mode := 0
+var _pedestrian_vat_debug_mode_name := ""
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
 	# Assets baked from .blend source by tools/bake_vat_blend.py.
 	# The GLTF rest mesh has clean Y-up orientation (no FBX rotation offset).
-	var vat_base = "res://assets/models/characters/civilians/VAT/"
+	var vat_base = "res://assets/models/characters/Quaternius/VAT/"
 	var person_meshes = {
 		0: vat_base + "male_walk_rest.gltf",
 		1: vat_base + "male_walk_rest.gltf",
@@ -51,14 +56,25 @@ func _ready():
 		2: vat_base + "female_vat_walk.exr",
 		3: vat_base + "female_vat_walk.exr",
 	}
-	var person_skins = {
-		0: "res://assets/models/characters/civilians/Skins/casualMaleA.png",
-		1: "res://assets/models/characters/civilians/Skins/casualMaleB.png",
-		2: "res://assets/models/characters/civilians/Skins/casualFemaleA.png",
-		3: "res://assets/models/characters/civilians/Skins/casualFemaleB.png",
+	var person_palettes = {
+		0: vat_base + "male_palette.png",
+		1: vat_base + "male_palette.png",
+		2: vat_base + "female_palette.png",
+		3: vat_base + "female_palette.png",
+	}
+	var person_tints = {
+		0: Vector3(1.0, 1.0, 1.0),
+		1: Vector3(0.86, 0.92, 1.0),
+		2: Vector3(1.0, 1.0, 1.0),
+		3: Vector3(1.0, 0.9, 0.92),
 	}
 
 	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
+	_pedestrian_vat_debug_mode_name = _pedestrian_debug_mode_name()
+	_pedestrian_vat_debug_mode = _pedestrian_debug_mode_from(_pedestrian_vat_debug_mode_name)
+	if _pedestrian_vat_debug_mode != 0:
+		print("Pedestrian VAT debug mode: ", _pedestrian_vat_debug_mode_name)
+		print("  ", _pedestrian_debug_mode_description(_pedestrian_vat_debug_mode))
 
 	for p_type in person_meshes:
 		var gltf_doc   := GLTFDocument.new()
@@ -106,9 +122,12 @@ func _ready():
 
 		var mat := ShaderMaterial.new()
 		mat.shader = walk_shader
-		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_skins[p_type]))
 		mat.set_shader_parameter("vat_texture",    vat_tex)
-		mat.set_shader_parameter("num_frames",     31.0)
+		mat.set_shader_parameter("albedo_texture", _load_source_texture(person_palettes[p_type]))
+		mat.set_shader_parameter("num_frames",     WALKER_VAT_FRAMES)
+		mat.set_shader_parameter("albedo_tint",    person_tints[p_type])
+		mat.set_shader_parameter("debug_mode",     _pedestrian_vat_debug_mode)
+		mat.set_shader_parameter("reverse_phase",  WALKER_VAT_REVERSE_PHASE)
 		mmi.material_override = mat
 
 		add_child(mmi)
@@ -328,6 +347,39 @@ func _hide_debug_labels() -> void:
 func _env_flag_enabled(name: String) -> bool:
 	var value := OS.get_environment(name).strip_edges().to_lower()
 	return not value.is_empty() and value != "0" and value != "false" and value != "off"
+
+func _pedestrian_debug_mode_name() -> String:
+	var mode := OS.get_environment("METRUM_DEBUG_PEDESTRIAN_VAT").strip_edges().to_lower()
+	var args := OS.get_cmdline_user_args()
+	for i in range(args.size()):
+		var arg := str(args[i]).strip_edges().to_lower()
+		if arg.begins_with("--pedestrian-vat-debug="):
+			mode = arg.trim_prefix("--pedestrian-vat-debug=")
+		elif arg == "--pedestrian-vat-debug" and i + 1 < args.size():
+			mode = str(args[i + 1]).strip_edges().to_lower()
+	return mode
+
+func _pedestrian_debug_mode_from(mode: String) -> int:
+	match mode:
+		"rest":
+			return 1
+		"uv":
+			return 2
+		"off", "offset", "offsets":
+			return 3
+		_:
+			return 0
+
+func _pedestrian_debug_mode_description(mode: int) -> String:
+	match mode:
+		1:
+			return "rest disables animation/VAT offsets; rigid sliding is expected."
+		2:
+			return "uv colors vertex-id UVs; animation offsets stay disabled."
+		3:
+			return "off/offset shows VAT offset magnitude while applying offsets; normal textures are hidden."
+		_:
+			return ""
 
 func _interpolate_car_buffer(
 	target_buffer: PackedFloat32Array,

@@ -26,10 +26,12 @@ void fragment() {
 
 	vec3 detail_albedo = texture(albedo_tex, detail_uv).rgb;
 	vec3 macro_albedo = texture(albedo_tex, macro_uv).rgb;
-	vec3 albedo = detail_albedo * mix(vec3(1.0), macro_albedo * 1.15, macro_influence) * brightness;
+	vec3 albedo = detail_albedo * mix(vec3(1.0), macro_albedo * 1.2, macro_influence) * brightness;
 	albedo = mix(albedo, max(albedo, albedo_floor), floor_influence);
 	vec3 normal = texture(normal_tex, detail_uv).rgb;
-	float roughness = texture(roughness_tex, detail_uv).r;
+	float roughness_micro = texture(roughness_tex, detail_uv).r;
+	float roughness_macro = texture(roughness_tex, macro_uv).r;
+	float roughness = mix(roughness_micro, roughness_macro, macro_influence * 0.5);
 
 	ALBEDO = albedo * tint.rgb;
 	NORMAL_MAP = normal;

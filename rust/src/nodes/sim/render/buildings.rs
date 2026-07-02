@@ -2,7 +2,7 @@
 //!
 //! Handles building instance transform generation and plot/construction-site visuals.
 
-use crate::assets::{AnchorType, AssetEntry, MeshPart, SiteSurfaceMaterial};
+use crate::assets::{AssetEntry, MeshPart, SiteSurfaceMaterial};
 use crate::config::{HEIGHT_SCALE, SIDEWALK_WIDTH};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -991,7 +991,7 @@ fn push_building_part_transform_for_pose(
 ) {
     let world_x = center_2d.x;
     let world_z = center_2d.y;
-    let (basis_x, basis_z) = building_local_xz_basis(facing_dir, main_anchor_forward(entry));
+    let (basis_x, basis_z) = building_local_xz_basis(facing_dir, building_frontage_forward(entry));
 
     let yaw = part.rotation_degrees[1].to_radians();
     let cos_yaw = yaw.cos();
@@ -1363,16 +1363,9 @@ fn construction_scaffold_height_m(building: &Building) -> f32 {
     .clamp(7.0, 18.0)
 }
 
-fn main_anchor_forward(entry: Option<&AssetEntry>) -> [f32; 3] {
+fn building_frontage_forward(entry: Option<&AssetEntry>) -> [f32; 3] {
     entry
-        .and_then(|entry| {
-            entry
-                .manifest
-                .anchors
-                .iter()
-                .find(|anchor| anchor.anchor_type == AnchorType::Entrance && anchor.name == "main")
-        })
-        .map(|anchor| anchor.forward)
+        .map(|entry| entry.manifest.building_frontage_forward())
         .unwrap_or([0.0, 0.0, 1.0])
 }
 
