@@ -83,6 +83,10 @@ impl RoadSurfaceSystem {
             .enumerate()
             .map(|(index, authority)| (*authority, index))
             .collect::<BTreeMap<_, _>>();
+        let top_height_context = NodeExportTopHeightContext::from_arrangement(
+            arrangement,
+            &explicit_vertical_step_segments,
+        );
         profile.authority_ms = elapsed_profile_ms(authority_start);
 
         let mut owned_region_exports = Vec::new();
@@ -90,8 +94,12 @@ impl RoadSurfaceSystem {
         let face_export_start = profile_enabled.then(Instant::now);
         for face in arrangement.faces() {
             let owner = face.owner();
-            let Some((polygon, source)) =
-                Self::visual_polygon_from_arrangement_face(arrangement, face, &authority_indices)?
+            let Some((polygon, source)) = Self::visual_polygon_from_arrangement_face(
+                arrangement,
+                face,
+                &authority_indices,
+                &top_height_context,
+            )?
             else {
                 continue;
             };
@@ -122,7 +130,8 @@ impl RoadSurfaceSystem {
             &node_grade_authorities,
             &explicit_vertical_step_segments,
         )?;
-        boundary_export_sources.extend_arrangement_exposed_boundary_edges(arrangement)?;
+        boundary_export_sources
+            .extend_arrangement_exposed_boundary_edges(arrangement, &top_height_context)?;
         profile.boundary_sources_ms = elapsed_profile_ms(boundary_sources_start);
         let raised_step_faces_start = profile_enabled.then(Instant::now);
         let mut raised_step_faces = Self::raised_step_face_polygons_from_arrangement(

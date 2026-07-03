@@ -1905,8 +1905,9 @@ Building rules:
   `waste` asset-side service class corresponds to runtime `utility_service = "sewage"`.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
 - `[building].frontage_forward` defines the asset-local frontage direction used by building
-  placement, rendering, and entrance-cache derivation. Older assets that omit it fall back to the
-  `main` entrance anchor's `forward` vector.
+  placement, rendering, and entrance-cache derivation. Older assets that omit it fall back first to
+  an authored driveway's road-facing edge direction, then to the `main` entrance anchor's `forward`
+  vector.
 - Additional building-side site points use `type = "driveway"`, `type = "parking"`, or
   `type = "loading_bay"`, not a second generic `entrance` anchor.
 - Driveway anchors require cardinal `[building].frontage_forward`, must lie on that frontage edge,

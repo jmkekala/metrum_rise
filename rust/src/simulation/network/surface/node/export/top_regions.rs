@@ -60,6 +60,7 @@ impl RoadSurfaceSystem {
         arrangement: &NodeArrangement,
         face: &arrangement::NodeArrangementFace,
         authority_indices: &BTreeMap<height::NodeGradeVertexAuthority, usize>,
+        top_height_context: &NodeExportTopHeightContext,
     ) -> Result<
         Option<(RoadSurfaceVisualPolygon, NodeTopSurfacePolygonSource)>,
         NodeBoundaryExportError,
@@ -68,7 +69,8 @@ impl RoadSurfaceSystem {
         else {
             return Ok(None);
         };
-        let Some(triangle) = Self::arrangement_face_world_triangle(arrangement, vertex_ids) else {
+        let Some(mut triangle) = Self::arrangement_face_world_triangle(arrangement, vertex_ids)
+        else {
             return Ok(None);
         };
         if Self::signed_polygon_area_xz(&triangle).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
@@ -80,7 +82,7 @@ impl RoadSurfaceSystem {
         let mut vertex_sources = Vec::with_capacity(vertex_ids.len());
         let mut vertex_keys = Vec::with_capacity(vertex_ids.len());
         let mut vertex_height_mm = Vec::with_capacity(vertex_ids.len());
-        for vertex_id in vertex_ids {
+        for (point_index, vertex_id) in vertex_ids.into_iter().enumerate() {
             let Some(vertex) = arrangement.vertices().get(vertex_id.index()) else {
                 return Err(NodeBoundaryExportError::MissingNodeTopSurfaceGradeAuthority);
             };
@@ -93,7 +95,34 @@ impl RoadSurfaceSystem {
                 grade_authority_index,
             });
             vertex_keys.push(vertex.key());
-            vertex_height_mm.push(vertex.height_mm());
+            let source_kind = vertex
+                .grade_authority()
+                .source_provenance
+                .map_or(vertex.height_field_id().kind(), |provenance| {
+                    provenance.source_kind
+                });
+            let source_kind = super::super::node_export_top_source_kind(
+                face.owner(),
+                source_kind,
+                vertex.key(),
+                vertex.height_mm(),
+                top_height_context,
+            );
+            triangle[point_index].y = super::super::node_export_top_height_m(
+                face.owner(),
+                source_kind,
+                vertex.key(),
+                vertex.height_m(),
+                vertex.height_mm(),
+                top_height_context,
+            );
+            vertex_height_mm.push(super::super::node_export_top_height_mm(
+                face.owner(),
+                source_kind,
+                vertex.key(),
+                vertex.height_mm(),
+                top_height_context,
+            ));
         }
         let triangle_sources = vec![[vertex_sources[0], vertex_sources[1], vertex_sources[2]]];
         let source = NodeTopSurfacePolygonSource {

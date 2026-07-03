@@ -282,6 +282,10 @@ impl NodeBandHeightFieldId {
     pub(crate) fn band_index(self) -> usize {
         self.band_index
     }
+
+    pub(crate) fn kind(self) -> RoadSurfaceBandKind {
+        self.kind
+    }
 }
 
 impl NodeArrangement {

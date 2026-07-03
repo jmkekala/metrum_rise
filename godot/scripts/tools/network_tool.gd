@@ -300,8 +300,6 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 		immediate.surface_add_vertex(point)
 	immediate.surface_end()
 
-static var _curb_mat: StandardMaterial3D = null
-static var _raised_step_mat: StandardMaterial3D = null
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
 
@@ -317,24 +315,10 @@ func update_main_mesh():
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
 	var road_mat := WorldMaterials.road_asphalt_material()
+	var sidewalk_mat := WorldMaterials.road_sidewalk_material()
+	var sidewalk_face_mat := WorldMaterials.road_sidewalk_face_material()
 	var concrete_mat := WorldMaterials.road_concrete_material()
 
-	if _curb_mat == null:
-		_curb_mat = StandardMaterial3D.new()
-		_curb_mat.vertex_color_use_as_albedo = true
-		_curb_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		_curb_mat.roughness = 1.0
-		_curb_mat.metallic = 0.0
-		_curb_mat.cull_mode = BaseMaterial3D.CULL_BACK
-
-	if _raised_step_mat == null:
-		_raised_step_mat = StandardMaterial3D.new()
-		_raised_step_mat.vertex_color_use_as_albedo = true
-		_raised_step_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		_raised_step_mat.roughness = 1.0
-		_raised_step_mat.metallic = 0.0
-		_raised_step_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	
 	if _marking_mat == null:
 		_marking_mat = StandardMaterial3D.new()
 		_marking_mat.vertex_color_use_as_albedo = true
@@ -373,7 +357,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.curb_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.curb_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_curb_mat)
+		surface_map.push_back(sidewalk_face_mat)
 
 	# Explicit raised-step faces between solved owner-pair top surfaces
 	if data.has("raised_step_vertices") and data.raised_step_vertices.size() > 0:
@@ -384,7 +368,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.raised_step_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.raised_step_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_raised_step_mat)
+		surface_map.push_back(sidewalk_face_mat)
 
 	# Sidewalk base
 	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:
@@ -395,7 +379,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.sidewalk_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.sidewalk_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(road_mat)
+		surface_map.push_back(sidewalk_mat)
 
 	# Asphalt & Junctions
 	if data.has("road_vertices") and data.road_vertices.size() > 0:

@@ -13,6 +13,7 @@ use serde::Deserialize;
 const ZONE_CELL_M: f32 = 10.0;
 const ANCHOR_FORWARD_UNIT_EPS: f32 = 0.02;
 const ANCHOR_LOT_EPS_M: f32 = 0.001;
+const ANCHOR_FRONTAGE_EDGE_EPS_M: f32 = 0.05;
 const DEFAULT_BUILDING_FRONTAGE_FORWARD: [f32; 3] = [0.0, 0.0, 1.0];
 
 // ── Shared sub-types ──────────────────────���────────────────────��──────────────
@@ -506,11 +507,12 @@ impl AssetManifest {
         format!("{}:{}", pack_id, self.asset_id)
     }
 
-    /// Returns the building frontage direction, with the legacy main entrance fallback.
+    /// Returns the building frontage direction, with legacy driveway/entrance fallbacks.
     pub(crate) fn building_frontage_forward(&self) -> [f32; 3] {
         self.building
             .as_ref()
             .and_then(|building| building.frontage_forward)
+            .or_else(|| self.legacy_driveway_frontage_forward())
             .or_else(|| {
                 self.anchors
                     .iter()
@@ -520,6 +522,18 @@ impl AssetManifest {
                     .map(|anchor| anchor.forward)
             })
             .unwrap_or(DEFAULT_BUILDING_FRONTAGE_FORWARD)
+    }
+
+    fn legacy_driveway_frontage_forward(&self) -> Option<[f32; 3]> {
+        self.anchors
+            .iter()
+            .find(|anchor| anchor.anchor_type == AnchorType::Driveway)
+            .and_then(|anchor| {
+                let [x, _, z] = anchor.forward;
+                let horizontal_len = (x * x + z * z).sqrt();
+                (horizontal_len > ANCHOR_FORWARD_UNIT_EPS)
+                    .then(|| [-x / horizontal_len, 0.0, -z / horizontal_len])
+            })
     }
 
     /// Validates structural and semantic constraints.
@@ -939,7 +953,7 @@ fn validate_building_driveway_frontage_edge(
     } else {
         anchor.position[2]
     };
-    if (anchor_edge_position - edge_position).abs() > ANCHOR_LOT_EPS_M {
+    if (anchor_edge_position - edge_position).abs() > ANCHOR_FRONTAGE_EDGE_EPS_M {
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': driveway anchor '{}' must lie on the road-facing frontage edge at {}={}m",
             asset_id,
@@ -1278,6 +1292,42 @@ distance_max_m = 600.0
     }
 
     #[test]
+    fn building_frontage_forward_defaults_to_legacy_driveway_when_present() {
+        let toml = r#"
+asset_id = "building.industrial.legacy_driveway"
+display_name = "Legacy Driveway"
+[building]
+placement_mode = "zoned_private"
+zone_type = "industrial"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+worker_capacity = 4
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [2.0, 0.0, 3.0]
+forward = [-1.0, 0.0, 0.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        let m = AssetManifest::from_str(toml).expect("parse failed");
+        assert_eq!(m.building_frontage_forward(), [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
     fn building_frontage_forward_can_differ_from_entrance_forward() {
         let toml = BUILDING_TOML
             .replace(
@@ -1521,6 +1571,41 @@ forward = [0.0, 0.0, -1.0]
 [[anchors]]
 type = "driveway"
 position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        AssetManifest::from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn building_accepts_driveway_with_legacy_edge_drift() {
+        let toml = r#"
+asset_id = "building.residential.good"
+display_name = "Good"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [4.0, 0.0, -2.7]
+forward = [0.0, 0.0, -1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.76, 0.0, -9.97]
 forward = [0.0, 0.0, 1.0]
 width_m = 3.0
 

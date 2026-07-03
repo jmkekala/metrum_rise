@@ -13,10 +13,18 @@ const MATERIAL_CONCRETE := "concrete"
 const GRASS_ALBEDO := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const GRASS_HEIGHT := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 
-const ASPHALT_DIFF := "res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"
-const ASPHALT_NORMAL := "res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"
-const ASPHALT_ROUGH := "res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"
-const ASPHALT_DISP := "res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"
+const ROAD_ASPHALT_DIFF := "res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"
+const ROAD_ASPHALT_NORMAL := "res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"
+const ROAD_ASPHALT_ROUGH := "res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"
+const ROAD_ASPHALT_DISP := "res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"
+
+const SIDEWALK_ASPHALT_DIFF := "res://assets/textures/road/asphalt_04/asphalt_04_diff_2k.jpg"
+const SIDEWALK_ASPHALT_NORMAL := "res://assets/textures/road/asphalt_04/asphalt_04_nor_gl_2k.png"
+const SIDEWALK_ASPHALT_ROUGH := "res://assets/textures/road/asphalt_04/asphalt_04_rough_2k.png"
+const SIDEWALK_ASPHALT_DISP := "res://assets/textures/road/asphalt_04/asphalt_04_disp_2k.png"
+const SIDEWALK_ASPHALT_BRIGHTNESS := 1.16
+const SIDEWALK_ASPHALT_FLOOR := Vector3(0.38, 0.36, 0.32)
+const SIDEWALK_ASPHALT_FLOOR_INFLUENCE := 0.28
 
 const CONCRETE_DIFF := "res://assets/textures/general/concrete_layers/concrete_layers_02_diff_4k.jpg"
 const CONCRETE_NORMAL := "res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"
@@ -24,6 +32,7 @@ const CONCRETE_ROUGH := "res://assets/textures/general/concrete_layers/concrete_
 const CONCRETE_DISP := "res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"
 
 const ROAD_SHADER := "res://assets/materials/road.gdshader"
+const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
 const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
@@ -31,6 +40,8 @@ const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
 static var _texture_cache = {}
 static var _shader_cache = {}
 static var _road_asphalt_material: ShaderMaterial
+static var _road_sidewalk_material: ShaderMaterial
+static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
 static var _site_asphalt_material: ShaderMaterial
@@ -40,17 +51,65 @@ static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:
 		_road_asphalt_material = ShaderMaterial.new()
 		_road_asphalt_material.shader = _load_shader(ROAD_SHADER)
-		_apply_pbr_textures(_road_asphalt_material, ASPHALT_DIFF, ASPHALT_NORMAL, ASPHALT_ROUGH, ASPHALT_DISP)
+		_apply_pbr_textures(
+			_road_asphalt_material,
+			ROAD_ASPHALT_DIFF,
+			ROAD_ASPHALT_NORMAL,
+			ROAD_ASPHALT_ROUGH,
+			ROAD_ASPHALT_DISP
+		)
 		_road_asphalt_material.set_shader_parameter("uv_scale", 0.05)
 		_road_asphalt_material.set_shader_parameter("macro_uv_scale", 0.007)
 		_road_asphalt_material.set_shader_parameter("macro_influence", 0.4)
 	return _road_asphalt_material
 
+static func road_sidewalk_material() -> ShaderMaterial:
+	if _road_sidewalk_material == null:
+		_road_sidewalk_material = ShaderMaterial.new()
+		_road_sidewalk_material.resource_name = "road_sidewalk_asphalt_04"
+		_road_sidewalk_material.shader = _load_shader(ROAD_SHADER)
+		_apply_pbr_textures(
+			_road_sidewalk_material,
+			SIDEWALK_ASPHALT_DIFF,
+			SIDEWALK_ASPHALT_NORMAL,
+			SIDEWALK_ASPHALT_ROUGH,
+			SIDEWALK_ASPHALT_DISP
+		)
+		_road_sidewalk_material.set_shader_parameter("uv_scale", 0.12)
+		_road_sidewalk_material.set_shader_parameter("macro_uv_scale", 0.018)
+		_road_sidewalk_material.set_shader_parameter("macro_influence", 0.25)
+		_apply_sidewalk_asphalt_tone(_road_sidewalk_material)
+	return _road_sidewalk_material
+
+static func road_sidewalk_face_material() -> ShaderMaterial:
+	if _road_sidewalk_face_material == null:
+		_road_sidewalk_face_material = ShaderMaterial.new()
+		_road_sidewalk_face_material.resource_name = "road_sidewalk_face_asphalt_04"
+		_road_sidewalk_face_material.shader = _load_shader(ROAD_FACE_SHADER)
+		_apply_pbr_textures(
+			_road_sidewalk_face_material,
+			SIDEWALK_ASPHALT_DIFF,
+			SIDEWALK_ASPHALT_NORMAL,
+			SIDEWALK_ASPHALT_ROUGH,
+			SIDEWALK_ASPHALT_DISP
+		)
+		_road_sidewalk_face_material.set_shader_parameter("uv_scale", Vector2(0.12, 0.12))
+		_road_sidewalk_face_material.set_shader_parameter("vertical_uv_scale", Vector2(0.12, 0.12))
+		_road_sidewalk_face_material.set_shader_parameter("vertical_normal_strength", 0.25)
+		_road_sidewalk_face_material.set_shader_parameter("tint", Color(0.88, 0.87, 0.82, 1.0))
+	return _road_sidewalk_face_material
+
 static func road_concrete_material() -> ShaderMaterial:
 	if _road_concrete_material == null:
 		_road_concrete_material = ShaderMaterial.new()
 		_road_concrete_material.shader = _load_shader(CONCRETE_SHADER)
-		_apply_pbr_textures(_road_concrete_material, CONCRETE_DIFF, CONCRETE_NORMAL, CONCRETE_ROUGH, CONCRETE_DISP)
+		_apply_pbr_textures(
+			_road_concrete_material,
+			CONCRETE_DIFF,
+			CONCRETE_NORMAL,
+			CONCRETE_ROUGH,
+			CONCRETE_DISP
+		)
 		_road_concrete_material.set_shader_parameter("uv_scale", 0.1)
 	return _road_concrete_material
 
@@ -72,23 +131,33 @@ static func site_ground_material() -> ShaderMaterial:
 static func site_asphalt_material() -> ShaderMaterial:
 	if _site_asphalt_material == null:
 		_site_asphalt_material = ShaderMaterial.new()
-		_site_asphalt_material.resource_name = "site_asphalt_matches_road"
+		_site_asphalt_material.resource_name = "site_asphalt_asphalt_04"
 		_site_asphalt_material.shader = _load_shader(SITE_SURFACE_SHADER)
-		_apply_pbr_textures(_site_asphalt_material, ASPHALT_DIFF, ASPHALT_NORMAL, ASPHALT_ROUGH, ASPHALT_DISP)
+		_apply_pbr_textures(
+			_site_asphalt_material,
+			SIDEWALK_ASPHALT_DIFF,
+			SIDEWALK_ASPHALT_NORMAL,
+			SIDEWALK_ASPHALT_ROUGH,
+			SIDEWALK_ASPHALT_DISP
+		)
 		_site_asphalt_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
-		_site_asphalt_material.set_shader_parameter("uv_scale", 0.05)
-		_site_asphalt_material.set_shader_parameter("macro_uv_scale", 0.007)
-		_site_asphalt_material.set_shader_parameter("macro_influence", 0.4)
-		_site_asphalt_material.set_shader_parameter("brightness", 1.0)
-		_site_asphalt_material.set_shader_parameter("albedo_floor", Vector3(0.0, 0.0, 0.0))
-		_site_asphalt_material.set_shader_parameter("floor_influence", 0.0)
+		_site_asphalt_material.set_shader_parameter("uv_scale", 0.12)
+		_site_asphalt_material.set_shader_parameter("macro_uv_scale", 0.018)
+		_site_asphalt_material.set_shader_parameter("macro_influence", 0.25)
+		_apply_sidewalk_asphalt_tone(_site_asphalt_material)
 	return _site_asphalt_material
 
 static func site_concrete_material() -> ShaderMaterial:
 	if _site_concrete_material == null:
 		_site_concrete_material = ShaderMaterial.new()
 		_site_concrete_material.shader = _load_shader(SITE_SURFACE_SHADER)
-		_apply_pbr_textures(_site_concrete_material, CONCRETE_DIFF, CONCRETE_NORMAL, CONCRETE_ROUGH, CONCRETE_DISP)
+		_apply_pbr_textures(
+			_site_concrete_material,
+			CONCRETE_DIFF,
+			CONCRETE_NORMAL,
+			CONCRETE_ROUGH,
+			CONCRETE_DISP
+		)
 		_site_concrete_material.set_shader_parameter("tint", Color(1.0, 1.0, 1.0, 1.0))
 		_site_concrete_material.set_shader_parameter("uv_scale", 0.18)
 		_site_concrete_material.set_shader_parameter("macro_uv_scale", 0.030)
@@ -109,6 +178,11 @@ static func _apply_pbr_textures(
 	material.set_shader_parameter("normal_tex", _load_texture(normal_path))
 	material.set_shader_parameter("roughness_tex", _load_texture(roughness_path))
 	material.set_shader_parameter("displacement_tex", _load_texture(displacement_path))
+
+static func _apply_sidewalk_asphalt_tone(material: ShaderMaterial) -> void:
+	material.set_shader_parameter("brightness", SIDEWALK_ASPHALT_BRIGHTNESS)
+	material.set_shader_parameter("albedo_floor", SIDEWALK_ASPHALT_FLOOR)
+	material.set_shader_parameter("floor_influence", SIDEWALK_ASPHALT_FLOOR_INFLUENCE)
 
 static func _apply_site_ground_grass_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("terrain_grass_albedo", _load_texture(GRASS_ALBEDO))

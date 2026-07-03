@@ -9,6 +9,10 @@ uniform sampler2D displacement_tex : hint_default_black, filter_linear_mipmap_an
 uniform float uv_scale = 0.05; // Primary detail scaling (20m per tile)
 uniform float macro_uv_scale = 0.007; // Macro variation scaling (~140m per tile)
 uniform float macro_influence = 0.4; // Influence of macro variation
+uniform vec4 tint : source_color = vec4(1.0);
+uniform float brightness = 1.0;
+uniform vec3 albedo_floor = vec3(0.0);
+uniform float floor_influence = 0.0;
 
 varying vec3 world_pos;
 
@@ -26,6 +30,9 @@ void fragment() {
 	
 	// Blend macro variation into albedo for large-scale interest
 	vec3 albedo = albedo_micro.rgb * mix(vec3(1.0), albedo_macro.rgb * 1.2, macro_influence);
+	albedo *= brightness;
+	albedo = mix(albedo, max(albedo, albedo_floor), floor_influence);
+	albedo *= tint.rgb;
 	
 	vec3 normal = texture(normal_tex, asphalt_uv).rgb;
 	float roughness_micro = texture(roughness_tex, asphalt_uv).r;
@@ -56,21 +63,6 @@ void fragment() {
 			
 			stripe = stripe_v * base_pattern;
 		}
-	}
-	
-	// 3. Sidewalk Detail (Tiles & Lightness)
-	if (COLOR.a > 0.9) {
-		// Concrete Tile Grout (Using World UVs for seamlessness across junctions)
-		vec2 world_uv = world_pos.xz;
-		vec2 grid = abs(fract(world_uv * 2.0) - 0.5); // 0.5m tiles
-		float grout = smoothstep(0.45, 0.5, grid.x) + smoothstep(0.45, 0.5, grid.y);
-		
-		// Lighten to concrete color and subtract grout lines
-		albedo = mix(albedo, vec3(0.85, 0.84, 0.82), 0.5);
-		albedo *= mix(1.0, 0.6, grout);
-		
-		// Curb/sidewalk boundaries are real geometry now. Do not derive a curb gap from mesh UVs:
-		// node-piece CDT triangles use arbitrary UVs, which would paint dark bars through junctions.
 	}
 	
 	// Darker grey-white for better integration

@@ -1,15 +1,16 @@
 //! Earthwork skirt geometry, transition vectors, and top-surface intrusion checks.
 
 use super::super::{
-    NodeOverlayContour, NodeOverlayShapes, RoadSurfaceSystem, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
+    CURB_STEP_HEIGHT_M, NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind,
+    RoadSurfaceSystem, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     backend::{self, RoadVec2, RoadVec3},
 };
 use super::{
     EARTHWORK_CUT_SLOPE_RATE, EARTHWORK_FILL_SLOPE_RATE, EARTHWORK_MARGIN_SAMPLE_STEP_M,
     EARTHWORK_MAX_MARGIN_M, EARTHWORK_MIN_MARGIN_M, EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD,
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkGeometryError, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkGeometryError,
+    RoadSurfaceEarthworkRenderFace,
 };
 use crate::config;
 use crate::simulation::terrain::TerrainSystem;

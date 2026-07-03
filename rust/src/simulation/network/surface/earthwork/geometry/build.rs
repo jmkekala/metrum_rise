@@ -120,8 +120,13 @@ impl RoadSurfaceSystem {
             ]) else {
                 continue;
             };
-            let face_kind =
-                Self::classify_earthwork_face_kind(current, next, outer_next, outer_current);
+            let face_kind = Self::classify_earthwork_face_kind_for_source(
+                segment.source,
+                current,
+                next,
+                outer_next,
+                outer_current,
+            );
             render_faces.push(RoadSurfaceEarthworkRenderFace {
                 kind: face_kind,
                 source: segment.source,

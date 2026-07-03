@@ -39,6 +39,7 @@ impl NodeFootprintBoundaryExportSources {
     pub(in crate::simulation::network::surface) fn extend_arrangement_exposed_boundary_edges(
         &mut self,
         arrangement: &arrangement::NodeArrangement,
+        top_height_context: &super::super::super::NodeExportTopHeightContext,
     ) -> Result<(), NodeBoundaryExportError> {
         for edge in arrangement
             .edges()
@@ -54,17 +55,59 @@ impl NodeFootprintBoundaryExportSources {
             if start_vertex.key() == end_vertex.key() {
                 continue;
             }
+            let owner = edge.owner();
+            let start_source_kind = start_vertex
+                .grade_authority()
+                .source_provenance
+                .map_or(start_vertex.height_field_id().kind(), |provenance| {
+                    provenance.source_kind
+                });
+            let end_source_kind = end_vertex
+                .grade_authority()
+                .source_provenance
+                .map_or(end_vertex.height_field_id().kind(), |provenance| {
+                    provenance.source_kind
+                });
+            let start_source_kind = super::super::super::node_export_top_source_kind(
+                owner,
+                start_source_kind,
+                start_vertex.key(),
+                start_vertex.height_mm(),
+                top_height_context,
+            );
+            let end_source_kind = super::super::super::node_export_top_source_kind(
+                owner,
+                end_source_kind,
+                end_vertex.key(),
+                end_vertex.height_mm(),
+                top_height_context,
+            );
+            let height_mm = [
+                super::super::super::node_export_top_height_mm(
+                    owner,
+                    start_source_kind,
+                    start_vertex.key(),
+                    start_vertex.height_mm(),
+                    top_height_context,
+                ),
+                super::super::super::node_export_top_height_mm(
+                    owner,
+                    end_source_kind,
+                    end_vertex.key(),
+                    end_vertex.height_mm(),
+                    top_height_context,
+                ),
+            ];
             let start_point_key = ArrangementBoundaryPointKey {
                 x_key: start_vertex.key().x_key(),
                 z_key: start_vertex.key().z_key(),
-                y_mm: start_vertex.height_mm(),
+                y_mm: height_mm[0],
             };
             let end_point_key = ArrangementBoundaryPointKey {
                 x_key: end_vertex.key().x_key(),
                 z_key: end_vertex.key().z_key(),
-                y_mm: end_vertex.height_mm(),
+                y_mm: height_mm[1],
             };
-            let owner = edge.owner();
             self.ensure_arrangement_exposed_boundary_vertex_source(start_point_key, owner)?;
             self.ensure_arrangement_exposed_boundary_vertex_source(end_point_key, owner)?;
             self.final_height_edges

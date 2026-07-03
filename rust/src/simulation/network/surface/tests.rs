@@ -13,12 +13,13 @@ use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundaryVertexSource, NodeOverlayContour,
     NodeOverlayShape, NodeOverlayShapes, PreviewRoadSurfaceResult, RoadSurfaceBand,
     RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkFaceSource,
-    RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection, RoadSurfaceSpanRegionRole,
-    RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipExportError,
-    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey, arrangement, backend, height,
-    input, node, ownership, rails, segments, validation,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSection,
+    RoadSurfaceSpanRegionRole, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVerticalFaceSource, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey, arrangement, backend, height, input, node, ownership, rails,
+    segments, validation,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};

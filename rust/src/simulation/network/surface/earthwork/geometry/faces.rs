@@ -3,6 +3,25 @@
 use super::*;
 
 impl RoadSurfaceSystem {
+    pub(in crate::simulation::network::surface) fn classify_earthwork_face_kind_for_source(
+        source: RoadSurfaceEarthworkFaceSource,
+        inner_start: RoadVec3,
+        inner_end: RoadVec3,
+        outer_end: RoadVec3,
+        outer_start: RoadVec3,
+    ) -> RoadSurfaceEarthworkFaceKind {
+        if Self::node_curb_or_sidewalk_drop_requires_retaining_wall(
+            source,
+            inner_start,
+            inner_end,
+            outer_end,
+            outer_start,
+        ) {
+            return RoadSurfaceEarthworkFaceKind::RetainingWall;
+        }
+        Self::classify_earthwork_face_kind(inner_start, inner_end, outer_end, outer_start)
+    }
+
     pub(in crate::simulation::network::surface) fn classify_earthwork_face_kind(
         inner_start: RoadVec3,
         inner_end: RoadVec3,
@@ -27,6 +46,31 @@ impl RoadSurfaceSystem {
         } else {
             RoadSurfaceEarthworkFaceKind::Slope
         }
+    }
+
+    fn node_curb_or_sidewalk_drop_requires_retaining_wall(
+        source: RoadSurfaceEarthworkFaceSource,
+        inner_start: RoadVec3,
+        inner_end: RoadVec3,
+        outer_end: RoadVec3,
+        outer_start: RoadVec3,
+    ) -> bool {
+        let owner_kind = match source {
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { owner_kind, .. }
+            | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                owner_kind, ..
+            } => owner_kind,
+            RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => return false,
+        };
+        if !matches!(
+            owner_kind,
+            RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk
+        ) {
+            return false;
+        }
+        let inner_min_y = inner_start.y.min(inner_end.y);
+        let outer_max_y = outer_start.y.max(outer_end.y);
+        inner_min_y - outer_max_y >= f64::from(CURB_STEP_HEIGHT_M) * 0.5
     }
 
     pub(in crate::simulation::network::surface) fn sort_earthwork_render_faces(

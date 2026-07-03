@@ -53,6 +53,83 @@ fn logged_flat_three_way_right_angle_junction_compiles_explicit_raised_steps() {
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
     assert_canonical_explicit_vertical_steps_have_faces(piece);
+    assert_flat_junction_raised_geometry_invariants(piece);
+}
+
+fn assert_flat_junction_raised_geometry_invariants(piece: &RoadSurfaceVisualNodePiece) {
+    assert_flat_junction_raised_top_triangles_stay_at_curb_height(piece);
+    assert_node_curb_and_sidewalk_drops_are_retaining_walls(piece);
+}
+
+fn assert_flat_junction_raised_top_triangles_stay_at_curb_height(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
+    assert_flat_polygons_stay_at_curb_height("curb", &piece.curb_surface_polygons);
+    assert_flat_polygons_stay_at_curb_height("sidewalk", &piece.sidewalk_surface_polygons);
+}
+
+fn assert_flat_polygons_stay_at_curb_height(label: &str, polygons: &[RoadSurfaceVisualPolygon]) {
+    let expected_y = f64::from(CURB_STEP_HEIGHT_M);
+    let off_height_triangles = polygons
+        .iter()
+        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        .filter(|triangle| {
+            triangle
+                .iter()
+                .any(|point| (point.y - expected_y).abs() > f64::from(SAMPLE_EPSILON_M))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        off_height_triangles.is_empty(),
+        "{label} JunctionN top triangles must stay flat at curb height; off_height_triangles={off_height_triangles:?}"
+    );
+}
+
+fn assert_node_curb_and_sidewalk_drops_are_retaining_walls(piece: &RoadSurfaceVisualNodePiece) {
+    let raised_drop_faces = piece
+        .render_earthwork_faces
+        .iter()
+        .filter(|face| {
+            node_earthwork_face_owner_is_raised_top(face.source)
+                && earthwork_face_has_curb_height_drop(face)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !raised_drop_faces.is_empty(),
+        "flat JunctionN should expose curb/sidewalk drop earthwork faces"
+    );
+    let sloped_drop_faces = raised_drop_faces
+        .iter()
+        .copied()
+        .filter(|face| face.kind == RoadSurfaceEarthworkFaceKind::Slope)
+        .collect::<Vec<_>>();
+    assert!(
+        sloped_drop_faces.is_empty(),
+        "node curb/sidewalk drops must export retaining-wall faces, not slopes; sloped_drop_faces={sloped_drop_faces:?}"
+    );
+}
+
+fn node_earthwork_face_owner_is_raised_top(source: RoadSurfaceEarthworkFaceSource) -> bool {
+    let owner_kind = match source {
+        RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary { owner_kind, .. }
+        | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff { owner_kind, .. } => {
+            owner_kind
+        }
+        RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => return false,
+    };
+    matches!(
+        owner_kind,
+        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk
+    )
+}
+
+fn earthwork_face_has_curb_height_drop(face: &RoadSurfaceEarthworkRenderFace) -> bool {
+    let [_, _, outer_end, outer_start] = face.polygon.points_world.as_slice() else {
+        return false;
+    };
+    let inner_min_y = face.inner_start.y.min(face.inner_end.y);
+    let outer_max_y = outer_start.y.max(outer_end.y);
+    inner_min_y - outer_max_y >= f64::from(CURB_STEP_HEIGHT_M) * 0.5
 }
 
 #[test]
@@ -114,6 +191,7 @@ fn logged_flat_three_way_junction_keeps_all_height_jumps_faced() {
     surface.compile_dirty(&graph, &terrain);
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     assert_no_unfaced_cross_material_height_boundaries(piece);
     assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
 }
@@ -174,6 +252,7 @@ fn regenerated_flat_three_way_junction_keeps_all_height_jumps_faced() {
     surface.compile_dirty(&graph, &terrain);
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     assert_no_unfaced_cross_material_height_boundaries(piece);
     assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
 }
@@ -240,6 +319,7 @@ fn logged_curved_flat_three_way_junction_does_not_emit_orphan_raised_step_caps()
     surface.compile_dirty(&graph, &terrain);
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     assert_no_unfaced_cross_material_height_boundaries(piece);
     assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
 }
@@ -342,6 +422,7 @@ fn regenerated_curved_flat_three_way_junction_filters_curb_width_orphan_caps() {
         center_node["material_footprint_coverage"]
     );
     assert_no_unfaced_cross_material_height_boundaries(piece);
+    assert_flat_junction_raised_geometry_invariants(piece);
     assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
     assert_no_missing_top_footprint_shapes_touch_boundaries(piece);
     assert_surface_terrain_cdt_contract(
@@ -420,6 +501,7 @@ fn logged_flat_four_way_junction_does_not_emit_curb_width_orphan_caps() {
     surface.compile_dirty(&graph, &terrain);
 
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     assert_no_unfaced_cross_material_height_boundaries(piece);
     assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
 }
@@ -783,7 +865,7 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             carrier_record_count: 320,
             source_segment_record_count: 19,
             polygon_key_set_digest: 597332141332153094,
-            top_owner_height_field_digest: 14324855606363737768,
+            top_owner_height_field_digest: 7056752584757341824,
             carrier_owner_source_height_field_digest: 1553872997480254388,
             source_segment_id_digest: 17651613363160715331,
             source_segment_ids: vec![
@@ -822,7 +904,7 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             carrier_record_count: 567,
             source_segment_record_count: 28,
             polygon_key_set_digest: 7855490188956755304,
-            top_owner_height_field_digest: 12958736732235442769,
+            top_owner_height_field_digest: 2508482512379286553,
             carrier_owner_source_height_field_digest: 13238820941424359883,
             source_segment_id_digest: 2898317876464273514,
             source_segment_ids: vec![
@@ -870,7 +952,7 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             carrier_record_count: 706,
             source_segment_record_count: 32,
             polygon_key_set_digest: 3533066805734846189,
-            top_owner_height_field_digest: 17439638755244052492,
+            top_owner_height_field_digest: 17129460900484566228,
             carrier_owner_source_height_field_digest: 13406976634543183515,
             source_segment_id_digest: 6020531977663627717,
             source_segment_ids: vec![
@@ -1038,6 +1120,7 @@ fn compile_generated_flat_t_junction(
         );
     }
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     generated_node_canonical_signature(piece)
 }
 
@@ -1065,6 +1148,7 @@ fn compile_generated_flat_multiway_junction(
         );
     }
     let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     generated_node_canonical_signature(piece)
 }
 
@@ -1091,7 +1175,8 @@ fn compile_generated_flat_t_junction_raw_identity(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, &graph, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     canonical_node_raw_polygon_identity(&surface, &graph, center)
 }
 
@@ -1118,7 +1203,8 @@ fn compile_generated_flat_multiway_junction_raw_identity(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, &graph, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     canonical_node_raw_polygon_identity(&surface, &graph, center)
 }
 
@@ -1147,7 +1233,8 @@ fn compile_generated_flat_multiway_junction_with_widths_raw_identity(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, &graph, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     canonical_node_raw_polygon_identity(&surface, &graph, center)
 }
 
@@ -1179,7 +1266,8 @@ fn compile_generated_flat_multiway_junction_with_widths_and_profile_modes_raw_id
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, &graph, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     canonical_node_raw_polygon_identity(&surface, &graph, center)
 }
 
@@ -1208,6 +1296,7 @@ fn compile_generated_flat_four_way_junction_raw_identity(
             canonical_junction_pipeline_report(&surface, &graph, center)
         );
     }
-    assert_compiled_junction_piece(&surface, &graph, center);
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
     canonical_node_raw_polygon_identity(&surface, &graph, center)
 }
