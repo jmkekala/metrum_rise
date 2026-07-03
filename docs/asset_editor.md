@@ -420,15 +420,19 @@ V1 keeps the generic entrance/exit runtime intentionally simple: every building 
 `entrance` anchor named `main` for pedestrian access and entrance-cache derivation. The editor
 stores and edits that entrance in the same anchor list as the optional site-layout anchors:
 
-- `driveway`: connector intent from lot interior toward the road-facing edge; requires `width_m`
+- `driveway`: vehicle connector pinned to the road-facing plot edge and pointing inward into the
+  lot; requires `width_m`
 - `parking`: car stop/stand position inside the lot; requires `width_m` and `length_m`
 - `loading_bay`: freight/service stop position inside the lot; requires `width_m` and `length_m`
-- All building anchor positions must remain inside the authored lot footprint. For `driveway`,
-  `parking`, and `loading_bay`, the whole authored footprint/rectangle must remain inside the lot;
-  the anchor handle alone being inside is not enough. Driveway footprint length is derived by the
-  editor from `width_m` in v1. All anchor `forward` vectors must be finite non-zero unit vectors.
+- All building anchor positions must remain inside the authored lot footprint. `driveway` anchors
+  must lie on the frontage edge; the editor lets them slide along that edge and derives their
+  inward direction from the building frontage. For `driveway`, `parking`, and `loading_bay`, the
+  whole authored footprint/rectangle must remain inside the lot; the anchor handle alone being
+  inside is not enough. Driveway footprint length is derived by the editor from `width_m` in v1.
+  All anchor `forward` vectors must be finite non-zero unit vectors.
 - `entrance/main` cannot be deleted. Dragging any anchor moves it; right-click dragging or the
-  shared yaw field rotates its `forward`.
+  shared yaw field rotates its `forward`, except for driveway anchors whose direction follows the
+  frontage edge.
 
 Runtime use in v1:
 
@@ -1905,6 +1909,8 @@ Building rules:
   `main` entrance anchor's `forward` vector.
 - Additional building-side site points use `type = "driveway"`, `type = "parking"`, or
   `type = "loading_bay"`, not a second generic `entrance` anchor.
+- Driveway anchors require cardinal `[building].frontage_forward`, must lie on that frontage edge,
+  and must point inward into the lot.
 - Driveway, parking, and loading-bay footprints must fit fully inside the authored lot rectangle.
 - In v1, driveway, parking, and loading-bay anchors are not rendered as ground treatment. Authored
   `[[site_surfaces]]` polygons own asphalt, concrete, walkways, parking pads, loading pads, and

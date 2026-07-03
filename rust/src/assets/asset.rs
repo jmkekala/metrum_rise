@@ -118,7 +118,7 @@ pub struct Anchor {
 pub enum AnchorType {
     /// Main pedestrian entrance / road-facing access point on a building.
     Entrance,
-    /// Vehicle connector from the lot interior toward the road-facing edge.
+    /// Vehicle connector pinned to the road-facing lot edge and pointing into the lot.
     Driveway,
     /// Vehicle parking position inside a building lot.
     Parking,
@@ -575,6 +575,7 @@ impl AssetManifest {
             if let Some(frontage_forward) = b.frontage_forward {
                 validate_building_frontage_forward(&self.asset_id, frontage_forward)?;
             }
+            let frontage_forward = self.building_frontage_forward();
             if b.effective_min_zone_width_cells() == 0 || b.effective_min_zone_depth_cells() == 0 {
                 return Err(ManifestError::Validation(format!(
                     "asset_id '{}': min_zone_width_cells and min_zone_depth_cells must be > 0",
@@ -661,6 +662,12 @@ impl AssetManifest {
                             anchor,
                             "width_m",
                             anchor.width_m,
+                        )?;
+                        validate_building_driveway_frontage_edge(
+                            &self.asset_id,
+                            b,
+                            anchor,
+                            frontage_forward,
                         )?;
                         validate_building_site_anchor_footprint(&self.asset_id, b, anchor)?;
                     }
@@ -904,6 +911,74 @@ fn validate_building_site_anchor_footprint(
         }
     }
     Ok(())
+}
+
+fn validate_building_driveway_frontage_edge(
+    asset_id: &str,
+    building: &BuildingData,
+    anchor: &Anchor,
+    frontage_forward: [f32; 3],
+) -> Result<(), ManifestError> {
+    let half_lot_width = f32::from(building.lot_width_cells) * ZONE_CELL_M * 0.5;
+    let half_lot_depth = f32::from(building.lot_depth_cells) * ZONE_CELL_M * 0.5;
+    let Some((edge_axis_x, outward_sign)) = building_cardinal_frontage_axis(frontage_forward)
+    else {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': driveway anchors require cardinal building frontage_forward, got {:?}",
+            asset_id, frontage_forward
+        )));
+    };
+    let edge_distance = if edge_axis_x {
+        half_lot_width
+    } else {
+        half_lot_depth
+    };
+    let edge_position = outward_sign * edge_distance;
+    let anchor_edge_position = if edge_axis_x {
+        anchor.position[0]
+    } else {
+        anchor.position[2]
+    };
+    if (anchor_edge_position - edge_position).abs() > ANCHOR_LOT_EPS_M {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': driveway anchor '{}' must lie on the road-facing frontage edge at {}={}m",
+            asset_id,
+            anchor.name,
+            if edge_axis_x { "x" } else { "z" },
+            edge_position
+        )));
+    }
+
+    let [forward_x, _, forward_z] = anchor.forward;
+    let horizontal_len = (forward_x * forward_x + forward_z * forward_z).sqrt();
+    if horizontal_len <= ANCHOR_FORWARD_UNIT_EPS {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': driveway anchor '{}' must point inward from the frontage edge",
+            asset_id, anchor.name
+        )));
+    }
+    let inward_x = if edge_axis_x { -outward_sign } else { 0.0 };
+    let inward_z = if edge_axis_x { 0.0 } else { -outward_sign };
+    let inward_dot =
+        (forward_x / horizontal_len) * inward_x + (forward_z / horizontal_len) * inward_z;
+    if inward_dot < 1.0 - ANCHOR_FORWARD_UNIT_EPS {
+        return Err(ManifestError::Validation(format!(
+            "asset_id '{}': driveway anchor '{}' must point inward from the frontage edge",
+            asset_id, anchor.name
+        )));
+    }
+    Ok(())
+}
+
+fn building_cardinal_frontage_axis(frontage_forward: [f32; 3]) -> Option<(bool, f32)> {
+    let [x, _, z] = frontage_forward;
+    if x.abs() >= 1.0 - ANCHOR_FORWARD_UNIT_EPS && z.abs() <= ANCHOR_FORWARD_UNIT_EPS {
+        return Some((true, if x >= 0.0 { 1.0 } else { -1.0 }));
+    }
+    if z.abs() >= 1.0 - ANCHOR_FORWARD_UNIT_EPS && x.abs() <= ANCHOR_FORWARD_UNIT_EPS {
+        return Some((false, if z >= 0.0 { 1.0 } else { -1.0 }));
+    }
+    None
 }
 
 fn validate_building_site_surface(
@@ -1424,6 +1499,162 @@ forward = [0.0, 0.0, -1.0]
     }
 
     #[test]
+    fn building_accepts_driveway_on_frontage_edge() {
+        let toml = r#"
+asset_id = "building.residential.good"
+display_name = "Good"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0.0, 0.0, -1.0]
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, -1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        AssetManifest::from_str(toml).unwrap();
+    }
+
+    #[test]
+    fn building_rejects_driveway_away_from_frontage_edge() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0.0, 0.0, -1.0]
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, -1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, 0.0]
+forward = [0.0, 0.0, 1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        let err = AssetManifest::from_str(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("frontage edge"),
+            "expected driveway frontage-edge validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_driveway_forward_away_from_lot() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0.0, 0.0, -1.0]
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, -1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        let err = AssetManifest::from_str(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("point inward"),
+            "expected driveway inward-direction validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn building_rejects_driveway_with_diagonal_frontage() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0.70710677, 0.0, 0.70710677]
+household_capacity = 1
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 10.0]
+forward = [0.0, 0.0, 1.0]
+
+[[anchors]]
+type = "driveway"
+position = [0.0, 0.0, 10.0]
+forward = [0.0, 0.0, -1.0]
+width_m = 3.0
+
+[[mesh_parts]]
+name = "main"
+
+[[mesh_parts.lods]]
+file = "lod0.glb"
+distance_min_m = 0.0
+"#;
+        let err = AssetManifest::from_str(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("cardinal"),
+            "expected driveway cardinal-frontage validation error, got: {err}"
+        );
+    }
+
+    #[test]
     fn building_rejects_driveway_footprint_outside_lot() {
         let toml = r#"
 asset_id = "building.residential.bad"
@@ -1439,14 +1670,14 @@ household_capacity = 1
 [[anchors]]
 type = "entrance"
 name = "main"
-position = [0.0, 0.0, 9.0]
-forward = [0.0, 0.0, 1.0]
+position = [0.0, 0.0, -10.0]
+forward = [0.0, 0.0, -1.0]
 
 [[anchors]]
 type = "driveway"
-position = [0.0, 0.0, 9.0]
+position = [0.0, 0.0, -10.0]
 forward = [0.0, 0.0, 1.0]
-width_m = 3.0
+width_m = 25.0
 
 [[mesh_parts]]
 name = "main"

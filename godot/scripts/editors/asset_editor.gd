@@ -2689,11 +2689,14 @@ func _add_site_anchor(anchor_type: String) -> void:
 	if anchor_type == "entrance":
 		_select_site_anchor(_ensure_main_entrance_anchor())
 		return
+	var anchor_forward := _frontage_fwd
+	if anchor_type == "driveway":
+		anchor_forward = _driveway_anchor_forward()
 	var anchor := {
 		"anchor_type": anchor_type,
 		"name": "",
 		"position": _vector3_to_array(_default_site_anchor_position(anchor_type), 0.01),
-		"forward": _vector3_to_array(_frontage_fwd, 0.001),
+		"forward": _vector3_to_array(anchor_forward, 0.001),
 		"width_m": float(SITE_ANCHOR_DEFAULT_WIDTH_M.get(anchor_type, 2.0)),
 		"vehicle_class": _default_site_anchor_vehicle_class(anchor_type),
 	}
@@ -2718,6 +2721,13 @@ func _default_site_anchor_position(anchor_type: String) -> Vector3:
 		fwd = Vector3.FORWARD
 	var side := Vector3(-fwd.z, 0.0, fwd.x)
 	var edge_distance := lot_half_d if absf(fwd.z) >= absf(fwd.x) else lot_half_w
+	if anchor_type == "driveway":
+		var outward := _frontage_edge_outward()
+		var driveway_side := Vector3(-outward.z, 0.0, outward.x)
+		var driveway_edge_distance := lot_half_w if absf(outward.x) > 0.5 else lot_half_d
+		return _clamp_anchor_position_to_lot(
+			outward * driveway_edge_distance + driveway_side * side_offset
+		)
 	var inward := -fwd
 	var base := fwd * maxf(0.0, edge_distance - 2.0 - depth_offset) + side * side_offset
 	if anchor_type == "parking":
@@ -2871,6 +2881,7 @@ func _update_site_anchor_controls() -> void:
 	var anchor := _site_anchors_data[_selected_site_anchor_index] if has_anchor else {}
 	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
 	var is_entrance := has_anchor and _is_main_entrance_anchor(anchor)
+	var is_driveway := has_anchor and anchor_type == "driveway"
 	var has_size := has_anchor and anchor_type != "entrance"
 	var has_length := has_anchor and (anchor_type == "parking" or anchor_type == "loading_bay")
 	var pos := _anchor_position(anchor)
@@ -2885,8 +2896,11 @@ func _update_site_anchor_controls() -> void:
 	_site_anchor_length_spin.value = _anchor_number(anchor, "length_m", 0.0) if has_length else 0.0
 	_site_anchor_name_edit.editable = has_anchor and not is_entrance
 	_site_anchor_vehicle_class_btn.disabled = not has_size
-	for control in [_site_anchor_x_spin, _site_anchor_y_spin, _site_anchor_z_spin, _site_anchor_yaw_spin]:
-		(control as SpinBox).editable = has_anchor
+	var frontage_outward := _frontage_edge_outward()
+	_site_anchor_x_spin.editable = has_anchor and not (is_driveway and absf(frontage_outward.x) > 0.5)
+	_site_anchor_y_spin.editable = has_anchor
+	_site_anchor_z_spin.editable = has_anchor and not (is_driveway and absf(frontage_outward.z) > 0.5)
+	_site_anchor_yaw_spin.editable = has_anchor and not is_driveway
 	_site_anchor_width_spin.editable = has_size
 	_site_anchor_length_spin.editable = has_length
 	_updating_site_anchor_controls = false
@@ -2923,10 +2937,10 @@ func _apply_site_anchor_controls() -> void:
 		anchor["name"] = _site_anchor_name_edit.text.strip_edges()
 		anchor["vehicle_class"] = _selected_option_metadata(_site_anchor_vehicle_class_btn, "car")
 		anchor["width_m"] = snappedf(maxf(0.1, float(_site_anchor_width_spin.value)), 0.01)
-	anchor["forward"] = _vector3_to_array(
-		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(_site_anchor_yaw_spin.value)),
-		0.001
-	)
+	var resolved_forward := _forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(_site_anchor_yaw_spin.value))
+	if anchor_type == "driveway":
+		resolved_forward = _driveway_anchor_forward()
+	anchor["forward"] = _vector3_to_array(resolved_forward, 0.001)
 	if not is_entrance and (anchor_type == "parking" or anchor_type == "loading_bay"):
 		anchor["length_m"] = snappedf(maxf(0.1, float(_site_anchor_length_spin.value)), 0.01)
 	elif anchor.has("length_m"):
@@ -3020,8 +3034,12 @@ func _set_site_anchor_position(index: int, pos: Vector3) -> void:
 func _set_site_anchor_yaw(index: int, yaw_degrees: float) -> void:
 	if index < 0 or index >= _site_anchors_data.size():
 		return
+	var anchor_type := str(_site_anchors_data[index].get("anchor_type", "")).strip_edges()
+	var resolved_forward := _forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(yaw_degrees))
+	if anchor_type == "driveway":
+		resolved_forward = _driveway_anchor_forward()
 	_site_anchors_data[index]["forward"] = _vector3_to_array(
-		_forward_from_yaw(_snap_rotation_y_to_cardinal_if_close(yaw_degrees)),
+		resolved_forward,
 		0.001
 	)
 	_site_anchors_data[index]["position"] = _vector3_to_array(
@@ -3293,6 +3311,7 @@ func _export_asset(move_original_after_export: bool) -> void:
 		})
 
 	_ensure_main_entrance_anchor()
+	_clamp_site_anchors_to_lot()
 	var anchors := []
 	for anchor in _site_anchors_data:
 		anchors.append(_export_site_anchor(anchor))
@@ -3701,7 +3720,7 @@ func _set_frontage_forward(fwd: Vector3) -> void:
 	_frontage_fwd = resolved.normalized()
 	_frontage_lbl.text = "Forward: (%.2f, 0, %.2f)" % [_frontage_fwd.x, _frontage_fwd.z]
 	_preview.set_frontage_forward(_frontage_fwd)
-	_update_main_entrance_preview()
+	_clamp_site_anchors_to_lot()
 
 func _snap_xz_to_cardinal(dir: Vector3) -> Vector3:
 	if absf(dir.x) >= absf(dir.z):
@@ -3716,12 +3735,20 @@ func _on_reset_main_entrance_pressed() -> void:
 func _default_main_entrance_position() -> Vector3:
 	var lot_half_w := _width_spin.value * 10.0 * 0.5
 	var lot_half_d := _depth_spin.value * 10.0 * 0.5
-	var fwd := _frontage_fwd
-	if fwd.length_squared() < 0.001:
-		fwd = Vector3.FORWARD
+	var fwd := _frontage_edge_outward()
 	if absf(fwd.x) >= absf(fwd.z):
 		return Vector3((1.0 if fwd.x >= 0.0 else -1.0) * lot_half_w, 0.0, 0.0)
 	return Vector3(0.0, 0.0, (1.0 if fwd.z >= 0.0 else -1.0) * lot_half_d)
+
+func _frontage_edge_outward() -> Vector3:
+	var fwd := _frontage_fwd
+	var flat := Vector3(fwd.x, 0.0, fwd.z)
+	if flat.length_squared() < 0.001:
+		flat = Vector3.FORWARD
+	return _snap_xz_to_cardinal(flat.normalized())
+
+func _driveway_anchor_forward() -> Vector3:
+	return -_frontage_edge_outward()
 
 func _set_main_entrance_position(pos: Vector3, auto_anchor: bool) -> void:
 	_main_entrance_auto = auto_anchor
@@ -3756,6 +3783,9 @@ func _clamp_anchor_position_to_lot(pos: Vector3) -> Vector3:
 func _clamp_site_anchor_position_to_lot(anchor: Dictionary, pos: Vector3) -> Vector3:
 	if not _width_spin or not _depth_spin:
 		return pos
+	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
+	if anchor_type == "driveway":
+		return _clamp_driveway_anchor_position_to_frontage(anchor, pos)
 	var offsets := _site_anchor_footprint_offsets(anchor)
 	if offsets.is_empty():
 		return _clamp_anchor_position_to_lot(pos)
@@ -3788,6 +3818,23 @@ func _clamp_site_anchor_position_to_lot(anchor: Dictionary, pos: Vector3) -> Vec
 		pos.y,
 		_clamp_to_possible_interval(pos.z, -lot_half_d - min_offset_z, lot_half_d - max_offset_z)
 	)
+
+func _clamp_driveway_anchor_position_to_frontage(anchor: Dictionary, pos: Vector3) -> Vector3:
+	var lot_half_w := float(_width_spin.value) * 10.0 * 0.5
+	var lot_half_d := float(_depth_spin.value) * 10.0 * 0.5
+	var outward := _frontage_edge_outward()
+	var side := Vector3(-outward.z, 0.0, outward.x)
+	var edge_distance := lot_half_w if absf(outward.x) > 0.5 else lot_half_d
+	var side_extent := lot_half_d if absf(outward.x) > 0.5 else lot_half_w
+	var half_width := maxf(0.1, _anchor_number(anchor, "width_m", SITE_ANCHOR_DRAG_RADIUS_M)) * 0.5
+	var side_coord := _clamp_to_possible_interval(
+		pos.dot(side),
+		-side_extent + half_width,
+		side_extent - half_width
+	)
+	var edge_coord := edge_distance if outward.dot(outward) > 0.0 else 0.0
+	var clamped := outward * edge_coord + side * side_coord
+	return Vector3(clamped.x, pos.y, clamped.z)
 
 func _site_anchor_footprint_offsets(anchor: Dictionary) -> Array:
 	var anchor_type := str(anchor.get("anchor_type", "")).strip_edges()
@@ -3871,10 +3918,16 @@ func _clamp_to_possible_interval(value: float, min_value: float, max_value: floa
 func _clamp_site_anchors_to_lot() -> void:
 	var changed := false
 	for i in _site_anchors_data.size():
-		var pos := _anchor_position(_site_anchors_data[i])
-		var clamped := _clamp_site_anchor_position_to_lot(_site_anchors_data[i], pos)
+		var anchor := _site_anchors_data[i]
+		if str(anchor.get("anchor_type", "")).strip_edges() == "driveway":
+			var inward := _driveway_anchor_forward()
+			if _anchor_forward(anchor).distance_squared_to(inward) > 0.0001:
+				anchor["forward"] = _vector3_to_array(inward, 0.001)
+				changed = true
+		var pos := _anchor_position(anchor)
+		var clamped := _clamp_site_anchor_position_to_lot(anchor, pos)
 		if clamped.distance_squared_to(pos) > 0.0001:
-			_site_anchors_data[i]["position"] = _vector3_to_array(clamped, 0.01)
+			anchor["position"] = _vector3_to_array(clamped, 0.01)
 			changed = true
 	if changed:
 		_refresh_site_anchor_list()
