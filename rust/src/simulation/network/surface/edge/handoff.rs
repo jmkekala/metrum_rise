@@ -25,12 +25,6 @@ impl RoadSurfaceSystem {
         Self::visual_profile_half_widths_for_edge(edge).0
     }
 
-    pub(in crate::simulation::network::surface) fn visual_carriageway_half_width_m(
-        edge: &Edge,
-    ) -> f32 {
-        Self::visual_profile_half_widths_for_edge(edge).1
-    }
-
     pub(in crate::simulation::network::surface) fn visual_node_handoff_limit_m(edge: &Edge) -> f32 {
         Self::visual_roadbed_half_width_m(edge) + VISUAL_NODE_HANDOFF_PADDING_M
     }
@@ -228,8 +222,23 @@ impl RoadSurfaceSystem {
         else {
             return required_handoff.clamp(0.0, total_length_m);
         };
-        let roadbed_half_width_m = Self::visual_roadbed_half_width_m(edge);
-        let carriageway_half_width_m = Self::visual_carriageway_half_width_m(edge);
+        let (roadbed_half_width_m, carriageway_half_width_m) = self
+            .visual_endpoint_profile_half_widths_for_edge(
+                graph,
+                edge_idx,
+                edge,
+                total_length_m,
+                at_start,
+            );
+        let (_, static_carriageway_half_width_m) = Self::visual_profile_half_widths_for_edge(edge);
+        let has_width_taper_at_node =
+            carriageway_half_width_m < static_carriageway_half_width_m - 0.1;
+        let endpoint_handoff_limit_m = roadbed_half_width_m + VISUAL_NODE_HANDOFF_PADDING_M;
+        required_handoff = if has_width_taper_at_node {
+            endpoint_handoff_limit_m
+        } else {
+            required_handoff.max(endpoint_handoff_limit_m)
+        };
 
         for other in &incidents {
             if other.edge_idx == edge_idx && other.side == side {
@@ -247,12 +256,18 @@ impl RoadSurfaceSystem {
             let sin_theta = (current.direction_xz.x * other.direction_xz.y
                 - current.direction_xz.y * other.direction_xz.x)
                 .abs() as f32;
-            let other_roadbed_half_width_m = Self::visual_roadbed_half_width_m(other_edge);
+            let other_at_start = other.side == IncidentEdgeSide::Start;
+            let (other_roadbed_half_width_m, other_carriageway_half_width_m) = self
+                .visual_endpoint_profile_half_widths_for_edge(
+                    graph,
+                    other.edge_idx,
+                    other_edge,
+                    other_edge.physical_length,
+                    other_at_start,
+                );
             let pair_required = if sin_theta <= VISUAL_CONFLICT_SIN_EPSILON {
                 total_length_m
             } else {
-                let other_carriageway_half_width_m =
-                    Self::visual_carriageway_half_width_m(other_edge);
                 [
                     roadbed_half_width_m + other_roadbed_half_width_m,
                     roadbed_half_width_m + other_carriageway_half_width_m,
@@ -263,7 +278,9 @@ impl RoadSurfaceSystem {
                 .fold(0.0, f32::max)
             };
             let widths_differ = (roadbed_half_width_m - other_roadbed_half_width_m).abs() > 0.1;
-            let max_pair_handoff_m = if widths_differ {
+            let max_pair_handoff_m = if has_width_taper_at_node {
+                endpoint_handoff_limit_m
+            } else if widths_differ {
                 total_length_m
             } else {
                 (roadbed_half_width_m.max(other_roadbed_half_width_m)

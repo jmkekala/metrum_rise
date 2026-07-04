@@ -680,6 +680,44 @@ mod tests {
         }
     }
 
+    fn visible_surface_half_width_at_x(
+        mesh_data: &NetworkMeshData,
+        x: f32,
+        max_z: f32,
+        step: f32,
+        predicate: impl Fn(VisibleSurface) -> bool,
+    ) -> f32 {
+        visible_surface_half_width_at_x_side(mesh_data, x, 1.0, max_z, step, predicate)
+    }
+
+    fn visible_surface_half_width_at_x_side(
+        mesh_data: &NetworkMeshData,
+        x: f32,
+        z_direction: f32,
+        max_z: f32,
+        step: f32,
+        predicate: impl Fn(VisibleSurface) -> bool,
+    ) -> f32 {
+        let road_triangles = main_triangles(mesh_data, VisibleSurface::Road);
+        let curb_triangles = main_triangles(mesh_data, VisibleSurface::Curb);
+        let sidewalk_triangles = main_triangles(mesh_data, VisibleSurface::Sidewalk);
+        let mut half_width = 0.0_f32;
+        let mut z = 0.0_f32;
+        while z <= max_z {
+            let visible_surface = visible_surface_at_point(
+                &road_triangles,
+                &curb_triangles,
+                &sidewalk_triangles,
+                Vector2::new(x, z_direction.signum() * z),
+            );
+            if predicate(visible_surface) {
+                half_width = z;
+            }
+            z += step;
+        }
+        half_width
+    }
+
     fn triangle_coverage_ratio(
         triangles: &[[Vector3; 3]],
         min: Vector2,
@@ -2229,6 +2267,152 @@ mod tests {
             VisibleSurface::Road,
         );
         assert!(center_road >= 0.9);
+    }
+
+    #[test]
+    fn test_width_change_node_tapers_wider_edge() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-25.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n1,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(25.0, 0.0, 0.0),
+            14.0,
+        ));
+
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 80.0);
+
+        let road_near_node =
+            visible_surface_half_width_at_x(&mesh_data, 1.0, 10.0, 0.25, |surface| {
+                surface == VisibleSurface::Road
+            });
+        let road_mid_taper =
+            visible_surface_half_width_at_x(&mesh_data, 10.0, 10.0, 0.25, |surface| {
+                surface == VisibleSurface::Road
+            });
+        let road_after_taper =
+            visible_surface_half_width_at_x(&mesh_data, 23.0, 10.0, 0.25, |surface| {
+                surface == VisibleSurface::Road
+            });
+        let roadbed_near_node =
+            visible_surface_half_width_at_x(&mesh_data, 1.0, 12.0, 0.25, |surface| {
+                matches!(
+                    surface,
+                    VisibleSurface::Road | VisibleSurface::Curb | VisibleSurface::Sidewalk
+                )
+            });
+        let roadbed_after_taper =
+            visible_surface_half_width_at_x(&mesh_data, 23.0, 12.0, 0.25, |surface| {
+                matches!(
+                    surface,
+                    VisibleSurface::Road | VisibleSurface::Curb | VisibleSurface::Sidewalk
+                )
+            });
+
+        assert!(
+            road_near_node <= 4.25,
+            "wider road should stay narrow at the width-change node; road_near_node={road_near_node:.2}"
+        );
+        assert!(
+            road_mid_taper >= road_near_node + 1.0,
+            "wider road should expand through the taper; road_near_node={road_near_node:.2} road_mid_taper={road_mid_taper:.2}"
+        );
+        assert!(
+            road_after_taper >= 6.5,
+            "wider road should return to full width after the taper; road_after_taper={road_after_taper:.2}"
+        );
+        assert!(
+            roadbed_after_taper >= roadbed_near_node + 2.0,
+            "curb and sidewalk should widen with the roadbed; roadbed_near_node={roadbed_near_node:.2} roadbed_after_taper={roadbed_after_taper:.2}"
+        );
+    }
+
+    #[test]
+    fn test_angled_width_change_node_tapers_outside_wider_edge_side() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 15.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-25.0, 0.0, 15.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n1,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(25.0, 0.0, 0.0),
+            14.0,
+        ));
+
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 80.0);
+
+        let road_negative_near_node =
+            visible_surface_half_width_at_x_side(&mesh_data, 10.0, -1.0, 10.0, 0.25, |surface| {
+                surface == VisibleSurface::Road
+            });
+        let road_after_taper =
+            visible_surface_half_width_at_x_side(&mesh_data, 23.0, 1.0, 10.0, 0.25, |surface| {
+                surface == VisibleSurface::Road
+            });
+        let roadbed_negative_near_node =
+            visible_surface_half_width_at_x_side(&mesh_data, 10.0, -1.0, 12.0, 0.25, |surface| {
+                matches!(
+                    surface,
+                    VisibleSurface::Road | VisibleSurface::Curb | VisibleSurface::Sidewalk
+                )
+            });
+        let roadbed_after_taper =
+            visible_surface_half_width_at_x_side(&mesh_data, 23.0, 1.0, 12.0, 0.25, |surface| {
+                matches!(
+                    surface,
+                    VisibleSurface::Road | VisibleSurface::Curb | VisibleSurface::Sidewalk
+                )
+            });
+
+        assert!(
+            road_negative_near_node <= 7.0,
+            "angled wider road should taper on negative side; road_negative_near_node={road_negative_near_node:.2}"
+        );
+        assert!(
+            road_after_taper >= 6.5,
+            "angled wider road should return to full width after the taper; road_after_taper={road_after_taper:.2}"
+        );
+        assert!(
+            roadbed_negative_near_node <= 7.75,
+            "angled roadbed should not leave the negative sidewalk at full width near the node; roadbed_negative_near_node={roadbed_negative_near_node:.2}"
+        );
+        assert!(
+            roadbed_after_taper >= 8.0,
+            "angled roadbed should return to full sidewalk width after the taper; roadbed_after_taper={roadbed_after_taper:.2}"
+        );
     }
 
     #[test]

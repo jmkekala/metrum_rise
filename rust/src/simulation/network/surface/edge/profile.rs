@@ -56,6 +56,7 @@ impl RoadSurfaceSystem {
         center: RoadVec3,
         lateral_xz: RoadVec2,
         profile_blend: Option<EdgeProfilePlaneBlend>,
+        carriageway_half_width_override_m: Option<f32>,
     ) -> Vec<RoadSurfaceBand> {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
             let flat_height_m = center.y as f32;
@@ -70,7 +71,7 @@ impl RoadSurfaceSystem {
         };
 
         let mut bands = Vec::new();
-        Self::for_each_lateral_band_spec(edge, |spec| {
+        Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, |spec| {
             bands.push(RoadSurfaceBand {
                 kind: spec.kind,
                 lateral_start_m: spec.lateral_start_m,
@@ -85,9 +86,16 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn visual_profile_half_widths_for_edge(
         edge: &Edge,
     ) -> (f32, f32) {
+        Self::visual_profile_half_widths_for_edge_with_carriageway_override(edge, None)
+    }
+
+    pub(in crate::simulation::network::surface::edge) fn visual_profile_half_widths_for_edge_with_carriageway_override(
+        edge: &Edge,
+        carriageway_half_width_override_m: Option<f32>,
+    ) -> (f32, f32) {
         let mut roadbed_half_width_m = 0.0_f32;
         let mut carriageway_half_width_m = 0.0_f32;
-        Self::for_each_lateral_band_spec(edge, |spec| {
+        Self::for_each_lateral_band_spec(edge, carriageway_half_width_override_m, |spec| {
             let band_half_width_m = spec.lateral_start_m.abs().max(spec.lateral_end_m.abs());
             roadbed_half_width_m = roadbed_half_width_m.max(band_half_width_m);
             if spec.kind == RoadSurfaceBandKind::Carriageway {
@@ -97,7 +105,11 @@ impl RoadSurfaceSystem {
         (roadbed_half_width_m, carriageway_half_width_m)
     }
 
-    fn for_each_lateral_band_spec(edge: &Edge, mut emit: impl FnMut(EdgeLateralBandSpec)) {
+    fn for_each_lateral_band_spec(
+        edge: &Edge,
+        carriageway_half_width_override_m: Option<f32>,
+        mut emit: impl FnMut(EdgeLateralBandSpec),
+    ) {
         if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
             let half_width = edge.width.max(2.0) * 0.5;
             emit(EdgeLateralBandSpec {
@@ -110,7 +122,9 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        let half_carriageway = edge.width.max(config::LANE_WIDTH) * 0.5;
+        let half_carriageway = carriageway_half_width_override_m
+            .unwrap_or_else(|| edge.width.max(config::LANE_WIDTH) * 0.5)
+            .max(config::LANE_WIDTH * 0.5);
         let has_sidewalk = edge.allowed_types & TransitFlags::FOOT != 0;
         let sidewalk_total = if has_sidewalk {
             config::SIDEWALK_WIDTH

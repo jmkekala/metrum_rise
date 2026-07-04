@@ -90,7 +90,8 @@ impl RoadSurfaceSystem {
         }
 
         let uses_explicit_band_domain_paths =
-            incident_profile_path_has_non_collinear_center(&profile_path);
+            incident_profile_path_has_non_collinear_center(&profile_path)
+                || incident_profile_path_has_non_collinear_boundary(&profile_path);
         let boundary_paths_world = (0..profile.boundary_points_world.len())
             .map(|boundary_index| {
                 incident_world_path(
@@ -210,6 +211,45 @@ fn incident_profile_path_has_non_collinear_center(path: &[IncidentMouthProfile])
         let px = i128::from(key.x_key() - start.x_key());
         let pz = i128::from(key.z_key() - start.z_key());
         px * dz - pz * dx != 0
+    })
+}
+
+fn incident_profile_path_has_non_collinear_boundary(path: &[IncidentMouthProfile]) -> bool {
+    if path.len() <= 2 {
+        return false;
+    }
+    let Some(first) = path.first() else {
+        return false;
+    };
+    let Some(last) = path.last() else {
+        return false;
+    };
+
+    (0..first.boundary_points_world.len()).any(|boundary_index| {
+        let Some(&start_point) = first.boundary_points_world.get(boundary_index) else {
+            return false;
+        };
+        let Some(&end_point) = last.boundary_points_world.get(boundary_index) else {
+            return false;
+        };
+        let start =
+            NodeArrangementKey::from_point(super::super::backend::road_vec3_xz(start_point));
+        let end = NodeArrangementKey::from_point(super::super::backend::road_vec3_xz(end_point));
+        if start == end {
+            return false;
+        }
+
+        let dx = i128::from(end.x_key() - start.x_key());
+        let dz = i128::from(end.z_key() - start.z_key());
+        path[1..path.len() - 1].iter().any(|profile| {
+            let Some(&point) = profile.boundary_points_world.get(boundary_index) else {
+                return false;
+            };
+            let key = NodeArrangementKey::from_point(super::super::backend::road_vec3_xz(point));
+            let px = i128::from(key.x_key() - start.x_key());
+            let pz = i128::from(key.z_key() - start.z_key());
+            px * dz - pz * dx != 0
+        })
     })
 }
 
