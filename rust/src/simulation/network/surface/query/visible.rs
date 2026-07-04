@@ -59,6 +59,53 @@ impl RoadSurfaceSystem {
         earthwork_height_m
     }
 
+    pub(crate) fn sample_visible_carriageway_height(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        world_x: f32,
+        world_z: f32,
+    ) -> Option<f32> {
+        let world_x = f64::from(world_x);
+        let world_z = f64::from(world_z);
+        let chunk = self.chunk_coords_for_world(world_x, world_z);
+        let point = RoadVec2::new(world_x, world_z);
+        let mut road_surface_height_m: Option<f32> = None;
+
+        self.visit_point_query_chunk_contributors(chunk, &mut |edge_indices, node_ids| {
+            for &node_id in node_ids {
+                let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                    continue;
+                };
+                if !self.node_uses_visible_surface(graph, terrain, node_id) {
+                    continue;
+                }
+                for polygon in &piece.road_surface_polygons {
+                    Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                        if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                            keep_max_height(&mut road_surface_height_m, height_m);
+                        }
+                    });
+                }
+            }
+
+            for &edge_idx in edge_indices {
+                let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                    continue;
+                };
+                for polygon in &piece.road_surface_polygons {
+                    Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                        if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                            keep_max_height(&mut road_surface_height_m, height_m);
+                        }
+                    });
+                }
+            }
+        });
+
+        road_surface_height_m
+    }
+
     fn visit_point_query_chunk_contributors<F>(&self, chunk: SurfaceChunkKey, visitor: &mut F)
     where
         F: FnMut(&[usize], &[u32]),

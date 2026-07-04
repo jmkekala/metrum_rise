@@ -43,7 +43,7 @@ impl RoadRenderer {
             standard_surface::build_compiled_surface_coverage(graph, road_surface, terrain);
         let mut mesh = NetworkMeshData::new();
 
-        crosswalks::emit_crosswalk_markings(&mut mesh, lane_system);
+        crosswalks::emit_crosswalk_markings(&mut mesh, graph, lane_system, terrain, road_surface);
         standard_surface::emit_compiled_surface_mesh(
             &mut mesh,
             graph,
@@ -54,6 +54,7 @@ impl RoadRenderer {
         standard_surface::emit_compiled_lane_markings(
             &mut mesh,
             graph,
+            lane_system,
             road_surface,
             terrain,
             &compiled_surface,
@@ -272,9 +273,20 @@ pub(super) fn concrete_color() -> Color {
 }
 
 pub(super) fn marking_center_color() -> Color {
-    Color::from_rgba(0.0, 1.0, 1.0, 0.0)
+    Color::from_rgba(1.0, 0.86, 0.12, 1.0)
 }
 
 pub(super) fn marking_dash_color() -> Color {
-    Color::from_rgba(0.0, 1.0, 0.0, 0.0)
+    Color::from_rgba(1.0, 1.0, 1.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{marking_center_color, marking_dash_color};
+
+    #[test]
+    fn lane_marking_colors_are_visible() {
+        assert!(marking_center_color().a > 0.0);
+        assert!(marking_dash_color().a > 0.0);
+    }
 }

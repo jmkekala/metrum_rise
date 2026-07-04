@@ -266,6 +266,29 @@ mod tests {
             .collect()
     }
 
+    fn triangles_from_vertices_matching_colors(
+        vertices: &[Vector3],
+        colors: &[Color],
+        mut matches_color: impl FnMut(Color) -> bool,
+    ) -> Vec<[Vector3; 3]> {
+        assert_eq!(
+            vertices.len(),
+            colors.len(),
+            "colored triangle data must keep vertices and colors aligned"
+        );
+        vertices
+            .chunks_exact(3)
+            .zip(colors.chunks_exact(3))
+            .filter_map(|(triangle, triangle_colors)| {
+                triangle_colors
+                    .iter()
+                    .copied()
+                    .all(&mut matches_color)
+                    .then(|| [triangle[0], triangle[1], triangle[2]])
+            })
+            .collect()
+    }
+
     fn triangle_projected_double_area(triangle: [Vector3; 3]) -> f32 {
         let [a, b, c] = triangle;
         (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
@@ -2454,6 +2477,123 @@ mod tests {
             mesh_data.marking_vertices.len() >= 150,
             "Expected significant marking vertices for crosswalks, got {}",
             mesh_data.marking_vertices.len()
+        );
+    }
+
+    #[test]
+    fn lane_markings_stop_before_crosswalk_edges() {
+        let road = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&road, 1, 1)]);
+        validate_mesh(&mesh_data, 70.0);
+
+        let center_line_triangles = triangles_from_vertices_matching_colors(
+            &mesh_data.marking_vertices,
+            &mesh_data.marking_colors,
+            |color| color.r > 0.9 && color.g > 0.7 && color.b < 0.4 && color.a > 0.5,
+        );
+        assert!(
+            !center_line_triangles.is_empty(),
+            "two-lane road should emit visible center-line marking triangles"
+        );
+
+        let edge = graph.edge(0);
+        let crosswalk_center_x = road[0].x + edge.start_clip + config::CROSSWALK_INSET;
+        let crosswalk_half_len_m = 1.0;
+        let crosswalk_min_x = crosswalk_center_x - crosswalk_half_len_m;
+        let crosswalk_max_x = crosswalk_center_x + crosswalk_half_len_m;
+        let crosswalk_center_line_coverage = triangle_coverage_ratio(
+            &center_line_triangles,
+            Vector2::new(crosswalk_min_x + 0.1, -0.25),
+            Vector2::new(crosswalk_max_x - 0.1, 0.25),
+            0.05,
+        );
+        let resumed_center_line_coverage = triangle_coverage_ratio(
+            &center_line_triangles,
+            Vector2::new(crosswalk_max_x + 0.75, -0.25),
+            Vector2::new(crosswalk_max_x + 2.75, 0.25),
+            0.05,
+        );
+
+        assert!(
+            crosswalk_center_line_coverage <= 0.02,
+            "center-line marking should not overlap the zebra crossing span, got coverage={crosswalk_center_line_coverage:.3}"
+        );
+        assert!(
+            resumed_center_line_coverage >= 0.2,
+            "center-line marking should resume after the crosswalk gap, got coverage={resumed_center_line_coverage:.3}"
+        );
+    }
+
+    #[test]
+    fn crosswalk_markings_follow_compiled_road_surface_height() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let mut graph = RegionGraph::new();
+        let west_flat = Vector3::new(-20.0, 0.0, 0.0);
+        let east_flat = Vector3::new(20.0, 0.0, 0.0);
+        let west = graph.add_node(west_flat, NodeType::Junction);
+        let east = graph.add_node(east_flat, NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            west,
+            east,
+            &[west_flat, east_flat],
+            3.5,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            0,
+        ));
+        graph.rebuild_adjacency_list();
+
+        let mut lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        lane_system.rebuild(&mut graph);
+
+        let west_raised = Vector3::new(-20.0, 1.0, 0.0);
+        let east_raised = Vector3::new(20.0, 3.0, 0.0);
+        graph.set_node_pos(west, west_raised);
+        graph.set_node_pos(east, east_raised);
+        let raised_length = west_raised.distance_to(east_raised);
+        {
+            let edge = graph.edge_mut(0);
+            edge.geometry = vec![west_raised, east_raised];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = raised_length;
+        }
+        graph.rebuild_intersection_clips();
+        graph.rebuild_adjacency_list();
+
+        let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        road_surface.compile_dirty(&graph, &terrain);
+        let mesh_data =
+            renderer.generate_mesh_data_with_surface(&graph, &lane_system, &terrain, &road_surface);
+        validate_mesh(&mesh_data, 30.0);
+        assert!(
+            !mesh_data.marking_vertices.is_empty(),
+            "one-lane road terminals should still emit crosswalk paint"
+        );
+
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for vertex in &mesh_data.marking_vertices {
+            let expected_height_m = road_surface
+                .sample_visible_carriageway_height(&graph, &terrain, vertex.x, vertex.z)
+                .or_else(|| {
+                    road_surface.sample_visible_surface_height(&graph, &terrain, vertex.x, vertex.z)
+                })
+                .expect("crosswalk marking vertex should be over compiled road surface");
+            let expected_y = expected_height_m + config::ROAD_DECAL_RENDER_Z_BIAS_M;
+            assert!(
+                (vertex.y - expected_y).abs() <= 0.01,
+                "crosswalk paint must use compiled surface height at {:?}; expected_y={expected_y:.3}",
+                vertex
+            );
+            min_y = min_y.min(vertex.y);
+            max_y = max_y.max(vertex.y);
+        }
+        assert!(
+            min_y > 0.9 && max_y > 2.8,
+            "crosswalk paint should no longer remain at stale flat lane height; y_range={min_y:.3}..{max_y:.3}"
         );
     }
 

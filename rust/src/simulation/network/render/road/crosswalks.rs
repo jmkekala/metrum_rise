@@ -4,23 +4,32 @@ use super::*;
 
 pub(super) fn emit_crosswalk_markings(
     mesh: &mut NetworkMeshData,
+    graph: &crate::simulation::network::graph::RegionGraph,
     lane_system: &crate::simulation::network::lanes::LaneSystem,
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
 ) {
     use crate::simulation::network::lanes::LaneType;
     for lane in &lane_system.lanes {
         if lane.edge_id == usize::MAX && lane.lane_type == LaneType::Foot && lane.is_crosswalk {
             if lane.geometry.len() >= 2 {
-                emit_zebra_stripes(mesh, lane);
+                emit_zebra_stripes(mesh, graph, lane, terrain, road_surface);
             }
         }
     }
 }
 
-const CROSSWALK_STRIPE_WIDTH: f32 = 0.5;
-const CROSSWALK_STRIPE_LEN: f32 = 2.0;
+pub(super) const CROSSWALK_STRIPE_WIDTH: f32 = 0.5;
+pub(super) const CROSSWALK_STRIPE_LEN: f32 = 2.0;
 const CROSSWALK_STRIPE_GAP: f32 = 0.4;
 
-fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::network::lanes::Lane) {
+fn emit_zebra_stripes(
+    mesh: &mut NetworkMeshData,
+    graph: &crate::simulation::network::graph::RegionGraph,
+    lane: &crate::simulation::network::lanes::Lane,
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+) {
     let color = Color::from_rgb(1.0, 1.0, 1.0);
     let step = CROSSWALK_STRIPE_WIDTH + CROSSWALK_STRIPE_GAP;
     let mut travelled = 0.0;
@@ -38,10 +47,10 @@ fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::netw
             mesh,
             MeshLayer::Marking,
             [
-                v0 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
-                v1 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
-                v2 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
-                v3 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
+                crosswalk_marking_vertex(v0, graph, terrain, road_surface),
+                crosswalk_marking_vertex(v1, graph, terrain, road_surface),
+                crosswalk_marking_vertex(v2, graph, terrain, road_surface),
+                crosswalk_marking_vertex(v3, graph, terrain, road_surface),
             ],
             [
                 Vector2::new(0.0, 0.0),
@@ -53,6 +62,19 @@ fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::netw
         );
         travelled += step;
     }
+}
+
+fn crosswalk_marking_vertex(
+    vertex: Vector3,
+    graph: &crate::simulation::network::graph::RegionGraph,
+    terrain: &crate::simulation::terrain::TerrainSystem,
+    road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+) -> Vector3 {
+    let height_m = road_surface
+        .sample_visible_carriageway_height(graph, terrain, vertex.x, vertex.z)
+        .or_else(|| road_surface.sample_visible_surface_height(graph, terrain, vertex.x, vertex.z))
+        .unwrap_or(vertex.y);
+    Vector3::new(vertex.x, height_m + MARKING_RENDER_Z_BIAS_M, vertex.z)
 }
 
 fn sample_polyline_pos_tangent(points: &[Vector3], t: f32) -> (Vector3, Vector3) {
