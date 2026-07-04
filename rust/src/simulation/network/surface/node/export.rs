@@ -434,10 +434,14 @@ impl ArrangementHeightSplitAuthorizationIndex {
         for segment in explicit_vertical_step_segments {
             let (owner, opposite_owner) =
                 ordered_arrangement_owner_pair(segment.owner(), segment.opposite_owner());
-            let bounds = ArrangementKeyBounds::from_segment(segment.start(), segment.end());
+            let bounds = ArrangementKeyBounds::from_segment(segment.start(), segment.end())
+                .expanded(super::boundary::BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
             arrangement_key_index.for_each_key_in_bounds(bounds, |key| {
-                if arrangement_key_lies_exactly_on_step_segment(key, segment.start(), segment.end())
-                {
+                if arrangement_key_lies_on_step_segment_or_endpoint_dust(
+                    key,
+                    segment.start(),
+                    segment.end(),
+                ) {
                     explicit_step_authorizations.insert((key, owner, opposite_owner));
                 }
             });
@@ -600,6 +604,15 @@ impl ArrangementKeyBounds {
             && self.min_z <= key.z_key()
             && key.z_key() <= self.max_z
     }
+
+    fn expanded(self, amount: i64) -> Self {
+        Self {
+            min_x: self.min_x - amount,
+            min_z: self.min_z - amount,
+            max_x: self.max_x + amount,
+            max_z: self.max_z + amount,
+        }
+    }
 }
 
 fn ordered_arrangement_owner_pair(
@@ -622,4 +635,24 @@ fn arrangement_key_lies_exactly_on_step_segment(
     let start = super::keys::SurfaceXzKey::from_raw_keys(start.x_key(), start.z_key());
     let end = super::keys::SurfaceXzKey::from_raw_keys(end.x_key(), end.z_key());
     super::segments::key_lies_exactly_on_segment(point, start, end)
+}
+
+fn arrangement_key_lies_on_step_segment_or_endpoint_dust(
+    point: arrangement::NodeArrangementKey,
+    start: arrangement::NodeArrangementKey,
+    end: arrangement::NodeArrangementKey,
+) -> bool {
+    arrangement_key_lies_exactly_on_step_segment(point, start, end)
+        || arrangement_keys_are_endpoint_dust_neighbors(point, start)
+        || arrangement_keys_are_endpoint_dust_neighbors(point, end)
+}
+
+fn arrangement_keys_are_endpoint_dust_neighbors(
+    a: arrangement::NodeArrangementKey,
+    b: arrangement::NodeArrangementKey,
+) -> bool {
+    let dx = i128::from(a.x_key() - b.x_key());
+    let dz = i128::from(a.z_key() - b.z_key());
+    let dust = i128::from(super::boundary::BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS);
+    dx * dx + dz * dz <= dust * dust
 }

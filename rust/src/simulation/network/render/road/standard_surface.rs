@@ -518,7 +518,8 @@ fn emit_vertical_surface_polygon(
             if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
                 continue;
             }
-            super::push_triangle_preserving_winding(
+            let normal = vertical_surface_visible_normal(triangle);
+            super::push_triangle_preserving_winding_with_exact_normal(
                 mesh,
                 MeshLayer::RaisedStep,
                 triangle,
@@ -528,6 +529,7 @@ fn emit_vertical_surface_polygon(
                     Vector2::new(1.0, 1.0),
                 ],
                 color,
+                normal,
             );
         }
         return;
@@ -563,14 +565,20 @@ fn emit_vertical_surface_polygon(
         if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
             continue;
         }
-        super::push_triangle_preserving_winding(
+        let normal = vertical_surface_visible_normal(triangle);
+        super::push_triangle_preserving_winding_with_exact_normal(
             mesh,
             MeshLayer::RaisedStep,
             triangle,
             triangle_uvs,
             color,
+            normal,
         );
     }
+}
+
+fn vertical_surface_visible_normal(triangle: [Vector3; 3]) -> Vector3 {
+    -((triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]))
 }
 
 fn section_boundary_world_point(

@@ -196,6 +196,42 @@ mod tests {
             }
         }
 
+        fn validate_raised_step_normals(vertices: &[Vector3], normals: &[Vector3]) {
+            assert_eq!(
+                vertices.len(),
+                normals.len(),
+                "raised_step normals must match vertex count"
+            );
+            for (tri_idx, (triangle, triangle_normals)) in vertices
+                .chunks_exact(3)
+                .zip(normals.chunks_exact(3))
+                .enumerate()
+            {
+                let triangle = [triangle[0], triangle[1], triangle[2]];
+                if triangle_projected_double_area(triangle).abs() >= 0.001
+                    || triangle_y_delta(triangle) < 0.05
+                {
+                    continue;
+                }
+                let visible_direction = godot_cull_back_visible_direction(triangle);
+                if visible_direction.length_squared() <= 1.0e-8 {
+                    continue;
+                }
+                let visible_direction = visible_direction.normalized();
+                for (normal_idx, normal) in triangle_normals.iter().copied().enumerate() {
+                    assert!(
+                        normal.length_squared() > 1.0e-8,
+                        "raised_step tri {tri_idx} normal {normal_idx}: degenerate normal"
+                    );
+                    let dot = normal.normalized().dot(visible_direction);
+                    assert!(
+                        dot >= 0.99,
+                        "raised_step tri {tri_idx} normal {normal_idx}: normal must point toward the Godot-visible side; triangle={triangle:?} normal={normal:?} visible_direction={visible_direction:?} dot={dot:.6}"
+                    );
+                }
+            }
+        }
+
         validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
         validate_triangles(&mesh_data.curb_vertices, max_dist, "curb");
         validate_triangles(&mesh_data.raised_step_vertices, max_dist, "raised_step");
@@ -203,6 +239,10 @@ mod tests {
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
         validate_triangles(&mesh_data.earthwork_vertices, max_dist, "earthwork");
+        validate_raised_step_normals(
+            &mesh_data.raised_step_vertices,
+            &mesh_data.raised_step_normals,
+        );
     }
 
     fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {

@@ -164,14 +164,36 @@ fn constraint_loop_spur_area_is_numeric_dust(
     ) else {
         return false;
     };
-    RoadSurfaceSystem::road_triangle_double_area_xz_m2([
+    let area_m2 = RoadSurfaceSystem::road_triangle_double_area_xz_m2([
         previous.point_world,
         current.point_world,
         next.point_world,
     ])
     .abs()
-        * 0.5
-        <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
+        * 0.5;
+    if area_m2 <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+        return true;
+    }
+
+    area_m2 <= constraint_loop_backtrack_area_budget_m2(previous, current, next)
+}
+
+fn constraint_loop_backtrack_area_budget_m2(
+    previous: &NodeTriangulatedVertex,
+    current: &NodeTriangulatedVertex,
+    next: &NodeTriangulatedVertex,
+) -> f64 {
+    let dust_width_m =
+        NODE_TRIANGULATION_CONSTRAINT_LOOP_DUST_KEY_UNITS as f64 / SURFACE_XZ_KEY_SCALE as f64;
+    let previous_length_m = xz_distance_m(previous.point_world, current.point_world);
+    let next_length_m = xz_distance_m(current.point_world, next.point_world);
+    previous_length_m.max(next_length_m) * dust_width_m
+}
+
+fn xz_distance_m(a: RoadVec3, b: RoadVec3) -> f64 {
+    let dx = a.x - b.x;
+    let dz = a.z - b.z;
+    dx.hypot(dz)
 }
 
 fn insert_arrangement_vertex(

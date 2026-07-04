@@ -82,6 +82,7 @@ struct FinalRequiredRaisedStepSpan {
     segment_end: keys::SurfaceXzKey,
     boundary_keys: RaisedStepBoundaryPointKeys,
     support_key: RaisedStepFaceSupportKey,
+    rendered_key: RenderedRaisedStepFaceKey,
     source: RoadSurfaceVerticalFaceSource,
 }
 
@@ -99,6 +100,27 @@ struct RaisedStepFaceSupportKey {
     raised_owner: NodeBandOwner,
     lower_edge: NodeTopSupportEdgeKey,
     upper_edge: NodeTopSupportEdgeKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RenderedRaisedStepFaceKey {
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_edge: RenderedRaisedStepEdgeKey,
+    upper_edge: RenderedRaisedStepEdgeKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RenderedRaisedStepEdgeKey {
+    start: RenderedRaisedStepVertexKey,
+    end: RenderedRaisedStepVertexKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RenderedRaisedStepVertexKey {
+    x_mm: i64,
+    y_mm: i64,
+    z_mm: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -298,12 +320,20 @@ fn final_required_raised_step_spans(
                     raised_owner,
                     boundary_keys,
                 );
+                let Some(rendered_key) = rendered_raised_step_face_key_from_boundary_points(
+                    lower_owner,
+                    raised_owner,
+                    boundary_keys,
+                ) else {
+                    continue;
+                };
                 let span = FinalRequiredRaisedStepSpan {
                     lower_edge: *lower_edge,
                     segment_start,
                     segment_end,
                     boundary_keys,
                     support_key,
+                    rendered_key,
                     source,
                 };
                 if emitted.insert(support_key) {
@@ -313,7 +343,40 @@ fn final_required_raised_step_spans(
         }
     }
     spans.sort_by_key(|span| span.support_key);
+    dedup_rendered_raised_step_spans(spans)
+}
+
+fn dedup_rendered_raised_step_spans(
+    spans: Vec<FinalRequiredRaisedStepSpan>,
+) -> Vec<FinalRequiredRaisedStepSpan> {
+    let mut spans_by_rendered_key =
+        BTreeMap::<RenderedRaisedStepFaceKey, FinalRequiredRaisedStepSpan>::new();
+    for span in spans {
+        let should_insert = match spans_by_rendered_key.get(&span.rendered_key) {
+            Some(existing) => raised_step_span_is_preferred_over(span, *existing),
+            None => true,
+        };
+        if should_insert {
+            spans_by_rendered_key.insert(span.rendered_key, span);
+        }
+    }
+    let mut spans = spans_by_rendered_key.into_values().collect::<Vec<_>>();
+    spans.sort_by_key(|span| span.support_key);
     spans
+}
+
+fn raised_step_span_is_preferred_over(
+    candidate: FinalRequiredRaisedStepSpan,
+    existing: FinalRequiredRaisedStepSpan,
+) -> bool {
+    raised_step_source_preference(candidate.source) > raised_step_source_preference(existing.source)
+}
+
+fn raised_step_source_preference(source: RoadSurfaceVerticalFaceSource) -> u8 {
+    match source {
+        RoadSurfaceVerticalFaceSource::CanonicalStep { .. } => 1,
+        RoadSurfaceVerticalFaceSource::CanonicalStepSameMaterialHandoff { .. } => 0,
+    }
 }
 
 fn vertical_step_source_for_final_support_owners(
@@ -446,6 +509,25 @@ fn raised_step_face_support_key_from_boundary_points(
             keys.raised_end,
         )),
     }
+}
+
+fn rendered_raised_step_face_key_from_boundary_points(
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    keys: RaisedStepBoundaryPointKeys,
+) -> Option<RenderedRaisedStepFaceKey> {
+    Some(RenderedRaisedStepFaceKey {
+        lower_owner,
+        raised_owner,
+        lower_edge: RenderedRaisedStepEdgeKey::from_boundary_points(
+            keys.lower_start,
+            keys.lower_end,
+        )?,
+        upper_edge: RenderedRaisedStepEdgeKey::from_boundary_points(
+            keys.raised_start,
+            keys.raised_end,
+        )?,
+    })
 }
 
 fn raised_step_region_centroids(owned_regions: &[NodeOwnedRegion]) -> Vec<Option<RoadVec3>> {
@@ -807,6 +889,38 @@ impl NodeTopSupportEdgeKey {
                 start: end,
                 end: start,
             }
+        }
+    }
+}
+
+impl RenderedRaisedStepEdgeKey {
+    fn from_boundary_points(
+        start: ArrangementBoundaryPointKey,
+        end: ArrangementBoundaryPointKey,
+    ) -> Option<Self> {
+        let start = RenderedRaisedStepVertexKey::from_boundary_point(start);
+        let end = RenderedRaisedStepVertexKey::from_boundary_point(end);
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
+    }
+}
+
+impl RenderedRaisedStepVertexKey {
+    fn from_boundary_point(point: ArrangementBoundaryPointKey) -> Self {
+        let xz = keys::SurfaceXzKey::from_raw_keys(point.x_key, point.z_key);
+        Self {
+            x_mm: xz.x_mm(),
+            y_mm: point.y_mm,
+            z_mm: xz.z_mm(),
         }
     }
 }

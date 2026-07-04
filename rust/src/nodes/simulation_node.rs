@@ -61,7 +61,8 @@
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
-//! | | `get_preview_road_surface_immediate` | `road_tool.gd` |
+//! | | `validate_road_candidate` | `road_tool.gd` |
+//! | | `validate_road_candidate_for_commit` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
@@ -95,10 +96,10 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury, DailyBudgetLedgerEntry,
-    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
-    SimCore, compile_road_preview_from_context, run_road_preview_worker, run_sim_thread,
+    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
+    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
+    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
+    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -123,7 +124,7 @@ use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
@@ -6697,10 +6698,150 @@ impl SimulationNode {
         core.get_road_mesh_data_internal()
     }
 
+    /// Returns cheap synchronous hover feedback for a road-tool candidate.
+    ///
+    /// This does not compile temporary preview meshes or mutate simulation state; click placement
+    /// must use `validate_road_candidate_for_commit` before queuing the edit.
+    #[func]
+    pub fn validate_road_candidate(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Variant {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let point_count = points.len();
+        let clone_start = road_debug.then(Instant::now);
+        let points = points.to_vec();
+        let clone_ms = clone_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let validate_start = road_debug.then(Instant::now);
+        let (prepared_points, validation) = {
+            let query = self.road_tool_query_snapshot.read().unwrap();
+            let prepared_input =
+                RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+                    &points,
+                    &query.terrain,
+                    &query.region_graph,
+                    &query.road_surface,
+                );
+            let validation = query.road_surface.validate_prepared_road_candidate_fast(
+                &prepared_input,
+                &query.terrain,
+                &query.region_graph,
+            );
+            (prepared_input.points, validation)
+        };
+        let validate_ms = validate_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if road_debug {
+            debug_log!(
+                "road",
+                "road_candidate_fast_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) clone_ms={:.3} validate_ms={:.3} total_ms={:.3}",
+                point_count,
+                prepared_points.len(),
+                fwd_lanes,
+                bkw_lanes,
+                validation.is_valid,
+                validation.invalid_reason,
+                validation.max_grade,
+                validation.allowed_grade,
+                validation.start_endpoint_snapped_node_id,
+                validation.end_endpoint_snapped_node_id,
+                clone_ms,
+                validate_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
+
+        Self::road_candidate_validation_to_variant(&validation, &prepared_points)
+    }
+
+    /// Validates a road-tool candidate using the same graph/surface contract as committed
+    /// placement. This is called on click, not on every mouse move.
+    #[func]
+    pub fn validate_road_candidate_for_commit(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Variant {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let point_count = points.len();
+        let clone_start = road_debug.then(Instant::now);
+        let points = points.to_vec();
+        let clone_ms = clone_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let validate_start = road_debug.then(Instant::now);
+        let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let (prepared_points, validation) = {
+            let query = self.road_tool_query_snapshot.read().unwrap();
+            let prepared_input =
+                RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+                    &points,
+                    &query.terrain,
+                    &query.region_graph,
+                    &query.road_surface,
+                );
+            let new_edge_validation = query.road_surface.validate_prepared_road_surface(
+                &prepared_input.points,
+                prepared_input.class,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                &query.terrain,
+            );
+            let validation = query
+                .road_surface
+                .validate_prepared_road_input_against_graph(
+                    &prepared_input,
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    &query.terrain,
+                    &query.region_graph,
+                    new_edge_validation,
+                );
+            (prepared_input.points, validation)
+        };
+        let validate_ms = validate_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        if road_debug {
+            debug_log!(
+                "road",
+                "road_candidate_commit_validation points={} prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} endpoint_snap=({},{}) clone_ms={:.3} validate_ms={:.3} total_ms={:.3}",
+                point_count,
+                prepared_points.len(),
+                fwd_lanes,
+                bkw_lanes,
+                validation.is_valid,
+                validation.invalid_reason,
+                validation.max_grade,
+                validation.allowed_grade,
+                validation.start_endpoint_snapped_node_id,
+                validation.end_endpoint_snapped_node_id,
+                clone_ms,
+                validate_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
+
+        Self::road_candidate_validation_to_variant(&validation, &prepared_points)
+    }
+
     /// Requests temporary preview-surface compilation for the road tool.
     ///
-    /// The result is published asynchronously through [`get_preview_road_surface_result`], so the
-    /// commit path can wait for a valid preview without blocking on the simulation mutex.
+    /// The result is published asynchronously through [`get_preview_road_surface_result`]. The
+    /// payload is visual-only; click validity is checked by `validate_road_candidate_for_commit`.
     #[func]
     pub fn request_preview_road_surface(
         &self,
@@ -6752,76 +6893,6 @@ impl SimulationNode {
         i64::try_from(request_id).unwrap_or(i64::MAX)
     }
 
-    /// Compiles a current-frame road-tool preview from immutable Rust preview state.
-    ///
-    /// This uses the same mesh-only road-surface compiler as the background preview worker, but
-    /// returns immediately so the live cursor preview and the idle preview share one geometry path.
-    #[func]
-    pub fn get_preview_road_surface_immediate(
-        &self,
-        points: PackedVector3Array,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
-    ) -> Variant {
-        let road_debug = crate::debug::category_enabled("road");
-        let total_start = road_debug.then(Instant::now);
-        let point_count = points.len();
-        let clone_start = road_debug.then(Instant::now);
-        let points = points.to_vec();
-        let clone_ms = clone_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let compile_start = road_debug.then(Instant::now);
-        let preview = {
-            let context = self.road_preview_context.read().unwrap();
-            compile_road_preview_from_context(
-                &context,
-                RoadPreviewRequest {
-                    request_id: 0,
-                    points,
-                    fwd_lanes,
-                    bkw_lanes,
-                },
-            )
-        };
-        let compile_ms = compile_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        if road_debug {
-            debug_log!(
-                "road",
-                "preview_surface_immediate points={} prepared_points={} surface_vertices={} valid={} reason={} max_grade={:.3} allowed_grade={:.3} span=({:.3},{:.3}) run={:.3} dy={:.3} span_y=({:.3},{:.3}) span_terrain=({:.3},{:.3}) span_delta=({:.3},{:.3}) endpoint_snap=({},{}) endpoint_delta=({:.3},{:.3}) clone_ms={:.3} compile_ms={:.3} total_ms={:.3}",
-                point_count,
-                preview.prepared_points.len(),
-                preview.surface_vertices.len(),
-                preview.is_valid,
-                preview.validation.invalid_reason,
-                preview.validation.max_grade,
-                preview.validation.allowed_grade,
-                preview.validation.offending_span_start_m,
-                preview.validation.offending_span_end_m,
-                preview.validation.offending_span_run_m,
-                preview.validation.offending_span_height_delta_m,
-                preview.validation.offending_span_start_height_m,
-                preview.validation.offending_span_end_height_m,
-                preview.validation.offending_span_start_terrain_height_m,
-                preview.validation.offending_span_end_terrain_height_m,
-                preview.validation.offending_span_start_support_delta_m,
-                preview.validation.offending_span_end_support_delta_m,
-                preview.validation.start_endpoint_snapped_node_id,
-                preview.validation.end_endpoint_snapped_node_id,
-                preview.validation.start_endpoint_support_delta_m,
-                preview.validation.end_endpoint_support_delta_m,
-                clone_ms,
-                compile_ms,
-                total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0)
-            );
-        }
-        Self::road_preview_snapshot_to_variant(&preview)
-    }
-
     /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
     #[func]
     pub fn get_preview_road_surface_result(&self, request_id: i64) -> Variant {
@@ -6840,101 +6911,125 @@ impl SimulationNode {
     }
 
     fn road_preview_snapshot_to_variant(preview: &RoadPreviewSnapshot) -> Variant {
-        let mut dict = VarDictionary::new();
+        let mut dict = Self::road_candidate_validation_to_dictionary(
+            &preview.validation,
+            &preview.prepared_points,
+        );
         dict.set(
             "request_id",
             i64::try_from(preview.request_id).unwrap_or(i64::MAX),
-        );
-        dict.set(
-            "prepared_points",
-            PackedVector3Array::from_iter(preview.prepared_points.iter().copied()),
         );
         dict.set(
             "surface_vertices",
             PackedVector3Array::from_iter(preview.surface_vertices.iter().copied()),
         );
         dict.set("is_valid", preview.is_valid);
-        dict.set("invalid_reason", preview.validation.invalid_reason);
-        dict.set("max_grade", preview.validation.max_grade);
-        dict.set("allowed_grade", preview.validation.allowed_grade);
+        dict.to_variant()
+    }
+
+    fn road_candidate_validation_to_variant(
+        validation: &RoadPreviewValidation,
+        prepared_points: &[Vector3],
+    ) -> Variant {
+        Self::road_candidate_validation_to_dictionary(validation, prepared_points).to_variant()
+    }
+
+    fn road_candidate_validation_to_dictionary(
+        validation: &RoadPreviewValidation,
+        prepared_points: &[Vector3],
+    ) -> VarDictionary {
+        let mut dict = Self::road_preview_validation_to_dictionary(validation);
         dict.set(
-            "offending_span_start_m",
-            preview.validation.offending_span_start_m,
+            "prepared_points",
+            PackedVector3Array::from_iter(prepared_points.iter().copied()),
         );
-        dict.set(
-            "offending_span_end_m",
-            preview.validation.offending_span_end_m,
-        );
-        dict.set(
-            "offending_span_run_m",
-            preview.validation.offending_span_run_m,
-        );
+        let build_length_m = Self::road_build_length_m(prepared_points);
+        dict.set("build_length_m", build_length_m);
+        dict.set("build_cost", build_length_m * ROAD_BUILD_COST_PER_METER);
+        dict
+    }
+
+    fn road_build_length_m(points: &[Vector3]) -> f64 {
+        points
+            .windows(2)
+            .map(|pair| {
+                let dx = f64::from(pair[1].x - pair[0].x);
+                let dy = f64::from(pair[1].y - pair[0].y);
+                let dz = f64::from(pair[1].z - pair[0].z);
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .sum()
+    }
+
+    fn road_preview_validation_to_dictionary(validation: &RoadPreviewValidation) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("is_valid", validation.is_valid);
+        dict.set("invalid_reason", validation.invalid_reason);
+        dict.set("max_grade", validation.max_grade);
+        dict.set("allowed_grade", validation.allowed_grade);
+        dict.set("offending_span_start_m", validation.offending_span_start_m);
+        dict.set("offending_span_end_m", validation.offending_span_end_m);
+        dict.set("offending_span_run_m", validation.offending_span_run_m);
         dict.set(
             "offending_span_height_delta_m",
-            preview.validation.offending_span_height_delta_m,
+            validation.offending_span_height_delta_m,
         );
         dict.set(
             "offending_span_start_height_m",
-            preview.validation.offending_span_start_height_m,
+            validation.offending_span_start_height_m,
         );
         dict.set(
             "offending_span_end_height_m",
-            preview.validation.offending_span_end_height_m,
+            validation.offending_span_end_height_m,
         );
         dict.set(
             "offending_span_start_terrain_height_m",
-            preview.validation.offending_span_start_terrain_height_m,
+            validation.offending_span_start_terrain_height_m,
         );
         dict.set(
             "offending_span_end_terrain_height_m",
-            preview.validation.offending_span_end_terrain_height_m,
+            validation.offending_span_end_terrain_height_m,
         );
         dict.set(
             "offending_span_start_support_delta_m",
-            preview.validation.offending_span_start_support_delta_m,
+            validation.offending_span_start_support_delta_m,
         );
         dict.set(
             "offending_span_end_support_delta_m",
-            preview.validation.offending_span_end_support_delta_m,
+            validation.offending_span_end_support_delta_m,
         );
         dict.set(
             "start_endpoint_snapped_node_id",
-            preview.validation.start_endpoint_snapped_node_id,
+            validation.start_endpoint_snapped_node_id,
         );
         dict.set(
             "end_endpoint_snapped_node_id",
-            preview.validation.end_endpoint_snapped_node_id,
+            validation.end_endpoint_snapped_node_id,
         );
         dict.set(
             "start_endpoint_height_m",
-            preview.validation.start_endpoint_height_m,
+            validation.start_endpoint_height_m,
         );
-        dict.set(
-            "end_endpoint_height_m",
-            preview.validation.end_endpoint_height_m,
-        );
+        dict.set("end_endpoint_height_m", validation.end_endpoint_height_m);
         dict.set(
             "start_endpoint_terrain_height_m",
-            preview.validation.start_endpoint_terrain_height_m,
+            validation.start_endpoint_terrain_height_m,
         );
         dict.set(
             "end_endpoint_terrain_height_m",
-            preview.validation.end_endpoint_terrain_height_m,
+            validation.end_endpoint_terrain_height_m,
         );
         dict.set(
             "start_endpoint_support_delta_m",
-            preview.validation.start_endpoint_support_delta_m,
+            validation.start_endpoint_support_delta_m,
         );
         dict.set(
             "end_endpoint_support_delta_m",
-            preview.validation.end_endpoint_support_delta_m,
+            validation.end_endpoint_support_delta_m,
         );
-        dict.set("clearance_m", preview.validation.clearance_m);
-        dict.set(
-            "required_clearance_m",
-            preview.validation.required_clearance_m,
-        );
-        dict.to_variant()
+        dict.set("clearance_m", validation.clearance_m);
+        dict.set("required_clearance_m", validation.required_clearance_m);
+        dict
     }
 
     /// Returns compiled road-surface debug line data for editor visualization.

@@ -27,6 +27,19 @@ pub(in crate::simulation::network::surface::tests) struct TestRenderEdgeKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(in crate::simulation::network::surface::tests) struct TestRenderedVertexMmKey {
+    pub(in crate::simulation::network::surface::tests) x_mm: i64,
+    pub(in crate::simulation::network::surface::tests) y_mm: i64,
+    pub(in crate::simulation::network::surface::tests) z_mm: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(in crate::simulation::network::surface::tests) struct TestRenderedEdgeMmKey {
+    pub(in crate::simulation::network::surface::tests) start: TestRenderedVertexMmKey,
+    pub(in crate::simulation::network::surface::tests) end: TestRenderedVertexMmKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(in crate::simulation::network::surface::tests) struct TestRenderXzVertexKey {
     pub(in crate::simulation::network::surface::tests) x_key: i64,
     pub(in crate::simulation::network::surface::tests) z_key: i64,
@@ -52,6 +65,17 @@ impl TestRenderVertexKey {
         TestRenderXzVertexKey {
             x_key: self.x_key,
             z_key: self.z_key,
+        }
+    }
+
+    pub(in crate::simulation::network::surface::tests) fn rendered_mm(
+        self,
+    ) -> TestRenderedVertexMmKey {
+        let xz_key = surface_keys::SurfaceXzKey::from_raw_keys(self.x_key, self.z_key);
+        TestRenderedVertexMmKey {
+            x_mm: xz_key.x_mm(),
+            y_mm: self.y_mm,
+            z_mm: xz_key.z_mm(),
         }
     }
 }
@@ -98,6 +122,27 @@ impl TestRenderEdgeKey {
                 end: start,
             }
         }
+    }
+}
+
+impl TestRenderedEdgeMmKey {
+    pub(in crate::simulation::network::surface::tests) fn normalized(
+        start: RoadVec3,
+        end: RoadVec3,
+    ) -> Option<Self> {
+        let start = TestRenderVertexKey::from_point(start).rendered_mm();
+        let end = TestRenderVertexKey::from_point(end).rendered_mm();
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
     }
 }
 

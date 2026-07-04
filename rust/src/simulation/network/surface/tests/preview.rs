@@ -305,6 +305,55 @@ fn preview_accepts_connected_bend_when_surface_geometry_compiles() {
 }
 
 #[test]
+fn fast_candidate_validation_rejects_endpoint_branch_overlap() {
+    let terrain = flat_terrain(96, 96);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let terminal = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        terminal,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut existing_surface = RoadSurfaceSystem::new(16.0);
+    existing_surface.compile_dirty(&graph, &terrain);
+    let candidate_surface = RoadSurfaceSystem::new(16.0);
+
+    let forward_points = vec![Vector3::new(24.0, 0.0, 0.0), Vector3::new(48.0, 0.0, 0.0)];
+    let forward_input = RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+        &forward_points,
+        &terrain,
+        &graph,
+        &existing_surface,
+    );
+    let forward_validation =
+        candidate_surface.validate_prepared_road_candidate_fast(&forward_input, &terrain, &graph);
+    assert!(
+        forward_validation.is_valid,
+        "straight terminal extensions must remain buildable: {forward_validation:?}"
+    );
+
+    let overlap_points = vec![Vector3::new(24.0, 0.0, 0.0), Vector3::new(12.0, 0.0, 0.0)];
+    let overlap_input = RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+        &overlap_points,
+        &terrain,
+        &graph,
+        &existing_surface,
+    );
+    let overlap_validation =
+        candidate_surface.validate_prepared_road_candidate_fast(&overlap_input, &terrain, &graph);
+    assert!(!overlap_validation.is_valid);
+    assert_eq!(
+        overlap_validation.invalid_reason,
+        "surface_geometry_invalid"
+    );
+}
+
+#[test]
 fn preview_validation_uses_endpoint_snap_before_reporting_valid() {
     let terrain = flat_terrain(96, 64);
     let mut graph = RegionGraph::new();

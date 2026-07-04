@@ -1,8 +1,11 @@
 //! Height-owned arrangement region construction.
 
+use super::super::super::{NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M};
 use super::super::height::{NodeGradeCarrierDecision, NodeGradeVertexAuthority};
 use super::super::height::{NodeHeightedRegion, NodeHeightedVertex};
-use super::super::keys::{SURFACE_MM_PER_M, SurfaceSegmentParameter, SurfaceXzKey};
+use super::super::keys::{
+    SURFACE_MM_PER_M, SURFACE_XZ_KEY_SCALE, SurfaceSegmentParameter, SurfaceXzKey,
+};
 use super::super::segments::interpolate_height_i64;
 use super::build::{node_grade_decision_rank, quantize_height_m};
 use super::edges::{PendingArrangementEdge, loop_edges};
@@ -386,12 +389,70 @@ fn remove_immediate_backtracking_arrangement_vertices(
     }
     let Some(index) = (0..loop_vertices.len()).find(|index| {
         let previous = loop_vertices[(*index + loop_vertices.len() - 1) % loop_vertices.len()];
+        let current = loop_vertices[*index];
         let next = loop_vertices[(*index + 1) % loop_vertices.len()];
         arrangement_vertices_share_exact_key_height_and_field(previous, next, vertices)
+            || arrangement_backtrack_spur_is_numeric_dust(previous, current, next, vertices)
     }) else {
         return;
     };
     loop_vertices.remove(index);
+}
+
+fn arrangement_backtrack_spur_is_numeric_dust(
+    previous: NodeArrangementVertexId,
+    current: NodeArrangementVertexId,
+    next: NodeArrangementVertexId,
+    vertices: &[NodeArrangementVertex],
+) -> bool {
+    let (Some(previous), Some(current), Some(next)) = (
+        vertices.get(previous.index()),
+        vertices.get(current.index()),
+        vertices.get(next.index()),
+    ) else {
+        return false;
+    };
+    if previous.height_field_id() != next.height_field_id()
+        || previous.height_mm() != next.height_mm()
+    {
+        return false;
+    }
+    let previous_key = previous.key();
+    let next_key = next.key();
+    let dust_key_units =
+        (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).round() as i64;
+    let dx = previous_key.x_key() - next_key.x_key();
+    let dz = previous_key.z_key() - next_key.z_key();
+    if i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz)
+        > i128::from(dust_key_units) * i128::from(dust_key_units)
+    {
+        return false;
+    }
+    let area_m2 = SurfaceXzKey::raw_tuple_triangle_area_m2_abs(
+        (previous_key.x_key(), previous_key.z_key()),
+        (current.key().x_key(), current.key().z_key()),
+        (next_key.x_key(), next_key.z_key()),
+    );
+    if area_m2 <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+        return true;
+    }
+    area_m2 <= arrangement_backtrack_area_budget_m2(previous, current, next)
+}
+
+fn arrangement_backtrack_area_budget_m2(
+    previous: &NodeArrangementVertex,
+    current: &NodeArrangementVertex,
+    next: &NodeArrangementVertex,
+) -> f64 {
+    let previous_length_m = arrangement_key_distance_m(previous.key(), current.key());
+    let next_length_m = arrangement_key_distance_m(current.key(), next.key());
+    previous_length_m.max(next_length_m) * f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+}
+
+fn arrangement_key_distance_m(a: NodeArrangementKey, b: NodeArrangementKey) -> f64 {
+    let dx = (a.x_key() - b.x_key()) as f64 / SURFACE_XZ_KEY_SCALE;
+    let dz = (a.z_key() - b.z_key()) as f64 / SURFACE_XZ_KEY_SCALE;
+    dx.hypot(dz)
 }
 
 fn arrangement_vertices_share_exact_key_height_and_field(

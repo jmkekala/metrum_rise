@@ -46,7 +46,7 @@ pub(super) struct NodeFootprintBoundaryPoint {
 }
 
 pub(super) type ArrangementSegmentParameter = SurfaceSegmentParameter;
-const BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS: i64 = 128;
+pub(super) const BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS: i64 = 128;
 
 impl ArrangementBoundaryPointKey {
     pub(super) fn from_world(point: RoadVec3) -> Self {

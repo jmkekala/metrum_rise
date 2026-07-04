@@ -117,8 +117,14 @@ impl RoadSurfaceSystem {
             .iter()
             .filter(|matches| matches.is_empty())
             .count();
-        let final_required_problem_count =
-            face_problem_count + missing_required_face_count + coverage_report.required_gap_count;
+        let duplicate_raised_step_face_count = Self::debug_duplicate_raised_step_face_count(
+            &face_span_edges,
+            &piece.raised_step_face_sources,
+        );
+        let final_required_problem_count = face_problem_count
+            + missing_required_face_count
+            + coverage_report.required_gap_count
+            + duplicate_raised_step_face_count;
         let non_exposed_source_constraint_count = canonical_face_matches
             .iter()
             .filter(|matches| matches.is_empty())
@@ -141,7 +147,7 @@ impl RoadSurfaceSystem {
         dump.push('{');
         let _ = write!(
             dump,
-            "\"face_count\":{},\"emitted_face_count\":{},\"top_boundary_edge_count\":{},\"expected_raised_step_count\":{},\"final_required_face_count\":{},\"required_interval_count\":{},\"missing_required_face_count\":{},\"required_gap_count\":{},\"missing_length_m\":{:.6},\"face_problem_count\":{},\"final_required_problem_count\":{},\"canonical_raised_step_count\":{},\"source_constraint_count\":{},\"non_exposed_source_constraint_count\":{},\"canonical_raised_step_problem_count\":{},\"problem_count\":{}",
+            "\"face_count\":{},\"emitted_face_count\":{},\"top_boundary_edge_count\":{},\"expected_raised_step_count\":{},\"final_required_face_count\":{},\"required_interval_count\":{},\"missing_required_face_count\":{},\"required_gap_count\":{},\"missing_length_m\":{:.6},\"face_problem_count\":{},\"duplicate_raised_step_face_count\":{},\"final_required_problem_count\":{},\"canonical_raised_step_count\":{},\"source_constraint_count\":{},\"non_exposed_source_constraint_count\":{},\"canonical_raised_step_problem_count\":{},\"problem_count\":{}",
             piece.raised_step_face_polygons.len(),
             piece.raised_step_face_polygons.len(),
             top_edges.len(),
@@ -152,6 +158,7 @@ impl RoadSurfaceSystem {
             coverage_report.required_gap_count,
             coverage_report.missing_length_m,
             face_problem_count,
+            duplicate_raised_step_face_count,
             final_required_problem_count,
             canonical_steps.len(),
             canonical_steps.len(),
@@ -211,6 +218,42 @@ impl RoadSurfaceSystem {
             );
         }
         dump.push_str("]}");
+    }
+
+    fn debug_duplicate_raised_step_face_count(
+        face_span_edges: &[Option<DebugVerticalFaceSpanEdges>],
+        sources: &[RoadSurfaceVerticalFaceSource],
+    ) -> usize {
+        let mut seen = BTreeSet::<DebugRenderedRaisedStepFaceKey>::new();
+        let mut duplicate_count = 0usize;
+        for (span_edges, source) in face_span_edges.iter().copied().zip(sources.iter().copied()) {
+            let Some(span_edges) = span_edges else {
+                continue;
+            };
+            let Some((lower_owner, raised_owner)) = source.lower_and_raised_owners() else {
+                continue;
+            };
+            let Some(lower_edge) =
+                DebugRenderedEdgeMmKey::normalized(span_edges.lower_start, span_edges.lower_end)
+            else {
+                continue;
+            };
+            let Some(upper_edge) =
+                DebugRenderedEdgeMmKey::normalized(span_edges.upper_start, span_edges.upper_end)
+            else {
+                continue;
+            };
+            let key = DebugRenderedRaisedStepFaceKey {
+                lower_owner,
+                raised_owner,
+                lower_edge,
+                upper_edge,
+            };
+            if !seen.insert(key) {
+                duplicate_count += 1;
+            }
+        }
+        duplicate_count
     }
 
     pub(in crate::simulation::network::surface::debug) fn append_raised_step_face_detail_literal(

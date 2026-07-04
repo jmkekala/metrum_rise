@@ -355,18 +355,14 @@ pub(in crate::simulation::network::surface::tests) fn assert_canonical_explicit_
     for edge in top_edges {
         top_edges_by_xz.entry(edge.xz_key).or_default().push(edge);
     }
-    let face_source_segments = piece
-        .raised_step_face_sources
+    let face_lower_edges = piece
+        .raised_step_face_polygons
         .iter()
-        .map(|source| source.segment())
-        .collect::<BTreeSet<_>>();
+        .filter_map(vertical_face_lower_edge_for_test)
+        .collect::<Vec<_>>();
 
     for (step_index, segment) in piece.explicit_vertical_step_segments.iter().enumerate() {
-        let owner = segment.owner();
-        let opposite_owner = segment.opposite_owner();
-        let owner_pair_requires_face =
-            test_owners_form_raised_step(owner.kind(), opposite_owner.kind());
-        if !owner_pair_requires_face {
+        if test_lower_and_raised_owners_from_explicit_step(*segment).is_none() {
             continue;
         }
         if explicit_vertical_step_segment_len_squared_m2(*segment)
@@ -379,13 +375,79 @@ pub(in crate::simulation::network::surface::tests) fn assert_canonical_explicit_
         }
 
         assert!(
-            face_source_segments.contains(segment),
-            "canonical explicit vertical step must be consumed by a rendered vertical face; kind={:?} step_index={} segment={:?}",
+            canonical_explicit_vertical_step_has_rendered_face_coverage(
+                *segment,
+                &top_edges_by_xz,
+                &face_lower_edges
+            ),
+            "canonical explicit vertical step must have rendered vertical face coverage; kind={:?} step_index={} segment={:?} face_lower_edges={:?}",
             piece.kind,
             step_index,
-            segment
+            segment,
+            face_lower_edges
         );
     }
+}
+
+fn canonical_explicit_vertical_step_has_rendered_face_coverage(
+    segment: super::arrangement::NodeExplicitVerticalStepSegment,
+    top_edges_by_xz: &BTreeMap<TestRenderXzEdgeKey, Vec<TestTopBoundaryEdge>>,
+    face_lower_edges: &[[RoadVec3; 2]],
+) -> bool {
+    let Some((lower_owner, raised_owner)) =
+        test_lower_and_raised_owners_from_explicit_step(segment)
+    else {
+        return false;
+    };
+    let Some(xz_key) =
+        TestRenderXzEdgeKey::normalized_from_arrangement_keys(segment.start(), segment.end())
+    else {
+        return false;
+    };
+    let Some(edges) = top_edges_by_xz.get(&xz_key) else {
+        return false;
+    };
+    edges
+        .iter()
+        .copied()
+        .filter(|edge| test_top_boundary_edge_matches_owner(*edge, lower_owner))
+        .any(|lower_edge| {
+            edges
+                .iter()
+                .copied()
+                .filter(|edge| test_top_boundary_edge_matches_owner(*edge, raised_owner))
+                .any(|raised_edge| {
+                    lower_edge.avg_y_m < raised_edge.avg_y_m
+                        && test_top_edges_form_raised_step(lower_edge, raised_edge)
+                        && test_top_boundary_overlap_interval(lower_edge, raised_edge).is_some_and(
+                            |overlap| {
+                                test_raised_step_faces_cover_overlap_interval(
+                                    lower_edge,
+                                    overlap,
+                                    face_lower_edges,
+                                )
+                            },
+                        )
+                })
+        })
+}
+
+fn test_lower_and_raised_owners_from_explicit_step(
+    segment: super::arrangement::NodeExplicitVerticalStepSegment,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    let owner = segment.owner();
+    let opposite_owner = segment.opposite_owner();
+    if test_owners_form_raised_step(owner.kind(), opposite_owner.kind()) {
+        Some((owner, opposite_owner))
+    } else if test_owners_form_raised_step(opposite_owner.kind(), owner.kind()) {
+        Some((opposite_owner, owner))
+    } else {
+        None
+    }
+}
+
+fn test_top_boundary_edge_matches_owner(edge: TestTopBoundaryEdge, owner: NodeBandOwner) -> bool {
+    edge.kind == owner.kind() && edge.owner_index == owner.owner_index()
 }
 
 pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_visible_from_lower_owner(
@@ -432,6 +494,60 @@ pub(in crate::simulation::network::surface::tests) fn assert_raised_step_faces_v
                 dot > 0.0,
                 "raised-step face must be visible from its lower owner; kind={:?} face={:?} visible_direction={visible_direction:?} dot={dot:.6}",
                 piece.kind,
+                face.points_world
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct TestRaisedStepRenderFaceKey {
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_edge: TestRenderedEdgeMmKey,
+    upper_edge: TestRenderedEdgeMmKey,
+}
+
+pub(in crate::simulation::network::surface::tests) fn assert_no_duplicate_raised_step_render_faces(
+    piece: &RoadSurfaceVisualNodePiece,
+) {
+    let mut seen = BTreeMap::<TestRaisedStepRenderFaceKey, usize>::new();
+    for (face_index, (face, source)) in piece
+        .raised_step_face_polygons
+        .iter()
+        .zip(piece.raised_step_face_sources.iter())
+        .enumerate()
+    {
+        let Some((lower_owner, raised_owner)) =
+            test_lower_and_raised_owners_from_vertical_face_source(*source)
+        else {
+            continue;
+        };
+        let Some(lower_edge) = vertical_face_lower_edge_for_test(face) else {
+            continue;
+        };
+        let Some(upper_edge) = vertical_face_upper_edge_for_test(face) else {
+            continue;
+        };
+        let Some(lower_edge) = TestRenderedEdgeMmKey::normalized(lower_edge[0], lower_edge[1])
+        else {
+            continue;
+        };
+        let Some(upper_edge) = TestRenderedEdgeMmKey::normalized(upper_edge[0], upper_edge[1])
+        else {
+            continue;
+        };
+        let key = TestRaisedStepRenderFaceKey {
+            lower_owner,
+            raised_owner,
+            lower_edge,
+            upper_edge,
+        };
+        if let Some(first_face_index) = seen.insert(key, face_index) {
+            panic!(
+                "raised-step faces must not duplicate rendered vertical geometry; kind={:?} key={key:?} first_face_index={first_face_index} duplicate_face_index={face_index} first_face={:?} duplicate_face={:?}",
+                piece.kind,
+                piece.raised_step_face_polygons[first_face_index].points_world,
                 face.points_world
             );
         }

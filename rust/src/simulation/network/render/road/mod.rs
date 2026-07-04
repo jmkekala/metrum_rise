@@ -174,6 +174,23 @@ pub(super) fn push_triangle_preserving_winding_with_normal(
     push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
 }
 
+pub(super) fn push_triangle_preserving_winding_with_exact_normal(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
+    color: Color,
+    mut normal: Vector3,
+) {
+    if normal.length_squared() <= 1e-8 {
+        normal = Vector3::UP;
+    } else {
+        normal = normal.normalized();
+    }
+
+    push_triangle_to_layer(mesh, layer, vertices, uvs, color, normal);
+}
+
 fn push_triangle_to_layer(
     mesh: &mut NetworkMeshData,
     layer: MeshLayer,

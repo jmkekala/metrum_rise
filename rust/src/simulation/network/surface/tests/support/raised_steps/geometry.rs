@@ -62,30 +62,58 @@ pub(in crate::simulation::network::surface::tests) fn test_boundary_segment_para
     start: TestRenderVertexKey,
     end: TestRenderVertexKey,
 ) -> Option<(i128, i128)> {
+    let denominator =
+        overlay_parameter_denominator((start.x_key, start.z_key), (end.x_key, end.z_key))?;
+    if xz_keys_nearly_equal(point, start) {
+        return Some((0, denominator));
+    }
+    if xz_keys_nearly_equal(point, end) {
+        return Some((denominator, denominator));
+    }
     let point_key = test_surface_xz_key(point.x_key, point.z_key);
     let start_key = test_surface_xz_key(start.x_key, start.z_key);
     let end_key = test_surface_xz_key(end.x_key, end.z_key);
     if let Some(parameter) = segments::overlay_segment_parameter(point_key, start_key, end_key) {
         return Some((parameter.numerator, parameter.denominator));
     }
-    let denominator = segment_denominator((start.x_key, start.z_key), (end.x_key, end.z_key));
-    if xz_keys_nearly_equal(point, start) {
-        return (denominator > 0).then_some((0, denominator));
-    }
-    if xz_keys_nearly_equal(point, end) {
-        return (denominator > 0).then_some((denominator, denominator));
-    }
     if !segments::key_collinear_with_overlay_grid_segment(point_key, start_key, end_key) {
         return None;
     }
-    (denominator > 0).then_some((
-        segments::segment_parameter_key(start_key, end_key, point_key),
+    Some((
+        overlay_parameter_numerator(
+            (start.x_key, start.z_key),
+            (end.x_key, end.z_key),
+            (point.x_key, point.z_key),
+        ),
         denominator,
     ))
 }
 
 fn xz_keys_nearly_equal(left: TestRenderVertexKey, right: TestRenderVertexKey) -> bool {
-    (left.x_key - right.x_key).abs() <= 2 && (left.z_key - right.z_key).abs() <= 2
+    let left = left.rendered_mm();
+    let right = right.rendered_mm();
+    left.x_mm == right.x_mm && left.z_mm == right.z_mm
+}
+
+fn overlay_parameter_denominator(start: (i64, i64), end: (i64, i64)) -> Option<i128> {
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
+    (denominator != 0).then_some(i128::from(denominator.abs()))
+}
+
+fn overlay_parameter_numerator(start: (i64, i64), end: (i64, i64), point: (i64, i64)) -> i128 {
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    let (mut numerator, denominator) = if dx.abs() >= dz.abs() {
+        (point.0 - start.0, dx)
+    } else {
+        (point.1 - start.1, dz)
+    };
+    if denominator < 0 {
+        numerator = -numerator;
+    }
+    i128::from(numerator)
 }
 
 pub(in crate::simulation::network::surface::tests) fn test_interpolated_height_mm(

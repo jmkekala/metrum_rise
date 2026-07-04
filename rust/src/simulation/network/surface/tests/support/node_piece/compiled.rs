@@ -37,6 +37,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_compiled_bend_piece
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
     assert_raised_step_faces_have_top_support(piece);
+    assert_no_duplicate_raised_step_render_faces(piece);
     assert_raised_step_faces_visible_from_lower_owner(piece);
     assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
@@ -76,6 +77,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_compiled_junction_p
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_top_surface_triangles_face_up(piece);
     assert_raised_step_faces_have_top_support(piece);
+    assert_no_duplicate_raised_step_render_faces(piece);
     assert_raised_step_faces_visible_from_lower_owner(piece);
     assert_top_raised_step_owner_boundaries_have_vertical_faces(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);

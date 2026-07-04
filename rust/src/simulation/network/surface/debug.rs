@@ -103,6 +103,27 @@ struct DebugRenderEdgeKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderedVertexMmKey {
+    x_mm: i64,
+    y_mm: i64,
+    z_mm: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderedEdgeMmKey {
+    start: DebugRenderedVertexMmKey,
+    end: DebugRenderedVertexMmKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderedRaisedStepFaceKey {
+    lower_owner: NodeBandOwner,
+    raised_owner: NodeBandOwner,
+    lower_edge: DebugRenderedEdgeMmKey,
+    upper_edge: DebugRenderedEdgeMmKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct DebugRenderXzEdgeKey {
     start: DebugRenderXzVertexKey,
     end: DebugRenderXzVertexKey,
@@ -227,6 +248,15 @@ impl DebugRenderVertexKey {
             z_key: self.z_key,
         }
     }
+
+    fn rendered_mm(self) -> DebugRenderedVertexMmKey {
+        let xz_key = SurfaceXzKey::from_raw_keys(self.x_key, self.z_key);
+        DebugRenderedVertexMmKey {
+            x_mm: xz_key.x_mm(),
+            y_mm: self.y_mm,
+            z_mm: xz_key.z_mm(),
+        }
+    }
 }
 
 impl DebugRenderEdgeKey {
@@ -248,6 +278,24 @@ impl DebugRenderEdgeKey {
 
     fn xz(self) -> DebugRenderXzEdgeKey {
         DebugRenderXzEdgeKey::normalized(self.start.xz(), self.end.xz())
+    }
+}
+
+impl DebugRenderedEdgeMmKey {
+    fn normalized(start: backend::RoadVec3, end: backend::RoadVec3) -> Option<Self> {
+        let start = DebugRenderVertexKey::from_point(start).rendered_mm();
+        let end = DebugRenderVertexKey::from_point(end).rendered_mm();
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
     }
 }
 

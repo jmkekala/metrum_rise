@@ -22,6 +22,9 @@ const PREVIEW_TOO_STEEP_REASON: &str = "too_steep";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
+const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
+const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
+const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS: f32 = 0.966; // ~15 degrees.
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
 #[derive(Clone, Debug, PartialEq)]
@@ -381,6 +384,246 @@ impl RoadSurfaceSystem {
             new_edge_validation,
             prepared_input.extension.as_ref(),
         )
+    }
+
+    /// Validates a road-tool candidate using only prepared-profile samples and local endpoint
+    /// graph checks. This path is intended for synchronous editor feedback, so it must not compile
+    /// temporary node surfaces or preview meshes.
+    pub(crate) fn validate_prepared_road_candidate_fast(
+        &self,
+        prepared_input: &PreparedRoadInput,
+        terrain: &TerrainSystem,
+        existing_graph: &RegionGraph,
+    ) -> RoadPreviewValidation {
+        let mut validation = Self::fast_prepared_profile_validation(
+            prepared_input.class,
+            &prepared_input.validation_points,
+            terrain,
+        );
+        Self::record_preview_endpoint_height_debug(
+            &mut validation,
+            &prepared_input.points,
+            terrain,
+        );
+        Self::record_preview_endpoint_snap_debug_with_extension(
+            &mut validation,
+            &prepared_input.points,
+            existing_graph,
+            prepared_input.extension.as_ref(),
+        );
+        if !validation.is_valid || prepared_input.points.len() < 2 {
+            return validation;
+        }
+
+        self.validate_candidate_endpoint_geometry_fast(
+            &prepared_input.points,
+            existing_graph,
+            prepared_input.extension.as_ref(),
+            validation,
+        )
+    }
+
+    fn fast_prepared_profile_validation(
+        edge_class: EdgeClass,
+        prepared_points: &[Vector3],
+        terrain: &TerrainSystem,
+    ) -> RoadPreviewValidation {
+        let mut validation = RoadPreviewValidation::valid(0.0);
+        Self::record_preview_endpoint_height_debug(&mut validation, prepared_points, terrain);
+        if prepared_points.len() < 2 {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        }
+
+        let mut station_m = 0.0;
+        for pair in prepared_points.windows(2) {
+            let run = (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z);
+            if run <= SAMPLE_EPSILON_M {
+                continue;
+            }
+            let next_station_m = station_m + run;
+            let grade = (pair[1].y - pair[0].y).abs() / run;
+            if grade > validation.max_grade {
+                validation.max_grade = grade;
+                validation.offending_span_start_m = station_m;
+                validation.offending_span_end_m = next_station_m;
+                validation.offending_span_run_m = run;
+                validation.offending_span_height_delta_m = pair[1].y - pair[0].y;
+                validation.offending_span_start_height_m = pair[0].y;
+                validation.offending_span_end_height_m = pair[1].y;
+                validation.offending_span_start_terrain_height_m =
+                    Self::preview_terrain_height_m(terrain, pair[0].x, pair[0].z);
+                validation.offending_span_end_terrain_height_m =
+                    Self::preview_terrain_height_m(terrain, pair[1].x, pair[1].z);
+                validation.offending_span_start_support_delta_m =
+                    pair[0].y - validation.offending_span_start_terrain_height_m;
+                validation.offending_span_end_support_delta_m =
+                    pair[1].y - validation.offending_span_end_terrain_height_m;
+            }
+            station_m = next_station_m;
+        }
+
+        if station_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        }
+        if validation.max_grade > PREVIEW_MAX_GRADE {
+            return validation.with_invalid_reason(PREVIEW_TOO_STEEP_REASON);
+        }
+
+        if prepared_points.len() > 2 {
+            let mid = prepared_points[prepared_points.len() / 2];
+            let terrain_h = Self::preview_terrain_height_m(terrain, mid.x, mid.z);
+            match edge_class {
+                EdgeClass::Bridge => {
+                    validation.clearance_m = mid.y - terrain_h;
+                    validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+                    if validation.clearance_m < PREVIEW_CLEARANCE_M {
+                        return validation.with_invalid_reason(PREVIEW_BRIDGE_CLEARANCE_REASON);
+                    }
+                }
+                EdgeClass::Tunnel => {
+                    validation.clearance_m = terrain_h - mid.y;
+                    validation.required_clearance_m = PREVIEW_CLEARANCE_M;
+                    if validation.clearance_m < PREVIEW_CLEARANCE_M {
+                        return validation.with_invalid_reason(PREVIEW_TUNNEL_CLEARANCE_REASON);
+                    }
+                }
+                EdgeClass::Standard => {}
+            }
+        }
+
+        validation
+    }
+
+    fn validate_candidate_endpoint_geometry_fast(
+        &self,
+        prepared_points: &[Vector3],
+        existing_graph: &RegionGraph,
+        extension: Option<&RoadExtensionReprofile>,
+        validation: RoadPreviewValidation,
+    ) -> RoadPreviewValidation {
+        let Some(first) = prepared_points.first().copied() else {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        };
+        let Some(last) = prepared_points.last().copied() else {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        };
+        let Some(start_dir) = Self::candidate_endpoint_dir(prepared_points, true) else {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        };
+        let Some(end_dir) = Self::candidate_endpoint_dir(prepared_points, false) else {
+            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
+        };
+
+        let start_existing =
+            Self::validation_endpoint_existing_node(first, existing_graph, extension);
+        let end_existing = Self::validation_endpoint_existing_node(last, existing_graph, extension);
+        if start_existing.is_some() && start_existing == end_existing {
+            return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
+        }
+
+        for (node_id, candidate_dir) in [(start_existing, start_dir), (end_existing, end_dir)] {
+            let Some(node_id) = node_id else {
+                continue;
+            };
+            if !self.endpoint_branch_angle_is_clear(
+                existing_graph,
+                node_id,
+                candidate_dir,
+                extension,
+            ) {
+                return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
+            }
+        }
+
+        validation
+    }
+
+    fn candidate_endpoint_dir(prepared_points: &[Vector3], at_start: bool) -> Option<[f32; 2]> {
+        if prepared_points.len() < 2 {
+            return None;
+        }
+        let (from, to) = if at_start {
+            (prepared_points[0], prepared_points[1])
+        } else {
+            (
+                *prepared_points.last().unwrap(),
+                prepared_points[prepared_points.len() - 2],
+            )
+        };
+        Self::normalized_xz_dir(from, to)
+    }
+
+    fn endpoint_branch_angle_is_clear(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        candidate_dir: [f32; 2],
+        extension: Option<&RoadExtensionReprofile>,
+    ) -> bool {
+        let valid_node = graph.get_valid_node(node_id);
+        if valid_node as usize >= graph.node_adjacency_count() {
+            return true;
+        }
+
+        for &edge_idx in graph.node_adjacency(valid_node) {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if !Self::is_surface_edge(edge) {
+                continue;
+            }
+            let Some(edge_dir) =
+                Self::incident_edge_dir_away_from_node(graph, edge_idx, valid_node, extension)
+            else {
+                continue;
+            };
+            let dot = candidate_dir[0] * edge_dir[0] + candidate_dir[1] * edge_dir[1];
+            if dot > PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn incident_edge_dir_away_from_node(
+        graph: &RegionGraph,
+        edge_idx: usize,
+        node_id: u32,
+        extension: Option<&RoadExtensionReprofile>,
+    ) -> Option<[f32; 2]> {
+        let edge = graph.edge(edge_idx);
+        let points = extension
+            .filter(|extension| extension.existing_edge_idx == edge_idx)
+            .map_or_else(
+                || {
+                    if edge.physical_geometry.is_empty() {
+                        edge.geometry.as_slice()
+                    } else {
+                        edge.physical_geometry.as_slice()
+                    }
+                },
+                |extension| extension.existing_points.as_slice(),
+            );
+        if points.len() < 2 {
+            return None;
+        }
+        let valid_node = graph.get_valid_node(node_id);
+        if graph.get_valid_node(edge.start_node) == valid_node {
+            return Self::normalized_xz_dir(points[0], points[1]);
+        }
+        if graph.get_valid_node(edge.end_node) == valid_node {
+            return Self::normalized_xz_dir(*points.last().unwrap(), points[points.len() - 2]);
+        }
+        None
+    }
+
+    fn normalized_xz_dir(from: Vector3, to: Vector3) -> Option<[f32; 2]> {
+        let dx = to.x - from.x;
+        let dz = to.z - from.z;
+        let len = dx.hypot(dz);
+        (len >= SAMPLE_EPSILON_M).then_some([dx / len, dz / len])
     }
 
     fn record_preview_endpoint_snap_debug_with_extension(

@@ -56,6 +56,101 @@ fn logged_flat_three_way_right_angle_junction_compiles_explicit_raised_steps() {
     assert_flat_junction_raised_geometry_invariants(piece);
 }
 
+#[test]
+fn logged_flat_split_road_branch_junction_compiles() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(
+        Vector3::new(-111.102150, 0.0, -31.755333),
+        NodeType::Junction,
+    );
+    let center = graph.add_node(Vector3::new(-63.626408, 0.0, 3.200905), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(-12.655884, 0.0, 40.730339), NodeType::Junction);
+    let branch = graph.add_node(
+        Vector3::new(-23.504681, 0.0, -39.691963),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-111.102150, 0.0, -31.755333),
+            Vector3::new(-106.414230, 0.0, -28.303635),
+            Vector3::new(-101.726318, 0.0, -24.851936),
+            Vector3::new(-97.038399, 0.0, -21.400236),
+            Vector3::new(-92.350479, 0.0, -17.948538),
+            Vector3::new(-87.662567, 0.0, -14.496840),
+            Vector3::new(-82.974640, 0.0, -11.045139),
+            Vector3::new(-78.286728, 0.0, -7.593441),
+            Vector3::new(-73.598808, 0.0, -4.141743),
+            Vector3::new(-68.910889, 0.0, -0.690044),
+            Vector3::new(-64.222977, 0.0, 2.761654),
+            Vector3::new(-63.626408, 0.0, 3.200905),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        branch,
+        vec![
+            Vector3::new(-63.626408, 0.0, 3.200905),
+            Vector3::new(-59.614235, 0.0, -1.088382),
+            Vector3::new(-55.602062, 0.0, -5.377669),
+            Vector3::new(-51.589890, 0.0, -9.666955),
+            Vector3::new(-47.577717, 0.0, -13.956243),
+            Vector3::new(-43.565544, 0.0, -18.245527),
+            Vector3::new(-39.553368, 0.0, -22.534815),
+            Vector3::new(-35.541199, 0.0, -26.824100),
+            Vector3::new(-31.529026, 0.0, -31.113390),
+            Vector3::new(-27.516853, 0.0, -35.402672),
+            Vector3::new(-23.504681, 0.0, -39.691963),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-63.626408, 0.0, 3.200905),
+            Vector3::new(-59.535057, 0.0, 6.213356),
+            Vector3::new(-54.847137, 0.0, 9.665054),
+            Vector3::new(-50.159222, 0.0, 13.116753),
+            Vector3::new(-45.471306, 0.0, 16.568451),
+            Vector3::new(-40.783386, 0.0, 20.020149),
+            Vector3::new(-36.095467, 0.0, 23.471848),
+            Vector3::new(-31.407555, 0.0, 26.923546),
+            Vector3::new(-26.719635, 0.0, 30.375244),
+            Vector3::new(-22.031715, 0.0, 33.826942),
+            Vector3::new(-17.343803, 0.0, 37.278641),
+            Vector3::new(-12.655884, 0.0, 40.730339),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    if !surface.compiled_visual_node_pieces().contains_key(&center) {
+        panic!(
+            "logged flat split-road branch JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, center)
+        );
+    }
+    let piece = assert_compiled_junction_piece(&surface, &graph, center);
+    assert_flat_junction_raised_geometry_invariants(piece);
+}
+
 fn assert_flat_junction_raised_geometry_invariants(piece: &RoadSurfaceVisualNodePiece) {
     assert_flat_junction_raised_top_triangles_stay_at_curb_height(piece);
     assert_node_curb_and_sidewalk_drops_are_retaining_walls(piece);
@@ -507,6 +602,189 @@ fn logged_flat_four_way_junction_does_not_emit_curb_width_orphan_caps() {
 }
 
 #[test]
+fn logged_mixed_width_junction_keeps_single_footprint_boundary_height() {
+    let mut graph = RegionGraph::new();
+    let node0 = graph.add_node(
+        Vector3::new(-117.430656, 0.0, -13.277603),
+        NodeType::Junction,
+    );
+    let node1 = graph.add_node(Vector3::new(26.671715, 0.0, 62.899704), NodeType::Junction);
+    let node2 = graph.add_node(Vector3::new(-54.213356, 0.0, 20.141167), NodeType::Junction);
+    let node3 = graph.add_node(Vector3::new(13.269596, 0.0, -34.675423), NodeType::Junction);
+    let node4 = graph.add_node(Vector3::new(-46.970161, 0.0, 70.222626), NodeType::Junction);
+    let _unused = graph.add_node(Vector3::new(-160.0, 0.0, -160.0), NodeType::Junction);
+    let node6 = graph.add_node(Vector3::new(-85.487671, 0.0, 3.608521), NodeType::Junction);
+    let node7 = graph.add_node(
+        Vector3::new(-34.649117, 0.0, -119.015366),
+        NodeType::Junction,
+    );
+
+    graph.add_edge(logged_lane_edge(
+        node0,
+        node6,
+        vec![
+            Vector3::new(-117.430656, 0.000000, -13.277603),
+            Vector3::new(-112.284142, 0.000000, -10.556985),
+            Vector3::new(-107.137627, 0.000000, -7.836367),
+            Vector3::new(-101.991119, 0.000000, -5.115748),
+            Vector3::new(-96.844604, 0.000000, -2.395130),
+            Vector3::new(-91.698090, 0.000000, 0.325488),
+            Vector3::new(-86.551575, 0.000000, 3.046106),
+            Vector3::new(-85.487671, 0.000000, 3.608521),
+        ],
+        1,
+        1,
+    ));
+    graph.add_edge(logged_lane_edge(
+        node2,
+        node3,
+        vec![
+            Vector3::new(-54.213356, 0.000000, 20.141167),
+            Vector3::new(-49.714493, 0.000000, 16.486727),
+            Vector3::new(-45.215630, 0.000000, 12.832288),
+            Vector3::new(-40.716766, 0.000000, 9.177849),
+            Vector3::new(-36.217903, 0.000000, 5.523409),
+            Vector3::new(-31.719038, 0.000000, 1.868969),
+            Vector3::new(-27.220175, 0.000000, -1.785469),
+            Vector3::new(-22.721312, 0.000000, -5.439909),
+            Vector3::new(-18.222448, 0.000000, -9.094349),
+            Vector3::new(-13.723584, 0.000000, -12.748787),
+            Vector3::new(-9.224721, 0.000000, -16.403229),
+            Vector3::new(-4.725857, 0.000000, -20.057667),
+            Vector3::new(-0.226994, 0.000000, -23.712105),
+            Vector3::new(4.271870, 0.000000, -27.366543),
+            Vector3::new(8.770733, 0.000000, -31.020985),
+            Vector3::new(13.269596, 0.000000, -34.675423),
+        ],
+        1,
+        1,
+    ));
+    graph.add_edge(logged_lane_edge(
+        node2,
+        node1,
+        vec![
+            Vector3::new(-54.213356, 0.000000, 20.141167),
+            Vector3::new(-50.525986, 0.000000, 22.090431),
+            Vector3::new(-45.379471, 0.000000, 24.811050),
+            Vector3::new(-40.232964, 0.000000, 27.531666),
+            Vector3::new(-35.086441, 0.000000, 30.252289),
+            Vector3::new(-29.939926, 0.000000, 32.972904),
+            Vector3::new(-24.793419, 0.000000, 35.693523),
+            Vector3::new(-19.646912, 0.000000, 38.414139),
+            Vector3::new(-14.500389, 0.000000, 41.134762),
+            Vector3::new(-9.353874, 0.000000, 43.855377),
+            Vector3::new(-4.207367, 0.000000, 46.575993),
+            Vector3::new(0.939156, 0.000000, 49.296616),
+            Vector3::new(6.085663, 0.000000, 52.017235),
+            Vector3::new(11.232170, 0.000000, 54.737846),
+            Vector3::new(16.378685, 0.000000, 57.458466),
+            Vector3::new(21.525200, 0.000000, 60.179085),
+            Vector3::new(26.671715, 0.000000, 62.899704),
+        ],
+        1,
+        1,
+    ));
+    graph.add_edge(logged_lane_edge(
+        node2,
+        node4,
+        vec![
+            Vector3::new(-54.213356, 0.000000, 20.141167),
+            Vector3::new(-53.408558, 0.120000, 25.705772),
+            Vector3::new(-52.603756, 0.026635, 31.270380),
+            Vector3::new(-51.798958, 0.005912, 36.834988),
+            Vector3::new(-50.994160, 0.001312, 42.399593),
+            Vector3::new(-50.189358, 0.000291, 47.964203),
+            Vector3::new(-49.384560, 0.000065, 53.528809),
+            Vector3::new(-48.579762, 0.000014, 59.093414),
+            Vector3::new(-47.774960, 0.000003, 64.658020),
+            Vector3::new(-46.970161, 0.000000, 70.222626),
+        ],
+        1,
+        1,
+    ));
+    graph.add_edge(logged_lane_edge(
+        node6,
+        node7,
+        vec![
+            Vector3::new(-85.487671, 0.000000, 3.608521),
+            Vector3::new(-83.277298, 0.000000, -1.722952),
+            Vector3::new(-81.066925, 0.000000, -7.054426),
+            Vector3::new(-78.856552, 0.000000, -12.385900),
+            Vector3::new(-76.646179, 0.000000, -17.717373),
+            Vector3::new(-74.435814, 0.000000, -23.048845),
+            Vector3::new(-72.225441, 0.000000, -28.380320),
+            Vector3::new(-70.015068, 0.000000, -33.711792),
+            Vector3::new(-67.804695, 0.000000, -39.043266),
+            Vector3::new(-65.594322, 0.000000, -44.374741),
+            Vector3::new(-63.383953, 0.000000, -49.706211),
+            Vector3::new(-61.173580, 0.000000, -55.037685),
+            Vector3::new(-58.963207, 0.000000, -60.369160),
+            Vector3::new(-56.752838, 0.000000, -65.700630),
+            Vector3::new(-54.542465, 0.000000, -71.032104),
+            Vector3::new(-52.332092, 0.000000, -76.363579),
+            Vector3::new(-50.121719, 0.000000, -81.695053),
+            Vector3::new(-47.911346, 0.000000, -87.026527),
+            Vector3::new(-45.700977, 0.000000, -92.358002),
+            Vector3::new(-43.490604, 0.000000, -97.689468),
+            Vector3::new(-41.280235, 0.000000, -103.020943),
+            Vector3::new(-39.069859, 0.000000, -108.352425),
+            Vector3::new(-36.859489, 0.000000, -113.683891),
+            Vector3::new(-34.649117, 0.000000, -119.015366),
+        ],
+        2,
+        2,
+    ));
+    graph.add_edge(logged_lane_edge(
+        node6,
+        node2,
+        vec![
+            Vector3::new(-85.487671, 0.000000, 3.608521),
+            Vector3::new(-81.405060, 0.000000, 5.766724),
+            Vector3::new(-76.258545, 0.000000, 8.487343),
+            Vector3::new(-71.112038, 0.000000, 11.207960),
+            Vector3::new(-65.965523, 0.000000, 13.928579),
+            Vector3::new(-60.819012, 0.000000, 16.649195),
+            Vector3::new(-55.672497, 0.000000, 19.369816),
+            Vector3::new(-54.213356, 0.000000, 20.141167),
+        ],
+        1,
+        1,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(256, 256);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    if !surface.compiled_visual_node_pieces().contains_key(&node6) {
+        panic!(
+            "logged mixed-width JunctionN did not compile: {}",
+            canonical_junction_pipeline_report(&surface, &graph, node6)
+        );
+    }
+    let piece = assert_compiled_junction_piece(&surface, &graph, node6);
+    assert_flat_junction_raised_geometry_invariants(piece);
+    assert_surface_no_unfaced_cross_material_height_boundaries(&surface);
+}
+
+fn logged_lane_edge(
+    start_node: u32,
+    end_node: u32,
+    points: Vec<Vector3>,
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+) -> Edge {
+    crate::simulation::network::build_surface_edge(
+        start_node,
+        end_node,
+        points,
+        fwd_lanes,
+        bkw_lanes,
+        EdgeClass::Standard,
+    )
+}
+
+#[test]
 fn flat_bend_angle_matrix_compiles_conflict_first_owned_regions() {
     run_generated_cases_in_parallel(
         &GENERATED_CONFLICT_MATRIX_ANGLES_DEGREES,
@@ -903,8 +1181,8 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             top_polygon_count: 481,
             carrier_record_count: 567,
             source_segment_record_count: 28,
-            polygon_key_set_digest: 7855490188956755304,
-            top_owner_height_field_digest: 2508482512379286553,
+            polygon_key_set_digest: 18433125960916516512,
+            top_owner_height_field_digest: 3017765074126608807,
             carrier_owner_source_height_field_digest: 13238820941424359883,
             source_segment_id_digest: 2898317876464273514,
             source_segment_ids: vec![
@@ -948,11 +1226,11 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
         ),
         CanonicalNodeRawPolygonGolden {
             kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            top_polygon_count: 607,
+            top_polygon_count: 604,
             carrier_record_count: 706,
             source_segment_record_count: 32,
-            polygon_key_set_digest: 3533066805734846189,
-            top_owner_height_field_digest: 17129460900484566228,
+            polygon_key_set_digest: 9084159174272668121,
+            top_owner_height_field_digest: 2586669956823001875,
             carrier_owner_source_height_field_digest: 13406976634543183515,
             source_segment_id_digest: 6020531977663627717,
             source_segment_ids: vec![
