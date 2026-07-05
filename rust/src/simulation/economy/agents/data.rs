@@ -7,7 +7,7 @@
 
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -199,6 +199,36 @@ pub struct AgentSystem {
     pub(crate) next_render_id: u64,
     /// Last allocator building-reference revision that was scrubbed against this agent store.
     pub(crate) last_building_ref_scrub_revision: u64,
+}
+
+impl Clone for AgentSystem {
+    fn clone(&self) -> Self {
+        Self {
+            agents: self.agents.clone(),
+            sim_time: self.sim_time,
+            pathfind_count: AtomicU32::new(self.pathfind_count.load(Ordering::Relaxed)),
+            lane_buckets: Vec::new(),
+            lane_is_dirty: Vec::new(),
+            dirty_lanes: Vec::new(),
+            lane_bucket_live_agent_count: 0,
+            lane_bucket_snapshot_lane_count: 0,
+            lane_bucket_snapshot_agent_count: 0,
+            lane_bucket_snapshot_valid: false,
+            lane_change_ghost_agents: Vec::new(),
+            new_speed: Vec::new(),
+            lane_attach_claimed: Vec::new(),
+            claim_serial_agents: Vec::new(),
+            edge_speed_sum: Vec::new(),
+            edge_agent_cnt: Vec::new(),
+            edge_is_dirty: Vec::new(),
+            dirty_edges: Vec::new(),
+            stale_dirty_edges: Vec::new(),
+            lane_speed_sum: Vec::new(),
+            lane_vehicle_cnt: Vec::new(),
+            next_render_id: self.next_render_id,
+            last_building_ref_scrub_revision: self.last_building_ref_scrub_revision,
+        }
+    }
 }
 
 impl Deref for AgentSystem {

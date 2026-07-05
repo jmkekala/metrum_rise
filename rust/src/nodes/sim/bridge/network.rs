@@ -13,6 +13,8 @@ use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::time::Instant;
 
+const GHOST_HEIGHT_SAMPLE_STEP_M: f32 = 8.0;
+
 /// Returns ghost guide data for the road-tool overlay.
 pub fn get_road_ghost_guides(core: &SimCore) -> PackedFloat32Array {
     let graph = &core.region_graph;
@@ -49,11 +51,14 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
     let mut vertices = Vec::new();
     let mut colors = Vec::new();
     let guide_color = Color::from_rgba(1.0, 1.0, 1.0, 0.30);
+    let graph = &core.region_graph;
+    let road_surface = &core.transit_network.road_surface;
+    let terrain = &core.heightmap;
+    let mut height_samples = 0usize;
 
     let outward_start = road_debug.then(Instant::now);
     let mut edge_count = 0usize;
-    for edge in core
-        .region_graph
+    for edge in graph
         .edges()
         .iter()
         .filter(|edge| !edge.deleted && edge.physical_geometry.len() >= 2)
@@ -65,18 +70,26 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
         append_outward_ghost_guide(
             geom[0],
             Vector2::new(start_tangent.x, start_tangent.z),
+            graph,
+            road_surface,
+            terrain,
             guide_color,
             &mut vertices,
             &mut colors,
+            &mut height_samples,
         );
 
         let end_tangent = (geom[end_index] - geom[end_index - 1]).normalized();
         append_outward_ghost_guide(
             geom[end_index],
             Vector2::new(end_tangent.x, end_tangent.z),
+            graph,
+            road_surface,
+            terrain,
             guide_color,
             &mut vertices,
             &mut colors,
+            &mut height_samples,
         );
     }
     let outward_ms = outward_start
@@ -84,8 +97,7 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
         .unwrap_or(0.0);
 
     let offset_start = road_debug.then(Instant::now);
-    for edge in core
-        .region_graph
+    for edge in graph
         .edges()
         .iter()
         .filter(|edge| !edge.deleted && edge.physical_geometry.len() >= 2)
@@ -97,16 +109,24 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
             append_offset_ghost_curve(
                 &edge.physical_geometry,
                 offset,
+                graph,
+                road_surface,
+                terrain,
                 color,
                 &mut vertices,
                 &mut colors,
+                &mut height_samples,
             );
             append_offset_ghost_curve(
                 &edge.physical_geometry,
                 -offset,
+                graph,
+                road_surface,
+                terrain,
                 color,
                 &mut vertices,
                 &mut colors,
+                &mut height_samples,
             );
         }
     }
@@ -134,7 +154,7 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
             outward_ms,
             offset_ms,
             dict_ms,
-            0,
+            height_samples,
             total_start
                 .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                 .unwrap_or(0.0)
@@ -239,40 +259,50 @@ pub fn get_road_tangent_at(core: &SimCore, pos: Vector3, max_dist: f32) -> Vecto
 fn append_outward_ghost_guide(
     anchor: Vector3,
     tangent: Vector2,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
     color: Color,
     vertices: &mut Vec<Vector3>,
     colors: &mut Vec<Color>,
+    height_samples: &mut usize,
 ) {
     let perp = Vector2::new(-tangent.y, tangent.x);
     let anchor_xz = Vector2::new(anchor.x, anchor.z);
     let end_xz = anchor_xz + tangent * GHOST_OUTWARD_EXTEND_M;
-    push_ghost_line(
-        anchor,
-        Vector3::new(end_xz.x, anchor.y, end_xz.y),
+    push_ghost_surface_line(
+        anchor_xz,
+        end_xz,
         GHOST_LINE_LIFT_M,
+        graph,
+        road_surface,
+        terrain,
         color,
         vertices,
         colors,
+        height_samples,
     );
 
     let mut dist = GHOST_TICK_INTERVAL_M;
     while dist <= GHOST_OUTWARD_EXTEND_M {
         let tick_center = anchor_xz + tangent * dist;
-        push_ghost_line(
-            Vector3::new(
+        push_ghost_surface_line(
+            Vector2::new(
                 tick_center.x - perp.x * GHOST_TICK_HALF_M,
-                anchor.y,
                 tick_center.y - perp.y * GHOST_TICK_HALF_M,
             ),
-            Vector3::new(
+            Vector2::new(
                 tick_center.x + perp.x * GHOST_TICK_HALF_M,
-                anchor.y,
                 tick_center.y + perp.y * GHOST_TICK_HALF_M,
             ),
             GHOST_TICK_LIFT_M,
+            graph,
+            road_surface,
+            terrain,
             color,
             vertices,
             colors,
+            height_samples,
         );
         dist += GHOST_TICK_INTERVAL_M;
     }
@@ -281,9 +311,13 @@ fn append_outward_ghost_guide(
 fn append_offset_ghost_curve(
     points: &[Vector3],
     offset_m: f32,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
     color: Color,
     vertices: &mut Vec<Vector3>,
     colors: &mut Vec<Color>,
+    height_samples: &mut usize,
 ) {
     if points.len() < 2 {
         return;
@@ -304,7 +338,7 @@ fn append_offset_ghost_curve(
         if (offset_b - offset_a).dot(seg_norm) < 0.0 {
             continue;
         }
-        offset_segments.push((offset_a, offset_b, segment[0].y, segment[1].y));
+        offset_segments.push((offset_a, offset_b));
     }
 
     let mut skip_next = false;
@@ -313,36 +347,74 @@ fn append_offset_ghost_curve(
             skip_next = false;
             continue;
         }
-        let (a, b, start_y, end_y) = offset_segments[index];
-        if let Some((next_a, next_b, _, _)) = offset_segments.get(index + 1).copied() {
+        let (a, b) = offset_segments[index];
+        if let Some((next_a, next_b)) = offset_segments.get(index + 1).copied() {
             if segments_cross_2d(a, b, next_a, next_b) {
                 skip_next = true;
                 continue;
             }
         }
-        push_ghost_line(
-            Vector3::new(a.x, start_y, a.y),
-            Vector3::new(b.x, end_y, b.y),
+        push_ghost_surface_line(
+            a,
+            b,
             GHOST_LINE_LIFT_M,
+            graph,
+            road_surface,
+            terrain,
             color,
             vertices,
             colors,
+            height_samples,
         );
     }
 }
 
-fn push_ghost_line(
-    start: Vector3,
-    end: Vector3,
+fn push_ghost_surface_line(
+    start: Vector2,
+    end: Vector2,
     lift_m: f32,
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
     color: Color,
     vertices: &mut Vec<Vector3>,
     colors: &mut Vec<Color>,
+    height_samples: &mut usize,
 ) {
-    vertices.push(Vector3::new(start.x, start.y + lift_m, start.z));
-    vertices.push(Vector3::new(end.x, end.y + lift_m, end.z));
-    colors.push(color);
-    colors.push(color);
+    let delta = end - start;
+    let length = delta.length();
+    if length <= 0.01 {
+        return;
+    }
+
+    let segment_count = (length / GHOST_HEIGHT_SAMPLE_STEP_M).ceil().max(1.0) as usize;
+    let mut prev = ghost_surface_point_m(graph, road_surface, terrain, start, lift_m);
+    *height_samples += 1;
+    for step in 1..=segment_count {
+        let t = step as f32 / segment_count as f32;
+        let pos = start + delta * t;
+        let next = ghost_surface_point_m(graph, road_surface, terrain, pos, lift_m);
+        *height_samples += 1;
+        vertices.push(prev);
+        vertices.push(next);
+        colors.push(color);
+        colors.push(color);
+        prev = next;
+    }
+}
+
+fn ghost_surface_point_m(
+    graph: &RegionGraph,
+    road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
+    pos: Vector2,
+    lift_m: f32,
+) -> Vector3 {
+    Vector3::new(
+        pos.x,
+        ghost_surface_height_m(graph, road_surface, terrain, pos) + lift_m,
+        pos.y,
+    )
 }
 
 fn ghost_surface_height_m(

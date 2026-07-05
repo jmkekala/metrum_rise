@@ -64,6 +64,7 @@ var _service_class_buttons: Dictionary = {}
 var _service_asset_buttons: Dictionary = {}
 var _active_service_class := ""
 var select_main_btn: Button
+var bulldoze_btn: Button
 var road_properties_panel: Node
 var clock_panel: PanelContainer
 var clock_label: Label
@@ -502,6 +503,38 @@ func _build_ui():
 	demand_meter = DemandMeter.new()
 	left_bottom_strip.add_child(_create_bottom_strip_shell(demand_meter, DEMAND_METER_WIDTH))
 
+	# --- Bottom-right Tool Strip ---
+	var right_strip_margin := MarginContainer.new()
+	right_strip_margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	right_strip_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	right_strip_margin.add_theme_constant_override("margin_right", int(UIStyle.HUD_LEFT_MARGIN))
+	right_strip_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_BOTTOM_MARGIN))
+	bottom_panel.add_child(right_strip_margin)
+
+	var right_strip_stack := VBoxContainer.new()
+	right_strip_stack.alignment = BoxContainer.ALIGNMENT_END
+	right_strip_stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_strip_stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	right_strip_margin.add_child(right_strip_stack)
+
+	var right_bottom_strip := HBoxContainer.new()
+	right_bottom_strip.alignment = BoxContainer.ALIGNMENT_END
+	right_bottom_strip.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_bottom_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	right_strip_stack.add_child(right_bottom_strip)
+
+	bulldoze_btn = Button.new()
+	bulldoze_btn.text = "⌫"
+	bulldoze_btn.tooltip_text = "Bulldoze"
+	bulldoze_btn.custom_minimum_size = Vector2(52, toolbar_button_height)
+	bulldoze_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(bulldoze_btn)
+	var bulldoze_style := StyleBoxFlat.new()
+	bulldoze_style.bg_color = Color(0.45, 0.08, 0.06, 0.86)
+	bulldoze_style.set_corner_radius_all(18)
+	bulldoze_btn.add_theme_stylebox_override("normal", bulldoze_style)
+	right_bottom_strip.add_child(_create_bottom_strip_shell(bulldoze_btn, 82.0))
+
 func _build_auxiliary_windows() -> void:
 	road_properties_panel = RoadPropertiesWindow.new()
 	add_child(road_properties_panel)
@@ -608,6 +641,7 @@ func _connect_signals():
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
 	services_main_btn.pressed.connect(_on_services_main_pressed)
 	select_main_btn.pressed.connect(_on_select_main_pressed)
+	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
 	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
 	road_4l_btn.pressed.connect(func(): _select_road_type(2, 2))
@@ -707,6 +741,14 @@ func _on_select_main_pressed():
 	services_combined_hbox.visible = false
 	_deactivate_services_if_active()
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
+
+func _on_bulldoze_pressed():
+	road_combined_hbox.visible = false
+	terrain_sub_menu.visible = false
+	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
+	input_manager._toggle_tool(InputManager.Tool.BULLDOZE)
 
 ## Shows the road properties panel for one or more selected edges.
 ## When multiple edges are selected the warning is suppressed and the

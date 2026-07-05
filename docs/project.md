@@ -52,6 +52,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Gameplay bulldoze is now a dedicated Rust-backed tool instead of a selection special case. The
+  bottom-right HUD action activates a one-click delete cursor with Rust-owned deterministic
+  targeting (`building` before `road`), road deletions soft-delete graph edges and refresh the
+  road-surface / terrain-clip pipeline, and building deletion uses the allocator lifecycle path
+  with undo snapshots covering allocator, agents, households, logistics, and zoning. See
+  [`ui.md`](ui.md), [`roads.md`](roads.md), and [`building_allocator.md`](building_allocator.md).
 - Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
   and adult female archetypes. The bake path selects the explicit walk action from the source
   `.blend`, normalizes the rest mesh to `1.8 m`, preserves outfit color through vertex colors, and

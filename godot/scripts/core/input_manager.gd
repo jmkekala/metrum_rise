@@ -1,7 +1,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, LaneTool, CulDeSacTool, ServiceBuildingTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## MoveTool, LaneTool, CulDeSacTool, ServiceBuildingTool, BulldozeTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
 ## The Building Inspector helper is always present in the scene and can be
@@ -17,13 +17,14 @@ extends Node
 @onready var move_tool = $"../MoveTool"
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
+var bulldoze_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const SAVES_DIR := "user://saves"
@@ -56,6 +57,15 @@ func _ready():
 		service_building_tool = sbt
 	else:
 		service_building_tool = get_node("../ServiceBuildingTool")
+
+	if not has_node("../BulldozeTool"):
+		var bt = Node3D.new()
+		bt.name = "BulldozeTool"
+		bt.set_script(load("res://scripts/tools/bulldoze_tool.gd"))
+		get_parent().call_deferred("add_child", bt)
+		bulldoze_tool = bt
+	else:
+		bulldoze_tool = get_node("../BulldozeTool")
 
 	if has_node("../BuildingInspector"):
 		building_inspector = get_node("../BuildingInspector")
@@ -123,6 +133,7 @@ func _unhandled_input(event):
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
+			KEY_B: _toggle_tool(Tool.BULLDOZE)
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
@@ -230,8 +241,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.fwd_lanes = 1
 					road_tool.bkw_lanes = 1
 					road_tool._update_lanes_label()
-					road_tool._ghost_guides_dirty = true
-					road_tool._rebuild_ghost_lines()
+					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
 			if road_tool: 
 				if not enabled:
@@ -253,6 +263,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
+		Tool.BULLDOZE:
+			if bulldoze_tool: bulldoze_tool.active = enabled
 
 func _toggle_zoning_overlay():
 	_toggle_tool(Tool.ZONING)
@@ -264,11 +276,11 @@ func _handle_undo():
 		return
 	if simulation_node.undo_action():
 		print("Undo Executed Globally")
+		if buildings_node: buildings_node.update_all_buildings()
 		if terrain_node: terrain_node.update_terrain_visuals()
 		if road_tool:
 			road_tool.update_main_mesh()
-			road_tool._ghost_guides_dirty = true
-			road_tool._rebuild_ghost_lines()
+			road_tool.mark_network_topology_dirty()
 
 func _default_save_name() -> String:
 	if not _current_save_path.is_empty():

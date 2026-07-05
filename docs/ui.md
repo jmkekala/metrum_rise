@@ -144,6 +144,10 @@ The toolbar is the primary tool-selection surface. It is always visible during g
 | Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
 | Mods    | Opens the Pack Manager window |
 
+Bulldoze is intentionally separate from the centered construction toolbar: a bottom-right icon
+button activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
+footprints before road edges; left click deletes one target; right click or Esc exits the tool.
+
 Sub-menus expand upward above the toolbar row, the same as today. In the current
 implementation the right-side menu cluster has:
 - one outer translucent group wrapper around the whole menu stack

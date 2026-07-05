@@ -456,6 +456,18 @@ pub(crate) struct NetworkRenderRuntimeSnapshot {
     pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
 }
 
+/// Building and economy runtime state that must move together for entity deletion undo.
+pub(crate) struct SimulationRuntimeSnapshot {
+    /// Building allocator, indices, derived site data, and occupancy-facing metadata.
+    pub(crate) allocator: BuildingAllocator,
+    /// Live agent SoA state after lifecycle eviction/remapping.
+    pub(crate) agents: AgentSystem,
+    /// Household records that reference building indices.
+    pub(crate) households: HouseholdSystem,
+    /// Freight reservations and shipment state that reference buildings.
+    pub(crate) logistics: ShipmentSystem,
+}
+
 /// A snapshot of simulation state for undo history.
 pub(crate) struct SimulationSnapshot {
     /// Terrain heightmap data.
@@ -468,6 +480,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) network_render: Option<NetworkRenderRuntimeSnapshot>,
     /// Zoning system state.
     pub(crate) zoning: Option<ZoningSystem>,
+    /// Building/economy runtime state.
+    pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
 }
 
 /// Cache key for one production refined terrain patch mesh.

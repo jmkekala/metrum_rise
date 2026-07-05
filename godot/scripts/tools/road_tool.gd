@@ -152,11 +152,7 @@ func _unhandled_input(event):
 	# G toggle works whenever the road tool is the active tool (not just mid-draw).
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_G:
-			_ghost_enabled = not _ghost_enabled
-			if _ghost_enabled:
-				_request_deferred_ghost_rebuild()
-			elif ghost_mesh:
-				ghost_mesh.visible = false
+			_set_ghost_guides_enabled(not _ghost_enabled)
 
 	if active and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -669,6 +665,19 @@ func cancel_road():
 	_clear_preview_cache()
 	if _info_label:
 		_info_label.visible = false
+
+func mark_network_topology_dirty() -> void:
+	mark_network_nodes_dirty()
+	_ghost_guides_dirty = true
+	_request_deferred_ghost_rebuild()
+
+func _set_ghost_guides_enabled(enabled: bool) -> void:
+	_ghost_enabled = enabled
+	if _ghost_enabled:
+		_ghost_guides_dirty = true
+		_request_deferred_ghost_rebuild()
+	elif ghost_mesh:
+		ghost_mesh.visible = false
 
 ## Called by NetworkRenderer after the road is confirmed in the graph.
 ## Drains _pending_border_checks and shows the border-connection dialog if relevant.

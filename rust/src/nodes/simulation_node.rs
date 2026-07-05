@@ -70,6 +70,8 @@
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
+//! | | `get_bulldoze_target_at` | `bulldoze_tool.gd` |
+//! | | `bulldoze_at` | `bulldoze_tool.gd` |
 //! | **Services** | `get_service_building_assets` | `main_ui.gd` |
 //! | | `get_service_building_placement_preview` | `service_building_tool.gd` |
 //! | | `place_service_building` | `service_building_tool.gd` |
@@ -5412,6 +5414,50 @@ impl SimulationNode {
             }
             Err(rejection) => GString::from(Self::service_placement_error_message(rejection)),
         }
+    }
+
+    /// Returns the deterministic bulldoze target under one world-space point.
+    #[func]
+    pub fn get_bulldoze_target_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
+        match self.try_lock_core() {
+            Some(mut core) => core.get_bulldoze_target_at_internal(world_x, world_z),
+            None => {
+                let mut dict = VarDictionary::new();
+                dict.set("valid", false);
+                dict.set("deleted", false);
+                dict
+            }
+        }
+    }
+
+    /// Deletes one building or road target at one world-space point.
+    #[func]
+    pub fn bulldoze_at(&mut self, world_x: f32, world_z: f32) -> VarDictionary {
+        let (payload, road_deleted, cache_inputs) = {
+            let mut core = self.lock_core();
+            let result = core.bulldoze_at_internal(world_x, world_z);
+            if !result.deleted {
+                return result.payload;
+            }
+            let cache_inputs = if result.road_deleted {
+                core.rebuild_network_surface_terrain_internal();
+                core.precompute_road_mesh_data();
+                core.bump_road_tool_surface_generation();
+                core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M)
+            } else {
+                Vec::new()
+            };
+            (result.payload, result.road_deleted, cache_inputs)
+        };
+
+        if road_deleted {
+            self.lock_terrain_patch_payload_jobs().clear();
+            let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
+            let mut core = self.lock_core();
+            core.insert_refined_terrain_patch_cache_entries(cache_entries);
+        }
+        self.refresh_snapshot_from_core();
+        payload
     }
 
     /// Creates or rezones a road-aligned zoning parcel at one world-space point.

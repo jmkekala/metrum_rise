@@ -1022,6 +1022,22 @@ impl BuildingAllocator {
         self.entrances_dirty = true;
         moved_key
     }
+
+    /// Removes one building through the normal lifecycle hooks used by demand redevelopment.
+    pub(crate) fn remove_building_for_bulldoze(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        logistics: &mut ShipmentSystem,
+    ) -> bool {
+        if building_idx >= self.buildings.len() {
+            return false;
+        }
+        let _ = self.remove_building_at_index(building_idx, zoning, agents, households, logistics);
+        true
+    }
 }
 
 fn accumulate_site_dirty_bounds(

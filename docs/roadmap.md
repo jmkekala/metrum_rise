@@ -110,6 +110,7 @@ Kind values:
 | ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
 |----|------|--------|----------|-----------|---------|---------------|
 | `TOOLS-01` | `feature` | `done` | `P2` | [`asset_editor.md`](asset_editor.md) | Installed content packs can now be viewed and enabled through the in-game Pack Manager window launched from the gameplay `Mods` action. | Players can view and manage installed content packs through an in-game pack-manager UI. |
+| `TOOLS-02` | `feature` | `done` | `P1` | [`ui.md`](ui.md) / [`roads.md`](roads.md) / [`building_allocator.md`](building_allocator.md) | Gameplay bulldoze now exists as its own bottom-right tool rather than a special case inside selection. | One click deletes exactly one Rust-targeted building or road, road terrain/render state is repaired, and building deletion is undo-safe across allocator/economy references. |
 
 ## Notes
 

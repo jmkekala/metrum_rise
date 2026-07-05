@@ -1,7 +1,8 @@
 //! Undo/Redo system for simulation state.
 
 use crate::nodes::sim::core::{
-    NetworkRenderRuntimeSnapshot, SimCore, SimulationSnapshot, WaterRuntimeSnapshot,
+    NetworkRenderRuntimeSnapshot, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot,
+    WaterRuntimeSnapshot,
 };
 
 impl SimCore {
@@ -15,6 +16,35 @@ impl SimCore {
         inc_water: bool,
         inc_trans_graph: bool,
         inc_zoning: bool,
+    ) {
+        self.push_undo_state_internal(inc_terrain, inc_water, inc_trans_graph, inc_zoning, false);
+    }
+
+    /// Pushes an undo snapshot that may include building/economy runtime state.
+    pub(crate) fn push_undo_state_with_runtime(
+        &mut self,
+        inc_terrain: bool,
+        inc_water: bool,
+        inc_trans_graph: bool,
+        inc_zoning: bool,
+        inc_runtime: bool,
+    ) {
+        self.push_undo_state_internal(
+            inc_terrain,
+            inc_water,
+            inc_trans_graph,
+            inc_zoning,
+            inc_runtime,
+        );
+    }
+
+    fn push_undo_state_internal(
+        &mut self,
+        inc_terrain: bool,
+        inc_water: bool,
+        inc_trans_graph: bool,
+        inc_zoning: bool,
+        inc_runtime: bool,
     ) {
         if self.undo_stack.len() >= 30 {
             self.undo_stack.pop_front(); // Constant 30-size rolling window
@@ -51,6 +81,16 @@ impl SimCore {
             } else {
                 None
             },
+            runtime: if inc_runtime {
+                Some(SimulationRuntimeSnapshot {
+                    allocator: self.allocator.clone(),
+                    agents: self.agents.clone(),
+                    households: self.households.clone(),
+                    logistics: self.logistics.clone(),
+                })
+            } else {
+                None
+            },
         });
     }
 
@@ -64,6 +104,7 @@ impl SimCore {
                 trans_graph,
                 network_render,
                 zoning,
+                runtime,
             } = state;
             let mut sync_trans_graph = false;
             let old_road_locked_patch_keys = self.road_locked_terrain_patch_keys.clone();
@@ -87,6 +128,19 @@ impl SimCore {
             }
             if let Some(z_sys) = zoning {
                 self.zoning = z_sys;
+            }
+            if let Some(runtime) = runtime {
+                self.allocator = runtime.allocator;
+                self.agents = runtime.agents;
+                self.households = runtime.households;
+                self.logistics = runtime.logistics;
+                if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
+                    self.mark_building_site_terrain_dirty_bounds(bounds);
+                }
+                self.allocator.dirty = true;
+                self.allocator.dirty_index = true;
+                self.allocator.entrances_dirty = true;
+                self.transit_network.flow_fields.mark_all_dirty();
             }
 
             if sync_trans_graph {

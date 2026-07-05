@@ -20,6 +20,59 @@ use godot::prelude::*;
 use std::collections::HashSet;
 use std::time::Instant;
 
+const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
+const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
+const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BulldozeTargetKind {
+    Building,
+    Road,
+}
+
+impl BulldozeTargetKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Building => "building",
+            Self::Road => "road",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BulldozeTarget {
+    kind: BulldozeTargetKind,
+    id: usize,
+    center: Vector3,
+    points: Vec<Vector3>,
+    width_m: f32,
+}
+
+/// Result of one bulldoze command, plus flags used by the Godot bridge refresh path.
+pub(crate) struct BulldozeCommandResult {
+    /// Dictionary returned to GDScript.
+    pub(crate) payload: VarDictionary,
+    /// True when an object was actually deleted.
+    pub(crate) deleted: bool,
+    /// True when deletion changed the road surface/terrain clip system.
+    pub(crate) road_deleted: bool,
+}
+
+fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, Vector3) {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let len_sq = dx * dx + dz * dz;
+    let t = if len_sq > f32::EPSILON {
+        (((pos.x - a.x) * dx + (pos.y - a.z) * dz) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let closest = Vector3::new(a.x + dx * t, a.y + (b.y - a.y) * t, a.z + dz * t);
+    let off_x = pos.x - closest.x;
+    let off_z = pos.y - closest.z;
+    (off_x * off_x + off_z * off_z, closest)
+}
+
 impl SimCore {
     const ROAD_GEOMETRY_DUMP_DEFAULT_MAX_BYTES: usize = 256 * 1024;
 
@@ -132,6 +185,339 @@ impl SimCore {
                 self.transit_network.flow_fields.mark_zone_dirty(*zone);
             }
         }
+    }
+
+    /// Returns the deterministic building-or-road target for the bulldoze cursor.
+    pub(crate) fn get_bulldoze_target_at_internal(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+    ) -> VarDictionary {
+        self.prepare_bulldoze_target_indices();
+        self.resolve_bulldoze_target(world_x, world_z)
+            .map(|target| self.bulldoze_target_dict(&target, false))
+            .unwrap_or_else(Self::empty_bulldoze_target_dict)
+    }
+
+    /// Deletes one bulldoze target at the cursor and returns the deleted target payload.
+    pub(crate) fn bulldoze_at_internal(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+    ) -> BulldozeCommandResult {
+        self.prepare_bulldoze_target_indices();
+        let Some(target) = self.resolve_bulldoze_target(world_x, world_z) else {
+            let mut dict = Self::empty_bulldoze_target_dict();
+            dict.set("deleted", false);
+            dict.set("reason", GString::from("nothing targetable"));
+            return BulldozeCommandResult {
+                payload: dict,
+                deleted: false,
+                road_deleted: false,
+            };
+        };
+
+        let deleted = match target.kind {
+            BulldozeTargetKind::Building => self.bulldoze_building(target.id),
+            BulldozeTargetKind::Road => self.bulldoze_road_edge(target.id),
+        };
+        let road_deleted = deleted && target.kind == BulldozeTargetKind::Road;
+        let mut dict = self.bulldoze_target_dict(&target, deleted);
+        if !deleted {
+            dict.set("reason", GString::from("target no longer exists"));
+        }
+        BulldozeCommandResult {
+            payload: dict,
+            deleted,
+            road_deleted,
+        }
+    }
+
+    fn prepare_bulldoze_target_indices(&mut self) {
+        if self.allocator.building_sites.len() != self.allocator.buildings.len() {
+            self.allocator
+                .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
+        }
+        if self.allocator.dirty_index
+            || (self.allocator.building_chunks.is_empty() && !self.allocator.buildings.is_empty())
+        {
+            self.allocator.rebuild_zone_index();
+        }
+    }
+
+    fn resolve_bulldoze_target(&self, world_x: f32, world_z: f32) -> Option<BulldozeTarget> {
+        let pos = Vector2::new(world_x, world_z);
+        self.resolve_bulldoze_building_target(pos)
+            .or_else(|| self.resolve_bulldoze_road_target(pos))
+    }
+
+    fn resolve_bulldoze_building_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
+        let candidates = self
+            .allocator
+            .site_candidate_indices_for_bounds(pos.x, pos.y, pos.x, pos.y);
+        let mut best: Option<(usize, f32)> = None;
+        for idx in candidates {
+            let Some(site) = self.allocator.building_sites.get(idx) else {
+                continue;
+            };
+            if !site.contains_point(pos) {
+                continue;
+            }
+            let center = site
+                .footprint_world
+                .iter()
+                .copied()
+                .fold(Vector2::ZERO, |acc, point| acc + point)
+                / site.footprint_world.len().max(1) as f32;
+            let dist_sq = (center.x - pos.x).mul_add(center.x - pos.x, (center.y - pos.y).powi(2));
+            let replace = best
+                .map(|(best_idx, best_dist_sq)| {
+                    dist_sq < best_dist_sq - f32::EPSILON
+                        || ((dist_sq - best_dist_sq).abs() <= f32::EPSILON && idx < best_idx)
+                })
+                .unwrap_or(true);
+            if replace {
+                best = Some((idx, dist_sq));
+            }
+        }
+
+        let (building_idx, _) = best?;
+        let site = self.allocator.building_sites.get(building_idx)?;
+        let mut points = Vec::with_capacity(site.footprint_world.len());
+        for point in &site.footprint_world {
+            points.push(Vector3::new(
+                point.x,
+                site.support_height_m + BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                point.y,
+            ));
+        }
+        let building = self.allocator.buildings.get(building_idx)?;
+        Some(BulldozeTarget {
+            kind: BulldozeTargetKind::Building,
+            id: building_idx,
+            center: Vector3::new(
+                building.center_x,
+                site.support_height_m + BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                building.center_y,
+            ),
+            points,
+            width_m: 0.0,
+        })
+    }
+
+    fn resolve_bulldoze_road_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
+        let query_pos = Vector3::new(pos.x, 0.0, pos.y);
+        let mut best: Option<(usize, f32, Vector3)> = None;
+        for edge_idx in self
+            .region_graph
+            .get_edges_near_point(query_pos, BULLDOZE_ROAD_PICK_RADIUS_M)
+        {
+            if edge_idx >= self.region_graph.edge_count() {
+                continue;
+            }
+            let edge = self.region_graph.edge(edge_idx);
+            if edge.deleted || edge.physical_geometry.len() < 2 {
+                continue;
+            }
+            let sidewalk_width = if edge.allowed_types
+                & crate::simulation::network::types::TransitFlags::FOOT
+                != 0
+            {
+                config::SIDEWALK_WIDTH
+            } else {
+                0.0
+            };
+            let half_width = edge.width.max(config::LANE_WIDTH) * 0.5 + sidewalk_width;
+            let threshold_sq = (half_width + BULLDOZE_ROAD_PICK_MARGIN_M).powi(2);
+            for pair in edge.physical_geometry.windows(2) {
+                let (dist_sq, closest) = point_segment_distance_sq_xz(pos, pair[0], pair[1]);
+                if dist_sq > threshold_sq {
+                    continue;
+                }
+                let replace = best
+                    .map(|(best_idx, best_dist_sq, _)| {
+                        dist_sq < best_dist_sq - f32::EPSILON
+                            || ((dist_sq - best_dist_sq).abs() <= f32::EPSILON
+                                && edge_idx < best_idx)
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    best = Some((edge_idx, dist_sq, closest));
+                }
+            }
+        }
+
+        let (edge_idx, _, closest) = best?;
+        let edge = self.region_graph.edge(edge_idx);
+        let sidewalk_width =
+            if edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0 {
+                config::SIDEWALK_WIDTH
+            } else {
+                0.0
+            };
+        let width_m = edge.width.max(config::LANE_WIDTH) + sidewalk_width * 2.0;
+        let mut points = Vec::with_capacity(edge.physical_geometry.len());
+        for point in &edge.physical_geometry {
+            let y = self
+                .transit_network
+                .road_surface
+                .sample_visible_surface_height(
+                    &self.region_graph,
+                    &self.heightmap,
+                    point.x,
+                    point.z,
+                )
+                .unwrap_or(point.y);
+            points.push(Vector3::new(
+                point.x,
+                y + BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                point.z,
+            ));
+        }
+        let center_y = self
+            .transit_network
+            .road_surface
+            .sample_visible_surface_height(
+                &self.region_graph,
+                &self.heightmap,
+                closest.x,
+                closest.z,
+            )
+            .unwrap_or(closest.y);
+        Some(BulldozeTarget {
+            kind: BulldozeTargetKind::Road,
+            id: edge_idx,
+            center: Vector3::new(
+                closest.x,
+                center_y + BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
+                closest.z,
+            ),
+            points,
+            width_m,
+        })
+    }
+
+    fn bulldoze_building(&mut self, building_idx: usize) -> bool {
+        if building_idx >= self.allocator.buildings.len() {
+            return false;
+        }
+        let dirty_bounds = self.allocator.site_world_bounds(building_idx);
+        self.allocator
+            .accumulate_pending_site_dirty_bounds(dirty_bounds);
+        self.push_undo_state_with_runtime(false, false, false, true, true);
+        let _ = self.allocator.take_pending_site_dirty_bounds();
+        let removed = self.allocator.remove_building_for_bulldoze(
+            building_idx,
+            &mut self.zoning,
+            &mut self.agents,
+            &mut self.households,
+            &mut self.logistics,
+        );
+        if !removed {
+            return false;
+        }
+        if let Some(bounds) = dirty_bounds {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        self.rebuild_building_entrances_internal();
+        self.transit_network.flow_fields.mark_all_dirty();
+        self.terrain_dirty = true;
+        true
+    }
+
+    fn bulldoze_road_edge(&mut self, edge_idx: usize) -> bool {
+        if edge_idx >= self.region_graph.edge_count() || self.region_graph.edge(edge_idx).deleted {
+            return false;
+        }
+
+        let edge = self.region_graph.edge(edge_idx).clone();
+        let edge_points = edge.physical_geometry.clone();
+        let old_chunks = self.region_graph.get_edge_chunks(edge_idx);
+        let start_node = self.region_graph.get_valid_node(edge.start_node);
+        let end_node = self.region_graph.get_valid_node(edge.end_node);
+        let mut affected_nodes = HashSet::from([start_node, end_node]);
+        let mut affected_edges = HashSet::from([edge_idx]);
+        for node_id in [start_node, end_node] {
+            if node_id as usize >= self.region_graph.node_adjacency_count() {
+                continue;
+            }
+            for &adj_edge_idx in self.region_graph.node_adjacency(node_id) {
+                affected_edges.insert(adj_edge_idx);
+                let adj_edge = self.region_graph.edge(adj_edge_idx);
+                affected_nodes.insert(self.region_graph.get_valid_node(adj_edge.start_node));
+                affected_nodes.insert(self.region_graph.get_valid_node(adj_edge.end_node));
+            }
+        }
+
+        self.push_undo_state(false, false, true, true);
+        self.transit_network.mark_surface_dirty_from_sets(
+            &self.region_graph,
+            &affected_edges,
+            &affected_nodes,
+        );
+        for point in &edge_points {
+            self.transit_network.mark_point_dirty(*point);
+            self.transit_network.mark_surface_point_dirty(*point);
+        }
+
+        self.region_graph.remove_from_spatial_index(edge_idx);
+        self.region_graph.edge_mut(edge_idx).deleted = true;
+        self.zoning.remove_parcels_attached_to_edge(edge_idx);
+        self.region_graph.rebuild_adjacency_list();
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&affected_nodes);
+        for chunk in old_chunks {
+            self.transit_network.cch_dirty_chunks.insert(chunk);
+        }
+        for &adj_edge_idx in &affected_edges {
+            if adj_edge_idx >= self.region_graph.edge_count()
+                || self.region_graph.edge(adj_edge_idx).deleted
+            {
+                continue;
+            }
+            for chunk in self.region_graph.get_edge_chunks(adj_edge_idx) {
+                self.transit_network.cch_dirty_chunks.insert(chunk);
+            }
+        }
+
+        self.agents
+            .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild(&mut self.region_graph);
+        self.rebuild_building_entrances_internal();
+        self.transit_network
+            .rebuild_cch_and_check(&self.region_graph);
+        self.transit_network.flow_fields.mark_all_dirty();
+        self.network_dirty = true;
+        self.terrain_dirty = true;
+        self.cached_road_mesh_data = None;
+        self.bump_road_tool_surface_generation();
+        true
+    }
+
+    fn empty_bulldoze_target_dict() -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("valid", false);
+        dict.set("deleted", false);
+        dict.set("kind", GString::new());
+        dict
+    }
+
+    fn bulldoze_target_dict(&self, target: &BulldozeTarget, deleted: bool) -> VarDictionary {
+        let mut points = PackedVector3Array::new();
+        for point in &target.points {
+            points.push(*point);
+        }
+        let mut dict = VarDictionary::new();
+        dict.set("valid", true);
+        dict.set("deleted", deleted);
+        dict.set("kind", GString::from(target.kind.as_str()));
+        dict.set("id", target.id as i64);
+        dict.set("center", target.center);
+        dict.set("points", points);
+        dict.set("width_m", f64::from(target.width_m));
+        dict
     }
 
     /// Sculpts the terrain with a given radius and strength.
@@ -1158,7 +1544,7 @@ impl SimCore {
 
 #[cfg(test)]
 mod tests {
-    use super::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
+    use super::{BulldozeTargetKind, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
@@ -1315,6 +1701,77 @@ mod tests {
 
         assert!(core.region_graph.edge(0).no_building_spawn);
         assert!(core.zoning.parcels().is_empty());
+    }
+
+    #[test]
+    fn bulldoze_road_targets_tightly_deletes_and_undo_restores() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 120.0,
+            physical_length: 120.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        core.region_graph.rebuild_adjacency_list();
+        let residential = core
+            .zoning
+            .profiles
+            .default_runtime_id_for_zone_type(ZoneType::Residential)
+            .unwrap();
+        core.zoning
+            .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &core.region_graph)
+            .expect("parcel");
+        assert!(!core.zoning.parcels().is_empty());
+
+        let target = core.resolve_bulldoze_target(0.0, 0.0).expect("road target");
+        assert_eq!(target.kind, BulldozeTargetKind::Road);
+        assert_eq!(target.id, 0);
+        assert!(
+            core.resolve_bulldoze_target(0.0, 20.0).is_none(),
+            "bulldoze targeting must stay close to the actual road footprint"
+        );
+
+        assert!(core.bulldoze_road_edge(target.id));
+        assert!(core.region_graph.edge(0).deleted);
+        assert!(core.zoning.parcels().is_empty());
+        assert!(
+            !core
+                .region_graph
+                .get_edges_near_point(Vector3::new(0.0, 0.0, 0.0), 8.0)
+                .contains(&0)
+        );
+        assert!(core.network_dirty);
+        assert!(core.terrain_dirty);
+
+        assert!(core.undo_action_internal());
+        assert!(!core.region_graph.edge(0).deleted);
+        assert!(!core.zoning.parcels().is_empty());
+        assert!(
+            core.region_graph
+                .get_edges_near_point(Vector3::new(0.0, 0.0, 0.0), 8.0)
+                .contains(&0)
+        );
     }
 
     #[test]

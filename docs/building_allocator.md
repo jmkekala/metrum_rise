@@ -110,6 +110,14 @@ world-grid footprint tests run.
 `entrances` is allocator-owned derived data, but its detailed semantics belong to
 [`entrance_and_exit.md`](entrance_and_exit.md).
 
+## Removal Lifecycle
+
+Building deletion must enter through allocator lifecycle helpers, not through direct vector
+mutation. Player bulldoze uses `remove_building_for_bulldoze(...)`, which wraps the existing
+private removal path so parcel occupancy is cleared, agents are evicted, households and logistics
+invalidate building references, swap-removed building IDs are remapped through dependent stores,
+site terrain bounds are marked dirty, and entrance caches are rebuilt.
+
 ## Build-Site Model
 
 In the live runtime, a build site is one frontage-attached roadside candidate footprint. It is not a

@@ -64,6 +64,7 @@ func _process(_delta: float) -> void:
 	# 3. Rebuild each network's visual mesh.
 	var road_mesh_start_us := Time.get_ticks_usec()
 	road_tool.update_main_mesh()
+	road_tool.mark_network_topology_dirty()
 	var road_mesh_ms := float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
 	# rail_tool.update_main_mesh()  # add when RailTool exists
 
