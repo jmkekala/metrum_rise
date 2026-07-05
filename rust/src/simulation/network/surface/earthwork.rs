@@ -1,6 +1,6 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
-use super::{ChunkCacheKind, RoadSurfaceSystem, SurfaceChunkKey};
+use super::{ChunkCacheKind, RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
@@ -118,12 +118,25 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         terrain: &mut TerrainSystem,
     ) -> Vec<SurfaceChunkKey> {
+        self.rebuild_dirty_earthworks_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        )
+    }
+
+    pub(crate) fn rebuild_dirty_earthworks_with_reason(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &mut TerrainSystem,
+        reason: RoadSurfaceCompileReason,
+    ) -> Vec<SurfaceChunkKey> {
         let had_dirty_work = !self.compiled_once
             || !self.dirty_edges.is_empty()
             || !self.dirty_nodes.is_empty()
             || !self.dirty_surface_chunks.is_empty()
             || !self.dirty_terrain_chunks.is_empty();
-        self.compile_dirty(graph, terrain);
+        self.compile_dirty_with_reason(graph, terrain, reason);
 
         let chunks = if had_dirty_work {
             self.last_rebuilt_terrain_chunks.clone()
@@ -141,7 +154,7 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
     ) -> Vec<SurfaceChunkKey> {
         terrain.reset_visuals_from_source();
-        self.compile_dirty(graph, terrain);
+        self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::TerrainEarthwork);
         let chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
         self.apply_earthwork_chunks(graph, terrain, &chunks);
         chunks

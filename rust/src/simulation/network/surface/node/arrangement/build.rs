@@ -269,6 +269,21 @@ impl NodeArrangement {
                 .or_default()
                 .push(vertex.id);
         }
+
+        vertices_by_key.retain(|_, vertex_ids| {
+            let Some(first_id) = vertex_ids.first().copied() else {
+                return false;
+            };
+            let first_height_key = self.vertices[first_id.0].height_key;
+            vertex_ids
+                .iter()
+                .copied()
+                .any(|vertex_id| self.vertices[vertex_id.0].height_key != first_height_key)
+        });
+        if vertices_by_key.is_empty() {
+            return Ok(());
+        }
+
         let relevant_keys = vertices_by_key.keys().copied().collect::<BTreeSet<_>>();
         let conflict_index = MaterialHeightConflictIndex::new(self, &relevant_keys);
 

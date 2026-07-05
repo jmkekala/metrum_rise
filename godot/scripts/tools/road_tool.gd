@@ -3,8 +3,8 @@
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,
 ## angle snapping (Shift, 15° steps), distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
-## Commits via NetworkTool.add_road() on left-click after the authoritative Rust placement validator;
-## cheap hover validation and expensive async road-surface previews are visual feedback only.
+## Commits via NetworkTool.add_road() on left-click after cheap Rust placement validation;
+## expensive async road-surface previews are visual feedback only.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
 
@@ -56,6 +56,7 @@ var _candidate_cache_points: PackedVector3Array = PackedVector3Array()
 var _candidate_cache_validation: Dictionary = {}
 var _candidate_cache_fwd_lanes: int = -1
 var _candidate_cache_bkw_lanes: int = -1
+var _candidate_cache_surface_generation: int = -1
 var _curve_shape_valid: bool = true
 
 const ROAD_PROFILE_SLOW_MS := 50.0
@@ -314,6 +315,7 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		not _candidate_cache_validation.is_empty()
 		and _candidate_cache_fwd_lanes == fwd_lanes
 		and _candidate_cache_bkw_lanes == bkw_lanes
+		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
 		and _road_surface_points_match(points, _candidate_cache_points)
 	):
 		return _candidate_cache_validation.duplicate(true)
@@ -323,10 +325,7 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		"is_valid": false,
 		"invalid_reason": "validation_unavailable"
 	}
-	_candidate_cache_points = points
-	_candidate_cache_validation = validation.duplicate(true)
-	_candidate_cache_fwd_lanes = fwd_lanes
-	_candidate_cache_bkw_lanes = bkw_lanes
+	_remember_candidate_validation(points, validation)
 	return validation
 
 func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
@@ -341,16 +340,29 @@ func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
 			"invalid_reason": "surface_geometry_invalid"
 		}
 
-	var validation_variant = simulation_node.validate_road_candidate_for_commit(points, fwd_lanes, bkw_lanes)
-	var validation: Dictionary = validation_variant if validation_variant is Dictionary else {
-		"is_valid": false,
-		"invalid_reason": "validation_unavailable"
-	}
+	var preview := _cached_preview_surface_for_points(points)
+	if preview.is_empty():
+		preview = _get_compiled_preview_surface("commit")
+	if _preview_surface_generation_is_current(preview):
+		_remember_candidate_validation(points, preview)
+		return preview
+
+	return _candidate_validation_for_points(points)
+
+func _remember_candidate_validation(points: PackedVector3Array, validation: Dictionary) -> void:
 	_candidate_cache_points = points
 	_candidate_cache_validation = validation.duplicate(true)
 	_candidate_cache_fwd_lanes = fwd_lanes
 	_candidate_cache_bkw_lanes = bkw_lanes
-	return validation
+	_candidate_cache_surface_generation = simulation_node.get_road_tool_surface_generation()
+
+func _preview_surface_generation_is_current(preview: Dictionary) -> bool:
+	if preview.is_empty():
+		return false
+	var generation := int(preview.get("surface_generation", -1))
+	if generation <= 0:
+		return false
+	return generation == simulation_node.get_road_tool_surface_generation()
 
 func _poll_pending_preview_result() -> void:
 	if current_path == null or _preview_request_id <= 0:
@@ -364,6 +376,12 @@ func _poll_pending_preview_result() -> void:
 	var points: PackedVector3Array = _road_surface_points_from_curve(current_path.curve)
 	if not _preview_request_matches(points):
 		_preview_result_pending = false
+		_queue_preview_update()
+		return
+
+	if not _preview_surface_generation_is_current(preview):
+		_preview_result_pending = false
+		_preview_request_id = 0
 		_queue_preview_update()
 		return
 
@@ -765,6 +783,13 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	var baked_ms := float(Time.get_ticks_usec() - baked_start_us) / 1000.0
 	var cached_preview := _cached_preview_surface_for_points(points)
 	if not cached_preview.is_empty():
+		if not _preview_surface_generation_is_current(cached_preview):
+			_preview_cache_points = PackedVector3Array()
+			_preview_cache_surface = {}
+			_preview_cache_fwd_lanes = -1
+			_preview_cache_bkw_lanes = -1
+			cached_preview = {}
+	if not cached_preview.is_empty():
 		_preview_result_pending = false
 		_preview_exact_waiting = false
 		var cached_vertices: PackedVector3Array = cached_preview.get("surface_vertices", PackedVector3Array())
@@ -811,6 +836,21 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 	if preview == null:
 		_preview_result_pending = true
 		_log_preview_surface_detail(profile_label, points.size(), 0, false, baked_ms, rust_ms, total_start_us)
+		return {}
+
+	if not _preview_surface_generation_is_current(preview):
+		_preview_result_pending = false
+		_preview_request_id = 0
+		_log_preview_surface_detail(
+			profile_label,
+			points.size(),
+			0,
+			false,
+			baked_ms,
+			rust_ms,
+			total_start_us,
+			"stale_surface_generation"
+		)
 		return {}
 
 	_preview_result_pending = false
@@ -863,6 +903,7 @@ func _clear_preview_cache() -> void:
 	_candidate_cache_validation = {}
 	_candidate_cache_fwd_lanes = -1
 	_candidate_cache_bkw_lanes = -1
+	_candidate_cache_surface_generation = -1
 	_preview_request_points = PackedVector3Array()
 	_preview_request_fwd_lanes = -1
 	_preview_request_bkw_lanes = -1

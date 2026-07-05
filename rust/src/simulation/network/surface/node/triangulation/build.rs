@@ -3,6 +3,14 @@
 use super::coverage::overlay_shape_from_arrangement_region;
 use super::regions::triangulate_arrangement_region;
 use super::*;
+use rayon::prelude::*;
+
+const PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS: usize = 8;
+
+enum NodeTriangulatedRegionBuildResult {
+    Region(NodeTriangulatedRegion),
+    Discarded(NodeTriangulationError),
+}
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement(
@@ -22,23 +30,34 @@ impl NodeTriangulationSolution {
             });
         }
 
-        let mut regions = Vec::with_capacity(arrangement.regions().len());
+        let triangulated_regions = if arrangement.regions().len()
+            >= PARALLEL_NODE_REGION_TRIANGULATION_MIN_ITEMS
+        {
+            arrangement
+                .regions()
+                .par_iter()
+                .enumerate()
+                .map(|(region_index, region)| {
+                    triangulate_arrangement_region_for_solution(arrangement, region_index, region)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            arrangement
+                .regions()
+                .iter()
+                .enumerate()
+                .map(|(region_index, region)| {
+                    triangulate_arrangement_region_for_solution(arrangement, region_index, region)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut regions = Vec::with_capacity(triangulated_regions.len());
         let mut first_discarded_error = None;
-        for (region_index, region) in arrangement.regions().iter().enumerate() {
-            match triangulate_arrangement_region(
-                arrangement.node_id(),
-                region_index,
-                arrangement,
-                region,
-            ) {
-                Ok(region) => regions.push(region),
-                Err(error)
-                    if triangulation_error_is_discardable_numeric_region(
-                        &error,
-                        arrangement,
-                        region,
-                    ) =>
-                {
+        for result in triangulated_regions {
+            match result {
+                Ok(NodeTriangulatedRegionBuildResult::Region(region)) => regions.push(region),
+                Ok(NodeTriangulatedRegionBuildResult::Discarded(error)) => {
                     first_discarded_error.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
@@ -58,6 +77,22 @@ impl NodeTriangulationSolution {
             explicit_vertical_step_segments: arrangement.explicit_vertical_step_segments(),
         })
     }
+}
+
+fn triangulate_arrangement_region_for_solution(
+    arrangement: &NodeArrangement,
+    region_index: usize,
+    region: &NodeOwnedRegion,
+) -> Result<NodeTriangulatedRegionBuildResult, NodeTriangulationError> {
+    triangulate_arrangement_region(arrangement.node_id(), region_index, arrangement, region)
+        .map(NodeTriangulatedRegionBuildResult::Region)
+        .or_else(|error| {
+            if triangulation_error_is_discardable_numeric_region(&error, arrangement, region) {
+                Ok(NodeTriangulatedRegionBuildResult::Discarded(error))
+            } else {
+                Err(error)
+            }
+        })
 }
 
 fn triangulation_error_is_discardable_numeric_region(

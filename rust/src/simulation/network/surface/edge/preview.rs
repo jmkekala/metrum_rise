@@ -2,7 +2,8 @@
 
 use super::super::backend::road_vec3_to_godot;
 use super::super::{
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, SAMPLE_EPSILON_M,
+    RoadSurfaceCompileReason, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    SAMPLE_EPSILON_M,
 };
 use super::input::{
     PREVIEW_CLEARANCE_M, PreparedRoadInput, ROAD_PROFILE_MAX_GRADE, RoadExtensionReprofile,
@@ -25,6 +26,9 @@ const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS: f32 = 0.966; // ~15 degrees.
+const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_SIN: f32 = 0.259; // ~15 degrees.
+const PREVIEW_ENDPOINT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+const PREVIEW_ENDPOINT_WIDTH_CLEARANCE_HALFWIDTH_FACTOR: f32 = 5.0;
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
 #[derive(Clone, Debug, PartialEq)]
@@ -137,7 +141,11 @@ impl RoadSurfaceSystem {
 
         let mut preview_surface = RoadSurfaceSystem::new(self.chunk_span_m);
         preview_surface.node_validation_logging_enabled = false;
-        preview_surface.compile_dirty(&graph, terrain);
+        preview_surface.compile_dirty_with_reason(
+            &graph,
+            terrain,
+            RoadSurfaceCompileReason::PreviewWorker,
+        );
 
         let compiled_sections = preview_surface
             .compiled_sections()
@@ -216,13 +224,12 @@ impl RoadSurfaceSystem {
             bkw_lanes,
             terrain,
         );
-        let validation = self.validate_prepared_road_input_against_graph(
+        let validation = self.validate_prepared_road_candidate_fast(
             &prepared_input,
             fwd_lanes,
             bkw_lanes,
             terrain,
             existing_graph,
-            preview.validation.clone(),
         );
         preview.is_valid = validation.is_valid;
         preview.validation = validation;
@@ -340,8 +347,7 @@ impl RoadSurfaceSystem {
         )
     }
 
-    /// Validates prepared road input, including any terminal-extension corridor reprofile.
-    pub(crate) fn validate_prepared_road_input_against_graph(
+    pub(crate) fn validate_prepared_road_input_against_graph_with_compile_reason(
         &self,
         prepared_input: &PreparedRoadInput,
         fwd_lanes: u8,
@@ -349,6 +355,7 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
         new_edge_validation: RoadPreviewValidation,
+        compile_reason: RoadSurfaceCompileReason,
     ) -> RoadPreviewValidation {
         if prepared_input.validation_points == prepared_input.points {
             return self.validate_prepared_surface_geometry_against_graph_with_extension(
@@ -360,6 +367,7 @@ impl RoadSurfaceSystem {
                 existing_graph,
                 new_edge_validation,
                 prepared_input.extension.as_ref(),
+                compile_reason,
             );
         }
 
@@ -383,6 +391,7 @@ impl RoadSurfaceSystem {
             existing_graph,
             new_edge_validation,
             prepared_input.extension.as_ref(),
+            compile_reason,
         )
     }
 
@@ -392,6 +401,8 @@ impl RoadSurfaceSystem {
     pub(crate) fn validate_prepared_road_candidate_fast(
         &self,
         prepared_input: &PreparedRoadInput,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
     ) -> RoadPreviewValidation {
@@ -415,10 +426,17 @@ impl RoadSurfaceSystem {
             return validation;
         }
 
+        let candidate_roadbed_half_width_m = Self::preview_candidate_roadbed_half_width_m(
+            &prepared_input.points,
+            prepared_input.class,
+            fwd_lanes,
+            bkw_lanes,
+        );
         self.validate_candidate_endpoint_geometry_fast(
             &prepared_input.points,
             existing_graph,
             prepared_input.extension.as_ref(),
+            candidate_roadbed_half_width_m,
             validation,
         )
     }
@@ -499,6 +517,7 @@ impl RoadSurfaceSystem {
         prepared_points: &[Vector3],
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
+        candidate_roadbed_half_width_m: f32,
         validation: RoadPreviewValidation,
     ) -> RoadPreviewValidation {
         let Some(first) = prepared_points.first().copied() else {
@@ -529,6 +548,7 @@ impl RoadSurfaceSystem {
                 existing_graph,
                 node_id,
                 candidate_dir,
+                candidate_roadbed_half_width_m,
                 extension,
             ) {
                 return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
@@ -558,6 +578,7 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         node_id: u32,
         candidate_dir: [f32; 2],
+        candidate_roadbed_half_width_m: f32,
         extension: Option<&RoadExtensionReprofile>,
     ) -> bool {
         let valid_node = graph.get_valid_node(node_id);
@@ -579,12 +600,41 @@ impl RoadSurfaceSystem {
                 continue;
             };
             let dot = candidate_dir[0] * edge_dir[0] + candidate_dir[1] * edge_dir[1];
+            if dot <= -PREVIEW_ENDPOINT_PASS_THROUGH_DOT_THRESHOLD {
+                continue;
+            }
             if dot > PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS {
                 return false;
+            }
+            let sin_theta = (candidate_dir[0] * edge_dir[1] - candidate_dir[1] * edge_dir[0]).abs();
+            let other_roadbed_half_width_m = Self::visual_roadbed_half_width_m(edge);
+            let width_scale_m = candidate_roadbed_half_width_m.max(other_roadbed_half_width_m)
+                * PREVIEW_ENDPOINT_WIDTH_CLEARANCE_HALFWIDTH_FACTOR;
+            if width_scale_m > SAMPLE_EPSILON_M {
+                let width_required_sin =
+                    ((candidate_roadbed_half_width_m + other_roadbed_half_width_m) / width_scale_m)
+                        .clamp(0.0, 1.0);
+                if sin_theta < PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_SIN.max(width_required_sin) {
+                    return false;
+                }
             }
         }
 
         true
+    }
+
+    fn preview_candidate_roadbed_half_width_m(
+        prepared_points: &[Vector3],
+        edge_class: EdgeClass,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+    ) -> f32 {
+        let points = match (prepared_points.first(), prepared_points.last()) {
+            (Some(first), Some(last)) => vec![*first, *last],
+            _ => Vec::new(),
+        };
+        let edge = build_surface_edge(0, 1, points, fwd_lanes, bkw_lanes, edge_class);
+        Self::visual_roadbed_half_width_m(&edge)
     }
 
     fn incident_edge_dir_away_from_node(
@@ -803,6 +853,7 @@ impl RoadSurfaceSystem {
             existing_graph,
             validation,
             None,
+            RoadSurfaceCompileReason::CommitValidator,
         )
     }
 
@@ -816,6 +867,7 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         validation: RoadPreviewValidation,
         extension: Option<&RoadExtensionReprofile>,
+        compile_reason: RoadSurfaceCompileReason,
     ) -> RoadPreviewValidation {
         let mut validation = validation;
         Self::record_preview_endpoint_snap_debug_with_extension(
@@ -843,7 +895,7 @@ impl RoadSurfaceSystem {
 
         let mut validation_surface = RoadSurfaceSystem::new(self.chunk_span_m);
         validation_surface.node_validation_logging_enabled = false;
-        validation_surface.compile_dirty(&validation_graph, terrain);
+        validation_surface.compile_dirty_with_reason(&validation_graph, terrain, compile_reason);
 
         if !validation_surface
             .compiled_visual_span_pieces()

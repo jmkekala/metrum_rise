@@ -62,7 +62,6 @@
 //! | | `clear_network_dirty` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
 //! | | `validate_road_candidate` | `road_tool.gd` |
-//! | | `validate_road_candidate_for_commit` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
 //! | | `get_road_surface_debug_data` | `network_tool.gd` |
@@ -96,10 +95,11 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury, DailyBudgetLedgerEntry,
-    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
-    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
-    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
-    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, run_road_preview_worker, run_sim_thread,
+    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
+    SimCore, run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -124,7 +124,9 @@ use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
+use crate::simulation::network::surface::{
+    RoadPreviewValidation, RoadSurfaceCompileReason, RoadSurfaceSystem,
+};
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
@@ -458,6 +460,15 @@ impl TerrainPatchPayloadAsyncState {
             self.queue_ready(key);
         }
     }
+
+    fn clear(&mut self) {
+        self.requested.clear();
+        self.in_flight.clear();
+        self.ready.clear();
+        self.ready_lookup.clear();
+        self.payloads.clear();
+        self.completed.clear();
+    }
 }
 
 struct WaterPatchPayloadAsyncState {
@@ -714,9 +725,11 @@ impl SimulationNode {
         let base_patch = core
             .heightmap
             .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
-        core.transit_network
-            .road_surface
-            .compile_dirty(&core.region_graph, &core.heightmap);
+        core.transit_network.road_surface.compile_dirty_with_reason(
+            &core.region_graph,
+            &core.heightmap,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        );
         let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
             &core.heightmap,
             render_step_m,
@@ -4074,11 +4087,26 @@ impl SimulationNode {
     /// Undoes the last action.
     #[func]
     pub fn undo_action(&mut self) -> bool {
-        let changed = self.lock_core().undo_action_internal();
-        if changed {
-            self.refresh_snapshot_from_core();
+        let cache_inputs = {
+            let mut core = self.lock_core();
+            if !core.undo_action_internal() {
+                return false;
+            }
+            core.rebuild_network_surface_terrain_internal();
+            core.precompute_road_mesh_data();
+            core.bump_road_tool_surface_generation();
+            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M)
+        };
+
+        self.lock_terrain_patch_payload_jobs().clear();
+
+        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
+        {
+            let mut core = self.lock_core();
+            core.insert_refined_terrain_patch_cache_entries(cache_entries);
         }
-        changed
+        self.refresh_snapshot_from_core();
+        true
     }
 
     // ── Terrain & Water ──
@@ -6700,8 +6728,8 @@ impl SimulationNode {
 
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
-    /// This does not compile temporary preview meshes or mutate simulation state; click placement
-    /// must use `validate_road_candidate_for_commit` before queuing the edit.
+    /// This does not compile temporary preview meshes or mutate simulation state; road-tool click
+    /// placement also uses this fast contract so mouse interaction never waits on mesh generation.
     #[func]
     pub fn validate_road_candidate(
         &self,
@@ -6729,6 +6757,8 @@ impl SimulationNode {
                 );
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
                 &prepared_input,
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
                 &query.terrain,
                 &query.region_graph,
             );
@@ -6762,8 +6792,11 @@ impl SimulationNode {
         Self::road_candidate_validation_to_variant(&validation, &prepared_points)
     }
 
-    /// Validates a road-tool candidate using the same graph/surface contract as committed
-    /// placement. This is called on click, not on every mouse move.
+    /// Validates a road-tool candidate by compiling temporary surface geometry.
+    ///
+    /// This is intentionally not used by the interactive road-tool click path because complex
+    /// junctions can take hundreds of milliseconds to compile. Keep it for diagnostics and tests
+    /// that need to compare the fast placement contract against the full surface compiler.
     #[func]
     pub fn validate_road_candidate_for_commit(
         &self,
@@ -6800,13 +6833,14 @@ impl SimulationNode {
             );
             let validation = query
                 .road_surface
-                .validate_prepared_road_input_against_graph(
+                .validate_prepared_road_input_against_graph_with_compile_reason(
                     &prepared_input,
                     fwd_lanes_u8,
                     bkw_lanes_u8,
                     &query.terrain,
                     &query.region_graph,
                     new_edge_validation,
+                    RoadSurfaceCompileReason::CommitValidator,
                 );
             (prepared_input.points, validation)
         };
@@ -6838,10 +6872,17 @@ impl SimulationNode {
         Self::road_candidate_validation_to_variant(&validation, &prepared_points)
     }
 
+    /// Returns the road-tool surface snapshot generation currently used for validation.
+    #[func]
+    pub fn get_road_tool_surface_generation(&self) -> i64 {
+        let query = self.road_tool_query_snapshot.read().unwrap();
+        i64::try_from(query.surface_generation).unwrap_or(i64::MAX)
+    }
+
     /// Requests temporary preview-surface compilation for the road tool.
     ///
     /// The result is published asynchronously through [`get_preview_road_surface_result`]. The
-    /// payload is visual-only; click validity is checked by `validate_road_candidate_for_commit`.
+    /// payload is visual-only; click validity is checked by the fast road-candidate validator.
     #[func]
     pub fn request_preview_road_surface(
         &self,
@@ -6918,6 +6959,10 @@ impl SimulationNode {
         dict.set(
             "request_id",
             i64::try_from(preview.request_id).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "surface_generation",
+            i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
         dict.set(
             "surface_vertices",
@@ -8069,6 +8114,7 @@ impl INode3D for SimulationNode {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 
@@ -8217,9 +8263,11 @@ impl SimCore {
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let road_locked_start = road_debug.then(Instant::now);
-        self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        );
         let max_road_locked_margin_m = self
             .transit_network
             .road_surface
@@ -9239,6 +9287,7 @@ mod tests {
             water_patch_mesh_cache: std::collections::HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

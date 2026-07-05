@@ -1024,6 +1024,7 @@ mod tests {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

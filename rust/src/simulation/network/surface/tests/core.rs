@@ -533,3 +533,131 @@ fn node_piece_classification_matches_surface_profiles() {
         RoadSurfaceVisualNodePieceKind::Terminal
     );
 }
+
+#[test]
+fn failed_span_recompile_removes_stale_visual_piece_and_chunk_coverage() {
+    let edge_idx = 7;
+    let surface_chunk = (1, 2);
+    let terrain_chunk = (3, 4);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+
+    surface
+        .compiled_visual_span_pieces
+        .insert(edge_idx, empty_visual_span_piece(edge_idx));
+    surface
+        .surface_span_chunks
+        .insert(edge_idx, vec![surface_chunk]);
+    surface
+        .earthwork_span_chunks
+        .insert(edge_idx, vec![terrain_chunk]);
+    surface
+        .surface_chunk_spans
+        .entry(surface_chunk)
+        .or_default()
+        .insert(edge_idx);
+    surface
+        .earthwork_chunk_spans
+        .entry(terrain_chunk)
+        .or_default()
+        .insert(edge_idx);
+
+    surface.apply_span_compile_result(edge_idx, None);
+
+    assert!(!surface.compiled_visual_span_pieces.contains_key(&edge_idx));
+    assert!(!surface.surface_span_chunks.contains_key(&edge_idx));
+    assert!(!surface.earthwork_span_chunks.contains_key(&edge_idx));
+    assert!(!surface.surface_chunk_spans.contains_key(&surface_chunk));
+    assert!(!surface.earthwork_chunk_spans.contains_key(&terrain_chunk));
+    assert!(surface.dirty_surface_chunks().contains(&surface_chunk));
+    assert!(surface.dirty_terrain_chunks().contains(&terrain_chunk));
+}
+
+#[test]
+fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
+    let node_id = 11;
+    let surface_chunk = (-2, 5);
+    let terrain_chunk = (-3, 6);
+    let input = crate::simulation::network::surface::RoadSurfaceVisualNodeCompileInput {
+        kind: RoadSurfaceVisualNodePieceKind::Terminal,
+        mouths: Vec::new(),
+    };
+    let mut surface = RoadSurfaceSystem::new(16.0);
+
+    surface
+        .compiled_visual_node_pieces
+        .insert(node_id, empty_visual_node_piece(node_id));
+    surface
+        .compiled_visual_node_inputs
+        .insert(node_id, input.clone());
+    surface
+        .surface_node_chunks
+        .insert(node_id, vec![surface_chunk]);
+    surface
+        .earthwork_node_chunks
+        .insert(node_id, vec![terrain_chunk]);
+    surface
+        .surface_chunk_nodes
+        .entry(surface_chunk)
+        .or_default()
+        .insert(node_id);
+    surface
+        .earthwork_chunk_nodes
+        .entry(terrain_chunk)
+        .or_default()
+        .insert(node_id);
+
+    surface.apply_node_compile_result(node_id, input, None);
+
+    assert!(!surface.compiled_visual_node_pieces.contains_key(&node_id));
+    assert!(!surface.compiled_visual_node_inputs.contains_key(&node_id));
+    assert!(!surface.surface_node_chunks.contains_key(&node_id));
+    assert!(!surface.earthwork_node_chunks.contains_key(&node_id));
+    assert!(!surface.surface_chunk_nodes.contains_key(&surface_chunk));
+    assert!(!surface.earthwork_chunk_nodes.contains_key(&terrain_chunk));
+    assert!(surface.dirty_surface_chunks().contains(&surface_chunk));
+    assert!(surface.dirty_terrain_chunks().contains(&terrain_chunk));
+}
+
+fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
+    RoadSurfaceVisualSpanPiece {
+        edge_idx,
+        outer_boundary_loops: Vec::new(),
+        terrain_clip_boundary_loops: Vec::new(),
+        road_surface_polygons: Vec::new(),
+        curb_surface_polygons: Vec::new(),
+        raised_step_face_polygons: Vec::new(),
+        span_raised_step_sources: Vec::new(),
+        sidewalk_surface_polygons: Vec::new(),
+        span_owned_regions: Vec::new(),
+        edge_class: EdgeClass::Standard,
+        start_mouth_profile: None,
+        end_mouth_profile: None,
+        span_earthwork_support_regions: Vec::new(),
+        earthwork_surface_polygons: Vec::new(),
+        earthwork_outer_boundary_loops: Vec::new(),
+        render_earthwork_faces: Vec::new(),
+    }
+}
+
+fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
+    RoadSurfaceVisualNodePiece {
+        node_id,
+        kind: RoadSurfaceVisualNodePieceKind::Terminal,
+        outer_boundary_loops: Vec::new(),
+        terrain_clip_boundary_loops: Vec::new(),
+        road_surface_polygons: Vec::new(),
+        curb_surface_polygons: Vec::new(),
+        raised_step_face_polygons: Vec::new(),
+        raised_step_face_sources: Vec::new(),
+        sidewalk_surface_polygons: Vec::new(),
+        explicit_vertical_step_segments: Vec::new(),
+        node_grade_authorities: Vec::new(),
+        node_top_surface_sources: Vec::new(),
+        owned_regions: Vec::new(),
+        boolean_debug: None,
+        earthwork_owner_sources: Vec::new(),
+        earthwork_surface_polygons: Vec::new(),
+        earthwork_outer_boundary_loops: Vec::new(),
+        render_earthwork_faces: Vec::new(),
+    }
+}

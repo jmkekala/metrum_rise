@@ -24,7 +24,7 @@ use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::pathing::flow_field::FlowFieldSystem;
 use graph::*;
 use render::road::RoadRenderer;
-use surface::RoadSurfaceSystem;
+use surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
 use types::*;
 
 pub(in crate::simulation::network) fn build_surface_edge(
@@ -327,7 +327,11 @@ impl TransitNetwork {
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
-        self.road_surface.compile_dirty(graph, terrain);
+        self.road_surface.compile_dirty_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
         let renderer = RoadRenderer;
         renderer.generate_mesh_data_with_surface(
             graph,
@@ -343,7 +347,21 @@ impl TransitNetwork {
         graph: &RegionGraph,
         terrain: &mut crate::simulation::terrain::TerrainSystem,
     ) -> Vec<surface::SurfaceChunkKey> {
-        self.road_surface.rebuild_dirty_earthworks(graph, terrain)
+        self.rebuild_dirty_terrain_earthworks_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        )
+    }
+
+    pub(crate) fn rebuild_dirty_terrain_earthworks_with_reason(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &mut crate::simulation::terrain::TerrainSystem,
+        reason: RoadSurfaceCompileReason,
+    ) -> Vec<surface::SurfaceChunkKey> {
+        self.road_surface
+            .rebuild_dirty_earthworks_with_reason(graph, terrain, reason)
     }
 
     /// Rebuilds terrain earthworks for the entire world from the compiled roadbed cache.

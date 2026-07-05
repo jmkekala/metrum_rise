@@ -54,6 +54,7 @@ pub(crate) use node::{input, ownership, rails, terminal, triangulation, validati
 pub(crate) use span::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
 };
+pub(crate) use system::RoadSurfaceCompileReason;
 pub(crate) use terrain_clip::{
     RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,

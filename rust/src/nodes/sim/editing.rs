@@ -12,15 +12,38 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::network::surface::{RoadExtensionReprofile, RoadSurfaceSystem};
+use crate::simulation::network::surface::{
+    RoadExtensionReprofile, RoadSurfaceCompileReason, RoadSurfaceSystem,
+};
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
+    const ROAD_GEOMETRY_DUMP_DEFAULT_MAX_BYTES: usize = 256 * 1024;
+
     fn road_geometry_dump_enabled() -> bool {
         std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    }
+
+    fn road_geometry_dump_max_bytes() -> Option<usize> {
+        if std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP_FULL")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP_MAX_BYTES")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .or(Some(Self::ROAD_GEOMETRY_DUMP_DEFAULT_MAX_BYTES))
+    }
+
+    fn road_commit_full_validation_debug_enabled() -> bool {
+        std::env::var("METRUM_DEBUG_ROAD_COMMIT_FULL_VALIDATION")
             .map(|value| !value.is_empty() && value != "0")
             .unwrap_or(false)
     }
@@ -43,11 +66,16 @@ impl SimCore {
     fn finish_terrain_authoring_edit_internal(&mut self) {
         self.terrain_dirty = true;
         self.cached_road_mesh_data = None;
+        self.bump_road_tool_surface_generation();
 
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.transit_network
-            .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+            .rebuild_dirty_terrain_earthworks_with_reason(
+                &self.region_graph,
+                &mut self.heightmap,
+                RoadSurfaceCompileReason::TerrainEarthwork,
+            );
         self.rebuild_building_entrances_internal();
         if self.has_authored_water_internal() {
             if let Err(err) = self.rebuild_authored_water_preview_internal() {
@@ -365,27 +393,73 @@ impl SimCore {
             );
         let fixed_points = prepared_input.points.clone();
 
-        let new_edge_validation = self
-            .transit_network
-            .road_surface
-            .validate_prepared_road_surface(
-                &prepared_input.points,
-                prepared_input.class,
-                fwd_lanes_u8,
-                bkw_lanes_u8,
-                &self.heightmap,
-            );
         let validation = self
             .transit_network
             .road_surface
-            .validate_prepared_road_input_against_graph(
+            .validate_prepared_road_candidate_fast(
                 &prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &self.heightmap,
                 &self.region_graph,
-                new_edge_validation,
             );
+        if Self::road_commit_full_validation_debug_enabled() {
+            let full_validation_start = Instant::now();
+            let new_edge_validation = self
+                .transit_network
+                .road_surface
+                .validate_prepared_road_surface(
+                    &prepared_input.points,
+                    prepared_input.class,
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    &self.heightmap,
+                );
+            let full_validation = self
+                .transit_network
+                .road_surface
+                .validate_prepared_road_input_against_graph_with_compile_reason(
+                    &prepared_input,
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    &self.heightmap,
+                    &self.region_graph,
+                    new_edge_validation,
+                    RoadSurfaceCompileReason::CommitValidator,
+                );
+            let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
+            if full_validation.is_valid != validation.is_valid
+                || full_validation.invalid_reason != validation.invalid_reason
+            {
+                debug_log!(
+                    "road",
+                    "road_commit_validation_contract_mismatch prepared_points={} fwd_lanes={} bkw_lanes={} fast_valid={} fast_reason={} full_valid={} full_reason={} fast_endpoint_snap=({},{}) full_endpoint_snap=({},{}) full_validation_ms={:.3}",
+                    fixed_points.len(),
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    validation.is_valid,
+                    validation.invalid_reason,
+                    full_validation.is_valid,
+                    full_validation.invalid_reason,
+                    validation.start_endpoint_snapped_node_id,
+                    validation.end_endpoint_snapped_node_id,
+                    full_validation.start_endpoint_snapped_node_id,
+                    full_validation.end_endpoint_snapped_node_id,
+                    full_validation_ms
+                );
+            } else {
+                debug_log!(
+                    "road",
+                    "road_commit_full_validation_debug prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} full_validation_ms={:.3}",
+                    fixed_points.len(),
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    full_validation.is_valid,
+                    full_validation.invalid_reason,
+                    full_validation_ms
+                );
+            }
+        }
         if !validation.is_valid {
             debug_log!(
                 "road",
@@ -822,7 +896,11 @@ impl SimCore {
         let earthwork_start = road_debug.then(Instant::now);
         let dirty_chunks = self
             .transit_network
-            .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+            .rebuild_dirty_terrain_earthworks_with_reason(
+                &self.region_graph,
+                &mut self.heightmap,
+                RoadSurfaceCompileReason::SimCommit,
+            );
         let road_locked_dirty_patches = self
             .transit_network
             .road_surface
@@ -857,15 +935,34 @@ impl SimCore {
             {
                 debug_log!("road", "{}", line);
             }
-            let dump = self
-                .transit_network
-                .road_surface
-                .build_edge_geometry_debug_dump(&self.region_graph, &self.heightmap, &debug_edges);
-            dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
-            dump_bytes = dump.len();
-            let dump_print_start = Instant::now();
-            debug_log!("road", "{}", dump);
-            dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
+            match Self::road_geometry_dump_max_bytes() {
+                Some(max_bytes) => {
+                    dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
+                    let dump_print_start = Instant::now();
+                    debug_log!(
+                        "road",
+                        "road_geometry_dump_skipped dump_edges={} max_bytes={} reason=capped_mode enable_full_with=METRUM_DEBUG_ROAD_GEOMETRY_DUMP_FULL",
+                        debug_edges.len(),
+                        max_bytes
+                    );
+                    dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
+                }
+                None => {
+                    let dump = self
+                        .transit_network
+                        .road_surface
+                        .build_edge_geometry_debug_dump(
+                            &self.region_graph,
+                            &self.heightmap,
+                            &debug_edges,
+                        );
+                    dump_build_ms = dump_start.elapsed().as_secs_f64() * 1000.0;
+                    dump_bytes = dump.len();
+                    let dump_print_start = Instant::now();
+                    debug_log!("road", "{}", dump);
+                    dump_print_ms = dump_print_start.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
         }
         self.terrain_dirty = true;
         if road_debug {
@@ -1061,7 +1158,7 @@ impl SimCore {
 
 #[cfg(test)]
 mod tests {
-    use super::SimCore;
+    use super::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
@@ -1126,6 +1223,7 @@ mod tests {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }
@@ -1234,6 +1332,101 @@ mod tests {
         assert!(core.end_terrain_stroke_internal());
         assert!(!core.terrain_stroke_active);
         assert!(!core.terrain_stroke_has_changes);
+    }
+
+    fn finalize_network_render_for_test(core: &mut SimCore) {
+        core.region_graph.rebuild_intersection_clips();
+        core.transit_network
+            .lane_system
+            .rebuild(&mut core.region_graph);
+        core.transit_network
+            .rebuild_cch_and_check(&core.region_graph);
+        core.rebuild_network_surface_terrain_internal();
+        core.precompute_road_mesh_data();
+        let cache_inputs =
+            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
+        core.insert_refined_terrain_patch_cache_entries(cache_entries);
+    }
+
+    #[test]
+    fn undoing_road_restore_invalidates_road_locked_terrain_state() {
+        let mut core = test_core();
+        core.benchmark_mode = false;
+        core.add_road_internal(
+            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+            1,
+            1,
+        );
+        assert_eq!(core.region_graph.edge_count(), 1);
+
+        finalize_network_render_for_test(&mut core);
+
+        let stale_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
+        assert!(!stale_road_locked_patches.is_empty());
+        assert!(!core.refined_terrain_patch_cache.is_empty());
+        core.heightmap.clear_dirty_render_patches();
+
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge_count(), 0);
+        assert!(core.road_locked_terrain_patch_keys.is_empty());
+        assert!(core.refined_terrain_patch_cache.is_empty());
+        assert!(core.cached_road_mesh_data.is_none());
+        assert!(core.terrain_dirty);
+        assert!(core.network_dirty);
+        for key in &stale_road_locked_patches {
+            assert!(
+                core.heightmap.dirty_render_patches().contains(key),
+                "former road-locked patch {key:?} must be re-uploaded after undo"
+            );
+        }
+
+        core.rebuild_network_surface_terrain_internal();
+        let cache_inputs =
+            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        assert!(cache_inputs.is_empty());
+        assert!(core.road_locked_terrain_patch_keys.is_empty());
+    }
+
+    #[test]
+    fn undoing_road_restore_reuses_previous_render_cache() {
+        let mut core = test_core();
+        core.benchmark_mode = false;
+        core.add_road_internal(
+            vec![
+                Vector3::new(-40.0, 0.0, -16.0),
+                Vector3::new(40.0, 0.0, -16.0),
+            ],
+            1,
+            1,
+        );
+        finalize_network_render_for_test(&mut core);
+        let first_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
+        let first_refined_cache_len = core.refined_terrain_patch_cache.len();
+        assert!(!first_road_locked_patches.is_empty());
+        assert!(first_refined_cache_len > 0);
+
+        core.add_road_internal(
+            vec![
+                Vector3::new(-40.0, 0.0, 16.0),
+                Vector3::new(40.0, 0.0, 16.0),
+            ],
+            1,
+            1,
+        );
+        finalize_network_render_for_test(&mut core);
+        assert_eq!(core.region_graph.edge_count(), 2);
+
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge_count(), 1);
+        assert_eq!(
+            core.road_locked_terrain_patch_keys,
+            first_road_locked_patches
+        );
+        assert_eq!(
+            core.refined_terrain_patch_cache.len(),
+            first_refined_cache_len
+        );
     }
 
     #[test]

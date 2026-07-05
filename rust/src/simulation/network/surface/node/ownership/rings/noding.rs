@@ -30,5 +30,8 @@ pub(in crate::simulation::network::surface::node::ownership) use canonicalizatio
 pub(in crate::simulation::network::surface::node::ownership) use edges::dedup_consecutive_overlay_points;
 #[cfg(test)]
 use edges::noded_owned_region_edge_points_with_rail_paths;
-use edges::{noded_owned_region_contour, noded_owned_region_contour_with_rail_paths};
+use edges::{
+    NodeOwnershipPointIndex, noded_owned_region_contour_with_point_index,
+    noded_owned_region_contour_with_rail_paths_and_point_index,
+};
 use rail_paths::rail_path_points_between;

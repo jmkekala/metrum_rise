@@ -1,6 +1,7 @@
 //! Temporary road preview regression tests.
 
 use super::*;
+use crate::simulation::network::surface::RoadSurfaceCompileReason;
 
 #[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
@@ -330,8 +331,13 @@ fn fast_candidate_validation_rejects_endpoint_branch_overlap() {
         &graph,
         &existing_surface,
     );
-    let forward_validation =
-        candidate_surface.validate_prepared_road_candidate_fast(&forward_input, &terrain, &graph);
+    let forward_validation = candidate_surface.validate_prepared_road_candidate_fast(
+        &forward_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+    );
     assert!(
         forward_validation.is_valid,
         "straight terminal extensions must remain buildable: {forward_validation:?}"
@@ -344,13 +350,88 @@ fn fast_candidate_validation_rejects_endpoint_branch_overlap() {
         &graph,
         &existing_surface,
     );
-    let overlap_validation =
-        candidate_surface.validate_prepared_road_candidate_fast(&overlap_input, &terrain, &graph);
+    let overlap_validation = candidate_surface.validate_prepared_road_candidate_fast(
+        &overlap_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+    );
     assert!(!overlap_validation.is_valid);
     assert_eq!(
         overlap_validation.invalid_reason,
         "surface_geometry_invalid"
     );
+}
+
+#[test]
+fn fast_candidate_validation_is_not_more_permissive_than_full_surface_validation() {
+    let terrain = flat_terrain(160, 160);
+    let mut graph = RegionGraph::new();
+    let far = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
+    let terminal = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        far,
+        terminal,
+        vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut existing_surface = RoadSurfaceSystem::new(16.0);
+    existing_surface.compile_dirty(&graph, &terrain);
+    let candidate_surface = RoadSurfaceSystem::new(16.0);
+
+    for (angle_degrees, fwd_lanes, bkw_lanes) in [
+        (18.0_f32, 1_u8, 1_u8),
+        (30.0, 1, 1),
+        (45.0, 2, 2),
+        (90.0, 1, 1),
+        (135.0, 2, 2),
+    ] {
+        let radians = angle_degrees.to_radians();
+        let raw_points = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(radians.cos() * 48.0, 0.0, radians.sin() * 48.0),
+        ];
+        let prepared_input =
+            RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
+                &raw_points,
+                &terrain,
+                &graph,
+                &existing_surface,
+            );
+        let fast_validation = candidate_surface.validate_prepared_road_candidate_fast(
+            &prepared_input,
+            fwd_lanes,
+            bkw_lanes,
+            &terrain,
+            &graph,
+        );
+        let new_edge_validation = candidate_surface.validate_prepared_road_surface(
+            &prepared_input.points,
+            prepared_input.class,
+            fwd_lanes,
+            bkw_lanes,
+            &terrain,
+        );
+        let full_validation = candidate_surface
+            .validate_prepared_road_input_against_graph_with_compile_reason(
+                &prepared_input,
+                fwd_lanes,
+                bkw_lanes,
+                &terrain,
+                &graph,
+                new_edge_validation,
+                RoadSurfaceCompileReason::CommitValidator,
+            );
+
+        assert!(
+            !fast_validation.is_valid || full_validation.is_valid,
+            "fast validator must not accept a candidate rejected by full validation: angle={angle_degrees:.1} lanes=({fwd_lanes},{bkw_lanes}) fast={fast_validation:?} full={full_validation:?}"
+        );
+    }
 }
 
 #[test]

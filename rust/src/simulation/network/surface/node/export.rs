@@ -243,14 +243,27 @@ fn reject_unauthorized_arrangement_height_splits(
             .or_default()
             .push(vertex);
     }
+    vertices_by_key.retain(|_, vertices| {
+        let Some(first) = vertices.first().copied() else {
+            return false;
+        };
+        let first_height_mm = first.height_mm();
+        vertices
+            .iter()
+            .copied()
+            .any(|vertex| vertex.height_mm() != first_height_mm)
+    });
+    if vertices_by_key.is_empty() {
+        return Ok(());
+    }
 
     let mut candidate_conflicts_by_owner_pair =
         BTreeMap::<(arrangement::NodeBandOwner, arrangement::NodeBandOwner), Vec<_>>::new();
     let mut candidate_conflict_keys = BTreeSet::new();
     for (key, vertices) in vertices_by_key {
         for left_index in 0..vertices.len() {
+            let left = vertices[left_index];
             for right in vertices.iter().copied().skip(left_index + 1) {
-                let left = vertices[left_index];
                 if left.height_mm() == right.height_mm() {
                     continue;
                 }

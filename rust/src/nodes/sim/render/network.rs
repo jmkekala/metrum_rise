@@ -4,6 +4,7 @@
 
 use crate::nodes::sim::core::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
 use crate::simulation::network::render::NetworkMeshData;
+use crate::simulation::network::surface::RoadSurfaceCompileReason;
 use crate::simulation::terrain::terrain_cdt_local_sample_margin_m;
 use crate::{debug, debug_log};
 use godot::prelude::*;
@@ -198,9 +199,11 @@ impl SimCore {
 
     /// Returns compiled road-surface debug line data for editor visualization.
     pub fn get_road_surface_debug_data_internal(&mut self) -> VarDictionary {
-        self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
         let debug = self
             .transit_network
             .road_surface
@@ -228,9 +231,11 @@ impl SimCore {
 
     /// Returns a JSON debug dump of final road-surface triangles at one world-space probe point.
     pub fn get_road_surface_probe_debug_internal(&mut self, world_pos: Vector3) -> GString {
-        self.transit_network
-            .road_surface
-            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
         let dump = self
             .transit_network
             .road_surface

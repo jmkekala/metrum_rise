@@ -11,9 +11,10 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_own
     footprint_shapes: &NodeOverlayShapes,
 ) {
     let global_points = owned_region_global_points(regions, footprint_shapes);
+    let global_point_index = NodeOwnershipPointIndex::new(&global_points);
     for region in regions.iter_mut() {
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour(contour, &global_points);
+            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
         }
     }
 }
@@ -88,9 +89,10 @@ fn node_owned_region_rings_to_global_points(
     footprint_shapes: &NodeOverlayShapes,
 ) {
     let global_points = owned_region_global_points(regions, footprint_shapes);
+    let global_point_index = NodeOwnershipPointIndex::new(&global_points);
     for region in regions {
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour(contour, &global_points);
+            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
         }
     }
 }
@@ -100,12 +102,13 @@ fn node_join_or_cap_owned_region_rings_to_global_points(
     footprint_shapes: &NodeOverlayShapes,
 ) {
     let global_points = owned_region_global_points(regions, footprint_shapes);
+    let global_point_index = NodeOwnershipPointIndex::new(&global_points);
     for region in regions {
         if region.claim_priority != NodeGeneratedContourClaimPriority::JoinOrCap {
             continue;
         }
         for contour in &mut region.shape {
-            *contour = noded_owned_region_contour(contour, &global_points);
+            *contour = noded_owned_region_contour_with_point_index(contour, &global_point_index);
         }
     }
 }
@@ -291,6 +294,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
     }
     source_points.sort_unstable();
     source_points.dedup();
+    let source_point_index = NodeOwnershipPointIndex::new(&source_points);
     let owner_paths = if region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap {
         rail_points
             .paths_by_owner
@@ -312,9 +316,9 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             canonicalize_source_height_numeric_dust,
             rail_points,
         )?;
-        *contour = noded_owned_region_contour_with_rail_paths(
+        *contour = noded_owned_region_contour_with_rail_paths_and_point_index(
             contour,
-            &source_points,
+            &source_point_index,
             owner_paths,
             region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap,
         );

@@ -19,8 +19,8 @@ type SameMaterialHeightSplitConstraint = (
     Option<usize>,
 );
 
-const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 512;
-const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 64;
+const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 64;
+const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 16;
 const SAME_BAND_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
 
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(

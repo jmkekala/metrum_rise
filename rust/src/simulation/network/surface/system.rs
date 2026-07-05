@@ -47,6 +47,36 @@ pub struct RoadSurfaceSystem {
     pub(crate) last_rebuilt_terrain_chunks: Vec<SurfaceChunkKey>,
 }
 
+/// Runtime caller category attached to road-surface compile timing logs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceCompileReason {
+    /// Compile was requested through the legacy/default entry point.
+    Unspecified,
+    /// Async road-tool preview worker compiled transient surface geometry.
+    PreviewWorker,
+    /// Diagnostic or commit validation compiled transient candidate geometry.
+    CommitValidator,
+    /// Simulation thread compiled committed road edits.
+    SimCommit,
+    /// Road mesh generation compiled or refreshed surface cache before rendering.
+    MeshPrecompute,
+    /// Terrain earthwork or refined terrain preparation needed current road ownership.
+    TerrainEarthwork,
+}
+
+impl RoadSurfaceCompileReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::PreviewWorker => "preview_worker",
+            Self::CommitValidator => "commit_validator",
+            Self::SimCommit => "sim_commit",
+            Self::MeshPrecompute => "mesh_precompute",
+            Self::TerrainEarthwork => "terrain_earthwork",
+        }
+    }
+}
+
 impl RoadSurfaceSystem {
     /// Creates an empty road-surface system using the given chunk span in world metres.
     pub fn new(chunk_span_m: f32) -> Self {
@@ -129,8 +159,17 @@ impl RoadSurfaceSystem {
 
     /// Compiles the road-surface cache if it is dirty or has not been built yet.
     pub fn compile_dirty(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
+        self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::Unspecified);
+    }
+
+    pub(crate) fn compile_dirty_with_reason(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        reason: RoadSurfaceCompileReason,
+    ) {
         if !self.compiled_once {
-            self.compile_all(graph, terrain);
+            self.compile_all_with_reason(graph, terrain, reason);
             return;
         }
 
@@ -215,13 +254,14 @@ impl RoadSurfaceSystem {
         let spans_start = road_debug.then(Instant::now);
         let mut span_candidates = Vec::new();
         for &edge_idx in &sorted_span_edges {
-            self.remove_span_piece_coverage(edge_idx);
             if edge_idx >= graph.edge_count() {
+                self.remove_span_piece_coverage(edge_idx);
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
             let edge = graph.edge(edge_idx);
             if !Self::is_surface_edge(edge) {
+                self.remove_span_piece_coverage(edge_idx);
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
@@ -235,13 +275,7 @@ impl RoadSurfaceSystem {
                 )
             });
         for (edge_idx, span_piece) in span_results {
-            if let Some(span_piece) = span_piece {
-                self.insert_span_piece_coverage(&span_piece);
-                self.compiled_visual_span_pieces
-                    .insert(edge_idx, span_piece);
-            } else {
-                self.compiled_visual_span_pieces.remove(&edge_idx);
-            }
+            self.apply_span_compile_result(edge_idx, span_piece);
         }
         let spans_ms = elapsed_ms(spans_start);
 
@@ -271,7 +305,6 @@ impl RoadSurfaceSystem {
                 reused_node_count += 1;
                 continue;
             }
-            self.remove_node_piece_coverage(node_id);
             node_candidates.push((node_id, input));
         }
         let node_results: Vec<(
@@ -286,15 +319,7 @@ impl RoadSurfaceSystem {
             )
         });
         for (node_id, input, visual_piece) in node_results {
-            if let Some(visual_piece) = visual_piece {
-                self.insert_node_piece_coverage(&visual_piece);
-                self.compiled_visual_node_pieces
-                    .insert(node_id, visual_piece);
-                self.compiled_visual_node_inputs.insert(node_id, input);
-            } else {
-                self.compiled_visual_node_pieces.remove(&node_id);
-                self.compiled_visual_node_inputs.remove(&node_id);
-            }
+            self.apply_node_compile_result(node_id, input, visual_piece);
         }
         let nodes_ms = elapsed_ms(nodes_start);
 
@@ -314,7 +339,8 @@ impl RoadSurfaceSystem {
             if total_ms >= 50.0 {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_dirty_detail dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} node_candidates={} node_reused={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    "surface_compile_dirty_detail compile_reason={} dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} node_candidates={} node_reused={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    reason.as_str(),
                     dirty_edge_count,
                     dirty_node_count,
                     dirty_surface_chunk_count,
@@ -338,7 +364,12 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn compile_all(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
+    fn compile_all_with_reason(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        reason: RoadSurfaceCompileReason,
+    ) {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
 
@@ -374,13 +405,7 @@ impl RoadSurfaceSystem {
                 )
             });
         for (edge_idx, span_piece) in span_results {
-            if let Some(span_piece) = span_piece {
-                self.insert_span_piece_coverage(&span_piece);
-                self.compiled_visual_span_pieces
-                    .insert(edge_idx, span_piece);
-            } else {
-                self.compiled_visual_span_pieces.remove(&edge_idx);
-            }
+            self.apply_span_compile_result(edge_idx, span_piece);
         }
         let spans_ms = elapsed_ms(spans_start);
 
@@ -405,15 +430,7 @@ impl RoadSurfaceSystem {
             )
         });
         for (node_id, input, visual_piece) in node_results {
-            if let Some(visual_piece) = visual_piece {
-                self.insert_node_piece_coverage(&visual_piece);
-                self.compiled_visual_node_pieces
-                    .insert(node_id, visual_piece);
-                self.compiled_visual_node_inputs.insert(node_id, input);
-            } else {
-                self.compiled_visual_node_pieces.remove(&node_id);
-                self.compiled_visual_node_inputs.remove(&node_id);
-            }
+            self.apply_node_compile_result(node_id, input, visual_piece);
         }
         let nodes_ms = elapsed_ms(nodes_start);
 
@@ -433,7 +450,8 @@ impl RoadSurfaceSystem {
             if total_ms >= 50.0 {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_all_detail edges={} nodes={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} edge_collect_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    "surface_compile_all_detail compile_reason={} edges={} nodes={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} edge_collect_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    reason.as_str(),
                     edge_ids.len(),
                     node_ids.len(),
                     self.last_rebuilt_surface_chunks.len(),
@@ -447,6 +465,39 @@ impl RoadSurfaceSystem {
                     total_ms
                 );
             }
+        }
+    }
+
+    pub(in crate::simulation::network::surface) fn apply_span_compile_result(
+        &mut self,
+        edge_idx: usize,
+        span_piece: Option<RoadSurfaceVisualSpanPiece>,
+    ) {
+        self.remove_span_piece_coverage(edge_idx);
+        if let Some(span_piece) = span_piece {
+            self.insert_span_piece_coverage(&span_piece);
+            self.compiled_visual_span_pieces
+                .insert(edge_idx, span_piece);
+        } else {
+            self.compiled_visual_span_pieces.remove(&edge_idx);
+        }
+    }
+
+    pub(in crate::simulation::network::surface) fn apply_node_compile_result(
+        &mut self,
+        node_id: u32,
+        input: RoadSurfaceVisualNodeCompileInput,
+        visual_piece: Option<RoadSurfaceVisualNodePiece>,
+    ) {
+        self.remove_node_piece_coverage(node_id);
+        if let Some(visual_piece) = visual_piece {
+            self.insert_node_piece_coverage(&visual_piece);
+            self.compiled_visual_node_pieces
+                .insert(node_id, visual_piece);
+            self.compiled_visual_node_inputs.insert(node_id, input);
+        } else {
+            self.compiled_visual_node_pieces.remove(&node_id);
+            self.compiled_visual_node_inputs.remove(&node_id);
         }
     }
 

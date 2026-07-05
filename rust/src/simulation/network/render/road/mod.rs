@@ -2,7 +2,7 @@
 
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
 use godot::prelude::*;
 
 use super::{NetworkMeshData, TransitRenderer};
@@ -72,7 +72,11 @@ impl TransitRenderer for RoadRenderer {
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
         let mut temporary_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
-        temporary_surface.compile_dirty(graph, terrain);
+        temporary_surface.compile_dirty_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
         self.generate_mesh_data_with_surface(graph, lane_system, terrain, &temporary_surface)
     }
 }

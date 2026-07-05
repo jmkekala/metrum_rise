@@ -1139,12 +1139,12 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
         ),
         CanonicalNodeRawPolygonGolden {
             kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            top_polygon_count: 271,
-            carrier_record_count: 320,
+            top_polygon_count: 275,
+            carrier_record_count: 326,
             source_segment_record_count: 19,
-            polygon_key_set_digest: 597332141332153094,
-            top_owner_height_field_digest: 7056752584757341824,
-            carrier_owner_source_height_field_digest: 1553872997480254388,
+            polygon_key_set_digest: 15505972699732544511,
+            top_owner_height_field_digest: 4578930640497027894,
+            carrier_owner_source_height_field_digest: 5687354493498944674,
             source_segment_id_digest: 17651613363160715331,
             source_segment_ids: vec![
                 "NodeSourceCarrierSegmentId { owner: NodeBandOwner { kind: Carriageway, owner_index: 3 }, source_kind: Carriageway, source_mouth_order_index: 0, source_band_index: 3, segment_start: NodeOwnedRegionArrangementKey { x_key: 2460269, z_key: 3500000 }, segment_end: NodeOwnedRegionArrangementKey { x_key: 2928932, z_key: 2928932 } }".to_owned(),
