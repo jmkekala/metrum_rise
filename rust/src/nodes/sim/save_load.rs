@@ -20,6 +20,7 @@ impl SimCore {
                 pollution: &self.pollution,
                 noise: &self.noise,
                 demand: &self.demand,
+                pending_demand_spawns: &self.pending_demand_spawns,
                 allocator: &self.allocator,
                 households: &self.households,
                 logistics: &self.logistics,
@@ -51,6 +52,7 @@ impl SimCore {
         self.noise = loaded.noise;
         self.desirability = loaded.desirability;
         self.demand = loaded.demand;
+        self.pending_demand_spawns = loaded.pending_demand_spawns;
         let mut new_allocator = loaded.allocator;
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;

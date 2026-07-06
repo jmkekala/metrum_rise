@@ -49,6 +49,26 @@ impl BuildingAllocator {
         self.bump_entrance_ref_revision();
     }
 
+    /// Appends the derived entrance for a newly appended building to a clean cache.
+    pub(crate) fn append_entrance_cache_for_building(
+        &mut self,
+        building_idx: usize,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) -> bool {
+        if building_idx >= self.buildings.len()
+            || building_idx + 1 != self.buildings.len()
+            || self.entrances.len() != building_idx
+        {
+            return false;
+        }
+        let entrance = self.derive_building_entrance(&self.buildings[building_idx], graph, lanes);
+        self.entrances.push(entrance);
+        self.entrances_dirty = self.entrances.len() != self.buildings.len();
+        self.bump_entrance_ref_revision();
+        true
+    }
+
     fn derive_building_entrance(
         &self,
         building: &Building,

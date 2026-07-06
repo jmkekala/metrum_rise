@@ -22,6 +22,8 @@ pub struct ZoningSystem {
     pub parcels: ParcelStore,
     /// World configuration used for parcel bounds validation.
     pub config: WorldConfig,
+    overlay_revision: u64,
+    overlay_occupancy_revision: u64,
 }
 
 impl ZoningSystem {
@@ -33,20 +35,48 @@ impl ZoningSystem {
             profiles,
             parcels: ParcelStore::default(),
             config: *config,
+            overlay_revision: 0,
+            overlay_occupancy_revision: 0,
         }
     }
 
     /// Clears all authored zoning parcels.
     pub fn clear(&mut self) {
+        let had_parcels = !self.parcels.parcels().is_empty();
         self.parcels.clear();
+        if had_parcels {
+            self.bump_overlay_revision();
+        }
     }
 
     /// Remaps parcel road-edge attachments after network compaction.
     pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
-        self.parcels.remove_edges_not_in_mapping(mapping);
+        if self.parcels.remove_edges_not_in_mapping(mapping) {
+            self.bump_overlay_revision();
+        }
     }
 
     pub(crate) fn remove_parcels_attached_to_edge(&mut self, edge_idx: usize) -> usize {
-        self.parcels.remove_attached_to_edge(edge_idx)
+        let removed = self.parcels.remove_attached_to_edge(edge_idx);
+        if removed > 0 {
+            self.bump_overlay_revision();
+        }
+        removed
+    }
+
+    pub(crate) fn overlay_revision(&self) -> u64 {
+        self.overlay_revision
+    }
+
+    pub(crate) fn overlay_occupancy_revision(&self) -> u64 {
+        self.overlay_occupancy_revision
+    }
+
+    pub(crate) fn bump_overlay_revision(&mut self) {
+        self.overlay_revision = self.overlay_revision.wrapping_add(1);
+    }
+
+    pub(crate) fn bump_overlay_occupancy_revision(&mut self) {
+        self.overlay_occupancy_revision = self.overlay_occupancy_revision.wrapping_add(1);
     }
 }

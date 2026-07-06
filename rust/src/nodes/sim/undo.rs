@@ -87,6 +87,7 @@ impl SimCore {
                     agents: self.agents.clone(),
                     households: self.households.clone(),
                     logistics: self.logistics.clone(),
+                    pending_demand_spawns: self.pending_demand_spawns.clone(),
                 })
             } else {
                 None
@@ -134,6 +135,7 @@ impl SimCore {
                 self.agents = runtime.agents;
                 self.households = runtime.households;
                 self.logistics = runtime.logistics;
+                self.pending_demand_spawns = runtime.pending_demand_spawns;
                 if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
                     self.mark_building_site_terrain_dirty_bounds(bounds);
                 }

@@ -332,6 +332,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
+        use_road_height_samples: bool,
         min_x: f32,
         min_z: f32,
         max_x: f32,
@@ -355,6 +356,7 @@ impl BuildingAllocator {
                 terrain,
                 graph,
                 road_surface,
+                use_road_height_samples,
                 safe_step_m,
                 max_distance_m,
                 tie_in_guide_samples,
@@ -931,6 +933,7 @@ fn append_building_site_grading_guides(
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
+    use_road_height_samples: bool,
     safe_step_m: f32,
     max_distance_m: f32,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
@@ -972,6 +975,7 @@ fn append_building_site_grading_guides(
                 terrain,
                 graph,
                 road_surface,
+                use_road_height_samples,
                 safe_step_m,
                 max_distance_m,
             );
@@ -1015,6 +1019,7 @@ fn append_building_site_grading_guides(
             terrain,
             graph,
             road_surface,
+            use_road_height_samples,
             safe_step_m,
             max_distance_m,
             tie_in_guide_samples,
@@ -1031,6 +1036,7 @@ fn append_building_site_grading_ray(
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
+    use_road_height_samples: bool,
     safe_step_m: f32,
     max_distance_m: f32,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
@@ -1044,6 +1050,7 @@ fn append_building_site_grading_ray(
         terrain,
         graph,
         road_surface,
+        use_road_height_samples,
         safe_step_m,
         max_distance_m,
     );
@@ -1065,6 +1072,7 @@ fn building_site_grading_ray_vertices(
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
+    use_road_height_samples: bool,
     safe_step_m: f32,
     max_distance_m: f32,
 ) -> Vec<TerrainCdtVertex> {
@@ -1084,6 +1092,7 @@ fn building_site_grading_ray_vertices(
             terrain,
             graph,
             road_surface,
+            use_road_height_samples,
         );
         vertices.push(TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64));
     }
@@ -1139,9 +1148,13 @@ fn building_site_grading_target_height(
     terrain: &TerrainSystem,
     graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
+    use_road_height_samples: bool,
 ) -> f32 {
-    let raw_height_m =
-        building_site_raw_tie_in_target_height(pos, distance_m, terrain, graph, road_surface);
+    let raw_height_m = if use_road_height_samples {
+        building_site_raw_tie_in_target_height(pos, distance_m, terrain, graph, road_surface)
+    } else {
+        terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE
+    };
     grade_limited_site_tie_in_height(seam_height_m, raw_height_m, distance_m)
 }
 
@@ -1422,6 +1435,41 @@ fn point_on_segment(pos: Vector2, a: Vector2, b: Vector2) -> bool {
 mod tests {
     use super::*;
 
+    fn road_test_edge(
+        start_node: u32,
+        end_node: u32,
+        points: Vec<Vector3>,
+        width: f32,
+        class: crate::simulation::network::types::EdgeClass,
+    ) -> crate::simulation::network::graph::Edge {
+        let length = points
+            .windows(2)
+            .map(|segment| segment[0].distance_to(segment[1]))
+            .sum();
+        crate::simulation::network::graph::Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class,
+            width,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 0.0,
+            physical_length: length,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: points.clone(),
+            physical_geometry: points,
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        }
+    }
+
     fn square_site_with_surface() -> BuildingSiteClient {
         BuildingSiteClient {
             footprint_world: vec![
@@ -1449,6 +1497,54 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    #[test]
+    fn terrain_only_site_grading_target_ignores_visible_road_surface() {
+        let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 1.0);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(
+            Vector3::new(0.0, 0.0, -16.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let end = graph.add_node(
+            Vector3::new(0.0, 0.0, 16.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        graph.add_edge(road_test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, -16.0), Vector3::new(0.0, 0.0, 16.0)],
+            10.0,
+            crate::simulation::network::types::EdgeClass::Bridge,
+        ));
+        let mut road_surface = RoadSurfaceSystem::new(16.0);
+        road_surface.compile_dirty(&graph, &terrain);
+
+        let pos = Vector2::ZERO;
+        let road_aware = building_site_grading_target_height(
+            10.0,
+            pos,
+            100.0,
+            &terrain,
+            &graph,
+            &road_surface,
+            true,
+        );
+        let terrain_only = building_site_grading_target_height(
+            10.0,
+            pos,
+            100.0,
+            &terrain,
+            &graph,
+            &road_surface,
+            false,
+        );
+
+        assert!(
+            terrain_only - road_aware > 10.0,
+            "terrain-only visual guide should use the terrain height instead of sampling the visible road surface: terrain_only={terrain_only:.3} road_aware={road_aware:.3}"
+        );
     }
 
     #[test]
@@ -1497,6 +1593,7 @@ mod tests {
             &terrain,
             &graph,
             &road_surface,
+            true,
             2.0,
             16.0,
             &mut samples,

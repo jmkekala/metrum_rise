@@ -46,6 +46,43 @@ impl BuildingAllocator {
         self.dirty_index = false;
     }
 
+    /// Adds the newest appended building to clean indices without scanning every building.
+    pub(crate) fn index_appended_building(&mut self, building_idx: usize) -> bool {
+        if building_idx >= self.buildings.len()
+            || building_idx + 1 != self.buildings.len()
+            || self.vacancy_pos.len() != building_idx
+        {
+            return false;
+        }
+
+        self.vacancy_pos.push(usize::MAX);
+        let b = &self.buildings[building_idx];
+        if b.edge_idx != usize::MAX {
+            let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+            self.building_chunks
+                .entry(chunk)
+                .or_default()
+                .push(building_idx);
+            let half_width = b.width_cells as f32 * 0.5;
+            let half_depth = b.depth_cells as f32 * 0.5;
+            self.max_lot_radius_cells = self.max_lot_radius_cells.max(half_width.hypot(half_depth));
+        }
+        if !b.is_under_construction() {
+            if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
+                self.zone_index[zi].push(building_idx);
+
+                let resident_cap = self.household_capacity(building_idx);
+                if resident_cap > 0 && b.occupancy < resident_cap {
+                    let v_idx = self.vacancy_index[zi].len();
+                    self.vacancy_index[zi].push(building_idx);
+                    self.vacancy_pos[building_idx] = v_idx;
+                }
+            }
+        }
+        self.dirty_index = false;
+        true
+    }
+
     /// Increments occupancy for a building and updates vacancy index if it becomes full. O(1).
     pub fn claim_vacancy(&mut self, building_idx: usize) {
         if building_idx >= self.buildings.len() {

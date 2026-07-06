@@ -49,6 +49,7 @@ impl ZoningSystem {
         );
         self.validate_single_parcel_geometry(&geometry, graph)?;
         self.parcels.insert_loaded(id, geometry, runtime_id);
+        self.bump_overlay_revision();
         Ok(id)
     }
 
@@ -104,7 +105,9 @@ impl ZoningSystem {
         if parcels::geometry_overlaps_road(graph, &geometry) {
             return Err(ParcelPlacementError::OverlapsRoad);
         }
-        self.parcels.replace_geometry(id, geometry);
+        if self.parcels.replace_geometry(id, geometry) {
+            self.bump_overlay_revision();
+        }
         Ok(())
     }
 }

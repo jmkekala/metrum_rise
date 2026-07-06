@@ -406,6 +406,13 @@ impl SimCore {
             .accumulate_pending_site_dirty_bounds(dirty_bounds);
         self.push_undo_state_with_runtime(false, false, false, true, true);
         let _ = self.allocator.take_pending_site_dirty_bounds();
+        self.agents.evacuate_building_for_removal(
+            building_idx,
+            &mut self.households,
+            &mut self.allocator,
+            &self.transit_network,
+            &self.region_graph,
+        );
         let removed = self.allocator.remove_building_for_bulldoze(
             building_idx,
             &mut self.zoning,
@@ -1082,6 +1089,7 @@ impl SimCore {
                 .copied()
                 .collect();
 
+            self.push_undo_state(false, false, true, false);
             self.region_graph.move_node(node_id as u32, pos);
             for &edge_idx in &affected_edges {
                 let length = self
@@ -1090,7 +1098,6 @@ impl SimCore {
                 self.region_graph.edge_mut(edge_idx).physical_length = length;
             }
             self.region_graph.rebuild_intersection_clips();
-            self.push_undo_state(false, false, true, false);
             self.agents
                 .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
             self.transit_network
@@ -1545,11 +1552,12 @@ impl SimCore {
 #[cfg(test)]
 mod tests {
     use super::{BulldozeTargetKind, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
+    use crate::nodes::sim::core::PendingDemandSpawnAction;
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
     use crate::simulation::economy::agents::AgentSystem;
-    use crate::simulation::economy::demand::DemandSystem;
+    use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
     use crate::simulation::economy::households::HouseholdSystem;
     use crate::simulation::economy::logistics::ShipmentSystem;
     use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -1580,6 +1588,7 @@ mod tests {
             noise: NoiseSystem::new(&config),
             desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
+            pending_demand_spawns: VecDeque::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -1771,6 +1780,83 @@ mod tests {
             core.region_graph
                 .get_edges_near_point(Vector3::new(0.0, 0.0, 0.0), 8.0)
                 .contains(&0)
+        );
+    }
+
+    #[test]
+    fn runtime_undo_restores_pending_demand_spawn_queue() {
+        let mut core = test_core();
+        core.pending_demand_spawns
+            .push_back(PendingDemandSpawnAction {
+                due_minute: 42,
+                zone_type: ZoneType::Residential,
+                action: DemandSpawnAction {
+                    parcel_id: 7,
+                    asset_id: "building.residential.test".to_owned(),
+                },
+                planned_day_index: 2,
+                planned_minute_of_day: 60,
+            });
+
+        core.push_undo_state_with_runtime(false, false, false, false, true);
+        core.pending_demand_spawns.clear();
+
+        assert!(core.undo_action_internal());
+        let pending = core
+            .pending_demand_spawns
+            .front()
+            .expect("runtime undo must restore delayed demand spawns");
+        assert_eq!(pending.due_minute, 42);
+        assert_eq!(pending.zone_type, ZoneType::Residential);
+        assert_eq!(pending.action.parcel_id, 7);
+        assert_eq!(pending.action.asset_id, "building.residential.test");
+        assert_eq!(pending.planned_day_index, 2);
+        assert_eq!(pending.planned_minute_of_day, 60);
+    }
+
+    #[test]
+    fn move_network_node_undo_restores_pre_move_graph_state() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(-10.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 120.0,
+            physical_length: 20.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        core.region_graph.rebuild_adjacency_list();
+
+        core.move_network_node_internal(n0 as i32, Vector3::new(-20.0, 0.0, 0.0));
+        assert_eq!(core.region_graph.node(n0).pos.x, -20.0);
+
+        assert!(core.undo_action_internal());
+        assert_eq!(
+            core.region_graph.node(n0).pos,
+            Vector3::new(-10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            core.region_graph.edge(0).physical_geometry[0],
+            Vector3::new(-10.0, 0.0, 0.0)
         );
     }
 

@@ -8,7 +8,9 @@ use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::{debug, debug_log};
 use rayon::prelude::*;
+use std::time::Instant;
 
 impl HouseholdSystem {
     /// Runs one operational-hour household pass for membership, production, logistics, and labor.
@@ -24,10 +26,21 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
     ) -> FiscalRevenue {
-        self.materialize_arrived_household_carriers(agents, allocator);
+        let timing_enabled = debug::category_enabled("economy");
+        let total_start = Instant::now();
+        let mut phase_start = total_start;
+        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
+        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
+        let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.rebuild_household_and_worker_counts(agents, allocator);
+        let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.run_building_economy(allocator);
+        let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         let business_purchase_tax = logistics.hourly_tick(
             allocator,
             agents,
@@ -36,6 +49,8 @@ impl HouseholdSystem {
             minute_of_day,
             treasury_balance,
         );
+        let logistics_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         let household_vat = self.run_household_operational_hour(
             agents,
             allocator,
@@ -43,6 +58,8 @@ impl HouseholdSystem {
             graph,
             absolute_hour,
         );
+        let household_hour_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.assign_agent_workplaces_with_service_funding(
             agents,
             allocator,
@@ -50,7 +67,32 @@ impl HouseholdSystem {
             graph,
             service_funding_by_building,
         );
+        let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.sync_agent_money_from_households(agents);
+        let money_sync_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if timing_enabled {
+            debug_log!(
+                "economy",
+                "operational_hour_detail absolute_hour={} minute={} materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} building_economy_ms={:.3} logistics_ms={:.3} household_hour_ms={:.3} workplace_ms={:.3} money_sync_ms={:.3} total_ms={:.3}",
+                absolute_hour,
+                minute_of_day,
+                materialized.households,
+                materialized.residents,
+                agents.len(),
+                allocator.buildings.len(),
+                self.households.len(),
+                materialize_ms,
+                validate_ms,
+                counts_ms,
+                building_economy_ms,
+                logistics_ms,
+                household_hour_ms,
+                workplace_ms,
+                money_sync_ms,
+                total_start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         FiscalRevenue {
             household_vat,
             business_purchase_tax,
@@ -72,19 +114,34 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
     ) -> FiscalRevenue {
+        let timing_enabled = debug::category_enabled("economy");
+        let total_start = Instant::now();
+        let mut phase_start = total_start;
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        self.materialize_arrived_household_carriers(agents, allocator);
+        let load_tuning_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
+        let materialized = self.materialize_arrived_household_carriers(agents, allocator);
+        let materialize_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.debug_validate_agent_household_refs(agents);
+        let validate_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.rebuild_household_and_worker_counts(agents, allocator);
+        let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.begin_daily_ledger_settlement();
         // Advance per-agent job-lock countdown once per day.
         agents.job_lock_days.par_iter_mut().for_each(|lock_days| {
             *lock_days = lock_days.saturating_sub(1);
         });
+        let ledger_and_locks_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         // Step 1: bankruptcy check — mark buildings that were in distress yesterday and are
         // still negative. Must run before wages so workers are ejected on the same day.
         self.run_bankruptcy_check(allocator);
+        let bankruptcy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         // Step 2: pay wages (budget does not go negative from this step).
         let income_tax = self.pay_daily_wages_with_service_funding(
             agents,
@@ -93,14 +150,24 @@ impl HouseholdSystem {
             treasury_balance,
             service_funding_by_building,
         );
+        let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         // Step 3: pay unemployment benefit to eligible households from the city treasury.
         self.pay_unemployment_benefits(agents, allocator, treasury_balance);
+        let benefits_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         // Steps 4 + 5: charge utility, then liquidate if still negative.
         self.settle_daily_utilities(allocator, logistics, treasury_balance);
+        let utilities_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         // Step 6: collect tax on positive daily business operating-budget growth.
         let business_profit_tax =
             self.settle_business_profit_tax(allocator, tuning.fiscal.business_profit_tax_rate);
+        let profit_tax_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.resolve_household_housing(agents, allocator);
+        let housing_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.assign_agent_workplaces_with_service_funding(
             agents,
             allocator,
@@ -108,8 +175,36 @@ impl HouseholdSystem {
             graph,
             service_funding_by_building,
         );
+        let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         self.sync_agent_money_from_households(agents);
         self.finish_daily_ledger_settlement();
+        let sync_and_finish_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if timing_enabled {
+            debug_log!(
+                "economy",
+                "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} load_tuning_ms={:.3} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
+                materialized.households,
+                materialized.residents,
+                agents.len(),
+                allocator.buildings.len(),
+                self.households.len(),
+                load_tuning_ms,
+                materialize_ms,
+                validate_ms,
+                counts_ms,
+                ledger_and_locks_ms,
+                bankruptcy_ms,
+                wages_ms,
+                benefits_ms,
+                utilities_ms,
+                profit_tax_ms,
+                housing_ms,
+                workplace_ms,
+                sync_and_finish_ms,
+                total_start.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         FiscalRevenue {
             income_tax,
             business_profit_tax,

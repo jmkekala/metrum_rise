@@ -24,7 +24,9 @@ use crate::simulation::economy::agents::{
     age_group_can_work, transit_is_visible,
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::demand::{
+    DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
+};
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -47,6 +49,24 @@ use crate::simulation::terrain::{
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
+
+const MINUTES_PER_DAY_U64: u64 = 24 * 60;
+const DEMAND_SPAWN_ACTIONS_PER_MINUTE: usize = 1;
+
+/// Demand-planned private building spawn delayed to a later authored minute.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingDemandSpawnAction {
+    /// Absolute authored minute when this spawn may be released.
+    pub(crate) due_minute: u64,
+    /// Demand bucket that selected this spawn.
+    pub(crate) zone_type: ZoneType,
+    /// Final parcel and asset placement request.
+    pub(crate) action: DemandSpawnAction,
+    /// Operational day when demand originally planned the spawn.
+    pub(crate) planned_day_index: u32,
+    /// Minute of day when demand originally planned the spawn.
+    pub(crate) planned_minute_of_day: u16,
+}
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -100,15 +120,75 @@ fn pedestrian_access_surface_height(core: &SimCore, world_x: f32, world_z: f32) 
         })
 }
 
+fn absolute_operational_minute(day_index: u32, minute_of_day: u16) -> u64 {
+    u64::from(day_index.saturating_sub(1)) * MINUTES_PER_DAY_U64 + u64::from(minute_of_day)
+}
+
+fn demand_plan_has_non_spawn_actions(plan: &DemandBuildingActionPlan) -> bool {
+    [&plan.residential, &plan.commercial, &plan.industrial]
+        .iter()
+        .any(|use_plan| {
+            !use_plan.despawns.is_empty()
+                || !use_plan.downgrades.is_empty()
+                || !use_plan.upgrades.is_empty()
+        })
+}
+
+fn demand_plan_without_spawns(plan: &DemandBuildingActionPlan) -> DemandBuildingActionPlan {
+    let mut immediate_plan = plan.clone();
+    immediate_plan.residential.spawns.clear();
+    immediate_plan.commercial.spawns.clear();
+    immediate_plan.industrial.spawns.clear();
+    immediate_plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CURB_STEP_HEIGHT_M, pedestrian_lane_surface_height, pedestrian_needs_access_surface,
+        CURB_STEP_HEIGHT_M, absolute_operational_minute, demand_plan_has_non_spawn_actions,
+        demand_plan_without_spawns, pedestrian_lane_surface_height,
+        pedestrian_needs_access_surface,
     };
     use crate::simulation::economy::agents::{
         TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
     };
+    use crate::simulation::economy::demand::{
+        DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction,
+    };
     use crate::simulation::network::lanes::{Lane, LaneType};
+
+    #[test]
+    fn absolute_operational_minute_is_day_stable() {
+        assert_eq!(absolute_operational_minute(1, 0), 0);
+        assert_eq!(absolute_operational_minute(1, 1439), 1439);
+        assert_eq!(absolute_operational_minute(2, 0), 1440);
+        assert_eq!(absolute_operational_minute(3, 60), 2940);
+    }
+
+    #[test]
+    fn immediate_demand_plan_strips_spawns_only() {
+        let mut plan = DemandBuildingActionPlan::default();
+        plan.residential.spawns.push(DemandSpawnAction {
+            parcel_id: 7,
+            asset_id: "building.residential.test".to_owned(),
+        });
+        plan.residential.despawns.push(DemandBuildingActionKey {
+            parcel_id: 8,
+            edge_idx: 1,
+            side: 1,
+            cell_x: 2,
+            width_cells: 3,
+            depth_cells: 4,
+            level: 1,
+            asset_id: "building.residential.old".to_owned(),
+        });
+
+        let immediate = demand_plan_without_spawns(&plan);
+
+        assert!(immediate.residential.spawns.is_empty());
+        assert_eq!(immediate.residential.despawns.len(), 1);
+        assert!(demand_plan_has_non_spawn_actions(&immediate));
+    }
 
     #[test]
     fn pedestrian_lane_surface_height_matches_lane_semantics() {
@@ -466,6 +546,8 @@ pub(crate) struct SimulationRuntimeSnapshot {
     pub(crate) households: HouseholdSystem,
     /// Freight reservations and shipment state that reference buildings.
     pub(crate) logistics: ShipmentSystem,
+    /// Delayed demand spawns that can later mutate allocator and zoning state.
+    pub(crate) pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
 }
 
 /// A snapshot of simulation state for undo history.
@@ -601,6 +683,8 @@ pub struct SimCore {
     pub desirability: DesirabilitySystem,
     /// Global R/C/I demand counters.
     pub demand: DemandSystem,
+    /// Demand building spawns scheduled across authored minutes to avoid hourly bursts.
+    pub(crate) pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
     /// Building placement and vacancy index.
     pub allocator: BuildingAllocator,
     /// Agent FSM in Structure-of-Arrays layout.
@@ -799,7 +883,11 @@ pub struct RenderSnapshot {
     pub heightmap_height: usize,
     /// Terrain world extent in metres, cached so Godot tools do not lock `SimCore` per frame.
     pub terrain_world_size: godot::prelude::Vector2,
-    /// World-space positions of all canonical (non-virtual) network nodes.
+    /// Revision of zoning overlay-visible parcel geometry and zoning profiles.
+    pub zoning_overlay_revision: u64,
+    /// Revision of zoning occupancy that affects overlay parcel coloring.
+    pub zoning_overlay_occupancy_revision: u64,
+    /// World-space positions of all live canonical network nodes.
     /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
     /// instead of locking SimCore — avoids main-thread stalls during road placement.
     pub node_positions: Vec<godot::prelude::Vector3>,
@@ -823,6 +911,8 @@ impl Default for RenderSnapshot {
             treasury_balance: 0.0,
             heightmap_width: 0,
             terrain_world_size: godot::prelude::Vector2::ZERO,
+            zoning_overlay_revision: 0,
+            zoning_overlay_occupancy_revision: 0,
             node_positions: Vec::new(),
             heightmap_height: 0,
         }
@@ -1709,6 +1799,144 @@ impl SimCore {
         }
     }
 
+    fn enqueue_hourly_demand_spawns(&mut self, day_index: u32, minute_of_day: u16) -> usize {
+        let now = absolute_operational_minute(day_index, minute_of_day);
+        let mut next_due_minute = self
+            .pending_demand_spawns
+            .back()
+            .map(|pending| pending.due_minute.saturating_add(1))
+            .unwrap_or_else(|| now.saturating_add(1))
+            .max(now.saturating_add(1));
+        let first_due_minute = next_due_minute;
+        let mut queued = 0_usize;
+
+        for (zone_type, spawns) in [
+            (
+                ZoneType::Residential,
+                &self.demand.building_actions.residential.spawns,
+            ),
+            (
+                ZoneType::Commercial,
+                &self.demand.building_actions.commercial.spawns,
+            ),
+            (
+                ZoneType::Industrial,
+                &self.demand.building_actions.industrial.spawns,
+            ),
+        ] {
+            for action in spawns {
+                self.pending_demand_spawns
+                    .push_back(PendingDemandSpawnAction {
+                        due_minute: next_due_minute,
+                        zone_type,
+                        action: action.clone(),
+                        planned_day_index: day_index,
+                        planned_minute_of_day: minute_of_day,
+                    });
+                queued += 1;
+                if queued % DEMAND_SPAWN_ACTIONS_PER_MINUTE == 0 {
+                    next_due_minute = next_due_minute.saturating_add(1);
+                }
+            }
+        }
+
+        if queued > 0 {
+            debug_log!(
+                "economy",
+                "queued demand spawns: day={} minute={} queued={} pending_total={} first_due={} last_due={}",
+                day_index,
+                minute_of_day,
+                queued,
+                self.pending_demand_spawns.len(),
+                first_due_minute,
+                next_due_minute.saturating_sub(1),
+            );
+        }
+        queued
+    }
+
+    fn execute_pending_demand_spawns_for_minute(
+        &mut self,
+        day_index: u32,
+        minute_of_day: u16,
+    ) -> usize {
+        let now = absolute_operational_minute(day_index, minute_of_day);
+        let mut executed_this_minute = 0_usize;
+        while executed_this_minute < DEMAND_SPAWN_ACTIONS_PER_MINUTE {
+            let Some(pending) = self.pending_demand_spawns.front() else {
+                return executed_this_minute;
+            };
+            if pending.due_minute > now {
+                return executed_this_minute;
+            }
+            let pending = self
+                .pending_demand_spawns
+                .pop_front()
+                .expect("pending spawn front existed");
+            self.execute_pending_demand_spawn(pending, day_index, minute_of_day);
+            executed_this_minute += 1;
+        }
+        executed_this_minute
+    }
+
+    fn execute_pending_demand_spawn(
+        &mut self,
+        pending: PendingDemandSpawnAction,
+        day_index: u32,
+        minute_of_day: u16,
+    ) {
+        let total_start = Instant::now();
+        let compile_start = Instant::now();
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::SimCommit,
+        );
+        let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
+        let execute_start = Instant::now();
+        let execution = self.allocator.execute_single_demand_spawn_action(
+            pending.zone_type,
+            &pending.action,
+            &mut self.zoning,
+            &self.region_graph,
+            &self.transit_network.lane_system,
+            &self.transit_network.road_surface,
+            &self.heightmap,
+            self.demand.runtime_catalog(),
+            self.demand.runtime_tuning(),
+        );
+        let execute_ms = execute_start.elapsed().as_secs_f64() * 1000.0;
+        self.treasury
+            .collect_property_tax(execution.property_tax_paid as f64);
+        if let Some(bounds) = execution.site_dirty_bounds {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+
+        let use_execution = match pending.zone_type {
+            ZoneType::Residential => execution.residential,
+            ZoneType::Commercial => execution.commercial,
+            ZoneType::Industrial => execution.industrial,
+            _ => return,
+        };
+        debug_log!(
+            "economy",
+            "queued demand spawn execution: planned_day={} planned_minute={} executed_day={} executed_minute={} zone={:?} attempted={} placed={} failed={} pending_remaining={} compile_ms={:.3} execute_ms={:.3} total_ms={:.3}",
+            pending.planned_day_index,
+            pending.planned_minute_of_day,
+            day_index,
+            minute_of_day,
+            pending.zone_type,
+            use_execution.spawn_attempted,
+            use_execution.spawn_executed,
+            use_execution.spawn_rejections.total(),
+            self.pending_demand_spawns.len(),
+            compile_ms,
+            execute_ms,
+            total_ms,
+        );
+    }
+
     /// Executes one full economy / daily tick (called once per in-game day).
     pub fn simulate_tick_internal(&mut self, day_index: u32) {
         let tick_start = Instant::now();
@@ -1863,24 +2091,26 @@ impl SimCore {
             .saturating_add(launched_households);
         self.demand
             .record_household_admission_execution(launched_households);
-        self.transit_network.road_surface.compile_dirty_with_reason(
-            &self.region_graph,
-            &self.heightmap,
-            RoadSurfaceCompileReason::SimCommit,
-        );
-        let building_action_execution = self.allocator.execute_demand_building_actions(
-            &self.demand.building_actions,
-            &mut self.zoning,
-            &mut self.agents,
-            &mut self.households,
-            &mut self.logistics,
-            &self.region_graph,
-            &self.transit_network.lane_system,
-            &self.transit_network.road_surface,
-            &self.heightmap,
-            self.demand.runtime_catalog(),
-            self.demand.runtime_tuning(),
-        );
+        let queued_spawn_count = self.enqueue_hourly_demand_spawns(day_index, minute_of_day);
+        let immediate_building_plan = demand_plan_without_spawns(&self.demand.building_actions);
+        let building_action_execution =
+            if demand_plan_has_non_spawn_actions(&immediate_building_plan) {
+                self.allocator.execute_demand_building_actions(
+                    &immediate_building_plan,
+                    &mut self.zoning,
+                    &mut self.agents,
+                    &mut self.households,
+                    &mut self.logistics,
+                    &self.region_graph,
+                    &self.transit_network.lane_system,
+                    &self.transit_network.road_surface,
+                    &self.heightmap,
+                    self.demand.runtime_catalog(),
+                    self.demand.runtime_tuning(),
+                )
+            } else {
+                Default::default()
+            };
         self.treasury
             .collect_property_tax(building_action_execution.property_tax_paid as f64);
         if let Some(bounds) = building_action_execution.site_dirty_bounds {
@@ -1926,7 +2156,7 @@ impl SimCore {
         }
         debug_log!(
             "economy",
-            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} planned_spawns=({}/{}/{}) placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            "hourly demand: day={} minute={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} planned_spawns=({}/{}/{}) queued_spawns={} pending_spawns={} placed_spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
             day_index,
             minute_of_day,
             self.demand.net_residential_pressure() * 100.0,
@@ -1936,6 +2166,8 @@ impl SimCore {
             self.demand.building_actions.residential.spawns.len(),
             self.demand.building_actions.commercial.spawns.len(),
             self.demand.building_actions.industrial.spawns.len(),
+            queued_spawn_count,
+            self.pending_demand_spawns.len(),
             building_action_execution.residential.spawn_executed,
             building_action_execution.commercial.spawn_executed,
             building_action_execution.industrial.spawn_executed,
@@ -2179,7 +2411,11 @@ impl SimCore {
             .nodes()
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.region_graph.get_valid_node(*i as u32) == *i as u32)
+            .filter(|(i, _)| {
+                let node_id = *i as u32;
+                self.region_graph.get_valid_node(node_id) == node_id
+                    && self.region_graph.node_has_live_incident_edge(node_id)
+            })
             .map(|(_, n)| n.pos)
             .collect();
 
@@ -2206,6 +2442,8 @@ impl SimCore {
             heightmap_width: self.heightmap.width,
             heightmap_height: self.heightmap.height,
             terrain_world_size: godot::prelude::Vector2::new(terrain_world_w, terrain_world_h),
+            zoning_overlay_revision: self.zoning.overlay_revision(),
+            zoning_overlay_occupancy_revision: self.zoning.overlay_occupancy_revision(),
         }
     }
 }
@@ -2231,30 +2469,61 @@ pub(crate) fn run_sim_thread(
         let frame_start = Instant::now();
 
         // Drain all pending commands — non-blocking.
+        let command_start = Instant::now();
+        let mut commands_processed = 0_usize;
+        let mut set_speed_commands = 0_usize;
+        let mut camera_aabb_commands = 0_usize;
+        let mut add_road_commands = 0_usize;
+        let mut pending_speed = None;
+        let mut pending_camera_aabb = None;
         let mut should_quit = false;
         loop {
             match cmd_rx.try_recv() {
                 Ok(SimCommand::Quit) => {
+                    commands_processed += 1;
                     should_quit = true;
                     break;
                 }
                 Ok(SimCommand::SetSpeed(s)) => {
-                    core.lock().unwrap().time.speed_multiplier = s;
+                    commands_processed += 1;
+                    set_speed_commands += 1;
+                    pending_speed = Some(s);
                 }
                 Ok(SimCommand::SetCameraAabb(x0, x1, z0, z1)) => {
-                    core.lock().unwrap().camera_aabb = (x0, x1, z0, z1);
+                    commands_processed += 1;
+                    camera_aabb_commands += 1;
+                    pending_camera_aabb = Some((x0, x1, z0, z1));
                 }
                 Ok(SimCommand::AddRoad {
                     points,
                     fwd_lanes,
                     bkw_lanes,
                 }) => {
+                    commands_processed += 1;
+                    add_road_commands += 1;
                     let road_total = Instant::now();
-                    let (cache_inputs, preview_context, query_snapshot) = {
+                    let lock_wait_start = Instant::now();
+                    let (
+                        cache_inputs,
+                        preview_context,
+                        query_snapshot,
+                        road_lock_wait_ms,
+                        add_internal_ms,
+                        finalize_ms,
+                        surface_ms,
+                        mesh_ms,
+                        snapshot_ms,
+                        collect_refined_ms,
+                        invalidated_refined_cache_entries,
+                    ) = {
                         let mut c = core.lock().unwrap();
+                        let road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
                         // Bulk-load defers per-edge rebuilds until finalization.
+                        let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
                         c.add_road_internal(points, fwd_lanes, bkw_lanes);
+                        let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
+                        let finalize_start = Instant::now();
                         {
                             let c = &mut *c;
                             c.transit_network.bulk_load = false;
@@ -2332,23 +2601,80 @@ pub(crate) fn run_sim_thread(
                             debug_log!("road", "{}", msg);
                             c.last_road_timing = msg;
                         }
+                        let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
+                        let surface_start = Instant::now();
                         c.rebuild_network_surface_terrain_internal();
+                        let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
+                        let mesh_start = Instant::now();
                         c.precompute_road_mesh_data();
+                        let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
                         c.bump_road_tool_surface_generation();
+                        let snapshot_start = Instant::now();
                         let preview_context = RoadPreviewWorkerContext::from_core(&c);
                         let query_snapshot = RoadToolQuerySnapshot::from_core(&c);
+                        let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+                        let collect_refined_start = Instant::now();
                         let cache_inputs = c.collect_refined_terrain_patch_build_inputs(
                             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
                         );
-                        (cache_inputs, preview_context, query_snapshot)
+                        let invalidated_refined_cache_entries = cache_inputs
+                            .iter()
+                            .filter(|input| {
+                                c.refined_terrain_patch_cache.remove(&input.key).is_some()
+                            })
+                            .count();
+                        c.network_dirty = true;
+                        let collect_refined_ms =
+                            collect_refined_start.elapsed().as_secs_f64() * 1000.0;
+                        (
+                            cache_inputs,
+                            preview_context,
+                            query_snapshot,
+                            road_lock_wait_ms,
+                            add_internal_ms,
+                            finalize_ms,
+                            surface_ms,
+                            mesh_ms,
+                            snapshot_ms,
+                            collect_refined_ms,
+                            invalidated_refined_cache_entries,
+                        )
                     };
+                    let refined_input_count = cache_inputs.len();
+                    let refined_window_count = cache_inputs
+                        .iter()
+                        .map(|input| input.windows.len())
+                        .sum::<usize>();
+                    let refined_reused_windows = cache_inputs
+                        .iter()
+                        .flat_map(|input| input.windows.iter())
+                        .filter(|window| window.previous.is_some())
+                        .count();
                     *road_preview_context.write().unwrap() = preview_context;
                     *road_query_snapshot.write().unwrap() = query_snapshot;
-                    let cache_entries =
-                        SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
-                    let mut c = core.lock().unwrap();
-                    c.insert_refined_terrain_patch_cache_entries(cache_entries);
-                    c.network_dirty = true;
+                    drop(cache_inputs);
+                    if crate::debug::is_perf_enabled() {
+                        println!(
+                            "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_build_ms={:.3} refined_cdt_sum_ms={:.3} refined_inputs={} refined_entries={} refined_windows={} refined_reused_windows={} refined_cache_invalidated={} insert_lock_wait_ms={:.3} insert_ms={:.3} refined_prebuild=skipped",
+                            road_total.elapsed().as_secs_f64() * 1000.0,
+                            road_lock_wait_ms,
+                            add_internal_ms,
+                            finalize_ms,
+                            surface_ms,
+                            mesh_ms,
+                            snapshot_ms,
+                            collect_refined_ms,
+                            0.0,
+                            0.0,
+                            refined_input_count,
+                            0,
+                            refined_window_count,
+                            refined_reused_windows,
+                            invalidated_refined_cache_entries,
+                            0.0,
+                            0.0
+                        );
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;
@@ -2357,14 +2683,33 @@ pub(crate) fn run_sim_thread(
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
+        let command_ms = command_start.elapsed().as_secs_f64() * 1000.0;
         if should_quit {
             return;
         }
+
+        let perf_enabled = crate::debug::is_perf_enabled();
+        let lock_wait_ms: f64;
+        let mut pathing_ms = 0.0;
+        let mut agent_ms = 0.0;
+        let mut minute_ms = 0.0;
+        let mut pending_spawn_ms = 0.0;
+        let mut hourly_ms = 0.0;
+        let mut daily_ms = 0.0;
+        let snapshot_ms: f64;
+        let lock_held_ms: f64;
+        let mut elapsed_minutes = 0_u16;
+        let mut pending_spawns_executed = 0_usize;
+        let mut hourly_ticks = 0_usize;
+        let mut daily_ticks = 0_usize;
+        let agent_count: i32;
+        let pathfind_count: u32;
 
         // Tick and build snapshot inside one lock acquisition.
         let new_snapshot = {
             // Recover from a poisoned mutex (caused by a previous tick panic) rather
             // than propagating a PoisonError cascade to every main-thread call.
+            let lock_wait_start = Instant::now();
             let mut core = match core.lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -2372,10 +2717,19 @@ pub(crate) fn run_sim_thread(
                     e.into_inner()
                 }
             };
+            lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+            let lock_held_start = Instant::now();
+            if let Some(speed) = pending_speed {
+                core.time.speed_multiplier = speed;
+            }
+            if let Some(camera_aabb) = pending_camera_aabb {
+                core.camera_aabb = camera_aabb;
+            }
             let speed = core.time.speed_multiplier;
 
             if speed > 0.0 {
                 // Rebuild CCH if dirty, then rebuild any dirty flow fields.
+                let pathing_start = Instant::now();
                 let c = &mut *core;
                 c.transit_network
                     .rebuild_pathing_if_dirty(&mut c.region_graph);
@@ -2388,6 +2742,7 @@ pub(crate) fn run_sim_thread(
                             alloc.get_sources_for_zone(zone, graph, mode_flags)
                         });
                 }
+                pathing_ms = pathing_start.elapsed().as_secs_f64() * 1000.0;
 
                 let dt = (TARGET_DT * speed as f64) as f32;
                 let t_agent = Instant::now();
@@ -2416,12 +2771,41 @@ pub(crate) fn run_sim_thread(
                 }
 
                 core.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
+                agent_ms = core.last_agent_tick_us as f64 / 1000.0;
 
+                let minute_start = Instant::now();
                 let time_advance = core.time.process_delta(TARGET_DT);
+                elapsed_minutes = time_advance.elapsed_minutes;
                 if time_advance.has_elapsed_minutes() {
                     for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes()
                     {
+                        let pending_spawn_start = Instant::now();
+                        let pending_spawn_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                core.execute_pending_demand_spawns_for_minute(
+                                    step_day_index,
+                                    step_minute_of_day,
+                                )
+                            }));
+                        match pending_spawn_result {
+                            Ok(executed) => {
+                                pending_spawns_executed += executed;
+                            }
+                            Err(e) => {
+                                let msg = e
+                                    .downcast_ref::<&str>()
+                                    .copied()
+                                    .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                                    .unwrap_or("(non-string payload)");
+                                godot_error!(
+                                    "[sim] demand spawn tick panicked — skipping minute: {}",
+                                    msg
+                                );
+                            }
+                        }
+                        pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
                         if step_minute_of_day % 60 == 0 {
+                            let hourly_start = Instant::now();
                             let hourly_result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     core.simulate_operational_hour_internal(
@@ -2440,11 +2824,14 @@ pub(crate) fn run_sim_thread(
                                     msg
                                 );
                             }
+                            hourly_ms += hourly_start.elapsed().as_secs_f64() * 1000.0;
+                            hourly_ticks += 1;
                             if step_minute_of_day != 0 && crate::debug::is_sim_enabled() {
                                 core.print_sim_console_summary(step_day_index, step_minute_of_day);
                             }
                         }
                         if step_minute_of_day == 0 {
+                            let daily_start = Instant::now();
                             let daily_result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     core.simulate_tick_internal(step_day_index)
@@ -2457,6 +2844,8 @@ pub(crate) fn run_sim_thread(
                                     .unwrap_or("(non-string payload)");
                                 godot_error!("[sim] daily tick panicked — skipping day: {}", msg);
                             }
+                            daily_ms += daily_start.elapsed().as_secs_f64() * 1000.0;
+                            daily_ticks += 1;
                             if crate::debug::is_sim_enabled() {
                                 core.print_sim_console_summary(step_day_index, step_minute_of_day);
                             }
@@ -2464,13 +2853,15 @@ pub(crate) fn run_sim_thread(
                         }
                     }
                 }
+                minute_ms = minute_start.elapsed().as_secs_f64() * 1000.0;
             }
 
             // build_snapshot only reads state; wrap anyway so a panic here does
             // not poison the mutex and kill the render thread.
+            let snapshot_start = Instant::now();
             let snap_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.build_snapshot()));
-            match snap_result {
+            let snapshot = match snap_result {
                 Ok(s) => s,
                 Err(e) => {
                     let msg = e
@@ -2481,11 +2872,49 @@ pub(crate) fn run_sim_thread(
                     godot_error!("[sim] build_snapshot panicked — using default: {}", msg);
                     RenderSnapshot::default()
                 }
-            }
+            };
+            snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+            lock_held_ms = lock_held_start.elapsed().as_secs_f64() * 1000.0;
+            agent_count = snapshot.agent_count;
+            pathfind_count = snapshot.pathfind_count;
+            snapshot
         };
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.
+        let snapshot_write_start = Instant::now();
         *snapshot.write().unwrap() = new_snapshot;
+        let snapshot_write_ms = snapshot_write_start.elapsed().as_secs_f64() * 1000.0;
+        let active_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        let unaccounted_ms =
+            (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
+        if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || elapsed_minutes > 0) {
+            println!(
+                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={}",
+                active_ms,
+                command_ms,
+                lock_wait_ms,
+                lock_held_ms,
+                pathing_ms,
+                agent_ms,
+                minute_ms,
+                pending_spawn_ms,
+                hourly_ms,
+                daily_ms,
+                snapshot_ms,
+                snapshot_write_ms,
+                unaccounted_ms,
+                elapsed_minutes,
+                pending_spawns_executed,
+                hourly_ticks,
+                daily_ticks,
+                agent_count,
+                pathfind_count,
+                commands_processed,
+                set_speed_commands,
+                camera_aabb_commands,
+                add_road_commands,
+            );
+        }
 
         // Sleep to maintain ~60 Hz.
         let elapsed = frame_start.elapsed();

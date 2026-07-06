@@ -85,7 +85,10 @@
 //! | | `get_zoning_parcel_profile_runtime_id_at` | `zoning_tool.gd` |
 //! | | `get_zoning_parcel_rezone_drag_preview_packed` | `zoning_tool.gd` |
 //! | | `apply_zoning_parcel_rezone_drag` | `zoning_tool.gd` |
+//! | | `get_zoning_overlay_revision` | `zoning_overlay.gd` |
+//! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
+//! | | `get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
 //! | | `get_car_render_ids` | `agent_renderer.gd` |
@@ -162,6 +165,7 @@ struct TerrainCdtSiteGradingContext<'a> {
     allocator: &'a BuildingAllocator,
     graph: &'a crate::simulation::network::graph::RegionGraph,
     road_surface: &'a RoadSurfaceSystem,
+    use_road_height_samples: bool,
 }
 
 #[derive(Default)]
@@ -392,12 +396,21 @@ enum TerrainPatchPayloadData {
     Refined {
         patch: CachedRefinedTerrainPatch,
     },
+    Retry,
 }
 
 struct TerrainPatchPayload {
     key: TerrainPatchPayloadKey,
     request_id: u64,
     data: TerrainPatchPayloadData,
+}
+
+enum TerrainPatchPayloadBuildJob {
+    Ready(TerrainPatchPayload),
+    Refined {
+        request: TerrainPatchPayloadRequest,
+        input: RefinedTerrainPatchBuildInput,
+    },
 }
 
 struct WaterPatchPayload {
@@ -689,23 +702,23 @@ impl SimulationNode {
         requests
     }
 
-    fn terrain_patch_payload_for_request(
+    fn terrain_patch_payload_build_job_for_request(
         core: &mut SimCore,
         request: TerrainPatchPayloadRequest,
-    ) -> Option<TerrainPatchPayload> {
+    ) -> Option<TerrainPatchPayloadBuildJob> {
         if request.key.render_step_mm == 0 {
             let patch = core
                 .heightmap
                 .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
             let height_bytes = Self::f32_bytes_vec(&patch.height_data);
-            return Some(TerrainPatchPayload {
+            return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 data: TerrainPatchPayloadData::Regular {
                     patch,
                     height_bytes,
                 },
-            });
+            }));
         }
 
         let cache_key = RefinedTerrainPatchCacheKey {
@@ -714,13 +727,13 @@ impl SimulationNode {
             render_step_mm: request.key.render_step_mm,
         };
         if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
-            return Some(TerrainPatchPayload {
+            return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 data: TerrainPatchPayloadData::Refined {
                     patch: cached.clone(),
                 },
-            });
+            }));
         }
 
         let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
@@ -767,6 +780,7 @@ impl SimulationNode {
                 allocator: &core.allocator,
                 graph: &core.region_graph,
                 road_surface: &core.transit_network.road_surface,
+                use_road_height_samples: false,
             }),
             previous,
         );
@@ -777,15 +791,37 @@ impl SimulationNode {
             road_clip_source_count: road_clip_query.source_count,
             clip_error_label: road_clip_query.clip_error_label,
         };
-        let mut entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
-        let entry = entries.pop()?;
-        core.refined_terrain_patch_cache
-            .insert(cache_key, entry.clone());
-        Some(TerrainPatchPayload {
+        Some(TerrainPatchPayloadBuildJob::Refined { request, input })
+    }
+
+    fn terrain_patch_payload_retry(request: TerrainPatchPayloadRequest) -> TerrainPatchPayload {
+        TerrainPatchPayload {
             key: request.key,
             request_id: request.request_id,
-            data: TerrainPatchPayloadData::Refined { patch: entry },
-        })
+            data: TerrainPatchPayloadData::Retry,
+        }
+    }
+
+    fn split_terrain_patch_payload_jobs(
+        jobs: Vec<TerrainPatchPayloadBuildJob>,
+    ) -> (
+        Vec<TerrainPatchPayload>,
+        Vec<TerrainPatchPayloadRequest>,
+        Vec<RefinedTerrainPatchBuildInput>,
+    ) {
+        let mut ready = Vec::new();
+        let mut refined_requests = Vec::new();
+        let mut refined_inputs = Vec::new();
+        for job in jobs {
+            match job {
+                TerrainPatchPayloadBuildJob::Ready(payload) => ready.push(payload),
+                TerrainPatchPayloadBuildJob::Refined { request, input } => {
+                    refined_requests.push(request);
+                    refined_inputs.push(input);
+                }
+            }
+        }
+        (ready, refined_requests, refined_inputs)
     }
 
     fn water_patch_payload_for_request(
@@ -1110,6 +1146,7 @@ impl SimulationNode {
                 allocator: &core.allocator,
                 graph: &core.region_graph,
                 road_surface: &core.transit_network.road_surface,
+                use_road_height_samples: true,
             }),
         );
         let cdt_input_ms = cdt_input_start
@@ -1196,6 +1233,19 @@ impl SimulationNode {
             }
             TerrainPatchPayloadData::Refined { patch } => {
                 Self::cached_refined_terrain_patch_dict(patch, false)
+            }
+            TerrainPatchPayloadData::Retry => {
+                let mut dict = VarDictionary::new();
+                dict.set(
+                    "patch_x",
+                    i64::try_from(payload.key.patch_x).unwrap_or(i64::MAX),
+                );
+                dict.set(
+                    "patch_z",
+                    i64::try_from(payload.key.patch_z).unwrap_or(i64::MAX),
+                );
+                dict.set("retry", true);
+                dict
             }
         };
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
@@ -2424,6 +2474,7 @@ impl SimulationNode {
                     terrain,
                     site_grading.graph,
                     site_grading.road_surface,
+                    site_grading.use_road_height_samples,
                     min_x,
                     min_z,
                     max_x,
@@ -2598,6 +2649,7 @@ impl SimulationNode {
                     terrain,
                     site_grading.graph,
                     site_grading.road_surface,
+                    site_grading.use_road_height_samples,
                     min_x,
                     min_z,
                     max_x,
@@ -4280,7 +4332,6 @@ impl SimulationNode {
             let mut core = self.lock_core();
             core.terrain_dirty = false;
             core.heightmap.clear_dirty_render_patches();
-            core.refined_terrain_patch_cache.clear();
             (
                 RoadPreviewWorkerContext::from_core(&core),
                 RoadToolQuerySnapshot::from_core(&core),
@@ -4433,20 +4484,92 @@ impl SimulationNode {
         }
 
         if !build_requests.is_empty() {
+            let request_count = build_requests.len();
+            let refined_request_count = build_requests
+                .iter()
+                .filter(|request| request.key.render_step_mm > 0)
+                .count();
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.terrain_patch_payload_jobs);
             rayon::spawn(move || {
-                let mut built = Vec::with_capacity(build_requests.len());
-                {
-                    let mut core = match core.lock() {
+                let worker_start = Instant::now();
+                let perf_enabled = crate::debug::is_perf_enabled();
+                let (mut built, refined_requests, refined_inputs) = {
+                    let mut core = match core.try_lock() {
                         Ok(g) => g,
-                        Err(e) => e.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            let retry_payloads = build_requests
+                                .into_iter()
+                                .map(SimulationNode::terrain_patch_payload_retry)
+                                .collect::<Vec<_>>();
+                            let mut job_state = match jobs.lock() {
+                                Ok(g) => g,
+                                Err(e) => e.into_inner(),
+                            };
+                            job_state.completed.extend(retry_payloads);
+                            if perf_enabled {
+                                println!(
+                                    "[DEBUG:perf] terrain_payload_worker status=busy_retry requests={} refined_requests={} total_ms={:.3}",
+                                    request_count,
+                                    refined_request_count,
+                                    worker_start.elapsed().as_secs_f64() * 1000.0
+                                );
+                            }
+                            return;
+                        }
+                        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
                     };
-                    for request in build_requests {
-                        if let Some(payload) =
-                            SimulationNode::terrain_patch_payload_for_request(&mut core, request)
-                        {
-                            built.push(payload);
+                    let input_start = Instant::now();
+                    let build_jobs = build_requests
+                        .into_iter()
+                        .filter_map(|request| {
+                            SimulationNode::terrain_patch_payload_build_job_for_request(
+                                &mut core, request,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let split = SimulationNode::split_terrain_patch_payload_jobs(build_jobs);
+                    if perf_enabled {
+                        let input_ms = input_start.elapsed().as_secs_f64() * 1000.0;
+                        if input_ms >= 4.0 || refined_request_count > 0 {
+                            println!(
+                                "[DEBUG:perf] terrain_payload_worker_input requests={} refined_requests={} ready={} refined_inputs={} input_ms={:.3}",
+                                request_count,
+                                refined_request_count,
+                                split.0.len(),
+                                split.2.len(),
+                                input_ms
+                            );
+                        }
+                    }
+                    split
+                };
+
+                let cdt_start = Instant::now();
+                let refined_entries =
+                    SimCore::build_refined_terrain_patch_cache_entries(refined_inputs);
+                let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+                for (request, entry) in refined_requests.iter().zip(refined_entries.iter()) {
+                    built.push(TerrainPatchPayload {
+                        key: request.key,
+                        request_id: request.request_id,
+                        data: TerrainPatchPayloadData::Refined {
+                            patch: entry.clone(),
+                        },
+                    });
+                }
+                let mut cache_inserted = false;
+                if !refined_entries.is_empty() {
+                    match core.try_lock() {
+                        Ok(mut core) => {
+                            core.insert_refined_terrain_patch_cache_entries(refined_entries);
+                            cache_inserted = true;
+                        }
+                        Err(std::sync::TryLockError::WouldBlock) => {}
+                        Err(std::sync::TryLockError::Poisoned(e)) => {
+                            e.into_inner()
+                                .insert_refined_terrain_patch_cache_entries(refined_entries);
+                            cache_inserted = true;
                         }
                     }
                 }
@@ -4455,6 +4578,21 @@ impl SimulationNode {
                     Err(e) => e.into_inner(),
                 };
                 job_state.completed.extend(built);
+                if perf_enabled
+                    && (worker_start.elapsed().as_secs_f64() * 1000.0 >= 8.0
+                        || cdt_ms >= 4.0
+                        || refined_request_count > 0)
+                {
+                    println!(
+                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} cache_inserted={} cdt_ms={:.3} total_ms={:.3}",
+                        request_count,
+                        refined_request_count,
+                        refined_requests.len(),
+                        cache_inserted,
+                        cdt_ms,
+                        worker_start.elapsed().as_secs_f64() * 1000.0
+                    );
+                }
             });
         }
 
@@ -5806,6 +5944,87 @@ impl SimulationNode {
             arr.push(&dict.to_variant());
         }
         arr
+    }
+
+    /// Returns the revision that changes whenever zoning overlay geometry or profiles change.
+    #[func]
+    pub fn get_zoning_overlay_revision(&self) -> i64 {
+        let revision = self.snapshot.read().unwrap().zoning_overlay_revision;
+        i64::try_from(revision).unwrap_or(i64::MAX)
+    }
+
+    /// Returns the revision that changes whenever zoning occupancy affects overlay coloring.
+    #[func]
+    pub fn get_zoning_overlay_occupancy_revision(&self) -> i64 {
+        let revision = self
+            .snapshot
+            .read()
+            .unwrap()
+            .zoning_overlay_occupancy_revision;
+        i64::try_from(revision).unwrap_or(i64::MAX)
+    }
+
+    /// Returns committed zoning parcels as packed mesh buffers for the overlay renderer.
+    #[func]
+    pub fn get_zoning_parcels_overlay_packed(&self) -> VarDictionary {
+        let core = self.lock_core();
+        let revision = core.zoning.overlay_revision();
+        let occupancy_revision = core.zoning.overlay_occupancy_revision();
+        let parcel_count = core.zoning.parcels().len();
+        let mut triangle_vertices = PackedVector3Array::new();
+        let mut triangle_colors = PackedColorArray::new();
+        let mut line_vertices = PackedVector3Array::new();
+        let mut line_colors = PackedColorArray::new();
+
+        for parcel in core.zoning.parcels() {
+            let geometry = crate::simulation::zoning::ParcelGeometry {
+                edge_idx: parcel.edge_idx(),
+                side: parcel.side(),
+                frontage_center_t: parcel.frontage_center_t(),
+                frontage_m: parcel.frontage_m(),
+                depth_m: parcel.depth_m(),
+                front_center: parcel.front_center(),
+                center: parcel.center(),
+                tangent: parcel.tangent(),
+                normal: parcel.normal(),
+                corners: parcel.corners(),
+                aabb_min: parcel.aabb_min(),
+                aabb_max: parcel.aabb_max(),
+            };
+            let corners = zoning_parcel_surface_corners(&core, &geometry);
+            let color = zoning_parcel_color(
+                &core,
+                parcel.zone_profile_runtime_id(),
+                parcel.occupied_building().is_some(),
+            );
+            for corner_idx in [0_usize, 1, 2, 0, 2, 3] {
+                triangle_vertices.push(corners[corner_idx]);
+                triangle_colors.push(color);
+            }
+            let line_color = Color::from_rgba(color.r, color.g, color.b, 0.9);
+            for corner_idx in 0..4 {
+                line_vertices.push(corners[corner_idx]);
+                line_vertices.push(corners[(corner_idx + 1) % 4]);
+                line_colors.push(line_color);
+                line_colors.push(line_color);
+            }
+        }
+
+        let mut dict = VarDictionary::new();
+        dict.set("revision", i64::try_from(revision).unwrap_or(i64::MAX));
+        dict.set(
+            "occupancy_revision",
+            i64::try_from(occupancy_revision).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "parcel_count",
+            i64::try_from(parcel_count).unwrap_or(i64::MAX),
+        );
+        dict.set("triangle_vertices", triangle_vertices);
+        dict.set("triangle_colors", triangle_colors);
+        dict.set("line_vertices", line_vertices);
+        dict.set("line_colors", line_colors);
+        dict
     }
 
     /// Returns the ID of the edge hovered by the mouse.
@@ -8127,6 +8346,7 @@ impl INode3D for SimulationNode {
             noise: NoiseSystem::new(&config),
             desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
+            pending_demand_spawns: VecDeque::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),
@@ -8413,6 +8633,7 @@ impl SimCore {
                     allocator: &self.allocator,
                     graph: &self.region_graph,
                     road_surface: &self.transit_network.road_surface,
+                    use_road_height_samples: false,
                 }),
                 previous,
             );
@@ -9304,6 +9525,7 @@ mod tests {
             noise: NoiseSystem::new(&config),
             desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
+            pending_demand_spawns: std::collections::VecDeque::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),

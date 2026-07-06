@@ -6,6 +6,7 @@
 //!   (`./run.sh --debug world-editor` or `./run.sh --debug-world-editor`)
 //! - `METRUM_DEBUG_TRAFFIC=1` — traffic/routing debug (`./run.sh --debug traffic`)
 //! - `METRUM_DEBUG_SIM=1` — hourly simulation summaries (`./run.sh --debug-sim`)
+//! - `METRUM_DEBUG_PERF=1` — renderer and simulation frame timing summaries
 //! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
@@ -22,6 +23,8 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 pub static TRAFFIC_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Simulation-summary debug flag — set by `METRUM_DEBUG_SIM=1` / `./run.sh --debug-sim`.
 pub static SIM_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Performance debug flag — set by `METRUM_DEBUG_PERF=1`.
+pub static PERF_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Optional comma-separated category filter for general debug logs.
 static FILTER: OnceLock<Vec<String>> = OnceLock::new();
@@ -71,6 +74,14 @@ pub fn init() {
     if sim_on {
         println!("[DEBUG] Simulation console debug enabled (METRUM_DEBUG_SIM=1)");
     }
+
+    let perf_on = std::env::var("METRUM_DEBUG_PERF")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    PERF_ENABLED.store(perf_on, Ordering::Relaxed);
+    if perf_on {
+        println!("[DEBUG] Performance debug logging enabled (METRUM_DEBUG_PERF=1)");
+    }
 }
 
 /// Returns `true` if general debug logging is currently enabled.
@@ -105,6 +116,12 @@ pub fn is_traffic_enabled() -> bool {
 #[inline(always)]
 pub fn is_sim_enabled() -> bool {
     SIM_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Returns `true` if per-frame performance diagnostics should be emitted.
+#[inline(always)]
+pub fn is_perf_enabled() -> bool {
+    PERF_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Logs a categorised debug message to stdout when general debug mode is on.

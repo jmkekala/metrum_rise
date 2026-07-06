@@ -1,6 +1,7 @@
 ## Zone overlay -- builds a mesh from Rust-authored road-aligned parcel geometry.
 ##
-## Rust methods called: get_zoning_parcels_overlay(), get_no_building_spawn_edge_indices(),
+## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),
+##   get_zoning_parcels_overlay_packed(), get_no_building_spawn_edge_indices(),
 ##   get_edge_geometry_3d()
 extends MeshInstance3D
 
@@ -15,6 +16,8 @@ const FADE_SPEED: float = 6.0
 var _zone_dirty: bool = true
 var _no_build_dirty: bool = true
 var _parcel_debug_count: int = 0
+var _zone_revision_seen: int = -1
+var _zone_occupancy_revision_seen: int = -1
 
 var _no_build_mesh_instance: MeshInstance3D = null
 
@@ -31,17 +34,22 @@ func _ready():
 	visible = false
 
 func _process(delta):
+	var overlay_requested := _overlay_requested()
 	if not PerfDebug.is_enabled():
 		if abs(_tool_active - _tool_active_target) > 0.001:
 			_tool_active = move_toward(_tool_active, _tool_active_target, FADE_SPEED * delta)
 		visible = _tool_active > 0.001 or _tool_active_target > 0.0
+		if overlay_requested:
+			_refresh_zone_dirty_from_revision()
 
-		if _zone_dirty:
+		if overlay_requested and _zone_dirty:
 			_rebuild_parcel_overlay()
 			_zone_dirty = false
-		if _no_build_dirty:
+		if overlay_requested and _no_build_dirty:
 			_rebuild_no_build_overlay()
 			_no_build_dirty = false
+		elif _no_build_mesh_instance and not overlay_requested:
+			_no_build_mesh_instance.visible = false
 		return
 
 	var frame_start_us := Time.get_ticks_usec()
@@ -50,24 +58,32 @@ func _process(delta):
 		_tool_active = move_toward(_tool_active, _tool_active_target, FADE_SPEED * delta)
 	visible = _tool_active > 0.001 or _tool_active_target > 0.0
 	var fade_elapsed_ms := float(Time.get_ticks_usec() - fade_start_us) / 1000.0
+	var revision_elapsed_ms := 0.0
+	if overlay_requested:
+		var revision_start_us := Time.get_ticks_usec()
+		_refresh_zone_dirty_from_revision()
+		revision_elapsed_ms = float(Time.get_ticks_usec() - revision_start_us) / 1000.0
 
 	var parcel_elapsed_ms := 0.0
-	if _zone_dirty:
+	if overlay_requested and _zone_dirty:
 		var parcel_start_us := Time.get_ticks_usec()
 		_rebuild_parcel_overlay()
 		parcel_elapsed_ms = float(Time.get_ticks_usec() - parcel_start_us) / 1000.0
 		_zone_dirty = false
 	var no_build_elapsed_ms := 0.0
-	if _no_build_dirty:
+	if overlay_requested and _no_build_dirty:
 		var no_build_start_us := Time.get_ticks_usec()
 		_rebuild_no_build_overlay()
 		no_build_elapsed_ms = float(Time.get_ticks_usec() - no_build_start_us) / 1000.0
 		_no_build_dirty = false
+	elif _no_build_mesh_instance and not overlay_requested:
+		_no_build_mesh_instance.visible = false
 	PerfDebug.record(
 		"zoning",
 		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
 		{
 			"fade": fade_elapsed_ms,
+			"revision": revision_elapsed_ms,
 			"parcel": parcel_elapsed_ms,
 			"no_build": no_build_elapsed_ms,
 		}
@@ -77,7 +93,8 @@ func mark_zone_dirty():
 	_zone_dirty = true
 
 func mark_occupied_dirty():
-	_zone_dirty = true
+	if _overlay_requested():
+		_refresh_zone_dirty_from_revision()
 
 func mark_no_build_dirty():
 	_no_build_dirty = true
@@ -86,11 +103,30 @@ func set_tool_active(active: bool):
 	_tool_active_target = 1.0 if active else 0.0
 	if active:
 		visible = true
-	_no_build_dirty = true
+		if mesh == null:
+			_zone_dirty = true
+		_no_build_dirty = true
+	elif _no_build_mesh_instance:
+		_no_build_mesh_instance.visible = false
+
+func is_overlay_requested() -> bool:
+	return _overlay_requested()
 
 func full_refresh():
 	_zone_dirty = true
 	_no_build_dirty = true
+
+func _overlay_requested() -> bool:
+	return _tool_active > 0.001 or _tool_active_target > 0.0
+
+func _refresh_zone_dirty_from_revision() -> void:
+	var revision := int(simulation_node.get_zoning_overlay_revision())
+	var occupancy_revision := int(simulation_node.get_zoning_overlay_occupancy_revision())
+	if revision == _zone_revision_seen and occupancy_revision == _zone_occupancy_revision_seen:
+		return
+	_zone_revision_seen = revision
+	_zone_occupancy_revision_seen = occupancy_revision
+	_zone_dirty = true
 
 func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[String]:
 	return [
@@ -99,47 +135,33 @@ func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[Str
 	]
 
 func _rebuild_parcel_overlay():
-	var payload: Array = simulation_node.get_zoning_parcels_overlay()
-	_parcel_debug_count = payload.size()
-	if payload.is_empty():
+	var payload: Dictionary = simulation_node.get_zoning_parcels_overlay_packed()
+	_zone_revision_seen = int(payload.get("revision", _zone_revision_seen))
+	_parcel_debug_count = int(payload.get("parcel_count", 0))
+	var triangle_vertices := payload.get("triangle_vertices", PackedVector3Array()) as PackedVector3Array
+	var triangle_colors := payload.get("triangle_colors", PackedColorArray()) as PackedColorArray
+	var line_vertices := payload.get("line_vertices", PackedVector3Array()) as PackedVector3Array
+	var line_colors := payload.get("line_colors", PackedColorArray()) as PackedColorArray
+	_zone_occupancy_revision_seen = int(payload.get("occupancy_revision", _zone_occupancy_revision_seen))
+	if triangle_vertices.is_empty() and line_vertices.is_empty():
 		mesh = null
 		return
 
-	var im := ImmediateMesh.new()
-	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
-	for entry in payload:
-		if not (entry is Dictionary):
-			continue
-		var parcel: Dictionary = entry
-		var corners: PackedVector3Array = parcel.get("corners", PackedVector3Array())
-		if corners.size() != 4:
-			continue
-		var color: Color = parcel.get("color", Color(0.7, 0.9, 0.7, 0.34))
-		im.surface_set_color(color)
-		im.surface_add_vertex(corners[0])
-		im.surface_add_vertex(corners[1])
-		im.surface_add_vertex(corners[2])
-		im.surface_add_vertex(corners[0])
-		im.surface_add_vertex(corners[2])
-		im.surface_add_vertex(corners[3])
-	im.surface_end()
+	var overlay_mesh := ArrayMesh.new()
+	if triangle_vertices.size() >= 3 and triangle_vertices.size() == triangle_colors.size():
+		var triangle_arrays := []
+		triangle_arrays.resize(Mesh.ARRAY_MAX)
+		triangle_arrays[Mesh.ARRAY_VERTEX] = triangle_vertices
+		triangle_arrays[Mesh.ARRAY_COLOR] = triangle_colors
+		overlay_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, triangle_arrays)
+	if line_vertices.size() >= 2 and line_vertices.size() == line_colors.size():
+		var line_arrays := []
+		line_arrays.resize(Mesh.ARRAY_MAX)
+		line_arrays[Mesh.ARRAY_VERTEX] = line_vertices
+		line_arrays[Mesh.ARRAY_COLOR] = line_colors
+		overlay_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, line_arrays)
 
-	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	for entry in payload:
-		if not (entry is Dictionary):
-			continue
-		var parcel: Dictionary = entry
-		var corners: PackedVector3Array = parcel.get("corners", PackedVector3Array())
-		if corners.size() != 4:
-			continue
-		var color: Color = parcel.get("color", Color(0.7, 0.9, 0.7, 0.34))
-		im.surface_set_color(Color(color.r, color.g, color.b, 0.9))
-		for i in range(4):
-			im.surface_add_vertex(corners[i])
-			im.surface_add_vertex(corners[(i + 1) % 4])
-	im.surface_end()
-
-	mesh = im
+	mesh = overlay_mesh if overlay_mesh.get_surface_count() > 0 else null
 
 func _rebuild_no_build_overlay():
 	if not _no_build_mesh_instance:

@@ -44,13 +44,19 @@ impl ZoningSystem {
         Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         let point = Vector2::new(world_x, world_z);
         if let Some(existing_id) = self.parcels.find_at_point(point) {
-            self.parcels
-                .set_zone_profile_runtime_id(existing_id, runtime_id);
+            if self
+                .parcels
+                .set_zone_profile_runtime_id(existing_id, runtime_id)
+            {
+                self.bump_overlay_revision();
+            }
             return Ok(existing_id);
         }
 
         let geometry = self.preview_parcel_at(world_x, world_z, frontage_m, depth_m, graph)?;
-        Ok(self.parcels.insert_new(geometry, runtime_id))
+        let id = self.parcels.insert_new(geometry, runtime_id);
+        self.bump_overlay_revision();
+        Ok(id)
     }
 
     /// Creates the legal parcels in a same-road drag run using the requested minimum gap.
@@ -79,6 +85,9 @@ impl ZoningSystem {
         for geometry in geometries {
             ids.push(self.parcels.insert_new(geometry, runtime_id));
         }
+        if !ids.is_empty() {
+            self.bump_overlay_revision();
+        }
         Ok(ids)
     }
 
@@ -97,6 +106,7 @@ impl ZoningSystem {
         for geometry in geometries {
             ids.push(self.parcels.insert_new(geometry, runtime_id));
         }
+        self.bump_overlay_revision();
         Ok(ids)
     }
 
@@ -119,6 +129,7 @@ impl ZoningSystem {
         for id in &ids {
             self.parcels.set_zone_profile_runtime_id(*id, runtime_id);
         }
+        self.bump_overlay_revision();
         Ok(ids)
     }
 
@@ -145,6 +156,7 @@ impl ZoningSystem {
         if ids.is_empty() {
             return Err(ParcelPlacementError::NoRoadAttachment);
         }
+        self.bump_overlay_revision();
         Ok(ids)
     }
 }

@@ -2,6 +2,7 @@ use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
+use crate::nodes::sim::core::PendingDemandSpawnAction;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -10,7 +11,7 @@ use crate::simulation::economy::agents::{
     ACCESS_PLAN_VALID, AGE_ADULT, MODE_CAR, MODE_WALK, TRANSIT_NETWORK,
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
 };
@@ -29,6 +30,7 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
+use std::collections::VecDeque;
 use std::fs;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -401,6 +403,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     treasury.lifetime_tax_revenue = 250.0;
     treasury.last_daily_business_profit_tax = 12.5;
     treasury.pending_business_profit_tax = 3.25;
+    let mut pending_demand_spawns = VecDeque::new();
+    pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        due_minute: 1234,
+        zone_type: ZoneType::Residential,
+        action: DemandSpawnAction {
+            parcel_id: 42,
+            asset_id: "building.residential.save_test".to_owned(),
+        },
+        planned_day_index: 2,
+        planned_minute_of_day: 180,
+    });
 
     let path = temp_path("round_trip");
     save_to_sqlite(
@@ -415,6 +428,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             pollution: &pollution,
             noise: &noise,
             demand: &demand,
+            pending_demand_spawns: &pending_demand_spawns,
             allocator: &allocator,
             households: &households,
             logistics: &logistics,
@@ -468,6 +482,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.demand.recent_household_failure_pressure,
         demand.recent_household_failure_pressure
     );
+    assert_eq!(loaded.pending_demand_spawns.len(), 1);
+    let loaded_pending = &loaded.pending_demand_spawns[0];
+    assert_eq!(loaded_pending.due_minute, 1234);
+    assert_eq!(loaded_pending.zone_type, ZoneType::Residential);
+    assert_eq!(loaded_pending.action.parcel_id, 42);
+    assert_eq!(
+        loaded_pending.action.asset_id,
+        "building.residential.save_test"
+    );
+    assert_eq!(loaded_pending.planned_day_index, 2);
+    assert_eq!(loaded_pending.planned_minute_of_day, 180);
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
     assert_eq!(loaded.graph.edge_count(), 1);

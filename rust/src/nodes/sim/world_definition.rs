@@ -504,6 +504,7 @@ impl SimCore {
         self.noise = NoiseSystem::new(&self.config);
         self.desirability = DesirabilitySystem::new(&self.config);
         self.demand = DemandSystem::new();
+        self.pending_demand_spawns.clear();
         self.agents = AgentSystem::new();
         self.households = HouseholdSystem::new();
         self.logistics = ShipmentSystem::new();
@@ -995,6 +996,7 @@ mod tests {
             noise: NoiseSystem::new(&config),
             desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
+            pending_demand_spawns: VecDeque::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             households: HouseholdSystem::new(),

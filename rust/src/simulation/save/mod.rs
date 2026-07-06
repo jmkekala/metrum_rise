@@ -1,6 +1,6 @@
 //! SQLite save/load infrastructure for simulation snapshots.
 
-use crate::nodes::sim::core::CityTreasury;
+use crate::nodes::sim::core::{CityTreasury, PendingDemandSpawnAction};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -19,7 +19,7 @@ use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
 use chrono::Utc;
 use rusqlite::{Connection, params};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
@@ -44,6 +44,7 @@ pub(crate) struct SaveGameView<'a> {
     pub pollution: &'a PollutionSystem,
     pub noise: &'a NoiseSystem,
     pub demand: &'a DemandSystem,
+    pub pending_demand_spawns: &'a VecDeque<PendingDemandSpawnAction>,
     pub allocator: &'a BuildingAllocator,
     pub households: &'a HouseholdSystem,
     pub logistics: &'a ShipmentSystem,
@@ -65,6 +66,7 @@ pub(crate) struct LoadedSimulation {
     pub noise: NoiseSystem,
     pub desirability: DesirabilitySystem,
     pub demand: DemandSystem,
+    pub pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
     pub allocator: BuildingAllocator,
     pub households: HouseholdSystem,
     pub logistics: ShipmentSystem,
@@ -202,6 +204,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         view.households,
         view.logistics,
         view.demand,
+        view.pending_demand_spawns,
         view.pollution,
         view.noise,
         &maps,
@@ -291,6 +294,7 @@ pub(crate) fn load_from_sqlite(
         demand_row.despawn_hysteresis_active,
         demand_row.recent_household_failure_pressure,
     );
+    let pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
@@ -379,6 +383,7 @@ pub(crate) fn load_from_sqlite(
         noise,
         desirability,
         demand,
+        pending_demand_spawns,
         allocator,
         households,
         logistics,
@@ -539,6 +544,9 @@ pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> {
 }
 pub(super) fn u64_to_i64(v: u64) -> SaveLoadResult<i64> {
     i64::try_from(v).map_err(|_| SaveLoadError::custom("u64 overflow"))
+}
+pub(super) fn i64_to_u64(v: i64) -> SaveLoadResult<u64> {
+    u64::try_from(v).map_err(|_| SaveLoadError::custom("u64 underflow"))
 }
 pub(super) fn u32_to_i64(v: u32) -> SaveLoadResult<i64> {
     Ok(i64::from(v))

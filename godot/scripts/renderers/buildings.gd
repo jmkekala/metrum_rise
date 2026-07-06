@@ -51,6 +51,7 @@ var building_site_ground_instance: MeshInstance3D
 var building_site_surface_instance: MeshInstance3D
 var building_site_revision: int = -1
 var building_debug_enabled: bool = false
+var building_site_dump_enabled: bool = false
 var building_site_visual_mode: String = ""
 var building_site_debug_materials: Dictionary = {}
 
@@ -83,11 +84,15 @@ func _load_enabled_packs() -> void:
 
 func _ready() -> void:
 	building_debug_enabled = _building_debug_is_enabled()
+	building_site_dump_enabled = _building_site_dump_is_enabled()
 	building_site_visual_mode = _building_site_visual_mode_from_env()
 	if building_debug_enabled:
 		print(
-			"[DEBUG:buildings] enabled site_visual_mode=%s"
-			% [building_site_visual_mode if not building_site_visual_mode.is_empty() else "off"]
+			"[DEBUG:buildings] enabled site_visual_mode=%s site_dump=%s"
+			% [
+				building_site_visual_mode if not building_site_visual_mode.is_empty() else "off",
+				str(building_site_dump_enabled),
+			]
 		)
 	elif _building_site_visual_debug_enabled():
 		print("[DEBUG:buildings] site visual overlay enabled mode=%s" % [building_site_visual_mode])
@@ -412,10 +417,11 @@ func _setup_building_site_surfaces() -> void:
 
 func _process(_delta: float) -> void:
 	var rebuild_due := Engine.get_frames_drawn() % 30 == 0
+	if rebuild_due and simulation_node.is_sim_core_busy():
+		return
 	if not PerfDebug.is_enabled():
 		if rebuild_due:
 			_rebuild_multimeshes()
-			if zoning_overlay: zoning_overlay.mark_occupied_dirty()
 			for key in multimeshes.keys():
 				_update_buildings_for_asset_part(key)
 			for key in deserted_multimeshes.keys():
@@ -436,7 +442,6 @@ func _process(_delta: float) -> void:
 		_rebuild_multimeshes()
 		rebuild_elapsed_ms = float(Time.get_ticks_usec() - rebuild_start_us) / 1000.0
 		var update_start_us := Time.get_ticks_usec()
-		if zoning_overlay: zoning_overlay.mark_occupied_dirty()
 		for key in multimeshes.keys():
 			_update_buildings_for_asset_part(key)
 		for key in deserted_multimeshes.keys():
@@ -623,7 +628,18 @@ func _print_building_site_debug(
 	concrete_vertices: PackedVector3Array,
 	ground_material: Material
 ) -> void:
-	if not building_debug_enabled:
+	if not building_debug_enabled and not building_site_dump_enabled:
+		return
+	if not building_site_dump_enabled:
+		print(
+			"[DEBUG:buildings] site_mesh revision=%d ground_vertices=%d asphalt_vertices=%d concrete_vertices=%d"
+			% [
+				int(data.get("revision", building_site_revision)),
+				ground_vertices.size(),
+				asphalt_vertices.size(),
+				concrete_vertices.size(),
+			]
+		)
 		return
 	var debug_sites: Array = data.get("debug_sites", [])
 	var ground_area := _triangle_area_xz(ground_vertices)
@@ -867,6 +883,10 @@ func _building_debug_is_enabled() -> bool:
 		if entry == "buildings" or entry == "building-sites":
 			return true
 	return false
+
+func _building_site_dump_is_enabled() -> bool:
+	var value := OS.get_environment("METRUM_DEBUG_BUILDING_SITES_DUMP").strip_edges().to_lower()
+	return value == "1" or value == "true" or value == "yes" or value == "full"
 
 func _building_site_visual_mode_from_env() -> String:
 	var value := OS.get_environment("METRUM_DEBUG_BUILDING_SITES_VISUAL").strip_edges().to_lower()

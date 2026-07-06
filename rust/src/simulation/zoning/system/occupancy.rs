@@ -6,23 +6,37 @@ use crate::simulation::zoning::ParcelId;
 impl ZoningSystem {
     /// Claims one parcel for a building index.
     pub fn occupy_parcel(&mut self, parcel_id: u64, building_idx: usize) -> bool {
-        self.parcels
-            .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx)
+        let changed = self
+            .parcels
+            .set_occupied_building(ParcelId::from_raw(parcel_id), building_idx);
+        if changed {
+            self.bump_overlay_occupancy_revision();
+        }
+        changed
     }
 
     /// Clears a parcel building claim.
     pub fn clear_parcel_occupancy(&mut self, parcel_id: u64) -> bool {
-        self.parcels
-            .clear_occupied_building(ParcelId::from_raw(parcel_id))
+        let changed = self
+            .parcels
+            .clear_occupied_building(ParcelId::from_raw(parcel_id));
+        if changed {
+            self.bump_overlay_occupancy_revision();
+        }
+        changed
     }
 
     /// Remaps a building index inside parcel occupancy after allocator swap-remove.
     pub fn remap_parcel_occupancy(&mut self, old_idx: usize, new_idx: usize) {
-        self.parcels.remap_occupied_building(old_idx, new_idx);
+        if self.parcels.remap_occupied_building(old_idx, new_idx) {
+            self.bump_overlay_occupancy_revision();
+        }
     }
 
     /// Clears every parcel occupancy claim.
     pub fn clear_all_parcel_occupancy(&mut self) {
-        self.parcels.clear_all_occupancy();
+        if self.parcels.clear_all_occupancy() {
+            self.bump_overlay_occupancy_revision();
+        }
     }
 }

@@ -12,6 +12,10 @@ fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
     graph.get_valid_node(node_id) == node_id
 }
 
+fn is_live_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
+    is_canonical_node(graph, node_id) && graph.node_has_live_incident_edge(node_id)
+}
+
 /// Stores the result of a point projection onto a road segment.
 pub struct ProjectionData {
     /// Normalized distance along the segment `[0, 1]`.
@@ -57,7 +61,7 @@ fn get_closest_point_impl(
     let mut closest_node_dist = f32::MAX;
 
     for node_id in nearby_node_ids(graph, world_pos, node_snap_dist) {
-        if !is_canonical_node(graph, node_id) {
+        if !is_live_canonical_node(graph, node_id) {
             continue;
         }
         let node = &graph.nodes()[node_id as usize];
@@ -162,7 +166,7 @@ pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) 
     let mut min_dist_sq = max_dist * max_dist;
 
     for node_id in nearby_node_ids(graph, world_pos, max_dist) {
-        if !is_canonical_node(graph, node_id) {
+        if !is_live_canonical_node(graph, node_id) {
             continue;
         }
         let node = &graph.nodes()[node_id as usize];
@@ -284,8 +288,10 @@ mod tests {
         find_intersection_2d, get_closest_point, get_closest_point_xz, get_edge_snap_point,
         get_edge_snap_point_for_mode,
     };
-    use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::NodeType;
+    use crate::simulation::network::graph::{Edge, RegionGraph};
+    use crate::simulation::network::types::{
+        EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+    };
     use godot::prelude::Vector3;
 
     #[test]
@@ -306,6 +312,8 @@ mod tests {
         let mut graph = RegionGraph::new();
         let keep = graph.add_node(Vector3::ZERO, NodeType::Junction);
         let remove = graph.add_node(Vector3::new(1.0, 0.0, 0.0), NodeType::Junction);
+        let far = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+        graph.add_edge(test_edge(keep, far));
         graph.unite_nodes(keep, remove);
 
         let snapped = get_closest_point(&graph, Vector3::new(0.8, 0.0, 0.0), 5.0).unwrap();
@@ -315,7 +323,9 @@ mod tests {
     #[test]
     fn xz_closest_point_ignores_height_delta_for_editor_snap() {
         let mut graph = RegionGraph::new();
-        graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+        graph.add_edge(test_edge(start, end));
 
         assert!(get_closest_point(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0).is_none());
         let snapped = get_closest_point_xz(&graph, Vector3::new(0.1, 20.0, 0.1), 5.0).unwrap();
@@ -335,6 +345,32 @@ mod tests {
         assert!((snapped.x - 8.0).abs() < 0.001);
         assert!((snapped.y - 8.0).abs() < 0.001);
         assert!(snapped.z.abs() < 0.001);
+    }
+
+    fn test_edge(start_node: u32, end_node: u32) -> Edge {
+        let start = Vector3::ZERO;
+        let end = Vector3::new(0.0, 0.0, 20.0);
+        Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 0.0,
+            physical_length: 20.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![start, end],
+            physical_geometry: vec![start, end],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        }
     }
 
     #[test]

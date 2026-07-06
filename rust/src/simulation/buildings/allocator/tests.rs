@@ -22,6 +22,56 @@ fn flat_test_terrain() -> TerrainSystem {
     TerrainSystem::new(32, 32)
 }
 
+fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: i32) -> Building {
+    Building {
+        center_x: idx as f32 * 16.0,
+        center_y: 0.0,
+        support_height_m: 0.0,
+        width_cells: 3,
+        depth_cells: 3,
+        zone_profile_runtime_id: 0,
+        parcel_id: idx.max(0) as u64,
+        zone_type,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.5,
+        side_offset: 0.0,
+        is_deserted: false,
+        budget_distress: false,
+        edge_idx: 0,
+        side: 1,
+        cell_x: idx.max(0) as usize,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        service_funding_override: -1.0,
+        asset_id,
+        level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
+        broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
+        resource_inventory: Vec::new(),
+        revenue: 0.0,
+        operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
+        last_day_profit: 0.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
+        daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    }
+}
+
 fn compiled_flat_test_terrain(network: &mut TransitNetwork, graph: &RegionGraph) -> TerrainSystem {
     let terrain = flat_test_terrain();
     network.road_surface.compile_dirty(graph, &terrain);
@@ -866,6 +916,49 @@ fn test_vacancy_index_consistency() {
     assert_eq!(
         allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         4
+    );
+}
+
+#[test]
+fn test_index_appended_building_matches_full_rebuild() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.incremental_index",
+        ZoneClass::Residential,
+    );
+
+    allocator.buildings.push(indexed_test_building(
+        residential_asset.clone(),
+        ZoneType::Residential,
+        0,
+    ));
+    allocator.rebuild_zone_index();
+
+    let mut expected = allocator.clone();
+    allocator.buildings.push(indexed_test_building(
+        residential_asset.clone(),
+        ZoneType::Residential,
+        1,
+    ));
+    expected.buildings.push(indexed_test_building(
+        residential_asset,
+        ZoneType::Residential,
+        1,
+    ));
+
+    assert!(allocator.index_appended_building(1));
+    expected.rebuild_zone_index();
+
+    assert!(!allocator.dirty_index);
+    assert_eq!(allocator.zone_index, expected.zone_index);
+    assert_eq!(allocator.vacancy_index, expected.vacancy_index);
+    assert_eq!(allocator.vacancy_pos, expected.vacancy_pos);
+    assert_eq!(allocator.building_chunks, expected.building_chunks);
+    assert_eq!(
+        allocator.max_lot_radius_cells,
+        expected.max_lot_radius_cells
     );
 }
 

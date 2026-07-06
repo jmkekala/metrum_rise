@@ -531,7 +531,7 @@ func _build_ui():
 	_apply_hud_toolbar_text_style(bulldoze_btn)
 	var bulldoze_style := StyleBoxFlat.new()
 	bulldoze_style.bg_color = Color(0.45, 0.08, 0.06, 0.86)
-	bulldoze_style.set_corner_radius_all(18)
+	bulldoze_style.set_corner_radius_all(8)
 	bulldoze_btn.add_theme_stylebox_override("normal", bulldoze_style)
 	right_bottom_strip.add_child(_create_bottom_strip_shell(bulldoze_btn, 82.0))
 

@@ -87,11 +87,14 @@ impl ParcelStore {
         self.index_parcel(index);
     }
 
-    pub(crate) fn remove_edges_not_in_mapping(&mut self, mapping: &HashMap<usize, usize>) {
+    pub(crate) fn remove_edges_not_in_mapping(&mut self, mapping: &HashMap<usize, usize>) -> bool {
         let mut changed = false;
         for parcel in &mut self.parcels {
             if let Some(&new_idx) = mapping.get(&parcel.edge_idx()) {
-                parcel.set_edge_idx(new_idx);
+                if parcel.edge_idx() != new_idx {
+                    parcel.set_edge_idx(new_idx);
+                    changed = true;
+                }
             } else {
                 parcel.set_edge_idx(usize::MAX);
                 changed = true;
@@ -108,6 +111,7 @@ impl ParcelStore {
             }
             self.rebuild_chunk_index();
         }
+        changed
     }
 
     pub(crate) fn remove_attached_to_edge(&mut self, edge_idx: usize) -> usize {
@@ -221,6 +225,9 @@ impl ParcelStore {
         let Some(parcel) = self.get_mut(id) else {
             return false;
         };
+        if parcel.zone_profile_runtime_id() == runtime_id {
+            return false;
+        }
         parcel.set_zone_profile_runtime_id(runtime_id);
         true
     }
@@ -240,22 +247,33 @@ impl ParcelStore {
         let Some(parcel) = self.get_mut(id) else {
             return false;
         };
+        if parcel.occupied_building().is_none() {
+            return false;
+        }
         parcel.set_occupied_building(None);
         true
     }
 
-    pub(crate) fn remap_occupied_building(&mut self, old_idx: usize, new_idx: usize) {
+    pub(crate) fn remap_occupied_building(&mut self, old_idx: usize, new_idx: usize) -> bool {
+        let mut changed = false;
         for parcel in &mut self.parcels {
             if parcel.occupied_building() == Some(old_idx) {
                 parcel.set_occupied_building(Some(new_idx));
+                changed = true;
             }
         }
+        changed
     }
 
-    pub(crate) fn clear_all_occupancy(&mut self) {
+    pub(crate) fn clear_all_occupancy(&mut self) -> bool {
+        let mut changed = false;
         for parcel in &mut self.parcels {
-            parcel.set_occupied_building(None);
+            if parcel.occupied_building().is_some() {
+                parcel.set_occupied_building(None);
+                changed = true;
+            }
         }
+        changed
     }
 
     pub(crate) fn replace_geometry(&mut self, id: ParcelId, geometry: ParcelGeometry) -> bool {

@@ -13,6 +13,15 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_tuning,
 };
 
+/// Summary of household carriers materialized during one economy pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct MaterializedHouseholdCarriers {
+    /// Count of border-origin household carriers converted into resident households this pass.
+    pub(super) households: usize,
+    /// Count of total residents created or converted from those carriers.
+    pub(super) residents: usize,
+}
+
 impl HouseholdSystem {
     pub(crate) fn admit_immigrant_household(
         &mut self,
@@ -70,7 +79,8 @@ impl HouseholdSystem {
         &mut self,
         agents: &mut AgentSystem,
         allocator: &BuildingAllocator,
-    ) {
+    ) -> MaterializedHouseholdCarriers {
+        let mut materialized = MaterializedHouseholdCarriers::default();
         let mut catalog = None;
         let mut tuning = None;
         let mut i = 0;
@@ -129,7 +139,10 @@ impl HouseholdSystem {
                 home,
                 i,
             );
+            materialized.households += 1;
+            materialized.residents += usize::from(pending_size);
             i += 1;
         }
+        materialized
     }
 }

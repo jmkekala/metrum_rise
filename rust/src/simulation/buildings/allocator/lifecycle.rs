@@ -9,7 +9,7 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
-    DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+    DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     demand_building_action_key,
 };
 use crate::simulation::economy::fiscal::construction_property_tax;
@@ -33,6 +33,7 @@ const FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M: f32 = 20.0;
 const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
 
 /// Summary of building mutations performed by one demand-owned building action pass.
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DemandBuildingActionExecution {
     /// Property tax debited from fresh private building budgets during this pass.
     pub(crate) property_tax_paid: f32,
@@ -514,6 +515,69 @@ impl BuildingAllocator {
                 self.rebuild_zone_index();
             }
             self.rebuild_entrance_cache(graph, lanes);
+        }
+        execution
+    }
+
+    /// Executes one queued demand spawn through the same final placement path as batch demand.
+    pub(crate) fn execute_single_demand_spawn_action(
+        &mut self,
+        zone_type: ZoneType,
+        action: &DemandSpawnAction,
+        zoning: &mut ZoningSystem,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> DemandBuildingActionExecution {
+        let mut execution = DemandBuildingActionExecution::default();
+        execution.use_mut(zone_type).spawn_attempted += 1;
+        let zone_index_was_clean =
+            !self.dirty_index && self.vacancy_pos.len() == self.buildings.len();
+        let entrance_cache_was_clean =
+            !self.entrances_dirty && self.entrances.len() == self.buildings.len();
+        match self.execute_demand_spawn_action(
+            action,
+            zoning,
+            graph,
+            road_surface,
+            terrain,
+            catalog,
+            tuning,
+        ) {
+            Ok(building_idx) => {
+                execution.use_mut(zone_type).spawn_executed += 1;
+                let property_tax = construction_property_tax(
+                    self.buildings[building_idx].zone_type,
+                    self.buildings[building_idx].level,
+                    &tuning.fiscal,
+                );
+                if property_tax > 0.0 {
+                    self.buildings[building_idx].operating_budget -= property_tax;
+                    execution.property_tax_paid += property_tax;
+                }
+                self.buildings[building_idx].profit_tax_budget_baseline =
+                    self.buildings[building_idx].operating_budget;
+                accumulate_site_dirty_bounds(
+                    &mut execution.site_dirty_bounds,
+                    self.site_world_bounds(building_idx),
+                );
+                if self.dirty_index
+                    && (!zone_index_was_clean || !self.index_appended_building(building_idx))
+                {
+                    self.rebuild_zone_index();
+                }
+                if !entrance_cache_was_clean
+                    || !self.append_entrance_cache_for_building(building_idx, graph, lanes)
+                {
+                    self.rebuild_entrance_cache(graph, lanes);
+                }
+            }
+            Err(reason) => {
+                execution.use_mut(zone_type).spawn_rejections.record(reason);
+            }
         }
         execution
     }

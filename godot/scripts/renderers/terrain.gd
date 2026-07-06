@@ -93,7 +93,8 @@ const PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME := 2
 const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 1.5
 const PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const PATCH_RESOURCE_POOL_MAX := 96
-const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 64
+const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 16
+const REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 2
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_PREWARM_MAX_PER_FRAME := 4
 const PATCH_PREWARM_BUDGET_MS := 0.75
@@ -447,21 +448,29 @@ func refresh_water_patch_bindings() -> void:
 func refresh_water_patch_binding(key: Vector2i) -> void:
 	_queue_water_patch_texture_sync(key)
 
-func update_terrain_visuals() -> void:
+func update_terrain_visuals() -> bool:
 	_refresh_road_locked_patch_lookup()
 	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
+	var upload_pending := false
 	if dirty_keys.is_empty():
 		for key in get_resident_patch_keys():
-			_upload_patch(key)
-			_queue_water_patch_texture_sync(key)
+			if _upload_patch(key, true):
+				_refresh_one_patch_mesh_lod(key)
+				_queue_water_patch_texture_sync(key)
+			else:
+				upload_pending = true
 	else:
 		for key in dirty_keys:
 			if patches.has(key):
-				_upload_patch(key)
-				_queue_water_patch_texture_sync(key)
-	if dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys):
+				if _upload_patch(key, true):
+					_refresh_one_patch_mesh_lod(key)
+					_queue_water_patch_texture_sync(key)
+				else:
+					upload_pending = true
+	if not upload_pending and (dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys)):
 		_rebuild_border_skirt()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
+	return not upload_pending
 
 func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 	if patch_cols <= 0 or patch_rows <= 0:
@@ -1512,12 +1521,15 @@ func _request_terrain_patch_payloads(
 		return 0
 	var flat_requests := PackedInt32Array()
 	var requested_count := 0
+	var refined_requested_count := 0
 	for key in keys:
 		if requested_count >= budget:
 			break
 		if (not include_existing and patches.has(key)) or patch_payload_ready.has(key):
 			continue
 		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
+		if render_step_mm > 0 and refined_requested_count >= REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME:
+			continue
 		if int(patch_payload_requested.get(key, -1)) == render_step_mm:
 			continue
 		flat_requests.push_back(key.x)
@@ -1525,6 +1537,8 @@ func _request_terrain_patch_payloads(
 		flat_requests.push_back(render_step_mm)
 		patch_payload_requested[key] = render_step_mm
 		requested_count += 1
+		if render_step_mm > 0:
+			refined_requested_count += 1
 	if not flat_requests.is_empty():
 		simulation_node.request_terrain_patch_payloads(flat_requests)
 	return requested_count
@@ -1547,6 +1561,10 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 			continue
 		var render_step_mm := int(patch_data.get("render_step_mm", _terrain_patch_payload_render_step_mm(key)))
 		if int(patch_payload_requested.get(key, -1)) != render_step_mm:
+			continue
+		if bool(patch_data.get("retry", false)):
+			patch_payload_requested.erase(key)
+			accepted_count += 1
 			continue
 		patch_payload_ready[key] = patch_data
 		patch_payload_requested.erase(key)

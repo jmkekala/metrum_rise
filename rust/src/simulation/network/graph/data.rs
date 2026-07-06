@@ -245,6 +245,23 @@ impl RegionGraph {
         &self.adjacency[node_id as usize]
     }
 
+    /// Counts non-deleted edges incident to a node's canonical representative.
+    pub fn live_node_connection_count(&self, node_id: u32) -> usize {
+        let valid = self.get_valid_node(node_id);
+        if valid as usize >= self.adjacency.len() {
+            return 0;
+        }
+        self.adjacency[valid as usize]
+            .iter()
+            .filter(|&&edge_idx| self.edges.get(edge_idx).is_some_and(|edge| !edge.deleted))
+            .count()
+    }
+
+    /// Returns true when a node still participates in at least one non-deleted edge.
+    pub fn node_has_live_incident_edge(&self, node_id: u32) -> bool {
+        self.live_node_connection_count(node_id) > 0
+    }
+
     /// Returns the full adjacency list.
     pub fn adjacency(&self) -> &[Vec<usize>] {
         &self.adjacency

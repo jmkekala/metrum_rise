@@ -1,6 +1,6 @@
 //! Road-network spatial queries (closest-point identification, edge projection).
 
-use super::{get_closest_canonical_node, is_canonical_node};
+use super::{get_closest_canonical_node, is_live_canonical_node};
 use crate::config::DEFAULT_ZONING_DEPTH;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::interaction;
@@ -530,19 +530,19 @@ impl SimCore {
         get_closest_canonical_node(&self.region_graph, world_pos, max_dist)
     }
 
-    /// Returns the number of road connections for a node.
+    /// Returns the number of non-deleted road connections for a node.
     pub fn get_node_connection_count_internal(&self, node_id: i32) -> i32 {
         if node_id < 0 || node_id as usize >= self.region_graph.node_count() {
             return 0;
         }
-        self.region_graph.node_adjacency(node_id as u32).len() as i32
+        self.region_graph.live_node_connection_count(node_id as u32) as i32
     }
 
-    /// Returns all junction node positions.
+    /// Returns all live junction node positions.
     pub fn get_network_nodes_internal(&self) -> PackedVector3Array {
         let mut arr = PackedVector3Array::new();
         for (i, node) in self.region_graph.nodes().iter().enumerate() {
-            if is_canonical_node(&self.region_graph, i as u32) {
+            if is_live_canonical_node(&self.region_graph, i as u32) {
                 arr.push(node.pos);
             }
         }
@@ -603,7 +603,7 @@ impl SimCore {
             if node.node_type != crate::simulation::network::types::NodeType::Border {
                 continue;
             }
-            if !is_canonical_node(&self.region_graph, i as u32) {
+            if !is_live_canonical_node(&self.region_graph, i as u32) {
                 continue;
             }
             arr.push(node.pos.x);

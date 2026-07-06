@@ -1,10 +1,11 @@
 //! Serialization for terrain, water, buildings, and zoning systems.
 
+use crate::nodes::sim::core::PendingDemandSpawnAction;
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::households::{Household, HouseholdSystem};
 use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
@@ -16,16 +17,17 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
-use crate::simulation::zoning::ZoningSystem;
+use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector2;
 use rusqlite::{Connection, Transaction, params};
 
 use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
-    db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_usize,
+    db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_u64, i64_to_usize,
     optional_building_to_db, pack_f32_slice, u32_to_i64, u64_to_i64, unpack_f32_blob, usize_to_i64,
 };
+use std::collections::VecDeque;
 
 const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
 const SHIPMENT_ENDPOINT_OWA_BORDER: i64 = 1;
@@ -102,6 +104,24 @@ fn carrier_class_from_db(code: i64) -> SaveLoadResult<CarrierClass> {
     CarrierClass::from_code(code).ok_or_else(|| SaveLoadError::custom("invalid carrier class"))
 }
 
+fn demand_spawn_zone_to_db(zone_type: ZoneType) -> SaveLoadResult<i64> {
+    match zone_type {
+        ZoneType::Residential => Ok(1),
+        ZoneType::Commercial => Ok(2),
+        ZoneType::Industrial => Ok(3),
+        _ => Err(SaveLoadError::custom("invalid pending demand spawn zone")),
+    }
+}
+
+fn demand_spawn_zone_from_db(code: i64) -> SaveLoadResult<ZoneType> {
+    match code {
+        1 => Ok(ZoneType::Residential),
+        2 => Ok(ZoneType::Commercial),
+        3 => Ok(ZoneType::Industrial),
+        _ => Err(SaveLoadError::custom("invalid pending demand spawn zone")),
+    }
+}
+
 pub(super) fn save_world(
     tx: &Transaction,
     terrain: &TerrainSystem,
@@ -111,6 +131,7 @@ pub(super) fn save_world(
     households: &HouseholdSystem,
     logistics: &ShipmentSystem,
     demand: &DemandSystem,
+    pending_demand_spawns: &VecDeque<PendingDemandSpawnAction>,
     pollution: &PollutionSystem,
     noise: &NoiseSystem,
     maps: &SnapshotMaps,
@@ -182,6 +203,20 @@ pub(super) fn save_world(
             demand.recent_household_failure_pressure,
         ],
     )?;
+    let mut pending_spawn_stmt = tx.prepare(
+        "INSERT INTO pending_demand_spawns(sequence, due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    for (sequence, pending) in pending_demand_spawns.iter().enumerate() {
+        pending_spawn_stmt.execute(params![
+            usize_to_i64(sequence)?,
+            u64_to_i64(pending.due_minute)?,
+            demand_spawn_zone_to_db(pending.zone_type)?,
+            u64_to_i64(pending.action.parcel_id)?,
+            &pending.action.asset_id,
+            u32_to_i64(pending.planned_day_index)?,
+            i64::from(pending.planned_minute_of_day),
+        ])?;
+    }
 
     // Grids
     tx.execute(
@@ -414,6 +449,39 @@ pub(super) fn load_water(
         .replace_baseline_depth_from_dense(&unpack_f32_blob(&baseline_db, w * h)?)
         .map_err(SaveLoadError::custom)?;
     Ok(water)
+}
+
+pub(super) fn load_pending_demand_spawns(
+    conn: &Connection,
+) -> SaveLoadResult<VecDeque<PendingDemandSpawnAction>> {
+    let mut stmt = conn.prepare(
+        "SELECT due_minute, zone_type, parcel_id, asset_id, planned_day_index, planned_minute_of_day FROM pending_demand_spawns ORDER BY sequence ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut pending = VecDeque::new();
+    for row in rows {
+        let (due_minute, zone_type, parcel_id, asset_id, planned_day, planned_minute) = row?;
+        pending.push_back(PendingDemandSpawnAction {
+            due_minute: i64_to_u64(due_minute)?,
+            zone_type: demand_spawn_zone_from_db(zone_type)?,
+            action: DemandSpawnAction {
+                parcel_id: i64_to_u64(parcel_id)?,
+                asset_id,
+            },
+            planned_day_index: i64_to_u32(planned_day)?,
+            planned_minute_of_day: i64_to_u16(planned_minute)?,
+        });
+    }
+    Ok(pending)
 }
 
 pub(super) fn load_zoning(

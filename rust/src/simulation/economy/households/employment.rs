@@ -11,7 +11,6 @@ use super::metrics::{
     UTILITY_SERVICE_POWER, active_worker_capacity_for_profile, household_demand_profile,
     household_supply_unit_price, refresh_commercial_activity_floor, service_funded_worker_capacity,
 };
-use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
     BuildingModeComponents, ModeComponentIndex, NO_COMPONENT, ReachableBucketEntry,
@@ -29,7 +28,9 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
+use crate::{debug, debug_log};
 use rayon::prelude::*;
+use std::time::Instant;
 
 const W_INCOME: f32 = 0.35;
 const W_STOCK: f32 = 0.35;
@@ -215,19 +216,79 @@ impl HouseholdSystem {
         graph: &RegionGraph,
         service_funding_by_building: &[f32],
     ) {
+        let timing_enabled = debug::category_enabled("economy");
+        let total_start = Instant::now();
+        let mut phase_start = total_start;
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
         eject_inactive_work_assignments(agents, allocator, &catalog);
+        let prep_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
+
+        let (home_option_keys, current_job_keys) =
+            collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
+        let home_key_count = home_option_keys.len();
+        let current_key_count = current_job_keys.len();
+        let collect_keys_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if home_option_keys.is_empty() && current_job_keys.is_empty() {
+            if timing_enabled {
+                debug_log!(
+                    "economy",
+                    "workplace_assignment_detail skipped_reason=no_candidate_agents agents={} buildings={} households={} job_supply=0 home_keys=0 current_keys=0 home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms=0.000 component_ms=0.000 supply_ms=0.000 collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
+                    agents.len(),
+                    allocator.buildings.len(),
+                    self.households.len(),
+                    self.workplace_route_cache.len(),
+                    load_ms,
+                    prep_ms,
+                    collect_keys_ms,
+                    total_start.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            return;
+        }
+        phase_start = Instant::now();
+
+        let has_job_supply =
+            has_potential_job_supply(allocator, &catalog, service_funding_by_building);
+        let supply_prefilter_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if !has_job_supply {
+            if timing_enabled {
+                debug_log!(
+                    "economy",
+                    "workplace_assignment_detail skipped_reason=no_open_jobs agents={} buildings={} households={} job_supply=0 home_keys={} current_keys={} home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms=0.000 component_ms=0.000 supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
+                    agents.len(),
+                    allocator.buildings.len(),
+                    self.households.len(),
+                    home_key_count,
+                    current_key_count,
+                    self.workplace_route_cache.len(),
+                    load_ms,
+                    prep_ms,
+                    supply_prefilter_ms,
+                    collect_keys_ms,
+                    total_start.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            return;
+        }
+        phase_start = Instant::now();
 
         self.refresh_workplace_route_cache(allocator, transit_network);
+        let route_cache_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         let foot_components = ModeComponentIndex::build(graph, TransitFlags::FOOT);
         let car_components = ModeComponentIndex::build(graph, TransitFlags::CAR);
+        let component_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         let job_supply = JobSupplySnapshot::build(
             allocator,
             graph,
@@ -236,11 +297,36 @@ impl HouseholdSystem {
             &car_components,
             service_funding_by_building,
         );
-        let (home_option_keys, current_job_keys) =
-            collect_home_job_option_keys(agents, allocator.buildings.len(), self.households.len());
+        let job_supply_count = job_supply.entries.len();
+        let supply_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if job_supply.entries.is_empty() {
+            if timing_enabled {
+                debug_log!(
+                    "economy",
+                    "workplace_assignment_detail skipped_reason=no_reachable_open_jobs agents={} buildings={} households={} job_supply=0 home_keys={} current_keys={} home_options=0 current_options=0 route_cache_entries={} new_route_entries=0 plans=0 load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms=0.000 option_build_ms=0.000 insert_routes_ms=0.000 plan_ms=0.000 apply_ms=0.000 total_ms={:.3}",
+                    agents.len(),
+                    allocator.buildings.len(),
+                    self.households.len(),
+                    home_key_count,
+                    current_key_count,
+                    self.workplace_route_cache.len(),
+                    load_ms,
+                    prep_ms,
+                    route_cache_ms,
+                    component_ms,
+                    supply_ms,
+                    collect_keys_ms,
+                    total_start.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            return;
+        }
+        phase_start = Instant::now();
         let max_walk_commute_speed = max_speed_for_modes(graph, TransitFlags::FOOT).max(1.0);
         let max_car_commute_speed =
             max_speed_for_modes(graph, TransitFlags::FOOT | TransitFlags::CAR).max(1.0);
+        let speed_bounds_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         let (home_job_options, current_job_options, new_route_entries) = build_home_job_options(
             &home_option_keys,
             &current_job_keys,
@@ -257,9 +343,16 @@ impl HouseholdSystem {
             max_car_commute_speed,
             service_funding_by_building,
         );
+        let home_option_count = home_job_options.len();
+        let current_option_count = current_job_options.len();
+        let new_route_entry_count = new_route_entries.len();
+        let option_build_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         for (key, result) in new_route_entries {
             self.workplace_route_cache.insert(key, result);
         }
+        let insert_routes_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
 
         let mut plans: Vec<_> = (0..agents.len())
             .into_par_iter()
@@ -278,6 +371,9 @@ impl HouseholdSystem {
             })
             .collect();
         plans.sort_unstable_by_key(|plan| plan.agent_idx);
+        let plan_count = plans.len();
+        let plan_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
         for plan in plans {
             apply_workplace_plan(
                 plan,
@@ -285,6 +381,36 @@ impl HouseholdSystem {
                 allocator,
                 &catalog,
                 service_funding_by_building,
+            );
+        }
+        let apply_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        if timing_enabled {
+            debug_log!(
+                "economy",
+                "workplace_assignment_detail agents={} buildings={} households={} job_supply={} home_keys={} current_keys={} home_options={} current_options={} route_cache_entries={} new_route_entries={} plans={} load_ms={:.3} prep_ms={:.3} route_cache_ms={:.3} component_ms={:.3} supply_ms={:.3} collect_keys_ms={:.3} speed_bounds_ms={:.3} option_build_ms={:.3} insert_routes_ms={:.3} plan_ms={:.3} apply_ms={:.3} total_ms={:.3}",
+                agents.len(),
+                allocator.buildings.len(),
+                self.households.len(),
+                job_supply_count,
+                home_key_count,
+                current_key_count,
+                home_option_count,
+                current_option_count,
+                self.workplace_route_cache.len(),
+                new_route_entry_count,
+                plan_count,
+                load_ms,
+                prep_ms,
+                route_cache_ms,
+                component_ms,
+                supply_ms,
+                collect_keys_ms,
+                speed_bounds_ms,
+                option_build_ms,
+                insert_routes_ms,
+                plan_ms,
+                apply_ms,
+                total_start.elapsed().as_secs_f64() * 1000.0,
             );
         }
     }
@@ -829,6 +955,57 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
         profile.kind,
         EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
     )
+}
+
+fn has_potential_job_supply(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    service_funding_by_building: &[f32],
+) -> bool {
+    allocator
+        .buildings
+        .par_iter()
+        .enumerate()
+        .any(|(idx, building)| {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || building.edge_idx == usize::MAX
+            {
+                return false;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                return false;
+            };
+            if !building_offers_work(building, profile) {
+                return false;
+            }
+            let worker_capacity = active_worker_capacity_for_profile(catalog, building, profile);
+            let worker_capacity = service_funded_worker_capacity(
+                worker_capacity,
+                profile,
+                idx,
+                service_funding_by_building,
+            );
+            if worker_capacity == 0 {
+                return false;
+            }
+            let average_daily_wage = profile.average_daily_wage();
+            let city_funded = allocator.is_city_service_building(building);
+            let budget_capacity = if city_funded {
+                worker_capacity
+            } else if average_daily_wage > 0.1 {
+                (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
+            } else {
+                worker_capacity
+            };
+            worker_capacity
+                .min(budget_capacity)
+                .saturating_sub(building.worker_count)
+                > 0
+        })
 }
 
 impl JobSupplySnapshot {
