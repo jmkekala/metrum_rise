@@ -69,6 +69,10 @@ Current live behavior:
 - fresh-map startup now uses purely organic demand signals — the pioneer demand floor has been
   removed; the unemployment benefit system in [`economy.md`](economy.md) provides early-city
   solvency instead
+- gameplay cheat mode is the explicit exception to the ordinary organic demand model: once enabled,
+  it pins the three R/C/I channels at maximum, persists that override in saves, and lets each
+  baseline private-use family with legal candidates plan at least one spawn per demand pass without
+  the ordinary non-residential output-absorption gate
 
 Current derived inputs:
 
@@ -233,6 +237,8 @@ Important boundary:
   the demand side
 - it does not bypass zoning legality or the economy-side viability gate described in
   [`economy.md`](economy.md)
+- cheat mode bypasses only the ordinary non-residential output-absorption gate; it still uses
+  demand-owned plans, legal zoning candidates, and allocator placement validation
 
 Important ownership rule:
 

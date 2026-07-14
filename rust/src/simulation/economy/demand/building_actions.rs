@@ -156,6 +156,12 @@ impl DemandSystem {
                 snapshot,
                 &spawn_candidates,
             );
+            let raw_spawn_need_buildings =
+                if self.cheat_max_demands_enabled && spawn_candidate_count > 0 {
+                    raw_spawn_need_buildings.max(1.0)
+                } else {
+                    raw_spawn_need_buildings
+                };
             let spawn_need_buildings = raw_spawn_need_buildings * normalized_spawn_pressure;
             let spawn_credit_before = self.spawn_action_credit.get(use_kind);
             let spawns_today = advance_spawn_need_credit(
@@ -195,9 +201,8 @@ impl DemandSystem {
                 spawn_skipped_budget = spawn_candidate_count;
                 Vec::new()
             } else {
-                // Non-residential: output absorption is the final hard gate. Staffing is an
-                // operational outcome after spawn: the new open jobs feed household admission and
-                // residential construction pressure on the next snapshot.
+                // Non-residential: output absorption is the final ordinary hard gate. Cheat mode
+                // bypasses it explicitly, while staffing remains an operational outcome after spawn.
                 let mut passed = 0;
                 let mut selected = Vec::new();
                 for candidate in spawn_candidates {
@@ -205,12 +210,14 @@ impl DemandSystem {
                         spawn_skipped_budget += 1;
                         continue;
                     }
-                    if !nonresidential_passes_absorption_gate(
-                        allocator,
-                        catalog,
-                        absorption_context,
-                        &candidate.action.asset_id,
-                    ) {
+                    if !self.cheat_max_demands_enabled
+                        && !nonresidential_passes_absorption_gate(
+                            allocator,
+                            catalog,
+                            absorption_context,
+                            &candidate.action.asset_id,
+                        )
+                    {
                         spawn_rejected_absorption += 1;
                         continue;
                     }

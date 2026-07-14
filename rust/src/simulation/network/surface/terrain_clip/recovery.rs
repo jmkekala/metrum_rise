@@ -14,6 +14,13 @@ pub(super) enum TerrainClipSourceChainRecovery {
     Covered(Vec<RoadVec3>),
 }
 
+#[derive(Clone, Copy)]
+struct TerrainClipSourceLoopAnchor {
+    edge_position: usize,
+    t: f64,
+    point: RoadVec3,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_segment_heights_from_source_edges(
         start: NodeOverlayPoint,
@@ -60,8 +67,6 @@ impl RoadSurfaceSystem {
             return TerrainClipSourceChainRecovery::Missing;
         }
 
-        let start_key = Self::terrain_clip_overlay_key(start);
-        let end_key = Self::terrain_clip_overlay_key(end);
         let source_indices = source_edges
             .iter()
             .map(|edge| edge.source_index)
@@ -78,31 +83,24 @@ impl RoadSurfaceSystem {
                 continue;
             }
 
-            let start_positions =
-                Self::terrain_clip_source_loop_positions_at_key(start_key, &source_chain_edges);
-            let end_positions =
-                Self::terrain_clip_source_loop_positions_at_key(end_key, &source_chain_edges);
-            for start_position in start_positions {
-                for end_position in end_positions.iter().copied() {
-                    if start_position == end_position {
+            let start_anchors =
+                Self::terrain_clip_source_loop_anchors_at_point(start, &source_chain_edges);
+            let end_anchors =
+                Self::terrain_clip_source_loop_anchors_at_point(end, &source_chain_edges);
+            for start_anchor in start_anchors {
+                for end_anchor in end_anchors.iter().copied() {
+                    if start_anchor.edge_position == end_anchor.edge_position
+                        && (start_anchor.t - end_anchor.t).abs() <= f64::EPSILON
+                    {
                         continue;
                     }
-                    let Some(path_keys) = Self::terrain_clip_ordered_source_loop_key_path(
+                    let Some(mut points) = Self::terrain_clip_ordered_source_loop_point_path(
                         &source_chain_edges,
-                        start_position,
-                        end_position,
+                        start_anchor,
+                        end_anchor,
                     ) else {
                         continue;
                     };
-                    let mut points = path_keys
-                        .into_iter()
-                        .filter_map(|key| {
-                            Self::terrain_clip_top_envelope_source_point_for_vertex_key(
-                                key,
-                                source_edges,
-                            )
-                        })
-                        .collect::<Vec<_>>();
                     Self::apply_terrain_clip_source_chain_top_envelope_heights(
                         &mut points,
                         source_edges,
@@ -234,52 +232,59 @@ impl RoadSurfaceSystem {
             .collect()
     }
 
-    fn terrain_clip_source_loop_positions_at_key(
-        key: SurfaceXzKey,
+    fn terrain_clip_source_loop_anchors_at_point(
+        point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> BTreeSet<usize> {
-        let mut positions = BTreeSet::new();
-        if source_edges.is_empty() {
-            return positions;
+    ) -> Vec<TerrainClipSourceLoopAnchor> {
+        let mut anchors = Vec::new();
+        for (edge_position, source_edge) in source_edges.iter().copied().enumerate() {
+            let source_start = [source_edge.start.x, source_edge.start.z];
+            let source_end = [source_edge.end.x, source_edge.end.z];
+            let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
+                continue;
+            };
+            let point = RoadVec3::new(
+                point[0],
+                interpolate_height_f64(source_edge.start.y, source_edge.end.y, t),
+                point[1],
+            );
+            anchors.push(TerrainClipSourceLoopAnchor {
+                edge_position,
+                t,
+                point,
+            });
         }
-        for (position, source_edge) in source_edges.iter().copied().enumerate() {
-            let start_key = Self::terrain_clip_world_key(source_edge.start);
-            if start_key == key {
-                positions.insert(position);
-            }
-            let end_key = Self::terrain_clip_world_key(source_edge.end);
-            if end_key == key {
-                positions.insert((position + 1) % source_edges.len());
-            }
-        }
-        positions
+        anchors
     }
 
-    fn terrain_clip_ordered_source_loop_key_path(
+    fn terrain_clip_ordered_source_loop_point_path(
         source_edges: &[TerrainClipSourceEdge],
-        start_position: usize,
-        end_position: usize,
-    ) -> Option<Vec<SurfaceXzKey>> {
-        if source_edges.is_empty() || start_position >= source_edges.len() {
+        start_anchor: TerrainClipSourceLoopAnchor,
+        end_anchor: TerrainClipSourceLoopAnchor,
+    ) -> Option<Vec<RoadVec3>> {
+        if source_edges.is_empty() || start_anchor.edge_position >= source_edges.len() {
             return None;
         }
-        let mut path = vec![Self::terrain_clip_source_loop_vertex_key(
-            source_edges,
-            start_position,
-        )?];
-        let mut cursor = start_position;
-        for _ in 0..source_edges.len() {
-            if cursor == end_position {
-                return (path.len() >= 2).then_some(path);
+        let mut path = vec![start_anchor.point];
+        let mut cursor = start_anchor.edge_position;
+        let mut first_edge = true;
+        for _ in 0..=source_edges.len() {
+            if cursor == end_anchor.edge_position {
+                if !first_edge || end_anchor.t > start_anchor.t {
+                    path.push(end_anchor.point);
+                    return (path.len() >= 2).then_some(path);
+                }
+                if (start_anchor.t - end_anchor.t).abs() <= f64::EPSILON {
+                    return None;
+                }
             }
+            let edge = source_edges[cursor % source_edges.len()];
+            path.push(edge.end);
             if !Self::terrain_clip_source_loop_edge_connects_to_next(source_edges, cursor) {
                 return None;
             }
             cursor = (cursor + 1) % source_edges.len();
-            path.push(Self::terrain_clip_source_loop_vertex_key(
-                source_edges,
-                cursor,
-            )?);
+            first_edge = false;
         }
         None
     }

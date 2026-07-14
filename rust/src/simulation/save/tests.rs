@@ -171,6 +171,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     demand.removal_action_credit = 0.50;
     demand.persistent_exit_action_credit = 0.75;
     demand.recent_household_failure_pressure = 0.75;
+    demand.enable_max_demand_cheat();
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_test_asset(
         &mut allocator,
@@ -482,6 +483,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.demand.recent_household_failure_pressure,
         demand.recent_household_failure_pressure
     );
+    assert!(loaded.demand.cheat_max_demands_enabled);
     assert_eq!(loaded.pending_demand_spawns.len(), 1);
     let loaded_pending = &loaded.pending_demand_spawns[0];
     assert_eq!(loaded_pending.due_minute, 1234);

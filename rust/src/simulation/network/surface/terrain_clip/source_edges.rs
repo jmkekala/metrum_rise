@@ -3,7 +3,7 @@
 use super::super::backend::RoadVec3;
 use super::super::{
     NodeOverlayPoint, RoadSurfaceSystem,
-    keys::{SurfaceHeightMmKey, SurfaceXzKey, SurfaceXzSegmentKey},
+    keys::{SurfaceHeightMmKey, SurfaceXzSegmentKey},
 };
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::*;
@@ -227,20 +227,6 @@ impl RoadSurfaceSystem {
                 edge_overlap_end_t,
             ),
         })
-    }
-
-    pub(super) fn terrain_clip_top_envelope_source_point_for_vertex_key(
-        key: SurfaceXzKey,
-        source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<RoadVec3> {
-        // This top-envelope pick is scoped to terrain-removal cutter recovery after
-        // final footprint ownership exists. Output provenance and dust connectors
-        // must use their ambiguity-checking paths instead.
-        source_edges
-            .iter()
-            .flat_map(|edge| [edge.start, edge.end])
-            .filter(|point| Self::terrain_clip_world_key(*point) == key)
-            .max_by(|a, b| a.y.total_cmp(&b.y))
     }
 }
 

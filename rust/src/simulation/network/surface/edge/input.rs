@@ -15,7 +15,7 @@ const ROAD_PROFILE_SMOOTH_WEIGHT: f32 = 0.22;
 const ROAD_PROFILE_TERRAIN_WEIGHT: f32 = 0.30;
 const ROAD_PROFILE_MAX_GRADE_CHANGE_PER_M: f32 = 0.018;
 pub(in crate::simulation::network::surface::edge) const PREVIEW_CLEARANCE_M: f32 = 1.0;
-pub(in crate::simulation::network::surface::edge) const ROAD_PROFILE_MAX_GRADE: f32 = 0.12;
+pub(in crate::simulation::network::surface::edge) const ROAD_PROFILE_MAX_GRADE: f32 = 0.16;
 
 /// Solved road-tool geometry plus optional profile edits to an existing terminal edge.
 #[derive(Clone, Debug)]

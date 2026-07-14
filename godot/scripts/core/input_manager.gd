@@ -150,6 +150,8 @@ func _unhandled_input(event):
 			KEY_L:
 				if event.ctrl_pressed:
 					_handle_load_game()
+			KEY_F12:
+				_handle_money_and_demand_cheat()
 			
 			# Lane Adjustments (Forward)
 			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
@@ -281,6 +283,13 @@ func _handle_undo():
 		if road_tool:
 			road_tool.update_main_mesh()
 			road_tool.mark_network_topology_dirty()
+
+func _handle_money_and_demand_cheat() -> void:
+	if not simulation_node or not simulation_node.has_method("apply_money_and_max_demand_cheat"):
+		return
+	var balance: float = simulation_node.apply_money_and_max_demand_cheat()
+	print("Cheat applied: +1000000 money, R/C/I demand locked at 100%. Treasury: ", balance)
+	get_viewport().set_input_as_handled()
 
 func _default_save_name() -> String:
 	if not _current_save_path.is_empty():

@@ -372,6 +372,7 @@ func _on_help_menu_pressed(id: int) -> void:
 					"Ctrl+S  Save",
 					"Ctrl+L  Load",
 					"Ctrl+Z  Undo",
+					"F12  +1000000 money and lock R/C/I demand at 100%",
 					"7 / 8 / 9 / 0  Overlay modes"
 				],
 				Vector2i(380, 340)

@@ -350,6 +350,10 @@ fn commercial_zoning_run(graph: &RegionGraph) -> ZoningSystem {
     zoning_run(graph, ZoneType::Commercial)
 }
 
+fn industrial_zoning_run(graph: &RegionGraph) -> ZoningSystem {
+    zoning_run(graph, ZoneType::Industrial)
+}
+
 fn vacant_admission_snapshot() -> DailyDemandSnapshot {
     DailyDemandSnapshot {
         vacant_household_slots: 10,
@@ -1020,6 +1024,80 @@ fn daily_pass_blocks_growth_without_external_connection() {
     assert_eq!(demand.commercial, 0.0);
     assert_eq!(demand.industrial, 0.0);
     assert_eq!(demand.households_to_admit_today, 0);
+}
+
+#[test]
+fn max_demand_cheat_survives_daily_and_hourly_recompute() {
+    let allocator = BuildingAllocator::new();
+    let households = HouseholdSystem::new();
+    let graph = RegionGraph::new();
+    let zoning = empty_zoning();
+    let mut demand = DemandSystem::new();
+
+    demand.enable_max_demand_cheat();
+    assert_eq!(demand.residential, 1.0);
+    assert_eq!(demand.commercial, 1.0);
+    assert_eq!(demand.industrial, 1.0);
+    assert_eq!(demand.net_residential_pressure(), 1.0);
+    assert_eq!(demand.net_commercial_pressure(), 1.0);
+    assert_eq!(demand.net_industrial_pressure(), 1.0);
+
+    demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+    assert_eq!(demand.residential, 1.0);
+    assert_eq!(demand.commercial, 1.0);
+    assert_eq!(demand.industrial, 1.0);
+
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, -100.0);
+    assert_eq!(demand.residential, 1.0);
+    assert_eq!(demand.commercial, 1.0);
+    assert_eq!(demand.industrial, 1.0);
+    assert_eq!(demand.net_residential_pressure(), 1.0);
+    assert_eq!(demand.net_commercial_pressure(), 1.0);
+    assert_eq!(demand.net_industrial_pressure(), 1.0);
+}
+
+#[test]
+fn max_demand_cheat_plans_commercial_spawn_without_consumer_need() {
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let zoning = commercial_zoning_run(&graph);
+    let mut demand = DemandSystem::new();
+
+    demand.enable_max_demand_cheat();
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000_000.0);
+
+    assert_eq!(demand.building_actions.commercial.spawns.len(), 1);
+    assert_eq!(
+        demand
+            .last_building_action_diagnostics
+            .commercial
+            .spawn_rejected_absorption,
+        0
+    );
+}
+
+#[test]
+fn max_demand_cheat_plans_industrial_spawn_without_input_need() {
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let zoning = industrial_zoning_run(&graph);
+    let mut demand = DemandSystem::new();
+
+    demand.enable_max_demand_cheat();
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000_000.0);
+
+    assert_eq!(demand.building_actions.industrial.spawns.len(), 1);
+    assert_eq!(
+        demand
+            .last_building_action_diagnostics
+            .industrial
+            .spawn_rejected_absorption,
+        0
+    );
 }
 
 #[test]

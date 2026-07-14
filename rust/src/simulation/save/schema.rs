@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 50;
+pub const SAVE_VERSION: i64 = 51;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -75,7 +75,8 @@ CREATE TABLE demand_state(
     despawn_hysteresis_active_residential INTEGER NOT NULL,
     despawn_hysteresis_active_commercial INTEGER NOT NULL,
     despawn_hysteresis_active_industrial INTEGER NOT NULL,
-    recent_household_failure_pressure REAL NOT NULL
+    recent_household_failure_pressure REAL NOT NULL,
+    cheat_max_demands_enabled INTEGER NOT NULL
 );
 CREATE TABLE pending_demand_spawns(
     sequence INTEGER PRIMARY KEY,

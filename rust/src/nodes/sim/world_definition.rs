@@ -498,7 +498,7 @@ impl SimCore {
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
         self.transit_network =
-            TransitNetwork::new_with_surface_chunk_span(self.config.terrain_chunk_m);
+            TransitNetwork::new_with_world_terrain_chunk_span(self.config.terrain_chunk_m);
         self.zoning = ZoningSystem::new(&self.config);
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
@@ -990,7 +990,9 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
+                config.terrain_chunk_m,
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),

@@ -57,6 +57,20 @@ func _process(_delta: float) -> void:
 		terrain_visuals_ms = float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
 	if terrain_visuals_ready:
 		simulation_node.clear_terrain_dirty()
+	else:
+		var pending_total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
+		if perf_enabled:
+			PerfDebug.record(
+				"network",
+				pending_total_ms,
+				{
+					"terrain_visuals": terrain_visuals_ms,
+					"water_visuals": 0.0,
+					"road_mesh": 0.0,
+					"border_checks": 0.0,
+				}
+			)
+		return
 
 	var water_visuals_start_us := Time.get_ticks_usec()
 	if water and water.has_method("refresh_road_clipped_patches"):
@@ -79,8 +93,10 @@ func _process(_delta: float) -> void:
 	# 5. Road geometry changed → refresh no-build edge overlay geometry.
 	if zoning_overlay: zoning_overlay.mark_no_build_dirty()
 
-	# 6. Clear the flag now that the refresh is done — same pattern as clear_terrain_dirty().
-	simulation_node.clear_network_dirty()
+	# 6. Clear the flag only after terrain accepted the road-locked uploads. Otherwise the next
+	# frame must retry this coordinated visual refresh instead of waiting for another road edit.
+	if terrain_visuals_ready:
+		simulation_node.clear_network_dirty()
 
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 	if perf_enabled:

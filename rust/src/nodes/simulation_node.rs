@@ -15,6 +15,7 @@
 //! | | `get_economy_overview` | `economy_overview.gd` |
 //! | | `set_economy_service_funding` | `economy_overview.gd` |
 //! | | `get_demand_pressures` | `main_ui.gd` |
+//! | | `apply_money_and_max_demand_cheat` | `input_manager.gd` |
 //! | | `get_treasury_balance` | `main_ui.gd` |
 //! | | `get_agent_count` | `main_ui.gd` |
 //! | **Economy Editor** | `is_economy_editor_mode` | `economy_editor.gd` |
@@ -159,6 +160,7 @@ const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO: f32 = 256.0;
 const TERRAIN_CDT_PATHOLOGICAL_TRIANGLE_EDGE_M: f32 = 96.0;
+const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 
 #[derive(Clone, Copy)]
 struct TerrainCdtSiteGradingContext<'a> {
@@ -380,6 +382,7 @@ struct WaterPatchPayloadKey {
 struct TerrainPatchPayloadRequest {
     key: TerrainPatchPayloadKey,
     request_id: u64,
+    surface_generation: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -396,12 +399,12 @@ enum TerrainPatchPayloadData {
     Refined {
         patch: CachedRefinedTerrainPatch,
     },
-    Retry,
 }
 
 struct TerrainPatchPayload {
     key: TerrainPatchPayloadKey,
     request_id: u64,
+    surface_generation: u64,
     data: TerrainPatchPayloadData,
 }
 
@@ -714,6 +717,7 @@ impl SimulationNode {
             return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
+                surface_generation: request.surface_generation,
                 data: TerrainPatchPayloadData::Regular {
                     patch,
                     height_bytes,
@@ -730,6 +734,7 @@ impl SimulationNode {
             return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
+                surface_generation: request.surface_generation,
                 data: TerrainPatchPayloadData::Refined {
                     patch: cached.clone(),
                 },
@@ -792,14 +797,6 @@ impl SimulationNode {
             clip_error_label: road_clip_query.clip_error_label,
         };
         Some(TerrainPatchPayloadBuildJob::Refined { request, input })
-    }
-
-    fn terrain_patch_payload_retry(request: TerrainPatchPayloadRequest) -> TerrainPatchPayload {
-        TerrainPatchPayload {
-            key: request.key,
-            request_id: request.request_id,
-            data: TerrainPatchPayloadData::Retry,
-        }
     }
 
     fn split_terrain_patch_payload_jobs(
@@ -1234,21 +1231,12 @@ impl SimulationNode {
             TerrainPatchPayloadData::Refined { patch } => {
                 Self::cached_refined_terrain_patch_dict(patch, false)
             }
-            TerrainPatchPayloadData::Retry => {
-                let mut dict = VarDictionary::new();
-                dict.set(
-                    "patch_x",
-                    i64::try_from(payload.key.patch_x).unwrap_or(i64::MAX),
-                );
-                dict.set(
-                    "patch_z",
-                    i64::try_from(payload.key.patch_z).unwrap_or(i64::MAX),
-                );
-                dict.set("retry", true);
-                dict
-            }
         };
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
+        dict.set(
+            "surface_generation",
+            i64::try_from(payload.surface_generation).unwrap_or(i64::MAX),
+        );
         dict
     }
 
@@ -1262,6 +1250,10 @@ impl SimulationNode {
                 Self::append_empty_cdt_failure(dict, error_label, include_debug);
             } else if cached.road_clip_source_count > 0 {
                 Self::append_empty_cdt_failure(dict, "missing_road_clip_loops", include_debug);
+            } else {
+                dict.set("terrain_cdt_status", GString::from("empty"));
+                dict.set("terrain_cdt_empty_refined", true);
+                dict.set("terrain_cdt_mesh_suppressed", true);
             }
             return;
         }
@@ -4467,6 +4459,11 @@ impl SimulationNode {
         let mut in_flight_count = 0_usize;
         let mut build_queued_count = 0_usize;
         let mut build_requests = Vec::new();
+        let surface_generation = self
+            .road_tool_query_snapshot
+            .read()
+            .unwrap()
+            .surface_generation;
         {
             let mut jobs = self.lock_terrain_patch_payload_jobs();
             let mut requested_key_lookup = HashSet::new();
@@ -4477,7 +4474,11 @@ impl SimulationNode {
                 }
                 in_flight_count += usize::from(jobs.in_flight.contains_key(&key));
                 let request_id = jobs.request(key);
-                build_requests.push(TerrainPatchPayloadRequest { key, request_id });
+                build_requests.push(TerrainPatchPayloadRequest {
+                    key,
+                    request_id,
+                    surface_generation,
+                });
                 accepted_count += 1;
                 build_queued_count += 1;
             }
@@ -4495,29 +4496,9 @@ impl SimulationNode {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::is_perf_enabled();
                 let (mut built, refined_requests, refined_inputs) = {
-                    let mut core = match core.try_lock() {
+                    let mut core = match core.lock() {
                         Ok(g) => g,
-                        Err(std::sync::TryLockError::WouldBlock) => {
-                            let retry_payloads = build_requests
-                                .into_iter()
-                                .map(SimulationNode::terrain_patch_payload_retry)
-                                .collect::<Vec<_>>();
-                            let mut job_state = match jobs.lock() {
-                                Ok(g) => g,
-                                Err(e) => e.into_inner(),
-                            };
-                            job_state.completed.extend(retry_payloads);
-                            if perf_enabled {
-                                println!(
-                                    "[DEBUG:perf] terrain_payload_worker status=busy_retry requests={} refined_requests={} total_ms={:.3}",
-                                    request_count,
-                                    refined_request_count,
-                                    worker_start.elapsed().as_secs_f64() * 1000.0
-                                );
-                            }
-                            return;
-                        }
-                        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+                        Err(e) => e.into_inner(),
                     };
                     let input_start = Instant::now();
                     let build_jobs = build_requests
@@ -4546,13 +4527,17 @@ impl SimulationNode {
                 };
 
                 let cdt_start = Instant::now();
-                let refined_entries =
-                    SimCore::build_refined_terrain_patch_cache_entries(refined_inputs);
+                let refined_entries = if refined_inputs.is_empty() {
+                    Vec::new()
+                } else {
+                    SimCore::build_refined_terrain_patch_cache_entries(refined_inputs)
+                };
                 let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
                 for (request, entry) in refined_requests.iter().zip(refined_entries.iter()) {
                     built.push(TerrainPatchPayload {
                         key: request.key,
                         request_id: request.request_id,
+                        surface_generation: request.surface_generation,
                         data: TerrainPatchPayloadData::Refined {
                             patch: entry.clone(),
                         },
@@ -4749,13 +4734,16 @@ impl SimulationNode {
         if crate::debug::category_enabled("road") {
             debug_log!(
                 "road",
-                "refined_patch_cache_miss key=({},{}) render_step_mm={}",
+                "refined_patch_cache_miss_fallback key=({},{}) render_step_mm={}",
                 patch_x,
                 patch_z,
                 cache_key.render_step_mm
             );
         }
-        Self::refined_terrain_patch_dict(&core, patch_x, patch_z, render_step_m, false)
+        core.heightmap
+            .visual_patch_snapshot(patch_x, patch_z)
+            .map(|patch| Self::terrain_patch_dict(&patch))
+            .unwrap_or_else(VarDictionary::new)
     }
 
     /// Returns a refined terrain patch with CDT provenance sidecars for diagnostics.
@@ -6113,6 +6101,17 @@ impl SimulationNode {
             core.demand.net_commercial_pressure().clamp(-1.0, 1.0),
             core.demand.net_industrial_pressure().clamp(-1.0, 1.0),
         )
+    }
+
+    /// Grants cheat money and permanently pins R/C/I demand display and planning pressure to 100%.
+    #[func]
+    pub fn apply_money_and_max_demand_cheat(&mut self) -> f64 {
+        let balance = {
+            let mut core = self.lock_core();
+            core.apply_money_and_max_demand_cheat(CHEAT_MONEY_GRANT_AMOUNT)
+        };
+        self.refresh_snapshot_from_core();
+        balance
     }
 
     /// Returns city budget history, service policy, and compact service status for UI windows.
@@ -8340,7 +8339,9 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
+                config.terrain_chunk_m,
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -8664,6 +8665,109 @@ impl SimCore {
         }
 
         inputs
+    }
+
+    /// Refreshes road-locked terrain patch membership and invalidates stale refined terrain cache.
+    pub(crate) fn refresh_road_locked_terrain_patch_state(&mut self, render_step_m: f32) -> usize {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        );
+        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            &self.heightmap,
+            safe_render_step_m,
+        );
+        let mut road_locked_patch_margins = self
+            .transit_network
+            .road_surface
+            .terrain_render_patch_grading_margins_for_visible_roads(
+                &self.region_graph,
+                &self.heightmap,
+                safe_render_step_m,
+            );
+        for key in self
+            .allocator
+            .terrain_render_patch_keys_with_building_site_margin(&self.heightmap, site_margin_m)
+        {
+            road_locked_patch_margins
+                .entry(key)
+                .and_modify(|existing| *existing = existing.max(site_margin_m))
+                .or_insert(site_margin_m);
+        }
+        let mut road_locked_key_vec = road_locked_patch_margins
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        road_locked_key_vec.sort_unstable();
+        road_locked_key_vec.dedup();
+        let old_road_locked_keys: HashSet<(usize, usize)> = self
+            .road_locked_terrain_patch_keys
+            .iter()
+            .copied()
+            .collect();
+        let road_locked_keys: HashSet<(usize, usize)> =
+            road_locked_key_vec.iter().copied().collect();
+        let mut road_locked_changed_patches = 0usize;
+        let mut invalidated_refined_cache_entries = 0usize;
+        for key in old_road_locked_keys.symmetric_difference(&road_locked_keys) {
+            self.heightmap.mark_render_patch_dirty(key.0, key.1);
+            if self
+                .refined_terrain_patch_cache
+                .remove(&SimulationNode::refined_patch_cache_key(
+                    key.0,
+                    key.1,
+                    safe_render_step_m,
+                ))
+                .is_some()
+            {
+                invalidated_refined_cache_entries += 1;
+            }
+            road_locked_changed_patches += 1;
+        }
+        self.road_locked_terrain_patch_keys = road_locked_key_vec;
+
+        let dirty_patches: Vec<(usize, usize)> = self
+            .heightmap
+            .dirty_render_patches()
+            .iter()
+            .copied()
+            .collect();
+        for (patch_x, patch_z) in dirty_patches.iter().copied() {
+            if !road_locked_keys.contains(&(patch_x, patch_z)) {
+                continue;
+            }
+            if self
+                .refined_terrain_patch_cache
+                .remove(&SimulationNode::refined_patch_cache_key(
+                    patch_x,
+                    patch_z,
+                    safe_render_step_m,
+                ))
+                .is_some()
+            {
+                invalidated_refined_cache_entries += 1;
+            }
+        }
+
+        if road_debug {
+            debug_log!(
+                "road",
+                "refined_patch_state_refresh dirty_patches={} road_locked_patches={} changed_locked_patches={} invalidated_cache_entries={} total_ms={:.3}",
+                dirty_patches.len(),
+                road_locked_keys.len(),
+                road_locked_changed_patches,
+                invalidated_refined_cache_entries,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
+
+        invalidated_refined_cache_entries
     }
 
     pub(crate) fn build_refined_terrain_patch_cache_entries(
@@ -9519,7 +9623,9 @@ mod tests {
             heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
+                config.terrain_chunk_m,
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),

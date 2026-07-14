@@ -92,6 +92,7 @@ struct DemandStateRow {
     downgrade_hysteresis_active: [bool; 3],
     despawn_hysteresis_active: [bool; 3],
     recent_household_failure_pressure: f32,
+    cheat_max_demands_enabled: bool,
 }
 
 fn demand_bool_triplet(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Result<[bool; 3]> {
@@ -251,7 +252,7 @@ pub(crate) fn load_from_sqlite(
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let demand_row = conn.query_row(
-        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure FROM demand_state LIMIT 1",
+        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure, cheat_max_demands_enabled FROM demand_state LIMIT 1",
         [],
         |r| {
             Ok(DemandStateRow {
@@ -272,6 +273,7 @@ pub(crate) fn load_from_sqlite(
                 downgrade_hysteresis_active: demand_bool_triplet(r, 26)?,
                 despawn_hysteresis_active: demand_bool_triplet(r, 29)?,
                 recent_household_failure_pressure: r.get(32)?,
+                cheat_max_demands_enabled: r.get::<_, i64>(33)? != 0,
             })
         },
     )?;
@@ -293,6 +295,7 @@ pub(crate) fn load_from_sqlite(
         demand_row.downgrade_hysteresis_active,
         demand_row.despawn_hysteresis_active,
         demand_row.recent_household_failure_pressure,
+        demand_row.cheat_max_demands_enabled,
     );
     let pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
@@ -305,7 +308,8 @@ pub(crate) fn load_from_sqlite(
     let logistics = world::load_shipments(&conn)?;
     let mut agents = agents::load_agents(&conn, time_r.5)?;
 
-    let mut transit_network = TransitNetwork::new();
+    let mut transit_network =
+        TransitNetwork::new_with_world_terrain_chunk_span(config.terrain_chunk_m);
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
     transit_network.lane_system.rebuild(&mut graph);
 

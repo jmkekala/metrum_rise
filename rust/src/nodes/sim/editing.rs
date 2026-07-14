@@ -162,7 +162,7 @@ impl SimCore {
         had_changes
     }
 
-    fn rebuild_building_entrances_internal(&mut self) {
+    pub(crate) fn rebuild_building_entrances_internal(&mut self) {
         self.allocator
             .repair_road_attachments_after_topology_edit(&self.region_graph, &mut self.zoning);
         self.allocator
@@ -1282,6 +1282,13 @@ impl SimCore {
 
     /// Rebuilds road-surface-driven visual terrain after network edits.
     pub fn rebuild_network_surface_terrain_internal(&mut self) {
+        self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(true);
+    }
+
+    pub(crate) fn rebuild_network_surface_terrain_internal_with_entrance_rebuild(
+        &mut self,
+        rebuild_entrances: bool,
+    ) {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
@@ -1308,7 +1315,9 @@ impl SimCore {
             .unwrap_or(0.0);
 
         let entrances_start = road_debug.then(Instant::now);
-        self.rebuild_building_entrances_internal();
+        if rebuild_entrances {
+            self.rebuild_building_entrances_internal();
+        }
         let entrances_ms = entrances_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -1582,7 +1591,9 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
+                config.terrain_chunk_m,
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),

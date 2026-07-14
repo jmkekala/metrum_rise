@@ -162,6 +162,53 @@ fn terrain_clip_union_recovers_partial_segment_through_connected_source_chain() 
 }
 
 #[test]
+fn terrain_clip_union_recovers_source_chain_to_interior_source_edge_endpoint() {
+    let y = 7.0;
+    let p0 = RoadVec3::new(0.0, y, 0.0);
+    let p1 = RoadVec3::new(0.35, y, 0.0);
+    let p2 = RoadVec3::new(0.55, y, 0.18);
+    let p3 = RoadVec3::new(0.775, y, 0.09);
+    let p4 = RoadVec3::new(1.0, y, 0.0);
+    let p5 = RoadVec3::new(1.0, y, 0.4);
+    let p6 = RoadVec3::new(0.0, y, 0.4);
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(p0, p1),
+            terrain_clip_source_edge_for_test(p1, p2),
+            terrain_clip_source_edge_for_test(p2, p4),
+            terrain_clip_source_edge_for_test(p4, p5),
+            terrain_clip_source_edge_for_test(p5, p6),
+            terrain_clip_source_edge_for_test(p6, p0),
+        ],
+        points_world: vec![p0, p3, p5, p6],
+    }];
+
+    let clip_export = RoadSurfaceSystem::union_terrain_clip_boundary_export(&raw_clip_sources)
+        .expect(
+            "source chains ending inside a later source edge should preserve terrain clip export",
+        );
+
+    assert_eq!(clip_export.loops.len(), 1);
+    let points = &clip_export.loops[0].points_world;
+    for expected in [p1, p2, p3] {
+        assert!(
+            points.iter().any(|point| {
+                (point.x - expected.x).abs() <= f64::from(SAMPLE_EPSILON_M)
+                    && (point.z - expected.z).abs() <= f64::from(SAMPLE_EPSILON_M)
+            }),
+            "source-chain vertex ({:.3},{:.3}) must survive terrain clip union",
+            expected.x,
+            expected.z
+        );
+    }
+    assert_eq!(
+        clip_export.loops[0].source_edges.len(),
+        points.len(),
+        "every emitted interior-endpoint source-chain segment must keep boundary-owner provenance"
+    );
+}
+
+#[test]
 fn terrain_clip_union_blocks_partial_export_when_shape_has_no_source_owner() {
     let y = 4.0;
     let valid = [

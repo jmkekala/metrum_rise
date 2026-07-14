@@ -192,6 +192,9 @@ impl DemandSystem {
     // - Negative: channel is below the active despawn threshold (city wants to shrink this use)
     // - Zero: channel is in the dead zone between thresholds (no pressure either way)
     pub(super) fn net_pressure_for(&self, use_kind: DemandUse) -> f32 {
+        if self.cheat_max_demands_enabled {
+            return 1.0;
+        }
         let channel = self.pressure_for_use(use_kind);
         let zone_type = match use_kind {
             DemandUse::Residential => ZoneType::Residential,

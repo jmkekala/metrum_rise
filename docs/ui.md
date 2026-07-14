@@ -258,6 +258,7 @@ Current WorldEditor shortcuts:
 | Space      | Pause / unpause |
 | Escape     | Cancel active tool |
 | Ctrl+Z     | Undo |
+| F12        | Add 1,000,000 money and lock R/C/I demand at 100% |
 | 7 / 8 / 9 / 0 | Overlay modes |
 
 ---

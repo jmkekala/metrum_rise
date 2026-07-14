@@ -27,6 +27,8 @@ use render::road::RoadRenderer;
 use surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
 use types::*;
 
+const ROAD_SURFACE_RUNTIME_CHUNK_M: f32 = 128.0;
+
 pub(in crate::simulation::network) fn build_surface_edge(
     start_node: u32,
     end_node: u32,
@@ -111,6 +113,16 @@ impl TransitNetwork {
     /// Creates a new, empty transit network.
     pub fn new() -> Self {
         Self::new_with_surface_chunk_span(RegionGraph::CHUNK_SIZE)
+    }
+
+    pub(crate) fn new_with_world_terrain_chunk_span(terrain_chunk_m: f32) -> Self {
+        Self::new_with_surface_chunk_span(Self::world_road_surface_chunk_span(terrain_chunk_m))
+    }
+
+    pub(crate) fn world_road_surface_chunk_span(terrain_chunk_m: f32) -> f32 {
+        terrain_chunk_m
+            .max(f32::EPSILON)
+            .min(ROAD_SURFACE_RUNTIME_CHUNK_M)
     }
 
     /// Creates a new, empty transit network with the given road-surface chunk span in metres.
@@ -598,6 +610,19 @@ fn log_road_connectivity(graph: &RegionGraph) {
                 idx, size, anchor, pos.x, pos.z, tag
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod road_surface_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn world_terrain_chunk_span_uses_smaller_road_surface_chunks() {
+        let network = TransitNetwork::new_with_world_terrain_chunk_span(512.0);
+        assert_eq!(network.road_surface.chunk_span_m(), 128.0);
+        assert_eq!(TransitNetwork::world_road_surface_chunk_span(64.0), 64.0);
+        assert!(TransitNetwork::world_road_surface_chunk_span(0.0) > 0.0);
     }
 }
 

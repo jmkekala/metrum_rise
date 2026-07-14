@@ -145,17 +145,206 @@ fn demand_plan_without_spawns(plan: &DemandBuildingActionPlan) -> DemandBuilding
 #[cfg(test)]
 mod tests {
     use super::{
-        CURB_STEP_HEIGHT_M, absolute_operational_minute, demand_plan_has_non_spawn_actions,
-        demand_plan_without_spawns, pedestrian_lane_surface_height,
-        pedestrian_needs_access_surface,
+        CURB_STEP_HEIGHT_M, CityTreasury, SimCore, absolute_operational_minute,
+        demand_plan_has_non_spawn_actions, demand_plan_without_spawns,
+        pedestrian_lane_surface_height, pedestrian_needs_access_surface,
     };
+    use crate::assets::AssetManifest;
+    use crate::assets::asset::{
+        Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass,
+    };
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::core::time::TimeSystem;
     use crate::simulation::economy::agents::{
-        TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK,
+        AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+        TRANSIT_NETWORK,
     };
     use crate::simulation::economy::demand::{
-        DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction,
+        DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
     };
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::grid::desirability::DesirabilitySystem;
+    use crate::simulation::grid::noise::NoiseSystem;
+    use crate::simulation::grid::pollution::PollutionSystem;
     use crate::simulation::network::lanes::{Lane, LaneType};
+    use crate::simulation::network::types::{
+        EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+    };
+    use crate::simulation::network::{TransitNetwork, graph::Edge, graph::RegionGraph};
+    use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::water::WaterSystem;
+    use crate::simulation::zoning::{ZoneType, ZoningSystem};
+    use godot::prelude::Vector3;
+    use std::collections::{HashMap, VecDeque};
+
+    fn test_core() -> SimCore {
+        let config = WorldConfig::default();
+        SimCore {
+            time: TimeSystem::new(),
+            heightmap: TerrainSystem::from_world_config(&config),
+            watermap: WaterSystem::from_world_config(&config),
+            region_graph: RegionGraph::new(),
+            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
+                config.terrain_chunk_m,
+            ),
+            zoning: ZoningSystem::new(&config),
+            pollution: PollutionSystem::new(&config),
+            noise: NoiseSystem::new(&config),
+            desirability: DesirabilitySystem::new(&config),
+            demand: DemandSystem::new(),
+            pending_demand_spawns: VecDeque::new(),
+            allocator: BuildingAllocator::new(),
+            agents: AgentSystem::new(),
+            households: HouseholdSystem::new(),
+            logistics: ShipmentSystem::new(),
+            config,
+            treasury: CityTreasury::new(0.0),
+            service_policy: Default::default(),
+            budget_history: VecDeque::new(),
+            budget_last_lifetime_build_cost: 0.0,
+            debug_household_admissions_since_daily: 0,
+            undo_stack: VecDeque::new(),
+            world_lake_fills: Vec::new(),
+            world_open_water_fills: Vec::new(),
+            world_lake_fill_preview: None,
+            authored_water_patch_fill_debug_cache: HashMap::new(),
+            terrain_stroke_active: false,
+            terrain_stroke_has_changes: false,
+            terrain_dirty: false,
+            water_dirty: false,
+            network_dirty: false,
+            benchmark_mode: true,
+            last_tick_duration: 0.0,
+            last_agent_tick_us: 0,
+            last_road_timing: String::new(),
+            last_surface_debug_edges: Vec::new(),
+            refined_terrain_patch_cache: HashMap::new(),
+            water_patch_mesh_cache: HashMap::new(),
+            road_locked_terrain_patch_keys: Vec::new(),
+            cached_road_mesh_data: None,
+            road_tool_surface_generation: 1,
+            camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    fn add_test_border_road(core: &mut SimCore) {
+        let border = core
+            .region_graph
+            .add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Border);
+        let junction = core
+            .region_graph
+            .add_node(Vector3::new(180.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: border,
+            end_node: junction,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.89,
+            base_cost: 180.0,
+            physical_length: 180.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(180.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(180.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        core.transit_network
+            .lane_system
+            .rebuild(&mut core.region_graph);
+    }
+
+    fn register_test_asset(
+        allocator: &mut BuildingAllocator,
+        asset_id: &str,
+        zone_type: ZoneType,
+    ) -> String {
+        let (zone_class, household_capacity, worker_capacity, economy_profile) = match zone_type {
+            ZoneType::Residential => (ZoneClass::Residential, Some(6), None, None),
+            ZoneType::Commercial => (
+                ZoneClass::Commercial,
+                None,
+                Some(4),
+                Some("grocery_basic".to_owned()),
+            ),
+            ZoneType::Industrial => (
+                ZoneClass::Industrial,
+                None,
+                Some(4),
+                Some("food_processor_basic".to_owned()),
+            ),
+            _ => panic!("test asset requires a baseline private-use zone"),
+        };
+        let manifest = AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
+            }],
+            site_surfaces: vec![],
+            building: Some(BuildingData {
+                flat_size_m2: household_capacity.map(|_| 80.0),
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(zone_class),
+                density: Some("low".to_owned()),
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                frontage_forward: None,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity,
+                worker_capacity,
+                service_class: None,
+                economy_profile,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        };
+        allocator.registry.register("test", manifest, String::new());
+        format!("test:{asset_id}")
+    }
+
+    fn place_test_parcel_run(core: &mut SimCore, zone_type: ZoneType, start_x: f32, end_x: f32) {
+        let profile = core
+            .zoning
+            .profiles
+            .default_runtime_id_for_zone_type(zone_type)
+            .expect("test zoning profile");
+        core.zoning
+            .place_parcel_run_at(
+                start_x,
+                -20.0,
+                end_x,
+                -20.0,
+                profile,
+                20.0,
+                30.0,
+                0.0,
+                &core.region_graph,
+            )
+            .expect("test parcel run");
+    }
 
     #[test]
     fn absolute_operational_minute_is_day_stable() {
@@ -188,6 +377,65 @@ mod tests {
         assert!(immediate.residential.spawns.is_empty());
         assert_eq!(immediate.residential.despawns.len(), 1);
         assert!(demand_plan_has_non_spawn_actions(&immediate));
+    }
+
+    #[test]
+    fn max_demand_cheat_runtime_queues_and_executes_rci_spawns() {
+        let mut core = test_core();
+        add_test_border_road(&mut core);
+        register_test_asset(&mut core.allocator, "residential", ZoneType::Residential);
+        register_test_asset(&mut core.allocator, "commercial", ZoneType::Commercial);
+        register_test_asset(&mut core.allocator, "industrial", ZoneType::Industrial);
+        place_test_parcel_run(&mut core, ZoneType::Residential, 10.0, 50.0);
+        place_test_parcel_run(&mut core, ZoneType::Commercial, 60.0, 100.0);
+        place_test_parcel_run(&mut core, ZoneType::Industrial, 110.0, 150.0);
+
+        core.apply_money_and_max_demand_cheat(1_000_000.0);
+        core.execute_hourly_demand_pass(1, 0, &[]);
+
+        assert!(
+            core.pending_demand_spawns
+                .iter()
+                .any(|pending| pending.zone_type == ZoneType::Residential)
+        );
+        assert!(
+            core.pending_demand_spawns
+                .iter()
+                .any(|pending| pending.zone_type == ZoneType::Commercial)
+        );
+        assert!(
+            core.pending_demand_spawns
+                .iter()
+                .any(|pending| pending.zone_type == ZoneType::Industrial)
+        );
+
+        let queued_spawn_count = core.pending_demand_spawns.len();
+        let mut executed_spawn_count = 0_usize;
+        for minute_offset in 1..=queued_spawn_count {
+            executed_spawn_count +=
+                core.execute_pending_demand_spawns_for_minute(1, minute_offset as u16);
+        }
+
+        assert_eq!(executed_spawn_count, queued_spawn_count);
+        assert!(core.pending_demand_spawns.is_empty());
+        assert!(
+            core.allocator
+                .buildings
+                .iter()
+                .any(|building| building.zone_type == ZoneType::Residential)
+        );
+        assert!(
+            core.allocator
+                .buildings
+                .iter()
+                .any(|building| building.zone_type == ZoneType::Commercial)
+        );
+        assert!(
+            core.allocator
+                .buildings
+                .iter()
+                .any(|building| building.zone_type == ZoneType::Industrial)
+        );
     }
 
     #[test]
@@ -1020,6 +1268,15 @@ pub(crate) fn compile_road_preview_from_context(
 }
 
 impl SimCore {
+    /// Applies the gameplay cheat grant and pins all demand channels to maximum pressure.
+    pub(crate) fn apply_money_and_max_demand_cheat(&mut self, money_amount: f64) -> f64 {
+        if money_amount.is_finite() && money_amount > 0.0 {
+            self.treasury.balance += money_amount;
+        }
+        self.demand.enable_max_demand_cheat();
+        self.treasury.balance
+    }
+
     /// Applies a live service funding policy change from the UI.
     pub(crate) fn set_service_funding(&mut self, service_id: &str, funding: f32) -> bool {
         let funding = funding.clamp(0.0, 1.0);
@@ -2504,7 +2761,6 @@ pub(crate) fn run_sim_thread(
                     let road_total = Instant::now();
                     let lock_wait_start = Instant::now();
                     let (
-                        cache_inputs,
                         preview_context,
                         query_snapshot,
                         road_lock_wait_ms,
@@ -2574,10 +2830,7 @@ pub(crate) fn run_sim_thread(
                                 .lane_system
                                 .rebuild_edges_incremental(&mut c.region_graph, &dirty);
                             let dt_lanes_us = t_lanes.elapsed().as_micros();
-                            c.allocator.rebuild_entrance_cache(
-                                &c.region_graph,
-                                &c.transit_network.lane_system,
-                            );
+                            c.rebuild_building_entrances_internal();
 
                             // Rebuild CCH and run the connectivity check. This is the only
                             // place the CCH is actually rebuilt for road placements — the
@@ -2603,7 +2856,7 @@ pub(crate) fn run_sim_thread(
                         }
                         let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
                         let surface_start = Instant::now();
-                        c.rebuild_network_surface_terrain_internal();
+                        c.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
                         let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
                         let mesh_start = Instant::now();
                         c.precompute_road_mesh_data();
@@ -2614,20 +2867,14 @@ pub(crate) fn run_sim_thread(
                         let query_snapshot = RoadToolQuerySnapshot::from_core(&c);
                         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
                         let collect_refined_start = Instant::now();
-                        let cache_inputs = c.collect_refined_terrain_patch_build_inputs(
-                            ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-                        );
-                        let invalidated_refined_cache_entries = cache_inputs
-                            .iter()
-                            .filter(|input| {
-                                c.refined_terrain_patch_cache.remove(&input.key).is_some()
-                            })
-                            .count();
+                        let invalidated_refined_cache_entries = c
+                            .refresh_road_locked_terrain_patch_state(
+                                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+                            );
                         c.network_dirty = true;
                         let collect_refined_ms =
                             collect_refined_start.elapsed().as_secs_f64() * 1000.0;
                         (
-                            cache_inputs,
                             preview_context,
                             query_snapshot,
                             road_lock_wait_ms,
@@ -2640,19 +2887,11 @@ pub(crate) fn run_sim_thread(
                             invalidated_refined_cache_entries,
                         )
                     };
-                    let refined_input_count = cache_inputs.len();
-                    let refined_window_count = cache_inputs
-                        .iter()
-                        .map(|input| input.windows.len())
-                        .sum::<usize>();
-                    let refined_reused_windows = cache_inputs
-                        .iter()
-                        .flat_map(|input| input.windows.iter())
-                        .filter(|window| window.previous.is_some())
-                        .count();
+                    let refined_input_count = 0usize;
+                    let refined_window_count = 0usize;
+                    let refined_reused_windows = 0usize;
                     *road_preview_context.write().unwrap() = preview_context;
                     *road_query_snapshot.write().unwrap() = query_snapshot;
-                    drop(cache_inputs);
                     if crate::debug::is_perf_enabled() {
                         println!(
                             "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_build_ms={:.3} refined_cdt_sum_ms={:.3} refined_inputs={} refined_entries={} refined_windows={} refined_reused_windows={} refined_cache_invalidated={} insert_lock_wait_ms={:.3} insert_ms={:.3} refined_prebuild=skipped",

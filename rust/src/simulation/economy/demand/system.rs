@@ -29,6 +29,7 @@ pub struct DemandSystem {
     pub(super) config: Arc<DemandConfig>,
     pub(super) runtime_catalog: Arc<RuntimeEconomyCatalog>,
     pub(super) runtime_tuning: Arc<RuntimeEconomyTuning>,
+    pub(crate) cheat_max_demands_enabled: bool,
     pub(crate) residential: f32,
     pub(crate) commercial: f32,
     pub(crate) industrial: f32,
@@ -66,6 +67,7 @@ impl DemandSystem {
             config,
             runtime_catalog,
             runtime_tuning,
+            cheat_max_demands_enabled: false,
             residential: 0.0,
             commercial: 0.0,
             industrial: 0.0,
@@ -153,6 +155,7 @@ impl DemandSystem {
         );
 
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.apply_cheat_max_demands_if_enabled();
         let admission_threshold = self.config.household_action.admission_threshold;
         let admission_credit_before = self.admission_action_credit;
         let normalized_admission_pressure =
@@ -206,6 +209,7 @@ impl DemandSystem {
         downgrade_hysteresis_active: [bool; 3],
         despawn_hysteresis_active: [bool; 3],
         recent_household_failure_pressure: f32,
+        cheat_max_demands_enabled: bool,
     ) -> Self {
         let mut system = Self::new();
         system.residential = residential;
@@ -257,7 +261,25 @@ impl DemandSystem {
             industrial: despawn_hysteresis_active[2],
         };
         system.recent_household_failure_pressure = clamp01(recent_household_failure_pressure);
+        if cheat_max_demands_enabled {
+            system.enable_max_demand_cheat();
+        }
         system
+    }
+
+    /// Enables the persistent cheat override that pins every R/C/I demand channel to maximum.
+    pub(crate) fn enable_max_demand_cheat(&mut self) {
+        self.cheat_max_demands_enabled = true;
+        self.apply_cheat_max_demands_if_enabled();
+    }
+
+    fn apply_cheat_max_demands_if_enabled(&mut self) {
+        if !self.cheat_max_demands_enabled {
+            return;
+        }
+        self.residential = 1.0;
+        self.commercial = 1.0;
+        self.industrial = 1.0;
     }
 
     /// Records how many planned household arrivals actually launched as carriers.
@@ -327,6 +349,7 @@ impl DemandSystem {
             service_funding_by_building,
         );
         let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.apply_cheat_max_demands_if_enabled();
         self.households_to_admit_today = 0;
         let recent_failure_before = self.recent_household_failure_pressure;
         let decayed_recent_failure =
