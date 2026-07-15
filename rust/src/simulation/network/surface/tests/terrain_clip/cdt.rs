@@ -573,7 +573,7 @@ fn building_site_terrain_cdt_loop(
 fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
     for (case_name, edge_class, points) in [
         (
-            "bridge endpoint abutments",
+            "bridge structural span",
             EdgeClass::Bridge,
             vec![
                 Vector3::new(-24.0, 6.0, 0.0),
@@ -613,15 +613,20 @@ fn surface_terrain_cdt_skips_bridge_and_tunnel_midspan_support() {
             .compiled_visual_span_pieces()
             .get(&edge_idx)
             .unwrap_or_else(|| panic!("{case_name}: span should compile"));
-        assert!(!span_piece.span_earthwork_support_regions.is_empty());
-        assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, edge_class);
-        assert!(
-            span_piece
-                .span_earthwork_support_regions
-                .iter()
-                .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
-            "{case_name}: support regions must stay out of the midspan"
-        );
+        if edge_class == EdgeClass::Bridge {
+            assert!(span_piece.span_earthwork_support_regions.is_empty());
+            assert!(span_piece.render_earthwork_faces.is_empty());
+        } else {
+            assert!(!span_piece.span_earthwork_support_regions.is_empty());
+            assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, edge_class);
+            assert!(
+                span_piece
+                    .span_earthwork_support_regions
+                    .iter()
+                    .all(|region| !(region.start_s_m < 24.0 && region.end_s_m > 24.0)),
+                "{case_name}: support regions must stay out of the midspan"
+            );
+        }
         let (road_loops, source_count) = surface
             .terrain_cdt_road_loops_for_world_bounds(&graph, -8.0, -12.0, 8.0, 12.0)
             .expect("bridge/tunnel midspan query should not fail terrain clip export");

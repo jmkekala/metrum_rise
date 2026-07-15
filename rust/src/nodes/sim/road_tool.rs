@@ -28,19 +28,13 @@ impl RoadGhostSnapIndex {
         {
             let geom = &edge.physical_geometry;
             let end_index = geom.len() - 1;
-            let start_tangent = (geom[0] - geom[1]).normalized();
-            append_outward_snap_segment(
-                geom[0],
-                Vector2::new(start_tangent.x, start_tangent.z),
-                &mut segments,
-            );
+            if let Some(start_tangent) = endpoint_tangent_xz(geom[0], geom[1]) {
+                append_outward_snap_segment(geom[0], start_tangent, &mut segments);
+            }
 
-            let end_tangent = (geom[end_index] - geom[end_index - 1]).normalized();
-            append_outward_snap_segment(
-                geom[end_index],
-                Vector2::new(end_tangent.x, end_tangent.z),
-                &mut segments,
-            );
+            if let Some(end_tangent) = endpoint_tangent_xz(geom[end_index], geom[end_index - 1]) {
+                append_outward_snap_segment(geom[end_index], end_tangent, &mut segments);
+            }
 
             for offset_index in 1..=GHOST_MAX_OFFSETS {
                 let offset = offset_index as f32 * GHOST_GRID_SPACING_M;
@@ -123,6 +117,12 @@ impl PointDistance for RoadGhostSnapSegment {
     }
 }
 
+/// Returns the outward endpoint tangent normalized in the horizontal road plane.
+pub(crate) fn endpoint_tangent_xz(anchor: Vector3, neighbor: Vector3) -> Option<Vector2> {
+    let tangent = Vector2::new(anchor.x - neighbor.x, anchor.z - neighbor.z);
+    (tangent.length_squared() > 1e-6).then(|| tangent.normalized())
+}
+
 fn append_outward_snap_segment(
     anchor: Vector3,
     tangent: Vector2,
@@ -191,4 +191,21 @@ fn segments_cross_2d(a1: Vector2, b1: Vector2, a2: Vector2, b2: Vector2) -> bool
     let t = ((a2.x - a1.x) * d2.y - (a2.y - a1.y) * d2.x) / denom;
     let u = ((a2.x - a1.x) * d1.y - (a2.y - a1.y) * d1.x) / denom;
     t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::endpoint_tangent_xz;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn endpoint_tangent_xz_ignores_height_delta() {
+        let tangent =
+            endpoint_tangent_xz(Vector3::new(10.0, 100.0, 0.0), Vector3::new(0.0, 0.0, 0.0))
+                .expect("non-degenerate horizontal endpoint direction");
+
+        assert!((tangent.x - 1.0).abs() < 0.001);
+        assert!(tangent.y.abs() < 0.001);
+        assert!((tangent.length() - 1.0).abs() < 0.001);
+    }
 }

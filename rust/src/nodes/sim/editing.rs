@@ -496,7 +496,7 @@ impl SimCore {
         self.transit_network
             .rebuild_cch_and_check(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
-        self.network_dirty = true;
+        self.mark_network_render_dirty();
         self.terrain_dirty = true;
         self.cached_road_mesh_data = None;
         self.bump_road_tool_surface_generation();
@@ -928,7 +928,7 @@ impl SimCore {
                 .deduct_build_cost(build_length_m * ROAD_BUILD_COST_PER_METER);
         }
 
-        self.network_dirty = true;
+        self.mark_network_render_dirty();
         self.cached_road_mesh_data = None;
 
         // Store partial timing so the AddRoad handler can append the remaining phases.
@@ -1119,7 +1119,7 @@ impl SimCore {
                 &affected_nodes,
             );
             self.transit_network.mark_surface_point_dirty(old_pos);
-            self.network_dirty = true;
+            self.mark_network_render_dirty();
             self.cached_road_mesh_data = None;
         }
     }
@@ -1591,9 +1591,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
-                config.terrain_chunk_m,
-            ),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1629,6 +1627,8 @@ mod tests {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            cached_network_node_positions: std::sync::Arc::new(Vec::new()),
+            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }

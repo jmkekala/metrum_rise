@@ -116,7 +116,7 @@ impl RoadSurfaceSystem {
         Self::signed_polygon_area_xz(points).abs() > NODE_OVERLAY_MIN_AREA_M2
     }
 
-    pub(in crate::simulation::network::surface) fn triangle_has_area_xz(
+    pub(in crate::simulation::network) fn top_surface_triangle_is_renderable_xz(
         triangle: [RoadVec3; 3],
     ) -> bool {
         let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
@@ -130,6 +130,12 @@ impl RoadSurfaceSystem {
         let max_edge_m = edge_ab.length().max(edge_bc.length()).max(edge_ca.length());
         projected_cross.abs() / max_edge_m.max(f64::from(SAMPLE_EPSILON_M))
             >= f64::from(SURFACE_MIN_TRIANGLE_ALTITUDE_M)
+    }
+
+    pub(in crate::simulation::network::surface) fn triangle_has_area_xz(
+        triangle: [RoadVec3; 3],
+    ) -> bool {
+        Self::top_surface_triangle_is_renderable_xz(triangle)
     }
 
     pub(in crate::simulation::network::surface) fn road_triangle_double_area_xz_m2(

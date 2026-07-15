@@ -1035,6 +1035,56 @@ fn test_border_spawn_movement() {
 }
 
 #[test]
+fn test_border_freight_replans_after_empty_path_freeze() {
+    let (mut network, mut graph, _) = build_two_edge_road(1, 1);
+    let mut allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+    let start_node = 0_u32;
+    let border_node = 2_u32;
+    let start_pos = graph.node(start_node).pos;
+
+    let agent_idx = agents.spawn_border_arrival_agent(
+        usize::MAX,
+        border_node,
+        0.0,
+        0.0,
+        start_node,
+        start_pos.x,
+        start_pos.z,
+    );
+    agents.current_building[agent_idx] = usize::MAX;
+    agents.target_building[agent_idx] = usize::MAX;
+    agents.freight_target_border_node[agent_idx] = border_node;
+    agents.current_node[agent_idx] = start_node;
+    agents.current_edge[agent_idx] = usize::MAX;
+    agents.current_lane_id[agent_idx] = usize::MAX;
+    agents.current_path[agent_idx].clear();
+    agents.current_path_index[agent_idx] = 0;
+    agents.access_flags[agent_idx] = ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION;
+    agents.transit[agent_idx] = TRANSIT_NETWORK;
+    agents.transit_mode[agent_idx] = MODE_CAR;
+    agents.speed[agent_idx] = 0.0;
+
+    for _ in 0..80 {
+        agents.tick(&mut allocator, &mut network, &mut graph, 1.0, 0, 0);
+        if agents.current_node[agent_idx] == border_node
+            && agents.current_lane_id[agent_idx] == usize::MAX
+            && agents.current_path[agent_idx].is_empty()
+        {
+            return;
+        }
+    }
+
+    panic!(
+        "freight border carrier stayed stuck: node={} lane={} path={:?} speed={:.2}",
+        agents.current_node[agent_idx],
+        agents.current_lane_id[agent_idx],
+        agents.current_path[agent_idx],
+        agents.speed[agent_idx],
+    );
+}
+
+#[test]
 fn test_pedestrian_crosses_junction() {
     let mut network = TransitNetwork::new();
     let mut graph = RegionGraph::new();
@@ -1293,6 +1343,48 @@ fn bkw_vehicle_lanes(network: &TransitNetwork, edge_idx: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Returns all forward foot lane IDs for `edge_idx`.
+fn fwd_foot_lanes(network: &TransitNetwork, edge_idx: usize) -> Vec<usize> {
+    network.lane_system.edge_lanes[&edge_idx]
+        .iter()
+        .filter(|&&lid| {
+            let l = &network.lane_system.lanes[lid];
+            l.is_fwd && l.lane_type == crate::simulation::network::lanes::LaneType::Foot
+        })
+        .copied()
+        .collect()
+}
+
+fn fwd_foot_lane_to_edge(
+    network: &TransitNetwork,
+    edge_idx: usize,
+    target_edge_idx: usize,
+) -> usize {
+    for lane_id in fwd_foot_lanes(network, edge_idx) {
+        let lane = &network.lane_system.lanes[lane_id];
+        for &conn_lane_id in &lane.next_lanes {
+            let Some(conn_lane) = network.lane_system.lanes.get(conn_lane_id) else {
+                continue;
+            };
+            if conn_lane.edge_id != usize::MAX {
+                continue;
+            }
+            let Some(&target_lane_id) = conn_lane.next_lanes.first() else {
+                continue;
+            };
+            if network
+                .lane_system
+                .lanes
+                .get(target_lane_id)
+                .is_some_and(|target_lane| target_lane.edge_id == target_edge_idx)
+            {
+                return lane_id;
+            }
+        }
+    }
+    panic!("expected a forward foot lane from edge {edge_idx} to edge {target_edge_idx}");
+}
+
 /// Build a two-edge road n0 → n1 → n2 with the given lane counts.
 /// Returns `(network, graph, fwd_vehicle_lanes_on_edge_0)`.
 fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, Vec<usize>) {
@@ -1504,12 +1596,12 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     agents.current_node[idx] = west_node;
     agents.current_edge[idx] = west_edge;
     agents.current_lane_id[idx] = west_lane;
-    agents.lane_distance[idx] = (west_lane_len - 0.01).max(0.0);
+    agents.lane_distance[idx] = (west_lane_len - 5.0).max(0.0);
     agents.speed[idx] = 14.0;
     agents.current_path[idx] = vec![west_node, center_node, north_node];
     agents.current_path_index[idx] = 1;
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 1.0, 0, 0);
+    agents.tick(&mut allocator, &mut network, &mut graph, 10.0, 0, 0);
 
     let lane_id = agents.current_lane_id[idx];
     assert!(lane_id < network.lane_system.lanes.len());
@@ -1527,6 +1619,56 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     assert!(
         agents.lane_distance[idx] < network.lane_system.lanes[lane_id].length,
         "agent should remain inside the junction connector for this tick"
+    );
+}
+
+#[test]
+fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
+    let (mut network, mut graph, _) = build_4way_junction(1, 1);
+    graph.rebuild_intersection_clips();
+    network.lane_system.rebuild(&mut graph);
+    network.cch_graph = CchGraph::build(&graph);
+
+    let west_node = 1_u32;
+    let center_node = 0_u32;
+    let north_node = 3_u32;
+    let west_edge = 0_usize;
+    let north_edge = 2_usize;
+    let west_lane = fwd_foot_lane_to_edge(&network, west_edge, north_edge);
+    let west_lane_len = network.lane_system.lanes[west_lane].length;
+
+    let mut allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+    let idx =
+        agents.spawn_border_arrival_agent(usize::MAX, north_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    agents.transit[idx] = TRANSIT_NETWORK;
+    agents.transit_mode[idx] = MODE_WALK;
+    agents.current_node[idx] = west_node;
+    agents.current_edge[idx] = west_edge;
+    agents.current_lane_id[idx] = west_lane;
+    agents.lane_distance[idx] = (west_lane_len - 5.0).max(0.0);
+    agents.speed[idx] = 0.0;
+    agents.current_path[idx] = vec![west_node, center_node, north_node];
+    agents.current_path_index[idx] = 1;
+
+    agents.tick(&mut allocator, &mut network, &mut graph, 10.0, 0, 0);
+
+    let lane_id = agents.current_lane_id[idx];
+    assert!(lane_id < network.lane_system.lanes.len());
+    assert_eq!(
+        agents.transit[idx],
+        TRANSIT_INTERSECTION,
+        "post-tick lane={} edge={} d={:.3} len={:.3} next={:?}",
+        lane_id,
+        network.lane_system.lanes[lane_id].edge_id,
+        agents.lane_distance[idx],
+        network.lane_system.lanes[lane_id].length,
+        network.lane_system.lanes[lane_id].next_lanes,
+    );
+    assert_eq!(network.lane_system.lanes[lane_id].edge_id, usize::MAX);
+    assert!(
+        agents.lane_distance[idx] < network.lane_system.lanes[lane_id].length,
+        "walking agent should remain inside the junction connector for this tick"
     );
 }
 

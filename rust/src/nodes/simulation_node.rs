@@ -155,6 +155,7 @@ const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
 const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
+const TERRAIN_CDT_CONTRACT_REVISION: i64 = 2;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
@@ -363,6 +364,14 @@ impl WaterPatchMeshAsyncState {
             self.ready.push(key);
         }
     }
+
+    fn clear(&mut self) {
+        self.in_flight.clear();
+        self.requested.clear();
+        self.ready.clear();
+        self.ready_lookup.clear();
+        self.completed.clear();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -408,6 +417,12 @@ struct TerrainPatchPayload {
     data: TerrainPatchPayloadData,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerrainPatchPayloadRequestState {
+    request_id: u64,
+    surface_generation: u64,
+}
+
 enum TerrainPatchPayloadBuildJob {
     Ready(TerrainPatchPayload),
     Refined {
@@ -426,8 +441,8 @@ struct WaterPatchPayload {
 
 struct TerrainPatchPayloadAsyncState {
     next_request_id: u64,
-    requested: HashMap<TerrainPatchPayloadKey, u64>,
-    in_flight: HashMap<TerrainPatchPayloadKey, u64>,
+    requested: HashMap<TerrainPatchPayloadKey, TerrainPatchPayloadRequestState>,
+    in_flight: HashMap<TerrainPatchPayloadKey, TerrainPatchPayloadRequestState>,
     ready: Vec<TerrainPatchPayloadKey>,
     ready_lookup: HashSet<TerrainPatchPayloadKey>,
     payloads: HashMap<TerrainPatchPayloadKey, TerrainPatchPayload>,
@@ -447,14 +462,16 @@ impl TerrainPatchPayloadAsyncState {
         }
     }
 
-    fn request(&mut self, key: TerrainPatchPayloadKey) -> u64 {
+    fn request(&mut self, key: TerrainPatchPayloadKey, surface_generation: u64) -> u64 {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
-        self.requested.insert(key, request_id);
-        self.in_flight.insert(key, request_id);
-        self.payloads.remove(&key);
-        self.ready_lookup.remove(&key);
-        self.ready.retain(|ready_key| *ready_key != key);
+        let state = TerrainPatchPayloadRequestState {
+            request_id,
+            surface_generation,
+        };
+        self.requested.insert(key, state);
+        self.in_flight.insert(key, state);
+        self.remove_ready_payload(key);
         request_id
     }
 
@@ -464,14 +481,71 @@ impl TerrainPatchPayloadAsyncState {
         }
     }
 
+    fn remove_ready_payload(&mut self, key: TerrainPatchPayloadKey) {
+        self.payloads.remove(&key);
+        self.ready_lookup.remove(&key);
+        self.ready.retain(|ready_key| *ready_key != key);
+    }
+
+    fn remove_key(&mut self, key: TerrainPatchPayloadKey) {
+        self.requested.remove(&key);
+        self.in_flight.remove(&key);
+        self.remove_ready_payload(key);
+    }
+
+    fn drop_stale_key_for_generation(
+        &mut self,
+        key: TerrainPatchPayloadKey,
+        surface_generation: u64,
+    ) {
+        let requested_stale = self
+            .requested
+            .get(&key)
+            .is_some_and(|state| state.surface_generation != surface_generation);
+        let in_flight_stale = self
+            .in_flight
+            .get(&key)
+            .is_some_and(|state| state.surface_generation != surface_generation);
+        let payload_stale = self
+            .payloads
+            .get(&key)
+            .is_some_and(|payload| payload.surface_generation != surface_generation);
+        let ready_without_payload =
+            self.ready_lookup.contains(&key) && !self.payloads.contains_key(&key);
+        if requested_stale || in_flight_stale || payload_stale || ready_without_payload {
+            self.remove_key(key);
+        }
+    }
+
+    fn has_current_request(&self, key: TerrainPatchPayloadKey, surface_generation: u64) -> bool {
+        self.requested
+            .get(&key)
+            .is_some_and(|state| state.surface_generation == surface_generation)
+    }
+
+    fn has_current_in_flight(&self, key: TerrainPatchPayloadKey, surface_generation: u64) -> bool {
+        self.in_flight
+            .get(&key)
+            .is_some_and(|state| state.surface_generation == surface_generation)
+    }
+
+    fn has_current_ready(&self, key: TerrainPatchPayloadKey, surface_generation: u64) -> bool {
+        self.payloads
+            .get(&key)
+            .is_some_and(|payload| payload.surface_generation == surface_generation)
+    }
+
     fn ingest_completed(&mut self, completed: Vec<TerrainPatchPayload>) {
         for payload in completed {
             let key = payload.key;
-            let request_id = payload.request_id;
-            if self.in_flight.get(&key).copied() == Some(request_id) {
+            let completed_state = TerrainPatchPayloadRequestState {
+                request_id: payload.request_id,
+                surface_generation: payload.surface_generation,
+            };
+            if self.in_flight.get(&key).copied() == Some(completed_state) {
                 self.in_flight.remove(&key);
             }
-            if self.requested.get(&key).copied() != Some(request_id) {
+            if self.requested.get(&key).copied() != Some(completed_state) {
                 continue;
             }
             self.payloads.insert(key, payload);
@@ -543,6 +617,15 @@ impl WaterPatchPayloadAsyncState {
             self.queue_ready(key);
         }
     }
+
+    fn clear(&mut self) {
+        self.requested.clear();
+        self.in_flight.clear();
+        self.ready.clear();
+        self.ready_lookup.clear();
+        self.payloads.clear();
+        self.completed.clear();
+    }
 }
 
 struct RoadClipLoopQuery {
@@ -610,6 +693,16 @@ impl SimulationNode {
                 e.into_inner()
             }
         }
+    }
+
+    fn clear_terrain_patch_payload_jobs(&self) {
+        self.lock_terrain_patch_payload_jobs().clear();
+    }
+
+    fn clear_runtime_render_async_jobs(&self) {
+        self.clear_terrain_patch_payload_jobs();
+        self.lock_water_patch_payload_jobs().clear();
+        self.lock_water_patch_mesh_jobs().clear();
     }
 
     fn lock_water_patch_payload_jobs(
@@ -730,6 +823,18 @@ impl SimulationNode {
             patch_z: request.key.patch_z,
             render_step_mm: request.key.render_step_mm,
         };
+        if core
+            .refined_terrain_patch_cache
+            .get(&cache_key)
+            .is_some_and(|cached| {
+                !Self::refined_terrain_patch_cache_entry_is_current(
+                    cached,
+                    request.surface_generation,
+                )
+            })
+        {
+            core.refined_terrain_patch_cache.remove(&cache_key);
+        }
         if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
             return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
                 key: request.key,
@@ -775,7 +880,15 @@ impl SimulationNode {
             base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
             base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
         );
-        let previous = core.refined_terrain_patch_cache.get(&cache_key);
+        let previous = core
+            .refined_terrain_patch_cache
+            .get(&cache_key)
+            .filter(|cached| {
+                Self::refined_terrain_patch_cache_entry_is_current(
+                    cached,
+                    request.surface_generation,
+                )
+            });
         let windows = Self::terrain_cdt_window_build_inputs(
             &core.heightmap,
             &base_patch,
@@ -791,6 +904,7 @@ impl SimulationNode {
         );
         let input = RefinedTerrainPatchBuildInput {
             key: cache_key,
+            surface_generation: request.surface_generation,
             patch: base_patch,
             windows,
             road_clip_source_count: road_clip_query.source_count,
@@ -819,6 +933,35 @@ impl SimulationNode {
             }
         }
         (ready, refined_requests, refined_inputs)
+    }
+
+    fn append_refined_terrain_patch_payloads_for_requests(
+        built: &mut Vec<TerrainPatchPayload>,
+        refined_requests: &[TerrainPatchPayloadRequest],
+        refined_entries: &[CachedRefinedTerrainPatch],
+    ) {
+        let entries_by_key = refined_entries
+            .iter()
+            .map(|entry| (entry.key, entry))
+            .collect::<HashMap<_, _>>();
+        for request in refined_requests {
+            let cache_key = RefinedTerrainPatchCacheKey {
+                patch_x: request.key.patch_x,
+                patch_z: request.key.patch_z,
+                render_step_mm: request.key.render_step_mm,
+            };
+            let Some(entry) = entries_by_key.get(&cache_key) else {
+                continue;
+            };
+            built.push(TerrainPatchPayload {
+                key: request.key,
+                request_id: request.request_id,
+                surface_generation: request.surface_generation,
+                data: TerrainPatchPayloadData::Refined {
+                    patch: (**entry).clone(),
+                },
+            });
+        }
     }
 
     fn water_patch_payload_for_request(
@@ -947,7 +1090,7 @@ impl SimulationNode {
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
         let (snapshot, preview_context, road_query_snapshot) = {
-            let core = self.lock_core();
+            let mut core = self.lock_core();
             (
                 core.build_snapshot(),
                 RoadPreviewWorkerContext::from_core(&core),
@@ -1245,6 +1388,7 @@ impl SimulationNode {
         cached: &CachedRefinedTerrainPatch,
         include_debug: bool,
     ) {
+        Self::append_cdt_contract_metadata(dict);
         if cached.input_road_loops == 0 {
             if let Some(error_label) = cached.clip_error_label {
                 Self::append_empty_cdt_failure(dict, error_label, include_debug);
@@ -1276,7 +1420,7 @@ impl SimulationNode {
 
         let has_conflicts = successful_windows
             .iter()
-            .any(|(_, mesh)| mesh.stats.invalid_constraint_edges > 0);
+            .any(|(_, mesh)| Self::terrain_cdt_stats_have_constraint_conflicts(mesh.stats));
         if include_debug {
             Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
         }
@@ -1321,6 +1465,11 @@ impl SimulationNode {
         }
     }
 
+    fn terrain_cdt_stats_have_constraint_conflicts(stats: TerrainCdtStats) -> bool {
+        stats.invalid_constraint_edges > 0
+            || stats.preserved_road_constraint_edges < stats.road_constraint_edges
+    }
+
     fn terrain_cdt_output_is_pathological(
         max_face_slope_ratio: f32,
         longest_triangle_edge_m: f32,
@@ -1360,6 +1509,7 @@ impl SimulationNode {
     }
 
     fn append_cdt_stats(dict: &mut VarDictionary, stats: TerrainCdtStats) {
+        Self::append_cdt_contract_metadata(dict);
         dict.set(
             "terrain_cdt_input_vertices",
             i64::try_from(stats.input_vertices).unwrap_or(0),
@@ -1383,6 +1533,18 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_preserved_road_constraint_edges",
             i64::try_from(stats.preserved_road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_spade_missing_road_constraint_edges",
+            i64::try_from(stats.spade_missing_road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_rejected_road_constraint_edges",
+            i64::try_from(stats.rejected_road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_internal_road_constraint_edges",
+            i64::try_from(stats.internal_road_constraint_edges).unwrap_or(0),
         );
         dict.set(
             "terrain_cdt_invalid_constraints",
@@ -2030,7 +2192,7 @@ impl SimulationNode {
                 let cdt_ms = cdt_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0);
-                let has_conflicts = mesh.stats.invalid_constraint_edges > 0;
+                let has_conflicts = Self::terrain_cdt_stats_have_constraint_conflicts(mesh.stats);
                 let metadata_start = road_debug.then(Instant::now);
                 if include_debug {
                     Self::append_cdt_diagnostic_metadata(dict, TERRAIN_CDT_BACKEND_SPADE_LABEL);
@@ -2147,6 +2309,7 @@ impl SimulationNode {
         error_label: &'static str,
         include_debug: bool,
     ) {
+        Self::append_cdt_contract_metadata(dict);
         dict.set("terrain_cdt_status", GString::from("failed"));
         dict.set("terrain_cdt_pathological_output", false);
         dict.set("terrain_cdt_mesh_suppressed", false);
@@ -2167,6 +2330,9 @@ impl SimulationNode {
         dict.set("terrain_cdt_accepted_faces", 0i64);
         dict.set("terrain_cdt_rejected_road_faces", 0i64);
         dict.set("terrain_cdt_preserved_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_spade_missing_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_rejected_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_internal_road_constraint_edges", 0i64);
         dict.set("terrain_cdt_invalid_constraints", 1i64);
         dict.set("terrain_cdt_emitted_faces", 0i64);
         dict.set("terrain_cdt_retaining_wall_emitted_faces", 0i64);
@@ -2294,6 +2460,21 @@ impl SimulationNode {
         Self::append_empty_cdt_sample_source_export(dict, "terrain_cdt_invalid_constraint");
         Self::append_empty_cdt_face_source_export(dict, "terrain_mesh");
         Self::append_empty_cdt_face_source_export(dict, "terrain_retaining_wall_mesh");
+    }
+
+    fn append_cdt_contract_metadata(dict: &mut VarDictionary) {
+        dict.set(
+            "terrain_cdt_contract_revision",
+            TERRAIN_CDT_CONTRACT_REVISION,
+        );
+    }
+
+    fn refined_terrain_patch_cache_entry_is_current(
+        cached: &CachedRefinedTerrainPatch,
+        surface_generation: u64,
+    ) -> bool {
+        cached.contract_revision == TERRAIN_CDT_CONTRACT_REVISION
+            && cached.surface_generation == surface_generation
     }
 
     fn append_cdt_diagnostic_metadata(dict: &mut VarDictionary, backend_label: &str) {
@@ -2473,7 +2654,6 @@ impl SimulationNode {
                     max_z,
                     safe_render_step_m,
                     &mut tie_in_guide_samples,
-                    &mut tie_in_guide_constraints,
                     &mut sample_keys,
                 );
         }
@@ -2648,7 +2828,6 @@ impl SimulationNode {
                     max_z,
                     safe_render_step_m,
                     &mut tie_in_guide_samples,
-                    &mut tie_in_guide_constraints,
                     &mut sample_keys,
                 );
         }
@@ -2715,6 +2894,7 @@ impl SimulationNode {
 
     fn terrain_cdt_input_fingerprint(input: &TerrainCdtInput) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        Self::hash_i64(&mut hash, TERRAIN_CDT_CONTRACT_REVISION);
         Self::hash_u64(&mut hash, input.road_loops.len() as u64);
         for road_loop in &input.road_loops {
             Self::hash_u64(&mut hash, road_loop.stable_piece_id);
@@ -3242,15 +3422,15 @@ impl SimulationNode {
             let normal = raw_normal.normalized();
             let (face_y_delta_m, face_slope_ratio, face_longest_edge_m) =
                 Self::terrain_buffer_triangle_metrics(points);
-            max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
-            max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
-            longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
             if omit_pathological_terrain_faces
                 && Self::terrain_cdt_output_is_pathological(face_slope_ratio, face_longest_edge_m)
             {
                 omitted_pathological_faces += 1;
                 continue;
             }
+            max_face_y_delta_m = max_face_y_delta_m.max(face_y_delta_m);
+            max_face_slope_ratio = max_face_slope_ratio.max(face_slope_ratio);
+            longest_triangle_edge_m = longest_triangle_edge_m.max(face_longest_edge_m);
             emitted_faces += 1;
             if include_debug {
                 let triangle_face_sources = triangle_sources
@@ -4449,6 +4629,7 @@ impl SimulationNode {
         stats.set("accepted_count", 0_i64);
         stats.set("duplicate_count", 0_i64);
         stats.set("in_flight_count", 0_i64);
+        stats.set("ready_count", 0_i64);
         stats.set("build_queued_count", 0_i64);
         if requests.is_empty() {
             return stats;
@@ -4457,6 +4638,7 @@ impl SimulationNode {
         let mut accepted_count = 0_usize;
         let mut duplicate_count = 0_usize;
         let mut in_flight_count = 0_usize;
+        let mut ready_count = 0_usize;
         let mut build_queued_count = 0_usize;
         let mut build_requests = Vec::new();
         let surface_generation = self
@@ -4472,8 +4654,16 @@ impl SimulationNode {
                     duplicate_count += 1;
                     continue;
                 }
-                in_flight_count += usize::from(jobs.in_flight.contains_key(&key));
-                let request_id = jobs.request(key);
+                jobs.drop_stale_key_for_generation(key, surface_generation);
+                let in_flight = jobs.has_current_in_flight(key, surface_generation);
+                let ready = jobs.has_current_ready(key, surface_generation);
+                if jobs.has_current_request(key, surface_generation) || in_flight || ready {
+                    duplicate_count += 1;
+                    in_flight_count += usize::from(in_flight);
+                    ready_count += usize::from(ready);
+                    continue;
+                }
+                let request_id = jobs.request(key, surface_generation);
                 build_requests.push(TerrainPatchPayloadRequest {
                     key,
                     request_id,
@@ -4533,16 +4723,11 @@ impl SimulationNode {
                     SimCore::build_refined_terrain_patch_cache_entries(refined_inputs)
                 };
                 let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
-                for (request, entry) in refined_requests.iter().zip(refined_entries.iter()) {
-                    built.push(TerrainPatchPayload {
-                        key: request.key,
-                        request_id: request.request_id,
-                        surface_generation: request.surface_generation,
-                        data: TerrainPatchPayloadData::Refined {
-                            patch: entry.clone(),
-                        },
-                    });
-                }
+                Self::append_refined_terrain_patch_payloads_for_requests(
+                    &mut built,
+                    &refined_requests,
+                    &refined_entries,
+                );
                 let mut cache_inserted = false;
                 if !refined_entries.is_empty() {
                     match core.try_lock() {
@@ -4594,6 +4779,10 @@ impl SimulationNode {
             i64::try_from(in_flight_count).unwrap_or(i64::MAX),
         );
         stats.set(
+            "ready_count",
+            i64::try_from(ready_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
             "build_queued_count",
             i64::try_from(build_queued_count).unwrap_or(i64::MAX),
         );
@@ -4606,6 +4795,11 @@ impl SimulationNode {
         let completed_payloads = self.drain_completed_terrain_patch_payload_jobs();
         let completed_count = completed_payloads.len();
         let max_patches = usize::try_from(max_patches).unwrap_or(0);
+        let current_surface_generation = self
+            .road_tool_query_snapshot
+            .read()
+            .unwrap()
+            .surface_generation;
         let mut patches = VarArray::new();
         let mut stats = VarDictionary::new();
         stats.set("patches", patches.to_variant());
@@ -4655,8 +4849,17 @@ impl SimulationNode {
                 jobs.requested.remove(&key);
                 continue;
             };
-            if jobs.requested.get(&key).copied() != Some(payload.request_id) {
+            let payload_state = TerrainPatchPayloadRequestState {
+                request_id: payload.request_id,
+                surface_generation: payload.surface_generation,
+            };
+            if jobs.requested.get(&key).copied() != Some(payload_state) {
                 stale_ready_count += 1;
+                continue;
+            }
+            if payload.surface_generation != current_surface_generation {
+                stale_ready_count += 1;
+                jobs.requested.remove(&key);
                 continue;
             }
             jobs.requested.remove(&key);
@@ -4706,8 +4909,18 @@ impl SimulationNode {
         let Ok(patch_z) = usize::try_from(patch_z) else {
             return VarDictionary::new();
         };
-        let core = self.lock_core();
+        let mut core = self.lock_core();
         let cache_key = Self::refined_patch_cache_key(patch_x, patch_z, render_step_m);
+        let surface_generation = core.road_tool_surface_generation;
+        if core
+            .refined_terrain_patch_cache
+            .get(&cache_key)
+            .is_some_and(|cached| {
+                !Self::refined_terrain_patch_cache_entry_is_current(cached, surface_generation)
+            })
+        {
+            core.refined_terrain_patch_cache.remove(&cache_key);
+        }
         if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
             let road_debug = crate::debug::category_enabled("road");
             let total_start = road_debug.then(Instant::now);
@@ -5577,7 +5790,7 @@ impl SimulationNode {
         };
 
         if road_deleted {
-            self.lock_terrain_patch_payload_jobs().clear();
+            self.clear_terrain_patch_payload_jobs();
             let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
             let mut core = self.lock_core();
             core.insert_refined_terrain_patch_cache_entries(cache_entries);
@@ -7406,6 +7619,9 @@ impl SimulationNode {
         start_tangent_angle: f32,
         ghost_enabled: bool,
         border_snap_dist_m: f32,
+        sticky_network_snap_active: bool,
+        sticky_network_snap_pos: Vector3,
+        sticky_network_snap_release_dist_m: f32,
     ) -> Variant {
         let query = self.road_tool_query_snapshot.read().unwrap();
         let (world_w, world_h) = query.terrain.world_size();
@@ -7413,13 +7629,19 @@ impl SimulationNode {
         let half_h = world_h * 0.5;
         let border_snap_dist = border_snap_dist_m.min(half_w.min(half_h));
 
-        let mut pos = match query.road_surface.raycast_visible_surface(
+        let road_hit = query.road_surface.raycast_road_visible_surface(
             &query.region_graph,
             &query.terrain,
             ray_origin,
             ray_dir,
-        ) {
-            Some(hit) => hit,
+        );
+        let terrain_hit = query.terrain.raycast_visual_terrain(ray_origin, ray_dir);
+        let mut pos = match Self::road_tool_closest_cursor_hit(ray_origin, road_hit, terrain_hit) {
+            Some((hit, true)) => hit,
+            Some((mut hit, false)) => {
+                hit.y += altitude_offset_m;
+                hit
+            }
             None => {
                 if ray_dir.y >= -0.001 {
                     return Variant::nil();
@@ -7429,23 +7651,11 @@ impl SimulationNode {
                 hit.x = hit.x.clamp(-half_w, half_w);
                 hit.z = hit.z.clamp(-half_h, half_h);
                 hit = Self::road_tool_snap_to_border(hit, half_w, half_h);
-                hit.y = query
-                    .road_surface
-                    .sample_visible_surface_height(
-                        &query.region_graph,
-                        &query.terrain,
-                        hit.x,
-                        hit.z,
-                    )
-                    .unwrap_or_else(|| {
-                        query.terrain.sample_visual_height_world(hit.x, hit.z)
-                            * crate::config::HEIGHT_SCALE
-                    });
+                hit.y =
+                    Self::road_tool_cursor_height_at_xz(&query, hit.x, hit.z, altitude_offset_m);
                 return hit.to_variant();
             }
         };
-
-        pos.y += altitude_offset_m;
 
         if active && shift_pressed {
             let ref_pos = if current_state == 1 {
@@ -7461,8 +7671,27 @@ impl SimulationNode {
                     ((dir.z.atan2(dir.x) - start_tangent_angle) / snap_rad).round() * snap_rad;
                 let angle = start_tangent_angle + relative;
                 let snapped_length = ((length / 10.0).round() * 10.0).max(10.0);
+                let snapped_height = pos.y;
                 pos = ref_pos + Vector3::new(angle.cos(), 0.0, angle.sin()) * snapped_length;
+                pos.y = snapped_height;
             }
+        }
+
+        if Self::road_tool_should_keep_sticky_network_snap(
+            &query.region_graph,
+            pos,
+            sticky_network_snap_active,
+            sticky_network_snap_pos,
+            sticky_network_snap_release_dist_m,
+        ) {
+            let mut sticky_pos = sticky_network_snap_pos;
+            sticky_pos.y = Self::road_tool_cursor_height_at_xz(
+                &query,
+                sticky_pos.x,
+                sticky_pos.z,
+                altitude_offset_m,
+            );
+            return sticky_pos.to_variant();
         }
 
         if let Some(mut snapped_pos) = crate::simulation::network::interaction::get_closest_point_xz(
@@ -7470,21 +7699,12 @@ impl SimulationNode {
             pos,
             5.0,
         ) {
-            snapped_pos.y = query
-                .road_surface
-                .sample_visible_surface_height(
-                    &query.region_graph,
-                    &query.terrain,
-                    snapped_pos.x,
-                    snapped_pos.z,
-                )
-                .unwrap_or_else(|| {
-                    query
-                        .terrain
-                        .sample_visual_height_world(snapped_pos.x, snapped_pos.z)
-                        * crate::config::HEIGHT_SCALE
-                })
-                + altitude_offset_m;
+            snapped_pos.y = Self::road_tool_cursor_height_at_xz(
+                &query,
+                snapped_pos.x,
+                snapped_pos.z,
+                altitude_offset_m,
+            );
             return snapped_pos.to_variant();
         }
 
@@ -7505,13 +7725,7 @@ impl SimulationNode {
 
         if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
             pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
-            pos.y = query
-                .road_surface
-                .sample_visible_surface_height(&query.region_graph, &query.terrain, pos.x, pos.z)
-                .unwrap_or_else(|| {
-                    query.terrain.sample_visual_height_world(pos.x, pos.z)
-                        * crate::config::HEIGHT_SCALE
-                });
+            pos.y = Self::road_tool_cursor_height_at_xz(&query, pos.x, pos.z, altitude_offset_m);
             return pos.to_variant();
         }
 
@@ -7525,6 +7739,65 @@ impl SimulationNode {
         }
 
         pos.to_variant()
+    }
+
+    fn road_tool_should_keep_sticky_network_snap(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        cursor_pos: Vector3,
+        sticky_active: bool,
+        sticky_pos: Vector3,
+        release_dist_m: f32,
+    ) -> bool {
+        if !sticky_active || release_dist_m <= 0.0 {
+            return false;
+        }
+        let dx = cursor_pos.x - sticky_pos.x;
+        let dz = cursor_pos.z - sticky_pos.z;
+        if dx * dx + dz * dz > release_dist_m * release_dist_m {
+            return false;
+        }
+        crate::simulation::network::interaction::get_closest_point_xz(graph, sticky_pos, 0.25)
+            .is_some_and(|network_pos| {
+                let dx = network_pos.x - sticky_pos.x;
+                let dz = network_pos.z - sticky_pos.z;
+                dx * dx + dz * dz <= 0.25 * 0.25
+            })
+    }
+
+    fn road_tool_closest_cursor_hit(
+        ray_origin: Vector3,
+        road_hit: Option<Vector3>,
+        terrain_hit: Option<Vector3>,
+    ) -> Option<(Vector3, bool)> {
+        match (road_hit, terrain_hit) {
+            (Some(road), Some(terrain)) => {
+                let road_dist_sq = (road - ray_origin).length_squared();
+                let terrain_dist_sq = (terrain - ray_origin).length_squared();
+                if road_dist_sq <= terrain_dist_sq {
+                    Some((road, true))
+                } else {
+                    Some((terrain, false))
+                }
+            }
+            (Some(road), None) => Some((road, true)),
+            (None, Some(terrain)) => Some((terrain, false)),
+            (None, None) => None,
+        }
+    }
+
+    fn road_tool_cursor_height_at_xz(
+        query: &RoadToolQuerySnapshot,
+        x: f32,
+        z: f32,
+        altitude_offset_m: f32,
+    ) -> f32 {
+        query
+            .road_surface
+            .sample_visible_surface_height(&query.region_graph, &query.terrain, x, z)
+            .unwrap_or_else(|| {
+                query.terrain.sample_visual_height_world(x, z) * crate::config::HEIGHT_SCALE
+                    + altitude_offset_m
+            })
     }
 
     /// Returns the ID of the closest network node.
@@ -7778,6 +8051,7 @@ impl SimulationNode {
         };
         match result {
             Ok(()) => {
+                self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 true
             }
@@ -7824,6 +8098,7 @@ impl SimulationNode {
         };
         match result {
             Ok(()) => {
+                self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 true
             }
@@ -7843,6 +8118,7 @@ impl SimulationNode {
         };
         match result {
             Ok(()) => {
+                self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
                 true
             }
@@ -8339,9 +8615,7 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
-                config.terrain_chunk_m,
-            ),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -8381,6 +8655,8 @@ impl INode3D for SimulationNode {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            cached_network_node_positions: Arc::new(Vec::new()),
+            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
@@ -8603,6 +8879,7 @@ impl SimCore {
             return Vec::new();
         }
 
+        let surface_generation = self.road_tool_surface_generation;
         let mut inputs = Vec::new();
         for (patch_x, patch_z) in dirty_patches.iter().copied() {
             if !road_locked_keys.contains(&(patch_x, patch_z)) {
@@ -8624,6 +8901,18 @@ impl SimCore {
                 base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
             );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
+            if self
+                .refined_terrain_patch_cache
+                .get(&key)
+                .is_some_and(|cached| {
+                    !SimulationNode::refined_terrain_patch_cache_entry_is_current(
+                        cached,
+                        surface_generation,
+                    )
+                })
+            {
+                self.refined_terrain_patch_cache.remove(&key);
+            }
             let previous = self.refined_terrain_patch_cache.get(&key);
             let windows = SimulationNode::terrain_cdt_window_build_inputs(
                 &self.heightmap,
@@ -8640,6 +8929,7 @@ impl SimCore {
             );
             inputs.push(RefinedTerrainPatchBuildInput {
                 key,
+                surface_generation,
                 patch: base_patch,
                 windows,
                 road_clip_source_count: road_clip_query.source_count,
@@ -8824,6 +9114,8 @@ impl SimCore {
                     .sum::<usize>();
                 CachedRefinedTerrainPatch {
                     key: input.key,
+                    contract_revision: TERRAIN_CDT_CONTRACT_REVISION,
+                    surface_generation: input.surface_generation,
                     patch: input.patch,
                     input_road_loops,
                     input_source_samples,
@@ -8840,10 +9132,9 @@ impl SimCore {
         if road_debug {
             for entry in &entries {
                 let has_conflicts = entry.windows.iter().any(|window| {
-                    window
-                        .mesh_result
-                        .as_ref()
-                        .is_ok_and(|mesh| mesh.stats.invalid_constraint_edges > 0)
+                    window.mesh_result.as_ref().is_ok_and(|mesh| {
+                        SimulationNode::terrain_cdt_stats_have_constraint_conflicts(mesh.stats)
+                    })
                 });
                 let error_label = entry
                     .windows
@@ -8951,8 +9242,14 @@ impl SimCore {
         &mut self,
         entries: Vec<CachedRefinedTerrainPatch>,
     ) {
+        let surface_generation = self.road_tool_surface_generation;
         for entry in entries {
-            self.refined_terrain_patch_cache.insert(entry.key, entry);
+            if SimulationNode::refined_terrain_patch_cache_entry_is_current(
+                &entry,
+                surface_generation,
+            ) {
+                self.refined_terrain_patch_cache.insert(entry.key, entry);
+            }
         }
     }
 }
@@ -8965,6 +9262,235 @@ mod tests {
         TerrainCdtEarthworkSupportPolicy, TerrainCdtEdgeClass, TerrainCdtNodePieceKind,
         TerrainCdtRoadBandKind, TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole,
     };
+
+    #[test]
+    fn road_tool_cursor_classifies_closer_road_hit_as_absolute_height() {
+        let ray_origin = Vector3::new(0.0, 10.0, 0.0);
+        let road_hit = Vector3::new(0.0, 4.0, 0.0);
+        let terrain_hit = Vector3::new(0.0, 0.0, 0.0);
+
+        let (hit, road_owned) = SimulationNode::road_tool_closest_cursor_hit(
+            ray_origin,
+            Some(road_hit),
+            Some(terrain_hit),
+        )
+        .expect("cursor should select one visible hit");
+
+        assert_eq!(hit, road_hit);
+        assert!(
+            road_owned,
+            "road-owned cursor hits must be treated as absolute heights, not terrain plus heightpoint"
+        );
+    }
+
+    #[test]
+    fn road_tool_cursor_classifies_closer_terrain_hit_as_offsettable_height() {
+        let ray_origin = Vector3::new(0.0, 10.0, 0.0);
+        let road_hit = Vector3::new(0.0, -2.0, 0.0);
+        let terrain_hit = Vector3::new(0.0, 0.0, 0.0);
+
+        let (hit, road_owned) = SimulationNode::road_tool_closest_cursor_hit(
+            ray_origin,
+            Some(road_hit),
+            Some(terrain_hit),
+        )
+        .expect("cursor should select one visible hit");
+
+        assert_eq!(hit, terrain_hit);
+        assert!(
+            !road_owned,
+            "terrain cursor hits must remain eligible for the road-tool heightpoint"
+        );
+    }
+
+    #[test]
+    fn road_tool_sticky_network_snap_holds_inside_release_radius() {
+        let graph = test_snap_graph();
+
+        assert!(SimulationNode::road_tool_should_keep_sticky_network_snap(
+            &graph,
+            Vector3::new(4.0, 0.0, 7.9),
+            true,
+            Vector3::new(4.0, 0.0, 0.0),
+            8.0,
+        ));
+    }
+
+    #[test]
+    fn road_tool_sticky_network_snap_releases_outside_release_radius() {
+        let graph = test_snap_graph();
+
+        assert!(!SimulationNode::road_tool_should_keep_sticky_network_snap(
+            &graph,
+            Vector3::new(4.0, 0.0, 8.1),
+            true,
+            Vector3::new(4.0, 0.0, 0.0),
+            8.0,
+        ));
+    }
+
+    #[test]
+    fn road_tool_sticky_network_snap_rejects_non_network_anchor() {
+        let graph = test_snap_graph();
+
+        assert!(!SimulationNode::road_tool_should_keep_sticky_network_snap(
+            &graph,
+            Vector3::new(40.0, 0.0, 40.0),
+            true,
+            Vector3::new(40.0, 0.0, 40.0),
+            8.0,
+        ));
+    }
+
+    #[test]
+    fn terrain_patch_payload_async_clear_drops_stale_world_payloads() {
+        let mut state = TerrainPatchPayloadAsyncState::new();
+        let key = TerrainPatchPayloadKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 0,
+        };
+        let request_id = state.request(key, 1);
+        let payload = TerrainPatchPayload {
+            key,
+            request_id,
+            surface_generation: 1,
+            data: TerrainPatchPayloadData::Regular {
+                patch: test_patch(),
+                height_bytes: Vec::new(),
+            },
+        };
+        state.completed.push(payload);
+        let completed = std::mem::take(&mut state.completed);
+        state.ingest_completed(completed);
+
+        assert!(state.ready_lookup.contains(&key));
+        assert!(state.payloads.contains_key(&key));
+
+        state.clear();
+
+        assert!(state.requested.is_empty());
+        assert!(state.in_flight.is_empty());
+        assert!(state.ready.is_empty());
+        assert!(state.ready_lookup.is_empty());
+        assert!(state.payloads.is_empty());
+        assert!(state.completed.is_empty());
+    }
+
+    #[test]
+    fn terrain_patch_payload_async_generation_change_requeues_key() {
+        let mut state = TerrainPatchPayloadAsyncState::new();
+        let key = TerrainPatchPayloadKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        };
+        let old_request_id = state.request(key, 1);
+        let old_payload = TerrainPatchPayload {
+            key,
+            request_id: old_request_id,
+            surface_generation: 1,
+            data: TerrainPatchPayloadData::Regular {
+                patch: test_patch(),
+                height_bytes: Vec::new(),
+            },
+        };
+        state.ingest_completed(vec![old_payload]);
+        assert!(state.has_current_request(key, 1));
+        assert!(state.has_current_ready(key, 1));
+
+        state.drop_stale_key_for_generation(key, 2);
+        assert!(!state.has_current_request(key, 1));
+        assert!(!state.has_current_ready(key, 1));
+
+        let new_request_id = state.request(key, 2);
+        assert_ne!(old_request_id, new_request_id);
+        assert!(state.has_current_request(key, 2));
+        assert!(state.has_current_in_flight(key, 2));
+    }
+
+    #[test]
+    fn refined_terrain_patch_cache_rejects_stale_contract_or_generation() {
+        let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 7);
+
+        assert!(SimulationNode::refined_terrain_patch_cache_entry_is_current(&cached, 7));
+
+        cached.contract_revision = TERRAIN_CDT_CONTRACT_REVISION - 1;
+
+        assert!(!SimulationNode::refined_terrain_patch_cache_entry_is_current(&cached, 7));
+
+        cached.contract_revision = TERRAIN_CDT_CONTRACT_REVISION;
+        cached.surface_generation = 6;
+
+        assert!(!SimulationNode::refined_terrain_patch_cache_entry_is_current(&cached, 7));
+    }
+
+    #[test]
+    fn refined_terrain_patch_cache_insert_drops_stale_generation() {
+        let mut core = test_core_with_flat_terrain(0.0);
+        core.road_tool_surface_generation = 7;
+        let key = RefinedTerrainPatchCacheKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        };
+
+        core.insert_refined_terrain_patch_cache_entries(vec![test_cached_refined_terrain_patch(
+            TERRAIN_CDT_CONTRACT_REVISION,
+            6,
+        )]);
+
+        assert!(!core.refined_terrain_patch_cache.contains_key(&key));
+
+        core.insert_refined_terrain_patch_cache_entries(vec![test_cached_refined_terrain_patch(
+            TERRAIN_CDT_CONTRACT_REVISION,
+            7,
+        )]);
+
+        assert!(core.refined_terrain_patch_cache.contains_key(&key));
+    }
+
+    #[test]
+    fn refined_async_payloads_follow_request_keys_after_cache_sort() {
+        let request_high_key = TerrainPatchPayloadKey {
+            patch_x: 9,
+            patch_z: 0,
+            render_step_mm: 2000,
+        };
+        let request_low_key = TerrainPatchPayloadKey {
+            patch_x: 1,
+            patch_z: 0,
+            render_step_mm: 2000,
+        };
+        let requests = vec![
+            TerrainPatchPayloadRequest {
+                key: request_high_key,
+                request_id: 11,
+                surface_generation: 7,
+            },
+            TerrainPatchPayloadRequest {
+                key: request_low_key,
+                request_id: 12,
+                surface_generation: 7,
+            },
+        ];
+        let mut entry_low = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 7);
+        entry_low.key.patch_x = 1;
+        let mut entry_high = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 7);
+        entry_high.key.patch_x = 9;
+        let entries = vec![entry_low, entry_high];
+        let mut built = Vec::new();
+
+        SimulationNode::append_refined_terrain_patch_payloads_for_requests(
+            &mut built, &requests, &entries,
+        );
+
+        assert_eq!(built.len(), 2);
+        assert_eq!(built[0].key, request_high_key);
+        assert_refined_payload_cache_key(&built[0], 9);
+        assert_eq!(built[1].key, request_low_key);
+        assert_refined_payload_cache_key(&built[1], 1);
+    }
 
     #[test]
     fn zoning_parcel_surface_corners_use_visible_world_surface_height() {
@@ -9139,7 +9665,32 @@ mod tests {
         assert_eq!(export.omitted_pathological_faces, 1);
         assert!(export.vertices.is_empty());
         assert!(export.indices.is_empty());
-        assert!(export.max_face_slope_ratio > TERRAIN_CDT_PATHOLOGICAL_FACE_SLOPE_RATIO);
+        assert_eq!(export.max_face_y_delta_m, 0.0);
+        assert_eq!(export.max_face_slope_ratio, 0.0);
+        assert_eq!(export.longest_triangle_edge_m, 0.0);
+    }
+
+    #[test]
+    fn terrain_cdt_triangle_buffers_omitted_faces_do_not_poison_export_metrics() {
+        let export = SimulationNode::terrain_cdt_triangle_buffers(
+            &test_patch(),
+            &[
+                TerrainCdtVertex::new(0.0, 0.0, 0.0),
+                TerrainCdtVertex::new(4.0, 0.0, 0.0),
+                TerrainCdtVertex::new(0.0, 0.0, 3.0),
+                TerrainCdtVertex::new(0.01, 10.0, 0.0),
+            ],
+            &[[0, 1, 2], [0, 3, 2]],
+            &[Vec::new(), Vec::new()],
+            false,
+            true,
+        );
+
+        assert_eq!(export.emitted_faces, 1);
+        assert_eq!(export.omitted_pathological_faces, 1);
+        assert!((export.max_face_y_delta_m - 0.0).abs() <= 0.0001);
+        assert_eq!(export.max_face_slope_ratio, 0.0);
+        assert!((export.longest_triangle_edge_m - 5.0).abs() <= 0.0001);
     }
 
     #[test]
@@ -9172,6 +9723,21 @@ mod tests {
             ),
             "conflicted"
         );
+    }
+
+    #[test]
+    fn terrain_cdt_constraint_conflicts_include_unpreserved_road_edges() {
+        let mut stats = empty_cdt_stats();
+        stats.road_constraint_edges = 10;
+        stats.preserved_road_constraint_edges = 9;
+        stats.invalid_constraint_edges = 0;
+
+        assert!(SimulationNode::terrain_cdt_stats_have_constraint_conflicts(
+            stats
+        ));
+
+        stats.preserved_road_constraint_edges = 10;
+        assert!(!SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats));
     }
 
     #[test]
@@ -9616,6 +10182,102 @@ mod tests {
         }
     }
 
+    fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
+        use crate::simulation::network::graph::Edge;
+        use crate::simulation::network::types::{
+            EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+        };
+
+        let mut graph = crate::simulation::network::graph::RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 0.0,
+            physical_length: 20.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::ZERO, Vector3::new(20.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::ZERO, Vector3::new(20.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+        graph
+    }
+
+    fn test_cached_refined_terrain_patch(
+        contract_revision: i64,
+        surface_generation: u64,
+    ) -> CachedRefinedTerrainPatch {
+        CachedRefinedTerrainPatch {
+            key: RefinedTerrainPatchCacheKey {
+                patch_x: 0,
+                patch_z: 0,
+                render_step_mm: 2000,
+            },
+            contract_revision,
+            surface_generation,
+            patch: test_patch(),
+            input_road_loops: 0,
+            input_source_samples: 0,
+            windows: Vec::new(),
+            road_clip_source_count: 0,
+            clip_error_label: None,
+            cdt_ms: 0.0,
+            reused_windows: 0,
+        }
+    }
+
+    fn assert_refined_payload_cache_key(payload: &TerrainPatchPayload, patch_x: usize) {
+        let TerrainPatchPayloadData::Refined { patch } = &payload.data else {
+            panic!("expected refined terrain payload");
+        };
+        assert_eq!(patch.key.patch_x, patch_x);
+    }
+
+    fn empty_cdt_stats() -> TerrainCdtStats {
+        TerrainCdtStats {
+            input_vertices: 0,
+            constraint_edges: 0,
+            road_constraint_edges: 0,
+            accepted_faces: 0,
+            rejected_road_faces: 0,
+            preserved_road_constraint_edges: 0,
+            spade_missing_road_constraint_edges: 0,
+            rejected_road_constraint_edges: 0,
+            internal_road_constraint_edges: 0,
+            invalid_constraint_edges: 0,
+            max_face_y_delta_m: 0.0,
+            max_face_slope_ratio: 0.0,
+            longest_triangle_edge_m: 0.0,
+            road_seam_faces: 0,
+            road_seam_max_y_delta_m: 0.0,
+            road_seam_max_slope_ratio: 0.0,
+            retaining_wall_faces: 0,
+            retaining_wall_max_y_delta_m: 0.0,
+            retaining_wall_max_slope_ratio: 0.0,
+            accepted_seam_edges: 0,
+            merged_subbudget_seam_edges: 0,
+            omitted_near_seam_source_samples: 0,
+            retaining_wall_required_seam_edges: 0,
+            retaining_wall_required_seam_faces: 0,
+            blocking_degenerate_seam_edges: 0,
+            tie_in_widened_source_samples: 0,
+            tie_in_widened_max_y_delta_m: 0.0,
+            tie_in_widened_max_slope_ratio: 0.0,
+        }
+    }
+
     fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         let config = WorldConfig::default();
         SimCore {
@@ -9623,9 +10285,7 @@ mod tests {
             heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
-                config.terrain_chunk_m,
-            ),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -9661,6 +10321,8 @@ mod tests {
             water_patch_mesh_cache: std::collections::HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            cached_network_node_positions: std::sync::Arc::new(Vec::new()),
+            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }

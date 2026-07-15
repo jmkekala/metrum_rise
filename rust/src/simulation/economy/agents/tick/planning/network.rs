@@ -1,7 +1,8 @@
 //! Network replan construction for agents already outside a building.
 
 use super::super::super::{
-    ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, ACCESS_ZERO_HOP_NODE_PATH,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID,
+    ACCESS_ZERO_HOP_NODE_PATH,
 };
 use super::super::access::{
     frontage_time_s, local_access_distance, local_access_time_s,
@@ -13,6 +14,7 @@ use super::types::BuiltNetworkReplan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::TransitFlags;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Rebuilds a destination-side network plan for an agent already in transit.
@@ -141,5 +143,44 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
         planned_detach_lane_d,
         current_path,
         access_flags,
+    })
+}
+
+/// Rebuilds a network-only plan for a freight carrier already travelling to an OWA border.
+pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
+    start_node: u32,
+    incoming_edge: usize,
+    border_node: u32,
+    graph: &RegionGraph,
+    transit_network: &TransitNetwork,
+    pathfind_count: &AtomicU32,
+) -> Option<BuiltNetworkReplan> {
+    if start_node as usize >= graph.node_count() || border_node as usize >= graph.node_count() {
+        return None;
+    }
+
+    let current_path = if start_node == border_node {
+        Vec::new()
+    } else {
+        pathfind_count.fetch_add(1, Ordering::Relaxed);
+        let (_, _, path) = transit_network.cch_graph.find_path(
+            start_node,
+            border_node,
+            incoming_edge,
+            graph,
+            TransitFlags::CAR,
+        )?;
+        if path.len() < 2 {
+            return None;
+        }
+        path
+    };
+
+    Some(BuiltNetworkReplan {
+        planned_detach_node: border_node,
+        planned_detach_lane_id: usize::MAX,
+        planned_detach_lane_d: 0.0,
+        current_path,
+        access_flags: ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION,
     })
 }

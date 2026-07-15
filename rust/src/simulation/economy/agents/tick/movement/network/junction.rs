@@ -6,7 +6,7 @@ mod zero_hop;
 
 use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID};
 use super::super::super::claims::LaneClaimContext;
-use super::super::super::planning::plan_network_replan;
+use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -48,6 +48,7 @@ pub(super) unsafe fn handle_lane_end(
         let s_tmode = &slices.tmode;
         let s_speed = &slices.speed;
         let s_tgt_b = &slices.tgt_b;
+        let s_freight_target_border_node = &slices.freight_target_border_node;
         let s_path = &slices.path;
         let s_path_idx = &slices.path_idx;
         let s_plan_detach_n = &slices.planned_detach_n;
@@ -142,6 +143,37 @@ pub(super) unsafe fn handle_lane_end(
         *s_lane_id.get_mut(i) = usize::MAX;
         if access_plan_valid {
             if (*s_access_flags.get(i) & ACCESS_FREIGHT_BORDER_DESTINATION) != 0 {
+                let border_node = *s_freight_target_border_node.get(i);
+                if *s_cur_n.get(i) != border_node && sim_time >= *s_next_replan_time.get(i) {
+                    if let Some(replan) = plan_border_network_replan(
+                        *s_cur_n.get(i),
+                        lane.edge_id,
+                        border_node,
+                        graph,
+                        transit_network,
+                        pathfind_count,
+                    ) {
+                        *s_path.get_mut(i) = replan.current_path;
+                        *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
+                        *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
+                        *s_plan_detach_lane.get_mut(i) = u32::MAX;
+                        *s_plan_detach_lane_d.get_mut(i) = 0.0;
+                        *s_access_flags.get_mut(i) = replan.access_flags;
+                        *s_next_replan_time.get_mut(i) = 0.0;
+                        traffic_log!(
+                            "[FREIGHT_BORDER_REPLAN] agent={} node={} border_node={} incoming_edge={} path_idx={}/{} path={:?}",
+                            i,
+                            *s_cur_n.get(i),
+                            border_node,
+                            lane.edge_id,
+                            *s_path_idx.get(i),
+                            s_path.get(i).len(),
+                            s_path.get(i),
+                        );
+                        return LaneEndAction::Break;
+                    }
+                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                }
                 *s_path_idx.get_mut(i) = 0;
                 *s_speed.get_mut(i) = 0.0;
                 return LaneEndAction::Break;

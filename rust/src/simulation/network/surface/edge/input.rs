@@ -69,7 +69,7 @@ impl RoadSurfaceSystem {
     ///
     /// Standard roads keep the authored XZ alignment, are densified against terrain samples, and
     /// receive a constrained smooth vertical profile. Bridge and tunnel strokes preserve authored
-    /// heights after light XZ simplification because their clearance is intentionally off terrain.
+    /// heights after light XZ simplification when an authored endpoint is intentionally off terrain.
     pub(crate) fn prepare_road_input_points(
         raw_points: &[Vector3],
         terrain: &TerrainSystem,
@@ -167,9 +167,10 @@ impl RoadSurfaceSystem {
             return (simplified_points, EdgeClass::Standard);
         }
 
-        let mut all_points_above_clearance = true;
-        let mut all_points_below_clearance = true;
-        for point in &simplified_points {
+        let mut endpoint_above_clearance = false;
+        let mut endpoint_below_clearance = false;
+        let last_idx = simplified_points.len() - 1;
+        for (idx, point) in simplified_points.iter().enumerate() {
             let support_h = Self::road_profile_support_height(
                 terrain,
                 &mut visible_support_height_at,
@@ -178,20 +179,21 @@ impl RoadSurfaceSystem {
             )
             .0;
             let clearance_m = point.y - support_h;
-            if clearance_m <= PREVIEW_CLEARANCE_M {
-                all_points_above_clearance = false;
+            if idx != 0 && idx != last_idx {
+                continue;
             }
-            if clearance_m >= -PREVIEW_CLEARANCE_M {
-                all_points_below_clearance = false;
+            if clearance_m > PREVIEW_CLEARANCE_M {
+                endpoint_above_clearance = true;
+            }
+            if clearance_m < -PREVIEW_CLEARANCE_M {
+                endpoint_below_clearance = true;
             }
         }
 
-        let class = if all_points_above_clearance {
-            EdgeClass::Bridge
-        } else if all_points_below_clearance {
-            EdgeClass::Tunnel
-        } else {
-            EdgeClass::Standard
+        let class = match (endpoint_above_clearance, endpoint_below_clearance) {
+            (true, false) => EdgeClass::Bridge,
+            (false, true) => EdgeClass::Tunnel,
+            _ => EdgeClass::Standard,
         };
 
         if class != EdgeClass::Standard {

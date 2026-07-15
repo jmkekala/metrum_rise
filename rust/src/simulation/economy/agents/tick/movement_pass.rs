@@ -50,6 +50,7 @@ impl AgentSystem {
             cur_b: RawSlice::new(&mut self.agents.current_building),
             tgt_b: RawSlice::new(&mut self.agents.target_building),
             planned_tgt_b: RawSlice::new(&mut self.agents.planned_target_building),
+            freight_target_border_node: RawSlice::new(&mut self.agents.freight_target_border_node),
             cur_n: RawSlice::new(&mut self.agents.current_node),
             planned_attach_n: RawSlice::new(&mut self.agents.planned_attach_node),
             planned_detach_n: RawSlice::new(&mut self.agents.planned_detach_node),

@@ -287,6 +287,15 @@ impl RoadSurfaceSystem {
             {
                 return TerrainClipOutputSourceSelection::Source(source);
             }
+            if let Some((start, end)) = canonical_segment
+                && let Some(source) = Self::canonical_same_owner_span_support_output_source(
+                    provenance_candidates,
+                    start,
+                    end,
+                )
+            {
+                return TerrainClipOutputSourceSelection::Source(source);
+            }
             let sources = provenance_candidates
                 .iter()
                 .take(6)
@@ -346,7 +355,7 @@ impl RoadSurfaceSystem {
     ) -> Option<(
         crate::simulation::network::types::EdgeClass,
         super::super::RoadSurfaceEarthworkSupportPolicy,
-        super::super::RoadSurfaceSpanBandOwner,
+        super::super::RoadSurfaceBandKind,
         super::super::RoadSurfaceSpanRegionRole,
     )> {
         let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
@@ -359,7 +368,7 @@ impl RoadSurfaceSystem {
         else {
             return None;
         };
-        Some((edge_class, support_policy, owner, role))
+        Some((edge_class, support_policy, owner.kind, role))
     }
 
     fn canonical_same_owner_node_boundary_output_source(
@@ -402,6 +411,64 @@ impl RoadSurfaceSystem {
             source_index: first.source_index,
             edge_index: first.edge_index,
         })
+    }
+
+    fn canonical_same_owner_span_support_output_source(
+        candidates: &[TerrainClipSourceEdge],
+        start: RoadVec3,
+        end: RoadVec3,
+    ) -> Option<TerrainClipSourceEdge> {
+        let first = *candidates.first()?;
+        if first.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff {
+            return None;
+        }
+        let first_key = Self::span_support_boundary_owner_key(first)?;
+        if !candidates
+            .iter()
+            .copied()
+            .all(|candidate| Self::span_support_boundary_owner_key(candidate) == Some(first_key))
+        {
+            return None;
+        }
+        Some(TerrainClipSourceEdge {
+            start,
+            end,
+            kind: first.kind,
+            source: first.source,
+            source_index: first.source_index,
+            edge_index: first.edge_index,
+        })
+    }
+
+    fn span_support_boundary_owner_key(
+        candidate: TerrainClipSourceEdge,
+    ) -> Option<(
+        RoadSurfaceTerrainClipEdgeKind,
+        usize,
+        crate::simulation::network::types::EdgeClass,
+        super::super::RoadSurfaceEarthworkSupportPolicy,
+        super::super::RoadSurfaceSpanBandOwner,
+        super::super::RoadSurfaceSpanRegionRole,
+    )> {
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx,
+            edge_class,
+            support_policy,
+            owner,
+            role,
+            ..
+        } = candidate.source
+        else {
+            return None;
+        };
+        Some((
+            candidate.kind,
+            edge_idx,
+            edge_class,
+            support_policy,
+            owner,
+            role,
+        ))
     }
 
     pub(super) fn canonical_same_owner_dust_connector_output_source(
@@ -655,6 +722,102 @@ mod tests {
     }
 
     #[test]
+    fn terrain_clip_output_canonicalizes_opposite_side_span_handoff_covered_segment_source() {
+        let start = RoadVec3::new(-65.995, 0.153, 73.114);
+        let end = RoadVec3::new(-64.678, 0.153, 72.818);
+        let candidates = vec![
+            span_handoff_source_edge(
+                start,
+                end,
+                3,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                3,
+                36,
+            ),
+            span_handoff_source_edge(
+                start,
+                end,
+                7,
+                5,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                7,
+                0,
+            ),
+        ];
+
+        let source = match RoadSurfaceSystem::terrain_clip_output_source_for_segment(
+            start,
+            end,
+            &candidates,
+        ) {
+            TerrainClipOutputSourceSelection::Source(source) => source,
+            TerrainClipOutputSourceSelection::Missing => {
+                panic!("opposite-side span handoff source must be present")
+            }
+            TerrainClipOutputSourceSelection::Ambiguous(context) => {
+                panic!("opposite-side span handoff source must be canonical: {context}")
+            }
+        };
+
+        assert_eq!(source.start, start);
+        assert_eq!(source.end, end);
+        assert_eq!(source.kind, RoadSurfaceTerrainClipEdgeKind::SpanHandoff);
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx,
+            owner,
+            role,
+            ..
+        } = source.source
+        else {
+            panic!("span handoff segment must keep span support provenance");
+        };
+        assert_eq!(edge_idx, 3);
+        assert_eq!(owner.kind, RoadSurfaceBandKind::Sidewalk);
+        assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
+    }
+
+    #[test]
+    fn terrain_clip_output_rejects_different_material_span_handoff_covered_segment_source() {
+        let start = RoadVec3::new(0.0, 10.0, 0.0);
+        let end = RoadVec3::new(1.0, 10.0, 0.0);
+        let candidates = vec![
+            span_handoff_source_edge(
+                start,
+                end,
+                3,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                3,
+                36,
+            ),
+            span_handoff_source_edge(
+                start,
+                end,
+                7,
+                4,
+                RoadSurfaceBandKind::CurbOrShoulder,
+                RoadSurfaceSpanRegionRole::CurbOrShoulder,
+                7,
+                0,
+            ),
+        ];
+
+        let TerrainClipOutputSourceSelection::Ambiguous(context) =
+            RoadSurfaceSystem::terrain_clip_output_source_for_segment(start, end, &candidates)
+        else {
+            panic!("different-material span handoff sources must stay ambiguous");
+        };
+        assert!(
+            context.contains("sources_disagree"),
+            "ambiguous span handoff diagnostic should name provenance disagreement: {context}"
+        );
+    }
+
+    #[test]
     fn terrain_clip_output_canonicalizes_span_handoff_only_connector_source() {
         let start = RoadVec3::new(0.0, 10.0, 0.0);
         let end = RoadVec3::new(1.0, 10.0, 0.0);
@@ -727,6 +890,75 @@ mod tests {
         assert_eq!(end_section_index, 0);
     }
 
+    #[test]
+    fn terrain_clip_output_canonicalizes_same_span_support_connector_source() {
+        let start = RoadVec3::new(0.0, 10.0, 0.0);
+        let end = RoadVec3::new(1.0, 10.0, 0.0);
+        let candidates = vec![
+            span_support_source_edge(
+                RoadVec3::new(-0.5, 10.0, 0.0),
+                RoadVec3::new(0.5, 10.0, 0.0),
+                RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+                6,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                18,
+                19,
+                23.92626,
+                24.041697,
+                4,
+                9,
+            ),
+            span_support_source_edge(
+                RoadVec3::new(0.5, 10.0, 0.0),
+                RoadVec3::new(1.5, 10.0, 0.0),
+                RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+                6,
+                0,
+                RoadSurfaceBandKind::Sidewalk,
+                RoadSurfaceSpanRegionRole::NonRoad,
+                20,
+                21,
+                24.043888,
+                26.04304,
+                3,
+                10,
+            ),
+        ];
+
+        let source = match RoadSurfaceSystem::terrain_clip_output_dust_connector_source(
+            start,
+            end,
+            &candidates,
+        ) {
+            TerrainClipOutputSourceSelection::Source(source) => source,
+            TerrainClipOutputSourceSelection::Missing => {
+                panic!("same span-support connector source must be present")
+            }
+            TerrainClipOutputSourceSelection::Ambiguous(context) => {
+                panic!("same span-support connector source must be canonical: {context}")
+            }
+        };
+
+        assert_eq!(source.start, start);
+        assert_eq!(source.end, end);
+        assert_eq!(source.kind, RoadSurfaceTerrainClipEdgeKind::SidewalkOuter);
+        let RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+            edge_idx,
+            owner,
+            role,
+            ..
+        } = source.source
+        else {
+            panic!("visible span support connector must keep span support provenance");
+        };
+        assert_eq!(edge_idx, 6);
+        assert_eq!(owner.source_band_index, 0);
+        assert_eq!(owner.kind, RoadSurfaceBandKind::Sidewalk);
+        assert_eq!(role, RoadSurfaceSpanRegionRole::NonRoad);
+    }
+
     fn span_handoff_source_edge(
         start: RoadVec3,
         end: RoadVec3,
@@ -754,6 +986,45 @@ mod tests {
                 end_section_index: 0,
                 start_s_m: 0.0,
                 end_s_m: 0.0,
+            },
+            source_index,
+            edge_index,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn span_support_source_edge(
+        start: RoadVec3,
+        end: RoadVec3,
+        kind: RoadSurfaceTerrainClipEdgeKind,
+        edge_idx: usize,
+        source_band_index: usize,
+        band_kind: RoadSurfaceBandKind,
+        role: RoadSurfaceSpanRegionRole,
+        start_section_index: usize,
+        end_section_index: usize,
+        start_s_m: f32,
+        end_s_m: f32,
+        source_index: usize,
+        edge_index: usize,
+    ) -> TerrainClipSourceEdge {
+        TerrainClipSourceEdge {
+            start,
+            end,
+            kind,
+            source: RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                edge_idx,
+                edge_class: EdgeClass::Standard,
+                support_policy: RoadSurfaceEarthworkSupportPolicy::StandardFullGroundedSpan,
+                owner: RoadSurfaceSpanBandOwner {
+                    source_band_index,
+                    kind: band_kind,
+                },
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
             },
             source_index,
             edge_index,

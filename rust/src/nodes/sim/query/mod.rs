@@ -20,15 +20,17 @@ pub fn is_live_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
 /// Finds the closest live canonical node to a given world position within a maximum distance.
 pub fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> i32 {
     let mut best_id = -1;
-    let mut min_d = max_dist;
+    let mut min_d_sq = max_dist * max_dist;
     for (i, node) in graph.nodes().iter().enumerate() {
         let node_id = i as u32;
         if !is_live_canonical_node(graph, node_id) {
             continue;
         }
-        let d = node.pos.distance_to(world_pos);
-        if d < min_d {
-            min_d = d;
+        let dx = node.pos.x - world_pos.x;
+        let dz = node.pos.z - world_pos.z;
+        let d_sq = dx * dx + dz * dz;
+        if d_sq < min_d_sq {
+            min_d_sq = d_sq;
             best_id = node_id as i32;
         }
     }
@@ -79,6 +81,19 @@ mod tests {
         assert_eq!(
             get_closest_canonical_node(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
             -1
+        );
+    }
+
+    #[test]
+    fn canonical_node_query_uses_xz_distance_for_editor_hits() {
+        let mut graph = RegionGraph::new();
+        let node = graph.add_node(Vector3::new(0.0, 50.0, 0.0), NodeType::Junction);
+        let far = graph.add_node(Vector3::new(20.0, 50.0, 0.0), NodeType::Junction);
+        graph.add_edge(test_edge(node, far));
+
+        assert_eq!(
+            get_closest_canonical_node(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
+            node as i32
         );
     }
 

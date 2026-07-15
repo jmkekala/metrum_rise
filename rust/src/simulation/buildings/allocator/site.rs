@@ -13,8 +13,7 @@ use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::cdt::{
     MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop,
-    TerrainCdtRoadLoopSourceEdge, TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
-    TerrainCdtVertex,
+    TerrainCdtRoadLoopSourceEdge, TerrainCdtTieInGuideSample, TerrainCdtVertex,
 };
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use godot::prelude::{Vector2, Vector3};
@@ -339,7 +338,6 @@ impl BuildingAllocator {
         max_z: f32,
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-        tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
         sample_keys: &mut BTreeMap<(i64, i64), ()>,
     ) {
         let safe_step_m = render_step_m.max(f32::EPSILON);
@@ -360,7 +358,6 @@ impl BuildingAllocator {
                 safe_step_m,
                 max_distance_m,
                 tie_in_guide_samples,
-                tie_in_guide_constraints,
                 sample_keys,
             );
         }
@@ -937,7 +934,6 @@ fn append_building_site_grading_guides(
     safe_step_m: f32,
     max_distance_m: f32,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
     sample_keys: &mut BTreeMap<(i64, i64), ()>,
 ) {
     let signed_area = signed_polygon_area(&site.footprint_world);
@@ -964,7 +960,6 @@ fn append_building_site_grading_guides(
         edge_outward_dirs.push(outward);
 
         let sample_count = ((length_m / safe_step_m).ceil() as u32).max(1);
-        let mut previous_ring_vertices = Vec::new();
         for sample_idx in 0..=sample_count {
             let t = sample_idx as f32 / sample_count as f32;
             let seam = start.lerp(end, t);
@@ -982,20 +977,6 @@ fn append_building_site_grading_guides(
             for vertex in &ring_vertices {
                 push_building_site_grading_sample(*vertex, tie_in_guide_samples, sample_keys);
             }
-            for (previous, current) in previous_ring_vertices.iter().zip(ring_vertices.iter()) {
-                push_building_site_grading_constraint(
-                    *previous,
-                    *current,
-                    tie_in_guide_constraints,
-                );
-            }
-            push_building_site_grading_ray_constraints(
-                site.support_height_m,
-                seam,
-                &ring_vertices,
-                tie_in_guide_constraints,
-            );
-            previous_ring_vertices = ring_vertices;
         }
     }
 
@@ -1023,7 +1004,6 @@ fn append_building_site_grading_guides(
             safe_step_m,
             max_distance_m,
             tie_in_guide_samples,
-            tie_in_guide_constraints,
             sample_keys,
         );
     }
@@ -1040,7 +1020,6 @@ fn append_building_site_grading_ray(
     safe_step_m: f32,
     max_distance_m: f32,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
     sample_keys: &mut BTreeMap<(i64, i64), ()>,
 ) {
     let vertices = building_site_grading_ray_vertices(
@@ -1057,12 +1036,6 @@ fn append_building_site_grading_ray(
     for vertex in &vertices {
         push_building_site_grading_sample(*vertex, tie_in_guide_samples, sample_keys);
     }
-    push_building_site_grading_ray_constraints(
-        seam_height_m,
-        seam,
-        &vertices,
-        tie_in_guide_constraints,
-    );
 }
 
 fn building_site_grading_ray_vertices(
@@ -1097,19 +1070,6 @@ fn building_site_grading_ray_vertices(
         vertices.push(TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64));
     }
     vertices
-}
-
-fn push_building_site_grading_ray_constraints(
-    seam_height_m: f32,
-    seam: Vector2,
-    ring_vertices: &[TerrainCdtVertex],
-    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
-) {
-    let mut previous = TerrainCdtVertex::new(seam.x as f64, seam_height_m, seam.y as f64);
-    for &current in ring_vertices {
-        push_building_site_grading_constraint(previous, current, tie_in_guide_constraints);
-        previous = current;
-    }
 }
 
 fn building_site_support_tie_in_ray_is_valid(
@@ -1306,28 +1266,6 @@ fn push_building_site_grading_sample(
         return;
     }
     tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });
-}
-
-fn push_building_site_grading_constraint(
-    start: TerrainCdtVertex,
-    end: TerrainCdtVertex,
-    tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
-) {
-    if !start.x.is_finite()
-        || !start.z.is_finite()
-        || !start.height_m.is_finite()
-        || !end.x.is_finite()
-        || !end.z.is_finite()
-        || !end.height_m.is_finite()
-    {
-        return;
-    }
-    if building_site_grading_sample_key(start.x, start.z)
-        == building_site_grading_sample_key(end.x, end.z)
-    {
-        return;
-    }
-    tie_in_guide_constraints.push(TerrainCdtTieInGuideConstraint { start, end });
 }
 
 fn building_site_grading_sample_key(x: f64, z: f64) -> (i64, i64) {
@@ -1575,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn site_grading_guides_start_outside_flat_support() {
+    fn site_grading_guides_are_soft_samples_outside_flat_support() {
         let site = BuildingSiteClient {
             support_height_m: 4.0,
             surfaces: Vec::new(),
@@ -1585,7 +1523,6 @@ mod tests {
         let graph = RegionGraph::new();
         let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
         let mut samples = Vec::new();
-        let mut constraints = Vec::new();
         let mut sample_keys = BTreeMap::new();
 
         append_building_site_grading_guides(
@@ -1597,7 +1534,6 @@ mod tests {
             2.0,
             16.0,
             &mut samples,
-            &mut constraints,
             &mut sample_keys,
         );
 
@@ -1612,21 +1548,6 @@ mod tests {
         assert!(samples.iter().all(|sample| {
             !site.contains_point(Vector2::new(sample.vertex.x as f32, sample.vertex.z as f32))
         }));
-        assert!(
-            !constraints.is_empty(),
-            "apron guide rails should be constrained so the CDT cannot collapse the support edge into one cap"
-        );
-        assert!(
-            constraints.iter().any(|constraint| {
-                (constraint.start.x + 5.0).abs() <= 0.001
-                    && constraint.start.z.abs() <= 1.001
-                    && (constraint.start.height_m - 4.0).abs() <= 0.001
-                    && (constraint.end.x + 6.0).abs() <= 0.001
-                    && constraint.end.z.abs() <= 1.001
-                    && (constraint.end.height_m - 3.5).abs() <= 0.001
-            }),
-            "apron rays should be constrained radially from the support edge to the first ring"
-        );
     }
 
     #[test]

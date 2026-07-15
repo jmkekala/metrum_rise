@@ -324,21 +324,56 @@ fn node_owner_source_edge(
 
 #[test]
 fn terrain_clip_union_rejects_dust_connector_conflicting_same_xz_heights() {
+    let raw_clip_sources = dust_connector_height_conflict_raw_clip_sources(20.0, 21.0);
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    let Err(RoadSurfaceTerrainClipExportError::AmbiguousDustConnectorHeight { context, .. }) =
+        unioned
+    else {
+        panic!(
+            "dust connector with conflicting same-XZ source heights must reject, got {unioned:?}"
+        );
+    };
+    assert!(
+        context.contains("conflicting_source_heights"),
+        "dust connector height ambiguity should name conflicting height keys: {context}"
+    );
+}
+
+#[test]
+fn terrain_clip_union_accepts_dust_connector_one_mm_height_tie() {
+    let raw_clip_sources = dust_connector_height_conflict_raw_clip_sources(20.0004, 20.0014);
+
+    let unioned =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
+
+    assert!(
+        unioned.is_ok(),
+        "dust connector should absorb one millimeter source-height ties, got {unioned:?}"
+    );
+}
+
+fn dust_connector_height_conflict_raw_clip_sources(
+    conflict_a_y: f64,
+    conflict_b_y: f64,
+) -> Vec<RoadSurfaceTerrainClipLoop> {
     let raw_boundary_y = -99.0;
-    let p0 = RoadVec3::new(0.0, 10.0, 0.0);
-    let p1 = RoadVec3::new(0.5, 10.5, 0.0);
+    let p0 = RoadVec3::new(0.0, conflict_a_y, 0.0);
+    let p1 = RoadVec3::new(0.5, conflict_a_y, 0.0);
     let d0 = RoadVec3::new(0.50002, raw_boundary_y, 0.00008);
     let d1 = RoadVec3::new(0.49998, raw_boundary_y, 0.00016);
     let d2 = RoadVec3::new(0.50001, raw_boundary_y, 0.00024);
-    let p2 = RoadVec3::new(0.5, 10.7, 0.00032);
-    let p3 = RoadVec3::new(1.0, 11.0, 0.0);
-    let p4 = RoadVec3::new(1.0, 11.0, 0.1);
-    let p5 = RoadVec3::new(0.0, 10.0, 0.1);
-    let conflict_a0 = RoadVec3::new(d1.x - 0.0002, 20.0, d1.z);
-    let conflict_a1 = RoadVec3::new(d1.x + 0.0002, 20.0, d1.z);
-    let conflict_b0 = RoadVec3::new(d1.x - 0.0002, 21.0, d1.z);
-    let conflict_b1 = RoadVec3::new(d1.x + 0.0002, 21.0, d1.z);
-    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+    let p2 = RoadVec3::new(0.5, conflict_b_y, 0.00032);
+    let p3 = RoadVec3::new(1.0, conflict_b_y, 0.0);
+    let p4 = RoadVec3::new(1.0, conflict_b_y, 0.1);
+    let p5 = RoadVec3::new(0.0, conflict_a_y, 0.1);
+    let conflict_a0 = RoadVec3::new(d1.x - 0.0002, conflict_a_y, d1.z);
+    let conflict_a1 = RoadVec3::new(d1.x + 0.0002, conflict_a_y, d1.z);
+    let conflict_b0 = RoadVec3::new(d1.x - 0.0002, conflict_b_y, d1.z);
+    let conflict_b1 = RoadVec3::new(d1.x + 0.0002, conflict_b_y, d1.z);
+    vec![RoadSurfaceTerrainClipLoop {
         source_edges: vec![
             terrain_clip_source_edge_for_test(p0, p1),
             terrain_clip_source_edge_for_test(p2, p3),
@@ -359,20 +394,5 @@ fn terrain_clip_union_rejects_dust_connector_conflicting_same_xz_heights() {
             RoadVec3::new(p4.x, raw_boundary_y, p4.z),
             RoadVec3::new(p5.x, raw_boundary_y, p5.z),
         ],
-    }];
-
-    let unioned =
-        RoadSurfaceSystem::union_terrain_clip_boundary_loops_with_sources(&raw_clip_sources);
-
-    let Err(RoadSurfaceTerrainClipExportError::AmbiguousDustConnectorHeight { context, .. }) =
-        unioned
-    else {
-        panic!(
-            "dust connector with conflicting same-XZ source heights must reject, got {unioned:?}"
-        );
-    };
-    assert!(
-        context.contains("conflicting_source_heights"),
-        "dust connector height ambiguity should name conflicting height keys: {context}"
-    );
+    }]
 }

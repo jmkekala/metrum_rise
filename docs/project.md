@@ -82,11 +82,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   the rendering invariants live in [`terrain.md`](terrain.md).
 - Building-site earthworks now keep the derived required support footprint flat, reject placement
   when the surrounding terrain/road cannot tie in within the deterministic apron envelope, and
-  derive apron guide samples from the actual support edges. Road-facing access anchors stay behind
-  the exact sidewalk/road boundary so the frontage strip remains tie-in space instead of a
-  conflicting hard site loop. Near-road tie-ins sample the nearest visible road surface, stale
-  parcel/building frontage attachments are repaired after road topology edits, and `--debug
-  site-grading` combines road and site diagnostics. See
+  derive sample-only apron guides from the actual support edges, so site grading cannot add hard
+  CDT rails across neighboring roads or sites. Road-facing access anchors stay behind the exact
+  sidewalk/road boundary so the frontage strip remains tie-in space instead of a conflicting hard
+  site loop. Near-road tie-ins sample the nearest visible road surface, stale parcel/building
+  frontage attachments are repaired after road topology edits, and `--debug site-grading`
+  combines road and site diagnostics. See
   [`earthworks.md`](earthworks.md), [`roads.md`](roads.md), and [`reference.md`](reference.md).
 - Standard road placement now prepares a dense terrain-aware vertical profile before preview or
   commit: the player's XZ alignment is preserved, terrain / visible-road support samples become
@@ -193,7 +194,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `ROAD-01` core roadbed ownership is live: `TransitNetwork` now owns one `RoadSurfaceSystem`
   cache that deterministically compiles preview geometry, committed road / sidewalk surfaces,
   bridge decks, tunnel portals, lane-divider markings, terrain earthworks, and world-surface
-  picking from the same roadbed ownership model. Bridge earthworks are endpoint-only, tunnel
+  picking from the same roadbed ownership model. Bridges render structural concrete supports
+  instead of terrain earthworks, tunnel
   earthworks are portal-only, dirty terrain rebuilds stay bounded to touched chunks, the network
   tools can visualize compiled sections / bands / piece boundaries / earthwork chunks through the
   debug overlay, and the old widened-ribbon renderer plus dense centerline flattening
@@ -329,8 +331,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   chunk-coverage fields, so span rendering is no longer the authority layer for material ownership.
   Road-touched terrain support now uses the lower
   road-owned top-surface envelope when grounded support overlaps terminal caps or raised bands, and
-  bridge / tunnel earthwork ranges are class-aware so bridge midspans are not flattened while
-  visible tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
+  bridge / tunnel earthwork ranges are class-aware so bridges do not stamp terrain while visible
+  tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
   samples omitted to widen over-steep cut / fill tie-ins, and `ROAD-03` keeps ordinary grounded
   `Standard` seams on the terrain path with `RoadSurfaceSystem` owned grade-limited guide samples
   around the final unioned road-owned footprint instead of retaining-wall teeth. Convex single-loop

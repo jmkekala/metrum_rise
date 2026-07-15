@@ -19,6 +19,11 @@ use super::{
 
 const BAND_EPSILON_M: f32 = 0.001;
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
+const BRIDGE_PIER_GROUND_EMBED_M: f32 = 0.08;
+const BRIDGE_PIER_HALF_DEPTH_M: f32 = 0.55;
+const BRIDGE_PIER_HALF_WIDTH_M: f32 = 0.55;
+const BRIDGE_PIER_MIN_CLEARANCE_M: f32 = 1.0;
+const BRIDGE_PIER_SPACING_M: f32 = 28.0;
 const LANE_MARKING_CROSSWALK_CLEARANCE_M: f32 = 0.25;
 const MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
 const CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M: f32 = 0.25;
@@ -100,7 +105,7 @@ pub(super) fn emit_compiled_surface_mesh(
                 if end_index <= start_index {
                     continue;
                 }
-                emit_compiled_bridge_concrete(mesh, &sections[start_index..=end_index]);
+                emit_compiled_bridge_concrete(mesh, terrain, &sections[start_index..=end_index]);
             }
         }
     }
@@ -288,7 +293,11 @@ fn edge_uses_compiled_surface(edge: &Edge) -> bool {
     !edge.deleted && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
 }
 
-fn emit_compiled_bridge_concrete(mesh: &mut NetworkMeshData, sections: &[RoadSurfaceSection]) {
+fn emit_compiled_bridge_concrete(
+    mesh: &mut NetworkMeshData,
+    terrain: &TerrainSystem,
+    sections: &[RoadSurfaceSection],
+) {
     if sections.len() < 2 {
         return;
     }
@@ -338,6 +347,108 @@ fn emit_compiled_bridge_concrete(mesh: &mut NetworkMeshData, sections: &[RoadSur
                 Vector2::new(pair[0].s_m, 1.0),
             ],
             concrete_color(),
+        );
+    }
+
+    emit_compiled_bridge_piers(mesh, terrain, sections);
+}
+
+fn emit_compiled_bridge_piers(
+    mesh: &mut NetworkMeshData,
+    terrain: &TerrainSystem,
+    sections: &[RoadSurfaceSection],
+) {
+    let mut last_emitted_s_m = f32::NEG_INFINITY;
+    for (section_index, section) in sections.iter().enumerate() {
+        let is_endpoint = section_index == 0 || section_index + 1 == sections.len();
+        if !is_endpoint && section.s_m - last_emitted_s_m < BRIDGE_PIER_SPACING_M {
+            continue;
+        }
+
+        let top_y = section.center_height_m - BRIDGE_CONCRETE_THICKNESS_M;
+        let base_y = terrain
+            .sample_visual_height_world(section.center_xz.x as f32, section.center_xz.y as f32)
+            * config::HEIGHT_SCALE
+            - BRIDGE_PIER_GROUND_EMBED_M;
+        if top_y - base_y < BRIDGE_PIER_MIN_CLEARANCE_M {
+            continue;
+        }
+
+        emit_bridge_pier(mesh, section, base_y, top_y);
+        last_emitted_s_m = section.s_m;
+    }
+}
+
+fn emit_bridge_pier(
+    mesh: &mut NetworkMeshData,
+    section: &RoadSurfaceSection,
+    base_y: f32,
+    top_y: f32,
+) {
+    let tangent = Vector2::new(section.tangent_xz.x as f32, section.tangent_xz.y as f32);
+    let lateral = Vector2::new(section.lateral_xz.x as f32, section.lateral_xz.y as f32);
+    if tangent.length_squared() <= 1e-8 || lateral.length_squared() <= 1e-8 {
+        return;
+    }
+
+    let tangent = tangent.normalized();
+    let lateral = lateral.normalized();
+    let center = Vector2::new(section.center_xz.x as f32, section.center_xz.y as f32);
+    let tangent_offset = tangent * BRIDGE_PIER_HALF_DEPTH_M;
+    let lateral_offset = lateral * BRIDGE_PIER_HALF_WIDTH_M;
+    let footprint = [
+        center - tangent_offset - lateral_offset,
+        center + tangent_offset - lateral_offset,
+        center + tangent_offset + lateral_offset,
+        center - tangent_offset + lateral_offset,
+    ];
+    let bottom = footprint.map(|point| Vector3::new(point.x, base_y, point.y));
+    let top = footprint.map(|point| Vector3::new(point.x, top_y, point.y));
+    let tangent_normal = Vector3::new(tangent.x, 0.0, tangent.y);
+    let lateral_normal = Vector3::new(lateral.x, 0.0, lateral.y);
+
+    emit_bridge_pier_quad(
+        mesh,
+        [top[0], top[1], bottom[1], bottom[0]],
+        -lateral_normal,
+    );
+    emit_bridge_pier_quad(mesh, [top[1], top[2], bottom[2], bottom[1]], tangent_normal);
+    emit_bridge_pier_quad(mesh, [top[2], top[3], bottom[3], bottom[2]], lateral_normal);
+    emit_bridge_pier_quad(
+        mesh,
+        [top[3], top[0], bottom[0], bottom[3]],
+        -tangent_normal,
+    );
+    emit_bridge_pier_quad(mesh, [top[0], top[1], top[2], top[3]], Vector3::UP);
+}
+
+fn emit_bridge_pier_quad(mesh: &mut NetworkMeshData, vertices: [Vector3; 4], normal: Vector3) {
+    let uvs = [
+        Vector2::ZERO,
+        Vector2::new(1.0, 0.0),
+        Vector2::new(1.0, 1.0),
+        Vector2::new(0.0, 1.0),
+    ];
+    for (triangle, triangle_uvs) in [
+        (
+            [vertices[0], vertices[1], vertices[2]],
+            [uvs[0], uvs[1], uvs[2]],
+        ),
+        (
+            [vertices[0], vertices[2], vertices[3]],
+            [uvs[0], uvs[2], uvs[3]],
+        ),
+    ] {
+        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+            continue;
+        }
+        super::push_triangle_preserving_winding_with_exact_normal(
+            mesh,
+            MeshLayer::Concrete,
+            triangle,
+            triangle_uvs,
+            concrete_color(),
+            normal,
         );
     }
 }
@@ -653,10 +764,10 @@ fn emit_surface_polygon_with_group_normal(
     }
 
     for triangle in &polygon.triangles_world {
-        let triangle = road_triangle_to_render(*triangle);
-        if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+        if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(*triangle) {
             continue;
         }
+        let triangle = road_triangle_to_render(*triangle);
         if let Some(normal) = group_normal {
             super::push_triangle_with_normal(
                 mesh,
@@ -785,10 +896,10 @@ fn stable_surface_group_normal(polygons: &[RoadSurfaceVisualPolygon]) -> Option<
     let mut normal = Vector3::ZERO;
     for polygon in polygons {
         for triangle in &polygon.triangles_world {
-            let triangle = road_triangle_to_render(*triangle);
-            if triangle_is_too_small(triangle[0], triangle[1], triangle[2]) {
+            if !RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(*triangle) {
                 continue;
             }
+            let triangle = road_triangle_to_render(*triangle);
             let mut triangle_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
             if triangle_normal.y < 0.0 {
                 triangle_normal = -triangle_normal;
@@ -810,7 +921,9 @@ fn world_xz_uvs_for_triangle(triangle: [Vector3; 3]) -> [Vector2; 3] {
 #[cfg(test)]
 mod tests {
     use super::{stable_surface_group_normal, triangle_is_too_small, world_xz_uvs_for_triangle};
-    use crate::simulation::network::surface::{RoadSurfaceVisualPolygon, RoadVec3};
+    use crate::simulation::network::surface::{
+        RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadVec3,
+    };
     use godot::prelude::Vector3;
 
     #[test]
@@ -841,6 +954,32 @@ mod tests {
             !triangle_is_too_small(a, b, c),
             "compiled road surfaces must not drop valid millimetre-scale closure triangles"
         );
+    }
+
+    #[test]
+    fn renderer_drops_top_surface_needle_triangles() {
+        let triangle = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(3.687, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.000002826),
+        ];
+
+        assert!(!RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(
+            triangle
+        ));
+    }
+
+    #[test]
+    fn renderer_keeps_stable_top_surface_triangles() {
+        let triangle = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(2.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 2.0),
+        ];
+
+        assert!(RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(
+            triangle
+        ));
     }
 
     #[test]

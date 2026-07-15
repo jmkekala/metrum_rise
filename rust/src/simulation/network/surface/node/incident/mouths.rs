@@ -6,11 +6,12 @@ use super::*;
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn build_ordered_piece_mouths(
         &self,
+        graph: &RegionGraph,
         incidents: &[IncidentSurfaceEdge],
     ) -> Option<Vec<OrderedIncidentPieceMouth>> {
         let mut mouths = Vec::with_capacity(incidents.len());
         for &incident in incidents {
-            let profile = self.build_incident_mouth_profile(incident)?;
+            let profile = self.build_incident_mouth_profile(graph, incident)?;
             let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
             let (
                 boundary_paths_world,
@@ -129,13 +130,72 @@ impl RoadSurfaceSystem {
 
     fn build_incident_mouth_profile(
         &self,
+        graph: &RegionGraph,
         incident: IncidentSurfaceEdge,
     ) -> Option<IncidentMouthProfile> {
-        let piece = self.compiled_visual_span_pieces.get(&incident.edge_idx)?;
-        match incident.side {
-            IncidentEdgeSide::Start => piece.start_mouth_profile.clone(),
-            IncidentEdgeSide::End => piece.end_mouth_profile.clone(),
+        if let Some(profile) = self
+            .compiled_visual_span_pieces
+            .get(&incident.edge_idx)
+            .and_then(|piece| match incident.side {
+                IncidentEdgeSide::Start => piece.start_mouth_profile.clone(),
+                IncidentEdgeSide::End => piece.end_mouth_profile.clone(),
+            })
+        {
+            return Some(profile);
         }
+
+        // Span pieces are render cache entries; graph topology remains authoritative for node
+        // mouths, so derive the mouth from compiled edge sections if the span cache is absent.
+        self.build_incident_mouth_profile_from_sections(graph, incident)
+    }
+
+    fn build_incident_mouth_profile_from_sections(
+        &self,
+        graph: &RegionGraph,
+        incident: IncidentSurfaceEdge,
+    ) -> Option<IncidentMouthProfile> {
+        let edge = graph.edges().get(incident.edge_idx)?;
+        let sections = self.compiled_sections.get(&incident.edge_idx)?;
+        let total_length_m = sections.last()?.s_m.max(0.0);
+        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.start_node),
+        );
+        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.end_node),
+        );
+        let ownership_range = self
+            .visual_edge_mouth_policy_for_edge(
+                graph,
+                incident.edge_idx,
+                edge,
+                total_length_m,
+                start_kind,
+                end_kind,
+                false,
+                false,
+            )
+            .ownership_range;
+
+        let target_s_m = match (incident.side, ownership_range) {
+            (IncidentEdgeSide::Start, Some((start_s_m, _))) => start_s_m,
+            (IncidentEdgeSide::End, Some((_, end_s_m))) => end_s_m,
+            (IncidentEdgeSide::Start, None) => 0.0,
+            (IncidentEdgeSide::End, None) => total_length_m,
+        };
+        let section = match incident.side {
+            IncidentEdgeSide::Start => sections
+                .iter()
+                .find(|section| section.s_m + SAMPLE_EPSILON_M >= target_s_m)
+                .or_else(|| sections.first())?,
+            IncidentEdgeSide::End => sections
+                .iter()
+                .rev()
+                .find(|section| section.s_m - SAMPLE_EPSILON_M <= target_s_m)
+                .or_else(|| sections.last())?,
+        };
+        Self::build_mouth_profile_from_section(section, incident.side)
     }
 
     fn build_incident_endpoint_profile(

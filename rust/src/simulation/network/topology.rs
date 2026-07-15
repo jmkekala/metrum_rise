@@ -41,30 +41,45 @@ fn downsample(geo: &[Vector3], min_step: f32) -> Vec<Vector3> {
     out
 }
 
-/// Returns the float segment-index factor (seg + t) in `geo` closest to `pos`.
+/// Returns the float segment-index factor (seg + t) in `geo` closest to `pos` in XZ.
 ///
-/// Used to convert an approximate 3D intersection position (from downsampled
+/// Used to convert an approximate topological intersection position (from downsampled
 /// detection) back to an exact factor in the original full-resolution geometry,
-/// so `split_edge` receives the correct segment index.
+/// so `split_edge` receives the correct segment index. Intersections are decided
+/// on road centerlines in XZ; Y is checked separately for bridge/tunnel rejection.
 fn find_geo_factor(geo: &[Vector3], pos: Vector3) -> f32 {
     let mut best_factor = 0.0_f32;
-    let mut best_dist = f32::MAX;
+    let mut best_dist_sq = f32::MAX;
     for (i, w) in geo.windows(2).enumerate() {
-        let ab = w[1] - w[0];
-        let ab_sq = ab.dot(ab);
-        let t = if ab_sq > 1e-10 {
-            ((pos - w[0]).dot(ab) / ab_sq).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let closest = w[0] + ab * t;
-        let dist = pos.distance_to(closest);
-        if dist < best_dist {
-            best_dist = dist;
+        let t = segment_factor_xz(pos, w[0], w[1]);
+        let closest_x = w[0].x + (w[1].x - w[0].x) * t;
+        let closest_z = w[0].z + (w[1].z - w[0].z) * t;
+        let dx = pos.x - closest_x;
+        let dz = pos.z - closest_z;
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq < best_dist_sq {
+            best_dist_sq = dist_sq;
             best_factor = i as f32 + t;
         }
     }
     best_factor
+}
+
+fn segment_factor_xz(pos: Vector3, start: Vector3, end: Vector3) -> f32 {
+    let ab_x = end.x - start.x;
+    let ab_z = end.z - start.z;
+    let ab_sq = ab_x * ab_x + ab_z * ab_z;
+    if ab_sq > 1e-10 {
+        let ap_x = pos.x - start.x;
+        let ap_z = pos.z - start.z;
+        ((ap_x * ab_x + ap_z * ab_z) / ab_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn closest_point_on_segment_xz(pos: Vector3, start: Vector3, end: Vector3) -> Vector3 {
+    start.lerp(end, segment_factor_xz(pos, start, end))
 }
 
 impl RegionGraph {
@@ -536,11 +551,7 @@ fn collect_endpoint_snap_splits(
             let mut best_dist = f32::MAX;
             let mut best_closest = godot::prelude::Vector3::ZERO;
             for j in 0..edge2_geo_ds.len() - 1 {
-                let closest = interaction::get_closest_point_on_segment(
-                    p,
-                    edge2_geo_ds[j],
-                    edge2_geo_ds[j + 1],
-                );
+                let closest = closest_point_on_segment_xz(p, edge2_geo_ds[j], edge2_geo_ds[j + 1]);
                 let dist = Vector2::new(p.x - closest.x, p.z - closest.z).length();
                 if dist < best_dist {
                     best_dist = dist;
@@ -742,19 +753,14 @@ fn collect_interior_node_splits(
         let mut best_factor = 0.0_f32;
         let mut best_y = 0.0_f32;
         for (seg_idx, w) in edge_geo.windows(2).enumerate() {
-            let closest = interaction::get_closest_point_on_segment(node_pos, w[0], w[1]);
+            let t = segment_factor_xz(node_pos, w[0], w[1]);
+            let closest = w[0].lerp(w[1], t);
             let dist_xz =
                 godot::prelude::Vector2::new(node_pos.x - closest.x, node_pos.z - closest.z)
                     .length();
             if dist_xz < best_dist_xz {
                 best_dist_xz = dist_xz;
                 best_y = closest.y;
-                let ab = w[1] - w[0];
-                let t = if ab.length_squared() > 1e-10 {
-                    ((node_pos - w[0]).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
                 best_factor = seg_idx as f32 + t;
             }
         }
@@ -1012,6 +1018,37 @@ mod tests {
             String::new(),
         );
         format!("{pack_id}:{asset_id}")
+    }
+
+    #[test]
+    fn geo_factor_uses_xz_distance_for_sloped_crossings() {
+        let geo = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 100.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+        ];
+
+        let factor = find_geo_factor(&geo, Vector3::new(15.0, 100.0, 0.0));
+
+        assert!(
+            (factor - 1.5).abs() < 0.001,
+            "expected XZ crossing factor 1.5, got {factor}"
+        );
+    }
+
+    #[test]
+    fn closest_point_on_segment_xz_ignores_height_bias() {
+        let closest = closest_point_on_segment_xz(
+            Vector3::new(15.0, 100.0, 0.0),
+            Vector3::new(10.0, 100.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+        );
+
+        assert!(
+            (closest.x - 15.0).abs() < 0.001,
+            "expected XZ projection x=15.0, got {}",
+            closest.x
+        );
     }
 
     #[test]

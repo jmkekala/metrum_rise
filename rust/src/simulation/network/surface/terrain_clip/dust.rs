@@ -1,10 +1,14 @@
 //! Numeric-dust terrain-clip connector recovery.
 
 use super::super::backend::RoadVec3;
-use super::super::{NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSurfaceSystem};
+use super::super::{
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, RoadSurfaceSystem,
+    keys::SurfaceHeightMmKey,
+};
 use super::geometry::{
     contour_area_delta_after_removing_vertex, interpolate_height_f64, overlay_segment_length_m,
 };
+use super::heights::TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM;
 use super::model::{
     TerrainClipDustConnectorRecovery, TerrainClipSegmentHeights, TerrainClipSourceEdge,
 };
@@ -74,10 +78,7 @@ impl RoadSurfaceSystem {
             .iter()
             .copied()
             .map(|point| {
-                Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
-                    point,
-                    source_edges,
-                )
+                Self::terrain_clip_dust_overlay_point_height_from_source_edges(point, source_edges)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let Some(anchor) = heights.iter().position(Option::is_some) else {
@@ -119,14 +120,11 @@ impl RoadSurfaceSystem {
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<(), String> {
         let Some(source_height) =
-            Self::terrain_clip_unambiguous_overlay_point_height_from_source_edges(
-                point,
-                source_edges,
-            )?
+            Self::terrain_clip_dust_overlay_point_height_from_source_edges(point, source_edges)?
         else {
             return Ok(());
         };
-        if Self::overlay_heights_equal(source_height, height) {
+        if Self::terrain_clip_dust_heights_equal(source_height, height) {
             Ok(())
         } else {
             Err(format!(
@@ -233,5 +231,11 @@ impl RoadSurfaceSystem {
             .into_iter()
             .chain(remove_end_delta)
             .any(|delta| delta <= budget_m2)
+    }
+
+    fn terrain_clip_dust_heights_equal(a: f64, b: f64) -> bool {
+        let a_mm = SurfaceHeightMmKey::from_m_f64(a).as_i64();
+        let b_mm = SurfaceHeightMmKey::from_m_f64(b).as_i64();
+        a_mm.abs_diff(b_mm) <= TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM
     }
 }

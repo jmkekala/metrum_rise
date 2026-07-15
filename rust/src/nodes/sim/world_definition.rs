@@ -498,7 +498,7 @@ impl SimCore {
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
         self.transit_network =
-            TransitNetwork::new_with_world_terrain_chunk_span(self.config.terrain_chunk_m);
+            TransitNetwork::new_with_surface_chunk_span(self.config.terrain_chunk_m);
         self.zoning = ZoningSystem::new(&self.config);
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
@@ -528,7 +528,7 @@ impl SimCore {
         self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
         self.water_dirty = true;
-        self.network_dirty = true;
+        self.mark_network_render_dirty();
         self.last_tick_duration = 0.0;
         self.last_agent_tick_us = 0;
         self.last_road_timing.clear();
@@ -990,9 +990,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
-                config.terrain_chunk_m,
-            ),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1028,6 +1026,8 @@ mod tests {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            cached_network_node_positions: std::sync::Arc::new(Vec::new()),
+            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }

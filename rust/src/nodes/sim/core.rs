@@ -5,7 +5,7 @@
 //! Godot objects. The Godot main thread reads only from the snapshot for rendering
 //! and locks the `Arc<Mutex<SimCore>>` briefly for mutations (road edits, etc.).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -66,6 +66,15 @@ pub(crate) struct PendingDemandSpawnAction {
     pub(crate) planned_day_index: u32,
     /// Minute of day when demand originally planned the spawn.
     pub(crate) planned_minute_of_day: u16,
+}
+
+#[derive(Debug)]
+struct BulkRoadGeometryFinalize {
+    dirty_edges: HashSet<usize>,
+    affected_nodes: HashSet<u32>,
+    profile_us: u128,
+    regrade_us: u128,
+    clips_us: u128,
 }
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
@@ -186,9 +195,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_world_terrain_chunk_span(
-                config.terrain_chunk_m,
-            ),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -224,9 +231,91 @@ mod tests {
             water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
             cached_road_mesh_data: None,
+            cached_network_node_positions: std::sync::Arc::new(Vec::new()),
+            cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
+    }
+
+    #[test]
+    fn test_core_keeps_road_surface_chunks_aligned_to_terrain_chunks() {
+        let core = test_core();
+        assert_eq!(
+            core.transit_network.road_surface.chunk_span_m(),
+            core.config.terrain_chunk_m
+        );
+    }
+
+    #[test]
+    fn build_snapshot_reuses_cached_network_nodes_until_network_dirty() {
+        let mut core = test_core();
+        add_test_border_road(&mut core);
+        core.mark_network_render_dirty();
+
+        let first = core.build_snapshot();
+        assert_eq!(first.node_positions.len(), 2);
+        let first_nodes = std::sync::Arc::clone(&first.node_positions);
+
+        let second = core.build_snapshot();
+        assert!(std::sync::Arc::ptr_eq(&first_nodes, &second.node_positions));
+
+        core.mark_network_render_dirty();
+        let third = core.build_snapshot();
+        assert_eq!(third.node_positions.len(), 2);
+        assert!(!std::sync::Arc::ptr_eq(&first_nodes, &third.node_positions));
+    }
+
+    #[test]
+    fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
+        let mut core = test_core();
+        let center_pos = Vector3::new(0.0, 10.0, 0.0);
+        let west_pos = Vector3::new(-48.0, 10.0, 0.0);
+        let north_pos = Vector3::new(0.0, 22.0, 48.0);
+        let center = core.region_graph.add_node(center_pos, NodeType::Junction);
+        let west = core.region_graph.add_node(west_pos, NodeType::Junction);
+        let north = core.region_graph.add_node(north_pos, NodeType::Junction);
+
+        let stable_edge =
+            core.region_graph
+                .add_edge(test_road_edge(west, center, vec![west_pos, center_pos]));
+        let new_edge =
+            core.region_graph
+                .add_edge(test_road_edge(center, north, vec![center_pos, north_pos]));
+
+        core.transit_network.bulk_dirty_edges.insert(new_edge);
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, new_edge);
+        core.transit_network
+            .road_surface
+            .mark_node_dirty(&core.region_graph, center);
+        core.transit_network
+            .road_surface
+            .mark_node_dirty(&core.region_graph, north);
+
+        let stable_before = core.region_graph.edge(stable_edge).geometry.clone();
+        let finalized = core.finalize_bulk_road_geometry_for_dirty_edges();
+
+        assert!(finalized.affected_nodes.contains(&center));
+        assert!(finalized.dirty_edges.contains(&new_edge));
+        assert!(core.transit_network.bulk_dirty_edges.is_empty());
+        assert_eq!(
+            core.region_graph.edge(stable_edge).geometry,
+            stable_before,
+            "stable bend authority edge must not be rewritten by bulk finalization"
+        );
+        assert!(
+            core.region_graph.edge(new_edge).geometry.len() >= 8,
+            "bulk finalization must adapt the new junction mouth before surface compilation"
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .dirty_edges()
+                .contains(&new_edge),
+            "changed profile edge must stay marked for the following road-surface compile"
+        );
     }
 
     fn add_test_border_road(core: &mut SimCore) {
@@ -260,6 +349,34 @@ mod tests {
         core.transit_network
             .lane_system
             .rebuild(&mut core.region_graph);
+    }
+
+    fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edge {
+        let physical_length = geometry
+            .windows(2)
+            .map(|points| points[0].distance_to(points[1]))
+            .sum();
+        Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.89,
+            base_cost: physical_length,
+            physical_length,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            physical_geometry: geometry.clone(),
+            geometry,
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        }
     }
 
     fn register_test_asset(
@@ -829,6 +946,8 @@ pub(crate) struct RefinedTerrainPatchCacheKey {
 pub(crate) struct RefinedTerrainPatchBuildInput {
     /// Cache key for the produced patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
+    /// Road-surface generation captured when this input was assembled.
+    pub(crate) surface_generation: u64,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
     /// Local CDT windows assembled from source terrain samples and road footprint loops.
@@ -888,6 +1007,10 @@ pub(crate) struct CachedRefinedTerrainCdtWindow {
 pub(crate) struct CachedRefinedTerrainPatch {
     /// Cache key for this patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
+    /// CDT contract revision used to build this cached patch.
+    pub(crate) contract_revision: i64,
+    /// Road-surface generation used to build this cached patch.
+    pub(crate) surface_generation: u64,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
     /// Number of road loops supplied to the CDT builder.
@@ -996,6 +1119,10 @@ pub struct SimCore {
     pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
     /// Latest full road mesh generated by the sim thread after a network edit.
     pub(crate) cached_road_mesh_data: Option<NetworkMeshData>,
+    /// Cached world-space positions of live canonical network nodes for render snapshots.
+    pub(crate) cached_network_node_positions: Arc<Vec<Vector3>>,
+    /// True when network topology changed and the cached node-position snapshot must rebuild.
+    pub(crate) cached_network_node_positions_dirty: bool,
     /// Monotonic stamp for road-tool terrain/surface snapshots.
     pub(crate) road_tool_surface_generation: u64,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
@@ -1091,6 +1218,96 @@ impl SimCore {
         self.road_tool_surface_generation =
             self.road_tool_surface_generation.wrapping_add(1).max(1);
     }
+
+    /// Marks network visuals dirty and invalidates cached topology-only render data.
+    pub(crate) fn mark_network_render_dirty(&mut self) {
+        self.network_dirty = true;
+        self.cached_network_node_positions_dirty = true;
+    }
+
+    fn finalize_bulk_road_geometry_for_dirty_edges(&mut self) -> BulkRoadGeometryFinalize {
+        let mut dirty_edges = std::mem::take(&mut self.transit_network.bulk_dirty_edges);
+        let mut affected_nodes: HashSet<u32> = self
+            .transit_network
+            .road_surface
+            .dirty_nodes()
+            .iter()
+            .copied()
+            .map(|node_id| self.region_graph.get_valid_node(node_id))
+            .collect();
+
+        for &edge_idx in &dirty_edges {
+            if edge_idx >= self.region_graph.edge_count()
+                || self.region_graph.edge(edge_idx).deleted
+            {
+                continue;
+            }
+            let edge = self.region_graph.edge(edge_idx);
+            affected_nodes.insert(self.region_graph.get_valid_node(edge.start_node));
+            affected_nodes.insert(self.region_graph.get_valid_node(edge.end_node));
+        }
+
+        let profile_start = Instant::now();
+        let profile_changed_edges = self.transit_network.solve_dirty_junction_endpoint_profiles(
+            &mut self.region_graph,
+            &affected_nodes,
+            &dirty_edges,
+        );
+        let profile_us = profile_start.elapsed().as_micros();
+        dirty_edges.extend(profile_changed_edges);
+
+        let regrade_start = Instant::now();
+        let regrade_changed_edges = self
+            .transit_network
+            .regrade_dirty_junction_endpoint_profiles(
+                &mut self.region_graph,
+                &affected_nodes,
+                &dirty_edges,
+            );
+        let regrade_us = regrade_start.elapsed().as_micros();
+        dirty_edges.extend(regrade_changed_edges);
+
+        self.transit_network.mark_surface_dirty_from_sets(
+            &self.region_graph,
+            &dirty_edges,
+            &affected_nodes,
+        );
+
+        let clips_start = Instant::now();
+        self.region_graph
+            .rebuild_intersection_clips_for_nodes(&affected_nodes);
+        let clips_us = clips_start.elapsed().as_micros();
+
+        BulkRoadGeometryFinalize {
+            dirty_edges,
+            affected_nodes,
+            profile_us,
+            regrade_us,
+            clips_us,
+        }
+    }
+
+    fn network_node_positions_snapshot(&mut self) -> Arc<Vec<Vector3>> {
+        if self.cached_network_node_positions_dirty {
+            self.cached_network_node_positions = Arc::new(self.build_network_node_positions());
+            self.cached_network_node_positions_dirty = false;
+        }
+        Arc::clone(&self.cached_network_node_positions)
+    }
+
+    fn build_network_node_positions(&self) -> Vec<Vector3> {
+        self.region_graph
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                let node_id = *i as u32;
+                self.region_graph.get_valid_node(node_id) == node_id
+                    && self.region_graph.node_has_live_incident_edge(node_id)
+            })
+            .map(|(_, n)| n.pos)
+            .collect()
+    }
 }
 
 /// Pre-computed rendering data written by the sim thread and read by the render thread.
@@ -1138,7 +1355,7 @@ pub struct RenderSnapshot {
     /// World-space positions of all live canonical network nodes.
     /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
     /// instead of locking SimCore — avoids main-thread stalls during road placement.
-    pub node_positions: Vec<godot::prelude::Vector3>,
+    pub node_positions: Arc<Vec<godot::prelude::Vector3>>,
 }
 
 impl Default for RenderSnapshot {
@@ -1161,7 +1378,7 @@ impl Default for RenderSnapshot {
             terrain_world_size: godot::prelude::Vector2::ZERO,
             zoning_overlay_revision: 0,
             zoning_overlay_occupancy_revision: 0,
-            node_positions: Vec::new(),
+            node_positions: Arc::new(Vec::new()),
             heightmap_height: 0,
         }
     }
@@ -2481,7 +2698,7 @@ impl SimCore {
     ///
     /// Called from the background thread at the end of every movement tick.
     /// Uses only pure Rust types so the resulting snapshot is `Send`.
-    pub fn build_snapshot(&self) -> RenderSnapshot {
+    pub fn build_snapshot(&mut self) -> RenderSnapshot {
         use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
 
         let mut pedestrian_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
@@ -2663,18 +2880,7 @@ impl SimCore {
             }
         }
 
-        let node_positions: Vec<godot::prelude::Vector3> = self
-            .region_graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                let node_id = *i as u32;
-                self.region_graph.get_valid_node(node_id) == node_id
-                    && self.region_graph.node_has_live_incident_edge(node_id)
-            })
-            .map(|(_, n)| n.pos)
-            .collect();
+        let node_positions = self.network_node_positions_snapshot();
 
         let (terrain_world_w, terrain_world_h) = self.heightmap.world_size();
 
@@ -2784,24 +2990,14 @@ pub(crate) fn run_sim_thread(
                             let c = &mut *c;
                             c.transit_network.bulk_load = false;
 
-                            // Take dirty edges first so we can derive the affected nodes
-                            // for the incremental clips pass.
-                            let dirty = std::mem::take(&mut c.transit_network.bulk_dirty_edges);
+                            let BulkRoadGeometryFinalize {
+                                dirty_edges: dirty,
+                                affected_nodes: _affected_nodes,
+                                profile_us: dt_profile_us,
+                                regrade_us: dt_regrade_us,
+                                clips_us: dt_clips_us,
+                            } = c.finalize_bulk_road_geometry_for_dirty_edges();
                             let dirty_count = dirty.len();
-
-                            // Collect nodes touched by the new/split edges.
-                            let mut affected_nodes = std::collections::HashSet::new();
-                            for &e_id in &dirty {
-                                if e_id < c.region_graph.edge_count()
-                                    && !c.region_graph.edge(e_id).deleted
-                                {
-                                    let e = c.region_graph.edge(e_id);
-                                    affected_nodes
-                                        .insert(c.region_graph.get_valid_node(e.start_node));
-                                    affected_nodes
-                                        .insert(c.region_graph.get_valid_node(e.end_node));
-                                }
-                            }
                             if crate::debug::category_enabled("road")
                                 && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
                                     .map(|value| !value.is_empty() && value != "0")
@@ -2811,11 +3007,6 @@ pub(crate) fn run_sim_thread(
                                 c.last_surface_debug_edges.sort_unstable();
                                 c.last_surface_debug_edges.dedup();
                             }
-
-                            let t_clips = Instant::now();
-                            c.region_graph
-                                .rebuild_intersection_clips_for_nodes(&affected_nodes);
-                            let dt_clips_us = t_clips.elapsed().as_micros();
 
                             let t_inv = Instant::now();
                             // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
@@ -2843,9 +3034,11 @@ pub(crate) fn run_sim_thread(
 
                             let total_us = road_total.elapsed().as_micros();
                             let msg = format!(
-                                "TOTAL={}µs  {}  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
+                                "TOTAL={}µs  {}  profiles={}µs  regrade={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
                                 total_us,
                                 c.last_road_timing,
+                                dt_profile_us,
+                                dt_regrade_us,
                                 dt_clips_us,
                                 dt_lanes_us,
                                 dirty_count,
@@ -2871,7 +3064,7 @@ pub(crate) fn run_sim_thread(
                             .refresh_road_locked_terrain_patch_state(
                                 ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
                             );
-                        c.network_dirty = true;
+                        c.mark_network_render_dirty();
                         let collect_refined_ms =
                             collect_refined_start.elapsed().as_secs_f64() * 1000.0;
                         (

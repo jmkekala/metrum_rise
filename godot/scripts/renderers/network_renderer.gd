@@ -20,6 +20,7 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 var _road_debug_enabled: bool = false
 var _road_geometry_debug_enabled: bool = false
+var _road_mesh_refreshed_surface_generation: int = -1
 
 const ROAD_PATCH_DEBUG_MAX_DIRTY_PAIRS := 64
 
@@ -31,6 +32,7 @@ func _process(_delta: float) -> void:
 	var perf_enabled := PerfDebug.is_enabled()
 	var total_start_us := Time.get_ticks_usec() if perf_enabled else 0
 	if not simulation_node.is_network_dirty():
+		_road_mesh_refreshed_surface_generation = -1
 		if perf_enabled:
 			PerfDebug.record(
 				"network",
@@ -47,8 +49,10 @@ func _process(_delta: float) -> void:
 	var dirty_terrain_patch_keys: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
 	var dirty_patch_pairs := int(dirty_terrain_patch_keys.size() / 2)
 
-	# 2. Redraw the terrain mesh eagerly and clear the flag so terrain.gd._process skips it
-	#    this frame rather than running a redundant second pass.
+	# 2. Redraw the terrain mesh once all dirty road-locked patches are ready. Road mesh publication
+	#    is intentionally gated behind this so the player never sees mixed road/terrain generations.
+	var road_mesh_ms := 0.0
+	var surface_generation := _current_road_surface_generation()
 	var terrain_visuals_ms := 0.0
 	var terrain_visuals_ready := true
 	if dirty_patch_pairs > 0:
@@ -66,23 +70,27 @@ func _process(_delta: float) -> void:
 				{
 					"terrain_visuals": terrain_visuals_ms,
 					"water_visuals": 0.0,
-					"road_mesh": 0.0,
+					"road_mesh": road_mesh_ms,
 					"border_checks": 0.0,
 				}
 			)
 		return
 
+	# 3. Publish committed road geometry only after terrain accepted the matching generation. The
+	#    update still happens in the same frame as the terrain upload, so no intermediate cut/road
+	#    mismatch reaches the renderer.
+	if _road_mesh_refreshed_surface_generation != surface_generation:
+		var road_mesh_start_us := Time.get_ticks_usec()
+		road_tool.update_main_mesh()
+		road_tool.mark_network_topology_dirty()
+		road_mesh_ms = float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
+		_road_mesh_refreshed_surface_generation = surface_generation
+	# rail_tool.update_main_mesh()  # add when RailTool exists
+
 	var water_visuals_start_us := Time.get_ticks_usec()
 	if water and water.has_method("refresh_road_clipped_patches"):
 		water.refresh_road_clipped_patches(dirty_terrain_patch_keys)
 	var water_visuals_ms := float(Time.get_ticks_usec() - water_visuals_start_us) / 1000.0
-
-	# 3. Rebuild each network's visual mesh.
-	var road_mesh_start_us := Time.get_ticks_usec()
-	road_tool.update_main_mesh()
-	road_tool.mark_network_topology_dirty()
-	var road_mesh_ms := float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
-	# rail_tool.update_main_mesh()  # add when RailTool exists
 
 	# 4. Check whether any queued road endpoints are border connections.
 	# Must run after the road is in the graph so check_border_candidate() finds the node.
@@ -97,6 +105,7 @@ func _process(_delta: float) -> void:
 	# frame must retry this coordinated visual refresh instead of waiting for another road edit.
 	if terrain_visuals_ready:
 		simulation_node.clear_network_dirty()
+		_road_mesh_refreshed_surface_generation = -1
 
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 	if perf_enabled:
@@ -125,6 +134,11 @@ func _process(_delta: float) -> void:
 		)
 		if _road_geometry_debug_enabled:
 			_print_road_geometry_patch_debug(dirty_terrain_patch_keys)
+
+func _current_road_surface_generation() -> int:
+	if simulation_node.has_method("get_road_tool_surface_generation"):
+		return int(simulation_node.get_road_tool_surface_generation())
+	return 0
 
 func _is_road_debug_enabled() -> bool:
 	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()

@@ -73,6 +73,77 @@ fn arrangement_edges_match_opposite_owners_by_canonical_xz_segment() {
 }
 
 #[test]
+fn arrangement_edges_accept_same_source_fragments_covering_final_edge() {
+    let curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 5);
+    let seam_fragments = vec![
+        NodeRegionSeamConstraint {
+            constraint_index: 91,
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 4 },
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        },
+        NodeRegionSeamConstraint {
+            constraint_index: 91,
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 4 },
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 1.0),
+            end_xz: RoadVec2::new(1.0, 3.0),
+        },
+    ];
+    let heights = NodeHeightSolution {
+        node_id: 43,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        regions: vec![
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![
+                    height_vertex(0.0, 0.0, 0.0),
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(1.0, 3.0, 0.0),
+                    height_vertex(0.0, 3.0, 0.0),
+                ],
+                seam_fragments.clone(),
+            ),
+            test_height_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![
+                    height_vertex(1.0, 0.0, 0.0),
+                    height_vertex(2.0, 0.0, 0.0),
+                    height_vertex(2.0, 3.0, 0.0),
+                    height_vertex(1.0, 3.0, 0.0),
+                ],
+                seam_fragments,
+            ),
+        ],
+    };
+
+    let arrangement = NodeArrangement::from_height_solution(&heights)
+        .expect("height-owned regions should produce canonical arrangement");
+
+    assert!(arrangement.diagnostics().is_empty());
+    assert!(arrangement.edges().iter().any(|edge| {
+        let start = arrangement.vertices()[edge.start.0].key;
+        let end = arrangement.vertices()[edge.end.0].key;
+        edge.owner == curb
+            && edge.opposite_owner == Some(sidewalk)
+            && matches!(edge.seam_source, NodeSeamSource::RaisedStepContact { .. })
+            && edge.source_constraint_indices == vec![91]
+            && start == NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0))
+            && end == NodeArrangementKey::from_point(RoadVec2::new(1.0, 3.0))
+    }));
+}
+
+#[test]
 fn arrangement_nodes_long_boundary_edge_at_peer_region_vertex() {
     let first = owner(RoadSurfaceBandKind::Carriageway, 0);
     let second = owner(RoadSurfaceBandKind::Carriageway, 1);

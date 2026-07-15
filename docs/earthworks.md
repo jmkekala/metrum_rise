@@ -181,7 +181,8 @@ Deterministic seam contract:
   grading rails from crossing the final road-owned footprint
 - building-site loops may share the terrain-CDT patch carrier, but they are not roadbed loops and
   must not emit `RoadSurfaceSystem` roadbed grading-envelope samples or constraints; site grading is
-  owned by the site / engineered-ground path
+  owned by the site / engineered-ground path and must remain sample-only around the hard support
+  footprint
 - ordinary `Standard` span and node footprint seam sources must not be promoted into retaining-wall
   topology; wall output is reserved for explicit structural bridge / tunnel / future retaining
   sources with preserved provenance
@@ -227,6 +228,8 @@ Deterministic seam contract:
   - guide constraints are a local convex-footprint aid, not a footprint repair path; if the final
     loop set is concave, contains holes, or contains multiple non-hole loops, the grading envelope
     must rely on guide samples without adding rail constraints
+  - building-site apron guides are always soft guide samples; the site support footprint is the hard
+    CDT boundary, and apron guides must not add rail constraints across roads or neighboring sites
   - Spade CDT faces are classified after triangulation against the final road-owned footprint;
     ordinary non-seam faces may use centroid ownership, but faces carrying a road constraint edge
     classify the exact seam side so narrow concave tie-ins are not lost to centroid-only ownership
@@ -345,8 +348,8 @@ That means:
   they must be emitted from the runtime site client after the terrain footprint is clipped
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
-- bridge earthworks remain abutment-only and use class-owned endpoint ranges rather than ordinary
-  road-width handoff ranges, so midspans are not flattened
+- bridges do not stamp terrain earthworks; raised spans and elevated terminals render structural
+  concrete support instead of terrain fill
 - tunnel earthworks remain portal-only and use class-owned endpoint ranges so visible portals are
   not trimmed away before portal visibility is evaluated
 
@@ -396,8 +399,8 @@ Current compatibility gap:
   terrain
 - structural visual terrain is then rebuilt from that moved roadbed, so the road can shift instead
   of the terrain alone reshaping around it
-- building-site clients now ship as fixed flat in-lot pad surfaces with deterministic perimeter
-  tie-in guides; richer foundation meshes remain later work
+- building-site clients now ship as fixed flat in-lot pad surfaces with deterministic sample-only
+  perimeter tie-in guides; richer foundation meshes remain later work
 
 ### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
@@ -714,7 +717,8 @@ required support footprint from mesh parts, entrance landings, driveway/loading/
 and authored hard surfaces. Road-facing access-anchor support stays behind the exact road /
 sidewalk boundary by a deterministic clearance so the frontage strip is a tie-in/apron region
 instead of a second hard terrain-CDT loop sharing the road seam. Terrain, road, and apron tie-ins
-start outside the support footprint; they must not cross back through it. Authored
+start outside the support footprint; they must not cross back through it, and apron guides remain
+sample-only so neighboring site or road windows cannot gain extra hard CDT rails. Authored
 `[[site_surfaces]]` polygons do not define separate terrain-ownership cuts. They define
 visible/material regions on the selected site plane, such as asphalt, concrete, paved yards, or
 walkways.

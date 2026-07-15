@@ -68,6 +68,9 @@ const ROAD_PREVIEW_LANE_WIDTH_M := 3.5
 const ROAD_PREVIEW_SIDEWALK_WIDTH_M := 1.5
 const ROAD_PREVIEW_MIN_WIDTH_M := 2.0
 const MAP_BORDER_SNAP_DIST_M := 25.0
+const ROAD_NETWORK_SNAP_CONFIRM_EPS_M := 0.25
+const ROAD_NETWORK_SNAP_RELEASE_DIST_M := 8.0
+const ROAD_SELF_SNAP_DIST_M := 2.5
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
 # Base angle (radians) for Shift snapping — set to the road tangent at start_pos
@@ -75,6 +78,8 @@ const MAP_BORDER_SNAP_DIST_M := 25.0
 var _start_tangent_angle: float = 0.0
 # True when a real road tangent was found at start_pos (false = open terrain, show world angle).
 var _has_road_tangent: bool = false
+var _sticky_network_snap_active: bool = false
+var _sticky_network_snap_pos: Vector3 = Vector3.ZERO
 
 func _ready():
 	super._ready()
@@ -96,6 +101,8 @@ func _ready():
 
 func _process(delta):
 	super._process(delta)
+	if not active:
+		_clear_sticky_network_snap()
 	_preview_idle_exact_delay_sec = maxf(_preview_idle_exact_delay_sec - delta, 0.0)
 	if (
 		current_path != null
@@ -186,6 +193,7 @@ func _handle_click():
 		State.IDLE:
 			start_pos = pos
 			active = true
+			_clear_sticky_network_snap()
 			if draw_mode == 0:
 				current_state = State.SETTING_END
 				control_pos = start_pos
@@ -217,6 +225,7 @@ func _handle_click():
 			
 		State.SETTING_CONTROL:
 			control_pos = pos
+			_clear_sticky_network_snap()
 			current_state = State.SETTING_END
 			
 		State.SETTING_END:
@@ -656,6 +665,7 @@ func _commit_segment(end_pos):
 
 func cancel_road():
 	current_state = State.IDLE
+	_clear_sticky_network_snap()
 	_clear_preview_visual()
 	if current_path:
 		current_path.queue_free()
@@ -668,6 +678,7 @@ func cancel_road():
 
 func mark_network_topology_dirty() -> void:
 	mark_network_nodes_dirty()
+	_clear_sticky_network_snap()
 	_ghost_guides_dirty = true
 	_request_deferred_ghost_rebuild()
 
@@ -769,7 +780,10 @@ func get_world_mouse_pos() -> Vector3:
 		Input.is_key_pressed(KEY_SHIFT),
 		_start_tangent_angle,
 		_ghost_enabled,
-		MAP_BORDER_SNAP_DIST_M
+		MAP_BORDER_SNAP_DIST_M,
+		_sticky_network_snap_active,
+		_sticky_network_snap_pos,
+		ROAD_NETWORK_SNAP_RELEASE_DIST_M
 	)
 	if pos_variant == null:
 		if _has_last_world_mouse_pos:
@@ -777,7 +791,40 @@ func get_world_mouse_pos() -> Vector3:
 		is_valid = false
 		return Vector3.ZERO
 	is_valid = true
-	return pos_variant
+	var pos: Vector3 = pos_variant
+	_update_sticky_network_snap(pos)
+	return pos
+
+func _update_sticky_network_snap(pos: Vector3) -> void:
+	if not _can_stick_to_network_snap(pos):
+		_clear_sticky_network_snap()
+		return
+	var network_pos = simulation_node.get_closest_network_point(pos, ROAD_NETWORK_SNAP_CONFIRM_EPS_M)
+	if network_pos == null:
+		_clear_sticky_network_snap()
+		return
+	if _xz_distance(pos, network_pos) > ROAD_NETWORK_SNAP_CONFIRM_EPS_M:
+		_clear_sticky_network_snap()
+		return
+	_sticky_network_snap_active = true
+	_sticky_network_snap_pos = pos
+
+func _can_stick_to_network_snap(pos: Vector3) -> bool:
+	if current_state == State.SETTING_END:
+		if _xz_distance(pos, start_pos) < ROAD_SELF_SNAP_DIST_M:
+			return false
+		if draw_mode != 0 and _xz_distance(pos, control_pos) < ROAD_SELF_SNAP_DIST_M:
+			return false
+	return true
+
+func _clear_sticky_network_snap() -> void:
+	_sticky_network_snap_active = false
+	_sticky_network_snap_pos = Vector3.ZERO
+
+func _xz_distance(a: Vector3, b: Vector3) -> float:
+	var dx := a.x - b.x
+	var dz := a.z - b.z
+	return sqrt(dx * dx + dz * dz)
 
 ## Returns preview geometry compiled through the shared Rust road-surface pipeline.
 ## If the sim mutex is momentarily contended, returns an empty invalid preview instead of stale geometry.

@@ -7,10 +7,6 @@ use super::super::{
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 
-const SAMPLE_EPSILON_M: f64 = 0.001;
-const SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2: f64 = 1.0e-8;
-const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f64 = 0.01;
-
 impl RoadSurfaceSystem {
     pub(super) fn collect_query_contributors(
         &self,
@@ -188,37 +184,9 @@ impl RoadSurfaceSystem {
         F: FnMut([RoadVec3; 3]),
     {
         for &triangle in &polygon.triangles_world {
-            if road_triangle_has_area_xz(triangle) {
+            if Self::top_surface_triangle_is_renderable_xz(triangle) {
                 visitor(triangle);
             }
         }
     }
-}
-
-fn road_triangle_has_area_xz(triangle: [RoadVec3; 3]) -> bool {
-    let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
-        - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-    if projected_cross.abs() <= SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2 {
-        return false;
-    }
-    let edge_ab = RoadVec3::new(
-        triangle[1].x - triangle[0].x,
-        0.0,
-        triangle[1].z - triangle[0].z,
-    )
-    .length();
-    let edge_bc = RoadVec3::new(
-        triangle[2].x - triangle[1].x,
-        0.0,
-        triangle[2].z - triangle[1].z,
-    )
-    .length();
-    let edge_ca = RoadVec3::new(
-        triangle[0].x - triangle[2].x,
-        0.0,
-        triangle[0].z - triangle[2].z,
-    )
-    .length();
-    let max_edge_m = edge_ab.max(edge_bc).max(edge_ca);
-    projected_cross.abs() / max_edge_m.max(SAMPLE_EPSILON_M) >= SURFACE_MIN_TRIANGLE_ALTITUDE_M
 }

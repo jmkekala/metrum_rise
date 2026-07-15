@@ -522,7 +522,7 @@ impl SimCore {
         world_pos: Vector3,
         max_dist: f32,
     ) -> Option<Vector3> {
-        interaction::get_closest_point(&self.region_graph, world_pos, max_dist)
+        interaction::get_closest_point_xz(&self.region_graph, world_pos, max_dist)
     }
 
     /// Returns the ID of the closest network node.

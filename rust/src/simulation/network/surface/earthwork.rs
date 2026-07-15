@@ -33,8 +33,7 @@ const EARTHWORK_CUT_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 
-// Structural end caps that constrain bridge abutments and tunnel portal stamps.
-const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
+// Structural end caps that constrain tunnel portal stamps.
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 const PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS: usize = 2;
 

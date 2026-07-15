@@ -181,7 +181,7 @@ fn canonical_node_carrier_records(
 ) -> Vec<ownership::NodeCarrierProvenanceRecord> {
     let incidents = surface.sorted_incident_surface_edges(graph, node_id);
     let mouths = surface
-        .build_ordered_piece_mouths(&incidents)
+        .build_ordered_piece_mouths(graph, &incidents)
         .unwrap_or_else(|| panic!("node {node_id} must produce ordered mouths"));
     let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(node_id, kind, &mouths)
         .unwrap_or_else(|error| {

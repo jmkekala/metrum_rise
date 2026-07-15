@@ -10,6 +10,7 @@ use super::regions::PendingArrangementRegion;
 use super::seams::{
     NodeRegionSeamConstraint, NodeSeamSource, seam_constraint_can_source_edge_owner_pair,
     seam_constraint_covers_edge, seam_constraints_are_ambiguous,
+    seam_constraints_covering_surface_key_edge_as_fragments,
 };
 use super::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId,
@@ -257,12 +258,13 @@ impl NodeArrangement {
             return false;
         };
         self.regions.iter().any(|region| {
-            region.seam_constraints.iter().any(|constraint| {
+            let source_constraints =
+                source_constraints_for_key_edge(start, end, &region.seam_constraints);
+            source_constraints.iter().any(|constraint| {
                 constraint.is_material_transition
                     && edge
                         .source_constraint_indices
                         .contains(&constraint.constraint_index)
-                    && seam_constraint_covers_edge(constraint, start, end)
                     && seam_constraint_can_source_edge_owner_pair(
                         constraint,
                         edge.owner,
@@ -284,10 +286,23 @@ fn source_constraints_for_edge<'a>(
     let Some(end) = vertices.get(edge.end.0).map(|vertex| vertex.key) else {
         return Vec::new();
     };
+    source_constraints_for_key_edge(start, end, constraints)
+}
+
+fn source_constraints_for_key_edge<'a>(
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+    constraints: &'a [NodeRegionSeamConstraint],
+) -> Vec<&'a NodeRegionSeamConstraint> {
     let mut matches = constraints
         .iter()
         .filter(|constraint| seam_constraint_covers_edge(constraint, start, end))
         .collect::<Vec<_>>();
+    matches.extend(seam_constraints_covering_surface_key_edge_as_fragments(
+        start.surface_key(),
+        end.surface_key(),
+        constraints,
+    ));
     matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches

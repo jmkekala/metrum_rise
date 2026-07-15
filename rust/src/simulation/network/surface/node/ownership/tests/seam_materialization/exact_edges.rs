@@ -113,6 +113,66 @@ fn materializes_seam_constraints_for_final_noded_owned_edges() {
 }
 
 #[test]
+fn arrangement_accepts_same_source_fragments_covering_final_owned_edge() {
+    let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+    let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+    let seam_fragments = vec![
+        NodeRegionSeamConstraint {
+            constraint_index: 91,
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 4 },
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 0.0),
+        },
+        NodeRegionSeamConstraint {
+            constraint_index: 91,
+            seam_source: NodeSeamSource::RaisedStepContact { owner_index: 4 },
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(3.0, 0.0),
+        },
+    ];
+    let mut regions = vec![
+        test_owned_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb,
+            vec![[0.0, 0.0], [3.0, 0.0], [3.0, -1.0], [0.0, -1.0]],
+        ),
+        test_owned_region(
+            RoadSurfaceBandKind::Sidewalk,
+            sidewalk,
+            vec![[0.0, 0.0], [0.0, 1.0], [3.0, 1.0], [3.0, 0.0]],
+        ),
+    ];
+    for region in &mut regions {
+        region.seam_constraints = seam_fragments.clone();
+    }
+
+    let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+        42,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &regions,
+        &Vec::new(),
+        &Vec::new(),
+    );
+
+    assert!(arrangement.diagnostics().is_empty());
+    assert!(arrangement.edges().iter().any(|edge| {
+        edge.owner == curb
+            && edge.opposite_owner == Some(sidewalk)
+            && edge.source_constraint_indices == vec![91]
+            && edge.start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(0.0, 0.0))
+            && edge.end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(3.0, 0.0))
+    }));
+}
+
+#[test]
 fn materializes_owner_explicit_step_for_final_edge_on_exact_constraint_span() {
     let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
     let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);

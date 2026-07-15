@@ -101,6 +101,90 @@ fn dirty_node_recompile_refreshes_incident_span_sections_for_new_junction() {
 }
 
 #[test]
+fn four_way_junction_input_keeps_graph_mouths_when_span_piece_is_missing() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let west = graph.add_node(Vector3::new(-36.0, 0.0, 0.0), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(36.0, 0.0, 0.0), NodeType::Junction);
+    let north = graph.add_node(Vector3::new(0.0, 0.0, -36.0), NodeType::Junction);
+    let south = graph.add_node(Vector3::new(0.0, 0.0, 36.0), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![Vector3::new(-36.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(36.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        north,
+        center,
+        vec![Vector3::new(0.0, 0.0, -36.0), Vector3::new(0.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 36.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(96, 96);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let missing_span_edge = *graph
+        .node_adjacency(center)
+        .first()
+        .expect("four-way center must have at least one incident edge");
+    surface
+        .compiled_visual_span_pieces
+        .remove(&missing_span_edge);
+
+    let input = surface
+        .visual_node_compile_input(&graph, center)
+        .expect("four-way center must still produce a JunctionN input");
+
+    assert_eq!(input.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_eq!(
+        input.mouths.len(),
+        4,
+        "a missing span cache entry must not drop a graph incident edge"
+    );
+    assert!(
+        input
+            .mouths
+            .iter()
+            .any(|mouth| mouth.edge_idx == missing_span_edge),
+        "the edge with the missing span piece must be represented by a fallback mouth"
+    );
+    assert!(
+        surface
+            .compile_visual_node_piece_from_input(&graph, &terrain, center, &input)
+            .is_some(),
+        "fallback mouths must remain usable by the canonical node compiler"
+    );
+}
+
+#[test]
 fn dirty_recompile_expanded_arbitrary_node_piece_compiles_with_explicit_height_carriers() {
     let terrain = flat_terrain(192, 192);
     let mut graph = RegionGraph::new();

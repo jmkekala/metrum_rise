@@ -127,6 +127,60 @@ fn uniformly_elevated_input_stays_auto_bridge() {
 }
 
 #[test]
+fn terrain_to_raised_input_becomes_bridge_ramp() {
+    let terrain = flat_terrain(65, 33);
+    let raw_points = vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 2.5, 0.0)];
+
+    let (points, class) = RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
+
+    assert_eq!(class, EdgeClass::Bridge);
+    assert_eq!(points.len(), raw_points.len());
+    assert!((points[0].y - raw_points[0].y).abs() <= 0.001);
+    assert!((points[1].y - raw_points[1].y).abs() <= 0.001);
+}
+
+#[test]
+fn bridge_ramp_height_survives_terrain_sync() {
+    let terrain = flat_terrain(65, 33);
+    let raw_points = vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 2.5, 0.0)];
+    let (points, class) = RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(points[1], NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        start,
+        end,
+        points,
+        7.0,
+        class,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    graph.sync_to_terrain(&terrain);
+
+    assert_eq!(graph.edge(edge_idx).class, EdgeClass::Bridge);
+    assert!((graph.node(end).pos.y - raw_points[1].y).abs() <= 0.001);
+    assert!((graph.edge(edge_idx).geometry.last().unwrap().y - raw_points[1].y).abs() <= 0.001);
+    assert!(
+        (graph.edge(edge_idx).physical_geometry.last().unwrap().y - raw_points[1].y).abs() <= 0.001
+    );
+}
+
+#[test]
+fn terrain_to_lowered_input_becomes_tunnel_ramp() {
+    let terrain = flat_terrain(65, 33);
+    let raw_points = vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, -2.5, 0.0)];
+
+    let (points, class) = RoadSurfaceSystem::prepare_road_input_points(&raw_points, &terrain);
+
+    assert_eq!(class, EdgeClass::Tunnel);
+    assert_eq!(points.len(), raw_points.len());
+    assert!((points[0].y - raw_points[0].y).abs() <= 0.001);
+    assert!((points[1].y - raw_points[1].y).abs() <= 0.001);
+}
+
+#[test]
 fn mark_edge_dirty_tracks_edge_without_centerline_chunk_guess() {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(5.0, 0.0, 0.0), NodeType::Junction);

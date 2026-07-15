@@ -1,9 +1,8 @@
 //! Earthwork visibility policy and span section range selection.
 
-use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M};
-use super::BRIDGE_ABUTMENT_LENGTH_M;
+use super::super::{RoadSurfaceSection, RoadSurfaceSystem};
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 
 impl RoadSurfaceSystem {
@@ -25,8 +24,12 @@ impl RoadSurfaceSystem {
             if edge.deleted || !Self::is_surface_edge(edge) {
                 continue;
             }
-            if edge.class != EdgeClass::Tunnel || edge.primary_type == TransitType::Foot {
+            if edge.class == EdgeClass::Standard {
                 return true;
+            }
+
+            if edge.class == EdgeClass::Bridge {
+                continue;
             }
 
             let at_start = graph.get_valid_node(edge.start_node) == node_id;
@@ -54,12 +57,7 @@ impl RoadSurfaceSystem {
 
         match edge.class {
             EdgeClass::Standard => vec![(start_index, end_index)],
-            EdgeClass::Bridge => self.endpoint_limited_section_ranges(
-                sections,
-                start_index,
-                end_index,
-                BRIDGE_ABUTMENT_LENGTH_M,
-            ),
+            EdgeClass::Bridge => Vec::new(),
             EdgeClass::Tunnel => {
                 self.tunnel_visible_section_ranges(sections, start_index, end_index, terrain)
             }
@@ -77,9 +75,8 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        // Bridge abutments and tunnel portals are structural endpoint regions; trimming them by
-        // the ordinary road-width handoff can either erase portals or collapse short spans into
-        // one full-length stamp.
+        // Tunnel portals are structural endpoint regions; trimming them by the ordinary road-width
+        // handoff can erase portals or collapse short spans into one full-length stamp.
         if edge.class != EdgeClass::Standard {
             return Some((0, sections.len().saturating_sub(1)));
         }
@@ -106,49 +103,6 @@ impl RoadSurfaceSystem {
             )
             .ownership_range?;
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
-    }
-
-    fn endpoint_limited_section_ranges(
-        &self,
-        sections: &[RoadSurfaceSection],
-        start_index: usize,
-        end_index: usize,
-        endpoint_length_m: f32,
-    ) -> Vec<(usize, usize)> {
-        if end_index <= start_index {
-            return Vec::new();
-        }
-
-        let start_s = sections[start_index].s_m;
-        let end_s = sections[end_index].s_m;
-        if end_s - start_s <= endpoint_length_m * 2.0 {
-            return vec![(start_index, end_index)];
-        }
-
-        let mut ranges = Vec::new();
-        if let Some(start_end) = sections[start_index..=end_index]
-            .iter()
-            .rposition(|section| section.s_m <= start_s + endpoint_length_m + SAMPLE_EPSILON_M)
-            .map(|offset| start_index + offset)
-        {
-            if start_end > start_index {
-                ranges.push((start_index, start_end));
-            }
-        }
-
-        if let Some(end_start) = sections[start_index..=end_index]
-            .iter()
-            .position(|section| section.s_m >= end_s - endpoint_length_m - SAMPLE_EPSILON_M)
-            .map(|offset| start_index + offset)
-        {
-            if end_index > end_start {
-                ranges.push((end_start, end_index));
-            }
-        }
-
-        ranges.sort_unstable();
-        ranges.dedup();
-        ranges
     }
 
     pub(in crate::simulation::network::surface) fn tunnel_visible_section_ranges(

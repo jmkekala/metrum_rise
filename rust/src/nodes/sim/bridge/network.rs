@@ -5,7 +5,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::nodes::sim::road_tool::{
     GHOST_GRID_SPACING_M, GHOST_LINE_LIFT_M, GHOST_MAX_OFFSETS, GHOST_OFFSET_ALPHAS,
     GHOST_OUTWARD_EXTEND_M, GHOST_TICK_HALF_M, GHOST_TICK_INTERVAL_M, GHOST_TICK_LIFT_M,
-    RoadGhostSnapIndex,
+    RoadGhostSnapIndex, endpoint_tangent_xz,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
@@ -27,17 +27,19 @@ pub fn get_road_ghost_guides(core: &SimCore) -> PackedFloat32Array {
         let geom = &edge.physical_geometry;
         let n = geom.len();
         // Start endpoint — tangent points outward
-        let t0 = (geom[0] - geom[1]).normalized();
-        out.push(geom[0].x);
-        out.push(geom[0].z);
-        out.push(t0.x);
-        out.push(t0.z);
+        if let Some(t0) = endpoint_tangent_xz(geom[0], geom[1]) {
+            out.push(geom[0].x);
+            out.push(geom[0].z);
+            out.push(t0.x);
+            out.push(t0.y);
+        }
         // End endpoint — tangent points outward
-        let t1 = (geom[n - 1] - geom[n - 2]).normalized();
-        out.push(geom[n - 1].x);
-        out.push(geom[n - 1].z);
-        out.push(t1.x);
-        out.push(t1.z);
+        if let Some(t1) = endpoint_tangent_xz(geom[n - 1], geom[n - 2]) {
+            out.push(geom[n - 1].x);
+            out.push(geom[n - 1].z);
+            out.push(t1.x);
+            out.push(t1.y);
+        }
     }
     out
 }
@@ -66,31 +68,33 @@ pub fn get_road_ghost_line_data(core: &mut SimCore) -> VarDictionary {
         edge_count += 1;
         let geom = &edge.physical_geometry;
         let end_index = geom.len() - 1;
-        let start_tangent = (geom[0] - geom[1]).normalized();
-        append_outward_ghost_guide(
-            geom[0],
-            Vector2::new(start_tangent.x, start_tangent.z),
-            graph,
-            road_surface,
-            terrain,
-            guide_color,
-            &mut vertices,
-            &mut colors,
-            &mut height_samples,
-        );
+        if let Some(start_tangent) = endpoint_tangent_xz(geom[0], geom[1]) {
+            append_outward_ghost_guide(
+                geom[0],
+                start_tangent,
+                graph,
+                road_surface,
+                terrain,
+                guide_color,
+                &mut vertices,
+                &mut colors,
+                &mut height_samples,
+            );
+        }
 
-        let end_tangent = (geom[end_index] - geom[end_index - 1]).normalized();
-        append_outward_ghost_guide(
-            geom[end_index],
-            Vector2::new(end_tangent.x, end_tangent.z),
-            graph,
-            road_surface,
-            terrain,
-            guide_color,
-            &mut vertices,
-            &mut colors,
-            &mut height_samples,
-        );
+        if let Some(end_tangent) = endpoint_tangent_xz(geom[end_index], geom[end_index - 1]) {
+            append_outward_ghost_guide(
+                geom[end_index],
+                end_tangent,
+                graph,
+                road_surface,
+                terrain,
+                guide_color,
+                &mut vertices,
+                &mut colors,
+                &mut height_samples,
+            );
+        }
     }
     let outward_ms = outward_start
         .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -196,11 +200,13 @@ pub(crate) fn get_road_ghost_snap_from_parts(
     ghost_snap_index
         .nearest_point(query, max_dist_m)
         .map(|point| {
-            Vector3::new(
-                point.x,
-                ghost_surface_height_m(graph, road_surface, terrain, point) + altitude_offset_m,
-                point.y,
-            )
+            let height_m = road_surface
+                .sample_visible_surface_height(graph, terrain, point.x, point.y)
+                .unwrap_or_else(|| {
+                    terrain.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE
+                        + altitude_offset_m
+                });
+            Vector3::new(point.x, height_m, point.y)
         })
 }
 

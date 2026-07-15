@@ -81,6 +81,23 @@ fn preview_matches_committed_sections_for_bridges() {
 }
 
 #[test]
+fn preview_keeps_terrain_to_raised_bridge_ramp_height() {
+    let terrain = flat_terrain(96, 16);
+    let surface = RoadSurfaceSystem::new(16.0);
+    let raw_points = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(32.0, 2.5, 0.0)];
+
+    let (preview, committed_sections, committed_visual_pieces) =
+        compile_committed_preview_reference(&surface, &raw_points, &terrain, 1, 1);
+
+    assert_eq!(preview.edge_class, EdgeClass::Bridge);
+    assert!(preview.is_valid);
+    assert!((preview.prepared_points[0].y - raw_points[0].y).abs() <= 0.001);
+    assert!((preview.prepared_points[1].y - raw_points[1].y).abs() <= 0.001);
+    assert_eq!(preview.compiled_sections, committed_sections);
+    assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
+}
+
+#[test]
 fn preview_matches_committed_sections_for_tunnels() {
     let terrain = flat_terrain(96, 16);
     let surface = RoadSurfaceSystem::new(16.0);

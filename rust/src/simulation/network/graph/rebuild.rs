@@ -699,7 +699,13 @@ impl RegionGraph {
     ) -> HashMap<u32, Vec<JunctionProfileIncident>> {
         let mut incidents_by_node: HashMap<u32, Vec<JunctionProfileIncident>> = HashMap::new();
 
-        for (edge_idx, edge) in self.edges.iter().enumerate() {
+        let candidate_edge_ids = affected_nodes
+            .map(|affected| self.surface_edges_touching_nodes(valid_node_ids, affected))
+            .unwrap_or_else(|| (0..self.edges.len()).collect());
+        for edge_idx in candidate_edge_ids {
+            let Some(edge) = self.edges.get(edge_idx) else {
+                continue;
+            };
             if edge.deleted
                 || edge.primary_type != TransitType::Road
                 || edge.geometry.len() < 2
@@ -1354,23 +1360,38 @@ impl RegionGraph {
         valid_node_ids: &[u32],
         affected_nodes: &HashSet<u32>,
     ) -> Vec<usize> {
-        self.edges
-            .iter()
-            .enumerate()
-            .filter_map(|(edge_idx, edge)| {
+        let mut edge_ids = HashSet::new();
+        for &node_id in affected_nodes {
+            let valid_node = if node_id as usize >= valid_node_ids.len() {
+                self.get_valid_node(node_id)
+            } else {
+                valid_node_ids[node_id as usize]
+            };
+            let Some(adjacency) = self.adjacency.get(valid_node as usize) else {
+                continue;
+            };
+            for &edge_idx in adjacency {
+                let Some(edge) = self.edges.get(edge_idx) else {
+                    continue;
+                };
                 if edge.deleted
                     || edge.primary_type != TransitType::Road
                     || edge.start_node as usize >= valid_node_ids.len()
                     || edge.end_node as usize >= valid_node_ids.len()
                 {
-                    return None;
+                    continue;
                 }
                 let start_node = valid_node_ids[edge.start_node as usize];
                 let end_node = valid_node_ids[edge.end_node as usize];
-                (affected_nodes.contains(&start_node) || affected_nodes.contains(&end_node))
-                    .then_some(edge_idx)
-            })
-            .collect()
+                if affected_nodes.contains(&start_node) || affected_nodes.contains(&end_node) {
+                    edge_ids.insert(edge_idx);
+                }
+            }
+        }
+
+        let mut edge_ids = edge_ids.into_iter().collect::<Vec<_>>();
+        edge_ids.sort_unstable();
+        edge_ids
     }
 
     fn build_clip_node_stats(

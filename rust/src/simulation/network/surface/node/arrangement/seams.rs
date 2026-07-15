@@ -2,6 +2,8 @@
 
 use super::super::RoadSurfaceBandKind;
 use super::super::backend::RoadVec2;
+use super::super::keys::SurfaceXzKey;
+use super::super::segments::{key_collinear_with_overlay_grid_segment, segment_parameter_key};
 use super::build::merge_sorted_unique;
 use super::{NodeArrangement, NodeArrangementKey, NodeBandOwner};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +56,17 @@ pub(crate) struct NodeRegionSeamConstraint {
     pub(crate) end_xz: RoadVec2,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SeamConstraintCoverageKey {
+    priority_key: (bool, bool, usize),
+    constraint_index: usize,
+    seam_source: NodeSeamSource,
+    owner: Option<NodeBandOwner>,
+    opposite_owner: Option<NodeBandOwner>,
+    constrains_shared_height: bool,
+    is_material_transition: bool,
+}
+
 impl NodeRegionSeamConstraint {
     pub(crate) fn priority_key(&self) -> (bool, bool, usize) {
         (
@@ -102,6 +115,92 @@ pub(super) fn seam_constraint_covers_edge(
     let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
     edge_start.lies_on_segment(constraint_start, constraint_end)
         && edge_end.lies_on_segment(constraint_start, constraint_end)
+}
+
+pub(in crate::simulation::network::surface::node) fn seam_constraints_covering_surface_key_edge_as_fragments<
+    'a,
+>(
+    start: SurfaceXzKey,
+    end: SurfaceXzKey,
+    constraints: &'a [NodeRegionSeamConstraint],
+) -> Vec<&'a NodeRegionSeamConstraint> {
+    if start == end {
+        return Vec::new();
+    }
+    let edge_end_parameter = segment_parameter_key(start, end, end);
+    if edge_end_parameter <= 0 {
+        return Vec::new();
+    }
+
+    let mut intervals_by_source = BTreeMap::<
+        SeamConstraintCoverageKey,
+        Vec<(i128, i128, &'a NodeRegionSeamConstraint)>,
+    >::new();
+    for constraint in constraints {
+        let Some((overlap_start, overlap_end)) =
+            seam_constraint_overlap_interval(start, end, edge_end_parameter, constraint)
+        else {
+            continue;
+        };
+        intervals_by_source
+            .entry(seam_constraint_coverage_key(constraint))
+            .or_default()
+            .push((overlap_start, overlap_end, constraint));
+    }
+
+    let mut matches = Vec::new();
+    for intervals in intervals_by_source.values_mut() {
+        intervals.sort_by_key(|(start, end, _)| (*start, *end));
+        let mut covered_end = 0;
+        let mut covered_constraints = Vec::new();
+        for (interval_start, interval_end, constraint) in intervals {
+            if *interval_start > covered_end {
+                break;
+            }
+            covered_end = covered_end.max(*interval_end);
+            covered_constraints.push(*constraint);
+            if covered_end >= edge_end_parameter {
+                matches.extend(covered_constraints);
+                break;
+            }
+        }
+    }
+    matches
+}
+
+fn seam_constraint_overlap_interval(
+    start: SurfaceXzKey,
+    end: SurfaceXzKey,
+    edge_end_parameter: i128,
+    constraint: &NodeRegionSeamConstraint,
+) -> Option<(i128, i128)> {
+    let constraint_start = SurfaceXzKey::from_road_xz(constraint.start_xz);
+    let constraint_end = SurfaceXzKey::from_road_xz(constraint.end_xz);
+    if constraint_start == constraint_end
+        || !key_collinear_with_overlay_grid_segment(constraint_start, start, end)
+        || !key_collinear_with_overlay_grid_segment(constraint_end, start, end)
+    {
+        return None;
+    }
+    let start_parameter = segment_parameter_key(start, end, constraint_start);
+    let end_parameter = segment_parameter_key(start, end, constraint_end);
+    let overlap_start = start_parameter.min(end_parameter).max(0);
+    let overlap_end = start_parameter.max(end_parameter).min(edge_end_parameter);
+    (overlap_start < overlap_end).then_some((overlap_start, overlap_end))
+}
+
+fn seam_constraint_coverage_key(
+    constraint: &NodeRegionSeamConstraint,
+) -> SeamConstraintCoverageKey {
+    SeamConstraintCoverageKey {
+        priority_key: constraint.priority_key(),
+        constraint_index: constraint.constraint_index,
+        seam_source: constraint.seam_source,
+        owner: constraint.owner,
+        opposite_owner: constraint.opposite_owner,
+        constrains_shared_height: constraint.constrains_shared_height,
+        is_material_transition: constraint.is_material_transition,
+    }
 }
 
 pub(super) fn seam_constraint_covers_key(

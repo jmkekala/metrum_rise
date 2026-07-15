@@ -180,6 +180,7 @@ impl RoadSurfaceSystem {
         best_height_m
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn raycast_visible_surface(
         &self,
         graph: &RegionGraph,
@@ -426,6 +427,7 @@ fn update_closest_ray_hit(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn closest_ray_hit(
     ray_origin: Vector3,
     ray_dir: Vector3,

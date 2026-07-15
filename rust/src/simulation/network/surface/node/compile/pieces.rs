@@ -13,7 +13,7 @@ impl RoadSurfaceSystem {
         match self.classify_visual_node_kind(&incidents) {
             CompiledNodeKind::Terminal => {
                 let incident = incidents.first()?;
-                let mouths = self.build_ordered_piece_mouths(&[*incident])?;
+                let mouths = self.build_ordered_piece_mouths(graph, &[*incident])?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::Terminal,
                     mouths,
@@ -24,7 +24,7 @@ impl RoadSurfaceSystem {
                 if incidents.len() != 2 {
                     return None;
                 }
-                let mouths = self.build_ordered_piece_mouths(&incidents)?;
+                let mouths = self.build_ordered_piece_mouths(graph, &incidents)?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::Bend,
                     mouths,
@@ -34,7 +34,7 @@ impl RoadSurfaceSystem {
                 if incidents.len() < 3 {
                     return None;
                 }
-                let mouths = self.build_ordered_piece_mouths(&incidents)?;
+                let mouths = self.build_ordered_piece_mouths(graph, &incidents)?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::JunctionN,
                     mouths,

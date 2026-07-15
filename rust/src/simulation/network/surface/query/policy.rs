@@ -54,7 +54,7 @@ impl RoadSurfaceSystem {
         &self,
         piece: &RoadSurfaceVisualSpanPiece,
     ) -> bool {
-        piece.edge_class != EdgeClass::Standard
+        piece.edge_class == EdgeClass::Tunnel
     }
 
     pub(crate) fn span_earthwork_face_uses_visible_earthwork(
@@ -65,7 +65,7 @@ impl RoadSurfaceSystem {
         else {
             return false;
         };
-        edge_class != EdgeClass::Standard
+        edge_class == EdgeClass::Tunnel
     }
 
     pub(crate) fn node_piece_uses_visible_earthwork(
@@ -167,7 +167,7 @@ impl RoadSurfaceSystem {
         }
         match edge.class {
             EdgeClass::Standard => false,
-            EdgeClass::Bridge => true,
+            EdgeClass::Bridge => false,
             EdgeClass::Tunnel => {
                 let at_start = graph.get_valid_node(edge.start_node) == node_id;
                 self.tunnel_throat_is_visible(source.edge_idx, at_start, terrain)

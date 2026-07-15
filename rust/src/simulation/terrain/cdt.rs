@@ -721,12 +721,51 @@ pub(crate) fn build_road_touched_terrain_patch(
         triangles.push(triangle);
     }
 
-    let accepted_edges = emitted_triangle_edges(&triangles);
-    let preserved_road_constraint_edges = canonical
+    let mut accepted_edges = emitted_triangle_edges(&triangles);
+    let mut preserved_road_constraint_edges = canonical
         .road_constraint_edges
         .iter()
         .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
         .count();
+    let mut unpreserved_road_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .copied()
+        .filter(|edge| !accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
+        .collect::<Vec<_>>();
+    if !unpreserved_road_constraint_edges.is_empty() {
+        let mut repaired_triangles = Vec::with_capacity(triangles.len());
+        for triangle in triangles {
+            let points = [
+                canonical.vertices[triangle[0]],
+                canonical.vertices[triangle[1]],
+                canonical.vertices[triangle[2]],
+            ];
+            if triangle_crosses_any_road_constraint(
+                points,
+                &unpreserved_road_constraint_edges,
+                &canonical.vertices,
+            ) {
+                rejected_road_faces += 1;
+                rejected_face_edges.extend(triangle_edges(&triangle));
+            } else {
+                repaired_triangles.push(triangle);
+            }
+        }
+        triangles = repaired_triangles;
+        accepted_edges = emitted_triangle_edges(&triangles);
+        preserved_road_constraint_edges = canonical
+            .road_constraint_edges
+            .iter()
+            .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
+            .count();
+        unpreserved_road_constraint_edges = canonical
+            .road_constraint_edges
+            .iter()
+            .copied()
+            .filter(|edge| !accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
+            .collect();
+    }
     let spade_missing_road_constraint_edges = canonical
         .road_constraint_edges
         .iter()
@@ -741,7 +780,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         })
         .count();
     let unpreserved_road_constraint_samples = unpreserved_road_constraint_samples(
-        &canonical.road_constraint_edges,
+        &unpreserved_road_constraint_edges,
         &accepted_edges,
         &canonical.vertices,
         &canonical.road_constraint_sources,
@@ -864,6 +903,18 @@ struct CanonicalTerrainCdtRoadLoop {
     is_hole: bool,
     vertices: Vec<TerrainCdtVertex>,
     edge_sources: Vec<Option<TerrainCdtRoadBoundarySource>>,
+    min_x: f64,
+    min_z: f64,
+    max_x: f64,
+    max_z: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainCdtLoopBounds {
+    min_x: f64,
+    min_z: f64,
+    max_x: f64,
+    max_z: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -964,9 +1015,14 @@ fn canonicalize_input(
         if missing_road_boundary_sources > 0 {
             return Err(TerrainCdtError::MissingRoadBoundarySource);
         }
+        let loop_bounds = terrain_cdt_loop_bounds(&points);
         road_loops.push(CanonicalTerrainCdtRoadLoop {
             footprint_group_id: road_loop.footprint_group_id,
             is_hole: road_loop.is_hole,
+            min_x: loop_bounds.min_x,
+            min_z: loop_bounds.min_z,
+            max_x: loop_bounds.max_x,
+            max_z: loop_bounds.max_z,
             vertices: points,
             edge_sources,
         });
@@ -2328,6 +2384,22 @@ fn signed_area(points: &[TerrainCdtVertex]) -> f64 {
     area * 0.5
 }
 
+fn terrain_cdt_loop_bounds(points: &[TerrainCdtVertex]) -> TerrainCdtLoopBounds {
+    let mut bounds = TerrainCdtLoopBounds {
+        min_x: f64::INFINITY,
+        min_z: f64::INFINITY,
+        max_x: f64::NEG_INFINITY,
+        max_z: f64::NEG_INFINITY,
+    };
+    for point in points {
+        bounds.min_x = bounds.min_x.min(point.x);
+        bounds.min_z = bounds.min_z.min(point.z);
+        bounds.max_x = bounds.max_x.max(point.x);
+        bounds.max_z = bounds.max_z.max(point.z);
+    }
+    bounds
+}
+
 fn point_in_polygon(point: TerrainCdtVertex, polygon: &[TerrainCdtVertex]) -> bool {
     let mut inside = false;
     let mut previous = polygon.len() - 1;
@@ -2352,14 +2424,26 @@ fn point_inside_any_road_footprint(
     road_loops
         .iter()
         .filter(|road_loop| !road_loop.is_hole)
+        .filter(|road_loop| road_loop_bounds_contain_point(road_loop, point))
         .filter(|road_loop| point_in_polygon(point, &road_loop.vertices))
         .any(|outer_loop| {
             !road_loops.iter().any(|hole_loop| {
                 hole_loop.is_hole
                     && hole_loop.footprint_group_id == outer_loop.footprint_group_id
+                    && road_loop_bounds_contain_point(hole_loop, point)
                     && point_in_polygon(point, &hole_loop.vertices)
             })
         })
+}
+
+fn road_loop_bounds_contain_point(
+    road_loop: &CanonicalTerrainCdtRoadLoop,
+    point: TerrainCdtVertex,
+) -> bool {
+    point.x >= road_loop.min_x - CDT_EPSILON_M
+        && point.x <= road_loop.max_x + CDT_EPSILON_M
+        && point.z >= road_loop.min_z - CDT_EPSILON_M
+        && point.z <= road_loop.max_z + CDT_EPSILON_M
 }
 
 fn terrain_triangle_is_road_owned(
@@ -2368,59 +2452,325 @@ fn terrain_triangle_is_road_owned(
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> bool {
-    if triangle_has_exterior_road_seam_side(triangle, points, road_constraint_sources, road_loops)
-        || (triangle_touches_road_constraint(triangle, road_constraint_sources)
-            && points
-                .iter()
-                .any(|point| road_exterior_support_point(*point, road_loops)))
-    {
-        return false;
-    }
-    point_inside_any_road_footprint(centroid(points), road_loops)
+    terrain_triangle_overlaps_any_road_footprint(
+        triangle,
+        points,
+        road_constraint_sources,
+        road_loops,
+    )
 }
 
-fn triangle_has_exterior_road_seam_side(
+fn terrain_triangle_overlaps_any_road_footprint(
     triangle: [usize; 3],
     points: [TerrainCdtVertex; 3],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> bool {
-    for (start_slot, end_slot, opposite_slot) in [(0, 1, 2), (1, 2, 0), (2, 0, 1)] {
-        let edge = normalize_edge_array(triangle[start_slot], triangle[end_slot]);
-        if !road_constraint_sources.contains_key(&edge) {
+    if point_strictly_inside_any_road_footprint(centroid(points), road_loops) {
+        return true;
+    }
+    if points
+        .iter()
+        .any(|point| point_strictly_inside_any_road_footprint(*point, road_loops))
+    {
+        return true;
+    }
+    if triangle_edges_enter_road_footprint(triangle, points, road_constraint_sources, road_loops) {
+        return true;
+    }
+    let triangle_bounds = triangle_xz_bounds(points);
+    for road_loop in road_loops {
+        if !bounds_overlap_loop(triangle_bounds, road_loop) {
             continue;
         }
-        let start = points[start_slot];
-        let end = points[end_slot];
-        let opposite = points[opposite_slot];
-        let mid_x = (start.x + end.x) * 0.5;
-        let mid_z = (start.z + end.z) * 0.5;
-        let dx = opposite.x - mid_x;
-        let dz = opposite.z - mid_z;
-        let distance = dx.hypot(dz);
-        if distance <= CDT_EPSILON_M {
-            continue;
+        if road_loop.vertices.iter().any(|vertex| {
+            point_strictly_inside_triangle_xz(*vertex, points)
+                && !road_loop_boundary_vertex_is_non_road_hole_only(*vertex, road_loop, road_loops)
+        }) {
+            return true;
         }
-        let probe_distance = MIN_SOURCE_OWNED_SEAM_EDGE_LENGTH_M.min(distance * 0.25);
-        let probe = TerrainCdtVertex::new(
-            mid_x + dx / distance * probe_distance,
-            (start.height_m + end.height_m + opposite.height_m) / 3.0,
-            mid_z + dz / distance * probe_distance,
-        );
-        if road_exterior_support_point(probe, road_loops) {
+        if triangle_edges_cross_road_loop_boundary(points, road_loop) {
             return true;
         }
     }
     false
 }
 
-fn triangle_touches_road_constraint(
+fn triangle_edges_enter_road_footprint(
     triangle: [usize; 3],
+    points: [TerrainCdtVertex; 3],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> bool {
-    triangle_edges(&triangle)
+    (0..3).any(|edge_index| {
+        let edge = normalize_edge_array(triangle[edge_index], triangle[(edge_index + 1) % 3]);
+        if road_constraint_sources.contains_key(&edge) {
+            return false;
+        }
+        segment_interior_enters_road_footprint(
+            points[edge_index],
+            points[(edge_index + 1) % 3],
+            road_loops,
+        )
+    })
+}
+
+fn segment_interior_enters_road_footprint(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    let segment_len_sq =
+        (end.x - start.x) * (end.x - start.x) + (end.z - start.z) * (end.z - start.z);
+    if segment_len_sq <= CDT_EPSILON_M * CDT_EPSILON_M {
+        return false;
+    }
+
+    let mut parameters = vec![0.0, 1.0];
+    for road_loop in road_loops {
+        if start.x.min(end.x) > road_loop.max_x + CDT_EPSILON_M
+            || road_loop.min_x > start.x.max(end.x) + CDT_EPSILON_M
+            || start.z.min(end.z) > road_loop.max_z + CDT_EPSILON_M
+            || road_loop.min_z > start.z.max(end.z) + CDT_EPSILON_M
+        {
+            continue;
+        }
+        for loop_edge_index in 0..road_loop.vertices.len() {
+            for intersection in segment_intersections(
+                start,
+                end,
+                road_loop.vertices[loop_edge_index],
+                road_loop.vertices[(loop_edge_index + 1) % road_loop.vertices.len()],
+            ) {
+                let t = segment_parameter(start, end, intersection.x, intersection.z);
+                if unit_interval_contains(t) {
+                    parameters.push(clamp_unit(t));
+                }
+            }
+        }
+    }
+    sort_dedup_segment_parameters(&mut parameters);
+
+    parameters.windows(2).any(|window| {
+        let start_t = window[0];
+        let end_t = window[1];
+        if end_t - start_t <= CDT_EPSILON_M {
+            return false;
+        }
+        let mid_t = (start_t + end_t) * 0.5;
+        if mid_t <= CDT_EPSILON_M || mid_t >= 1.0 - CDT_EPSILON_M {
+            return false;
+        }
+        point_strictly_inside_any_road_footprint(interpolate_vertex(start, end, mid_t), road_loops)
+    })
+}
+
+fn sort_dedup_segment_parameters(parameters: &mut Vec<f64>) {
+    parameters.sort_by(|a, b| a.total_cmp(b));
+    let mut deduped = Vec::with_capacity(parameters.len());
+    for &parameter in parameters.iter() {
+        if deduped
+            .last()
+            .is_some_and(|last: &f64| (parameter - *last).abs() <= CDT_EPSILON_M)
+        {
+            continue;
+        }
+        deduped.push(parameter);
+    }
+    *parameters = deduped;
+}
+
+fn point_strictly_inside_any_road_footprint(
+    point: TerrainCdtVertex,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    point_inside_any_road_footprint(point, road_loops)
+        && !point_on_any_road_loop_boundary(point, road_loops)
+}
+
+fn triangle_xz_bounds(points: [TerrainCdtVertex; 3]) -> TerrainCdtLoopBounds {
+    let mut bounds = TerrainCdtLoopBounds {
+        min_x: points[0].x,
+        min_z: points[0].z,
+        max_x: points[0].x,
+        max_z: points[0].z,
+    };
+    for point in points.iter().skip(1) {
+        bounds.min_x = bounds.min_x.min(point.x);
+        bounds.min_z = bounds.min_z.min(point.z);
+        bounds.max_x = bounds.max_x.max(point.x);
+        bounds.max_z = bounds.max_z.max(point.z);
+    }
+    bounds
+}
+
+fn bounds_overlap_loop(
+    bounds: TerrainCdtLoopBounds,
+    road_loop: &CanonicalTerrainCdtRoadLoop,
+) -> bool {
+    bounds.min_x <= road_loop.max_x + CDT_EPSILON_M
+        && road_loop.min_x <= bounds.max_x + CDT_EPSILON_M
+        && bounds.min_z <= road_loop.max_z + CDT_EPSILON_M
+        && road_loop.min_z <= bounds.max_z + CDT_EPSILON_M
+}
+
+fn road_loop_boundary_vertex_is_non_road_hole_only(
+    vertex: TerrainCdtVertex,
+    road_loop: &CanonicalTerrainCdtRoadLoop,
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    road_loop.is_hole && !point_inside_any_road_footprint(vertex, road_loops)
+}
+
+fn triangle_edges_cross_road_loop_boundary(
+    points: [TerrainCdtVertex; 3],
+    road_loop: &CanonicalTerrainCdtRoadLoop,
+) -> bool {
+    for triangle_edge_index in 0..3 {
+        let triangle_start = points[triangle_edge_index];
+        let triangle_end = points[(triangle_edge_index + 1) % 3];
+        if triangle_start.x.min(triangle_end.x) > road_loop.max_x + CDT_EPSILON_M
+            || road_loop.min_x > triangle_start.x.max(triangle_end.x) + CDT_EPSILON_M
+            || triangle_start.z.min(triangle_end.z) > road_loop.max_z + CDT_EPSILON_M
+            || road_loop.min_z > triangle_start.z.max(triangle_end.z) + CDT_EPSILON_M
+        {
+            continue;
+        }
+        for loop_edge_index in 0..road_loop.vertices.len() {
+            if segments_cross_at_strict_interiors(
+                triangle_start,
+                triangle_end,
+                road_loop.vertices[loop_edge_index],
+                road_loop.vertices[(loop_edge_index + 1) % road_loop.vertices.len()],
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn triangle_crosses_any_road_constraint(
+    points: [TerrainCdtVertex; 3],
+    road_constraint_edges: &[[usize; 2]],
+    vertices: &[TerrainCdtVertex],
+) -> bool {
+    road_constraint_edges
         .iter()
-        .any(|edge| road_constraint_sources.contains_key(&[edge.0, edge.1]))
+        .any(|edge| triangle_crosses_road_constraint(points, vertices[edge[0]], vertices[edge[1]]))
+}
+
+fn triangle_crosses_road_constraint(
+    points: [TerrainCdtVertex; 3],
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+) -> bool {
+    if !triangle_bounds_overlap_segment(points, start, end) {
+        return false;
+    }
+    if point_strictly_inside_triangle_xz(start, points)
+        || point_strictly_inside_triangle_xz(end, points)
+    {
+        return true;
+    }
+    for edge_index in 0..3 {
+        if segments_cross_at_strict_interiors(
+            points[edge_index],
+            points[(edge_index + 1) % 3],
+            start,
+            end,
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+fn triangle_bounds_overlap_segment(
+    points: [TerrainCdtVertex; 3],
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+) -> bool {
+    let mut triangle_min_x = points[0].x;
+    let mut triangle_min_z = points[0].z;
+    let mut triangle_max_x = points[0].x;
+    let mut triangle_max_z = points[0].z;
+    for point in points.iter().skip(1) {
+        triangle_min_x = triangle_min_x.min(point.x);
+        triangle_min_z = triangle_min_z.min(point.z);
+        triangle_max_x = triangle_max_x.max(point.x);
+        triangle_max_z = triangle_max_z.max(point.z);
+    }
+    triangle_min_x <= start.x.max(end.x) + CDT_EPSILON_M
+        && start.x.min(end.x) <= triangle_max_x + CDT_EPSILON_M
+        && triangle_min_z <= start.z.max(end.z) + CDT_EPSILON_M
+        && start.z.min(end.z) <= triangle_max_z + CDT_EPSILON_M
+}
+
+fn segments_cross_at_strict_interiors(
+    first_start: TerrainCdtVertex,
+    first_end: TerrainCdtVertex,
+    second_start: TerrainCdtVertex,
+    second_end: TerrainCdtVertex,
+) -> bool {
+    if !segment_bounds_overlap(first_start, first_end, second_start, second_end) {
+        return false;
+    }
+    segment_intersections(first_start, first_end, second_start, second_end)
+        .into_iter()
+        .any(|intersection| {
+            point_is_strict_segment_interior(intersection, first_start, first_end)
+                && point_is_strict_segment_interior(intersection, second_start, second_end)
+        })
+}
+
+fn point_is_strict_segment_interior(
+    point: TerrainCdtVertex,
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+) -> bool {
+    let t = segment_parameter(start, end, point.x, point.z);
+    t > CDT_EPSILON_M && t < 1.0 - CDT_EPSILON_M
+}
+
+fn point_strictly_inside_triangle_xz(
+    point: TerrainCdtVertex,
+    triangle: [TerrainCdtVertex; 3],
+) -> bool {
+    let area = cross_xz(
+        triangle[1].x - triangle[0].x,
+        triangle[1].z - triangle[0].z,
+        triangle[2].x - triangle[0].x,
+        triangle[2].z - triangle[0].z,
+    );
+    if area.abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+        return false;
+    }
+    let signs = [
+        cross_xz(
+            triangle[1].x - triangle[0].x,
+            triangle[1].z - triangle[0].z,
+            point.x - triangle[0].x,
+            point.z - triangle[0].z,
+        ),
+        cross_xz(
+            triangle[2].x - triangle[1].x,
+            triangle[2].z - triangle[1].z,
+            point.x - triangle[1].x,
+            point.z - triangle[1].z,
+        ),
+        cross_xz(
+            triangle[0].x - triangle[2].x,
+            triangle[0].z - triangle[2].z,
+            point.x - triangle[2].x,
+            point.z - triangle[2].z,
+        ),
+    ];
+    if area > 0.0 {
+        signs.iter().all(|sign| *sign > CDT_EPSILON_M)
+    } else {
+        signs.iter().all(|sign| *sign < -CDT_EPSILON_M)
+    }
 }
 
 fn road_exterior_support_point(
@@ -4411,6 +4761,71 @@ mod tests {
     }
 
     #[test]
+    fn unpreserved_constraint_repair_catches_centroid_outside_overlap() {
+        let road_loop = canonical_square_road_loop(4.0, 6.0);
+        let points = [
+            TerrainCdtVertex::new(0.0, 0.0, 4.5),
+            TerrainCdtVertex::new(10.0, 0.0, 4.5),
+            TerrainCdtVertex::new(0.0, 0.0, 0.0),
+        ];
+
+        assert!(!point_inside_any_road_footprint(
+            centroid(points),
+            std::slice::from_ref(&road_loop)
+        ));
+        assert!(terrain_triangle_is_road_owned(
+            [0, 1, 2],
+            points,
+            &BTreeMap::new(),
+            std::slice::from_ref(&road_loop),
+        ));
+        assert!(triangle_crosses_road_constraint(
+            points,
+            road_loop.vertices[0],
+            road_loop.vertices[3],
+        ));
+    }
+
+    #[test]
+    fn road_owned_triangle_rejection_keeps_exterior_seam_without_source_edge() {
+        let road_loop = canonical_square_road_loop(4.0, 6.0);
+        let points = [
+            TerrainCdtVertex::new(4.0, 0.0, 4.0),
+            TerrainCdtVertex::new(6.0, 0.0, 4.0),
+            TerrainCdtVertex::new(4.0, 0.0, 0.0),
+        ];
+
+        assert!(!terrain_triangle_is_road_owned(
+            [0, 1, 2],
+            points,
+            &BTreeMap::new(),
+            &[road_loop],
+        ));
+    }
+
+    #[test]
+    fn road_owned_triangle_rejection_catches_boundary_chord_with_centroid_outside() {
+        let road_loop = canonical_square_road_loop(4.0, 6.0);
+        let points = [
+            TerrainCdtVertex::new(4.0, 0.0, 4.0),
+            TerrainCdtVertex::new(6.0, 0.0, 6.0),
+            TerrainCdtVertex::new(2.0, 0.0, 6.0),
+        ];
+        let road_loops = [road_loop.clone()];
+
+        assert!(!point_strictly_inside_any_road_footprint(
+            centroid(points),
+            &road_loops,
+        ));
+        assert!(terrain_triangle_is_road_owned(
+            [0, 1, 2],
+            points,
+            &BTreeMap::new(),
+            &road_loops,
+        ));
+    }
+
+    #[test]
     fn source_sample_on_road_seam_splits_the_road_constraint() {
         let patch = TerrainCdtPatch::new(0.0, 0.0, 20.0, 20.0, [0.0; 4]);
         let road = vec![
@@ -5215,6 +5630,21 @@ mod tests {
             TerrainCdtVertex::new(max, height_m, max),
             TerrainCdtVertex::new(min, height_m, max),
         ]
+    }
+
+    fn canonical_square_road_loop(min: f64, max: f64) -> CanonicalTerrainCdtRoadLoop {
+        let vertices = square_road_loop(min, max, 0.0);
+        let bounds = terrain_cdt_loop_bounds(&vertices);
+        CanonicalTerrainCdtRoadLoop {
+            footprint_group_id: 7,
+            is_hole: false,
+            edge_sources: vec![None; vertices.len()],
+            min_x: bounds.min_x,
+            min_z: bounds.min_z,
+            max_x: bounds.max_x,
+            max_z: bounds.max_z,
+            vertices,
+        }
     }
 
     fn build_crossing_patch(patch: TerrainCdtPatch, road: Vec<TerrainCdtVertex>) -> TerrainCdtMesh {

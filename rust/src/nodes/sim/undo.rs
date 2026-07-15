@@ -199,6 +199,6 @@ impl SimCore {
         }
         self.cached_road_mesh_data = None;
         self.terrain_dirty = true;
-        self.network_dirty = true;
+        self.mark_network_render_dirty();
     }
 }

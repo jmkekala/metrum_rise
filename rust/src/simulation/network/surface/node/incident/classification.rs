@@ -124,8 +124,10 @@ impl RoadSurfaceSystem {
         self.collect_incident_surface_edges_with_direction(
             graph,
             node_id,
-            |surface, edge_idx, _, side| {
-                surface.incident_direction_from_compiled_mouth(edge_idx, side)
+            |surface, edge_idx, edge, side| {
+                surface
+                    .incident_direction_from_compiled_mouth(edge_idx, side)
+                    .or_else(|| surface.incident_direction_from_edge_geometry(edge, side))
             },
         )
     }

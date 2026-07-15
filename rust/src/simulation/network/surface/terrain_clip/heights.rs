@@ -1,11 +1,17 @@
 //! Terrain-clip cutter height recovery and interval coverage.
 
 use super::super::backend::RoadVec3;
-use super::super::{NodeOverlayPoint, RoadSurfaceSystem, keys::SurfaceHeightMmKey};
+use super::super::{
+    NodeOverlayPoint, RoadSurfaceSystem,
+    keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey},
+};
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::{
     TerrainClipSegmentPointRecovery, TerrainClipSourceEdge, TerrainClipSourceInterval,
 };
+
+/// Height-key tolerance used only for numeric-dust terrain-clip connector ties.
+pub(super) const TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM: u64 = 1;
 
 impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_top_envelope_points_from_interval_coverage<I>(
@@ -170,6 +176,25 @@ impl RoadSurfaceSystem {
         point: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<Option<f64>, String> {
+        Self::terrain_clip_overlay_point_height_from_source_edges(point, source_edges, 0)
+    }
+
+    pub(super) fn terrain_clip_dust_overlay_point_height_from_source_edges(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<Option<f64>, String> {
+        Self::terrain_clip_overlay_point_height_from_source_edges(
+            point,
+            source_edges,
+            TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM,
+        )
+    }
+
+    fn terrain_clip_overlay_point_height_from_source_edges(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+        quantization_tie_tolerance_mm: u64,
+    ) -> Result<Option<f64>, String> {
         let mut height = None;
         let mut height_key: Option<SurfaceHeightMmKey> = None;
         for &source_edge in source_edges {
@@ -181,18 +206,24 @@ impl RoadSurfaceSystem {
             let candidate = interpolate_height_f64(source_edge.start.y, source_edge.end.y, t);
             let candidate_key = SurfaceHeightMmKey::from_m_f64(candidate);
             if let Some(current_key) = height_key {
-                if current_key != candidate_key {
+                let current_mm = current_key.as_i64();
+                let candidate_mm = candidate_key.as_i64();
+                if current_mm != candidate_mm {
+                    if current_mm.abs_diff(candidate_mm) <= quantization_tie_tolerance_mm {
+                        if candidate_mm > current_mm {
+                            height_key = Some(candidate_key);
+                            height = Some(candidate_mm as f64 / SURFACE_MM_PER_M);
+                        }
+                        continue;
+                    }
                     return Err(format!(
                         "conflicting_source_heights point=({:.6},{:.6}) current_mm={} candidate_mm={}",
-                        point[0],
-                        point[1],
-                        current_key.as_i64(),
-                        candidate_key.as_i64()
+                        point[0], point[1], current_mm, candidate_mm
                     ));
                 }
             } else {
                 height_key = Some(candidate_key);
-                height = Some(candidate_key.as_i64() as f64 / 1000.0);
+                height = Some(candidate_key.as_i64() as f64 / SURFACE_MM_PER_M);
             }
         }
         Ok(height)

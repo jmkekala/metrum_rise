@@ -46,7 +46,6 @@ fn mixed_standard_bridge_node_earthwork_visibility_is_owner_scoped() {
         });
 
     let mut saw_standard_face = false;
-    let mut saw_bridge_face = false;
     for face in &piece.render_earthwork_faces {
         let Some(edge_class) = node_earthwork_face_edge_class(piece, face.source) else {
             continue;
@@ -62,10 +61,9 @@ fn mixed_standard_bridge_node_earthwork_visibility_is_owner_scoped() {
                 );
             }
             EdgeClass::Bridge => {
-                saw_bridge_face = true;
                 assert!(
-                    visible,
-                    "bridge-owned node earthwork face should remain structural"
+                    !visible,
+                    "bridge-owned node earthwork face must not raise terrain or render fill"
                 );
             }
             EdgeClass::Tunnel => {}
@@ -75,10 +73,6 @@ fn mixed_standard_bridge_node_earthwork_visibility_is_owner_scoped() {
     assert!(
         saw_standard_face,
         "test setup should expose a standard-owned node boundary face"
-    );
-    assert!(
-        saw_bridge_face,
-        "test setup should expose a bridge-owned node boundary face"
     );
 }
 

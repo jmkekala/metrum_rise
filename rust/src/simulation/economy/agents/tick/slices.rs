@@ -62,6 +62,7 @@ pub(crate) struct MovementSlices {
     pub(super) cur_b: RawSlice<usize>,
     pub(super) tgt_b: RawSlice<usize>,
     pub(super) planned_tgt_b: RawSlice<usize>,
+    pub(super) freight_target_border_node: RawSlice<u32>,
     pub(super) cur_n: RawSlice<u32>,
     pub(super) planned_attach_n: RawSlice<u32>,
     pub(super) planned_detach_n: RawSlice<u32>,

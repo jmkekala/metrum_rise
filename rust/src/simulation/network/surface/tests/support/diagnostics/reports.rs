@@ -25,7 +25,7 @@ pub(in crate::simulation::network::surface::tests) fn canonical_node_pipeline_re
 ) -> String {
     let valid = graph.get_valid_node(node_id);
     let incidents = surface.sorted_incident_surface_edges(graph, valid);
-    let Some(mouths) = surface.build_ordered_piece_mouths(&incidents) else {
+    let Some(mouths) = surface.build_ordered_piece_mouths(graph, &incidents) else {
         return format!("node {node_id}: failed to build ordered mouths");
     };
     let input = match RoadSurfaceSystem::build_node_arrangement_input_from_mouths(

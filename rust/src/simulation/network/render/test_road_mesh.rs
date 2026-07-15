@@ -2517,12 +2517,21 @@ mod tests {
         assert!(deck_road >= 0.95);
         assert!(deck_sidewalk >= 0.5);
         assert!(
-            !mesh_data.earthwork_vertices.is_empty(),
-            "expected bridge abutments to keep explicit visible earthwork geometry"
+            mesh_data.earthwork_vertices.is_empty(),
+            "bridge decks must not render terrain-fill earthwork as structural support"
         );
         assert!(
             !mesh_data.concrete_vertices.is_empty(),
             "expected bridge structural concrete to remain rendered"
+        );
+        let min_concrete_y = mesh_data
+            .concrete_vertices
+            .iter()
+            .map(|vertex| vertex.y)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            min_concrete_y <= 0.1,
+            "expected bridge concrete piers to reach terrain instead of relying on raised terrain fill; min_concrete_y={min_concrete_y:.3}"
         );
     }
 

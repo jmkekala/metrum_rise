@@ -18,6 +18,8 @@ thread_local! {
     static VALID_CONNS: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(8));
 }
 
+const CONNECTOR_ENTRY_RETAIN_EPS_M: f32 = 0.05;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn enter_next_edge_connector(
     i: usize,
@@ -327,6 +329,7 @@ unsafe fn enter_connector_lane(
             transit_network,
             slices,
         );
+        clamp_remaining_to_connector_sample(conn_lane_id, remaining_dist, transit_network);
     }
 }
 
@@ -370,4 +373,18 @@ unsafe fn apply_connector_entry_speed(
             *slices.speed.get_mut(i) = turn_speed;
         }
     }
+}
+
+fn clamp_remaining_to_connector_sample(
+    conn_lane_id: usize,
+    remaining_dist: &mut f32,
+    transit_network: &TransitNetwork,
+) {
+    let Some(conn_lane) = transit_network.lane_system.lanes.get(conn_lane_id) else {
+        *remaining_dist = 0.0;
+        return;
+    };
+
+    let max_connector_step = (conn_lane.length - CONNECTOR_ENTRY_RETAIN_EPS_M).max(0.0);
+    *remaining_dist = remaining_dist.min(max_connector_step);
 }

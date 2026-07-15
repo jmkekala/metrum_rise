@@ -308,8 +308,7 @@ pub(crate) fn load_from_sqlite(
     let logistics = world::load_shipments(&conn)?;
     let mut agents = agents::load_agents(&conn, time_r.5)?;
 
-    let mut transit_network =
-        TransitNetwork::new_with_world_terrain_chunk_span(config.terrain_chunk_m);
+    let mut transit_network = TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m);
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
     transit_network.lane_system.rebuild(&mut graph);
 
