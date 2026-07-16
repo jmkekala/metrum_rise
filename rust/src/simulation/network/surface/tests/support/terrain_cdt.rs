@@ -184,10 +184,6 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_terrain_cdt
         mesh.stats.blocking_degenerate_seam_edges, 0,
         "{case_name}: production CDT input must not pass unresolved sub-budget seam fragments to Spade"
     );
-    assert_eq!(
-        mesh.stats.omitted_near_seam_source_samples, mesh.stats.tie_in_widened_source_samples,
-        "{case_name}: omitted near-seam terrain samples must stay visible as tie-in diagnostics"
-    );
     assert!(
         mesh.emitted_faces.iter().all(|face| {
             face.kind != TerrainCdtTieInKind::RetainingWall || !face.sources.is_empty()

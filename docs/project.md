@@ -52,6 +52,20 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- The Rust runtime bridge now keeps `simulation_node.rs` as the `SimulationNode` lifecycle and
+  routing shell, with Godot APIs, async job state, and Variant export split into focused
+  `nodes/simulation_node/` modules. Authoritative state, thread orchestration, snapshots, budgets,
+  previews, and shared terrain/water payload computation are split under `nodes/sim/core/`;
+  `CODE-08` tracks the remaining Godot-independent terrain/CDT work still below the node boundary.
+- Rust production monoliths now route through ownership-focused modules: building-site support is
+  split into model, derivation, grading, terrain clipping, query, and geometry; graph rebuilds into
+  adjacency, compaction, clips, junction profiles, and terrain sync; compiled standard-road
+  rendering into coverage, top surface, bridges, markings, earthwork, and geometry; and asset
+  manifests into class models plus centralized validation. Large allocator, agent, and household
+  test modules are also split by behavior. The audit additionally made incremental junction clips
+  proportional to incident edges, removed repeated road-render coverage sorting, made island
+  counting iterative and deterministic, and fixed asymmetric building-site broad-phase radius and
+  geometry tolerance errors without changing the owning subsystem contracts.
 - Gameplay bulldoze is now a dedicated Rust-backed tool instead of a selection special case. The
   bottom-right HUD action activates a one-click delete cursor with Rust-owned deterministic
   targeting (`building` before `road`), road deletions soft-delete graph edges and refresh the

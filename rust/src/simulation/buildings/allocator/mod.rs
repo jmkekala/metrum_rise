@@ -18,6 +18,7 @@ mod site;
 mod tests;
 
 pub(crate) use placement::ExplicitServicePlacementPreview;
+pub(crate) use site::BuildingSiteGradingRequest;
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
@@ -297,7 +298,7 @@ pub struct BuildingAllocator {
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
-    /// Maximum world-space half-diagonal of derived building-site footprints.
+    /// Maximum support-footprint distance from its indexed lot center, in world metres.
     pub(crate) max_site_radius_m: f32,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,

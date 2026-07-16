@@ -234,15 +234,8 @@ impl SimCore {
     }
 
     fn prepare_bulldoze_target_indices(&mut self) {
-        if self.allocator.building_sites.len() != self.allocator.buildings.len() {
-            self.allocator
-                .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
-        }
-        if self.allocator.dirty_index
-            || (self.allocator.building_chunks.is_empty() && !self.allocator.buildings.is_empty())
-        {
-            self.allocator.rebuild_zone_index();
-        }
+        self.allocator
+            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
     }
 
     fn resolve_bulldoze_target(&self, world_x: f32, world_z: f32) -> Option<BulldozeTarget> {

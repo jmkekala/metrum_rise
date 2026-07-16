@@ -129,7 +129,7 @@ fn collect_assets(dir: &Path, out: &mut Vec<(AssetManifest, String)>, warnings: 
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             match std::fs::read_to_string(&path) {
-                Ok(s) => match AssetManifest::from_str(&s) {
+                Ok(s) => match s.parse::<AssetManifest>() {
                     Ok(m) => out.push((m, asset_dir)),
                     Err(e) => warnings.push(format!("skipping '{}': {e}", path.display())),
                 },

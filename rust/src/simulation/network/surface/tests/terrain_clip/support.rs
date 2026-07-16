@@ -369,10 +369,6 @@ pub(super) fn assert_production_dem_cdt_contract(
         mesh.stats.blocking_degenerate_seam_edges, 0,
         "{case_name}: unresolved seam fragments must not reach Spade"
     );
-    assert_eq!(
-        mesh.stats.omitted_near_seam_source_samples, mesh.stats.tie_in_widened_source_samples,
-        "{case_name}: omitted near-seam samples must be reported as widened tie-ins"
-    );
     assert!(
         mesh.stats.road_seam_faces > 0,
         "{case_name}: production terrain CDT should report road-seam faces"

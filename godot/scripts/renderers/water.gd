@@ -1386,6 +1386,15 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 	if budget <= 0 or not simulation_node.has_method("poll_ready_water_patch_payloads"):
 		return 0
 	var result: Dictionary = simulation_node.poll_ready_water_patch_payloads(budget) as Dictionary
+	var failed_patch_keys: PackedInt32Array = result.get(
+		"failed_patch_keys", PackedInt32Array()
+	) as PackedInt32Array
+	for pair_index in range(failed_patch_keys.size() >> 1):
+		var offset := pair_index * 2
+		patch_payload_requested.erase(Vector2i(
+			failed_patch_keys[offset],
+			failed_patch_keys[offset + 1]
+		))
 	var payloads: Array = result.get("patches", []) as Array
 	var accepted_count := 0
 	for payload_variant in payloads:

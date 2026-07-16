@@ -55,7 +55,7 @@ impl AssetRegistry {
     /// asset is already registered at the same `(asset_set, level)` pair a warning is
     /// printed and the new registration wins.
     ///
-    /// The manifest must already be validated (produced by [`AssetManifest::from_str`]).
+    /// The manifest must already be validated through [`AssetManifest`] parsing.
     /// `asset_dir` is the native filesystem path to the directory containing `asset.toml`.
     pub fn register(&mut self, pack_id: &str, manifest: AssetManifest, asset_dir: String) {
         let qid = manifest.qualified_id(pack_id);

@@ -49,17 +49,22 @@ impl SimCore {
     /// Owned road surfaces and building-site top surfaces hide source/visual terrain below them.
     /// Query paths must not compile geometry.
     pub fn intersect_world_surface_internal(
-        &self,
+        &mut self,
         ray_origin: Vector3,
         ray_dir: Vector3,
     ) -> Option<Vector3> {
+        self.allocator
+            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
         let road_hit = self
             .transit_network
             .road_surface
             .raycast_road_visible_surface(&self.region_graph, &self.heightmap, ray_origin, ray_dir);
-        let site_hit = self
-            .allocator
-            .raycast_building_site_surface(ray_origin, ray_dir);
+        let (half_w, half_h) = self.heightmap.half_world_extents();
+        let site_hit = self.allocator.raycast_building_site_surface(
+            ray_origin,
+            ray_dir,
+            (-half_w, -half_h, half_w, half_h),
+        );
         let terrain_hit = self
             .heightmap
             .raycast_visual_terrain(ray_origin, ray_dir)

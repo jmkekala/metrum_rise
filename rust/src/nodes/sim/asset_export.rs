@@ -1,7 +1,7 @@
 //! Asset export helpers: validate form data and write `pack.toml` / `asset.toml` to disk.
 //!
 //! GDScript sends a JSON string describing the form state. Rust validates it, generates
-//! well-formed TOML, round-trips it through [`AssetManifest::from_str`] for final
+//! well-formed TOML, round-trips it through [`AssetManifest`] parsing for final
 //! validation, and writes the output files. Pack TOML is only written when the file does
 //! not already exist, so re-exporting individual assets never overwrites pack metadata.
 
@@ -635,7 +635,7 @@ pub fn validate_and_export_asset_internal(params_json: &str, output_dir: &str) -
     // Build and round-trip validate the asset TOML.
     let asset_toml = build_asset_toml(&params);
     debug_log!("asset-editor", "generated asset.toml:\n{asset_toml}");
-    if let Err(e) = AssetManifest::from_str(&asset_toml) {
+    if let Err(e) = asset_toml.parse::<AssetManifest>() {
         let msg = format!("validation error: {e}\n\nGenerated TOML:\n{asset_toml}");
         debug_log!("asset-editor", "validation failed: {e}");
         return msg;
@@ -961,7 +961,9 @@ mod tests {
         .unwrap();
         assert!(asset_toml.contains("name = \"bay \\\"north\\\"\\n\""));
         assert!(asset_toml.contains("vehicle_class = \"car\""));
-        AssetManifest::from_str(&asset_toml).expect("escaped TOML should round-trip");
+        asset_toml
+            .parse::<AssetManifest>()
+            .expect("escaped TOML should round-trip");
     }
 
     #[test]
