@@ -1,7 +1,9 @@
 //! Edge centerline section sampling and longitudinal height selection.
 
 use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
-use super::super::{CompiledNodeKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M};
+use super::super::{
+    CompiledNodeKind, IncidentEdgeSide, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+};
 use super::{EdgeMouthPolicy, EdgeProfilePlaneBlend};
 use crate::config;
 use crate::simulation::network::graph::rebuild::{
@@ -72,14 +74,10 @@ impl RoadSurfaceSystem {
 
         let cumulative = self.build_cumulative_distances(&points);
         let total_length_m = *cumulative.last().unwrap_or(&0.0);
-        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
-            graph,
-            graph.get_valid_node(edge.start_node),
-        );
-        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
-            graph,
-            graph.get_valid_node(edge.end_node),
-        );
+        let (start_kind, start_pass_through_tangent) =
+            self.section_endpoint_kind_and_tangent(graph, edge_idx, edge, true);
+        let (end_kind, end_pass_through_tangent) =
+            self.section_endpoint_kind_and_tangent(graph, edge_idx, edge, false);
         let start_profile_plane = Self::node_kind_uses_endpoint_profile(start_kind)
             .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node)))
             .flatten();
@@ -109,7 +107,14 @@ impl RoadSurfaceSystem {
         sample_distances
             .into_iter()
             .map(|s_m| {
-                let (center, tangent_xz) = self.sample_polyline(&points, &cumulative, s_m);
+                let (center, sampled_tangent_xz) = self.sample_polyline(&points, &cumulative, s_m);
+                let tangent_xz = if s_m <= SAMPLE_EPSILON_M {
+                    start_pass_through_tangent.unwrap_or(sampled_tangent_xz)
+                } else if total_length_m - s_m <= SAMPLE_EPSILON_M {
+                    end_pass_through_tangent.unwrap_or(sampled_tangent_xz)
+                } else {
+                    sampled_tangent_xz
+                };
                 let lateral_xz = RoadVec2::new(-tangent_xz.y, tangent_xz.x).normalize();
                 let profile_blend = mouth_policy.profile_range.and_then(|profile| {
                     Self::edge_profile_blend_for_section(
@@ -151,6 +156,57 @@ impl RoadSurfaceSystem {
                 }
             })
             .collect()
+    }
+
+    fn section_endpoint_kind_and_tangent(
+        &self,
+        graph: &RegionGraph,
+        edge_idx: usize,
+        edge: &Edge,
+        at_start: bool,
+    ) -> (Option<CompiledNodeKind>, Option<RoadVec2>) {
+        let node_id = graph.get_valid_node(if at_start {
+            edge.start_node
+        } else {
+            edge.end_node
+        });
+        let incidents = self.sorted_incident_surface_edges_from_graph_geometry(graph, node_id);
+        if incidents.is_empty() {
+            return (None, None);
+        }
+        let kind = self.classify_visual_node_kind(&incidents);
+        if kind != CompiledNodeKind::PassThrough {
+            return (Some(kind), None);
+        }
+
+        let [first, second] = incidents.as_slice() else {
+            return (Some(kind), None);
+        };
+        let side = if at_start {
+            IncidentEdgeSide::Start
+        } else {
+            IncidentEdgeSide::End
+        };
+        let Some(current) = incidents
+            .iter()
+            .find(|incident| incident.edge_idx == edge_idx && incident.side == side)
+        else {
+            return (Some(kind), None);
+        };
+        let axis = first.direction_xz - second.direction_xz;
+        if axis.length_squared() <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
+            return (Some(kind), None);
+        }
+        let mut tangent_xz = axis.normalize();
+        let forward_xz = if at_start {
+            current.direction_xz
+        } else {
+            -current.direction_xz
+        };
+        if tangent_xz.dot(forward_xz) < 0.0 {
+            tangent_xz = -tangent_xz;
+        }
+        (Some(kind), Some(tangent_xz))
     }
 
     fn solve_section_height(&self, center: RoadVec3) -> f32 {
@@ -712,6 +768,51 @@ mod tests {
             carriageway_half_width(after_taper) >= 6.5,
             "wide angled endpoint should return to full carriageway width after taper; after_half={:.2}",
             carriageway_half_width(after_taper)
+        );
+    }
+
+    #[test]
+    fn shallow_pass_through_handoff_uses_one_shared_cross_section_axis() {
+        let surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(Vector3::new(-40.0, 0.0, 0.0), NodeType::Junction);
+        let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let east = graph.add_node(Vector3::new(40.0, 0.0, 4.0), NodeType::Junction);
+
+        let bridge_idx = graph.add_edge(test_edge(
+            west,
+            center,
+            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::ZERO],
+            7.0,
+        ));
+        graph.edge_mut(bridge_idx).class = EdgeClass::Bridge;
+        let approach_idx = graph.add_edge(test_edge(
+            center,
+            east,
+            vec![Vector3::ZERO, Vector3::new(40.0, 0.0, 4.0)],
+            7.0,
+        ));
+        graph.rebuild_adjacency_list();
+
+        assert_eq!(
+            surface.classify_surface_node_kind_from_graph_geometry(&graph, center),
+            Some(CompiledNodeKind::PassThrough),
+            "test setup must exercise the shallow pass-through path"
+        );
+
+        let bridge_sections = surface.compile_edge_sections(&graph, bridge_idx);
+        let approach_sections = surface.compile_edge_sections(&graph, approach_idx);
+        let bridge_mouth = bridge_sections
+            .last()
+            .expect("bridge must reach the handoff");
+        let approach_mouth = approach_sections
+            .first()
+            .expect("approach must start at the handoff");
+        let lateral_dot = bridge_mouth.lateral_xz.dot(approach_mouth.lateral_xz).abs();
+
+        assert!(
+            (1.0 - lateral_dot) <= 1.0e-9,
+            "pass-through span mouths must use the same cross-section axis; abs_dot={lateral_dot:.12}"
         );
     }
 }

@@ -167,12 +167,24 @@ impl SimCore {
                 .get(&(patch_x, patch_z))
                 .copied()
                 .unwrap_or_default();
+            let road_locked = self
+                .road_locked_terrain_patch_margins
+                .contains_key(&(patch_x, patch_z));
+            let patch_query_margin_m = if road_locked {
+                crate::simulation::terrain::terrain_cdt_road_query_margin_m(
+                    &self.heightmap,
+                    safe_render_step_m,
+                    patch_margin_m,
+                )
+            } else {
+                patch_margin_m
+            };
             let road_clip_query = SimulationNode::road_clip_loop_query_for_bounds(
                 self,
-                base_patch.world_origin_x - patch_margin_m,
-                base_patch.world_origin_z - patch_margin_m,
-                base_patch.world_origin_x + base_patch.world_size_x + patch_margin_m,
-                base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
+                base_patch.world_origin_x - patch_query_margin_m,
+                base_patch.world_origin_z - patch_query_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + patch_query_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + patch_query_margin_m,
             );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
             let surface_generation = self.terrain_payload_generation_for_patch(patch_x, patch_z);
@@ -190,10 +202,10 @@ impl SimCore {
             }
             let previous = self.refined_terrain_patch_cache.get(&key);
             let sites = self.allocator.terrain_site_snapshot_for_world_bounds(
-                base_patch.world_origin_x - patch_margin_m,
-                base_patch.world_origin_z - patch_margin_m,
-                base_patch.world_origin_x + base_patch.world_size_x + patch_margin_m,
-                base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
+                base_patch.world_origin_x - patch_query_margin_m,
+                base_patch.world_origin_z - patch_query_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + patch_query_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + patch_query_margin_m,
             );
             let windows = SimulationNode::terrain_cdt_window_build_inputs(
                 &self.heightmap,
@@ -209,8 +221,7 @@ impl SimCore {
             );
             let requires_road_clipping = SimulationNode::road_clip_query_requires_road_clipping(
                 &road_clip_query,
-                self.road_locked_terrain_patch_margins
-                    .contains_key(&(patch_x, patch_z)),
+                road_locked,
             );
             inputs.push(RefinedTerrainPatchBuildInput {
                 key,

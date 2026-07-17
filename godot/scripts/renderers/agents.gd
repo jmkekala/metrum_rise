@@ -116,7 +116,7 @@ func _ready():
 		mmi.multimesh       = mm
 		SceneLightingConfig.apply_shadow_policy(
 			mmi,
-			SceneLightingConfig.SHADOW_TINY_DYNAMIC,
+			SceneLightingConfig.SHADOW_DYNAMIC_CASTER,
 			"walkers"
 		)
 

@@ -207,9 +207,18 @@ impl SimulationNode {
         let requires_road_clipping = core
             .road_locked_terrain_patch_margins
             .contains_key(&request_key);
-        let road_locked_margin_m = engineered_margin
+        let engineered_query_margin_m = engineered_margin
             .unwrap_or(site_margin_m)
             .max(site_margin_m);
+        let road_locked_margin_m = if requires_road_clipping {
+            crate::simulation::terrain::terrain_cdt_road_query_margin_m(
+                &core.heightmap,
+                render_step_m,
+                engineered_query_margin_m,
+            )
+        } else {
+            engineered_query_margin_m
+        };
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
         let sites = core.allocator.terrain_site_snapshot_for_world_bounds(

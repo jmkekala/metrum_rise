@@ -196,6 +196,23 @@ pub(super) fn terrain_cdt_boundary_source_allows_retaining_wall(
     }
 }
 
+pub(super) fn terrain_cdt_boundary_source_requires_widened_sample_retaining_wall(
+    source: TerrainCdtRoadBoundarySource,
+) -> bool {
+    match source {
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+            edge_class: TerrainCdtEdgeClass::Tunnel,
+            support_policy: TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals,
+            ..
+        }
+        | TerrainCdtRoadBoundarySource::SyntheticTestBoundary { .. } => true,
+        TerrainCdtRoadBoundarySource::SpanSupportBoundary { .. }
+        | TerrainCdtRoadBoundarySource::NodeFootprintBoundary { .. }
+        | TerrainCdtRoadBoundarySource::NodeSameMaterialBoundaryHandoff { .. }
+        | TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. } => false,
+    }
+}
+
 fn terrain_sources_include_retaining_wall_required_source(
     sources: &[TerrainCdtRoadBoundarySource],
     retaining_wall_required_sources: &[TerrainCdtRoadBoundarySource],

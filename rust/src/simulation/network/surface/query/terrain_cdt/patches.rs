@@ -2,6 +2,8 @@
 
 use super::*;
 
+const TERRAIN_CDT_MIN_PATCH_OVERLAP_M: f32 = 0.001;
+
 impl RoadSurfaceSystem {
     /// Returns render-patch keys covered by visible grounded road plus a seam-safe margin.
     #[cfg(test)]
@@ -17,7 +19,7 @@ impl RoadSurfaceSystem {
         let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
         span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
         for (_, piece) in span_pieces {
-            if piece.edge_class != EdgeClass::Standard {
+            if piece.terrain_clip_boundary_loops.is_empty() {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
@@ -40,7 +42,7 @@ impl RoadSurfaceSystem {
         let mut node_pieces = self.compiled_visual_node_pieces.iter().collect::<Vec<_>>();
         node_pieces.sort_by_key(|(node_id, _)| **node_id);
         for (&node_id, piece) in node_pieces {
-            if !self.node_has_standard_surface_edges(graph, node_id) {
+            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
@@ -79,7 +81,7 @@ impl RoadSurfaceSystem {
         let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
         span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
         for (_, piece) in span_pieces {
-            if piece.edge_class != EdgeClass::Standard {
+            if piece.terrain_clip_boundary_loops.is_empty() {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
@@ -96,7 +98,7 @@ impl RoadSurfaceSystem {
         let mut node_pieces = self.compiled_visual_node_pieces.iter().collect::<Vec<_>>();
         node_pieces.sort_by_key(|(node_id, _)| **node_id);
         for (&node_id, piece) in node_pieces {
-            if !self.node_has_standard_surface_edges(graph, node_id) {
+            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
@@ -176,7 +178,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            if piece.edge_class != EdgeClass::Standard {
+            if piece.terrain_clip_boundary_loops.is_empty() {
                 continue;
             }
             Self::collect_terrain_clip_boundary_loops_from_piece(
@@ -193,7 +195,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
-            if !self.node_has_standard_surface_edges(graph, node_id) {
+            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
                 continue;
             }
             Self::collect_terrain_clip_boundary_loops_from_piece(
@@ -446,12 +448,28 @@ impl RoadSurfaceSystem {
         margin_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
     ) {
+        let query_min_x = min_x.min(max_x);
+        let query_min_z = min_z.min(max_z);
+        let query_max_x = min_x.max(max_x);
+        let query_max_z = min_z.max(max_z);
         for key in terrain.render_patch_keys_for_world_bounds(
-            min_x.min(max_x),
-            min_z.min(max_z),
-            min_x.max(max_x),
-            min_z.max(max_z),
+            query_min_x,
+            query_min_z,
+            query_max_x,
+            query_max_z,
         ) {
+            let Some((patch_min_x, patch_min_z, patch_max_x, patch_max_z)) =
+                terrain.render_patch_world_bounds(key.0, key.1)
+            else {
+                continue;
+            };
+            let overlap_x = query_max_x.min(patch_max_x) - query_min_x.max(patch_min_x);
+            let overlap_z = query_max_z.min(patch_max_z) - query_min_z.max(patch_min_z);
+            if overlap_x <= TERRAIN_CDT_MIN_PATCH_OVERLAP_M
+                || overlap_z <= TERRAIN_CDT_MIN_PATCH_OVERLAP_M
+            {
+                continue;
+            }
             patch_margins
                 .entry(key)
                 .and_modify(|existing| *existing = existing.max(margin_m))
@@ -474,5 +492,46 @@ impl RoadSurfaceSystem {
             max_z = max_z.max(point.z);
         }
         min_x.is_finite().then_some((min_x, min_z, max_x, max_z))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grading_rect_does_not_claim_a_patch_at_zero_area_contact() {
+        let terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
+        let (min_x, min_z, max_x, _) = terrain
+            .render_patch_world_bounds(0, 0)
+            .expect("first terrain patch should exist");
+        let query_bounds = (min_x + 5.0, min_z + 5.0, max_x, min_z + 15.0);
+        let raw_keys = terrain.render_patch_keys_for_world_bounds(
+            query_bounds.0,
+            query_bounds.1,
+            query_bounds.2,
+            query_bounds.3,
+        );
+        assert!(
+            raw_keys.contains(&(1, 0)),
+            "inclusive terrain sample ownership should expose the tangent neighbor"
+        );
+
+        let mut patch_margins = BTreeMap::new();
+        RoadSurfaceSystem::insert_terrain_patch_grading_margins_for_rect(
+            &terrain,
+            query_bounds.0,
+            query_bounds.1,
+            query_bounds.2,
+            query_bounds.3,
+            10.0,
+            &mut patch_margins,
+        );
+
+        assert_eq!(patch_margins.get(&(0, 0)), Some(&10.0));
+        assert!(
+            !patch_margins.contains_key(&(1, 0)),
+            "a patch touched only along its boundary must not become road-locked"
+        );
     }
 }

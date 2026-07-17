@@ -40,6 +40,14 @@ impl SimulationNode {
                 &query.terrain,
                 &query.region_graph,
             );
+            let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
+                prepared_input.class,
+                &prepared_input.points,
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                &query.water,
+                validation,
+            );
             (prepared_input.points, validation)
         };
         let validate_ms = validate_start
@@ -120,6 +128,14 @@ impl SimulationNode {
                     new_edge_validation,
                     RoadSurfaceCompileReason::CommitValidator,
                 );
+            let validation = crate::nodes::sim::road_tool::validate_road_candidate_against_water(
+                prepared_input.class,
+                &prepared_input.points,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                &query.water,
+                validation,
+            );
             (prepared_input.points, validation)
         };
         let validate_ms = validate_start

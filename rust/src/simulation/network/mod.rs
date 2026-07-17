@@ -135,10 +135,10 @@ impl TransitNetwork {
     /// [`AgentSystem::invalidate_lane_ids_for_edges`].
     ///
     /// **Callers that need agent invalidation** should call
-    /// `agent_system.invalidate_lane_ids_for_edges(&dirty, &self.lane_system)` **before**
-    /// calling `lane_system.rebuild_edges_incremental`, i.e. they should inline the steps
-    /// rather than using this helper. This method is provided for contexts where agent
-    /// invalidation is not required (e.g. save-load restore).
+    /// `agent_system.invalidate_lane_ids_for_edges(&dirty, &self.lane_system, graph)` **before**
+    /// calling `lane_system.rebuild_edges_incremental`, i.e. they should inline the steps rather
+    /// than using this helper. This method is provided for contexts where agent invalidation is
+    /// not required (e.g. save-load restore).
     pub fn finalize_bulk_load(
         &mut self,
         graph: &mut RegionGraph,

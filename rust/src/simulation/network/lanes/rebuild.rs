@@ -99,7 +99,39 @@ impl LaneSystem {
         }
     }
 
-    /// Incrementally rebuilds lanes only for `affected_edges` and adjacent connection lanes.
+    /// Returns the physical-edge closure rebuilt by an incremental lane update.
+    ///
+    /// Every live edge incident to an endpoint of `affected_edges` is included because a changed
+    /// junction clip moves the lane mouth on all of its road arms.
+    pub(crate) fn incremental_rebuild_edge_closure(
+        graph: &RegionGraph,
+        affected_edges: &HashSet<usize>,
+    ) -> HashSet<usize> {
+        let mut affected_nodes = HashSet::new();
+        for &edge_id in affected_edges {
+            if edge_id >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_id);
+            affected_nodes.insert(edge.start_node as usize);
+            affected_nodes.insert(edge.end_node as usize);
+        }
+
+        let mut rebuild_set = affected_edges.clone();
+        for node_id in affected_nodes {
+            if node_id >= graph.node_adjacency_count() {
+                continue;
+            }
+            for &edge_id in graph.node_adjacency(node_id as u32) {
+                if !graph.edge(edge_id).deleted {
+                    rebuild_set.insert(edge_id);
+                }
+            }
+        }
+        rebuild_set
+    }
+
+    /// Incrementally rebuilds changed physical lanes and every connection lane touching them.
     pub fn rebuild_edges_incremental(
         &mut self,
         graph: &mut RegionGraph,
@@ -109,34 +141,26 @@ impl LaneSystem {
             return;
         }
 
-        // 1. Collect nodes at both ends of every affected edge.
+        // 1. Expand to every road arm whose lane mouth can move with an affected junction.
+        let rebuild_set = Self::incremental_rebuild_edge_closure(graph, affected_edges);
+
+        // Connection lanes must be rebuilt at both ends of every rebuilt edge. Restricting this
+        // to the original dirty endpoints leaves the far end pointing at orphaned physical lanes.
         let mut affected_nodes: HashSet<usize> = HashSet::new();
-        for &e_id in affected_edges {
-            if e_id < graph.edge_count() && !graph.edge(e_id).deleted {
-                let e = graph.edge(e_id);
-                affected_nodes.insert(e.start_node as usize);
-                affected_nodes.insert(e.end_node as usize);
+        for &edge_id in &rebuild_set {
+            if edge_id < graph.edge_count() {
+                let edge = graph.edge(edge_id);
+                affected_nodes.insert(edge.start_node as usize);
+                affected_nodes.insert(edge.end_node as usize);
             }
         }
 
-        // 2. Expand: also rebuild edges incident to affected nodes.
-        let mut rebuild_set: HashSet<usize> = affected_edges.clone();
-        for &node_id in &affected_nodes {
-            if node_id < graph.node_adjacency_count() {
-                for &e_id in graph.node_adjacency(node_id as u32) {
-                    if !graph.edge(e_id).deleted {
-                        rebuild_set.insert(e_id);
-                    }
-                }
-            }
-        }
-
-        // 3. Orphan old road lanes for every edge in rebuild_set.
+        // 2. Orphan old road lanes for every edge in rebuild_set.
         for &e_id in &rebuild_set {
             self.edge_lanes.remove(&e_id);
         }
 
-        // 4. Clear next_lanes on non-orphaned lanes at affected nodes.
+        // 3. Clear next_lanes on non-orphaned lanes at affected nodes.
         for &node_id in &affected_nodes {
             if node_id >= graph.node_adjacency_count() {
                 continue;
@@ -153,7 +177,7 @@ impl LaneSystem {
 
         let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
 
-        // 5. Pre-populate lane_map from surviving (non-rebuilt) edges so that connection
+        // 4. Pre-populate lane_map from surviving (non-rebuilt) edges so that connection
         //    builders at affected nodes can route through arms that weren't touched.
         for (&edge_idx, lane_ids) in &self.edge_lanes {
             for &lid in lane_ids {
@@ -162,7 +186,7 @@ impl LaneSystem {
             }
         }
 
-        // 6. Append new straight lanes for every edge in rebuild_set.
+        // 5. Append new straight lanes for every edge in rebuild_set.
         for &edge_idx in &rebuild_set {
             if edge_idx >= graph.edge_count() {
                 continue;
@@ -283,7 +307,7 @@ impl LaneSystem {
             self.edge_lanes.insert(edge_idx, edge_lane_indices);
         }
 
-        // 7 & 8. Rebuild connections for every affected node.
+        // 6. Rebuild connections for every affected node.
         for &node_id in &affected_nodes {
             if node_id < graph.node_count() {
                 // Tombstone old connection lanes at this node so the renderer skips them.

@@ -79,6 +79,10 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub(crate) edge_class: EdgeClass,
     pub(crate) start_mouth_profile: Option<IncidentMouthProfile>,
     pub(crate) end_mouth_profile: Option<IncidentMouthProfile>,
+    /// Whether the start node footprint belongs to a grounded bridge abutment cutout.
+    pub(crate) start_terrain_clip_node: bool,
+    /// Whether the end node footprint belongs to a grounded bridge abutment cutout.
+    pub(crate) end_terrain_clip_node: bool,
     pub(crate) span_earthwork_support_regions: Vec<RoadSurfaceSpanOwnedRegion>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -256,7 +260,7 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
-        let terrain_clip_boundary_loops =
+        let visible_terrain_clip_boundary_loops =
             std::mem::take(&mut visible_regions.terrain_clip_boundary_loops);
 
         let earthwork_ranges =
@@ -264,25 +268,46 @@ impl RoadSurfaceSystem {
         let mut clearance_regions =
             self.resolve_span_regions_for_ranges(sections, &earthwork_ranges, edge.class)?;
         Self::sort_span_owned_regions(&mut clearance_regions.regions);
+        let terrain_clip_boundary_loops = match edge.class {
+            EdgeClass::Standard => visible_terrain_clip_boundary_loops,
+            EdgeClass::Bridge => std::mem::take(&mut clearance_regions.terrain_clip_boundary_loops),
+            EdgeClass::Tunnel => Vec::new(),
+        };
         let span_earthwork_support_regions = clearance_regions.regions;
-        let earthwork_boundary_segments =
-            Self::span_earthwork_boundary_segment_loops_from_support_regions(
-                &span_earthwork_support_regions,
-                edge.class,
-            )
-            .ok()?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
-            self.build_closed_earthwork_geometry_from_boundary_segments(
-                &earthwork_boundary_segments,
-                terrain,
-                None,
-            )
-            .ok()?;
+            if edge.class == EdgeClass::Bridge {
+                (
+                    Vec::new(),
+                    std::mem::take(&mut clearance_regions.outer_boundary_loops),
+                    Vec::new(),
+                )
+            } else {
+                let earthwork_boundary_segments =
+                    Self::span_earthwork_boundary_segment_loops_from_support_regions(
+                        &span_earthwork_support_regions,
+                        edge.class,
+                    )
+                    .ok()?;
+                self.build_closed_earthwork_geometry_from_boundary_segments(
+                    &earthwork_boundary_segments,
+                    terrain,
+                    None,
+                )
+                .ok()?
+            };
 
         let start_mouth_profile =
             Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::Start);
         let end_mouth_profile =
             Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::End);
+        let start_terrain_clip_node = edge.class == EdgeClass::Bridge
+            && sections
+                .first()
+                .is_some_and(|section| self.bridge_section_contacts_terrain(section, terrain));
+        let end_terrain_clip_node = edge.class == EdgeClass::Bridge
+            && sections
+                .last()
+                .is_some_and(|section| self.bridge_section_contacts_terrain(section, terrain));
 
         Some(RoadSurfaceVisualSpanPiece {
             edge_idx,
@@ -297,6 +322,8 @@ impl RoadSurfaceSystem {
             edge_class: edge.class,
             start_mouth_profile,
             end_mouth_profile,
+            start_terrain_clip_node,
+            end_terrain_clip_node,
             span_earthwork_support_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,

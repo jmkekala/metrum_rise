@@ -284,6 +284,7 @@ pub(crate) mod triangulation;
 pub(crate) mod validation;
 mod vertical_faces;
 
+pub(crate) use joins::rounded_sidewalk_corner_path_xz;
 pub use piece::RoadSurfaceVisualNodePiece;
 pub(crate) use piece::{
     NodeBooleanDebugSnapshot, NodeCornerTrimDebug, NodeCornerTrimSideJoinIntersectionDebug,

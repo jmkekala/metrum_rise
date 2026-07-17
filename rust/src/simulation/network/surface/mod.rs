@@ -46,7 +46,7 @@ pub(crate) use incident::{
 pub(crate) use node::{
     NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
     NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeTopSurfacePolygonSource,
-    RoadSurfaceVerticalFaceSource,
+    RoadSurfaceVerticalFaceSource, rounded_sidewalk_corner_path_xz,
 };
 pub(crate) use node::{arrangement, height};
 #[cfg(test)]

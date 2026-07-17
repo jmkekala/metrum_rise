@@ -291,6 +291,7 @@ impl SimCore {
                     .replace_baseline_depth_from_dense(&w_data.baseline_depth)
                     .expect("undo baseline water snapshot must match the live water dimensions");
                 self.water_dirty = true;
+                self.bump_road_tool_query_generation();
             }
             if let Some(tr_graph) = trans_graph {
                 self.region_graph.restore_undo_delta(tr_graph);

@@ -78,8 +78,9 @@ mod tests {
     // The connection count at a 4-way junction is invariant to vehicle lane count:
     //
     //   4 edges × 2 sides = 8 sidewalk mouths
-    //   Each mouth has one marked crossing and one perimeter turn = 2 connections
-    //   Total = 8 × 2 = 16
+    //   Each mouth has one legal connector route to every other sidewalk mouth = 7 connections
+    //   Each mouth also has one stationary same-side reversal = 1 connection
+    //   Total = 8 × 8 = 64
     //
     // This is because sidewalks are always exactly ONE lane per side per edge (lane_idx ±100),
     // regardless of how many vehicle lanes the edge carries. Adding more vehicle lanes widens
@@ -90,8 +91,8 @@ mod tests {
             let (graph, lanes, n1) = build_4way_junction(fwd, bkw);
             let total = count_sidewalk_connections_at(&graph, &lanes, n1);
             assert_eq!(
-                total, 16,
-                "[{label}] 4-way junction must have exactly one crossing and one perimeter turn from each sidewalk mouth."
+                total, 64,
+                "[{label}] every 4-way sidewalk mouth must reach both sidewalks of every road arm and reverse in place without a diagonal shortcut."
             );
         }
     }

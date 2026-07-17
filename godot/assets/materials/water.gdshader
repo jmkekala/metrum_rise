@@ -5,17 +5,19 @@ uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear_mipmap;
 uniform float height_scale = 10.0;
-uniform vec4 shallow_water_color : source_color = vec4(0.31, 0.58, 0.64, 0.46);
-uniform vec4 deep_water_color : source_color = vec4(0.03, 0.16, 0.31, 0.84);
+uniform vec4 shallow_water_color : source_color = vec4(0.10, 0.28, 0.40, 0.62);
+uniform vec4 deep_water_color : source_color = vec4(0.018, 0.09, 0.18, 0.90);
 uniform vec4 foam_color : source_color = vec4(0.76, 0.91, 0.96, 0.82);
-uniform vec4 sky_reflection_color : source_color = vec4(0.62, 0.82, 0.95, 1.0);
+uniform vec4 sky_reflection_color : source_color = vec4(0.38, 0.56, 0.72, 1.0);
 uniform float shore_softness_m = 0.26;
 uniform float shore_foam_band_m = 0.18;
-uniform float water_fresnel_strength = 0.42;
-uniform float water_fresnel_power = 3.2;
+uniform float water_deep_color_depth_m = 3.5;
+uniform float water_fresnel_strength = 0.46;
+uniform float water_fresnel_power = 2.8;
 uniform float water_wave_color_strength = 0.052;
 uniform float water_wave_roughness_strength = 0.024;
 uniform float water_wave_normal_strength = 0.42;
+uniform float water_sun_glitter_strength = 0.38;
 uniform float water_refraction_strength = 0.010;
 uniform float water_refraction_mix = 0.13;
 uniform float water_surface_smoothing = 0.94;
@@ -134,42 +136,64 @@ float hash12(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-float value_noise(vec2 p) {
+vec3 value_noise_field(vec2 p) {
 	vec2 cell = floor(p);
 	vec2 local = fract(p);
 	vec2 smooth_local = local * local * (3.0 - 2.0 * local);
+	vec2 smooth_derivative = 6.0 * local * (1.0 - local);
 	float n00 = hash12(cell);
 	float n10 = hash12(cell + vec2(1.0, 0.0));
 	float n01 = hash12(cell + vec2(0.0, 1.0));
 	float n11 = hash12(cell + vec2(1.0, 1.0));
-	return mix(
-		mix(n00, n10, smooth_local.x),
-		mix(n01, n11, smooth_local.x),
-		smooth_local.y
+	float row_0 = mix(n00, n10, smooth_local.x);
+	float row_1 = mix(n01, n11, smooth_local.x);
+	return vec3(
+		mix(row_0, row_1, smooth_local.y),
+		mix(n10 - n00, n11 - n01, smooth_local.y) * smooth_derivative.x,
+		(row_1 - row_0) * smooth_derivative.y
 	);
 }
 
-float water_surface_breakup(vec2 world_xz) {
-	// Use soft, non-periodic motion so the sun reflection does not reveal a
-	// regular checker or sine interference pattern.
-	vec2 p = world_xz * 0.006 + vec2(TIME * 0.028, -TIME * 0.019);
-	float n1 = value_noise(p);
-	float n2 = value_noise(p * 2.13 + vec2(17.4, -9.1));
-	float n3 = value_noise(p * 4.37 + vec2(-31.7, 22.8));
-	return n1 * 0.58 + n2 * 0.29 + n3 * 0.13;
+vec3 water_noise_octave(
+	vec2 world_xz,
+	float scale,
+	vec2 axis,
+	vec2 drift,
+	vec2 offset
+) {
+	vec2 perpendicular = vec2(-axis.y, axis.x);
+	vec2 rotated_world = vec2(dot(world_xz, axis), dot(world_xz, perpendicular));
+	vec3 field = value_noise_field(rotated_world * scale + drift * TIME + offset);
+	vec2 world_gradient = (axis * field.y + perpendicular * field.z) * scale;
+	return vec3(field.x, world_gradient);
 }
 
-vec2 water_wave_slope(vec2 world_xz) {
-	vec2 dir1 = normalize(vec2(0.92, 0.39));
-	vec2 dir2 = normalize(vec2(-0.31, 0.95));
-	vec2 dir3 = normalize(vec2(0.58, -0.82));
-	float phase1 = dot(world_xz, dir1) * 0.055 + TIME * 0.52;
-	float phase2 = dot(world_xz, dir2) * 0.091 - TIME * 0.37;
-	float phase3 = dot(world_xz, dir3) * 0.137 + TIME * 0.24;
-	vec2 slope = dir1 * cos(phase1) * 0.045;
-	slope += dir2 * cos(phase2) * 0.026;
-	slope += dir3 * cos(phase3) * 0.014;
-	return slope;
+vec3 water_surface_field(vec2 world_xz) {
+	// Rotated, independently drifting octaves avoid exposing either the source
+	// value-noise cells or an infinite periodic wave train in high camera views.
+	vec3 octave_1 = water_noise_octave(
+		world_xz,
+		0.0055,
+		vec2(0.939693, 0.342020),
+		vec2(0.026, -0.018),
+		vec2(0.0)
+	);
+	vec3 octave_2 = water_noise_octave(
+		world_xz,
+		0.0117,
+		vec2(0.573576, -0.819152),
+		vec2(-0.021, 0.029),
+		vec2(17.4, -9.1)
+	);
+	vec3 octave_3 = water_noise_octave(
+		world_xz,
+		0.0240,
+		vec2(0.258819, 0.965926),
+		vec2(0.017, 0.013),
+		vec2(-31.7, 22.8)
+	);
+	vec3 combined = octave_1 * 0.58 + octave_2 * 0.29 + octave_3 * 0.13;
+	return vec3(combined.x, combined.yz * 7.5);
 }
 
 vec3 perturb_water_normal(vec3 base_normal, vec2 wave_slope, float strength) {
@@ -187,13 +211,21 @@ vec3 water_world_normal(vec2 wave_slope) {
 	));
 }
 
-float water_sun_specular(vec3 view_normal) {
+float water_sun_glitter(vec3 view_normal, float breakup) {
 	vec3 sun_dir = normalize(var_sun_direction_view);
 	vec3 normal = normalize(view_normal);
 	vec3 view_dir = normalize(var_view_direction);
 	vec3 reflected_sun = reflect(-sun_dir, normal);
-	float highlight = pow(clamp(dot(reflected_sun, view_dir), 0.0, 1.0), 72.0);
-	return clamp(highlight * 1.55, 0.0, 1.0);
+	float alignment = clamp(dot(reflected_sun, view_dir), 0.0, 1.0);
+	float broad_path = pow(alignment, 30.0);
+	float bright_core = pow(alignment, 72.0);
+	float broken_surface = mix(0.72, 1.0, smoothstep(0.38, 0.78, breakup));
+	return clamp(
+		broad_path * broken_surface * 0.55
+			+ bright_core * mix(0.55, 0.85, broken_surface),
+		0.0,
+		1.0
+	);
 }
 
 float water_debug_patch_border(vec2 patch_uv) {
@@ -306,10 +338,11 @@ void fragment() {
 	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
 	float depth_m = contour_depth_m;
 	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
-	float depth_factor = smoothstep(0.12, 6.5, depth_m);
-	float wave = water_surface_breakup(var_world_pos.xz);
+	float depth_factor = smoothstep(0.12, max(water_deep_color_depth_m, 0.121), depth_m);
+	vec3 surface_field = water_surface_field(var_world_pos.xz);
+	float wave = surface_field.x;
 	float wave_signed = wave * 2.0 - 1.0;
-	vec2 wave_slope = water_wave_slope(var_world_pos.xz);
+	vec2 wave_slope = surface_field.yz;
 	vec3 world_normal = water_world_normal(wave_slope);
 	float normal_debug_strength = clamp(length(wave_slope) * water_wave_normal_strength * 18.0, 0.0, 1.0);
 	vec3 depth_tint = mix(shallow_water_color.rgb, deep_water_color.rgb, depth_factor);
@@ -320,13 +353,16 @@ void fragment() {
 	float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
 	final_alpha = clamp(final_alpha, 0.0, 0.92);
 
-	NORMAL = perturb_water_normal(normalize(NORMAL), wave_slope, water_wave_normal_strength);
+	vec3 base_view_normal = normalize(NORMAL);
+	NORMAL = perturb_water_normal(base_view_normal, wave_slope, water_wave_normal_strength);
 	float fresnel = pow(
-		1.0 - clamp(dot(normalize(NORMAL), normalize(var_view_direction)), 0.0, 1.0),
+		1.0 - clamp(dot(base_view_normal, normalize(var_view_direction)), 0.0, 1.0),
 		water_fresnel_power
 	);
 	float fresnel_mix = clamp(fresnel * water_fresnel_strength, 0.0, 1.0);
-	float sun_specular = water_sun_specular(NORMAL) * shore_mask * (0.40 + depth_factor * 0.60);
+	float sun_specular = water_sun_glitter(NORMAL, wave)
+		* shore_mask
+		* (0.40 + depth_factor * 0.60);
 	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color, 0.65);
 
 	if (water_visual_debug_mode > 0) {
@@ -368,7 +404,7 @@ void fragment() {
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
 		final_color = mix(final_color, sky_reflection, fresnel_mix);
-		final_color += scene_sun_color * sun_specular * 0.45;
+		final_color += scene_sun_color * sun_specular * water_sun_glitter_strength;
 		float topdown_ripple = smoothstep(0.48, 0.86, wave)
 			* normal_debug_strength
 			* (1.0 - fresnel_mix * 0.35)

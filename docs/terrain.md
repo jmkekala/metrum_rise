@@ -414,10 +414,28 @@ Current deterministic rules:
   terrain while remaining a separate flat support pad mesh
 - authored building asphalt and concrete site surfaces remain separate materials from grass/site
   ground
-- water rendering consumes the visible baseline water field and applies depth tint,
-  shoreline foam, Fresnel/sky response, and procedural wave normals as presentation only
+- water rendering consumes the visible baseline water field and applies a dark Baltic-blue depth
+  tint, reaching its deep-water palette by `3.5 m`; increased shallow opacity prevents submerged
+  terrain from turning open water muddy, while shoreline foam, restrained Fresnel/sky response,
+  and procedural wave normals remain presentation only; the wave field uses rotated aperiodic
+  noise octaves with analytic gradients so high camera views do not expose periodic sine bands or
+  an axis-aligned sampling grid
+- water reflection remains dark in downward views but uses a restrained grazing-angle Fresnel
+  response derived from the smooth base surface so procedural normal gradients cannot imprint
+  their source cells into the reflected sky; the sun response uses a softened glitter shoulder
+  around its bright core, while fine ripple detail remains deferred until a seamless mipmapped
+  normal texture is available
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
+- the visible background uses one continuous procedural hemisphere gradient; its upper and lower
+  halves meet at the same color without literal horizon geometry, and the shared directional light
+  supplies the visible sun
+- static equirectangular cloud imagery is sampled only as a restrained half-resolution upper-sky
+  cover; baked panorama sky color, lower hemisphere, and lighting do not replace the shared
+  procedural gradient or directional-light contract
+- one shared depth-fog pass fades all ordinary world geometry into the horizon sky color; terrain,
+  water, roads, buildings, vehicles, and agents must not implement competing per-material horizon
+  cutoffs
 - shadow policy must be applied through the shared helper rather than per-renderer ad hoc flags
 - terrain and site ground receive real shadows; final buildings and cars cast shadows; construction
   pads, debug overlays, and temporary authoring helpers should not cast shadows unless a specific
@@ -714,7 +732,13 @@ Deterministic terrain-render rules:
   reuse the resident patch snapshot and must not fall back to whole-map terrain or water uploads
 - only dirty patches and newly required visible patches may rebuild or upload
 - the visible terrain patch set must be derived from the camera or editor interest region plus one
-  fixed padding margin to avoid pop-in
+  fixed patch of desired-set padding, two resident hysteresis patches, and one speculative prewarm
+  patch; at normal height this keeps resident and prepared terrain behind the `8 km` cull boundary
+- gameplay uses a `9 km` minimum camera far plane so the full normal-height terrain range is
+  renderable; the shared non-volumetric depth fade begins at about `6.2 km` and reaches the sky
+  color half a terrain patch before the `8 km` cull boundary
+- the depth-fade range follows the terrain renderer's height-scaled cull distance in high-altitude
+  WorldEditor views instead of turning into a fixed fog wall above the map
 - road earthworks and future engineered-ground clients must continue to invalidate only touched
   terrain chunks; the renderer must reflect that locality instead of reintroducing full-world
   uploads
@@ -731,6 +755,12 @@ Deterministic terrain-render rules:
 - refined patch publication is atomic across its local CDT windows; one failed window, a failed road
   clip query, or missing road loops on a road-owned patch suppresses the complete new payload and
   preserves the renderer's last valid clipped patch
+- a road-locked patch selected through the grading-ray safety pad expands its clip-source query by
+  that same render-step / terrain-cell pad; bridge-to-ground transitions cannot mark a neighboring
+  patch as road-owned while querying just short of the responsible road seam
+- a road loop discovered only through that padded query does not create a local CDT window unless
+  its grading bounds retain positive two-dimensional area after clamping to the patch; margin-only
+  neighboring loops must not materialize zero-width refined patches
 - engineered ownership travels with the Rust payload, and Rust must reject raw-heightmap payload
   requests for known road- or building-site-owned patches even if the renderer's patch-membership
   lookup is stale
@@ -1237,6 +1267,14 @@ What is implemented now:
 - terrain/water activation removes out-of-window patches farthest-first, drains downstream texture /
   LOD / mesh queues closest-first, and exports residency add/remove/pending counters for streaming
   perf captures
+- ready terrain and water residency can each activate at most `12` patches per frame and stop after
+  `4 ms`; this is still `O(k)` with `k <= 12`, while cached/cheap rotation handoffs are no longer
+  forced through the old two-patch-per-frame bottleneck
+- ordinary terrain payload requests may enqueue `32` camera-prioritized patches per frame; refined
+  road/site terrain retains its separate two-request cap so faster raw streaming does not flood the
+  expensive CDT path
+- ready water mesh uploads apply at most `4` patches normally or `6` only under the existing
+  measured-headroom boost, with `2.5/3.5 ms` and `1.4/2.2 MB` time/byte limits respectively
 - terrain/water LOD refreshes are movement-gated and cap checked/changed patches per frame so
   periodic LOD validation does not rescan or rebuild the whole resident set in one frame; new
   movement-triggered resident sweeps replace stale pending sweep entries and expose replaced-count
@@ -1254,14 +1292,17 @@ What is implemented now:
 - terrain grass and building-site grass now use the same Grass002 material stack with world-space
   UVs, stochastic anti-tiling, and luminance-preserving detail fade so camera distance changes
   reduce detail contrast rather than changing base brightness
-- centralized scene lighting now provides a deterministic sun / sky / shadow baseline, with shared
-  shadow policy for terrain, site ground, buildings, cars, roads, water, and editor/debug helpers
+- centralized scene lighting now provides a deterministic procedural hemisphere sky, static
+  texture-derived upper-sky cloud cover, a terrain-range-aware far-distance fade, and a shared
+  directional sun / shadow baseline for terrain, site ground, buildings, cars, roads, water, and
+  editor/debug helpers
 - terrain coloring now uses surface classification first and absolute height second, so flat blank
   worlds and imported DEM worlds share the same inland-first palette model instead of depending
   mainly on one absolute-height ramp
 - terrain-border skirt rendering now adds a render-only side wall plus bottom cap derived from the
-  live terrain edge, with contour continuation down the side surface so maps read as a visible cut
-  through terrain instead of a paper-thin top plane
+  live terrain edge, with contour continuation, noise-warped earth strata, distance-faded surface
+  relief, and a shallow irregular topsoil lip so maps read as a visible cut through terrain instead
+  of a paper-thin top plane
 - water rendering now also adds a render-only edge curtain where visible water reaches the map
   boundary, so outside-of-map views do not expose the submerged terrain plane through the
   transparent water surface

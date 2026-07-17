@@ -25,6 +25,7 @@ const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
+const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
 const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS: f32 = 0.966; // ~15 degrees.
 const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_SIN: f32 = 0.259; // ~15 degrees.
 const PREVIEW_ENDPOINT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
@@ -487,7 +488,18 @@ impl RoadSurfaceSystem {
             return validation.with_invalid_reason(PREVIEW_TOO_STEEP_REASON);
         }
 
-        if prepared_points.len() > 2 {
+        if edge_class == EdgeClass::Bridge
+            && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
+        {
+            validation.clearance_m = prepared_points
+                .iter()
+                .map(|point| point.y - Self::preview_terrain_height_m(terrain, point.x, point.z))
+                .fold(f32::INFINITY, f32::min);
+            validation.required_clearance_m = 0.0;
+            if validation.clearance_m < -PREVIEW_BRIDGE_GROUND_TOLERANCE_M {
+                return validation.with_invalid_reason(PREVIEW_BRIDGE_CLEARANCE_REASON);
+            }
+        } else if prepared_points.len() > 2 {
             let mid = prepared_points[prepared_points.len() / 2];
             let terrain_h = Self::preview_terrain_height_m(terrain, mid.x, mid.z);
             match edge_class {
@@ -623,7 +635,8 @@ impl RoadSurfaceSystem {
         true
     }
 
-    fn preview_candidate_roadbed_half_width_m(
+    /// Returns the visible roadbed half-width for one not-yet-committed candidate.
+    pub(crate) fn preview_candidate_roadbed_half_width_m(
         prepared_points: &[Vector3],
         edge_class: EdgeClass,
         fwd_lanes: u8,
@@ -776,7 +789,27 @@ impl RoadSurfaceSystem {
             return validation;
         }
 
-        if prepared_points.len() > 2 {
+        if edge_class == EdgeClass::Bridge
+            && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
+        {
+            validation.clearance_m = compiled_sections
+                .iter()
+                .map(|section| {
+                    section.center_height_m
+                        - Self::preview_terrain_height_m(
+                            terrain,
+                            section.center_xz.x as f32,
+                            section.center_xz.y as f32,
+                        )
+                })
+                .fold(f32::INFINITY, f32::min);
+            validation.required_clearance_m = 0.0;
+            if validation.clearance_m < -PREVIEW_BRIDGE_GROUND_TOLERANCE_M {
+                validation.is_valid = false;
+                validation.invalid_reason = PREVIEW_BRIDGE_CLEARANCE_REASON;
+                return validation;
+            }
+        } else if prepared_points.len() > 2 {
             if let Some(mid_section) = compiled_sections.get(compiled_sections.len() / 2) {
                 let terrain_h = Self::preview_terrain_height_m(
                     terrain,
@@ -808,6 +841,20 @@ impl RoadSurfaceSystem {
         }
 
         validation
+    }
+
+    fn bridge_profile_is_ground_transition(
+        prepared_points: &[Vector3],
+        terrain: &TerrainSystem,
+    ) -> bool {
+        let (Some(first), Some(last)) = (prepared_points.first(), prepared_points.last()) else {
+            return false;
+        };
+        let first_clearance = first.y - Self::preview_terrain_height_m(terrain, first.x, first.z);
+        let last_clearance = last.y - Self::preview_terrain_height_m(terrain, last.x, last.z);
+        (first_clearance.abs() <= PREVIEW_CLEARANCE_M && last_clearance > PREVIEW_CLEARANCE_M)
+            || (last_clearance.abs() <= PREVIEW_CLEARANCE_M
+                && first_clearance > PREVIEW_CLEARANCE_M)
     }
 
     fn preview_terrain_height_m(terrain: &TerrainSystem, x: f32, z: f32) -> f32 {
@@ -1136,7 +1183,8 @@ impl RoadPreviewValidation {
         }
     }
 
-    fn with_invalid_reason(mut self, invalid_reason: &'static str) -> Self {
+    /// Replaces a valid result with one stable machine-readable rejection reason.
+    pub(crate) fn with_invalid_reason(mut self, invalid_reason: &'static str) -> Self {
         self.is_valid = false;
         self.invalid_reason = invalid_reason;
         self

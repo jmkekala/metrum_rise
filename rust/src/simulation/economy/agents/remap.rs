@@ -1,6 +1,7 @@
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
 use std::collections::{HashMap, HashSet};
 
@@ -50,8 +51,8 @@ impl AgentSystem {
         }
     }
 
-    /// Sets `current_lane_id = usize::MAX` for every agent whose active lane belongs to one
-    /// of `affected_edges`, or whose connection lane leads directly into such a lane.
+    /// Sets `current_lane_id = usize::MAX` for every agent whose active lane belongs to the
+    /// incremental rebuild closure of `affected_edges`, or whose connector leads into that closure.
     ///
     /// Must be called **before** `LaneSystem::rebuild_edges_incremental` so the old lane IDs
     /// are still valid for lookup — old orphaned lanes retain their original `edge_id` even
@@ -60,9 +61,11 @@ impl AgentSystem {
         &mut self,
         affected_edges: &HashSet<usize>,
         lane_system: &LaneSystem,
+        graph: &RegionGraph,
     ) {
+        let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
         let mut affected_lane_ids: HashSet<usize> = HashSet::new();
-        for &edge_id in affected_edges {
+        for &edge_id in &affected_edges {
             if let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) {
                 affected_lane_ids.extend(lane_ids);
             }
@@ -199,8 +202,8 @@ mod tests {
     }
 
     #[test]
-    fn test_invalidate_clears_agents_on_affected_edge() {
-        let (_graph, lane_system) = make_simple_lane_system();
+    fn test_invalidate_clears_agents_on_incremental_rebuild_closure() {
+        let (graph, lane_system) = make_simple_lane_system();
         let e0_lane = lane_system.edge_lanes[&0][0];
         let e1_lane = lane_system.edge_lanes[&1][0];
 
@@ -326,16 +329,21 @@ mod tests {
 
         let mut affected = HashSet::new();
         affected.insert(0usize);
-        sys.invalidate_lane_ids_for_edges(&affected, &lane_system);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
 
         assert_eq!(sys.agents.current_lane_id[0], usize::MAX);
         assert_eq!(sys.agents.lane_distance[0], 10.0);
-        assert_eq!(sys.agents.current_lane_id[1], e1_lane);
+        assert_eq!(
+            sys.agents.current_lane_id[1],
+            usize::MAX,
+            "the adjacent edge is physically rebuilt because it shares the changed junction"
+        );
+        assert_eq!(sys.agents.lane_distance[1], 10.0);
     }
 
     #[test]
     fn test_invalidate_skips_already_invalid_agents() {
-        let (_graph, lane_system) = make_simple_lane_system();
+        let (graph, lane_system) = make_simple_lane_system();
 
         let mut sys = AgentSystem::new();
         let render_id = sys.allocate_render_id();
@@ -400,7 +408,7 @@ mod tests {
 
         let mut affected = HashSet::new();
         affected.insert(0usize);
-        sys.invalidate_lane_ids_for_edges(&affected, &lane_system);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
         assert_eq!(sys.agents.current_lane_id[0], usize::MAX);
     }
 }

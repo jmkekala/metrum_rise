@@ -1,8 +1,8 @@
 shader_type spatial;
 render_mode blend_mix, depth_prepass_alpha, cull_disabled;
 
-uniform vec4 shallow_water_color : source_color = vec4(0.20, 0.37, 0.40, 0.58);
-uniform vec4 deep_water_color : source_color = vec4(0.05, 0.16, 0.29, 0.86);
+uniform vec4 shallow_water_color : source_color = vec4(0.10, 0.28, 0.40, 0.62);
+uniform vec4 deep_water_color : source_color = vec4(0.018, 0.09, 0.18, 0.90);
 
 varying float local_depth_factor;
 varying float local_alpha_factor;

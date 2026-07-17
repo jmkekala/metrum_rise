@@ -725,6 +725,8 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         edge_class: EdgeClass::Standard,
         start_mouth_profile: None,
         end_mouth_profile: None,
+        start_terrain_clip_node: false,
+        end_terrain_clip_node: false,
         span_earthwork_support_regions: Vec::new(),
         earthwork_surface_polygons: Vec::new(),
         earthwork_outer_boundary_loops: Vec::new(),

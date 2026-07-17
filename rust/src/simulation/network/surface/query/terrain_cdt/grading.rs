@@ -40,7 +40,7 @@ impl RoadSurfaceSystem {
         let mut margin_m = base_margin_m;
 
         for (_, piece) in self.compiled_visual_span_pieces.iter() {
-            if piece.edge_class != EdgeClass::Standard {
+            if piece.terrain_clip_boundary_loops.is_empty() {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
@@ -54,7 +54,7 @@ impl RoadSurfaceSystem {
         }
 
         for (&node_id, piece) in self.compiled_visual_node_pieces.iter() {
-            if !self.node_has_standard_surface_edges(graph, node_id) {
+            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {

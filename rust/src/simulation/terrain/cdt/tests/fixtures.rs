@@ -147,10 +147,40 @@ pub(super) fn test_structural_span_boundary_source(
     band_kind: TerrainCdtRoadBandKind,
     source_band_index: u32,
 ) -> TerrainCdtRoadBoundarySource {
+    test_nonstandard_span_boundary_source(
+        edge_idx,
+        TerrainCdtEdgeClass::Bridge,
+        TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
+        band_kind,
+        source_band_index,
+    )
+}
+
+pub(super) fn test_tunnel_span_boundary_source(
+    edge_idx: u64,
+    band_kind: TerrainCdtRoadBandKind,
+    source_band_index: u32,
+) -> TerrainCdtRoadBoundarySource {
+    test_nonstandard_span_boundary_source(
+        edge_idx,
+        TerrainCdtEdgeClass::Tunnel,
+        TerrainCdtEarthworkSupportPolicy::TunnelVisiblePortals,
+        band_kind,
+        source_band_index,
+    )
+}
+
+fn test_nonstandard_span_boundary_source(
+    edge_idx: u64,
+    edge_class: TerrainCdtEdgeClass,
+    support_policy: TerrainCdtEarthworkSupportPolicy,
+    band_kind: TerrainCdtRoadBandKind,
+    source_band_index: u32,
+) -> TerrainCdtRoadBoundarySource {
     TerrainCdtRoadBoundarySource::SpanSupportBoundary {
         edge_idx,
-        edge_class: TerrainCdtEdgeClass::Bridge,
-        support_policy: TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
+        edge_class,
+        support_policy,
         source_band_index,
         band_kind,
         role: match band_kind {

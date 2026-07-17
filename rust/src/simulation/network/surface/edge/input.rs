@@ -100,13 +100,19 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
     ) -> PreparedRoadInput {
-        let (mut points, class) = Self::prepare_road_input_points_to_visible_surface(
+        let (mut points, mut class) = Self::prepare_road_input_points_to_visible_surface(
             raw_points,
             terrain,
             graph,
             road_surface,
         );
         Self::snap_road_endpoints_to_existing_nodes(&mut points, graph);
+        if class == EdgeClass::Standard
+            && Self::terminal_bridge_transition_endpoint(&points, terrain, graph).is_some()
+        {
+            Self::solve_structural_transition_profile(&mut points);
+            class = EdgeClass::Bridge;
+        }
 
         if class != EdgeClass::Standard || points.len() < 2 {
             return PreparedRoadInput {
@@ -250,6 +256,15 @@ impl RoadSurfaceSystem {
     }
 
     fn terminal_extension_incident_edge(graph: &RegionGraph, node_id: u32) -> Option<usize> {
+        Self::terminal_incident_surface_edge(graph, node_id, EdgeClass::Standard)
+    }
+
+    fn terminal_incident_surface_edge(
+        graph: &RegionGraph,
+        node_id: u32,
+        required_class: EdgeClass,
+    ) -> Option<usize> {
+        let node_id = graph.get_valid_node(node_id);
         if node_id as usize >= graph.node_adjacency_count() {
             return None;
         }
@@ -261,7 +276,6 @@ impl RoadSurfaceSystem {
             .filter(|&edge_idx| {
                 edge_idx < graph.edge_count()
                     && Self::is_surface_edge(graph.edge(edge_idx))
-                    && graph.edge(edge_idx).class == EdgeClass::Standard
                     && graph
                         .edge(edge_idx)
                         .geometry
@@ -271,7 +285,75 @@ impl RoadSurfaceSystem {
             });
 
         let edge_idx = active_edges.next()?;
-        active_edges.next().is_none().then_some(edge_idx)
+        (active_edges.next().is_none() && graph.edge(edge_idx).class == required_class)
+            .then_some(edge_idx)
+    }
+
+    fn terminal_bridge_transition_endpoint(
+        points: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+    ) -> Option<TerminalExtensionEndpoint> {
+        let first = *points.first()?;
+        let last = *points.last()?;
+        if points.len() < 2 {
+            return None;
+        }
+
+        let start_is_elevated_bridge_terminal = graph
+            .find_node_within(first, config::SNAP_TOLERANCE)
+            .filter(|&node_id| {
+                Self::terminal_incident_surface_edge(graph, node_id, EdgeClass::Bridge).is_some()
+            })
+            .is_some()
+            && Self::source_terrain_clearance_m(first, terrain) > PREVIEW_CLEARANCE_M;
+        let end_is_elevated_bridge_terminal = graph
+            .find_node_within(last, config::SNAP_TOLERANCE)
+            .filter(|&node_id| {
+                Self::terminal_incident_surface_edge(graph, node_id, EdgeClass::Bridge).is_some()
+            })
+            .is_some()
+            && Self::source_terrain_clearance_m(last, terrain) > PREVIEW_CLEARANCE_M;
+        let start_is_grounded =
+            Self::source_terrain_clearance_m(first, terrain).abs() <= PREVIEW_CLEARANCE_M;
+        let end_is_grounded =
+            Self::source_terrain_clearance_m(last, terrain).abs() <= PREVIEW_CLEARANCE_M;
+
+        match (
+            start_is_elevated_bridge_terminal && end_is_grounded,
+            end_is_elevated_bridge_terminal && start_is_grounded,
+        ) {
+            (true, false) => Some(TerminalExtensionEndpoint::Start),
+            (false, true) => Some(TerminalExtensionEndpoint::End),
+            _ => None,
+        }
+    }
+
+    fn source_terrain_clearance_m(point: Vector3, terrain: &TerrainSystem) -> f32 {
+        point.y - terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE
+    }
+
+    fn solve_structural_transition_profile(points: &mut [Vector3]) {
+        let Some(first) = points.first().copied() else {
+            return;
+        };
+        let Some(last) = points.last().copied() else {
+            return;
+        };
+        let total_length_m: f32 = points
+            .windows(2)
+            .map(|segment| Self::xz_distance(segment[0], segment[1]))
+            .sum();
+        if total_length_m <= f32::EPSILON {
+            return;
+        }
+
+        let mut station_m = 0.0;
+        for index in 1..points.len() {
+            station_m += Self::xz_distance(points[index - 1], points[index]);
+            let t = (station_m / total_length_m).clamp(0.0, 1.0);
+            points[index].y = first.y + (last.y - first.y) * t;
+        }
     }
 
     fn build_terminal_extension_profile(

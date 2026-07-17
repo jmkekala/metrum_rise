@@ -433,22 +433,42 @@ fn cdt_tie_in_widening_ties_choose_seam_geometry_before_source_identity() {
 }
 
 #[test]
-fn cdt_promotes_high_delta_omitted_tie_in_source_to_retaining_wall() {
+fn cdt_bridge_omitted_tie_in_source_does_not_promote_grade_compliant_faces() {
     let source = test_structural_span_boundary_source(1, TerrainCdtRoadBandKind::Sidewalk, 0);
-    let road = vec![
-        TerrainCdtVertex::new(48.0, 1.2, 48.0),
-        TerrainCdtVertex::new(52.0, 1.2, 48.0),
-        TerrainCdtVertex::new(52.0, 1.2, 52.0),
-        TerrainCdtVertex::new(48.0, 1.2, 52.0),
-    ];
-    let input = TerrainCdtInput::new(
-        TerrainCdtPatch::new(0.0, 0.0, 100.0, 100.0, [0.0; 4]),
-        vec![sourced_road_loop(1, 0, road, source)],
-        vec![TerrainCdtVertex::new(50.0, 0.0, 47.99)],
-    );
+    let input = high_delta_omitted_tie_in_input(source);
 
     let mesh = build_road_touched_terrain_patch(input)
-        .expect("high-delta sourced tie-in widening should triangulate");
+        .expect("high-delta bridge tie-in widening should triangulate");
+
+    assert_eq!(mesh.stats.tie_in_widened_source_samples, 1);
+    assert_eq!(
+        mesh.stats.retaining_wall_faces, 0,
+        "one omitted bridge sample must not promote every grade-compliant abutment face"
+    );
+    let sourced_faces = mesh
+        .emitted_faces
+        .iter()
+        .filter(|face| face.sources.contains(&source))
+        .collect::<Vec<_>>();
+    assert!(
+        !sourced_faces.is_empty(),
+        "bridge regression must exercise emitted faces carrying the structural source"
+    );
+    assert!(
+        sourced_faces
+            .iter()
+            .all(|face| face.kind == TerrainCdtTieInKind::OrdinaryTerrain),
+        "grade-compliant bridge-abutment faces must remain on the terrain material path"
+    );
+}
+
+#[test]
+fn cdt_promotes_high_delta_omitted_tunnel_source_to_retaining_wall() {
+    let source = test_tunnel_span_boundary_source(1, TerrainCdtRoadBandKind::Sidewalk, 0);
+    let input = high_delta_omitted_tie_in_input(source);
+
+    let mesh = build_road_touched_terrain_patch(input)
+        .expect("high-delta tunnel tie-in widening should triangulate");
 
     assert_eq!(mesh.stats.tie_in_widened_source_samples, 1);
     assert!(mesh.stats.retaining_wall_faces > 0);
@@ -456,12 +476,26 @@ fn cdt_promotes_high_delta_omitted_tie_in_source_to_retaining_wall() {
         mesh.retaining_wall_triangle_sources
             .iter()
             .any(|sources| sources.contains(&source)),
-        "source-required retaining walls must preserve the omitted terminal sidewalk source"
+        "source-required retaining walls must preserve the omitted tunnel portal source"
     );
     assert!(
         mesh.emitted_faces.iter().any(|face| {
             face.kind == TerrainCdtTieInKind::RetainingWall && face.sources.contains(&source)
         }),
-        "first-class emitted retaining-wall faces must carry the required seam source"
+        "first-class emitted retaining-wall faces must carry the required tunnel source"
     );
+}
+
+fn high_delta_omitted_tie_in_input(source: TerrainCdtRoadBoundarySource) -> TerrainCdtInput {
+    let road = vec![
+        TerrainCdtVertex::new(48.0, 1.2, 48.0),
+        TerrainCdtVertex::new(52.0, 1.2, 48.0),
+        TerrainCdtVertex::new(52.0, 1.2, 52.0),
+        TerrainCdtVertex::new(48.0, 1.2, 52.0),
+    ];
+    TerrainCdtInput::new(
+        TerrainCdtPatch::new(0.0, 0.0, 100.0, 100.0, [0.0; 4]),
+        vec![sourced_road_loop(1, 0, road, source)],
+        vec![TerrainCdtVertex::new(50.0, 0.0, 47.99)],
+    )
 }

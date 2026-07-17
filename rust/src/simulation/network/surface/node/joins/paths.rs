@@ -43,18 +43,14 @@ pub(super) fn side_join_boundary_path_world(
         to_xz,
         to_mouth.direction_xz,
     );
-    let path_xz = if let Some(join_point_xz) = join_point_xz {
-        let Some(path_xz) =
-            side_join_backend_join_path_xz(from_xz, join_point_xz, to_xz, path_mode)
-        else {
-            return Ok(None);
-        };
-        path_xz
-    } else {
-        let Some(path_xz) = cleaned_open_road_points([from_xz, to_xz]) else {
-            return Ok(None);
-        };
-        path_xz
+    let Some(path_xz) = rounded_side_join_path_xz(
+        from_xz,
+        from_mouth.direction_xz,
+        to_xz,
+        to_mouth.direction_xz,
+        path_mode,
+    ) else {
+        return Ok(None);
     };
     let rounded_world = side_join_path_points_to_world(
         path_xz,
@@ -86,6 +82,38 @@ pub(super) fn side_join_boundary_path_world(
         rounded_world,
         miter_world,
     }))
+}
+
+/// Builds a sampled sidewalk centerline using the same rounded join policy as node ownership.
+pub(crate) fn rounded_sidewalk_corner_path_xz(
+    start_xz: RoadVec2,
+    start_direction_xz: RoadVec2,
+    end_xz: RoadVec2,
+    end_direction_xz: RoadVec2,
+) -> Option<Vec<RoadVec2>> {
+    rounded_side_join_path_xz(
+        start_xz,
+        start_direction_xz,
+        end_xz,
+        end_direction_xz,
+        SideJoinPathMode::JunctionNonRoad,
+    )
+}
+
+fn rounded_side_join_path_xz(
+    start_xz: RoadVec2,
+    start_direction_xz: RoadVec2,
+    end_xz: RoadVec2,
+    end_direction_xz: RoadVec2,
+    path_mode: SideJoinPathMode,
+) -> Option<Vec<RoadVec2>> {
+    if let Some(join_point_xz) =
+        side_join_backend_meet_point_xz(start_xz, start_direction_xz, end_xz, end_direction_xz)
+    {
+        side_join_backend_join_path_xz(start_xz, join_point_xz, end_xz, path_mode)
+    } else {
+        cleaned_open_road_points([start_xz, end_xz])
+    }
 }
 
 fn side_join_path_points_to_world(

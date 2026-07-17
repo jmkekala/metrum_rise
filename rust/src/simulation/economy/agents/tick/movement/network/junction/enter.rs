@@ -129,6 +129,12 @@ pub(super) unsafe fn enter_next_edge_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
+                if *slices.tmode.get(i) != MODE_CAR {
+                    *s_path_idx.get_mut(i) = path_idx_before_lane_end;
+                    *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
+                    *remaining_dist = 0.0;
+                    return LaneEndAction::Break;
+                }
                 s_path.get_mut(i).clear();
                 *s_lane_id.get_mut(i) = usize::MAX;
                 LaneEndAction::Break
@@ -246,7 +252,14 @@ pub(super) unsafe fn enter_detach_lane_connector(
                     *s_path_idx.get(i),
                     path_len,
                 );
-                None
+                if *slices.tmode.get(i) != MODE_CAR {
+                    *s_lane_d.get_mut(i) = transit_network.lane_system.lanes[lane_id].length;
+                    *s_speed.get_mut(i) = 0.0;
+                    *remaining_dist = 0.0;
+                    Some(LaneEndAction::Break)
+                } else {
+                    None
+                }
             }
         }
     }

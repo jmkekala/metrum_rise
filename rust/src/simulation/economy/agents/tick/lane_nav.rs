@@ -93,6 +93,16 @@ pub(super) fn collect_connector_lanes_to_edge(
             out.push(conn_lane_id);
         }
     }
+    if out.len() > 1 {
+        let shortest = out
+            .iter()
+            .map(|&lane_id| transit_network.lane_system.lanes[lane_id].length)
+            .min_by(f32::total_cmp)
+            .unwrap_or(f32::INFINITY);
+        out.retain(|&lane_id| {
+            (transit_network.lane_system.lanes[lane_id].length - shortest).abs() <= 0.001
+        });
+    }
     !out.is_empty()
 }
 

@@ -191,7 +191,9 @@ pub(super) fn canonicalize_input(
             tie_in_widened_max_slope_ratio =
                 tie_in_widened_max_slope_ratio.max(tie_in_sample.slope_ratio);
             if tie_in_sample.height_delta_m >= MIN_RETAINING_WALL_TIE_IN_HEIGHT_DELTA_M
-                && terrain_cdt_boundary_source_allows_retaining_wall(tie_in_sample.seam_source)
+                && terrain_cdt_boundary_source_requires_widened_sample_retaining_wall(
+                    tie_in_sample.seam_source,
+                )
             {
                 retaining_wall_required_sources.push(tie_in_sample.seam_source);
             }

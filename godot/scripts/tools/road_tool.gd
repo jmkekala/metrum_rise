@@ -563,6 +563,8 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 				float(preview.get("clearance_m", 0.0)),
 				float(preview.get("required_clearance_m", 0.0)),
 			]
+		"water_requires_bridge":
+			return "Water crossing requires a bridge"
 		"surface_geometry_invalid":
 			return "Curve too tight"
 		"too_short":

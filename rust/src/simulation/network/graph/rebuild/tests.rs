@@ -397,6 +397,68 @@ fn junction_profile_preserves_authority_corridor_when_branch_connects_from_hill(
 }
 
 #[test]
+fn pass_through_bridge_approach_profile_does_not_exceed_authored_grade_cap() {
+    let mut graph = RegionGraph::new();
+    let west_pos = Vector3::new(-48.0, 0.096, 0.0);
+    let center_pos = Vector3::ZERO;
+    let east_pos = Vector3::new(96.0, 0.0, 0.0);
+    let west = graph.add_node(west_pos, NodeType::Junction);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    let east = graph.add_node(east_pos, NodeType::Junction);
+
+    let mut bridge = profile_test_edge(vec![west_pos, center_pos]);
+    bridge.class = EdgeClass::Bridge;
+    bridge.start_node = west;
+    bridge.end_node = center;
+    graph.add_edge(bridge);
+
+    let mut approach_points = vec![
+        center_pos,
+        Vector3::new(6.0, -0.96, 0.0),
+        Vector3::new(12.0, -1.92, 0.0),
+        Vector3::new(18.0, -2.40, 0.0),
+    ];
+    for x in (24..=96).step_by(6) {
+        let t = (x - 18) as f32 / (96 - 18) as f32;
+        approach_points.push(Vector3::new(x as f32, -2.40 * (1.0 - t), 0.0));
+    }
+    let mut approach = profile_test_edge(approach_points);
+    approach.start_node = center;
+    approach.end_node = east;
+    let approach_idx = graph.add_edge(approach);
+    graph.rebuild_adjacency_list();
+    let authored_profile = graph.edge(approach_idx).physical_geometry.clone();
+
+    graph.solve_junction_endpoint_profiles_for_edges(
+        &HashSet::from([center, east]),
+        &HashSet::from([approach_idx]),
+    );
+    graph.regrade_junction_endpoint_profiles_for_nodes(
+        &HashSet::from([center, east]),
+        &HashSet::from([approach_idx]),
+    );
+
+    assert_eq!(
+        graph.edge(approach_idx).physical_geometry,
+        authored_profile,
+        "PassThrough nodes have no node platform and must not rewrite an already validated approach profile"
+    );
+    let max_grade = graph
+        .edge(approach_idx)
+        .physical_geometry
+        .windows(2)
+        .map(|pair| {
+            let run_m = (pair[1].x - pair[0].x).hypot(pair[1].z - pair[0].z);
+            (pair[1].y - pair[0].y).abs() / run_m
+        })
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_grade <= JUNCTION_PROFILE_MOUTH_MAX_GRADE + 1.0e-4,
+        "post-commit pass-through approach must preserve the authored grade cap; max_grade={max_grade:.3}"
+    );
+}
+
+#[test]
 fn junction_profile_preserves_primary_corridor_when_opposite_branch_is_added() {
     let mut graph = RegionGraph::new();
     let center = graph.add_node(Vector3::ZERO, NodeType::Junction);

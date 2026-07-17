@@ -353,6 +353,7 @@ impl SimCore {
             self.watermap = water;
             self.authored_water_patch_fill_debug_cache.clear();
             self.water_dirty = true;
+            self.bump_road_tool_query_generation();
             return Ok(());
         }
 
@@ -450,6 +451,7 @@ impl SimCore {
         self.watermap = water;
         self.authored_water_patch_fill_debug_cache = fill_debug_cache;
         self.water_dirty = true;
+        self.bump_road_tool_query_generation();
         Ok(())
     }
 

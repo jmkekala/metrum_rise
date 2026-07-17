@@ -262,6 +262,7 @@ Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 Godot applies render-side interpolation in `godot/scripts/renderers/agents.gd`:
 
 - cars have stable render IDs from Rust
+- pedestrian and vehicle MultiMeshes use the shared dynamic shadow-caster policy
 - origin interpolation smooths per-tick position updates
 - basis interpolation smooths rotation
 - large jumps above `80 m` snap instead of interpolating across the map

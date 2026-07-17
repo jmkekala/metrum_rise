@@ -222,6 +222,7 @@ pub(crate) fn run_sim_thread(
                             c.agents.invalidate_lane_ids_for_edges(
                                 &dirty,
                                 &c.transit_network.lane_system,
+                                &c.region_graph,
                             );
                             let dt_inv_us = t_inv.elapsed().as_micros();
 

@@ -1,7 +1,10 @@
 //! Road-locked terrain patch selection tests.
 
 use super::*;
-use crate::simulation::terrain::terrain_cdt_local_sample_margin_m;
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::terrain::{
+    TerrainSystem, terrain_cdt_local_sample_margin_m, terrain_cdt_road_query_margin_m,
+};
 
 #[test]
 fn road_locked_terrain_patches_include_visible_footprint_without_margin() {
@@ -309,6 +312,112 @@ fn road_locked_patch_margins_follow_local_grading_envelope_on_one_road() {
 }
 
 #[test]
+fn road_locked_grading_pad_is_preserved_in_clip_query_margin() {
+    let render_step_m = 2.0;
+    let patch_span_m = 512.0;
+    let config = WorldConfig::new(1_280.0, 1_280.0, 40.0, 10.0)
+        .with_terrain_resolution(10.0)
+        .with_chunking(patch_span_m, 0.0);
+    let terrain = TerrainSystem::from_world_config(&config);
+    let base_margin_m = terrain_cdt_local_sample_margin_m(&terrain, render_step_m);
+    let query_pad_m = render_step_m.max(terrain.cell_size_m());
+    let (target_patch_min_x, _, _, _) = terrain
+        .render_patch_world_bounds(1, 1)
+        .expect("fixture must contain the target neighboring patch");
+
+    let mut probe_graph = RegionGraph::new();
+    let probe_start = probe_graph.add_node(Vector3::new(0.0, 0.0, -48.0), NodeType::Junction);
+    let probe_end = probe_graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
+    probe_graph.add_edge(test_edge(
+        probe_start,
+        probe_end,
+        vec![Vector3::new(0.0, 0.0, -48.0), Vector3::new(0.0, 0.0, 48.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut probe_surface = RoadSurfaceSystem::new(patch_span_m);
+    probe_surface.compile_dirty(&probe_graph, &terrain);
+    let probe_east_extent_m = probe_surface
+        .compiled_visual_span_pieces()
+        .values()
+        .flat_map(|piece| &piece.terrain_clip_boundary_loops)
+        .chain(
+            probe_surface
+                .compiled_visual_node_pieces()
+                .values()
+                .flat_map(|piece| &piece.terrain_clip_boundary_loops),
+        )
+        .flat_map(|boundary_loop| &boundary_loop.points_world)
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max) as f32;
+    assert!(probe_east_extent_m.is_finite());
+
+    // Put the east road seam inside the grading-ray selection pad, but outside the raw grading
+    // margin of the neighboring patch. This reproduces the reported bridge-approach boundary case.
+    let road_x = target_patch_min_x - base_margin_m - query_pad_m * 0.5 - probe_east_extent_m;
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(road_x, 0.0, -48.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(road_x, 0.0, 48.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        vec![
+            Vector3::new(road_x, 0.0, -48.0),
+            Vector3::new(road_x, 0.0, 48.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut surface = RoadSurfaceSystem::new(patch_span_m);
+    surface.compile_dirty(&graph, &terrain);
+
+    let patch_margins = surface.terrain_render_patch_grading_margins_for_visible_roads(
+        &graph,
+        &terrain,
+        render_step_m,
+    );
+    let target_key = (1, 1);
+    let grading_margin_m = *patch_margins
+        .get(&target_key)
+        .expect("grading-ray safety pad must select the neighboring patch");
+    let (min_x, min_z, max_x, max_z) = terrain
+        .render_patch_world_bounds(target_key.0, target_key.1)
+        .expect("selected patch bounds must exist");
+    let (_, raw_source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(
+            &graph,
+            min_x - grading_margin_m,
+            min_z - grading_margin_m,
+            max_x + grading_margin_m,
+            max_z + grading_margin_m,
+        )
+        .expect("raw clip query should remain structurally valid");
+    assert_eq!(
+        raw_source_count, 0,
+        "fixture must keep the road seam beyond the unpadded grading query"
+    );
+
+    let query_margin_m = terrain_cdt_road_query_margin_m(&terrain, render_step_m, grading_margin_m);
+    let (road_loops, padded_source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(
+            &graph,
+            min_x - query_margin_m,
+            min_z - query_margin_m,
+            max_x + query_margin_m,
+            max_z + query_margin_m,
+        )
+        .expect("padded clip query should remain structurally valid");
+    assert!(
+        padded_source_count > 0 && !road_loops.is_empty(),
+        "a road-locked patch selected by the grading pad must retain its road clip sources"
+    );
+}
+
+#[test]
 fn road_locked_terrain_patches_skip_bridge_and_tunnel_only_surfaces() {
     let terrain = flat_terrain(257, 257);
     let mut graph = RegionGraph::new();
@@ -416,5 +525,184 @@ fn terrain_clip_loops_skip_bridge_midspans() {
     assert!(
         road_loops.is_empty() && source_count == 0,
         "bridge midspans must not cut terrain topology like grounded standard roads"
+    );
+}
+
+#[test]
+fn terrain_clip_loops_include_grounded_bridge_abutments_only() {
+    let terrain = flat_terrain(129, 65);
+    let mut graph = RegionGraph::new();
+    let grounded = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
+    let elevated = graph.add_node(Vector3::new(48.0, 7.5, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        grounded,
+        elevated,
+        vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 7.5, 0.0)],
+        10.0,
+        EdgeClass::Bridge,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let bridge_piece = surface
+        .compiled_visual_span_pieces()
+        .get(&edge_idx)
+        .expect("bridge ramp must compile");
+
+    assert!(
+        !bridge_piece.terrain_clip_boundary_loops.is_empty(),
+        "the grounded bridge ramp end must own a terrain cutout"
+    );
+    assert!(bridge_piece.start_terrain_clip_node);
+    assert!(!bridge_piece.end_terrain_clip_node);
+    assert!(
+        bridge_piece
+            .terrain_clip_boundary_loops
+            .iter()
+            .flat_map(|boundary_loop| &boundary_loop.source_edges)
+            .all(|source_edge| matches!(
+                source_edge.source,
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
+                    edge_class: EdgeClass::Bridge,
+                    support_policy: RoadSurfaceEarthworkSupportPolicy::BridgeEndpointAbutments,
+                    ..
+                }
+            )),
+        "bridge abutment terrain clips must retain structural provenance"
+    );
+
+    let (grounded_loops, grounded_source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -64.0, -16.0, -32.0, 16.0)
+        .expect("grounded bridge abutment terrain clip export must succeed");
+    assert!(
+        !grounded_loops.is_empty() && grounded_source_count > 0,
+        "the grounded bridge span must contribute a terrain cutout"
+    );
+
+    let (elevated_loops, elevated_source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, 24.0, -16.0, 64.0, 16.0)
+        .expect("elevated bridge terrain clip query must succeed");
+    assert!(
+        elevated_loops.is_empty() && elevated_source_count == 0,
+        "the elevated bridge run and terminal must remain outside terrain clipping"
+    );
+}
+
+#[test]
+fn grounded_bridge_abutment_cdt_keeps_grade_compliant_faces_in_terrain_bucket() {
+    let terrain = flat_terrain(129, 65);
+    let mut graph = RegionGraph::new();
+    let grounded = graph.add_node(Vector3::new(-48.0, 0.0, 0.0), NodeType::Junction);
+    let elevated = graph.add_node(Vector3::new(48.0, 7.5, 0.0), NodeType::Junction);
+    graph.add_edge(test_edge(
+        grounded,
+        elevated,
+        vec![Vector3::new(-48.0, 0.0, 0.0), Vector3::new(48.0, 7.5, 0.0)],
+        10.0,
+        EdgeClass::Bridge,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let mesh = assert_production_dem_cdt_contract(
+        "grade-compliant grounded bridge abutment",
+        &surface,
+        &graph,
+        &terrain,
+        (-64.0, -16.0, -32.0, 16.0),
+        2.0,
+        false,
+        true,
+    );
+
+    assert!(
+        mesh.stats.road_seam_max_slope_ratio
+            <= crate::simulation::terrain::cdt::MAX_TERRAIN_TIE_IN_SLOPE_RATIO + 0.0001,
+        "bridge abutment seam must remain within the terrain slope budget"
+    );
+    assert!(
+        mesh.emitted_faces.iter().any(|face| {
+            face.kind == TerrainCdtTieInKind::OrdinaryTerrain
+                && face.sources.iter().copied().any(|source| {
+                    matches!(
+                        source,
+                        TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                            edge_class: crate::simulation::terrain::cdt::TerrainCdtEdgeClass::Bridge,
+                            support_policy:
+                                crate::simulation::terrain::cdt::TerrainCdtEarthworkSupportPolicy::BridgeEndpointAbutments,
+                            ..
+                        }
+                    )
+                })
+        }),
+        "production bridge-abutment faces must retain structural provenance in the terrain bucket"
+    );
+}
+
+#[test]
+fn connected_bridge_ramps_keep_abutment_cutouts_beside_standard_bends() {
+    let terrain = flat_terrain(193, 97);
+    let mut graph = RegionGraph::new();
+    let west_elevated = graph.add_node(Vector3::new(-80.0, 5.0, -24.0), NodeType::Junction);
+    let west_landing = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+    let east_landing = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+    let east_elevated = graph.add_node(Vector3::new(80.0, 5.0, 24.0), NodeType::Junction);
+    for (start, end, points, class) in [
+        (
+            west_elevated,
+            west_landing,
+            vec![
+                Vector3::new(-80.0, 5.0, -24.0),
+                Vector3::new(-24.0, 0.0, 0.0),
+            ],
+            EdgeClass::Bridge,
+        ),
+        (
+            west_landing,
+            east_landing,
+            vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+            EdgeClass::Standard,
+        ),
+        (
+            east_landing,
+            east_elevated,
+            vec![Vector3::new(24.0, 0.0, 0.0), Vector3::new(80.0, 5.0, 24.0)],
+            EdgeClass::Bridge,
+        ),
+    ] {
+        graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            10.0,
+            class,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    assert!(
+        surface
+            .compiled_visual_node_pieces()
+            .contains_key(&west_landing)
+            && surface
+                .compiled_visual_node_pieces()
+                .contains_key(&east_landing),
+        "the two mixed bridge/standard landing bends must compile"
+    );
+
+    let (road_loops, source_count) = surface
+        .terrain_cdt_road_loops_for_world_bounds(&graph, -96.0, -48.0, 96.0, 48.0)
+        .expect("connected bridge landing terrain cutouts must union successfully");
+    assert!(!road_loops.is_empty());
+    assert!(
+        source_count >= 5,
+        "both bridge abutments, both landing bends, and the grounded connector must contribute terrain cutouts; sources={source_count}"
     );
 }

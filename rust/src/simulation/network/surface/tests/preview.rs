@@ -98,6 +98,99 @@ fn preview_keeps_terrain_to_raised_bridge_ramp_height() {
 }
 
 #[test]
+fn elevated_bridge_terminal_to_ground_stays_a_structural_ramp_in_both_directions() {
+    let terrain = flat_terrain(128, 64);
+    let mut graph = RegionGraph::new();
+    let bridge_start_pos = Vector3::new(-32.0, 5.0, 0.0);
+    let bridge_terminal_pos = Vector3::new(0.0, 5.0, 0.0);
+    let bridge_start = graph.add_node(bridge_start_pos, NodeType::Junction);
+    let bridge_terminal = graph.add_node(bridge_terminal_pos, NodeType::Junction);
+    graph.add_edge(test_edge(
+        bridge_start,
+        bridge_terminal,
+        vec![bridge_start_pos, bridge_terminal_pos],
+        7.0,
+        EdgeClass::Bridge,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut existing_surface = RoadSurfaceSystem::new(16.0);
+    existing_surface.compile_dirty(&graph, &terrain);
+    let preview_surface = RoadSurfaceSystem::new(16.0);
+    let ground_pos = Vector3::new(32.0, 0.0, 0.0);
+
+    for raw_points in [
+        vec![bridge_terminal_pos, ground_pos],
+        vec![ground_pos, bridge_terminal_pos],
+    ] {
+        let preview = preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
+            &raw_points,
+            1,
+            1,
+            &terrain,
+            &graph,
+            &existing_surface,
+        );
+
+        assert_eq!(
+            preview.edge_class,
+            EdgeClass::Bridge,
+            "a grounded continuation of an elevated bridge terminal must remain structural"
+        );
+        assert!(
+            preview.is_valid,
+            "the structural bridge ramp must pass the same grade/clearance validation: {:?}",
+            preview.validation
+        );
+        assert!(
+            preview.prepared_points.len() > 2,
+            "the bridge-to-ground transition must keep the dense grade profile"
+        );
+        let midpoint = preview.prepared_points[preview.prepared_points.len() / 2];
+        assert!(
+            midpoint.y > 1.5,
+            "the structural ramp must descend across its full run instead of following terrain early: midpoint={midpoint:?}"
+        );
+    }
+}
+
+#[test]
+fn dense_bridge_ground_transition_may_enter_the_clearance_zone_without_becoming_invalid() {
+    let terrain = flat_terrain(64, 32);
+    let surface = RoadSurfaceSystem::new(16.0);
+    let points = vec![
+        Vector3::new(-12.0, 1.5, 0.0),
+        Vector3::new(0.0, 0.75, 0.0),
+        Vector3::new(12.0, 0.0, 0.0),
+    ];
+
+    let validation =
+        surface.validate_prepared_road_surface(&points, EdgeClass::Bridge, 1, 1, &terrain);
+
+    assert!(
+        validation.is_valid,
+        "a bridge approach must be allowed to descend through the ordinary midspan clearance zone: {validation:?}"
+    );
+}
+
+#[test]
+fn dense_bridge_ground_transition_rejects_a_deck_buried_below_terrain() {
+    let terrain = flat_terrain(96, 32);
+    let surface = RoadSurfaceSystem::new(16.0);
+    let points = vec![
+        Vector3::new(-30.0, 3.0, 0.0),
+        Vector3::new(0.0, -0.2, 0.0),
+        Vector3::new(30.0, 0.0, 0.0),
+    ];
+
+    let validation =
+        surface.validate_prepared_road_surface(&points, EdgeClass::Bridge, 1, 1, &terrain);
+
+    assert!(!validation.is_valid);
+    assert_eq!(validation.invalid_reason, "bridge_clearance");
+}
+
+#[test]
 fn preview_matches_committed_sections_for_tunnels() {
     let terrain = flat_terrain(96, 16);
     let surface = RoadSurfaceSystem::new(16.0);

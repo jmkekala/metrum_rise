@@ -222,7 +222,9 @@ impl RegionGraph {
         incidents_by_node
             .iter()
             .filter_map(|(&node_id, incidents)| {
-                if incidents.len() < 2 {
+                if incidents.len() < 2
+                    || self.junction_profile_incidents_form_pass_through(incidents)
+                {
                     return None;
                 }
                 if !incidents
@@ -284,7 +286,7 @@ impl RegionGraph {
         node_ids.sort_unstable();
         for node_id in node_ids {
             let incidents = &incidents_by_node[&node_id];
-            if incidents.len() < 2 {
+            if incidents.len() < 2 || self.junction_profile_incidents_form_pass_through(incidents) {
                 continue;
             }
             let stable_incidents = incidents
@@ -455,6 +457,9 @@ impl RegionGraph {
         let incidents_by_node =
             self.build_junction_profile_incidents(&valid_node_ids, Some(&affected_nodes));
         let incidents = incidents_by_node.get(&node_id)?;
+        if self.junction_profile_incidents_form_pass_through(incidents) {
+            return None;
+        }
         self.solve_bend_profile_solve(node_id, incidents)
             .or_else(|| {
                 self.solve_junction_profile_solve(
@@ -519,6 +524,16 @@ impl RegionGraph {
     }
 
     fn junction_profile_incidents_form_bend(&self, incidents: &[JunctionProfileIncident]) -> bool {
+        let [_, _] = incidents else {
+            return false;
+        };
+        !self.junction_profile_incidents_form_pass_through(incidents)
+    }
+
+    fn junction_profile_incidents_form_pass_through(
+        &self,
+        incidents: &[JunctionProfileIncident],
+    ) -> bool {
         let [a, b] = incidents else {
             return false;
         };
@@ -537,7 +552,7 @@ impl RegionGraph {
             return false;
         };
 
-        !Self::directions_are_pass_through(a_direction, b_direction)
+        Self::directions_are_pass_through(a_direction, b_direction)
     }
 
     fn solve_junction_profile_solve(

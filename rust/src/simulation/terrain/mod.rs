@@ -36,6 +36,19 @@ pub(crate) fn terrain_cdt_local_sample_margin_m(
         .max(terrain.cell_size_m() * TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS)
 }
 
+/// Expands a road grading margin by the patch-selection safety pad used around grading rays.
+///
+/// A patch can be selected by the pad even when the road seam lies just beyond the unpadded
+/// grading margin. Clip-source queries must include the same pad or that selected patch can be
+/// misclassified as road-owned with no road sources.
+pub(crate) fn terrain_cdt_road_query_margin_m(
+    terrain: &TerrainSystem,
+    render_step_m: f32,
+    grading_margin_m: f32,
+) -> f32 {
+    grading_margin_m.max(0.0) + render_step_m.max(terrain.cell_size_m())
+}
+
 /// One deterministic render-patch snapshot of visual terrain.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TerrainPatchSnapshot {

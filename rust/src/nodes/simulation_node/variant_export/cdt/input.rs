@@ -2,6 +2,8 @@
 
 use super::super::super::*;
 
+const TERRAIN_CDT_MIN_WINDOW_EXTENT_M: f32 = 0.001;
+
 impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
         terrain: &TerrainSystem,
@@ -329,7 +331,9 @@ impl SimulationNode {
         min_z = (min_z - margin_m).clamp(patch_min_z, patch_max_z);
         max_x = (max_x + margin_m).clamp(patch_min_x, patch_max_x);
         max_z = (max_z + margin_m).clamp(patch_min_z, patch_max_z);
-        if min_x > max_x || min_z > max_z {
+        if max_x <= min_x + TERRAIN_CDT_MIN_WINDOW_EXTENT_M
+            || max_z <= min_z + TERRAIN_CDT_MIN_WINDOW_EXTENT_M
+        {
             None
         } else {
             Some((min_x, min_z, max_x, max_z))

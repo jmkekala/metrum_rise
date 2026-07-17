@@ -9,6 +9,7 @@
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
 const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
@@ -65,14 +66,15 @@ pub(crate) struct WaterPatchLayerStats {
     pub(crate) visible_sum: f32,
 }
 
+#[derive(Clone)]
 struct BaselineWaterState {
-    depth: SparseChunkGrid<f32>,
+    depth: Arc<SparseChunkGrid<f32>>,
 }
 
 impl BaselineWaterState {
     fn new(width: usize, height: usize, chunk_size: usize) -> Self {
         Self {
-            depth: SparseChunkGrid::new(width, height, chunk_size.max(1), 0.0),
+            depth: Arc::new(SparseChunkGrid::new(width, height, chunk_size.max(1), 0.0)),
         }
     }
 
@@ -81,7 +83,7 @@ impl BaselineWaterState {
     }
 
     fn replace_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
-        self.depth.replace_from_dense(dense)
+        Arc::make_mut(&mut self.depth).replace_from_dense(dense)
     }
 }
 
@@ -90,6 +92,7 @@ impl BaselineWaterState {
 /// The runtime stores flat authored still-water bodies as baseline depth above
 /// terrain. Rendering reads this depth directly; no source/sink, velocity, or
 /// flux state is maintained.
+#[derive(Clone)]
 pub struct WaterSystem {
     /// Grid width in cells (matches terrain width).
     pub width: usize,
@@ -384,6 +387,55 @@ impl WaterSystem {
         (grid_x, grid_z)
     }
 
+    /// Returns whether a sampled roadbed corridor touches visible authored water.
+    ///
+    /// Sampling uses a fixed quarter-cell lattice over the candidate footprint. Complexity is
+    /// `O(ceil(length / step) * ceil(width / step))` with no allocation, where `step` is bounded
+    /// to `0.5..=3.0 m`; the query exits on the first visible-water sample.
+    pub(crate) fn road_corridor_overlaps_visible_water(
+        &self,
+        points: &[godot::prelude::Vector3],
+        half_width_m: f32,
+    ) -> bool {
+        if points.len() < 2 || self.width == 0 || self.height == 0 {
+            return false;
+        }
+
+        let sample_step_m = (self.cell_size * 0.25).clamp(0.5, 3.0);
+        let half_width_m = half_width_m.max(0.0);
+        let lateral_steps = ((half_width_m * 2.0) / sample_step_m).ceil().max(1.0) as usize;
+
+        for pair in points.windows(2) {
+            let dx = pair[1].x - pair[0].x;
+            let dz = pair[1].z - pair[0].z;
+            let length_m = dx.hypot(dz);
+            if length_m <= f32::EPSILON {
+                continue;
+            }
+            let lateral_x = -dz / length_m;
+            let lateral_z = dx / length_m;
+            let longitudinal_steps = (length_m / sample_step_m).ceil().max(1.0) as usize;
+
+            for along_idx in 0..=longitudinal_steps {
+                let along_t = along_idx as f32 / longitudinal_steps as f32;
+                let center_x = pair[0].x + dx * along_t;
+                let center_z = pair[0].z + dz * along_t;
+                for lateral_idx in 0..=lateral_steps {
+                    let lateral_t = lateral_idx as f32 / lateral_steps as f32;
+                    let offset_m = -half_width_m + half_width_m * 2.0 * lateral_t;
+                    if self.visible_depth_world(
+                        center_x + lateral_x * offset_m,
+                        center_z + lateral_z * offset_m,
+                    ) > WATER_DEBUG_VISIBLE_EPSILON
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn grid_to_world_coords(&self, grid_x: usize, grid_z: usize) -> (f32, f32) {
         let (world_w, world_h) = self.world_size();
         let half_w = world_w * 0.5;
@@ -424,6 +476,31 @@ impl WaterSystem {
 
     fn visible_depth_at(&self, grid_x: usize, grid_z: usize) -> f32 {
         self.baseline.depth.get(grid_x, grid_z)
+    }
+
+    fn visible_depth_world(&self, world_x: f32, world_z: f32) -> f32 {
+        let (world_w, world_h) = self.world_size();
+        let grid_x = (world_x + world_w * 0.5) / self.cell_size;
+        let grid_z = (world_z + world_h * 0.5) / self.cell_size;
+        let max_x = self.width.saturating_sub(1) as f32;
+        let max_z = self.height.saturating_sub(1) as f32;
+        if grid_x < 0.0 || grid_z < 0.0 || grid_x > max_x || grid_z > max_z {
+            return 0.0;
+        }
+
+        let x0 = grid_x.floor() as usize;
+        let z0 = grid_z.floor() as usize;
+        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
+        let z1 = (z0 + 1).min(self.height.saturating_sub(1));
+        let tx = grid_x - x0 as f32;
+        let tz = grid_z - z0 as f32;
+        let depth_00 = self.visible_depth_at(x0, z0);
+        let depth_10 = self.visible_depth_at(x1, z0);
+        let depth_01 = self.visible_depth_at(x0, z1);
+        let depth_11 = self.visible_depth_at(x1, z1);
+        let top = depth_00 + (depth_10 - depth_00) * tx;
+        let bottom = depth_01 + (depth_11 - depth_01) * tx;
+        top + (bottom - top) * tz
     }
 }
 

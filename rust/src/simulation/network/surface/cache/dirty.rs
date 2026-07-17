@@ -141,19 +141,40 @@ impl RoadSurfaceSystem {
             })
     }
 
-    pub(in crate::simulation::network::surface) fn node_has_standard_surface_edges(
+    /// Returns whether a node footprint must remove terrain beneath a grounded road or abutment.
+    pub(in crate::simulation::network::surface) fn node_has_terrain_clip_surface_edges(
         &self,
         graph: &RegionGraph,
         node_id: u32,
     ) -> bool {
-        (node_id as usize) < graph.node_adjacency_count()
-            && graph.node_adjacency(node_id).iter().any(|&edge_idx| {
-                if edge_idx >= graph.edge_count() {
-                    return false;
-                }
-                let edge = graph.edge(edge_idx);
-                Self::is_surface_edge(edge) && edge.class == EdgeClass::Standard
-            })
+        if node_id as usize >= graph.node_adjacency_count() {
+            return false;
+        }
+
+        graph.node_adjacency(node_id).iter().any(|&edge_idx| {
+            if edge_idx >= graph.edge_count() {
+                return false;
+            }
+            let edge = graph.edge(edge_idx);
+            if !Self::is_surface_edge(edge) {
+                return false;
+            }
+            if edge.class == EdgeClass::Standard {
+                return true;
+            }
+            if edge.class != EdgeClass::Bridge {
+                return false;
+            }
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                return false;
+            };
+            let at_start = graph.get_valid_node(edge.start_node) == node_id;
+            if at_start {
+                piece.start_terrain_clip_node
+            } else {
+                piece.end_terrain_clip_node
+            }
+        })
     }
 
     pub(in crate::simulation::network::surface) fn is_surface_edge(edge: &Edge) -> bool {

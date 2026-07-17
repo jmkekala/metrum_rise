@@ -1,6 +1,7 @@
 //! Authoritative pedestrian junction routes and rendered-crossing geometry.
 
 use super::super::graph::RegionGraph;
+use super::super::surface::{RoadVec2, rounded_sidewalk_corner_path_xz};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::{build_cum_dist, road_half_width};
 use super::{CrosswalkMarking, Lane, LaneType};
@@ -10,7 +11,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::{PI, TAU};
 
 const CONNECTION_POINT_EPSILON_M: f32 = 0.001;
-const CORNER_MITER_LIMIT_MULTIPLIER: f32 = 4.0;
 const CORNER_ARC_MAX_STEP_RAD: f32 = PI / 12.0;
 
 /// A classification of a sidewalk-end at a junction, used for sorting.
@@ -22,8 +22,10 @@ pub struct SidewalkMouth {
     /// Road-arm angle in radians relative to the junction center.
     pub angle: f32,
     /// Planar unit direction pointing from the junction node into the road body.
-    /// Used to intersect adjacent sidewalk centerlines.
+    /// Used to classify the sidewalk side of the road arm.
     pub dir: Vector3,
+    /// Planar sidewalk tangent pointing from the junction into the physical lane body.
+    pub sidewalk_dir: Vector3,
     /// ID of the inbound lane relative to the junction.
     pub in_id: usize,
     /// ID of the outbound lane relative to the junction.
@@ -34,7 +36,7 @@ pub struct SidewalkMouth {
     /// 3-D world position at the road mouth offset to the asphalt edge (no sidewalk).
     /// Used for crosswalk geometry so stripes stay on the car lanes only.
     pub road_edge_pos: Vector3,
-    /// Asphalt half-width used to reject corner miters that enter the junction core.
+    /// Asphalt half-width used to keep defensive corner fallbacks outside the junction core.
     pub road_half_width_m: f32,
 }
 
@@ -45,42 +47,13 @@ struct RoadArm {
     counter_clockwise_mouth: usize,
 }
 
-/// Returns the 3-D point `dist` metres along `geom` measured from the start (`from_start=true`)
-/// or from the end (`from_start=false`). Clamps to the endpoint if `dist` exceeds the length.
-fn walk_geom_from_end(geom: &[Vector3], dist: f32, from_start: bool) -> Vector3 {
-    if geom.is_empty() {
-        return Vector3::ZERO;
-    }
-    if dist <= 0.0 {
-        return if from_start {
-            geom[0]
-        } else {
-            *geom.last().unwrap()
-        };
-    }
-    let mut remaining = dist;
-    if from_start {
-        for i in 0..geom.len().saturating_sub(1) {
-            let seg = geom[i].distance_to(geom[i + 1]);
-            if remaining <= seg || i == geom.len() - 2 {
-                let t = (remaining / seg).min(1.0);
-                return geom[i].lerp(geom[i + 1], t);
-            }
-            remaining -= seg;
-        }
-        geom[0]
-    } else {
-        let n = geom.len();
-        for i in (1..n).rev() {
-            let seg = geom[i - 1].distance_to(geom[i]);
-            if remaining <= seg || i == 1 {
-                let t = (remaining / seg).min(1.0);
-                return geom[i].lerp(geom[i - 1], t);
-            }
-            remaining -= seg;
-        }
-        *geom.last().unwrap()
-    }
+struct PedestrianStep {
+    start_mouth: usize,
+    end_mouth: usize,
+    geometry: Vec<Vector3>,
+    length: f32,
+    crosswalk_edge_id: Option<usize>,
+    crosswalk_marking: Option<CrosswalkMarking>,
 }
 
 fn push_distinct_point(points: &mut Vec<Vector3>, point: Vector3) {
@@ -112,10 +85,6 @@ fn crosswalk_route(start: &SidewalkMouth, end: &SidewalkMouth) -> Vec<Vector3> {
     route
 }
 
-fn xz_cross(a: Vector3, b: Vector3) -> f32 {
-    a.x * b.z - a.z * b.x
-}
-
 fn distance_to_segment_xz(point: Vector3, start: Vector3, end: Vector3) -> f32 {
     let point = Vector2::new(point.x, point.z);
     let start = Vector2::new(start.x, start.z);
@@ -129,50 +98,11 @@ fn distance_to_segment_xz(point: Vector3, start: Vector3, end: Vector3) -> f32 {
     point.distance_to(start + segment * t)
 }
 
-fn sidewalk_centerline_intersection(
-    start: &SidewalkMouth,
-    end: &SidewalkMouth,
-    node_pos: Vector3,
-) -> Option<Vector3> {
-    let denominator = xz_cross(start.dir, end.dir);
-    if denominator.abs() <= 1.0e-4 {
-        return None;
-    }
-
-    let delta = end.mouth_world_pos - start.mouth_world_pos;
-    let start_t = xz_cross(delta, end.dir) / denominator;
-    let mut intersection = start.mouth_world_pos + start.dir * start_t;
-    intersection.y = (start.mouth_world_pos.y + end.mouth_world_pos.y) * 0.5;
-
-    let start_leg = start.mouth_world_pos.distance_to(intersection);
-    let end_leg = end.mouth_world_pos.distance_to(intersection);
-    let local_scale = start
-        .mouth_world_pos
-        .distance_to(node_pos)
-        .max(end.mouth_world_pos.distance_to(node_pos))
-        .max(config::SIDEWALK_WIDTH);
-    let minimum_radius =
-        start.road_half_width_m.max(end.road_half_width_m) + config::SIDEWALK_WIDTH * 0.5;
-    if !intersection.is_finite()
-        || start_leg > local_scale * CORNER_MITER_LIMIT_MULTIPLIER
-        || end_leg > local_scale * CORNER_MITER_LIMIT_MULTIPLIER
-        || distance_to_segment_xz(node_pos, start.mouth_world_pos, intersection)
-            + CONNECTION_POINT_EPSILON_M
-            < minimum_radius
-        || distance_to_segment_xz(node_pos, intersection, end.mouth_world_pos)
-            + CONNECTION_POINT_EPSILON_M
-            < minimum_radius
-    {
-        return None;
-    }
-    Some(intersection)
-}
-
 fn shortest_signed_angle_delta(start: f32, end: f32) -> f32 {
     (end - start + PI).rem_euclid(TAU) - PI
 }
 
-fn sidewalk_corner_arc_route(
+fn safe_node_centered_corner_route(
     start: &SidewalkMouth,
     end: &SidewalkMouth,
     node_pos: Vector3,
@@ -203,12 +133,11 @@ fn sidewalk_corner_arc_route(
     for index in 0..=segment_count {
         let t = index as f32 / segment_count as f32;
         let angle = start_angle + angle_delta * t;
-        let y = start.mouth_world_pos.y.lerp(end.mouth_world_pos.y, t);
         push_distinct_point(
             &mut route,
             Vector3::new(
                 node_pos.x + angle.cos() * arc_radius,
-                y,
+                start.mouth_world_pos.y.lerp(end.mouth_world_pos.y, t),
                 node_pos.z + angle.sin() * arc_radius,
             ),
         );
@@ -222,15 +151,63 @@ fn sidewalk_corner_route(
     end: &SidewalkMouth,
     node_pos: Vector3,
 ) -> Vec<Vector3> {
-    let mut route = Vec::with_capacity(3);
+    // Physical sidewalk lanes end at the zebra, CROSSWALK_INSET metres beyond the
+    // compiled node mouth. Restore those node-mouth tangent points before asking the
+    // road-surface side-join backend for its canonical rounded corner.
+    let start_corner_mouth = start.mouth_world_pos - start.sidewalk_dir * config::CROSSWALK_INSET;
+    let end_corner_mouth = end.mouth_world_pos - end.sidewalk_dir * config::CROSSWALK_INSET;
+    let start_xz = RoadVec2::new(
+        f64::from(start_corner_mouth.x),
+        f64::from(start_corner_mouth.z),
+    );
+    let end_xz = RoadVec2::new(f64::from(end_corner_mouth.x), f64::from(end_corner_mouth.z));
+    let rounded_xz = rounded_sidewalk_corner_path_xz(
+        start_xz,
+        RoadVec2::new(
+            f64::from(start.sidewalk_dir.x),
+            f64::from(start.sidewalk_dir.z),
+        ),
+        end_xz,
+        RoadVec2::new(f64::from(end.sidewalk_dir.x), f64::from(end.sidewalk_dir.z)),
+    )
+    .unwrap_or_else(|| vec![start_xz]);
+
+    let total_length_m = rounded_xz
+        .windows(2)
+        .map(|segment| segment[0].distance(segment[1]))
+        .sum::<f64>();
+    let mut cumulative_length_m = 0.0;
+    let mut route = Vec::with_capacity(rounded_xz.len() + 2);
     push_distinct_point(&mut route, start.mouth_world_pos);
-    if let Some(corner) = sidewalk_centerline_intersection(start, end, node_pos) {
-        push_distinct_point(&mut route, corner);
-    } else {
-        return sidewalk_corner_arc_route(start, end, node_pos);
+    for (index, point_xz) in rounded_xz.iter().copied().enumerate() {
+        if index > 0 {
+            cumulative_length_m += rounded_xz[index - 1].distance(point_xz);
+        }
+        let t = if total_length_m > f64::EPSILON {
+            (cumulative_length_m / total_length_m) as f32
+        } else {
+            0.0
+        };
+        push_distinct_point(
+            &mut route,
+            Vector3::new(
+                point_xz.x as f32,
+                start_corner_mouth.y.lerp(end_corner_mouth.y, t),
+                point_xz.y as f32,
+            ),
+        );
     }
     push_distinct_point(&mut route, end.mouth_world_pos);
-    route
+    let minimum_radius =
+        start.road_half_width_m.max(end.road_half_width_m) + config::SIDEWALK_WIDTH * 0.5;
+    if route.windows(2).any(|segment| {
+        distance_to_segment_xz(node_pos, segment[0], segment[1]) + CONNECTION_POINT_EPSILON_M
+            < minimum_radius
+    }) {
+        safe_node_centered_corner_route(start, end, node_pos)
+    } else {
+        route
+    }
 }
 
 fn append_pedestrian_connection(
@@ -276,6 +253,143 @@ fn append_pedestrian_connection(
         .push((end.edge_idx, end.lane_idx));
 }
 
+fn append_pedestrian_step(
+    steps: &mut Vec<PedestrianStep>,
+    outgoing_steps: &mut [Vec<usize>],
+    start_mouth: usize,
+    end_mouth: usize,
+    geometry: Vec<Vector3>,
+    crosswalk_edge_id: Option<usize>,
+    crosswalk_marking: Option<CrosswalkMarking>,
+) {
+    if geometry.len() < 2 {
+        return;
+    }
+    let length = polyline_length(&geometry);
+    if length <= CONNECTION_POINT_EPSILON_M {
+        return;
+    }
+
+    let step_id = steps.len();
+    steps.push(PedestrianStep {
+        start_mouth,
+        end_mouth,
+        geometry,
+        length,
+        crosswalk_edge_id,
+        crosswalk_marking,
+    });
+    outgoing_steps[start_mouth].push(step_id);
+}
+
+fn pedestrian_route_tree(
+    source_mouth: usize,
+    steps: &[PedestrianStep],
+    outgoing_steps: &[Vec<usize>],
+) -> (Vec<f32>, Vec<usize>) {
+    let mouth_count = outgoing_steps.len();
+    let mut distance = vec![f32::INFINITY; mouth_count];
+    let mut previous_step = vec![usize::MAX; mouth_count];
+    let mut visited = vec![false; mouth_count];
+    distance[source_mouth] = 0.0;
+
+    for _ in 0..mouth_count {
+        let Some(current) = (0..mouth_count)
+            .filter(|&mouth| !visited[mouth] && distance[mouth].is_finite())
+            .min_by(|&a, &b| distance[a].total_cmp(&distance[b]).then_with(|| a.cmp(&b)))
+        else {
+            break;
+        };
+        visited[current] = true;
+
+        for &step_id in &outgoing_steps[current] {
+            let step = &steps[step_id];
+            let candidate = distance[current] + step.length;
+            let old = distance[step.end_mouth];
+            if candidate + CONNECTION_POINT_EPSILON_M < old
+                || ((candidate - old).abs() <= CONNECTION_POINT_EPSILON_M
+                    && step_id < previous_step[step.end_mouth])
+            {
+                distance[step.end_mouth] = candidate;
+                previous_step[step.end_mouth] = step_id;
+            }
+        }
+    }
+
+    (distance, previous_step)
+}
+
+fn pedestrian_route_to_mouth(
+    source_mouth: usize,
+    target_mouth: usize,
+    steps: &[PedestrianStep],
+    distance: &[f32],
+    previous_step: &[usize],
+) -> Option<Vec<usize>> {
+    if target_mouth == source_mouth || !distance[target_mouth].is_finite() {
+        return None;
+    }
+
+    let mut route = Vec::new();
+    let mut current = target_mouth;
+    while current != source_mouth {
+        let step_id = previous_step[current];
+        if step_id == usize::MAX {
+            return None;
+        }
+        route.push(step_id);
+        current = steps[step_id].start_mouth;
+    }
+    route.reverse();
+    Some(route)
+}
+
+fn pedestrian_route_geometry(route: &[usize], steps: &[PedestrianStep]) -> Vec<Vector3> {
+    let point_capacity = route
+        .iter()
+        .map(|&step_id| steps[step_id].geometry.len())
+        .sum();
+    let mut geometry = Vec::with_capacity(point_capacity);
+    for &step_id in route {
+        for &point in &steps[step_id].geometry {
+            push_distinct_point(&mut geometry, point);
+        }
+    }
+    geometry
+}
+
+fn append_stationary_pedestrian_connection(
+    lanes: &mut Vec<Lane>,
+    graph: &mut RegionGraph,
+    node_lanes: &mut HashMap<usize, Vec<usize>>,
+    node_id: usize,
+    mouth: &SidewalkMouth,
+) {
+    let point = mouth.mouth_world_pos;
+    let connection_id = lanes.len();
+    lanes.push(Lane {
+        edge_id: usize::MAX,
+        is_fwd: true,
+        lane_idx: 0,
+        geometry: vec![point, point],
+        length: 0.0,
+        frontage_delay_penalty_s: 0.0,
+        cum_dist: vec![0.0, 0.0],
+        lane_type: LaneType::Foot,
+        crosswalk_edge_id: None,
+        crosswalk_marking: None,
+        next_lanes: vec![mouth.out_id],
+        node_id,
+    });
+    node_lanes.entry(node_id).or_default().push(connection_id);
+    lanes[mouth.in_id].next_lanes.push(connection_id);
+    graph.nodes[node_id]
+        .lane_connections
+        .entry((mouth.edge_idx, mouth.lane_idx))
+        .or_default()
+        .push((mouth.edge_idx, mouth.lane_idx));
+}
+
 /// Builds pedestrian sidewalk connection lanes (crosswalks) at a single node.
 pub fn build_pedestrian_connections_at_node(
     lanes: &mut Vec<Lane>,
@@ -314,16 +428,12 @@ pub fn build_pedestrian_connections_at_node(
         } else {
             Vector3::ZERO
         };
-        let side_vec = Vector3::new(-dir.z, 0.0, dir.x);
+        // Lane offsets are authored relative to the edge's start-to-end direction. At an
+        // end-node junction, `dir` points the opposite way (from the node back into the arm),
+        // so using its normal would place the mouth on the opposite sidewalk.
+        let edge_dir = if is_start { dir } else { dir * -1.0 };
+        let edge_side_vec = Vector3::new(-edge_dir.z, 0.0, edge_dir.x);
 
-        // Position at the junction mouth — clip distance from the node along the road geometry.
-        // This is where the road mesh visually starts/ends, and where crosswalks must sit.
-        let clip = (if is_start {
-            edge.start_clip
-        } else {
-            edge.end_clip
-        }) + config::CROSSWALK_INSET;
-        let mouth_center = walk_geom_from_end(geometry, clip, is_start);
         let side_multiplier = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
         let asphalt_half_width = road_half_width(edge);
 
@@ -334,20 +444,7 @@ pub fn build_pedestrian_connections_at_node(
 
             let arm_angle = dir.z.atan2(dir.x);
 
-            // Sidewalk-centreline position: used for agent routing geometry.
-            let mouth_world_pos = Vector3::new(
-                mouth_center.x + side_vec.x * offset,
-                mouth_center.y,
-                mouth_center.z + side_vec.z * offset,
-            );
-            // Asphalt-edge position: used for crosswalk stripe geometry so stripes
-            // stay on the car lanes and do not extend onto the sidewalk.
             let road_edge_offset = -asphalt_half_width * side * side_multiplier;
-            let road_edge_pos = Vector3::new(
-                mouth_center.x + side_vec.x * road_edge_offset,
-                mouth_center.y,
-                mouth_center.z + side_vec.z * road_edge_offset,
-            );
 
             let (inbound, outbound) = if is_start {
                 (
@@ -361,11 +458,41 @@ pub fn build_pedestrian_connections_at_node(
                 )
             };
             if let (Some(in_id), Some(out_id)) = (inbound, outbound) {
+                let Some(&mouth_world_pos) = lanes[in_id].geometry.last() else {
+                    continue;
+                };
+                let sidewalk_dir = lanes[out_id]
+                    .geometry
+                    .windows(2)
+                    .find_map(|segment| {
+                        let delta = segment[1] - segment[0];
+                        let planar_length = Vector2::new(delta.x, delta.z).length();
+                        (planar_length > 1.0e-4).then_some(Vector3::new(
+                            delta.x / planar_length,
+                            0.0,
+                            delta.z / planar_length,
+                        ))
+                    })
+                    .unwrap_or(dir);
+                debug_assert!(
+                    lanes[out_id]
+                        .geometry
+                        .first()
+                        .is_some_and(|outbound_start| outbound_start
+                            .distance_squared_to(mouth_world_pos)
+                            <= CONNECTION_POINT_EPSILON_M.powi(2)),
+                    "opposing sidewalk lanes must share one junction mouth"
+                );
+                // Move laterally from the authoritative sidewalk endpoint to the asphalt edge.
+                // Reconstructing both points independently from centerline arc length diverges
+                // on curved offset lanes and can introduce a longitudinal backtrack.
+                let road_edge_pos = mouth_world_pos + edge_side_vec * (road_edge_offset - offset);
                 mouths.push(SidewalkMouth {
                     edge_idx: e_idx,
                     lane_idx: l_idx,
                     angle: arm_angle,
                     dir,
+                    sidewalk_dir,
                     in_id,
                     out_id,
                     mouth_world_pos,
@@ -434,16 +561,22 @@ pub fn build_pedestrian_connections_at_node(
     });
 
     let road_degree = arms.len();
+    let mut steps = Vec::with_capacity(road_degree * 4);
+    let mut outgoing_steps = (0..mouths.len())
+        .map(|_| Vec::with_capacity(2))
+        .collect::<Vec<_>>();
     let mut crosswalks_added = 0;
     for arm in &arms {
         let edge_idx = arm.edge_idx;
         let clockwise = &mouths[arm.clockwise_mouth];
         let counter_clockwise = &mouths[arm.counter_clockwise_mouth];
-        let (start, end) = if clockwise.lane_idx <= counter_clockwise.lane_idx {
-            (clockwise, counter_clockwise)
+        let (start_index, end_index) = if clockwise.lane_idx <= counter_clockwise.lane_idx {
+            (arm.clockwise_mouth, arm.counter_clockwise_mouth)
         } else {
-            (counter_clockwise, clockwise)
+            (arm.counter_clockwise_mouth, arm.clockwise_mouth)
         };
+        let start = &mouths[start_index];
+        let end = &mouths[end_index];
         let crosswalk_override = graph.nodes[node_id]
             .crosswalk_overrides
             .get(&edge_idx)
@@ -460,24 +593,20 @@ pub fn build_pedestrian_connections_at_node(
             end: end.road_edge_pos,
         };
         let route = crosswalk_route(start, end);
-        append_pedestrian_connection(
-            lanes,
-            graph,
-            node_lanes,
-            node_id,
-            start,
-            end,
+        append_pedestrian_step(
+            &mut steps,
+            &mut outgoing_steps,
+            start_index,
+            end_index,
             route.clone(),
             Some(edge_idx),
             Some(marking),
         );
-        append_pedestrian_connection(
-            lanes,
-            graph,
-            node_lanes,
-            node_id,
-            end,
-            start,
+        append_pedestrian_step(
+            &mut steps,
+            &mut outgoing_steps,
+            end_index,
+            start_index,
             route.into_iter().rev().collect(),
             Some(edge_idx),
             None,
@@ -498,27 +627,77 @@ pub fn build_pedestrian_connections_at_node(
         let end = &mouths[end_index];
 
         let route = sidewalk_corner_route(start, end, node_pos);
-        append_pedestrian_connection(
-            lanes,
-            graph,
-            node_lanes,
-            node_id,
-            start,
-            end,
+        append_pedestrian_step(
+            &mut steps,
+            &mut outgoing_steps,
+            start_index,
+            end_index,
             route.clone(),
             None,
             None,
         );
-        append_pedestrian_connection(
+        append_pedestrian_step(
+            &mut steps,
+            &mut outgoing_steps,
+            end_index,
+            start_index,
+            route.into_iter().rev().collect(),
+            None,
+            None,
+        );
+    }
+
+    // Agent movement consumes one connector per road-graph junction. Materialize one
+    // shortest legal route from every incoming sidewalk mouth to every reachable
+    // outbound mouth, composing only the authoritative crosswalk and perimeter steps
+    // above. Exact building access can require either sidewalk of a destination arm.
+    for source_mouth in 0..mouths.len() {
+        // Rebuild-only bounded Dijkstra: O(D²) per mouth and O(D³) for a node
+        // with road degree D. Live movement only scans the O(D) materialized routes.
+        let (distance, previous_step) =
+            pedestrian_route_tree(source_mouth, &steps, &outgoing_steps);
+        for target_mouth in 0..mouths.len() {
+            let Some(route) = pedestrian_route_to_mouth(
+                source_mouth,
+                target_mouth,
+                &steps,
+                &distance,
+                &previous_step,
+            ) else {
+                continue;
+            };
+            let Some(&last_step_id) = route.last() else {
+                continue;
+            };
+            debug_assert_eq!(steps[last_step_id].end_mouth, target_mouth);
+            let (crosswalk_edge_id, crosswalk_marking) = if route.len() == 1 {
+                let step = &steps[route[0]];
+                (step.crosswalk_edge_id, step.crosswalk_marking)
+            } else {
+                (None, None)
+            };
+            append_pedestrian_connection(
+                lanes,
+                graph,
+                node_lanes,
+                node_id,
+                &mouths[source_mouth],
+                &mouths[target_mouth],
+                pedestrian_route_geometry(&route, &steps),
+                crosswalk_edge_id,
+                crosswalk_marking,
+            );
+        }
+
+        // Reversing along the same sidewalk requires no street crossing. Keep it as
+        // an explicit zero-length connector so exact frontage plans do not clear the
+        // lane and reattach farther along the opposite-direction sidewalk.
+        append_stationary_pedestrian_connection(
             lanes,
             graph,
             node_lanes,
             node_id,
-            end,
-            start,
-            route.into_iter().rev().collect(),
-            None,
-            None,
+            &mouths[source_mouth],
         );
     }
 }

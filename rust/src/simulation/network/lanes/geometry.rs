@@ -1,4 +1,5 @@
 use super::super::graph::Edge;
+use super::super::types::TransitType;
 use super::{Lane, LaneType};
 use crate::config;
 use godot::prelude::*;
@@ -97,14 +98,23 @@ pub fn build_one_lane(
     let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
     geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
 
-    // Clip lane endpoints to stop at the visual junction boundary, matching the road mesh.
-    // start_clip trims from pts[0] (start_node) side; end_clip from pts.last() (end_node) side.
-    if edge.start_clip > 0.0 {
-        geometry = trim_from_front(&geometry, edge.start_clip);
+    // Road sidewalks stop at the crosswalk mouth, while vehicle lanes stop at the asphalt
+    // junction throat. This keeps the physical sidewalk endpoint identical to the first/last
+    // point of every pedestrian connector and prevents walkers from passing the zebra before
+    // returning to it.
+    let junction_inset = if lane_type == LaneType::Foot && edge.primary_type == TransitType::Road {
+        config::CROSSWALK_INSET
+    } else {
+        0.0
+    };
+    let start_clip = edge.start_clip + junction_inset;
+    let end_clip = edge.end_clip + junction_inset;
+    if start_clip > 0.0 {
+        geometry = trim_from_front(&geometry, start_clip);
     }
-    if edge.end_clip > 0.0 {
+    if end_clip > 0.0 {
         geometry.reverse();
-        geometry = trim_from_front(&geometry, edge.end_clip);
+        geometry = trim_from_front(&geometry, end_clip);
         geometry.reverse();
     }
 

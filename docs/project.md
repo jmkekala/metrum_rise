@@ -77,11 +77,19 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Pedestrian junction lanes and visible zebra crossings now consume the same authoritative
   crossing records. Both walking directions traverse the rendered asphalt-edge segment, while
   adjacent-arm turns stay on the sidewalk perimeter instead of cutting mouth-to-mouth through the
-  carriageway. See [`roads.md`](roads.md).
+  carriageway. Each incoming sidewalk now also has a precomputed legal route to both sidewalks of
+  every reachable road arm, so exact destination-side access cannot stall or reselect a lane
+  across the junction. Road-sidewalk endpoints now coincide with the crosswalk inset, removing the
+  visual pass-and-backtrack discontinuity before a crossing. Adjacent-arm turns share the compiled
+  road surface's sampled corner-rounding policy instead of walking through a sharp asphalt miter.
+  Incremental lane updates rebuild connectors at both ends of every incident arm and invalidate
+  active agents across that same closure, so no current route can target an orphaned lane ID. See
+  [`roads.md`](roads.md).
 - Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
   and adult female archetypes. The bake path selects the explicit walk action from the source
   `.blend`, normalizes the rest mesh to `1.8 m`, preserves outfit color through vertex colors, and
   keeps the renderer on the existing GPU VAT MultiMesh path instead of per-agent skeleton playback.
+  Walker MultiMeshes now use the same centralized dynamic shadow-caster policy as vehicles.
   See [`asset_editor.md`](asset_editor.md).
 - Terrain/water streaming now smooths remaining activation spikes by keeping speculative prewarm
   local to the resident halo, deferring LOD/prewarm work when earlier render stages have already
@@ -91,9 +99,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   resources by LOD/topology and prewarm the regular full-grid variants during load, regular
   terrain mesh variants are prewarmed from the active world layout, terrain/water patch
   nodes/materials/images/textures are pooled before first visible activation, Rust asynchronously
-  prepares terrain/water non-mesh patch payloads for residency and resident dirty uploads, and perf
-  summaries include viewport, draw-call, primitive, memory, vsync, FPS-cap, and resource-pool
-  stats. See [`terrain.md`](terrain.md).
+  prepares terrain/water non-mesh patch payloads for residency and resident dirty uploads, and
+  ready residency work can now burst up to `12` terrain plus `12` water patches per frame under
+  separate `4 ms` safety budgets instead of being forced through a two-patch drain. Water mesh
+  publication has matching bounded apply headroom, while perf summaries include the active
+  residency limits/budgets plus viewport, draw-call, primitive, memory, vsync, FPS-cap, and
+  resource-pool stats. See [`terrain.md`](terrain.md).
 - Refined terrain payload preparation no longer performs road clipping, building-site grading, or
   CDT input construction while holding the central simulation mutex. A perf capture exposed a
   `16.7 s` terrain-input lock hold that stopped simulation ticks, camera handling, and log output
@@ -107,10 +118,21 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   [`earthworks.md`](earthworks.md).
 - Terrain/water presentation now has a documented runtime contract: terrain and building-site
   grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
-  detail fade, water uses the tuned depth/Fresnel/foam/normal material path, and scene lighting /
-  shadow policy is centralized through the Godot rendering bridge. The `run.sh` debug launch flags
-  and terrain/water/building visual modes are now listed in [`reference.md`](reference.md), while
-  the rendering invariants live in [`terrain.md`](terrain.md).
+  detail fade, water uses a dark Baltic-blue depth palette with less terrain bleed and restrained
+  downward-view sky reflection through a tuned Fresnel/foam/normal material path. Grazing views
+  receive a smooth sky response that does not expose procedural normal cells, and the sun
+  reflection uses a conservative softened shoulder around its bright core; fine ripple detail is
+  deferred until it can use a seamless mipmapped normal texture. Scene lighting / shadow policy is
+  centralized through the Godot rendering bridge. Gameplay and WorldEditor now
+  share a continuous procedural hemisphere sky with no literal horizon seam and a sun driven by
+  that same directional light. A static 2K equirectangular cloud source is reduced to a restrained
+  half-resolution cloud cover in the sky shader; its baked lower hemisphere is excluded and its
+  sun opening is aligned to the shared directional sun. Gameplay now exposes the renderer's full
+  normal-height `8 km` terrain range through a `9 km` camera far plane, then fades all world
+  geometry into the sky before the cull boundary; the existing desired/resident/prewarm patch bands
+  remain behind that fade. The `run.sh` debug launch flags and terrain/water/building visual modes
+  are now listed in [`reference.md`](reference.md), while the rendering invariants live in
+  [`terrain.md`](terrain.md).
 - Building-site earthworks now keep the derived required support footprint flat, reject placement
   when the surrounding terrain/road cannot tie in within the deterministic apron envelope, and
   derive sample-only apron guides from the actual support edges, so site grading cannot add hard
@@ -127,8 +149,21 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   extensions re-solve the previous terminal edge plus the new edge as one corridor, so building in
   pieces and one-stroke placement share the same vertical validity. Placement preview and commit
   now also dry-run the local surface compile so degenerate tight bends are rejected with a visible
-  reason instead of landing as missing roadbed. Road geometry dumps now include compact cut/fill
-  summaries. See [`roads.md`](roads.md).
+  reason instead of landing as missing roadbed. Grounded `Standard` roadbeds that touch authored
+  water are now rejected in hover preview, exact preview, live commit, and edge-class editing;
+  explicit `Bridge` spans remain legal. Road-locked terrain payload queries now preserve the same
+  safety pad as grading-envelope patch selection, preventing source-less terrain holes where a
+  bridge approach returns to grounded road. Degree-two pass-through bridge/road handoffs now retain
+  the preview-validated vertical profile and share one exact endpoint cross-section, removing the
+  post-commit bump and narrow transverse cap. A continuation from either end of a degree-one
+  elevated bridge terminal down to source terrain now remains a structural bridge ramp across its
+  full approach, rather than becoming `Standard` earthwork that raises the terrain to meet the
+  deck. Ground-contact bridge-ramp sections now join the adjacent node / standard-road terrain
+  cutout with source-owned abutment boundaries, preventing coplanar terrain from z-fighting through
+  connected bridge landings without clipping elevated midspans. Padded terrain-CDT queries now
+  discard margin-only road loops whose patch-clamped bounds collapse to a line, preventing a bridge
+  landing from invalidating and hiding an adjacent terrain patch. Road geometry dumps now include
+  compact cut/fill summaries. See [`roads.md`](roads.md).
 - Corrected road-speed units so the current urban road presets use `50 km/h` as `13.89 m/s`,
   and capped car movement through junction connector lanes at `6 m/s`. See
   [`reference.md`](reference.md).
@@ -366,10 +401,14 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   tunnel portals still stamp. Road-touched terrain CDT diagnostics now expose source
   samples omitted to widen over-steep cut / fill tie-ins, and `ROAD-03` keeps ordinary grounded
   `Standard` seams on the terrain path with `RoadSurfaceSystem` owned grade-limited guide samples
-  around the final unioned road-owned footprint instead of retaining-wall teeth. Convex single-loop
-  footprints may constrain their guide rails; concave or multi-loop junction footprints stay
-  sample-only so grading constraints cannot cross the roadbed. Synthetic DEM validation still covers
-  structural retaining-wall classification while preserving exact road seam constraints.
+  around the final unioned road-owned footprint instead of retaining-wall teeth. Bridge abutments
+  now retain the terrain material for emitted grade-compliant faces even when one nearby source
+  sample must be omitted, rather than promoting the whole span boundary into triangular wall fans;
+  actual over-budget bridge faces and portal-required tunnel sources retain explicit wall output.
+  Convex single-loop footprints may constrain their guide rails; concave or multi-loop junction
+  footprints stay sample-only so grading constraints cannot cross the roadbed. Synthetic DEM
+  validation still covers structural retaining-wall classification while preserving exact road seam
+  constraints.
   Production road-surface authored DEM coverage now also validates supportive spans, steep
   along-slope and extreme cross-slope spans, raised standard spans, raised terminals and bends near
   authored ridge / valley terrain, raised multiway junctions on flat and steep authored terrain,
@@ -412,12 +451,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - The current `Lake Fill` / `Open Water` workflow is now treated as the shipped water-authoring baseline; richer river-path or hydrology ownership is optional future work rather than a required next milestone. See [`terrain.md`](terrain.md).
 - Reworked `WorldEditor` surface fills into a two-phase preview workflow: click once to seed a transient basin or open-water preview, adjust `Surface +m`, then use the dedicated `OK` / `Cancel` flow to confirm or dismiss it. Unconfirmed preview state is runtime-only and never serialized into `WorldDefinition`, and terrain sculpting now rebakes authored water so previewed/committed water reacts to basin changes. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
 - Terrain rendering now adds procedural hillshade directly from the live heightmap in both gameplay and WorldEditor, so imported DEM worlds and hand-sculpted worlds get better relief readability without any separate hillshade asset pipeline. See [`terrain.md`](terrain.md).
-- Terrain and water rendering now use the first render-only realism pass: slope-aware terrain coloring, shoreline-aware terrain tinting, macro terrain breakup, depth-aware water color, fresnel-style water highlights, and mild procedural surface variation, all without introducing authored material data or external texture requirements. See [`terrain.md`](terrain.md).
+- Terrain and water rendering now use the first render-only realism pass: slope-aware terrain coloring, shoreline-aware terrain tinting, macro terrain breakup, depth-aware water color, fresnel-style water highlights, and mild aperiodic procedural surface variation that does not expose repeating wave bands from high camera views, all without introducing authored material data or external texture requirements. See [`terrain.md`](terrain.md).
 - Terrain coloring now follows a surface-classification-first and absolute-height-second model, so blank worlds and imported DEM worlds no longer depend mainly on one global elevation ramp for their palette. See [`terrain.md`](terrain.md).
 - Added an offline DEM-to-`WorldDefinition` importer in `tools/import_dem_world_definition.py`, validated against the Kuopio `324 km²` Maanmittauslaitos `Korkeusmalli 2 m` tiles under `maps/raw/Kuopio/324km2/`, producing a ready-to-open authored world asset at `maps/processed/Kuopio/kuopio_324km2_10m.sqlite`. See [`terrain.md`](terrain.md).
 - Water shoreline rendering on the existing `10 m` grid now derives its visible coast from the linearly interpolated live water field instead of whole-cell shoreline masks, giving contour-style diagonal coastlines and channels without a denser authored map. See [`terrain.md`](terrain.md).
 - Terrain rendering on the existing coarse authored grid now also includes render-only cliff breakline / cliff band treatment derived from the live terrain field, improving steep cuts and man-made cliffs without changing authored world data or forcing a denser map. See [`terrain.md`](terrain.md).
-- Terrain rendering now adds a render-only terrain-border skirt derived from the live terrain edge, with a side wall, bottom cap, and contour continuation down the cut surface so the world reads as a visible slice instead of a paper-thin plane. See [`terrain.md`](terrain.md).
+- Terrain rendering now adds a render-only terrain-border skirt derived from the live terrain edge, with a side wall, bottom cap, contour continuation, irregular earth strata, restrained surface relief, and a shallow topsoil lip so the world reads as a visible slice instead of a paper-thin plane. See [`terrain.md`](terrain.md).
 - Water rendering now also adds a render-only edge curtain where water reaches the map boundary, so outside views do not see straight through to the submerged terrain plane at the border. See [`terrain.md`](terrain.md).
 - `TERRAIN-01` is now live: terrain and water rendering no longer use one whole-world mesh plus one whole-map dense runtime upload. Both renderers now consume chunk-local patch snapshots aligned to the terrain patch grid, terrain/water roots now own per-patch child meshes instead of a single mesh boundary, dirty patch uploads stay local, and the old whole-map Godot render bridge methods were removed from the steady-state render path. This makes the `10 m` versus `5 m` terrain-density decision measurable on the actual large-world render boundary instead of on the old overlay-era compatibility path. See [`terrain.md`](terrain.md).
 - Earthworks cleanup note: the old whole-map terrain render boundary is no longer the active

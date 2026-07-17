@@ -5,6 +5,8 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 
+const BRIDGE_ABUTMENT_CONTACT_CLEARANCE_M: f32 = 1.0;
+
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn node_piece_uses_earthworks(
         &self,
@@ -57,11 +59,86 @@ impl RoadSurfaceSystem {
 
         match edge.class {
             EdgeClass::Standard => vec![(start_index, end_index)],
-            EdgeClass::Bridge => Vec::new(),
+            EdgeClass::Bridge => self.bridge_endpoint_abutment_section_ranges(
+                sections,
+                start_index,
+                end_index,
+                terrain,
+            ),
             EdgeClass::Tunnel => {
                 self.tunnel_visible_section_ranges(sections, start_index, end_index, terrain)
             }
         }
+    }
+
+    fn bridge_endpoint_abutment_section_ranges(
+        &self,
+        sections: &[RoadSurfaceSection],
+        start_index: usize,
+        end_index: usize,
+        terrain: &TerrainSystem,
+    ) -> Vec<(usize, usize)> {
+        if end_index <= start_index {
+            return Vec::new();
+        }
+
+        let mut ranges = Vec::new();
+        if self.bridge_section_contacts_terrain(&sections[start_index], terrain) {
+            let mut contact_end = start_index;
+            while contact_end < end_index
+                && self.bridge_section_contacts_terrain(&sections[contact_end + 1], terrain)
+            {
+                contact_end += 1;
+            }
+            let transition_end = (contact_end + 1).min(end_index);
+            if transition_end > start_index {
+                ranges.push((start_index, transition_end));
+            }
+        }
+
+        if self.bridge_section_contacts_terrain(&sections[end_index], terrain) {
+            let mut contact_start = end_index;
+            while contact_start > start_index
+                && self.bridge_section_contacts_terrain(&sections[contact_start - 1], terrain)
+            {
+                contact_start -= 1;
+            }
+            let transition_start = contact_start.saturating_sub(1).max(start_index);
+            if end_index > transition_start {
+                if let Some(last) = ranges.last_mut() {
+                    if transition_start <= last.1 {
+                        last.1 = end_index;
+                    } else {
+                        ranges.push((transition_start, end_index));
+                    }
+                } else {
+                    ranges.push((transition_start, end_index));
+                }
+            }
+        }
+
+        ranges
+    }
+
+    /// Returns whether any paved boundary of a bridge section reaches its terrain contact zone.
+    pub(in crate::simulation::network::surface) fn bridge_section_contacts_terrain(
+        &self,
+        section: &RoadSurfaceSection,
+        terrain: &TerrainSystem,
+    ) -> bool {
+        section.bands.iter().any(|band| {
+            [
+                (band.lateral_start_m, band.height_start_m),
+                (band.lateral_end_m, band.height_end_m),
+            ]
+            .into_iter()
+            .any(|(lateral_m, height_m)| {
+                let point = Self::section_boundary_world_point_static(section, lateral_m, height_m);
+                let terrain_height_m = terrain.sample_height_world(point.x as f32, point.z as f32)
+                    * crate::config::HEIGHT_SCALE;
+                point.y as f32 - terrain_height_m <= BRIDGE_ABUTMENT_CONTACT_CLEARANCE_M
+            })
+        })
     }
 
     fn corridor_index_range_for_edge(
@@ -76,8 +153,9 @@ impl RoadSurfaceSystem {
         }
 
         // Tunnel portals are structural endpoint regions; trimming them by the ordinary road-width
-        // handoff can erase portals or collapse short spans into one full-length stamp.
-        if edge.class != EdgeClass::Standard {
+        // handoff can erase portals or collapse short spans into one full-length stamp. Bridge
+        // abutments do use the visible handoff because the adjacent node owns the remaining cutout.
+        if edge.class == EdgeClass::Tunnel {
             return Some((0, sections.len().saturating_sub(1)));
         }
 

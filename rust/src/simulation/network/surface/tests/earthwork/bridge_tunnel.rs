@@ -64,7 +64,14 @@ fn bridge_ramp_earthworks_do_not_raise_elevated_terminal_terrain() {
         .get(&edge_idx)
         .expect("bridge ramp span should compile");
 
-    assert!(span_piece.span_earthwork_support_regions.is_empty());
+    assert!(
+        !span_piece.span_earthwork_support_regions.is_empty(),
+        "the grounded end of a bridge ramp must own a terrain-clipped abutment"
+    );
+    assert!(
+        !span_piece.terrain_clip_boundary_loops.is_empty(),
+        "the bridge abutment must remove coplanar terrain beneath the deck"
+    );
     assert!(span_piece.render_earthwork_faces.is_empty());
     for (x, expected) in [(-48.0, 0.0), (0.0, 0.0), (48.0, 0.0)] {
         let visual_height =

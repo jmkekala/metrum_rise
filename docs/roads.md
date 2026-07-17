@@ -34,7 +34,8 @@ The roadbed rewrite is shipped for the current surface-road scope:
   constrain its guide rails, while holed, concave, or multi-loop footprint sets stay sample-only so
   guide rails cannot cross the final roadbed
 - road-locked terrain coverage follows each grounded footprint's required tie-in envelope; a large
-  cut / fill envelope on one road must not widen unrelated road patches
+  cut / fill envelope on one road must not widen unrelated road patches, and clip-source queries
+  include the same render/cell safety pad used to select grading-ray boundary patches
 - ordinary grounded-road tie-ins do not emit retaining-wall mesh as a visual cleanup path
 - player road bulldoze is a queued `SimCore` mutation: Godot captures an immutable target from the
   road spatial index, the simulation thread verifies and soft-deletes that exact edge, removes
@@ -118,12 +119,26 @@ One authoritative crossing record drives both pedestrian routing and zebra-marki
 - the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
   segment stored by the marking
 - routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
-  mouth-to-mouth chords through the junction carriageway
+  mouth-to-mouth chords through the junction carriageway; their centerlines use the same sampled
+  circular-arc / bounded-fillet policy as the compiled rounded sidewalk side joins, with straight
+  sidewalk approaches between the node mouth and crosswalk inset
+- every incoming sidewalk mouth has one precomputed route to each reachable outbound sidewalk
+  mouth; ordinary edge routing selects the shortest route to an arm, while exact building access
+  can select either sidewalk without falling back to a side-to-side lane reselection
+- physical road-sidewalk lanes terminate at the configured crosswalk inset, exactly matching the
+  first and last points of their junction connectors, so walkers cannot pass a zebra and backtrack
+- a same-side reversal uses an explicit stationary connector at the mouth instead of crossing the
+  road or reattaching farther along the reverse sidewalk
 - degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
   junctions may expose one crossing per eligible arm
 
 Crossing availability and geometry must not be independently reconstructed by the renderer,
 selection queries, or agent movement.
+
+Incremental physical-lane rebuilds include every road arm incident to the original dirty
+endpoints. All connector lanes at both ends of every rebuilt arm are replaced in the same update,
+and active agents on that complete rebuild closure are invalidated before the old lane IDs become
+orphans. A connector must never survive while targeting an orphaned physical lane.
 
 ## Visual Pieces
 
@@ -202,6 +217,12 @@ not visual padding.
 Edge span sampling, visible-surface section queries, and grounded `Standard` road earthwork ranges
 must consume the same node-mouth ownership policy. Profile blending may use a shorter range than
 ownership only for the explicit sparse grounded `Standard` `Bend` hard-pin case described below.
+
+Degree-two `PassThrough` nodes own no node platform and therefore never run the `Bend` /
+`JunctionN` endpoint-profile rewrite. Their incident spans preserve the already validated authored
+vertical profiles. At a shallow alignment change, both spans use one deterministic bisected
+cross-section axis at the shared endpoint, so `Bridge` / `Standard` and same-class handoffs meet
+without a transverse cap, terrain slit, or overlapping roadbed.
 
 Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
 and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a
@@ -310,11 +331,16 @@ Road-touched terrain patches obey this contract:
 - ordinary `Standard` span and node seam sources stay in the terrain bucket even when the authored
   terrain is steep; retaining-wall output is reserved for explicit structural bridge / tunnel /
   future retaining sources
+- an omitted over-steep source sample beside a bridge abutment does not promote every face sharing
+  that span boundary to retaining material; bridge faces are classified from their emitted slope,
+  while a tunnel portal may still require source-wide retaining output
 - no shader mask, water plane, closure carpet, guard strip, or seam strip may replace missing
   topology
 
 `Bridge` and `Tunnel` edges do not flatten or clip ordinary midspan terrain. Their terrain support
-is limited to class-owned abutment or portal regions.
+is limited to class-owned abutment or portal regions. A bridge ramp within the ground-contact
+clearance zone exports a source-owned terrain cutout only through its abutment and adjacent node
+handoff; it does not stamp terrain fill, and the elevated bridge run remains outside terrain CDT.
 
 Structural earthwork stamping remains for explicit bridge, tunnel, retaining, and future
 engineered-ground cases. Its current acceleration is chunk-local: prepared triangles are bucketed
@@ -343,11 +369,27 @@ the remaining local cut/fill around that solved roadbed.
 When a road is extended from a degree-1 standard-road terminal, preview and commit solve the
 existing terminal edge plus the new edge as one vertical corridor; the shared terminal becomes an
 internal profile point, while the far old endpoint, far new endpoint, and true junctions stay pinned.
+When the same edit runs from a degree-1 elevated bridge terminal down to source terrain, the dense
+profile remains `Bridge` and forms a structural ramp across the full approach. It may enter the
+ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
+and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
 
 Placement validity also includes local road-surface compileability. A preview or commit that would
 fail to compile the new span or its required endpoint `Terminal` / `Bend` / `JunctionN` pieces is
 rejected before it reaches the live graph; tight switchbacks are allowed only when the compiled
 surface topology can actually represent them.
+
+Authored water is part of the same placement contract. A `Standard` candidate is rejected with the
+stable `water_requires_bridge` reason when its complete roadbed footprint overlaps visible baseline
+water. The cheap hover query, exact async preview, live simulation-thread commit, and conversion of
+an existing edge to `Standard` all apply the same rule. `Bridge` spans remain legal over water;
+`Tunnel` spans remain legal below it.
+
+The query reuses the sparse baseline-water state and samples bilinear depth on a deterministic
+quarter-cell lattice across the roadbed. It allocates no per query and introduces no additional
+spatial index. Its bounded cost is
+`O(ceil(length / step) * ceil(width / step))`, with the sample step clamped to `0.5..=3.0 m` and
+early exit on the first visible-water sample.
 
 Visible-world queries use this precedence:
 

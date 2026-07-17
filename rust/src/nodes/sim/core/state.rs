@@ -198,9 +198,14 @@ pub struct SimCore {
 }
 
 impl SimCore {
-    pub(crate) fn bump_road_tool_surface_generation(&mut self) {
+    /// Invalidates immutable road-tool query snapshots without forcing terrain payload rebuilds.
+    pub(crate) fn bump_road_tool_query_generation(&mut self) {
         self.road_tool_surface_generation =
             self.road_tool_surface_generation.wrapping_add(1).max(1);
+    }
+
+    pub(crate) fn bump_road_tool_surface_generation(&mut self) {
+        self.bump_road_tool_query_generation();
         self.bump_global_terrain_payload_generation();
     }
 

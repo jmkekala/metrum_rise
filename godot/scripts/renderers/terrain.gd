@@ -74,9 +74,14 @@ const TERRAIN_BORDER_TOP_COLOR := Color(0.42, 0.40, 0.34)
 const TERRAIN_BORDER_MID_COLOR := Color(0.33, 0.31, 0.27)
 const TERRAIN_BORDER_DEEP_COLOR := Color(0.24, 0.22, 0.20)
 const TERRAIN_BORDER_RIM_COLOR := Color(0.65, 0.63, 0.54)
+const TERRAIN_BORDER_TOPSOIL_COLOR := Color(0.17, 0.15, 0.11)
 const TERRAIN_BORDER_BOTTOM_COLOR := Color(0.18, 0.17, 0.15)
 const TERRAIN_BORDER_BAND_INTERVAL_M := 12.0
 const TERRAIN_BORDER_BAND_STRENGTH := 0.08
+const TERRAIN_BORDER_STRATA_WARP_M := 3.5
+const TERRAIN_BORDER_TOPSOIL_DEPTH_M := 3.0
+const TERRAIN_BORDER_TOPSOIL_STRENGTH := 0.74
+const TERRAIN_BORDER_NORMAL_STRENGTH := 0.09
 const TERRAIN_BORDER_CONTOUR_MINOR_COLOR := Color(0.13, 0.19, 0.16)
 const TERRAIN_BORDER_CONTOUR_MAJOR_COLOR := Color(0.10, 0.16, 0.14)
 const TERRAIN_BORDER_CONTOUR_MINOR_STRENGTH := 0.14
@@ -89,11 +94,11 @@ const TERRAIN_DEBUG_LOG_INTERVAL_S := 0.5
 const PATCH_RESIDENCY_HYSTERESIS_PATCHES := 2
 const PATCH_RESIDENCY_MUTATION_MAX_PER_FRAME := 256
 const PATCH_RESIDENCY_ADD_ATTEMPT_MAX_PER_FRAME := 64
-const PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME := 2
-const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 1.5
+const PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME := 12
+const PATCH_RESIDENCY_MUTATION_BUDGET_MS := 4.0
 const PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const PATCH_RESOURCE_POOL_MAX := 96
-const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 16
+const PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 32
 const REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 2
 const PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME := 64
 const PATCH_PREWARM_MAX_PER_FRAME := 4
@@ -389,6 +394,8 @@ func _process(delta: float) -> void:
 			"residency_remove_count": float(_terrain_residency_last_remove_count),
 			"residency_add_pending_count": float(_terrain_residency_last_add_pending_count),
 			"residency_remove_pending_count": float(_terrain_residency_last_remove_pending_count),
+			"residency_add_limit_count": float(PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME),
+			"residency_budget_ms": PATCH_RESIDENCY_MUTATION_BUDGET_MS,
 			"resource_pool_hit_count": float(_terrain_resource_pool_hit_count),
 			"resource_pool_miss_count": float(_terrain_resource_pool_miss_count),
 			"resource_pool_release_count": float(_terrain_resource_pool_release_count),
@@ -431,6 +438,14 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 
 func get_resident_patch_revision() -> int:
 	return _terrain_resident_patch_revision
+
+func get_visibility_cull_far_m(camera: Camera3D) -> float:
+	if camera == null:
+		return 0.0
+	return minf(camera.far, _terrain_patch_cull_far_m(camera))
+
+func get_render_patch_span_m() -> float:
+	return patch_span_m
 
 func get_patch_height_texture(key: Vector2i) -> Texture2D:
 	if not patches.has(key):
@@ -647,7 +662,7 @@ func _desired_patch_bounds() -> Dictionary:
 	return _camera_patch_bounds(camera)
 
 func _camera_patch_bounds(camera: Camera3D) -> Dictionary:
-	var cull_far := minf(camera.far, _terrain_patch_cull_far_m(camera))
+	var cull_far := get_visibility_cull_far_m(camera)
 	_terrain_debug_last_cull_far_m = cull_far
 	var viewport_size := get_viewport().get_visible_rect().size
 	var corners := [
@@ -2800,8 +2815,13 @@ func _ensure_border_visuals() -> void:
 		border_skirt_material.set_shader_parameter("mid_color", TERRAIN_BORDER_MID_COLOR)
 		border_skirt_material.set_shader_parameter("deep_color", TERRAIN_BORDER_DEEP_COLOR)
 		border_skirt_material.set_shader_parameter("rim_color", TERRAIN_BORDER_RIM_COLOR)
+		border_skirt_material.set_shader_parameter("topsoil_color", TERRAIN_BORDER_TOPSOIL_COLOR)
 		border_skirt_material.set_shader_parameter("band_interval_m", TERRAIN_BORDER_BAND_INTERVAL_M)
 		border_skirt_material.set_shader_parameter("band_strength", TERRAIN_BORDER_BAND_STRENGTH)
+		border_skirt_material.set_shader_parameter("strata_warp_m", TERRAIN_BORDER_STRATA_WARP_M)
+		border_skirt_material.set_shader_parameter("topsoil_depth_m", TERRAIN_BORDER_TOPSOIL_DEPTH_M)
+		border_skirt_material.set_shader_parameter("topsoil_strength", TERRAIN_BORDER_TOPSOIL_STRENGTH)
+		border_skirt_material.set_shader_parameter("normal_strength", TERRAIN_BORDER_NORMAL_STRENGTH)
 		border_skirt_material.set_shader_parameter("contour_minor_interval_m", CONTOUR_MINOR_INTERVAL_M)
 		border_skirt_material.set_shader_parameter("contour_major_interval_m", CONTOUR_MAJOR_INTERVAL_M)
 		border_skirt_material.set_shader_parameter("contour_minor_color", TERRAIN_BORDER_CONTOUR_MINOR_COLOR)
@@ -2842,6 +2862,7 @@ func _rebuild_border_skirt() -> void:
 		_add_skirt_quad(surface_tool, top_a, top_b, bottom_b, bottom_a, perimeter_u, perimeter_u + segment_length)
 		perimeter_u += segment_length
 
+	surface_tool.generate_tangents()
 	border_skirt_instance.mesh = surface_tool.commit()
 	border_skirt_instance.material_override = border_skirt_material
 	var bottom_cap := PlaneMesh.new()

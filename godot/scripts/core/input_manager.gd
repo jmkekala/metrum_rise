@@ -28,6 +28,9 @@ enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, MOVE, AGENT, SCULPT, CUL_DE_S
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const SAVES_DIR := "user://saves"
+const WORLD_CAMERA_NEAR_CLIP_M := 0.5
+const WORLD_CAMERA_MIN_FAR_M := 9000.0
+const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
 const WORLD_CAMERA_PIVOT_CLEARANCE_M := 0.25
 const WORLD_CAMERA_CLEARANCE_M := 1.5
 
@@ -85,6 +88,12 @@ func _ready():
 func _configure_world_camera_policy() -> void:
 	var camera = get_parent().find_child("CameraNode", true, false)
 	var debug_under_terrain: bool = _debug_camera_can_go_under_terrain()
+	if camera and camera.has_method("set_clip_policy"):
+		camera.set_clip_policy(
+			WORLD_CAMERA_NEAR_CLIP_M,
+			WORLD_CAMERA_MIN_FAR_M,
+			WORLD_CAMERA_FAR_MARGIN_M
+		)
 	if camera and camera.has_method("set_terrain_clearance_policy"):
 		camera.set_terrain_clearance_policy(
 			not debug_under_terrain,

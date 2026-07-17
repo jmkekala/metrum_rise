@@ -13,15 +13,17 @@ const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
-const SHALLOW_WATER_COLOR := Color(0.31, 0.58, 0.64, 0.46)
-const DEEP_WATER_COLOR := Color(0.03, 0.16, 0.31, 0.84)
+const SHALLOW_WATER_COLOR := Color(0.10, 0.28, 0.40, 0.62)
+const DEEP_WATER_COLOR := Color(0.018, 0.09, 0.18, 0.90)
 const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
-const SKY_REFLECTION_COLOR := Color(0.62, 0.82, 0.95, 1.0)
-const WATER_FRESNEL_STRENGTH := 0.42
-const WATER_FRESNEL_POWER := 3.2
+const SKY_REFLECTION_COLOR := Color(0.38, 0.56, 0.72, 1.0)
+const WATER_DEEP_COLOR_DEPTH_M := 3.5
+const WATER_FRESNEL_STRENGTH := 0.46
+const WATER_FRESNEL_POWER := 2.8
 const WATER_WAVE_COLOR_STRENGTH := 0.052
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.024
 const WATER_WAVE_NORMAL_STRENGTH := 0.42
+const WATER_SUN_GLITTER_STRENGTH := 0.38
 const WATER_REFRACTION_STRENGTH := 0.010
 const WATER_REFRACTION_MIX := 0.13
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
@@ -32,8 +34,8 @@ const WATER_PATCH_EXTRA_CULL_MARGIN_M := 4096.0
 const WATER_DEBUG_LOG_INTERVAL_S := 0.5
 const WATER_PATCH_MUTATION_MAX_PER_FRAME := 256
 const WATER_PATCH_ADD_ATTEMPT_MAX_PER_FRAME := 64
-const WATER_PATCH_ADD_APPLY_MAX_PER_FRAME := 2
-const WATER_PATCH_MUTATION_BUDGET_MS := 1.5
+const WATER_PATCH_ADD_APPLY_MAX_PER_FRAME := 12
+const WATER_PATCH_MUTATION_BUDGET_MS := 4.0
 const WATER_PATCH_RESOURCE_POOL_PREWARM_COUNT := 64
 const WATER_PATCH_RESOURCE_POOL_MAX := 96
 const WATER_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME := 64
@@ -59,12 +61,12 @@ const WATER_PATCH_MESH_POLL_BACKLOG_THRESHOLD := 16
 const WATER_PATCH_MESH_READY_BACKLOG_BOOST_THRESHOLD := 32
 const WATER_PATCH_MESH_APPLY_QUEUE_SOFT_LIMIT := 8
 const WATER_PATCH_MESH_APPLY_QUEUE_HARD_LIMIT := 16
-const WATER_PATCH_MESH_APPLY_MAX_PER_FRAME := 2
-const WATER_PATCH_MESH_APPLY_HEADROOM_MAX_PER_FRAME := 3
-const WATER_PATCH_MESH_APPLY_BUDGET_MS := 1.5
-const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_MS := 2.0
-const WATER_PATCH_MESH_APPLY_BUDGET_BYTES := 700000
-const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_BYTES := 1100000
+const WATER_PATCH_MESH_APPLY_MAX_PER_FRAME := 4
+const WATER_PATCH_MESH_APPLY_HEADROOM_MAX_PER_FRAME := 6
+const WATER_PATCH_MESH_APPLY_BUDGET_MS := 2.5
+const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_MS := 3.5
+const WATER_PATCH_MESH_APPLY_BUDGET_BYTES := 1400000
+const WATER_PATCH_MESH_APPLY_HEADROOM_BUDGET_BYTES := 2200000
 const WATER_PATCH_MESH_APPLY_QUEUE_SOFT_BYTES := 1600000
 const WATER_PATCH_MESH_APPLY_QUEUE_HARD_BYTES := 3200000
 const WATER_PATCH_MESH_APPLY_HEADROOM_FRAME_MS := 5.0
@@ -289,6 +291,8 @@ func _process(delta: float) -> void:
 			"residency_remove_count": float(_water_residency_last_remove_count),
 			"residency_add_pending_count": float(_water_residency_last_add_pending_count),
 			"residency_remove_pending_count": float(_water_residency_last_remove_pending_count),
+			"residency_add_limit_count": float(WATER_PATCH_ADD_APPLY_MAX_PER_FRAME),
+			"residency_budget_ms": WATER_PATCH_MUTATION_BUDGET_MS,
 			"resource_pool_hit_count": float(_water_resource_pool_hit_count),
 			"resource_pool_miss_count": float(_water_resource_pool_miss_count),
 			"resource_pool_release_count": float(_water_resource_pool_release_count),
@@ -559,11 +563,13 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("deep_water_color", DEEP_WATER_COLOR)
 	material.set_shader_parameter("foam_color", FOAM_COLOR)
 	material.set_shader_parameter("sky_reflection_color", SKY_REFLECTION_COLOR)
+	material.set_shader_parameter("water_deep_color_depth_m", WATER_DEEP_COLOR_DEPTH_M)
 	material.set_shader_parameter("water_fresnel_strength", WATER_FRESNEL_STRENGTH)
 	material.set_shader_parameter("water_fresnel_power", WATER_FRESNEL_POWER)
 	material.set_shader_parameter("water_wave_color_strength", WATER_WAVE_COLOR_STRENGTH)
 	material.set_shader_parameter("water_wave_roughness_strength", WATER_WAVE_ROUGHNESS_STRENGTH)
 	material.set_shader_parameter("water_wave_normal_strength", WATER_WAVE_NORMAL_STRENGTH)
+	material.set_shader_parameter("water_sun_glitter_strength", WATER_SUN_GLITTER_STRENGTH)
 	material.set_shader_parameter("water_refraction_strength", WATER_REFRACTION_STRENGTH)
 	material.set_shader_parameter("water_refraction_mix", WATER_REFRACTION_MIX)
 	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())

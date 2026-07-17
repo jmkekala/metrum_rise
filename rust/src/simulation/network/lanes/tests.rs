@@ -276,7 +276,7 @@ fn build_pedestrian_junction(
 
 #[test]
 fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
-    let (_graph, lanes, center, edge_ids) = build_pedestrian_junction(&[
+    let (graph, lanes, center, edge_ids) = build_pedestrian_junction(&[
         Vector3::new(100.0, 0.0, 0.0),
         Vector3::new(0.0, 0.0, 100.0),
         Vector3::new(-100.0, 0.0, 0.0),
@@ -289,7 +289,7 @@ fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
         .filter(|lane| lane.lane_type == LaneType::Foot)
         .collect::<Vec<_>>();
 
-    for edge_id in edge_ids {
+    for &edge_id in &edge_ids {
         let crossings = pedestrian_connections
             .iter()
             .copied()
@@ -325,21 +325,54 @@ fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
         }
     }
 
-    let minimum_sidewalk_radius = 4.2;
+    for &edge_id in &edge_ids {
+        let edge = graph.edge(edge_id);
+        for &lane_id in &lanes.edge_lanes[&edge_id] {
+            let lane = &lanes.lanes[lane_id];
+            let arrives_at_center =
+                lane.lane_type == LaneType::Foot && lane.is_fwd == (edge.end_node == center);
+            if !arrives_at_center {
+                continue;
+            }
+            let sidewalk_end = *lane.geometry.last().expect("physical sidewalk endpoint");
+            for &connector_id in &lane.next_lanes {
+                let connector = &lanes.lanes[connector_id];
+                assert!(
+                    connector.geometry.first().is_some_and(|connector_start| {
+                        points_approximately_equal(*connector_start, sidewalk_end)
+                    }),
+                    "walker must enter a junction connector at the sidewalk endpoint without passing and returning to the crosswalk"
+                );
+                let target_lane_id = connector.next_lanes[0];
+                let target_start = lanes.lanes[target_lane_id].geometry[0];
+                assert!(
+                    connector.geometry.last().is_some_and(|connector_end| {
+                        points_approximately_equal(*connector_end, target_start)
+                    }),
+                    "pedestrian connector must end exactly at its outbound sidewalk"
+                );
+            }
+        }
+    }
+
+    // A 7 m orthogonal road with 8 m graph clips has its rounded sidewalk centerline
+    // outside 6.5 m. The old three-point miter reached (±4.25, ±4.25), radius 6.01 m,
+    // and produced the visible walk-into-asphalt / 90-degree-turn defect.
+    let minimum_rounded_sidewalk_radius = 6.5;
     for lane in pedestrian_connections
         .iter()
         .copied()
-        .filter(|lane| lane.crosswalk_edge_id.is_none())
+        .filter(|lane| lane.crosswalk_edge_id.is_none() && lane.length > 0.001)
     {
         assert!(
-            lane.geometry.len() >= 3,
-            "non-crossing turns must follow the sidewalk corner, not a mouth-to-mouth chord"
+            lane.geometry.len() >= 9,
+            "non-crossing turns must use the sampled rounded sidewalk, not a three-point miter"
         );
         for segment in lane.geometry.windows(2) {
             assert!(
                 distance_to_segment_xz(Vector3::ZERO, segment[0], segment[1])
-                    >= minimum_sidewalk_radius,
-                "a non-crosswalk pedestrian connector entered the asphalt junction interior"
+                    >= minimum_rounded_sidewalk_radius,
+                "a non-crosswalk pedestrian connector left the rounded sidewalk for the old sharp miter"
             );
         }
     }
@@ -355,7 +388,11 @@ fn acute_pedestrian_corner_falls_back_outside_junction_core() {
     let non_crossing_routes = lanes.node_lanes[&(center as usize)]
         .iter()
         .map(|lane_id| &lanes.lanes[*lane_id])
-        .filter(|lane| lane.lane_type == LaneType::Foot && lane.crosswalk_edge_id.is_none())
+        .filter(|lane| {
+            lane.lane_type == LaneType::Foot
+                && lane.crosswalk_edge_id.is_none()
+                && lane.length > 0.001
+        })
         .collect::<Vec<_>>();
 
     assert!(!non_crossing_routes.is_empty());
@@ -836,6 +873,62 @@ fn test_incremental_rebuild_new_edge_gets_lanes() {
         .count();
     assert_eq!(physical_e1, 6);
     assert!(lanes.edge_lanes.contains_key(&e0));
+}
+
+#[test]
+fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    let south = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
+    let farther_south = graph.add_node(Vector3::new(0.0, 0.0, -200.0), NodeType::Junction);
+    let changed_edge = add_road_edge(&mut graph, center, east);
+    let expanded_edge = add_road_edge(&mut graph, center, south);
+    let preserved_edge = add_road_edge(&mut graph, south, farther_south);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    let old_expanded_lanes = lanes.edge_lanes[&expanded_edge].clone();
+    let preserved_inbound = lanes.edge_lanes[&preserved_edge]
+        .iter()
+        .copied()
+        .find(|&lane_id| {
+            let lane = &lanes.lanes[lane_id];
+            lane.lane_type == LaneType::Foot && !lane.is_fwd && lane.lane_idx == -100
+        })
+        .expect("preserved edge must have an inbound sidewalk lane");
+
+    lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([changed_edge]));
+
+    let current_expanded_lanes = &lanes.edge_lanes[&expanded_edge];
+    assert!(
+        current_expanded_lanes
+            .iter()
+            .all(|lane_id| !old_expanded_lanes.contains(lane_id)),
+        "the incident arm must be part of the physical-lane rebuild closure"
+    );
+    let expanded_target = lanes.lanes[preserved_inbound]
+        .next_lanes
+        .iter()
+        .filter_map(|&connector_id| lanes.lanes[connector_id].next_lanes.first().copied())
+        .find(|&target_lane_id| lanes.lanes[target_lane_id].edge_id == expanded_edge)
+        .expect("far-end connector must still reach the expanded edge");
+    assert!(
+        current_expanded_lanes.contains(&expanded_target),
+        "far-end connector must target the rebuilt physical lane, not its orphan"
+    );
+    let changed_target = lanes.lanes[expanded_target]
+        .next_lanes
+        .iter()
+        .filter_map(|&connector_id| lanes.lanes[connector_id].next_lanes.first().copied())
+        .find(|&target_lane_id| lanes.lanes[target_lane_id].edge_id == changed_edge)
+        .expect("rebuilt sidewalk must continue through the changed junction");
+    assert!(
+        lanes.edge_lanes[&changed_edge].contains(&changed_target),
+        "changed-junction connector must target the current physical lane"
+    );
 }
 
 #[test]

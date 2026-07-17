@@ -21,7 +21,8 @@ pub(in crate::simulation::network::surface) struct EdgeMouthPolicy {
 }
 
 impl RoadSurfaceSystem {
-    pub(in crate::simulation::network::surface) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
+    /// Returns the complete visible roadbed half-width, including curb and sidewalk bands.
+    pub(crate) fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
         Self::visual_profile_half_widths_for_edge(edge).0
     }
 

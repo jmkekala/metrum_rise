@@ -489,6 +489,42 @@ fn terrain_cdt_local_window_input_samples_arbitrary_boundary() {
 }
 
 #[test]
+fn terrain_cdt_local_bounds_skip_margin_only_loop_outside_patch() {
+    let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
+    let patch = TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 5,
+        sample_height: 5,
+        texture_width: 5,
+        texture_height: 5,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: 40.0,
+        world_size_z: 40.0,
+        height_data: vec![0.0; 25],
+    };
+    let road_loop = TerrainCdtRoadLoop::new(
+        123,
+        0,
+        vec![
+            TerrainCdtVertex::new(60.0, 0.0, 10.0),
+            TerrainCdtVertex::new(70.0, 0.0, 10.0),
+            TerrainCdtVertex::new(70.0, 0.0, 20.0),
+            TerrainCdtVertex::new(60.0, 0.0, 20.0),
+        ],
+    );
+
+    assert!(
+        SimulationNode::terrain_cdt_local_sample_bounds(&terrain, &patch, &[road_loop], 2.0)
+            .is_none(),
+        "a loop found only through the query margin must not create a collapsed CDT window"
+    );
+}
+
+#[test]
 fn terrain_cdt_input_adds_grade_limited_guides_for_grounded_standard_roads() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {

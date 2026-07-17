@@ -5,10 +5,11 @@ use std::time::Instant;
 
 use super::state::SimCore;
 use crate::debug_log;
-use crate::nodes::sim::road_tool::RoadGhostSnapIndex;
+use crate::nodes::sim::road_tool::{RoadGhostSnapIndex, validate_road_candidate_against_water};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::water::WaterSystem;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoadPreviewSnapshot {
@@ -25,6 +26,7 @@ pub(crate) struct RoadPreviewWorkerContext {
     terrain: Arc<TerrainSystem>,
     region_graph: Arc<RegionGraph>,
     road_surface: Arc<RoadSurfaceSystem>,
+    water: Arc<WaterSystem>,
     surface_chunk_span_m: f32,
     surface_generation: u64,
 }
@@ -42,6 +44,8 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) terrain: Arc<TerrainSystem>,
     pub(crate) region_graph: Arc<RegionGraph>,
     pub(crate) road_surface: Arc<RoadSurfaceSystem>,
+    /// Immutable authored-water state used by road placement validation.
+    pub(crate) water: Arc<WaterSystem>,
     pub(crate) ghost_snap_index: RoadGhostSnapIndex,
     pub(crate) surface_generation: u64,
 }
@@ -52,6 +56,7 @@ pub(crate) fn road_tool_snapshots_from_core(
     let terrain = Arc::new(core.heightmap.clone());
     let region_graph = Arc::new(core.region_graph.clone());
     let road_surface = Arc::new(core.transit_network.road_surface.clone());
+    let water = Arc::new(core.watermap.clone());
     let surface_chunk_span_m = road_surface.chunk_span_m();
     let surface_generation = core.road_tool_surface_generation;
     let ghost_snap_index = RoadGhostSnapIndex::from_graph(region_graph.as_ref());
@@ -61,6 +66,7 @@ pub(crate) fn road_tool_snapshots_from_core(
             terrain: Arc::clone(&terrain),
             region_graph: Arc::clone(&region_graph),
             road_surface: Arc::clone(&road_surface),
+            water: Arc::clone(&water),
             surface_chunk_span_m,
             surface_generation,
         },
@@ -68,6 +74,7 @@ pub(crate) fn road_tool_snapshots_from_core(
             terrain,
             region_graph,
             road_surface,
+            water,
             ghost_snap_index,
             surface_generation,
         },
@@ -143,6 +150,15 @@ pub(crate) fn compile_road_preview_from_context(
         context.region_graph.as_ref(),
         context.road_surface.as_ref(),
     );
+    preview.validation = validate_road_candidate_against_water(
+        preview.edge_class,
+        &preview.prepared_points,
+        request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+        request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+        context.water.as_ref(),
+        preview.validation,
+    );
+    preview.is_valid = preview.validation.is_valid;
     let generation_matches = request_surface_generation == context.surface_generation;
     if !generation_matches {
         preview.validation.is_valid = false;

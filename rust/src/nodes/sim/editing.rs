@@ -6,6 +6,7 @@ use crate::nodes::sim::core::{
     ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SERVICE_BUILD_COST_PER_LOT_CELL,
     SimCore,
 };
+use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::buildings::allocator::{
     ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
@@ -489,8 +490,11 @@ impl SimCore {
             }
         }
 
-        self.agents
-            .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+        self.agents.invalidate_lane_ids_for_edges(
+            &affected_edges,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.transit_network
             .lane_system
             .rebuild(&mut self.region_graph);
@@ -753,6 +757,26 @@ impl SimCore {
             2 => crate::simulation::network::types::EdgeClass::Tunnel,
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
+        if class == crate::simulation::network::types::EdgeClass::Standard {
+            let edge = self.region_graph.edge(edge_idx);
+            let points = if edge.physical_geometry.len() >= 2 {
+                edge.physical_geometry.as_slice()
+            } else {
+                edge.geometry.as_slice()
+            };
+            let half_width_m = RoadSurfaceSystem::visual_roadbed_half_width_m(edge);
+            if self
+                .watermap
+                .road_corridor_overlaps_visible_water(points, half_width_m)
+            {
+                debug_log!(
+                    "road",
+                    "edge_class_change_rejected edge={} reason=water_requires_bridge",
+                    edge_idx
+                );
+                return;
+            }
+        }
 
         let mut affected_nodes = HashSet::new();
         {
@@ -797,6 +821,14 @@ impl SimCore {
                 &self.heightmap,
                 &self.region_graph,
             );
+        let validation = validate_road_candidate_against_water(
+            prepared_input.class,
+            &prepared_input.points,
+            fwd_lanes_u8,
+            bkw_lanes_u8,
+            &self.watermap,
+            validation,
+        );
         if Self::road_commit_full_validation_debug_enabled() {
             let full_validation_start = Instant::now();
             let new_edge_validation = self
@@ -821,6 +853,14 @@ impl SimCore {
                     new_edge_validation,
                     RoadSurfaceCompileReason::CommitValidator,
                 );
+            let full_validation = validate_road_candidate_against_water(
+                prepared_input.class,
+                &prepared_input.points,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                &self.watermap,
+                full_validation,
+            );
             let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
             if full_validation.is_valid != validation.is_valid
                 || full_validation.invalid_reason != validation.invalid_reason
@@ -1004,8 +1044,11 @@ impl SimCore {
         if self.transit_network.bulk_load {
             self.transit_network.bulk_dirty_edges.insert(edge_idx);
         } else {
-            self.agents
-                .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+            self.agents.invalidate_lane_ids_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
             self.transit_network
                 .lane_system
                 .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
@@ -1102,8 +1145,11 @@ impl SimCore {
                 self.region_graph.edge_mut(edge_idx).physical_length = length;
             }
             self.region_graph.rebuild_intersection_clips();
-            self.agents
-                .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+            self.agents.invalidate_lane_ids_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
             self.transit_network
                 .lane_system
                 .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
@@ -1161,8 +1207,11 @@ impl SimCore {
             .iter()
             .copied()
             .collect();
-        self.agents
-            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.agents.invalidate_lane_ids_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
@@ -1211,8 +1260,11 @@ impl SimCore {
             .iter()
             .copied()
             .collect();
-        self.agents
-            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.agents.invalidate_lane_ids_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
@@ -1242,8 +1294,11 @@ impl SimCore {
             .iter()
             .copied()
             .collect();
-        self.agents
-            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.agents.invalidate_lane_ids_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
@@ -1275,8 +1330,11 @@ impl SimCore {
             .iter()
             .copied()
             .collect();
-        self.agents
-            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.agents.invalidate_lane_ids_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);

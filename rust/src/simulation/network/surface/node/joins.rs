@@ -45,6 +45,7 @@ mod paths;
 
 #[cfg(test)]
 use generation::side_join_band_has_quantized_area;
+pub(crate) use paths::rounded_sidewalk_corner_path_xz;
 
 #[derive(Clone, Copy)]
 struct SideJoinLayer {
