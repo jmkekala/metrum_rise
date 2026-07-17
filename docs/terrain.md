@@ -338,10 +338,17 @@ whole-map render buffers.
 
 Current deterministic rules:
 
-- `terrain.gd` consumes `get_terrain_patch_layout()`, `get_dirty_terrain_patches()`,
-  `get_terrain_patch()`, and `get_terrain_border_loop()`
-- `water.gd` consumes `get_dirty_water_patches()`, `get_water_patch()`, and
+- `terrain.gd` consumes `get_terrain_patch_layout()`, generation-tagged dirty patch states,
+  `request_terrain_patch_payloads()`, `poll_ready_terrain_patch_payloads()`,
+  `acknowledge_terrain_patches()`, and `get_terrain_border_loop()`
+- `water.gd` consumes generation-tagged dirty patch states, `request_water_patch_payloads()`,
+  `poll_ready_water_patch_payloads()`, `acknowledge_water_patches()`, and
   `get_water_border_depths()`
+- dirty acknowledgements clear only the exact uploaded patch/network revision; a mutation between
+  upload and acknowledgement remains dirty, and live terrain brush steps advance touched patch
+  revisions before their asynchronous payloads are requested
+- renderer polling, ownership lookup, layout/border reads, and road-mesh retrieval consume immutable
+  render snapshots or nonblocking job queues rather than waiting on the simulation mutex
 - terrain material shoreline/depth sampling reuses the Water renderer's resident patch depth
   texture binding; it must not request a second terrain-aligned water snapshot or duplicate
   `ImageTexture` upload from GDScript
@@ -459,8 +466,15 @@ Required direction:
 
 Current repository state:
 
-- undo snapshots currently capture visual terrain and water depth snapshots for compatibility with
-  the pre-sparse mutation path
+- road edits retain bounded local graph deltas and rebuild derived road/CDT render caches after
+  restore; attached zoning removal uses an index-stable local parcel journal rather than cloning
+  the zoning system
+- road bulldoze and undo queue their graph/surface/terrain work on the simulation thread; the
+  Godot input path never performs the road-surface, road-mesh, or refined-CDT rebuild synchronously
+- building deletion retains an operation-local inverse journal for touched buildings, sites,
+  agents, households, and freight records rather than cloning complete runtime systems
+- terrain-authoring and water-authoring undo still capture dense visual terrain or baseline-depth
+  snapshots for compatibility with the pre-sparse mutation path
 
 Required direction:
 
@@ -704,6 +718,22 @@ Deterministic terrain-render rules:
 - road earthworks and future engineered-ground clients must continue to invalidate only touched
   terrain chunks; the renderer must reflect that locality instead of reintroducing full-world
   uploads
+- asynchronous terrain payload workers may hold the authoritative simulation lock only while
+  validating a request revision and copying bounded patch-local terrain/site inputs; road clipping,
+  road/site grading, CDT input construction, triangulation, and Godot payload conversion must run
+  after that lock is released
+- terrain payload revisions are patch-local for building-site changes and global only for source
+  terrain or road-surface changes; one physical build per patch/render-step may be in flight, stale
+  results are discarded, and revision churn coalesces into at most one current follow-up build
+- terrain/site height sampling and road-footprint collection must use the existing building and
+  road-surface ownership indices; full-building or full-road scans are not allowed in patch jobs or
+  repeated point queries
+- refined patch publication is atomic across its local CDT windows; one failed window, a failed road
+  clip query, or missing road loops on a road-owned patch suppresses the complete new payload and
+  preserves the renderer's last valid clipped patch
+- engineered ownership travels with the Rust payload, and Rust must reject raw-heightmap payload
+  requests for known road- or building-site-owned patches even if the renderer's patch-membership
+  lookup is stale
 
 Deterministic water-render rules:
 
@@ -1195,9 +1225,11 @@ What is implemented now:
   are prewarmed by active layout, terrain/water patch resources are pooled/prewarmed before first
   visible residency activation, water prewarms shared full-grid `ArrayMesh` variants, and perf
   summaries include render stats for viewport, draw calls, primitives, memory buckets, vsync,
-  FPS cap, and resource-pool counters
-- gameplay world-load refresh now clears terrain/water/network render-dirty flags after rebuilding
-  those visuals, avoiding a duplicate first-frame resident patch upload
+  FPS cap, and resource-pool counters; refined terrain preparation snapshots only bounded local
+  inputs under the simulation lock, performs road/site grading and CDT work off-lock, and uses
+  patch-local revisions with one physical in-flight build per patch/render-step
+- gameplay world-load refresh leaves terrain/water/network revisions dirty until the renderers
+  acknowledge the exact payloads and road mesh they actually uploaded
 - terrain and water patch residency plus speculative cache prewarm now use elapsed-time budgets
   with camera-prioritized patch order; water follows terrain's resident-set revision for the
   steady-state no-change path, and terrain/water mesh-LOD refreshes plus terrain-to-water texture

@@ -4,6 +4,7 @@ use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_privat
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector3;
+use std::collections::HashMap;
 
 impl BuildingAllocator {
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
@@ -109,6 +110,52 @@ impl BuildingAllocator {
                 self.vacancy_pos[building_idx] = usize::MAX;
             }
         }
+    }
+
+    /// Predicts the vacancy claims made by forced rehousing without mutating allocator indices.
+    pub(crate) fn preview_vacancy_claims_except(
+        &self,
+        excluded_building: usize,
+        claim_count: usize,
+    ) -> Vec<usize> {
+        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
+            return Vec::new();
+        };
+        let source = &self.vacancy_index[residential_slot];
+        let mut virtual_len = source.len();
+        let mut slot_overrides = HashMap::<usize, usize>::new();
+        let mut occupancy_overrides = HashMap::<usize, u32>::new();
+        let mut result = Vec::with_capacity(claim_count.min(source.len()));
+
+        for _ in 0..claim_count {
+            let candidate = (0..virtual_len).find_map(|slot| {
+                let building_idx = slot_overrides.get(&slot).copied().unwrap_or(source[slot]);
+                (building_idx != excluded_building && building_idx < self.buildings.len())
+                    .then_some((slot, building_idx))
+            });
+            let Some((slot, building_idx)) = candidate else {
+                break;
+            };
+            result.push(building_idx);
+            let occupancy = occupancy_overrides
+                .entry(building_idx)
+                .or_insert(self.buildings[building_idx].occupancy);
+            *occupancy = occupancy.saturating_add(1);
+            if *occupancy < self.household_capacity(building_idx) {
+                continue;
+            }
+
+            virtual_len -= 1;
+            if slot < virtual_len {
+                let last_building = slot_overrides
+                    .get(&virtual_len)
+                    .copied()
+                    .unwrap_or(source[virtual_len]);
+                slot_overrides.insert(slot, last_building);
+            }
+            slot_overrides.remove(&virtual_len);
+        }
+        result
     }
 
     /// Decrements occupancy for a building and updates vacancy index if it gained space. O(1).

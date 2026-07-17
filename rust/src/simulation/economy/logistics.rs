@@ -24,6 +24,7 @@ mod timing;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::data::ShipmentBuildingUndo;
 pub use self::data::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,

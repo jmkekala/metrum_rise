@@ -27,10 +27,15 @@ impl SimulationNode {
         }
     }
 
-    /// Returns terrain render patches that must keep full mesh resolution where compiled road ownership is visible.
+    /// Returns terrain patches whose raw heightmap payloads are forbidden by engineered ownership.
     #[func]
-    pub fn get_road_locked_terrain_patches(&self) -> PackedInt32Array {
-        let core = self.lock_core();
-        core.get_road_locked_terrain_patches_internal()
+    pub fn get_engineered_terrain_patches(&self) -> PackedInt32Array {
+        let snapshot = self.snapshot.read().unwrap();
+        let mut packed = PackedInt32Array::new();
+        for &(patch_x, patch_z) in snapshot.engineered_terrain_patch_keys.iter() {
+            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
+            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
+        }
+        packed
     }
 }

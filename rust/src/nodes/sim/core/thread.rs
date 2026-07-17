@@ -10,6 +10,7 @@ use super::snapshot::RenderSnapshot;
 use super::state::{BulkRoadGeometryFinalize, SimCore};
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug_log;
+use crate::nodes::sim::editing::BulldozeTarget;
 use godot::prelude::godot_error;
 
 fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
@@ -28,7 +29,7 @@ fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
 }
 
 /// Commands sent from the Godot main thread to the sim background thread.
-pub enum SimCommand {
+pub(crate) enum SimCommand {
     /// Update the simulation speed multiplier.
     SetSpeed(f32),
     /// Update the camera world-space AABB used for agent frustum culling.
@@ -44,17 +45,44 @@ pub enum SimCommand {
         /// Backward lane count.
         bkw_lanes: i32,
     },
-    /// Ask the background thread to exit cleanly.
-    Quit,
+    /// Undo the latest authoring operation entirely on the simulation thread.
+    Undo,
+    /// Delete one previously resolved building or road target on the simulation thread.
+    Bulldoze {
+        /// Immutable target token captured while the cursor still referenced the object.
+        target: BulldozeTarget,
+    },
+}
+
+fn finalize_network_render_products(
+    core: &mut SimCore,
+) -> (RoadPreviewWorkerContext, RoadToolQuerySnapshot) {
+    core.rebuild_network_surface_terrain_internal();
+    core.precompute_road_mesh_data();
+    core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+    road_tool_snapshots_from_core(core)
+}
+
+fn publish_road_tool_snapshots(
+    road_preview_context: &RwLock<RoadPreviewWorkerContext>,
+    road_query_snapshot: &RwLock<RoadToolQuerySnapshot>,
+    preview_context: RoadPreviewWorkerContext,
+    query_snapshot: RoadToolQuerySnapshot,
+) {
+    *road_preview_context
+        .write()
+        .expect("road preview context lock poisoned") = preview_context;
+    *road_query_snapshot
+        .write()
+        .expect("road query snapshot lock poisoned") = query_snapshot;
 }
 
 /// Background simulation thread loop.
 ///
-/// Runs at ~60 Hz, decoupled from Godot's render frame. The `core` mutex is held
-/// for the duration of each movement tick; main-thread `#[func]` calls block for
-/// at most one tick duration while the lock is held (~7 ms at 100 k agents).
-/// After the tick the snapshot is written while the lock is *not* held, so render
-/// reads are completely non-blocking.
+/// Runs at ~60 Hz, decoupled from Godot's render frame. Movement ticks and queued
+/// structural edits own the core mutex while they execute. Render-facing APIs consume
+/// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
+/// after releasing the core mutex.
 pub(crate) fn run_sim_thread(
     core: Arc<Mutex<SimCore>>,
     snapshot: Arc<RwLock<RenderSnapshot>>,
@@ -75,16 +103,13 @@ pub(crate) fn run_sim_thread(
         let mut set_speed_commands = 0_usize;
         let mut camera_aabb_commands = 0_usize;
         let mut add_road_commands = 0_usize;
+        let mut undo_commands = 0_usize;
+        let mut bulldoze_commands = 0_usize;
         let mut pending_speed = None;
         let mut pending_camera_aabb = None;
         let mut should_quit = false;
         loop {
             match cmd_rx.try_recv() {
-                Ok(SimCommand::Quit) => {
-                    commands_processed += 1;
-                    should_quit = true;
-                    break;
-                }
                 Ok(SimCommand::SetSpeed(s)) => {
                     commands_processed += 1;
                     set_speed_commands += 1;
@@ -94,6 +119,52 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     camera_aabb_commands += 1;
                     pending_camera_aabb = Some((x0, x1, z0, z1));
+                }
+                Ok(SimCommand::Undo) => {
+                    commands_processed += 1;
+                    undo_commands += 1;
+                    let road_snapshots = {
+                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        let generation_before = core.road_tool_surface_generation;
+                        if !core.undo_action_internal() {
+                            None
+                        } else if core.road_tool_surface_generation != generation_before {
+                            Some(finalize_network_render_products(&mut core))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((preview_context, query_snapshot)) = road_snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview_context,
+                            query_snapshot,
+                        );
+                    }
+                }
+                Ok(SimCommand::Bulldoze { target }) => {
+                    commands_processed += 1;
+                    bulldoze_commands += 1;
+                    let road_snapshots = {
+                        let mut core = core.lock().expect("simulation core lock poisoned");
+                        let road_deleted = core
+                            .bulldoze_prepared_target_internal(target)
+                            .unwrap_or(false);
+                        if road_deleted {
+                            Some(finalize_network_render_products(&mut core))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((preview_context, query_snapshot)) = road_snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview_context,
+                            query_snapshot,
+                        );
+                    }
                 }
                 Ok(SimCommand::AddRoad {
                     points,
@@ -192,7 +263,6 @@ pub(crate) fn run_sim_thread(
                         let mesh_start = Instant::now();
                         c.precompute_road_mesh_data();
                         let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
-                        c.bump_road_tool_surface_generation();
                         let snapshot_start = Instant::now();
                         let (preview_context, query_snapshot) = road_tool_snapshots_from_core(&c);
                         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
@@ -201,7 +271,6 @@ pub(crate) fn run_sim_thread(
                             .refresh_road_locked_terrain_patch_state(
                                 ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
                             );
-                        c.mark_network_render_dirty();
                         let collect_refined_ms =
                             collect_refined_start.elapsed().as_secs_f64() * 1000.0;
                         (
@@ -220,12 +289,12 @@ pub(crate) fn run_sim_thread(
                     let refined_input_count = 0usize;
                     let refined_window_count = 0usize;
                     let refined_reused_windows = 0usize;
-                    *road_preview_context
-                        .write()
-                        .expect("road preview context lock poisoned") = preview_context;
-                    *road_query_snapshot
-                        .write()
-                        .expect("road query snapshot lock poisoned") = query_snapshot;
+                    publish_road_tool_snapshots(
+                        &road_preview_context,
+                        &road_query_snapshot,
+                        preview_context,
+                        query_snapshot,
+                    );
                     if crate::debug::is_perf_enabled() {
                         println!(
                             "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_build_ms={:.3} refined_cdt_sum_ms={:.3} refined_inputs={} refined_entries={} refined_windows={} refined_reused_windows={} refined_cache_invalidated={} insert_lock_wait_ms={:.3} insert_ms={:.3} refined_prebuild=skipped",
@@ -397,7 +466,7 @@ pub(crate) fn run_sim_thread(
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
         if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || elapsed_minutes > 0) {
             println!(
-                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={}",
+                "[DEBUG:perf] sim_frame active_ms={:.3} command_ms={:.3} lock_wait_ms={:.3} lock_held_ms={:.3} pathing_ms={:.3} agent_ms={:.3} minute_ms={:.3} pending_spawn_ms={:.3} hourly_ms={:.3} daily_ms={:.3} snapshot_ms={:.3} snapshot_write_ms={:.3} unaccounted_ms={:.3} elapsed_minutes={} pending_spawns={} hourly_ticks={} daily_ticks={} agents={} pathfinds={} commands={} set_speed_cmds={} camera_aabb_cmds={} add_road_cmds={} undo_cmds={} bulldoze_cmds={}",
                 active_ms,
                 command_ms,
                 lock_wait_ms,
@@ -421,6 +490,8 @@ pub(crate) fn run_sim_thread(
                 set_speed_commands,
                 camera_aabb_commands,
                 add_road_commands,
+                undo_commands,
+                bulldoze_commands,
             );
         }
 

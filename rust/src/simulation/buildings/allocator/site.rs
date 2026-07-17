@@ -8,7 +8,7 @@ mod query;
 mod terrain_clip;
 
 pub(crate) use grading::{BuildingSiteGradingRequest, building_site_support_tie_in_is_valid};
-pub(crate) use model::BuildingSiteClient;
+pub(crate) use model::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
 
 #[cfg(test)]
 mod tests;

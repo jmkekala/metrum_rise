@@ -303,17 +303,21 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
 
-func update_main_mesh():
+func update_main_mesh(expected_generation: int = -1) -> int:
 	if name != "RoadTool":
 		mark_network_nodes_dirty()
 		var road_tool = get_node_or_null("../RoadTool")
 		if road_tool:
-			road_tool.update_main_mesh()
-		return
+			return road_tool.update_main_mesh(expected_generation)
+		return -1
 
 	mark_network_nodes_dirty()
 	var data = simulation_node.get_road_mesh_data()
-	if not data: return
+	if not data:
+		return -1
+	var surface_generation := int(data.get("surface_generation", -1))
+	if expected_generation >= 0 and surface_generation != expected_generation:
+		return -1
 	var road_mat := WorldMaterials.road_asphalt_material()
 	var sidewalk_mat := WorldMaterials.road_sidewalk_material()
 	var sidewalk_face_mat := WorldMaterials.road_sidewalk_face_material()
@@ -419,3 +423,4 @@ func update_main_mesh():
 	# Apply materials according to the mapped surface indices
 	for i in range(surface_map.size()):
 		mesh_instance.set_surface_override_material(i, surface_map[i])
+	return surface_generation

@@ -47,14 +47,17 @@ impl SimulationNode {
 
     pub(in crate::nodes::simulation_node) fn drain_completed_terrain_patch_payload_jobs(
         &self,
-    ) -> Vec<TerrainPatchPayload> {
+    ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
         let mut jobs = self.lock_terrain_patch_payload_jobs();
-        std::mem::take(&mut jobs.completed)
+        (
+            std::mem::take(&mut jobs.completed),
+            std::mem::take(&mut jobs.failed),
+        )
     }
 
     pub(in crate::nodes::simulation_node) fn drain_completed_water_patch_payload_jobs(
         &self,
-    ) -> (Vec<WaterPatchPayload>, Vec<(WaterPatchPayloadKey, u64)>) {
+    ) -> (Vec<WaterPatchPayload>, Vec<WaterPatchPayloadRequest>) {
         let mut jobs = self.lock_water_patch_payload_jobs();
         (
             std::mem::take(&mut jobs.completed),
@@ -128,16 +131,27 @@ impl SimulationNode {
         requests
     }
 
-    pub(in crate::nodes::simulation_node) fn terrain_patch_payload_build_job_for_request(
+    pub(in crate::nodes::simulation_node) fn terrain_patch_payload_build_source_for_request(
         core: &mut SimCore,
         request: TerrainPatchPayloadRequest,
-    ) -> Option<TerrainPatchPayloadBuildJob> {
+    ) -> Option<TerrainPatchPayloadBuildSource> {
+        if core.terrain_payload_generation_for_patch(request.key.patch_x, request.key.patch_z)
+            != request.surface_generation
+        {
+            return None;
+        }
         if request.key.render_step_mm == 0 {
+            if core.terrain_patch_requires_engineered_refinement(
+                request.key.patch_x,
+                request.key.patch_z,
+            ) {
+                return None;
+            }
             let patch = core
                 .heightmap
                 .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
             let height_bytes = Self::f32_bytes_vec(&patch.height_data);
-            return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
+            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
@@ -166,7 +180,7 @@ impl SimulationNode {
             core.refined_terrain_patch_cache.remove(&cache_key);
         }
         if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
-            return Some(TerrainPatchPayloadBuildJob::Ready(TerrainPatchPayload {
+            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
@@ -180,66 +194,99 @@ impl SimulationNode {
         let base_patch = core
             .heightmap
             .visual_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
-        core.transit_network.road_surface.compile_dirty_with_reason(
-            &core.region_graph,
-            &core.heightmap,
-            RoadSurfaceCompileReason::TerrainEarthwork,
-        );
         let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
             &core.heightmap,
             render_step_m,
         );
-        let road_locked_patch_margins = core
-            .transit_network
-            .road_surface
-            .terrain_render_patch_grading_margins_for_visible_roads(
-                &core.region_graph,
-                &core.heightmap,
-                render_step_m,
-            );
         let request_key = (request.key.patch_x, request.key.patch_z);
-        let road_locked_margin_m = road_locked_patch_margins
+        let engineered_margin = core
+            .engineered_terrain_patch_margins
             .get(&request_key)
-            .copied()
+            .copied();
+        let requires_engineered_refinement = engineered_margin.is_some();
+        let requires_road_clipping = core
+            .road_locked_terrain_patch_margins
+            .contains_key(&request_key);
+        let road_locked_margin_m = engineered_margin
             .unwrap_or(site_margin_m)
             .max(site_margin_m);
-        let road_clip_query = Self::road_clip_loop_query_for_bounds(
-            core,
+        core.allocator
+            .prepare_building_site_query_index(core.config.zone_cell_m);
+        let sites = core.allocator.terrain_site_snapshot_for_world_bounds(
             base_patch.world_origin_x - road_locked_margin_m,
             base_patch.world_origin_z - road_locked_margin_m,
             base_patch.world_origin_x + base_patch.world_size_x + road_locked_margin_m,
             base_patch.world_origin_z + base_patch.world_size_z + road_locked_margin_m,
         );
-        let previous = core
-            .refined_terrain_patch_cache
-            .get(&cache_key)
-            .filter(|cached| {
-                Self::refined_terrain_patch_cache_entry_is_current(
-                    cached,
-                    request.surface_generation,
-                )
-            });
+        Some(TerrainPatchPayloadBuildSource::Refined(
+            RefinedTerrainPatchBuildSource {
+                request,
+                patch: base_patch,
+                requires_engineered_refinement,
+                requires_road_clipping,
+                road_locked_margin_m,
+                sites,
+            },
+        ))
+    }
+
+    pub(in crate::nodes::simulation_node) fn terrain_patch_payload_build_job_for_source(
+        query: &RoadToolQuerySnapshot,
+        source: TerrainPatchPayloadBuildSource,
+    ) -> TerrainPatchPayloadBuildJob {
+        let source = match source {
+            TerrainPatchPayloadBuildSource::Ready(payload) => {
+                return TerrainPatchPayloadBuildJob::Ready(payload);
+            }
+            TerrainPatchPayloadBuildSource::Refined(source) => source,
+        };
+        let request = source.request;
+        let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
+        let road_clip_query = Self::road_clip_loop_query_for_snapshot(
+            query.region_graph.as_ref(),
+            query.road_surface.as_ref(),
+            &source.sites,
+            source.patch.world_origin_x - source.road_locked_margin_m,
+            source.patch.world_origin_z - source.road_locked_margin_m,
+            source.patch.world_origin_x + source.patch.world_size_x + source.road_locked_margin_m,
+            source.patch.world_origin_z + source.patch.world_size_z + source.road_locked_margin_m,
+        );
         let windows = Self::terrain_cdt_window_build_inputs(
-            &core.heightmap,
-            &base_patch,
+            query.terrain.as_ref(),
+            &source.patch,
             &road_clip_query.cdt_road_loops,
             render_step_m,
             Some(TerrainCdtSiteGradingContext {
-                allocator: &core.allocator,
-                graph: &core.region_graph,
-                road_surface: &core.transit_network.road_surface,
+                source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
+                graph: query.region_graph.as_ref(),
+                road_surface: query.road_surface.as_ref(),
             }),
-            previous,
+            None,
         );
-        let input = RefinedTerrainPatchBuildInput {
-            key: cache_key,
-            surface_generation: request.surface_generation,
-            patch: base_patch,
-            windows,
-            road_clip_source_count: road_clip_query.source_count,
-            clip_error_label: road_clip_query.clip_error_label,
-        };
-        Some(TerrainPatchPayloadBuildJob::Refined { request, input })
+        let requires_road_clipping = Self::road_clip_query_requires_road_clipping(
+            &road_clip_query,
+            source.requires_road_clipping,
+        );
+        TerrainPatchPayloadBuildJob::Refined {
+            request,
+            input: RefinedTerrainPatchBuildInput {
+                key: RefinedTerrainPatchCacheKey {
+                    patch_x: request.key.patch_x,
+                    patch_z: request.key.patch_z,
+                    render_step_mm: request.key.render_step_mm,
+                },
+                surface_generation: request.surface_generation,
+                patch: source.patch,
+                windows,
+                requires_engineered_refinement: source.requires_engineered_refinement,
+                requires_road_clipping,
+                clip_source_count: road_clip_query.source_count,
+                road_clip_source_count: road_clip_query.road_source_count,
+                road_clip_loop_count: road_clip_query.road_loop_count,
+                site_clip_loop_count: road_clip_query.site_loop_count,
+                clip_error_label: road_clip_query.clip_error_label,
+            },
+        }
     }
 
     pub(in crate::nodes::simulation_node) fn split_terrain_patch_payload_jobs(
@@ -297,6 +344,12 @@ impl SimulationNode {
         core: &SimCore,
         request: WaterPatchPayloadRequest,
     ) -> Option<WaterPatchPayload> {
+        if core.watermap.render_generation() != request.source_generation {
+            return None;
+        }
+        if core.road_tool_surface_generation != request.surface_generation {
+            return None;
+        }
         let patch = core
             .watermap
             .visible_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
@@ -311,6 +364,8 @@ impl SimulationNode {
         Some(WaterPatchPayload {
             key: request.key,
             request_id: request.request_id,
+            source_generation: request.source_generation,
+            surface_generation: request.surface_generation,
             patch,
             depth_bytes,
             road_clip_query,
@@ -347,28 +402,5 @@ impl SimulationNode {
                 clip_failed: road_clip_query.clip_error_label.is_some(),
             },
         ))
-    }
-
-    pub(in crate::nodes::simulation_node) fn water_patch_mesh_key_for_request(
-        core: &SimCore,
-        patch_x: usize,
-        patch_z: usize,
-        lod_step: usize,
-    ) -> Option<WaterPatchMeshCacheKey> {
-        let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
-        let road_clip_query = Self::road_clip_loop_query_for_bounds(
-            core,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-        );
-        Some(WaterPatchMeshCacheKey {
-            patch_x,
-            patch_z,
-            lod_step,
-            road_clip_signature: Self::road_clip_query_signature(&road_clip_query),
-            depth_signature: water_patch_depth_signature(&patch),
-        })
     }
 }

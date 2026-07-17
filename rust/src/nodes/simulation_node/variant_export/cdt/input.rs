@@ -3,93 +3,6 @@
 use super::super::super::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn terrain_cdt_input(
-        terrain: &TerrainSystem,
-        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        road_loops: &[TerrainCdtRoadLoop],
-        render_step_m: f32,
-        site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
-    ) -> TerrainCdtInput {
-        if road_loops.is_empty() {
-            return TerrainCdtInput::new(
-                Self::terrain_cdt_patch_for_bounds(
-                    terrain,
-                    patch.world_origin_x,
-                    patch.world_origin_z,
-                    patch.world_origin_x + patch.world_size_x,
-                    patch.world_origin_z + patch.world_size_z,
-                ),
-                Vec::new(),
-                Vec::new(),
-            );
-        }
-
-        let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let (min_x, min_z, max_x, max_z) =
-            Self::terrain_cdt_local_sample_bounds(terrain, patch, road_loops, safe_render_step_m)
-                .unwrap_or((
-                    patch.world_origin_x,
-                    patch.world_origin_z,
-                    patch.world_origin_x + patch.world_size_x,
-                    patch.world_origin_z + patch.world_size_z,
-                ));
-        let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
-        let mut source_samples = Vec::new();
-        let mut tie_in_guide_samples = Vec::new();
-        let mut tie_in_guide_constraints = Vec::new();
-        let mut sample_keys = BTreeMap::new();
-        let grid_step_m =
-            Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
-        RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
-            terrain,
-            road_loops,
-            safe_render_step_m,
-            &mut tie_in_guide_samples,
-            &mut tie_in_guide_constraints,
-            &mut sample_keys,
-        );
-        if let Some(site_grading) = site_grading {
-            site_grading
-                .allocator
-                .append_terrain_cdt_site_grading_guides_for_world_bounds(
-                    BuildingSiteGradingRequest::new(
-                        terrain,
-                        site_grading.graph,
-                        site_grading.road_surface,
-                        (min_x, min_z, max_x, max_z),
-                        safe_render_step_m,
-                    ),
-                    &mut tie_in_guide_samples,
-                    &mut sample_keys,
-                );
-        }
-        Self::append_terrain_cdt_grid_samples(
-            terrain,
-            patch,
-            min_x,
-            min_z,
-            max_x,
-            max_z,
-            grid_step_m,
-            &mut source_samples,
-            &mut sample_keys,
-        );
-        Self::append_terrain_cdt_window_boundary_samples(
-            terrain,
-            min_x,
-            min_z,
-            max_x,
-            max_z,
-            safe_render_step_m,
-            &mut source_samples,
-            &mut sample_keys,
-        );
-
-        TerrainCdtInput::new(patch_model, road_loops.to_vec(), source_samples)
-            .with_tie_in_guide_samples(tie_in_guide_samples)
-            .with_tie_in_guide_constraints(tie_in_guide_constraints)
-    }
-
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
         terrain: &TerrainSystem,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -221,19 +134,13 @@ impl SimulationNode {
             &mut sample_keys,
         );
         if let Some(site_grading) = site_grading {
-            site_grading
-                .allocator
-                .append_terrain_cdt_site_grading_guides_for_world_bounds(
-                    BuildingSiteGradingRequest::new(
-                        terrain,
-                        site_grading.graph,
-                        site_grading.road_surface,
-                        (min_x, min_z, max_x, max_z),
-                        safe_render_step_m,
-                    ),
-                    &mut tie_in_guide_samples,
-                    &mut sample_keys,
-                );
+            site_grading.append_guides(
+                terrain,
+                (min_x, min_z, max_x, max_z),
+                safe_render_step_m,
+                &mut tie_in_guide_samples,
+                &mut sample_keys,
+            );
         }
         Self::append_terrain_cdt_grid_samples(
             terrain,

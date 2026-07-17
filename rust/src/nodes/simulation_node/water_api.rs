@@ -10,66 +10,75 @@ impl SimulationNode {
         self.snapshot.read().unwrap().water_dirty
     }
 
-    /// Clears the water dirty flag.
+    /// Acknowledges rendered water patch revisions without erasing newer mutations.
     #[func]
-    pub fn clear_water_dirty(&mut self) {
-        {
-            let mut core = self.lock_core();
-            let dirty_patches = core
-                .watermap
-                .dirty_render_patches()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            core.clear_water_patch_mesh_cache_entries(&dirty_patches);
-            core.water_dirty = false;
-            core.watermap.clear_dirty_render_patches();
+    pub fn acknowledge_water_patches(&mut self, flat_states: PackedInt64Array) -> bool {
+        let acknowledged = flat_states
+            .as_slice()
+            .chunks_exact(3)
+            .filter_map(|state| {
+                Some((
+                    usize::try_from(state[0]).ok()?,
+                    usize::try_from(state[1]).ok()?,
+                    u64::try_from(state[2]).ok()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let Some(mut core) = self.try_lock_core() else {
+            return false;
+        };
+        let acknowledged_keys = acknowledged
+            .iter()
+            .filter_map(|&(patch_x, patch_z, generation)| {
+                (core.watermap.render_patch_generation(patch_x, patch_z) == generation)
+                    .then_some((patch_x, patch_z))
+            })
+            .collect::<Vec<_>>();
+        for (patch_x, patch_z, generation) in acknowledged {
+            core.watermap
+                .acknowledge_render_patch(patch_x, patch_z, generation);
         }
-        self.snapshot.write().unwrap().water_dirty = false;
+        core.water_dirty = !core.watermap.dirty_render_patches().is_empty();
+        let water_dirty = core.water_dirty;
+        let states = core.watermap.dirty_render_patch_states();
+        let generation = core.watermap.render_generation();
+        drop(core);
+
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.water_dirty = water_dirty;
+        snapshot.water_dirty_patch_states = Arc::new(states);
+        snapshot.water_payload_generation = generation;
+        drop(snapshot);
+        let mut mesh_jobs = self.lock_water_patch_mesh_jobs();
+        for (patch_x, patch_z) in acknowledged_keys {
+            mesh_jobs.forget_patch(patch_x, patch_z);
+        }
+        true
     }
 
     /// Returns the currently dirty water render patches as flat `(x, z)` pairs.
     #[func]
     pub fn get_dirty_water_patches(&self) -> PackedInt32Array {
-        let core = self.lock_core();
-        let mut patches: Vec<(usize, usize)> = core
-            .watermap
-            .dirty_render_patches()
-            .iter()
-            .copied()
-            .collect();
-        patches.sort_unstable();
+        let snapshot = self.snapshot.read().unwrap();
         let mut packed = PackedInt32Array::new();
-        for (patch_x, patch_z) in patches {
+        for &(patch_x, patch_z, _) in snapshot.water_dirty_patch_states.iter() {
             packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
             packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
         }
         packed
     }
 
-    /// Returns one visible-water render patch, including its one-sample border ring.
+    /// Returns dirty water patches as flat `(x, z, payload_generation)` triples.
     #[func]
-    pub fn get_water_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
-        let Ok(patch_x) = usize::try_from(patch_x) else {
-            return VarDictionary::new();
-        };
-        let Ok(patch_z) = usize::try_from(patch_z) else {
-            return VarDictionary::new();
-        };
-        let core = self.lock_core();
-        let Some(patch) = core.watermap.visible_patch_snapshot(patch_x, patch_z) else {
-            return VarDictionary::new();
-        };
-        let mut dict = Self::water_patch_dict(&patch);
-        Self::append_road_clip_loops_for_bounds(
-            &mut dict,
-            &core,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-        );
-        dict
+    pub fn get_dirty_water_patch_payload_states(&self) -> PackedInt64Array {
+        let snapshot = self.snapshot.read().unwrap();
+        let mut packed = PackedInt64Array::new();
+        for &(patch_x, patch_z, generation) in snapshot.water_dirty_patch_states.iter() {
+            packed.push(i64::try_from(patch_x).unwrap_or(i64::MAX));
+            packed.push(i64::try_from(patch_z).unwrap_or(i64::MAX));
+            packed.push(i64::try_from(generation).unwrap_or(i64::MAX));
+        }
+        packed
     }
 
     /// Requests async water patch payload preparation for flat `(patch_x, patch_z)` pairs.
@@ -90,6 +99,13 @@ impl SimulationNode {
             return stats;
         }
 
+        let (source_generation, surface_generation) = {
+            let snapshot = self.snapshot.read().unwrap();
+            (
+                snapshot.water_payload_generation,
+                snapshot.network_generation,
+            )
+        };
         let mut accepted_count = 0_usize;
         let mut duplicate_count = 0_usize;
         let mut in_flight_count = 0_usize;
@@ -103,15 +119,21 @@ impl SimulationNode {
                     duplicate_count += 1;
                     continue;
                 }
+                jobs.drop_stale_key_for_generation(key, source_generation, surface_generation);
                 jobs.drop_missing_ready_payload(key);
                 let in_flight = jobs.in_flight.contains_key(&key);
-                if jobs.has_pending_or_ready(key) {
+                if jobs.has_current_pending_or_ready(key, source_generation, surface_generation) {
                     duplicate_count += 1;
                     in_flight_count += usize::from(in_flight);
                     continue;
                 }
-                let request_id = jobs.request(key);
-                build_requests.push(WaterPatchPayloadRequest { key, request_id });
+                let request_id = jobs.request(key, source_generation, surface_generation);
+                build_requests.push(WaterPatchPayloadRequest {
+                    key,
+                    request_id,
+                    source_generation,
+                    surface_generation,
+                });
                 accepted_count += 1;
                 build_queued_count += 1;
             }
@@ -130,7 +152,7 @@ impl SimulationNode {
                     for request in build_requests {
                         match SimulationNode::water_patch_payload_for_request(&core, request) {
                             Some(payload) => built.push(payload),
-                            None => failed.push((request.key, request.request_id)),
+                            None => failed.push(request),
                         }
                     }
                 }
@@ -186,6 +208,13 @@ impl SimulationNode {
         stats.set("requested_before_count", 0_i64);
         stats.set("requested_after_count", 0_i64);
 
+        let (source_generation, surface_generation) = {
+            let snapshot = self.snapshot.read().unwrap();
+            (
+                snapshot.water_payload_generation,
+                snapshot.network_generation,
+            )
+        };
         let mut jobs = self.lock_water_patch_payload_jobs();
         if !completed_payloads.is_empty() {
             jobs.ingest_completed(completed_payloads);
@@ -232,8 +261,19 @@ impl SimulationNode {
                 jobs.requested.remove(&key);
                 continue;
             };
-            if jobs.requested.get(&key).copied() != Some(payload.request_id) {
+            let payload_state = WaterPatchPayloadRequestState {
+                request_id: payload.request_id,
+                source_generation: payload.source_generation,
+                surface_generation: payload.surface_generation,
+            };
+            if payload.source_generation != source_generation
+                || payload.surface_generation != surface_generation
+                || jobs.requested.get(&key).copied() != Some(payload_state)
+            {
                 stale_ready_count += 1;
+                if jobs.requested.get(&key).copied() == Some(payload_state) {
+                    jobs.requested.remove(&key);
+                }
                 continue;
             }
             jobs.requested.remove(&key);
@@ -284,21 +324,10 @@ impl SimulationNode {
             patch_keys.push((patch_x, patch_z));
         }
         if !patch_keys.is_empty() {
-            self.lock_core()
-                .clear_water_patch_mesh_cache_entries(&patch_keys);
-            let patch_key_lookup = patch_keys.into_iter().collect::<HashSet<_>>();
             let mut jobs = self.lock_water_patch_mesh_jobs();
-            jobs.in_flight
-                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
-            jobs.requested
-                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
-            jobs.ready_lookup
-                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
-            jobs.ready
-                .retain(|key| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
-            jobs.completed.retain(|entry| {
-                !patch_key_lookup.contains(&(entry.key.patch_x, entry.key.patch_z))
-            });
+            for (patch_x, patch_z) in patch_keys {
+                jobs.forget_patch(patch_x, patch_z);
+            }
         }
     }
 
@@ -315,6 +344,7 @@ impl SimulationNode {
         stats.set("cache_hit_count", 0_i64);
         stats.set("in_flight_count", 0_i64);
         stats.set("build_queued_count", 0_i64);
+        stats.set("core_busy", false);
         if requests.is_empty() {
             return stats;
         }
@@ -326,7 +356,10 @@ impl SimulationNode {
         let mut build_queued_count = 0_usize;
         let mut build_inputs = Vec::new();
         {
-            let core = self.lock_core();
+            let Some(core) = self.try_lock_core() else {
+                stats.set("core_busy", true);
+                return stats;
+            };
             let mut jobs = self.lock_water_patch_mesh_jobs();
             let mut requested_key_lookup = HashSet::new();
             for (patch_x, patch_z, lod_step) in requests {
@@ -343,7 +376,7 @@ impl SimulationNode {
                 jobs.forget_requested_patch(patch_x, patch_z);
                 jobs.requested.insert(key);
                 accepted_count += 1;
-                if core.water_patch_mesh_cache.contains_key(&key) {
+                if jobs.cache.contains_key(&key) {
                     jobs.queue_ready(key);
                     cache_hit_count += 1;
                     continue;
@@ -422,19 +455,17 @@ impl SimulationNode {
         stats.set("requested_before_count", 0_i64);
         stats.set("requested_after_count", 0_i64);
         if max_meshes == 0 {
-            if !completed_entries.is_empty() {
-                self.lock_core()
-                    .insert_water_patch_mesh_cache_entries(completed_entries);
+            let mut jobs = self.lock_water_patch_mesh_jobs();
+            for entry in completed_entries {
+                jobs.cache.insert(entry.key, entry);
             }
             return stats;
         }
 
-        let core = &mut *self.lock_core();
-        if !completed_entries.is_empty() {
-            core.insert_water_patch_mesh_cache_entries(completed_entries);
-        }
-
         let mut jobs = self.lock_water_patch_mesh_jobs();
+        for entry in completed_entries {
+            jobs.cache.insert(entry.key, entry);
+        }
         for key in completed_keys {
             if jobs.requested.contains(&key) {
                 jobs.queue_ready(key);
@@ -455,13 +486,16 @@ impl SimulationNode {
                 stale_ready_count += 1;
                 continue;
             }
-            let Some(mesh) = core.water_patch_mesh_cache.get(&key) else {
-                jobs.requested.remove(&key);
-                missing_ready_count += 1;
-                continue;
+            let mesh_variant = {
+                let Some(mesh) = jobs.cache.get(&key) else {
+                    jobs.requested.remove(&key);
+                    missing_ready_count += 1;
+                    continue;
+                };
+                Self::water_patch_mesh_dict(mesh).to_variant()
             };
             jobs.requested.remove(&key);
-            meshes.push(&Self::water_patch_mesh_dict(mesh).to_variant());
+            meshes.push(&mesh_variant);
             emitted_count += 1;
         }
         stats.set("meshes", meshes.to_variant());
@@ -492,70 +526,6 @@ impl SimulationNode {
         stats
     }
 
-    /// Returns ready cached water patch meshes for flat `(patch_x, patch_z, lod_step)` requests.
-    #[func]
-    pub fn poll_water_patch_meshes(
-        &mut self,
-        flat_requests: PackedInt32Array,
-        max_meshes: i32,
-    ) -> VarArray {
-        let completed_entries = self.drain_completed_water_patch_mesh_jobs();
-        if !completed_entries.is_empty() {
-            self.lock_core()
-                .insert_water_patch_mesh_cache_entries(completed_entries);
-        }
-        let max_meshes = usize::try_from(max_meshes).unwrap_or(0);
-        if max_meshes == 0 {
-            return VarArray::new();
-        }
-        let requests = Self::water_patch_mesh_requests_from_flat(&flat_requests);
-        if requests.is_empty() {
-            return VarArray::new();
-        }
-
-        let core = self.lock_core();
-        let mut meshes = VarArray::new();
-        let mut emitted_count = 0_usize;
-        let mut requested_key_lookup = HashSet::new();
-        for (patch_x, patch_z, lod_step) in requests {
-            if emitted_count >= max_meshes {
-                break;
-            }
-            let Some(key) =
-                Self::water_patch_mesh_key_for_request(&core, patch_x, patch_z, lod_step)
-            else {
-                continue;
-            };
-            if !requested_key_lookup.insert(key) {
-                continue;
-            }
-            if let Some(mesh) = core.water_patch_mesh_cache.get(&key) {
-                meshes.push(&Self::water_patch_mesh_dict(mesh).to_variant());
-                emitted_count += 1;
-            }
-        }
-        meshes
-    }
-
-    /// Returns road-clip metadata for a cached water patch without exporting water textures.
-    #[func]
-    pub fn get_water_patch_road_clip(
-        &self,
-        patch_x: i32,
-        patch_z: i32,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) -> VarDictionary {
-        let mut dict = VarDictionary::new();
-        dict.set("patch_x", i64::from(patch_x));
-        dict.set("patch_z", i64::from(patch_z));
-        let core = self.lock_core();
-        Self::append_road_clip_loops_for_bounds(&mut dict, &core, min_x, min_z, max_x, max_z);
-        dict
-    }
-
     /// Returns debug-only baseline/dynamic/combined water stats for one render patch.
     #[func]
     pub fn get_water_patch_debug(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
@@ -565,7 +535,9 @@ impl SimulationNode {
         let Ok(patch_z) = usize::try_from(patch_z) else {
             return VarDictionary::new();
         };
-        let core = self.lock_core();
+        let Some(core) = self.try_lock_core() else {
+            return VarDictionary::new();
+        };
         let Some(stats) = core.watermap.visible_patch_layer_stats(patch_x, patch_z) else {
             return VarDictionary::new();
         };
@@ -581,7 +553,9 @@ impl SimulationNode {
         let Ok(patch_z) = usize::try_from(patch_z) else {
             return VarArray::new();
         };
-        let core = self.lock_core();
+        let Some(core) = self.try_lock_core() else {
+            return VarArray::new();
+        };
         let contributors = core.authored_water_patch_fill_debug_internal(patch_x, patch_z);
         let mut array = VarArray::new();
         for contributor in contributors {
@@ -594,6 +568,13 @@ impl SimulationNode {
     /// Returns the visible water depth along the world-edge perimeter loop.
     #[func]
     pub fn get_water_border_depths(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().watermap.border_loop_depths())
+        PackedFloat32Array::from_iter(
+            self.snapshot
+                .read()
+                .unwrap()
+                .water_border_depths
+                .iter()
+                .copied(),
+        )
     }
 }

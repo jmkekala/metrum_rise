@@ -9,7 +9,7 @@ use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
+use crate::simulation::network::lanes::{LaneSystem, LaneType};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem,
 };
@@ -171,11 +171,10 @@ fn lane_marking_crosswalk_endpoint_flags_by_edge(
 ) -> HashMap<usize, (bool, bool)> {
     let mut flags_by_edge = HashMap::new();
     for lane in &lane_system.lanes {
-        if lane.edge_id != usize::MAX
-            || lane.lane_type != LaneType::Foot
-            || !lane.is_crosswalk
-            || lane.geometry.len() < 2
-        {
+        let Some(crosswalk) = lane.crosswalk_marking else {
+            continue;
+        };
+        if lane.edge_id != usize::MAX || lane.lane_type != LaneType::Foot {
             continue;
         }
 
@@ -183,7 +182,7 @@ fn lane_marking_crosswalk_endpoint_flags_by_edge(
         if node_id as usize >= graph.node_adjacency_count() {
             continue;
         }
-        let center = crosswalk_lane_center_xz(lane);
+        let center = crosswalk_center_xz(crosswalk);
         for &edge_idx in graph.node_adjacency(node_id) {
             if edge_idx >= graph.edge_count() {
                 continue;
@@ -225,10 +224,11 @@ fn crosswalk_mouth_center(edge: &Edge, from_start: bool) -> Option<Vector2> {
     Some(Vector2::new(point.x, point.z))
 }
 
-fn crosswalk_lane_center_xz(lane: &Lane) -> Vector2 {
-    let first = lane.geometry.first().copied().unwrap_or(Vector3::ZERO);
-    let last = lane.geometry.last().copied().unwrap_or(first);
-    Vector2::new((first.x + last.x) * 0.5, (first.z + last.z) * 0.5)
+fn crosswalk_center_xz(crosswalk: crate::simulation::network::lanes::CrosswalkMarking) -> Vector2 {
+    Vector2::new(
+        (crosswalk.start.x + crosswalk.end.x) * 0.5,
+        (crosswalk.start.z + crosswalk.end.z) * 0.5,
+    )
 }
 
 fn walk_edge_geometry_from_end(

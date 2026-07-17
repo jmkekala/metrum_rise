@@ -1,7 +1,9 @@
 //! Building-site apron grading and road/terrain tie-in validation.
 
 use super::geometry::{SITE_POINT_EPS_M, point_in_polygon_slice, signed_polygon_area};
+#[cfg(test)]
 use super::model::BuildingSiteClient;
+use super::model::BuildingSiteTerrainSnapshot;
 use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
@@ -101,7 +103,7 @@ struct FootprintEdge {
     sample_count: u32,
 }
 
-impl BuildingAllocator {
+impl BuildingSiteTerrainSnapshot {
     pub(crate) fn append_terrain_cdt_site_grading_guides_for_world_bounds(
         &self,
         request: BuildingSiteGradingRequest<'_>,
@@ -111,22 +113,27 @@ impl BuildingAllocator {
         let (min_x, min_z, max_x, max_z) = request.world_bounds;
         let safe_step_m = request.render_step_m.max(f32::EPSILON);
         let max_distance_m = terrain_cdt_local_sample_margin_m(request.terrain, safe_step_m);
-        for building_idx in self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z) {
-            let Some(site) = self.building_sites.get(building_idx) else {
-                continue;
-            };
-            if !site.overlaps_bounds(min_x, min_z, max_x, max_z) {
+        let context = SiteGradingContext::new(
+            request.terrain,
+            request.graph,
+            request.road_surface,
+            safe_step_m,
+            max_distance_m,
+        );
+        let mut sink = SiteGradingGuideSink::new(tie_in_guide_samples, sample_keys);
+        for site in &self.sites {
+            let (site_min_x, site_min_z, site_max_x, site_max_z) =
+                super::geometry::polygon_slice_bounds(&site.footprint_world);
+            if site_min_x > max_x || site_max_x < min_x || site_min_z > max_z || site_max_z < min_z
+            {
                 continue;
             }
-            let context = SiteGradingContext::new(
-                request.terrain,
-                request.graph,
-                request.road_surface,
-                safe_step_m,
-                max_distance_m,
+            append_building_site_grading_guides_from_parts(
+                &site.footprint_world,
+                site.support_height_m,
+                &context,
+                &mut sink,
             );
-            let mut sink = SiteGradingGuideSink::new(tie_in_guide_samples, sample_keys);
-            append_building_site_grading_guides(site, &context, &mut sink);
         }
     }
 }
@@ -209,19 +216,30 @@ fn visit_footprint_grading_rays(
     true
 }
 
+#[cfg(test)]
 pub(super) fn append_building_site_grading_guides(
     site: &BuildingSiteClient,
     context: &SiteGradingContext<'_>,
     sink: &mut SiteGradingGuideSink<'_>,
 ) {
-    visit_footprint_grading_rays(
+    append_building_site_grading_guides_from_parts(
         &site.footprint_world,
-        context.safe_step_m,
-        |seam, outward| {
-            append_building_site_grading_ray(site.support_height_m, seam, outward, context, sink);
-            true
-        },
+        site.support_height_m,
+        context,
+        sink,
     );
+}
+
+fn append_building_site_grading_guides_from_parts(
+    footprint_world: &[Vector2],
+    support_height_m: f32,
+    context: &SiteGradingContext<'_>,
+    sink: &mut SiteGradingGuideSink<'_>,
+) {
+    visit_footprint_grading_rays(footprint_world, context.safe_step_m, |seam, outward| {
+        append_building_site_grading_ray(support_height_m, seam, outward, context, sink);
+        true
+    });
 }
 
 fn append_building_site_grading_ray(

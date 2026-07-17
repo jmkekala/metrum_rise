@@ -23,14 +23,24 @@ pub(crate) struct RefinedTerrainPatchCacheKey {
 pub(crate) struct RefinedTerrainPatchBuildInput {
     /// Cache key for the produced patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
-    /// Road-surface generation captured when this input was assembled.
+    /// Patch-local terrain source generation captured when this input was assembled.
     pub(crate) surface_generation: u64,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
     /// Local CDT windows assembled from source terrain samples and road footprint loops.
     pub(crate) windows: Vec<RefinedTerrainCdtWindowBuildInput>,
-    /// Number of source road-boundary records found by the clip query.
+    /// True when a road or building site forbids raw terrain for this patch.
+    pub(crate) requires_engineered_refinement: bool,
+    /// True when this patch intersects authoritative grounded-road ownership.
+    pub(crate) requires_road_clipping: bool,
+    /// Total number of road and building-site clip sources found by the query.
+    pub(crate) clip_source_count: usize,
+    /// Number of authoritative grounded-road sources found by the query.
     pub(crate) road_clip_source_count: usize,
+    /// Number of authoritative grounded-road loops emitted by the query.
+    pub(crate) road_clip_loop_count: usize,
+    /// Number of building-site loops emitted by the query.
+    pub(crate) site_clip_loop_count: usize,
     /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
     pub(crate) clip_error_label: Option<&'static str>,
 }
@@ -86,7 +96,7 @@ pub(crate) struct CachedRefinedTerrainPatch {
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// CDT contract revision used to build this cached patch.
     pub(crate) contract_revision: i64,
-    /// Road-surface generation used to build this cached patch.
+    /// Patch-local terrain source generation used to build this cached patch.
     pub(crate) surface_generation: u64,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
@@ -96,8 +106,18 @@ pub(crate) struct CachedRefinedTerrainPatch {
     pub(crate) input_source_samples: usize,
     /// Local CDT windows composed into this render patch.
     pub(crate) windows: Vec<CachedRefinedTerrainCdtWindow>,
-    /// Number of source road-boundary records found by the clip query.
+    /// True when a road or building site forbids raw terrain for this patch.
+    pub(crate) requires_engineered_refinement: bool,
+    /// True when this patch intersects authoritative grounded-road ownership.
+    pub(crate) requires_road_clipping: bool,
+    /// Total number of road and building-site clip sources found by the query.
+    pub(crate) clip_source_count: usize,
+    /// Number of authoritative grounded-road sources found by the clip query.
     pub(crate) road_clip_source_count: usize,
+    /// Number of authoritative grounded-road loops emitted by the clip query.
+    pub(crate) road_clip_loop_count: usize,
+    /// Number of building-site loops emitted by the clip query.
+    pub(crate) site_clip_loop_count: usize,
     /// Terrain-clip setup error, if the road-boundary query failed before CDT input was built.
     pub(crate) clip_error_label: Option<&'static str>,
     /// Time spent in CDT construction for this patch's rebuilt windows.

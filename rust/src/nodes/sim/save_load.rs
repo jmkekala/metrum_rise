@@ -73,9 +73,19 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
-        self.water_patch_mesh_cache.clear();
+        self.refined_terrain_patch_cache.clear();
+        self.road_locked_terrain_patch_keys.clear();
+        self.road_locked_terrain_patch_margins.clear();
+        self.building_site_owned_terrain_patch_keys.clear();
+        self.engineered_terrain_patch_keys.clear();
+        self.engineered_terrain_patch_margins.clear();
+        self.terrain_payload_patch_generations.clear();
+        self.refresh_road_locked_terrain_patch_state(
+            crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+        );
         self.terrain_dirty = true;
         self.water_dirty = true;
         self.cached_road_mesh_data = None;
+        self.mark_network_render_dirty();
     }
 }

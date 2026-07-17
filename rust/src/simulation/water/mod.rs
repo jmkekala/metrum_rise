@@ -8,7 +8,7 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
 const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
@@ -104,6 +104,10 @@ pub struct WaterSystem {
     baseline: BaselineWaterState,
     /// Render patches whose visible water textures must be refreshed.
     dirty_render_patches: HashSet<(usize, usize)>,
+    /// Monotonic allocator for render-patch source revisions.
+    render_generation_counter: u64,
+    /// Latest source revision for each water render patch.
+    render_patch_generations: HashMap<(usize, usize), u64>,
 }
 
 impl WaterSystem {
@@ -124,6 +128,8 @@ impl WaterSystem {
             render_patch_interval_cells: safe_chunk_size.saturating_sub(1).max(1),
             baseline: BaselineWaterState::new(width, height, safe_chunk_size),
             dirty_render_patches: HashSet::new(),
+            render_generation_counter: 0,
+            render_patch_generations: HashMap::new(),
         }
     }
 
@@ -191,6 +197,36 @@ impl WaterSystem {
         &self.dirty_render_patches
     }
 
+    /// Returns the current source revision for one water render patch.
+    pub(crate) fn render_patch_generation(&self, patch_x: usize, patch_z: usize) -> u64 {
+        self.render_patch_generations
+            .get(&(patch_x, patch_z))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Returns the current global water payload revision.
+    pub(crate) fn render_generation(&self) -> u64 {
+        self.render_generation_counter
+    }
+
+    /// Returns sorted dirty patch keys paired with their source revisions.
+    pub(crate) fn dirty_render_patch_states(&self) -> Vec<(usize, usize, u64)> {
+        let mut states = self
+            .dirty_render_patches
+            .iter()
+            .map(|&(patch_x, patch_z)| {
+                (
+                    patch_x,
+                    patch_z,
+                    self.render_patch_generation(patch_x, patch_z),
+                )
+            })
+            .collect::<Vec<_>>();
+        states.sort_unstable();
+        states
+    }
+
     /// Returns the owned sample bounds for one render patch, excluding its render border ring.
     pub(crate) fn render_patch_owned_sample_bounds(
         &self,
@@ -200,9 +236,17 @@ impl WaterSystem {
         self.render_patch_sample_bounds(patch_x, patch_z)
     }
 
-    /// Clears the water render-patch dirtiness set.
-    pub(crate) fn clear_dirty_render_patches(&mut self) {
-        self.dirty_render_patches.clear();
+    /// Acknowledges one rendered patch only when the renderer consumed its current revision.
+    pub(crate) fn acknowledge_render_patch(
+        &mut self,
+        patch_x: usize,
+        patch_z: usize,
+        generation: u64,
+    ) -> bool {
+        if self.render_patch_generation(patch_x, patch_z) != generation {
+            return false;
+        }
+        self.dirty_render_patches.remove(&(patch_x, patch_z))
     }
 
     /// Returns one visible-water render patch aligned to the terrain render grid.
@@ -351,9 +395,13 @@ impl WaterSystem {
     }
 
     fn mark_all_render_patches_dirty(&mut self) {
+        self.render_generation_counter = self.render_generation_counter.wrapping_add(1).max(1);
+        let generation = self.render_generation_counter;
         for patch_z in 0..self.render_patch_rows() {
             for patch_x in 0..self.render_patch_cols() {
                 self.dirty_render_patches.insert((patch_x, patch_z));
+                self.render_patch_generations
+                    .insert((patch_x, patch_z), generation);
             }
         }
     }
@@ -488,5 +536,25 @@ mod tests {
             dirty.len(),
             water.render_patch_cols() * water.render_patch_rows()
         );
+    }
+
+    #[test]
+    fn stale_acknowledgement_preserves_newer_water_patch_dirtiness() {
+        let mut water = WaterSystem::with_chunking(9, 9, 10.0, 4).with_render_chunk_span(30.0);
+        let baseline = vec![1.0; 81];
+        water
+            .replace_baseline_depth_from_dense(&baseline)
+            .expect("baseline depth dimensions should match");
+        let stale_generation = water.render_patch_generation(0, 0);
+
+        water
+            .replace_baseline_depth_from_dense(&baseline)
+            .expect("second baseline update should advance the revision");
+        assert!(!water.acknowledge_render_patch(0, 0, stale_generation));
+        assert!(water.dirty_render_patches().contains(&(0, 0)));
+
+        let current_generation = water.render_patch_generation(0, 0);
+        assert!(water.acknowledge_render_patch(0, 0, current_generation));
+        assert!(!water.dirty_render_patches().contains(&(0, 0)));
     }
 }

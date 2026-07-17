@@ -36,10 +36,10 @@ The roadbed rewrite is shipped for the current surface-road scope:
 - road-locked terrain coverage follows each grounded footprint's required tie-in envelope; a large
   cut / fill envelope on one road must not widen unrelated road patches
 - ordinary grounded-road tie-ins do not emit retaining-wall mesh as a visual cleanup path
-- player road bulldoze is a `SimCore` mutation: the target comes from the road spatial index, the
-  edge is soft-deleted and removed from that index, attached zoning parcels are removed, and
-  adjacency, clips, lanes, CCH, road surface chunks, terrain clips, and flow-field dirtiness are
-  repaired before Godot renders the next payload
+- player road bulldoze is a queued `SimCore` mutation: Godot captures an immutable target from the
+  road spatial index, the simulation thread verifies and soft-deletes that exact edge, removes
+  attached zoning parcels, and repairs adjacency, clips, lanes, CCH, road surface chunks, terrain
+  clips, and flow-field dirtiness before publishing the next render snapshot
 - Godot is a thin input/render bridge: it uploads cached payloads and must not decide road
   topology, heights, terrain holes, or material ownership
 
@@ -109,6 +109,21 @@ For every road-owned top surface:
 The current required band model supports carriageway, curb / shoulder, sidewalk, and no-sidewalk
 profiles. Later medians, parking lanes, cycle tracks, tram reservations, or richer shoulders must
 add explicit ordered bands instead of special-case render offsets.
+
+## Pedestrian Junction Crossings
+
+One authoritative crossing record drives both pedestrian routing and zebra-marking rendering:
+
+- an arm is crossable if and only if its lane rebuild emits a `CrosswalkMarking`
+- the two directional pedestrian connections for that arm traverse the exact same asphalt-edge
+  segment stored by the marking
+- routes between adjacent arms follow the solved sidewalk perimeter and must not create direct
+  mouth-to-mouth chords through the junction carriageway
+- degree-two junctions keep the deterministic single-crosswalk policy, while higher-degree
+  junctions may expose one crossing per eligible arm
+
+Crossing availability and geometry must not be independently reconstructed by the renderer,
+selection queries, or agent movement.
 
 ## Visual Pieces
 

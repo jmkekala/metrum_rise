@@ -5,14 +5,7 @@
 ##   get_registered_asset_ids() -> PackedStringArray
 ##   get_building_mesh_part_count(asset_id: String) -> int
 ##   get_building_mesh_part_lod0_native_path(asset_id: String, part_index: int) -> String
-##   get_building_transforms_for_asset_part(asset_id: String, part_index: int) -> PackedFloat32Array
-##   get_deserted_building_transforms_for_asset_part(asset_id: String, part_index: int) -> PackedFloat32Array
-##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
-##   get_construction_site_transforms(zone_id: int) -> PackedFloat32Array
-##   get_construction_foundation_transforms(zone_id: int) -> PackedFloat32Array
-##   get_construction_scaffold_transforms(zone_id: int) -> PackedFloat32Array
-##   get_building_site_revision() -> int
-##   get_building_site_mesh_data() -> Dictionary
+##   try_get_building_render_frame(asset_ids, part_indices, zone_ids, site_revision) -> Dictionary
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
 ## passes each enabled pack's native path to Rust for manifest scanning. Packs not
@@ -63,7 +56,7 @@ func reload_asset_packs() -> void:
 	_load_enabled_packs()
 	_rebuild_multimeshes()
 	building_site_revision = -1
-	_update_building_sites()
+	_update_building_render_frame(true)
 
 func _load_enabled_packs() -> void:
 	var cfg := ConfigFile.new()
@@ -109,23 +102,17 @@ func _ready() -> void:
 
 	# Build one MultiMeshInstance3D for each registered building asset.
 	_rebuild_multimeshes()
-	_update_building_sites(true)
+	_update_building_render_frame(true)
 
 func update_all_buildings() -> void:
 	_rebuild_multimeshes()
-	for key in multimeshes.keys():
-		_update_buildings_for_asset_part(key)
-	for key in deserted_multimeshes.keys():
-		_update_deserted_multimesh(key)
-	for zone_id in ZONE_IDS:
-		_update_foundation(zone_id)
-		_update_construction_site(zone_id)
-		_update_construction_foundation(zone_id)
-		_update_construction_scaffold(zone_id)
-	_update_building_sites(true)
+	building_site_revision = -1
+	_update_building_render_frame(true)
 
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
+	if not asset_ids.has("broken:error"):
+		asset_ids.append("broken:error")
 	for aid in asset_ids:
 		if aid == "broken:error":
 			var broken_key := _part_key(aid, 0)
@@ -417,41 +404,17 @@ func _setup_building_site_surfaces() -> void:
 
 func _process(_delta: float) -> void:
 	var rebuild_due := Engine.get_frames_drawn() % 30 == 0
-	if rebuild_due and simulation_node.is_sim_core_busy():
-		return
 	if not PerfDebug.is_enabled():
 		if rebuild_due:
-			_rebuild_multimeshes()
-			for key in multimeshes.keys():
-				_update_buildings_for_asset_part(key)
-			for key in deserted_multimeshes.keys():
-				_update_deserted_multimesh(key)
-			for zone_id in ZONE_IDS:
-				_update_foundation(zone_id)
-				_update_construction_site(zone_id)
-				_update_construction_foundation(zone_id)
-				_update_construction_scaffold(zone_id)
-			_update_building_sites()
+			_update_building_render_frame()
 		return
 
 	var frame_start_us := Time.get_ticks_usec()
 	var rebuild_elapsed_ms := 0.0
 	var update_elapsed_ms := 0.0
 	if rebuild_due:
-		var rebuild_start_us := Time.get_ticks_usec()
-		_rebuild_multimeshes()
-		rebuild_elapsed_ms = float(Time.get_ticks_usec() - rebuild_start_us) / 1000.0
 		var update_start_us := Time.get_ticks_usec()
-		for key in multimeshes.keys():
-			_update_buildings_for_asset_part(key)
-		for key in deserted_multimeshes.keys():
-			_update_deserted_multimesh(key)
-		for zone_id in ZONE_IDS:
-			_update_foundation(zone_id)
-			_update_construction_site(zone_id)
-			_update_construction_foundation(zone_id)
-			_update_construction_scaffold(zone_id)
-		_update_building_sites()
+		_update_building_render_frame()
 		update_elapsed_ms = float(Time.get_ticks_usec() - update_start_us) / 1000.0
 	PerfDebug.record(
 		"buildings",
@@ -469,78 +432,83 @@ func _input(event: InputEvent) -> void:
 			for mmi in foundation_multimeshes.values():
 				mmi.visible = show_foundations
 
-func _update_buildings_for_asset_part(key: String) -> void:
-	if not multimeshes.has(key):
-		return
-	var asset_id: String = part_assets.get(key, "")
-	var part_index: int = part_indices.get(key, 0)
-	var buffer: PackedFloat32Array = simulation_node.get_building_transforms_for_asset_part(asset_id, part_index)
-	var mmi: MultiMeshInstance3D = multimeshes[key]
+func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
+	var keys: Array = multimeshes.keys()
+	keys.sort()
+	var asset_ids := PackedStringArray()
+	var requested_part_indices := PackedInt32Array()
+	for key_variant in keys:
+		var key := str(key_variant)
+		asset_ids.append(str(part_assets.get(key, "")))
+		requested_part_indices.append(int(part_indices.get(key, 0)))
+	var zone_ids := PackedInt32Array(ZONE_IDS)
+	var known_site_revision := -1 if force_site_mesh else building_site_revision
+	var frame: Dictionary = simulation_node.try_get_building_render_frame(
+		asset_ids,
+		requested_part_indices,
+		zone_ids,
+		known_site_revision
+	)
+	if bool(frame.get("busy", true)):
+		return false
+
+	var building_buffers: Array = frame.get("building_transforms", []) as Array
+	var deserted_buffers: Array = frame.get("deserted_transforms", []) as Array
+	for index in keys.size():
+		var key := str(keys[index])
+		if index < building_buffers.size() and multimeshes.has(key):
+			_set_multimesh_buffer(
+				multimeshes[key] as MultiMeshInstance3D,
+				building_buffers[index] as PackedFloat32Array
+			)
+		if index < deserted_buffers.size() and deserted_multimeshes.has(key):
+			_set_multimesh_buffer(
+				deserted_multimeshes[key] as MultiMeshInstance3D,
+				deserted_buffers[index] as PackedFloat32Array
+			)
+
+	var plot_buffers: Array = frame.get("plot_transforms", []) as Array
+	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array
+	var foundation_buffers: Array = frame.get("construction_foundation_transforms", []) as Array
+	var scaffold_buffers: Array = frame.get("construction_scaffold_transforms", []) as Array
+	for index in ZONE_IDS.size():
+		var zone_id: int = ZONE_IDS[index]
+		if index < plot_buffers.size() and foundation_multimeshes.has(zone_id):
+			_set_multimesh_buffer(
+				foundation_multimeshes[zone_id] as MultiMeshInstance3D,
+				plot_buffers[index] as PackedFloat32Array
+			)
+		if index < site_buffers.size() and construction_site_multimeshes.has(zone_id):
+			_set_multimesh_buffer(
+				construction_site_multimeshes[zone_id] as MultiMeshInstance3D,
+				site_buffers[index] as PackedFloat32Array
+			)
+		if index < foundation_buffers.size() and construction_foundation_multimeshes.has(zone_id):
+			_set_multimesh_buffer(
+				construction_foundation_multimeshes[zone_id] as MultiMeshInstance3D,
+				foundation_buffers[index] as PackedFloat32Array
+			)
+		if index < scaffold_buffers.size() and construction_scaffold_multimeshes.has(zone_id):
+			_set_multimesh_buffer(
+				construction_scaffold_multimeshes[zone_id] as MultiMeshInstance3D,
+				scaffold_buffers[index] as PackedFloat32Array
+			)
+
+	building_site_revision = int(frame.get("site_revision", building_site_revision))
+	if frame.has("site_mesh_data"):
+		_apply_building_site_mesh_data(frame["site_mesh_data"] as Dictionary)
+	return true
+
+func _set_multimesh_buffer(mmi: MultiMeshInstance3D, buffer: PackedFloat32Array) -> void:
 	var count := buffer.size() / 12
 	mmi.multimesh.instance_count = count
 	if count > 0:
 		mmi.multimesh.buffer = buffer
 
-func _update_deserted_multimesh(key: String) -> void:
-	if not deserted_multimeshes.has(key):
-		return
-	var asset_id: String = part_assets.get(key, "")
-	var part_index: int = part_indices.get(key, 0)
-	var buffer: PackedFloat32Array = simulation_node.get_deserted_building_transforms_for_asset_part(asset_id, part_index)
-	var mmi: MultiMeshInstance3D = deserted_multimeshes[key]
-	var count := buffer.size() / 12
-	mmi.multimesh.instance_count = count
-	if count > 0:
-		mmi.multimesh.buffer = buffer
-
-func _update_foundation(zone_id: int) -> void:
-	if not foundation_multimeshes.has(zone_id):
-		return
-	var buffer: PackedFloat32Array = simulation_node.get_building_plot_transforms(zone_id)
-	var mmi: MultiMeshInstance3D = foundation_multimeshes[zone_id]
-	var count := buffer.size() / 12
-	mmi.multimesh.instance_count = count
-	if count > 0:
-		mmi.multimesh.buffer = buffer
-
-func _update_construction_site(zone_id: int) -> void:
-	if not construction_site_multimeshes.has(zone_id):
-		return
-	var buffer: PackedFloat32Array = simulation_node.get_construction_site_transforms(zone_id)
-	var mmi: MultiMeshInstance3D = construction_site_multimeshes[zone_id]
-	var count := buffer.size() / 12
-	mmi.multimesh.instance_count = count
-	if count > 0:
-		mmi.multimesh.buffer = buffer
-
-func _update_construction_foundation(zone_id: int) -> void:
-	if not construction_foundation_multimeshes.has(zone_id):
-		return
-	var buffer: PackedFloat32Array = simulation_node.get_construction_foundation_transforms(zone_id)
-	var mmi: MultiMeshInstance3D = construction_foundation_multimeshes[zone_id]
-	var count := buffer.size() / 12
-	mmi.multimesh.instance_count = count
-	if count > 0:
-		mmi.multimesh.buffer = buffer
-
-func _update_construction_scaffold(zone_id: int) -> void:
-	if not construction_scaffold_multimeshes.has(zone_id):
-		return
-	var buffer: PackedFloat32Array = simulation_node.get_construction_scaffold_transforms(zone_id)
-	var mmi: MultiMeshInstance3D = construction_scaffold_multimeshes[zone_id]
-	var count := buffer.size() / 12
-	mmi.multimesh.instance_count = count
-	if count > 0:
-		mmi.multimesh.buffer = buffer
-
-func _update_building_sites(force: bool = false) -> void:
+func _apply_building_site_mesh_data(data: Dictionary) -> void:
 	if not building_site_ground_instance or not building_site_surface_instance:
 		return
-	var revision := int(simulation_node.get_building_site_revision())
-	if not force and revision == building_site_revision:
-		return
-	var data: Dictionary = simulation_node.get_building_site_mesh_data()
-	building_site_revision = int(data.get("revision", revision))
+	building_site_revision = int(data.get("revision", building_site_revision))
 	var ground_vertices := data.get("ground_vertices", PackedVector3Array()) as PackedVector3Array
 	var asphalt_vertices := data.get("asphalt_vertices", PackedVector3Array()) as PackedVector3Array
 	var concrete_vertices := data.get("concrete_vertices", PackedVector3Array()) as PackedVector3Array

@@ -30,6 +30,20 @@ pub(crate) struct BuildingSiteClient {
     pub(crate) surfaces: Vec<BuildingSiteSurfaceClient>,
 }
 
+/// Minimal immutable building-site data needed by asynchronous terrain jobs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BuildingSiteTerrainSnapshot {
+    pub(super) sites: Vec<BuildingSiteTerrainClient>,
+}
+
+/// One stable building-site footprint detached from the authoritative allocator.
+#[derive(Clone, Debug)]
+pub(super) struct BuildingSiteTerrainClient {
+    pub(super) building_idx: usize,
+    pub(super) footprint_world: Vec<Vector2>,
+    pub(super) support_height_m: f32,
+}
+
 impl BuildingSiteClient {
     pub(crate) fn bounds(&self) -> (f32, f32, f32, f32) {
         polygon_slice_bounds(&self.footprint_world)

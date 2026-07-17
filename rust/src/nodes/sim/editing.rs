@@ -23,6 +23,7 @@ use std::time::Instant;
 const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
+const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BulldozeTargetKind {
@@ -40,22 +41,12 @@ impl BulldozeTargetKind {
 }
 
 #[derive(Clone, Debug)]
-struct BulldozeTarget {
+pub(crate) struct BulldozeTarget {
     kind: BulldozeTargetKind,
     id: usize,
     center: Vector3,
     points: Vec<Vector3>,
     width_m: f32,
-}
-
-/// Result of one bulldoze command, plus flags used by the Godot bridge refresh path.
-pub(crate) struct BulldozeCommandResult {
-    /// Dictionary returned to GDScript.
-    pub(crate) payload: VarDictionary,
-    /// True when an object was actually deleted.
-    pub(crate) deleted: bool,
-    /// True when deletion changed the road surface/terrain clip system.
-    pub(crate) road_deleted: bool,
 }
 
 fn point_segment_distance_sq_xz(pos: Vector2, a: Vector3, b: Vector3) -> (f32, Vector3) {
@@ -111,15 +102,27 @@ impl SimCore {
             self.begin_terrain_stroke_internal();
         }
         if !self.terrain_stroke_has_changes {
-            self.push_undo_state(true, false, true, false);
+            self.push_undo_state(true, false, true);
             self.terrain_stroke_has_changes = true;
         }
+    }
+
+    fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
+        let radius = radius.max(0.0);
+        let patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
+            pos.x - radius,
+            pos.y - radius,
+            pos.x + radius,
+            pos.y + radius,
+        );
+        self.bump_terrain_payload_patch_generations(&patch_keys);
+        self.terrain_dirty = true;
     }
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
         self.terrain_dirty = true;
         self.cached_road_mesh_data = None;
-        self.bump_road_tool_surface_generation();
+        self.mark_network_render_dirty();
 
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
@@ -199,37 +202,39 @@ impl SimCore {
             .unwrap_or_else(Self::empty_bulldoze_target_dict)
     }
 
-    /// Deletes one bulldoze target at the cursor and returns the deleted target payload.
-    pub(crate) fn bulldoze_at_internal(
+    /// Resolves and captures one immutable bulldoze command for background execution.
+    pub(crate) fn prepare_bulldoze_command_internal(
         &mut self,
         world_x: f32,
         world_z: f32,
-    ) -> BulldozeCommandResult {
+    ) -> Option<(BulldozeTarget, VarDictionary)> {
         self.prepare_bulldoze_target_indices();
-        let Some(target) = self.resolve_bulldoze_target(world_x, world_z) else {
-            let mut dict = Self::empty_bulldoze_target_dict();
-            dict.set("deleted", false);
-            dict.set("reason", GString::from("nothing targetable"));
-            return BulldozeCommandResult {
-                payload: dict,
-                deleted: false,
-                road_deleted: false,
-            };
-        };
+        let target = self.resolve_bulldoze_target(world_x, world_z)?;
+        let payload = self.bulldoze_target_dict(&target, false);
+        Some((target, payload))
+    }
 
-        let deleted = match target.kind {
+    /// Executes a previously resolved target if it still identifies the same object.
+    ///
+    /// Returns whether the deleted object was a road, or `None` when validation/deletion failed.
+    pub(crate) fn bulldoze_prepared_target_internal(
+        &mut self,
+        target: BulldozeTarget,
+    ) -> Option<bool> {
+        self.prepare_bulldoze_target_indices();
+        let current = self.resolve_bulldoze_target(target.center.x, target.center.z)?;
+        if current.kind != target.kind || current.id != target.id {
+            return None;
+        }
+        let road_deleted = current.kind == BulldozeTargetKind::Road;
+        self.delete_bulldoze_target(&current)
+            .then_some(road_deleted)
+    }
+
+    fn delete_bulldoze_target(&mut self, target: &BulldozeTarget) -> bool {
+        match target.kind {
             BulldozeTargetKind::Building => self.bulldoze_building(target.id),
             BulldozeTargetKind::Road => self.bulldoze_road_edge(target.id),
-        };
-        let road_deleted = deleted && target.kind == BulldozeTargetKind::Road;
-        let mut dict = self.bulldoze_target_dict(&target, deleted);
-        if !deleted {
-            dict.set("reason", GString::from("target no longer exists"));
-        }
-        BulldozeCommandResult {
-            payload: dict,
-            deleted,
-            road_deleted,
         }
     }
 
@@ -397,7 +402,9 @@ impl SimCore {
         let dirty_bounds = self.allocator.site_world_bounds(building_idx);
         self.allocator
             .accumulate_pending_site_dirty_bounds(dirty_bounds);
-        self.push_undo_state_with_runtime(false, false, false, true, true);
+        if !self.push_building_removal_undo(building_idx) {
+            return false;
+        }
         let _ = self.allocator.take_pending_site_dirty_bounds();
         self.agents.evacuate_building_for_removal(
             building_idx,
@@ -414,12 +421,14 @@ impl SimCore {
             &mut self.logistics,
         );
         if !removed {
+            self.undo_stack.pop_back();
             return false;
         }
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
         self.rebuild_building_entrances_internal();
+        self.seal_building_removal_undo();
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
         true
@@ -449,7 +458,7 @@ impl SimCore {
             }
         }
 
-        self.push_undo_state(false, false, true, true);
+        self.push_road_removal_undo(affected_edges.clone(), affected_nodes.clone(), edge_idx);
         self.transit_network.mark_surface_dirty_from_sets(
             &self.region_graph,
             &affected_edges,
@@ -492,7 +501,6 @@ impl SimCore {
         self.mark_network_render_dirty();
         self.terrain_dirty = true;
         self.cached_road_mesh_data = None;
-        self.bump_road_tool_surface_generation();
         true
     }
 
@@ -522,7 +530,7 @@ impl SimCore {
 
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.push_undo_state(true, false, true, false);
+        self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
@@ -546,7 +554,7 @@ impl SimCore {
             .sculpt(center_x, center_y, radius_cells, strength);
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
-        self.terrain_dirty = true;
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Moves terrain toward one target rendered height in a circular area.
@@ -557,7 +565,7 @@ impl SimCore {
         target_height_m: f32,
         strength: f32,
     ) {
-        self.push_undo_state(true, false, true, false);
+        self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap.level_to_height(
@@ -574,7 +582,7 @@ impl SimCore {
 
     /// Smooths terrain toward the local neighborhood average in a circular area.
     pub fn smooth_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.push_undo_state(true, false, true, false);
+        self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
@@ -595,7 +603,7 @@ impl SimCore {
         end_height_m: f32,
         strength: f32,
     ) {
-        self.push_undo_state(true, false, true, false);
+        self.push_undo_state(true, false, true);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
         let (start_x, start_y) = self
             .heightmap
@@ -641,7 +649,7 @@ impl SimCore {
         );
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
-        self.terrain_dirty = true;
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Applies one batched terrain-smooth step without running deferred rebuild work yet.
@@ -658,7 +666,7 @@ impl SimCore {
             .smooth(center_x, center_y, radius_cells, strength);
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
-        self.terrain_dirty = true;
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Applies one batched terrain-slope step without running deferred rebuild work yet.
@@ -695,7 +703,7 @@ impl SimCore {
         );
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
-        self.terrain_dirty = true;
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
     /// Sets the classification of an edge.
@@ -886,7 +894,7 @@ impl SimCore {
 
         let t_undo = Instant::now();
         if !self.benchmark_mode {
-            self.push_undo_state(false, false, true, false);
+            self.push_network_undo_for_polyline(&fixed_points, ROAD_UNDO_TOPOLOGY_MARGIN_M);
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
@@ -1082,7 +1090,10 @@ impl SimCore {
                 .copied()
                 .collect();
 
-            self.push_undo_state(false, false, true, false);
+            self.push_network_undo_for_local_topology(
+                affected_edges.clone(),
+                HashSet::from([node_id as u32]),
+            );
             self.region_graph.move_node(node_id as u32, pos);
             for &edge_idx in &affected_edges {
                 let length = self
@@ -1126,11 +1137,11 @@ impl SimCore {
         to_edge: i32,
         to_lane: i32,
     ) {
-        self.push_undo_state(false, false, true, false);
         traffic_log!(
             "[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}"
         );
         if (node_id as usize) < self.region_graph.node_count() {
+            self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
             let already = self
@@ -1181,8 +1192,8 @@ impl SimCore {
 
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
-        self.push_undo_state(false, false, true, false);
         if (node_id as usize) < self.region_graph.node_count() {
+            self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
             let keys: Vec<_> = self
                 .region_graph
                 .node(node_id)
@@ -1221,7 +1232,7 @@ impl SimCore {
             return;
         }
 
-        self.push_undo_state(false, false, true, false);
+        self.push_network_undo_for_local_topology(HashSet::new(), HashSet::from([node_id]));
         self.region_graph
             .remove_lane_connection(node_id, (from_edge as usize, from_lane as i8));
 
@@ -1251,7 +1262,10 @@ impl SimCore {
         if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return;
         }
-        self.push_undo_state(false, false, true, false);
+        self.push_network_undo_for_local_topology(
+            HashSet::from([edge_id as usize]),
+            HashSet::from([node_id]),
+        );
         self.region_graph
             .set_crosswalk_override(node_id, edge_id as usize, enabled);
 
@@ -1298,7 +1312,6 @@ impl SimCore {
             .transit_network
             .road_surface
             .mark_render_patches_for_chunk_grading_envelopes(
-                &self.region_graph,
                 &mut self.heightmap,
                 &dirty_chunks,
                 ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
@@ -1555,7 +1568,7 @@ impl SimCore {
 mod tests {
     use super::{BulldozeTargetKind, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
     use crate::nodes::sim::core::PendingDemandSpawnAction;
-    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
     use crate::simulation::economy::agents::AgentSystem;
@@ -1574,6 +1587,7 @@ mod tests {
     use crate::simulation::water::WaterSystem;
     use crate::simulation::zoning::{ZoneType, ZoningSystem};
     use godot::prelude::{Vector2, Vector3};
+    use std::collections::HashSet;
     use std::collections::{HashMap, VecDeque};
 
     fn test_core() -> SimCore {
@@ -1617,13 +1631,69 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
+            road_locked_terrain_patch_margins: std::collections::BTreeMap::new(),
+            building_site_owned_terrain_patch_keys: HashSet::new(),
+            engineered_terrain_patch_keys: Vec::new(),
+            engineered_terrain_patch_margins: std::collections::BTreeMap::new(),
+            terrain_payload_generation_counter: 1,
+            terrain_payload_global_generation: 1,
+            terrain_payload_patch_generations: HashMap::new(),
             cached_road_mesh_data: None,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    fn test_building(asset_id: &str, center_x: f32, support_height_m: f32) -> Building {
+        Building {
+            center_x,
+            center_y: 0.0,
+            support_height_m,
+            width_cells: 2,
+            depth_cells: 2,
+            zone_profile_runtime_id: 0,
+            parcel_id: 0,
+            zone_type: ZoneType::Residential,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.5,
+            side_offset: 1.0,
+            is_deserted: false,
+            budget_distress: false,
+            edge_idx: usize::MAX,
+            side: 1,
+            cell_x: 0,
+            cell_y: 0,
+            occupancy: 0,
+            worker_count: 0,
+            service_funding_override: -1.0,
+            asset_id: asset_id.to_owned(),
+            level: 1,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
+            broken: false,
+            economy_profile_runtime_id: 0,
+            economy_broken: false,
+            resource_inventory: Vec::new(),
+            revenue: 0.0,
+            operating_budget: 500.0,
+            profit_tax_budget_baseline: 500.0,
+            last_day_profit: 0.0,
+            shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
+            daily_city_funded_input_cost: 0.0,
+            daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
+            recent_household_sales_value: 0.0,
+            commercial_activity_floor_scale: 0.0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
         }
     }
 
@@ -1755,7 +1825,16 @@ mod tests {
         core.zoning
             .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &core.region_graph)
             .expect("parcel");
-        assert!(!core.zoning.parcels().is_empty());
+        core.zoning
+            .place_or_rezone_default_parcel_at(0.0, 20.0, residential, &core.region_graph)
+            .expect("second parcel");
+        let original_parcel_ids = core
+            .zoning
+            .parcels()
+            .iter()
+            .map(|parcel| parcel.id())
+            .collect::<Vec<_>>();
+        assert_eq!(original_parcel_ids.len(), 2);
 
         let target = core.resolve_bulldoze_target(0.0, 0.0).expect("road target");
         assert_eq!(target.kind, BulldozeTargetKind::Road);
@@ -1765,7 +1844,7 @@ mod tests {
             "bulldoze targeting must stay close to the actual road footprint"
         );
 
-        assert!(core.bulldoze_road_edge(target.id));
+        assert_eq!(core.bulldoze_prepared_target_internal(target), Some(true));
         assert!(core.region_graph.edge(0).deleted);
         assert!(core.zoning.parcels().is_empty());
         assert!(
@@ -1779,7 +1858,15 @@ mod tests {
 
         assert!(core.undo_action_internal());
         assert!(!core.region_graph.edge(0).deleted);
-        assert!(!core.zoning.parcels().is_empty());
+        assert_eq!(
+            core.zoning
+                .parcels()
+                .iter()
+                .map(|parcel| parcel.id())
+                .collect::<Vec<_>>(),
+            original_parcel_ids,
+            "sparse zoning undo must preserve stable parcel ids and storage order"
+        );
         assert!(
             core.region_graph
                 .get_edges_near_point(Vector3::new(0.0, 0.0, 0.0), 8.0)
@@ -1802,7 +1889,7 @@ mod tests {
                 planned_minute_of_day: 60,
             });
 
-        core.push_undo_state_with_runtime(false, false, false, false, true);
+        core.push_undo_state_with_runtime(false, false, false, true);
         core.pending_demand_spawns.clear();
 
         assert!(core.undo_action_internal());
@@ -1816,6 +1903,34 @@ mod tests {
         assert_eq!(pending.action.asset_id, "building.residential.test");
         assert_eq!(pending.planned_day_index, 2);
         assert_eq!(pending.planned_minute_of_day, 60);
+    }
+
+    #[test]
+    fn building_bulldoze_undo_restores_swap_removed_building_and_site() {
+        let mut core = test_core();
+        core.allocator.buildings = vec![
+            test_building("building.removed", -20.0, 3.0),
+            test_building("building.moved", 20.0, 7.0),
+        ];
+        core.allocator
+            .rebuild_building_site_clients(core.zoning.config.zone_cell_m);
+        core.allocator.rebuild_zone_index();
+        let original_sites = core.allocator.building_sites.clone();
+
+        assert!(core.bulldoze_building(0));
+        assert_eq!(core.allocator.buildings.len(), 1);
+        assert_eq!(core.allocator.buildings[0].asset_id, "building.moved");
+
+        assert!(core.undo_action_internal());
+        assert_eq!(core.allocator.buildings.len(), 2);
+        assert_eq!(core.allocator.buildings[0].asset_id, "building.removed");
+        assert_eq!(core.allocator.buildings[1].asset_id, "building.moved");
+        assert_eq!(core.allocator.building_sites.len(), original_sites.len());
+        for (restored, original) in core.allocator.building_sites.iter().zip(&original_sites) {
+            assert_eq!(restored.footprint_world, original.footprint_world);
+            assert_eq!(restored.lot_footprint_world, original.lot_footprint_world);
+            assert_eq!(restored.support_height_m, original.support_height_m);
+        }
     }
 
     #[test]
@@ -1912,7 +2027,15 @@ mod tests {
         let stale_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
         assert!(!stale_road_locked_patches.is_empty());
         assert!(!core.refined_terrain_patch_cache.is_empty());
-        core.heightmap.clear_dirty_render_patches();
+        let dirty_keys = core
+            .heightmap
+            .dirty_render_patches()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for (patch_x, patch_z) in dirty_keys {
+            core.heightmap.clear_render_patch_dirty(patch_x, patch_z);
+        }
 
         assert!(core.undo_action_internal());
         assert_eq!(core.region_graph.edge_count(), 0);
@@ -1936,7 +2059,7 @@ mod tests {
     }
 
     #[test]
-    fn undoing_road_restore_reuses_previous_render_cache() {
+    fn undoing_road_restore_invalidates_derived_render_cache() {
         let mut core = test_core();
         core.benchmark_mode = false;
         core.add_road_internal(
@@ -1948,10 +2071,8 @@ mod tests {
             1,
         );
         finalize_network_render_for_test(&mut core);
-        let first_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
-        let first_refined_cache_len = core.refined_terrain_patch_cache.len();
-        assert!(!first_road_locked_patches.is_empty());
-        assert!(first_refined_cache_len > 0);
+        assert!(!core.road_locked_terrain_patch_keys.is_empty());
+        assert!(!core.refined_terrain_patch_cache.is_empty());
 
         core.add_road_internal(
             vec![
@@ -1966,14 +2087,10 @@ mod tests {
 
         assert!(core.undo_action_internal());
         assert_eq!(core.region_graph.edge_count(), 1);
-        assert_eq!(
-            core.road_locked_terrain_patch_keys,
-            first_road_locked_patches
-        );
-        assert_eq!(
-            core.refined_terrain_patch_cache.len(),
-            first_refined_cache_len
-        );
+        assert!(core.road_locked_terrain_patch_keys.is_empty());
+        assert!(core.refined_terrain_patch_cache.is_empty());
+        assert!(core.cached_road_mesh_data.is_none());
+        assert!(core.network_dirty);
     }
 
     #[test]

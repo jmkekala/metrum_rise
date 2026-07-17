@@ -2,6 +2,51 @@
 
 use super::*;
 
+fn test_cached_cdt_window(
+    min_x_mm: i64,
+    mesh_result: Result<TerrainCdtMesh, TerrainCdtError>,
+) -> CachedRefinedTerrainCdtWindow {
+    CachedRefinedTerrainCdtWindow {
+        key: RefinedTerrainCdtWindowKey {
+            min_x_mm,
+            min_z_mm: 0,
+            max_x_mm: min_x_mm + 1_000,
+            max_z_mm: 1_000,
+            fingerprint: min_x_mm as u64,
+        },
+        input_road_loops: 1,
+        input_source_samples: 0,
+        cdt_patch: TerrainCdtPatch::new(
+            min_x_mm as f64 / 1_000.0,
+            0.0,
+            min_x_mm as f64 / 1_000.0 + 1.0,
+            1.0,
+            [0.0; 4],
+        ),
+        mesh_result,
+        cdt_ms: 0.0,
+        reused: false,
+    }
+}
+
+fn empty_test_cdt_mesh() -> TerrainCdtMesh {
+    TerrainCdtMesh {
+        vertices: Vec::new(),
+        emitted_faces: Vec::new(),
+        triangles: Vec::new(),
+        terrain_triangle_sources: Vec::new(),
+        retaining_wall_triangles: Vec::new(),
+        retaining_wall_triangle_sources: Vec::new(),
+        stats: empty_cdt_stats(),
+        invalid_constraint_samples: Vec::new(),
+        road_seam_face_samples: Vec::new(),
+        retaining_wall_face_samples: Vec::new(),
+        tie_in_widened_samples: Vec::new(),
+        seam_quality_samples: Vec::new(),
+        unpreserved_road_constraint_samples: Vec::new(),
+    }
+}
+
 #[test]
 fn terrain_cdt_structured_face_sources_preserve_span_fields() {
     let source = span_source();
@@ -207,6 +252,63 @@ fn terrain_cdt_constraint_conflicts_include_unpreserved_road_edges() {
 }
 
 #[test]
+fn cached_refined_patch_rejects_partial_window_success() {
+    let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    cached.requires_road_clipping = true;
+    cached.clip_source_count = 2;
+    cached.road_clip_source_count = 1;
+    cached.road_clip_loop_count = 1;
+    cached.site_clip_loop_count = 1;
+    cached.input_road_loops = 2;
+    cached.windows = vec![
+        test_cached_cdt_window(0, Ok(empty_test_cdt_mesh())),
+        test_cached_cdt_window(2_000, Err(TerrainCdtError::InvalidPatch)),
+    ];
+
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        Some("invalid_patch")
+    );
+}
+
+#[test]
+fn road_locked_refined_patch_rejects_site_only_clip_payload() {
+    assert_eq!(
+        SimulationNode::terrain_clip_input_failure_label(true, 1, 0, 0, 1, 1, None,),
+        Some("missing_road_clip_sources")
+    );
+    assert_eq!(
+        SimulationNode::terrain_clip_input_failure_label(false, 1, 0, 0, 1, 1, None,),
+        None,
+        "site-only patches remain valid when no grounded road owns the patch"
+    );
+}
+
+#[test]
+fn refined_patch_rejects_dropped_clip_loop_before_cdt() {
+    assert_eq!(
+        SimulationNode::terrain_clip_input_failure_label(true, 2, 1, 1, 1, 1, None,),
+        Some("incomplete_terrain_clip_windows")
+    );
+}
+
+#[test]
+fn road_clip_failure_cannot_be_masked_by_site_loops() {
+    assert_eq!(
+        SimulationNode::terrain_clip_input_failure_label(
+            true,
+            1,
+            0,
+            0,
+            1,
+            1,
+            Some("terrain_clip_missing_output_boundary_owner"),
+        ),
+        Some("terrain_clip_missing_output_boundary_owner")
+    );
+}
+
+#[test]
 fn terrain_cdt_conflicting_road_height_error_has_stable_label() {
     assert_eq!(
         SimulationNode::terrain_cdt_error_label(&TerrainCdtError::ConflictingRoadBoundaryHeight),
@@ -301,6 +403,9 @@ fn road_clip_query_metadata_keeps_clip_failure_visible_without_loops() {
     let query = RoadClipLoopQuery {
         cdt_road_loops: Vec::new(),
         source_count: 1,
+        road_source_count: 1,
+        road_loop_count: 0,
+        site_loop_count: 0,
         clip_error_label: Some("terrain_clip_missing_output_boundary_owner"),
     };
 
@@ -309,6 +414,9 @@ fn road_clip_query_metadata_keeps_clip_failure_visible_without_loops() {
     assert_eq!(status, "failed");
     assert_eq!(error, "terrain_clip_missing_output_boundary_owner");
     assert_eq!(source_count, 1);
+    assert!(SimulationNode::road_clip_query_requires_road_clipping(
+        &query, false
+    ));
     assert!(
         query.cdt_road_loops.is_empty(),
         "the failure status must survive even when there are no loops to upload"
@@ -320,6 +428,9 @@ fn road_clip_query_metadata_marks_absent_road_clip_as_ok() {
     let query = RoadClipLoopQuery {
         cdt_road_loops: Vec::new(),
         source_count: 0,
+        road_source_count: 0,
+        road_loop_count: 0,
+        site_loop_count: 0,
         clip_error_label: None,
     };
 
@@ -328,6 +439,9 @@ fn road_clip_query_metadata_marks_absent_road_clip_as_ok() {
     assert_eq!(status, "ok");
     assert_eq!(error, "none");
     assert_eq!(source_count, 0);
+    assert!(!SimulationNode::road_clip_query_requires_road_clipping(
+        &query, false
+    ));
 }
 
 #[test]

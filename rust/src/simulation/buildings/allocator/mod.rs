@@ -320,7 +320,7 @@ pub struct BuildingAllocator {
     pub registry: AssetRegistry,
 }
 
-use site::BuildingSiteClient;
+pub(crate) use site::{BuildingSiteClient, BuildingSiteTerrainSnapshot};
 
 /// Derived runtime binding from an asset-side `economy_profile` reference.
 #[derive(Clone, Copy, Debug, Default)]

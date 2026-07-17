@@ -8,6 +8,35 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 
 impl RoadSurfaceSystem {
+    pub(super) fn collect_spatial_query_contributors_for_bounds(
+        &self,
+        min_x: f64,
+        min_z: f64,
+        max_x: f64,
+        max_z: f64,
+    ) -> (Vec<usize>, Vec<u32>) {
+        let min_chunk = Self::query_chunk_coords_for_world(min_x.min(max_x), min_z.min(max_z));
+        let max_chunk = Self::query_chunk_coords_for_world(min_x.max(max_x), min_z.max(max_z));
+        let mut edge_indices = Vec::new();
+        let mut node_ids = Vec::new();
+        for cx in min_chunk.0..=max_chunk.0 {
+            for cz in min_chunk.1..=max_chunk.1 {
+                let chunk = (cx, cz);
+                if let Some(edges) = self.query_chunk_spans.get(&chunk) {
+                    edge_indices.extend(edges.iter().copied());
+                }
+                if let Some(nodes) = self.query_chunk_nodes.get(&chunk) {
+                    node_ids.extend(nodes.iter().copied());
+                }
+            }
+        }
+        edge_indices.sort_unstable();
+        edge_indices.dedup();
+        node_ids.sort_unstable();
+        node_ids.dedup();
+        (edge_indices, node_ids)
+    }
+
     pub(super) fn collect_query_contributors(
         &self,
         min_chunk: SurfaceChunkKey,
@@ -121,24 +150,26 @@ impl RoadSurfaceSystem {
         }
     }
 
-    pub(super) fn visit_visible_top_surface_query_triangles<F>(
+    pub(super) fn visit_visible_top_surface_query_triangles<Edges, Nodes, F>(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
-        edge_indices: &[usize],
-        node_ids: &[u32],
+        edge_indices: Edges,
+        node_ids: Nodes,
         visitor: &mut F,
     ) where
+        Edges: IntoIterator<Item = usize>,
+        Nodes: IntoIterator<Item = u32>,
         F: FnMut([RoadVec3; 3]),
     {
-        for &node_id in node_ids {
+        for node_id in node_ids {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
             self.visit_visible_node_piece_triangles(graph, terrain, node_id, piece, visitor);
         }
 
-        for &edge_idx in edge_indices {
+        for edge_idx in edge_indices {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
@@ -146,17 +177,19 @@ impl RoadSurfaceSystem {
         }
     }
 
-    pub(super) fn visit_visible_earthwork_query_triangles<F>(
+    pub(super) fn visit_visible_earthwork_query_triangles<Edges, Nodes, F>(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
-        edge_indices: &[usize],
-        node_ids: &[u32],
+        edge_indices: Edges,
+        node_ids: Nodes,
         visitor: &mut F,
     ) where
+        Edges: IntoIterator<Item = usize>,
+        Nodes: IntoIterator<Item = u32>,
         F: FnMut([RoadVec3; 3]),
     {
-        for &edge_idx in edge_indices {
+        for edge_idx in edge_indices {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
@@ -166,7 +199,7 @@ impl RoadSurfaceSystem {
             self.visit_span_piece_earthwork_triangles(piece, visitor);
         }
 
-        for &node_id in node_ids {
+        for node_id in node_ids {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };

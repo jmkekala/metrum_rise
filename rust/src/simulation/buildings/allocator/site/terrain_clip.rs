@@ -1,6 +1,6 @@
 //! Terrain-patch invalidation and authoritative CDT exclusion loops for building sites.
 
-use super::model::BuildingSiteClient;
+use super::model::{BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
@@ -11,25 +11,45 @@ use crate::simulation::terrain::cdt::{
 const BUILDING_SITE_FOOTPRINT_GROUP_MASK: u64 = 0x8000_0000_0000_0000;
 
 impl BuildingAllocator {
-    pub(crate) fn terrain_render_patch_keys_with_building_site_margin(
+    pub(crate) fn terrain_site_snapshot_for_world_bounds(
         &self,
-        terrain: &TerrainSystem,
-        margin_m: f32,
-    ) -> Vec<(usize, usize)> {
-        let margin_m = margin_m.max(0.0);
-        let mut keys = Vec::new();
-        for site in &self.building_sites {
-            let (min_x, min_z, max_x, max_z) = site.bounds();
-            keys.extend(terrain.render_patch_keys_for_world_bounds(
-                min_x - margin_m,
-                min_z - margin_m,
-                max_x + margin_m,
-                max_z + margin_m,
-            ));
-        }
-        keys.sort_unstable();
-        keys.dedup();
-        keys
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> BuildingSiteTerrainSnapshot {
+        let sites = self
+            .site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z)
+            .into_iter()
+            .filter_map(|building_idx| {
+                let site = self.building_sites.get(building_idx)?;
+                site.overlaps_bounds(min_x, min_z, max_x, max_z).then(|| {
+                    BuildingSiteTerrainClient {
+                        building_idx,
+                        footprint_world: site.footprint_world.clone(),
+                        support_height_m: site.support_height_m,
+                    }
+                })
+            })
+            .collect();
+        BuildingSiteTerrainSnapshot { sites }
+    }
+
+    /// Returns whether the chunk-index candidates contain a site overlapping the bounds.
+    pub(crate) fn has_building_site_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> bool {
+        self.site_candidate_indices_for_bounds(min_x, min_z, max_x, max_z)
+            .into_iter()
+            .any(|building_idx| {
+                self.building_sites
+                    .get(building_idx)
+                    .is_some_and(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
+            })
     }
 
     pub(crate) fn mark_building_site_terrain_bounds_dirty(
@@ -69,12 +89,51 @@ impl BuildingAllocator {
     }
 }
 
+impl BuildingSiteTerrainSnapshot {
+    pub(crate) fn terrain_cdt_site_loops_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<TerrainCdtRoadLoop> {
+        self.sites
+            .iter()
+            .filter(|site| site.overlaps_bounds(min_x, min_z, max_x, max_z))
+            .map(building_site_snapshot_cdt_loop)
+            .collect()
+    }
+}
+
+impl BuildingSiteTerrainClient {
+    fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
+        let (site_min_x, site_min_z, site_max_x, site_max_z) =
+            super::geometry::polygon_slice_bounds(&self.footprint_world);
+        site_min_x <= max_x && site_max_x >= min_x && site_min_z <= max_z && site_max_z >= min_z
+    }
+}
+
 fn building_site_cdt_loop(building_idx: usize, site: &BuildingSiteClient) -> TerrainCdtRoadLoop {
+    building_site_cdt_loop_from_parts(building_idx, &site.footprint_world, site.support_height_m)
+}
+
+fn building_site_snapshot_cdt_loop(site: &BuildingSiteTerrainClient) -> TerrainCdtRoadLoop {
+    building_site_cdt_loop_from_parts(
+        site.building_idx,
+        &site.footprint_world,
+        site.support_height_m,
+    )
+}
+
+fn building_site_cdt_loop_from_parts(
+    building_idx: usize,
+    footprint_world: &[godot::prelude::Vector2],
+    support_height_m: f32,
+) -> TerrainCdtRoadLoop {
     let stable_piece_id = BUILDING_SITE_FOOTPRINT_GROUP_MASK | building_idx as u64;
-    let vertices = site
-        .footprint_world
+    let vertices = footprint_world
         .iter()
-        .map(|point| TerrainCdtVertex::new(point.x as f64, site.support_height_m, point.y as f64))
+        .map(|point| TerrainCdtVertex::new(point.x as f64, support_height_m, point.y as f64))
         .collect::<Vec<_>>();
     let source_edges = vertices
         .iter()

@@ -21,6 +21,17 @@ pub enum LaneType {
     Foot,
 }
 
+/// Asphalt segment that owns one visible zebra crossing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrosswalkMarking {
+    /// Road edge whose junction mouth contains the crossing.
+    pub edge_id: usize,
+    /// First asphalt-edge endpoint of the stripe corridor.
+    pub start: Vector3,
+    /// Opposite asphalt-edge endpoint of the stripe corridor.
+    pub end: Vector3,
+}
+
 /// A single travel lane through a road or intersection.
 #[derive(Clone)]
 pub struct Lane {
@@ -41,8 +52,10 @@ pub struct Lane {
     pub cum_dist: Vec<f32>,
     /// The travel type of this lane.
     pub lane_type: LaneType,
-    /// Whether this is a visual crosswalk.
-    pub is_crosswalk: bool,
+    /// Road edge crossed by this pedestrian connection in either travel direction.
+    pub crosswalk_edge_id: Option<usize>,
+    /// Exact asphalt-only segment used to render this crossing, when owned by this lane.
+    pub crosswalk_marking: Option<CrosswalkMarking>,
     /// Reachable lanes from the end of this lane.
     pub next_lanes: Vec<usize>,
     /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
@@ -60,7 +73,8 @@ impl Default for Lane {
             frontage_delay_penalty_s: 0.0,
             cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
-            is_crosswalk: false,
+            crosswalk_edge_id: None,
+            crosswalk_marking: None,
             next_lanes: Vec::new(),
             node_id: usize::MAX,
         }

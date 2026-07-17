@@ -132,7 +132,8 @@ pub fn build_one_lane(
         frontage_delay_penalty_s: 0.0,
         cum_dist,
         lane_type,
-        is_crosswalk: false,
+        crosswalk_edge_id: None,
+        crosswalk_marking: None,
         next_lanes: Vec::new(),
         node_id: usize::MAX,
     });

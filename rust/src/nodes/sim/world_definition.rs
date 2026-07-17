@@ -352,7 +352,6 @@ impl SimCore {
         {
             self.watermap = water;
             self.authored_water_patch_fill_debug_cache.clear();
-            self.water_patch_mesh_cache.clear();
             self.water_dirty = true;
             return Ok(());
         }
@@ -450,7 +449,6 @@ impl SimCore {
 
         self.watermap = water;
         self.authored_water_patch_fill_debug_cache = fill_debug_cache;
-        self.water_patch_mesh_cache.clear();
         self.water_dirty = true;
         Ok(())
     }
@@ -523,7 +521,14 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
-        self.water_patch_mesh_cache.clear();
+        self.refined_terrain_patch_cache.clear();
+        self.road_locked_terrain_patch_keys.clear();
+        self.road_locked_terrain_patch_margins.clear();
+        self.building_site_owned_terrain_patch_keys.clear();
+        self.engineered_terrain_patch_keys.clear();
+        self.engineered_terrain_patch_margins.clear();
+        self.terrain_payload_patch_generations.clear();
+        self.cached_road_mesh_data = None;
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
@@ -979,6 +984,7 @@ mod tests {
     use crate::simulation::water::WaterSystem;
     use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector2;
+    use std::collections::HashSet;
     use std::collections::{HashMap, VecDeque};
 
     fn test_core_with_small_world() -> SimCore {
@@ -1023,8 +1029,14 @@ mod tests {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
+            road_locked_terrain_patch_margins: std::collections::BTreeMap::new(),
+            building_site_owned_terrain_patch_keys: HashSet::new(),
+            engineered_terrain_patch_keys: Vec::new(),
+            engineered_terrain_patch_margins: std::collections::BTreeMap::new(),
+            terrain_payload_generation_counter: 1,
+            terrain_payload_global_generation: 1,
+            terrain_payload_patch_generations: HashMap::new(),
             cached_road_mesh_data: None,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,

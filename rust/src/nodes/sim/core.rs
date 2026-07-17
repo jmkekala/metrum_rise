@@ -16,7 +16,7 @@ mod water_preview;
 pub use budget::CityTreasury;
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
-pub use thread::SimCommand;
+pub(crate) use thread::SimCommand;
 
 pub(crate) use budget::{
     DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER, SERVICE_BUILD_COST_PER_LOT_CELL,
@@ -27,8 +27,7 @@ pub(crate) use road_preview::{
     road_tool_snapshots_from_core, run_road_preview_worker,
 };
 pub(crate) use snapshot::{
-    NetworkRenderRuntimeSnapshot, SimulationRuntimeSnapshot, SimulationSnapshot,
-    WaterRuntimeSnapshot,
+    BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, WaterRuntimeSnapshot,
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use terrain_payloads::{

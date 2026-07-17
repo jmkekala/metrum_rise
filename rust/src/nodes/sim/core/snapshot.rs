@@ -4,16 +4,17 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::state::{PendingDemandSpawnAction, SimCore};
-use super::terrain_payloads::{CachedRefinedTerrainPatch, RefinedTerrainPatchCacheKey};
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::render::lane_pose::sample_lane_pose;
-use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::{AgentSystem, MODE_CAR, transit_is_visible};
-use crate::simulation::economy::households::HouseholdSystem;
-use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
+use crate::simulation::economy::agents::{Agent, MODE_CAR, transit_is_visible};
+use crate::simulation::economy::households::HouseholdBuildingUndo;
+use crate::simulation::economy::logistics::ShipmentBuildingUndo;
+use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::{Lane, LaneType};
-use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
-use crate::simulation::zoning::ZoningSystem;
+use crate::simulation::network::render::NetworkMeshData;
+use crate::simulation::network::surface::CURB_STEP_HEIGHT_M;
+use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
 const PEDESTRIAN_SURFACE_CLEARANCE_M: f32 = 0.02;
@@ -116,29 +117,31 @@ pub(crate) struct WaterRuntimeSnapshot {
     pub baseline_depth: Vec<f32>,
 }
 
-/// Derived road render state that matches an undo graph snapshot.
-pub(crate) struct NetworkRenderRuntimeSnapshot {
-    /// Compiled road-surface cache for the snapped road graph.
-    pub(crate) road_surface: RoadSurfaceSystem,
-    /// Refined terrain patches prepared for road-locked render patches.
-    pub(crate) refined_terrain_patch_cache:
-        HashMap<RefinedTerrainPatchCacheKey, CachedRefinedTerrainPatch>,
-    /// Render patches that were road-locked when the snapshot was captured.
-    pub(crate) road_locked_terrain_patch_keys: Vec<(usize, usize)>,
+/// Operation-local runtime state retained by one undo entry.
+pub(crate) enum SimulationRuntimeSnapshot {
+    /// Delayed demand spawns captured by isolated runtime tests/tools.
+    PendingDemandSpawns(VecDeque<PendingDemandSpawnAction>),
+    /// Records changed by one building bulldoze operation.
+    BuildingRemoval(BuildingRemovalUndo),
 }
 
-/// Building and economy runtime state that must move together for entity deletion undo.
-pub(crate) struct SimulationRuntimeSnapshot {
-    /// Building allocator, indices, derived site data, and occupancy-facing metadata.
-    pub(crate) allocator: BuildingAllocator,
-    /// Live agent SoA state after lifecycle eviction/remapping.
-    pub(crate) agents: AgentSystem,
-    /// Household records that reference building indices.
-    pub(crate) households: HouseholdSystem,
-    /// Freight reservations and shipment state that reference buildings.
-    pub(crate) logistics: ShipmentSystem,
-    /// Delayed demand spawns that can later mutate allocator and zoning state.
-    pub(crate) pending_demand_spawns: VecDeque<PendingDemandSpawnAction>,
+/// Bounded inverse journal for one building deletion.
+pub(crate) struct BuildingRemovalUndo {
+    pub(crate) building_idx: usize,
+    pub(crate) original_building_count: usize,
+    pub(crate) expected_post_building_ref_revision: u64,
+    pub(crate) original_site_count: usize,
+    pub(crate) original_agent_count: usize,
+    pub(crate) original_household_count: usize,
+    pub(crate) original_shipment_count: usize,
+    pub(crate) original_request_failure_count: usize,
+    pub(crate) buildings: Vec<(usize, Building)>,
+    pub(crate) sites: Vec<(usize, BuildingSiteClient)>,
+    pub(crate) agents: Vec<(usize, Agent)>,
+    pub(crate) removed_carriers: Vec<(usize, Agent)>,
+    pub(crate) households: HouseholdBuildingUndo,
+    pub(crate) logistics: ShipmentBuildingUndo,
+    pub(crate) dirty_bounds: Option<(f32, f32, f32, f32)>,
 }
 
 /// A snapshot of simulation state for undo history.
@@ -148,11 +151,9 @@ pub(crate) struct SimulationSnapshot {
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.
-    pub(crate) trans_graph: Option<crate::simulation::network::graph::RegionGraph>,
-    /// Derived road render state matching `trans_graph`.
-    pub(crate) network_render: Option<NetworkRenderRuntimeSnapshot>,
-    /// Zoning system state.
-    pub(crate) zoning: Option<ZoningSystem>,
+    pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
+    /// Parcels removed by one road bulldoze.
+    pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// Building/economy runtime state.
     pub(crate) runtime: Option<SimulationRuntimeSnapshot>,
 }
@@ -195,10 +196,28 @@ pub struct RenderSnapshot {
     pub car_render_ids: HashMap<u8, Vec<i64>>,
     /// Mirrors `SimCore::terrain_dirty` at snapshot time.
     pub terrain_dirty: bool,
+    /// Sorted dirty terrain patch keys paired with their authoritative payload revisions.
+    pub terrain_dirty_patch_states: Arc<Vec<(usize, usize, u64)>>,
+    /// Terrain revision applying to every patch.
+    pub terrain_payload_global_generation: u64,
+    /// Patch-local terrain revisions newer than the global revision.
+    pub terrain_payload_patch_generations: Arc<HashMap<(usize, usize), u64>>,
     /// Mirrors `SimCore::water_dirty` at snapshot time.
     pub water_dirty: bool,
-    /// Mirrors `SimCore::network_dirty` at snapshot time; cleared the same frame.
+    /// Sorted dirty water patch keys paired with their authoritative payload revisions.
+    pub water_dirty_patch_states: Arc<Vec<(usize, usize, u64)>>,
+    /// Current source revision shared by water payloads.
+    pub water_payload_generation: u64,
+    /// Visible water depths along the world-edge terrain loop.
+    pub water_border_depths: Arc<Vec<f32>>,
+    /// Mirrors `SimCore::network_dirty` until the published generation is acknowledged.
     pub network_dirty: bool,
+    /// Authoritative road-surface revision consumed by the network renderer.
+    pub network_generation: u64,
+    /// Precomputed road mesh for the published network revision.
+    pub road_mesh_data: Option<Arc<NetworkMeshData>>,
+    /// Sorted terrain patches whose raw heightmap payloads are forbidden.
+    pub engineered_terrain_patch_keys: Arc<Vec<(usize, usize)>>,
     /// Current simulation day.
     pub current_day: u32,
     /// Current minute since operational midnight.
@@ -219,6 +238,18 @@ pub struct RenderSnapshot {
     pub heightmap_height: usize,
     /// Terrain world extent in metres, cached so Godot tools do not lock `SimCore` per frame.
     pub terrain_world_size: godot::prelude::Vector2,
+    /// Terrain render-patch columns.
+    pub terrain_patch_cols: usize,
+    /// Terrain render-patch rows.
+    pub terrain_patch_rows: usize,
+    /// Owned sample intervals per terrain render patch.
+    pub terrain_patch_interval_cells: usize,
+    /// Terrain sample spacing in metres.
+    pub terrain_cell_m: f32,
+    /// Terrain storage chunk span in metres.
+    pub terrain_chunk_span_m: f32,
+    /// Current terrain border top loop.
+    pub terrain_border_loop: Arc<Vec<godot::prelude::Vector3>>,
     /// Revision of zoning overlay-visible parcel geometry and zoning profiles.
     pub zoning_overlay_revision: u64,
     /// Revision of zoning occupancy that affects overlay parcel coloring.
@@ -236,8 +267,17 @@ impl Default for RenderSnapshot {
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
             terrain_dirty: true,
+            terrain_dirty_patch_states: Arc::new(Vec::new()),
+            terrain_payload_global_generation: 0,
+            terrain_payload_patch_generations: Arc::new(HashMap::new()),
             water_dirty: true,
+            water_dirty_patch_states: Arc::new(Vec::new()),
+            water_payload_generation: 0,
+            water_border_depths: Arc::new(Vec::new()),
             network_dirty: false,
+            network_generation: 0,
+            road_mesh_data: None,
+            engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
             last_tick_ms: 0.0,
@@ -247,11 +287,31 @@ impl Default for RenderSnapshot {
             treasury_balance: 0.0,
             heightmap_width: 0,
             terrain_world_size: godot::prelude::Vector2::ZERO,
+            terrain_patch_cols: 0,
+            terrain_patch_rows: 0,
+            terrain_patch_interval_cells: 0,
+            terrain_cell_m: 0.0,
+            terrain_chunk_span_m: 0.0,
+            terrain_border_loop: Arc::new(Vec::new()),
             zoning_overlay_revision: 0,
             zoning_overlay_occupancy_revision: 0,
             node_positions: Arc::new(Vec::new()),
             heightmap_height: 0,
         }
+    }
+}
+
+impl RenderSnapshot {
+    pub(crate) fn terrain_payload_generation_for_patch(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> u64 {
+        self.terrain_payload_patch_generations
+            .get(&(patch_x, patch_z))
+            .copied()
+            .unwrap_or(0)
+            .max(self.terrain_payload_global_generation)
     }
 }
 
@@ -367,8 +427,36 @@ impl SimCore {
         let (terrain_world_w, terrain_world_h) = self.heightmap.world_size();
 
         snapshot.terrain_dirty = self.terrain_dirty;
+        let terrain_dirty_patch_states = self.terrain_dirty_patch_states();
+        let patch_cols = self.heightmap.render_patch_cols();
+        let patch_rows = self.heightmap.render_patch_rows();
+        let border_dirty = snapshot.terrain_border_loop.is_empty()
+            || terrain_dirty_patch_states
+                .iter()
+                .any(|&(patch_x, patch_z, _)| {
+                    patch_x == 0
+                        || patch_z == 0
+                        || patch_x + 1 == patch_cols
+                        || patch_z + 1 == patch_rows
+                });
+        snapshot.terrain_dirty_patch_states = Arc::new(terrain_dirty_patch_states);
+        snapshot.terrain_payload_global_generation = self.terrain_payload_global_generation;
+        snapshot.terrain_payload_patch_generations =
+            Arc::new(self.terrain_payload_patch_generations.clone());
         snapshot.water_dirty = self.water_dirty;
+        snapshot.water_dirty_patch_states = Arc::new(self.watermap.dirty_render_patch_states());
+        let water_payload_generation = self.watermap.render_generation();
+        if snapshot.water_border_depths.is_empty()
+            || snapshot.water_payload_generation != water_payload_generation
+        {
+            snapshot.water_border_depths = Arc::new(self.watermap.border_loop_depths());
+        }
+        snapshot.water_payload_generation = water_payload_generation;
         snapshot.network_dirty = self.network_dirty;
+        snapshot.network_generation = self.road_tool_surface_generation;
+        snapshot.road_mesh_data = self.cached_road_mesh_data.clone();
+        snapshot.engineered_terrain_patch_keys =
+            Arc::new(self.engineered_terrain_patch_keys.clone());
         snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
@@ -384,6 +472,14 @@ impl SimCore {
         snapshot.heightmap_height = self.heightmap.height;
         snapshot.terrain_world_size =
             godot::prelude::Vector2::new(terrain_world_w, terrain_world_h);
+        snapshot.terrain_patch_cols = patch_cols;
+        snapshot.terrain_patch_rows = patch_rows;
+        snapshot.terrain_patch_interval_cells = self.heightmap.render_patch_interval_cells();
+        snapshot.terrain_cell_m = self.config.terrain_cell_m;
+        snapshot.terrain_chunk_span_m = self.heightmap.chunk_span_m();
+        if border_dirty {
+            snapshot.terrain_border_loop = Arc::new(self.heightmap.border_loop_positions());
+        }
         snapshot.zoning_overlay_revision = self.zoning.overlay_revision();
         snapshot.zoning_overlay_occupancy_revision = self.zoning.overlay_occupancy_revision();
         snapshot

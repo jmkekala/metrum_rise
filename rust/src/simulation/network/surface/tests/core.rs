@@ -204,6 +204,45 @@ fn mark_edge_dirty_tracks_edge_without_centerline_chunk_guess() {
 }
 
 #[test]
+fn point_query_index_excludes_distant_road_in_same_terrain_chunk() {
+    let mut graph = RegionGraph::new();
+    let near_a = graph.add_node(Vector3::new(4.0, 0.0, 8.0), NodeType::Junction);
+    let near_b = graph.add_node(Vector3::new(24.0, 0.0, 8.0), NodeType::Junction);
+    let far_a = graph.add_node(Vector3::new(196.0, 0.0, 8.0), NodeType::Junction);
+    let far_b = graph.add_node(Vector3::new(216.0, 0.0, 8.0), NodeType::Junction);
+    let near_edge = graph.add_edge(test_edge(
+        near_a,
+        near_b,
+        vec![Vector3::new(4.0, 0.0, 8.0), Vector3::new(24.0, 0.0, 8.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let far_edge = graph.add_edge(test_edge(
+        far_a,
+        far_b,
+        vec![Vector3::new(196.0, 0.0, 8.0), Vector3::new(216.0, 0.0, 8.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let terrain = flat_terrain(256, 64);
+    let mut surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    surface.compile_dirty(&graph, &terrain);
+
+    let query_chunk = RoadSurfaceSystem::query_chunk_coords_for_world(12.0, 8.0);
+    let contributors = surface
+        .query_chunk_spans
+        .get(&query_chunk)
+        .expect("near road should own its fine query chunk");
+
+    assert!(contributors.contains(&near_edge));
+    assert!(!contributors.contains(&far_edge));
+}
+
+#[test]
 fn terrain_edit_marks_nearby_edges_nodes_and_chunks() {
     let mut graph = RegionGraph::new();
     let near_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);

@@ -2,12 +2,12 @@
 //!
 //! Handles road mesh generation and road connection utility calculations.
 
-use crate::nodes::sim::core::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::surface::RoadSurfaceCompileReason;
-use crate::simulation::terrain::terrain_cdt_local_sample_margin_m;
 use crate::{debug, debug_log};
 use godot::prelude::*;
+use std::sync::Arc;
 use std::time::Instant;
 
 impl SimCore {
@@ -19,10 +19,10 @@ impl SimCore {
         let total_start = road_debug.then(Instant::now);
         let cache_hit = self.cached_road_mesh_data.is_some();
         if self.cached_road_mesh_data.is_none() {
-            self.cached_road_mesh_data = Some(
+            self.cached_road_mesh_data = Some(Arc::new(
                 self.transit_network
                     .generate_mesh_data(&self.region_graph, &self.heightmap),
-            );
+            ));
         }
         let Some(mesh_data) = self.cached_road_mesh_data.as_ref() else {
             return VarDictionary::new();
@@ -47,14 +47,14 @@ impl SimCore {
     pub(crate) fn precompute_road_mesh_data(&mut self) {
         let road_debug = debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
-        self.cached_road_mesh_data = Some(
+        self.cached_road_mesh_data = Some(Arc::new(
             self.transit_network
                 .generate_mesh_data(&self.region_graph, &self.heightmap),
-        );
+        ));
         if road_debug {
             let vertex_count = self
                 .cached_road_mesh_data
-                .as_ref()
+                .as_deref()
                 .map(Self::network_mesh_vertex_count)
                 .unwrap_or(0);
             debug_log!(
@@ -68,7 +68,7 @@ impl SimCore {
         }
     }
 
-    fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
+    pub(crate) fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set(
             "earthwork_vertices",
@@ -241,25 +241,6 @@ impl SimCore {
             .road_surface
             .build_road_surface_probe_debug_dump(&self.region_graph, &self.heightmap, world_pos);
         GString::from(dump.as_str())
-    }
-
-    /// Returns terrain render-patch keys that must keep full mesh resolution over compiled road ownership.
-    pub fn get_road_locked_terrain_patches_internal(&self) -> PackedInt32Array {
-        let margin_m =
-            terrain_cdt_local_sample_margin_m(&self.heightmap, ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
-        let mut keys = self.road_locked_terrain_patch_keys.clone();
-        keys.extend(
-            self.allocator
-                .terrain_render_patch_keys_with_building_site_margin(&self.heightmap, margin_m),
-        );
-        keys.sort_unstable();
-        keys.dedup();
-        let mut packed = PackedInt32Array::new();
-        for (patch_x, patch_z) in keys {
-            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
-            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
-        }
-        packed
     }
 
     /// Calculates the normalized T-coordinates of the connection between two edges.

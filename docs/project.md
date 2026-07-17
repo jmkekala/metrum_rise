@@ -68,10 +68,16 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   geometry tolerance errors without changing the owning subsystem contracts.
 - Gameplay bulldoze is now a dedicated Rust-backed tool instead of a selection special case. The
   bottom-right HUD action activates a one-click delete cursor with Rust-owned deterministic
-  targeting (`building` before `road`), road deletions soft-delete graph edges and refresh the
-  road-surface / terrain-clip pipeline, and building deletion uses the allocator lifecycle path
-  with undo snapshots covering allocator, agents, households, logistics, and zoning. See
+  targeting (`building` before `road`). Bulldoze and undo are queued onto the simulation thread so
+  Godot never performs road-surface, road-mesh, or refined-CDT rebuilding in an input callback.
+  Road deletion uses local graph and attached-parcel deltas, while building deletion uses the
+  allocator lifecycle path with a bounded inverse journal for only the touched
+  building/site/economy records; derived render caches are regenerated instead of cloned. See
   [`ui.md`](ui.md), [`roads.md`](roads.md), and [`building_allocator.md`](building_allocator.md).
+- Pedestrian junction lanes and visible zebra crossings now consume the same authoritative
+  crossing records. Both walking directions traverse the rendered asphalt-edge segment, while
+  adjacent-arm turns stay on the sidewalk perimeter instead of cutting mouth-to-mouth through the
+  carriageway. See [`roads.md`](roads.md).
 - Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
   and adult female archetypes. The bake path selects the explicit walk action from the source
   `.blend`, normalizes the rest mesh to `1.8 m`, preserves outfit color through vertex colors, and
@@ -88,6 +94,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   prepares terrain/water non-mesh patch payloads for residency and resident dirty uploads, and perf
   summaries include viewport, draw-call, primitive, memory, vsync, FPS-cap, and resource-pool
   stats. See [`terrain.md`](terrain.md).
+- Refined terrain payload preparation no longer performs road clipping, building-site grading, or
+  CDT input construction while holding the central simulation mutex. A perf capture exposed a
+  `16.7 s` terrain-input lock hold that stopped simulation ticks, camera handling, and log output
+  together as buildings spawned. Workers now take bounded patch-local terrain/site snapshots,
+  perform indexed road/site work off-lock, use patch-local source revisions, and coalesce revision
+  churn behind one physical build per patch/render-step. Refined publication is also atomic across
+  local CDT windows: site geometry cannot mask a failed/missing road clip, and raw terrain payloads
+  are refused for all road- or building-site-owned patches. Generation-tagged acknowledgements
+  cannot erase a mutation newer than the uploaded terrain, water, or road revision. See
+  [`terrain.md`](terrain.md) and
+  [`earthworks.md`](earthworks.md).
 - Terrain/water presentation now has a documented runtime contract: terrain and building-site
   grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
   detail fade, water uses the tuned depth/Fresnel/foam/normal material path, and scene lighting /

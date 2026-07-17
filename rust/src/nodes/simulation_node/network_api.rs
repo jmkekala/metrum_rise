@@ -215,25 +215,47 @@ impl SimulationNode {
         Vector2i::new(e.start_node as i32, e.end_node as i32)
     }
 
-    /// Returns the indices of all non-deleted edges with `no_building_spawn = true`.
-    /// Used by the zone-tool overlay to draw the hatched no-build indicator.
+    /// Returns no-build road line segments without waiting when the simulation is busy.
     #[func]
-    pub fn get_no_building_spawn_edge_indices(&self) -> PackedInt32Array {
-        let core = self.lock_core();
-        let mut out = PackedInt32Array::new();
-        for (i, e) in core.region_graph.edges().iter().enumerate() {
-            if !e.deleted && e.no_building_spawn {
-                out.push(i as i32);
+    pub fn try_get_no_building_spawn_lines(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("busy", true);
+        let Some(core) = self.try_lock_core() else {
+            return dict;
+        };
+        let mut lines = PackedVector3Array::new();
+        for edge in core.region_graph.edges() {
+            if edge.deleted || !edge.no_building_spawn {
+                continue;
+            }
+            for segment in edge.physical_geometry.windows(2) {
+                lines.push(segment[0]);
+                lines.push(segment[1]);
             }
         }
-        out
+        dict.set("busy", false);
+        dict.set("line_vertices", lines);
+        dict
     }
 
     /// Returns dictionary of road/intersection mesh data.
     #[func]
     pub fn get_road_mesh_data(&self) -> VarDictionary {
-        let mut core = self.lock_core();
-        core.get_road_mesh_data_internal()
+        let (mesh_data, generation) = {
+            let snapshot = self.snapshot.read().unwrap();
+            (snapshot.road_mesh_data.clone(), snapshot.network_generation)
+        };
+        let mut dict = mesh_data
+            .as_deref()
+            .map(SimCore::network_mesh_data_dict)
+            .unwrap_or_default();
+        if !dict.is_empty() {
+            dict.set(
+                "surface_generation",
+                i64::try_from(generation).unwrap_or(i64::MAX),
+            );
+        }
+        dict
     }
 
     /// Returns the ID of the closest network node.

@@ -582,6 +582,7 @@ pub(crate) enum TerrainCdtTieInKind {
     RetainingWall,
 }
 
+#[cfg(test)]
 impl TerrainCdtTieInKind {
     pub(crate) fn debug_code(self) -> i32 {
         match self {
@@ -634,16 +635,6 @@ pub(crate) enum TerrainCdtSeamQualityKind {
     MergedSubbudgetSeamEdge,
     RetainingWallRequired,
     BlockingDegenerateSeam,
-}
-
-impl TerrainCdtSeamQualityKind {
-    pub(crate) fn debug_code(self) -> i32 {
-        match self {
-            Self::MergedSubbudgetSeamEdge => 0,
-            Self::RetainingWallRequired => 1,
-            Self::BlockingDegenerateSeam => 2,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

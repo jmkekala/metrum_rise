@@ -1,3 +1,5 @@
+//! Lane geometry and junction-connectivity regression tests.
+
 use super::super::graph::{Edge, RegionGraph};
 use super::super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use super::{LaneSystem, LaneType};
@@ -215,6 +217,165 @@ fn test_junction_pedestrian_connectivity() {
     );
 }
 
+fn distance_to_segment_xz(point: Vector3, start: Vector3, end: Vector3) -> f32 {
+    let point = Vector2::new(point.x, point.z);
+    let start = Vector2::new(start.x, start.z);
+    let end = Vector2::new(end.x, end.z);
+    let segment = end - start;
+    let length_squared = segment.length_squared();
+    if length_squared <= f32::EPSILON {
+        return point.distance_to(start);
+    }
+    let t = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+    point.distance_to(start + segment * t)
+}
+
+fn points_approximately_equal(a: Vector3, b: Vector3) -> bool {
+    a.distance_squared_to(b) <= 1.0e-6
+}
+
+fn build_pedestrian_junction(
+    arm_positions: &[Vector3],
+) -> (RegionGraph, LaneSystem, u32, Vec<usize>) {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let mut edge_ids = Vec::new();
+    for &arm_position in arm_positions {
+        let arm = graph.add_node(arm_position, NodeType::Junction);
+        let start = graph.node(center).pos;
+        let end = graph.node(arm).pos;
+        edge_ids.push(graph.add_edge(Edge {
+            start_node: center,
+            end_node: arm,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 1.0,
+            physical_length: start.distance_to(end),
+            current_congestion: 0.0,
+            start_clip: 8.0,
+            end_clip: 0.0,
+            geometry: vec![start, end],
+            physical_geometry: vec![start, end],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        }));
+    }
+    graph.rebuild_adjacency_list();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    (graph, lanes, center, edge_ids)
+}
+
+#[test]
+fn pedestrian_junction_routes_cross_only_at_rendered_crosswalks() {
+    let (_graph, lanes, center, edge_ids) = build_pedestrian_junction(&[
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 100.0),
+        Vector3::new(-100.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, -100.0),
+    ]);
+    let junction_lanes = &lanes.node_lanes[&(center as usize)];
+    let pedestrian_connections = junction_lanes
+        .iter()
+        .map(|lane_id| &lanes.lanes[*lane_id])
+        .filter(|lane| lane.lane_type == LaneType::Foot)
+        .collect::<Vec<_>>();
+
+    for edge_id in edge_ids {
+        let crossings = pedestrian_connections
+            .iter()
+            .copied()
+            .filter(|lane| lane.crosswalk_edge_id == Some(edge_id))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            crossings.len(),
+            2,
+            "each visible crossing must have two directional walking lanes"
+        );
+        let marking = crossings
+            .iter()
+            .find_map(|lane| lane.crosswalk_marking)
+            .expect("crossing must own one visible zebra segment");
+        assert_eq!(
+            crossings
+                .iter()
+                .filter(|lane| lane.crosswalk_marking.is_some())
+                .count(),
+            1,
+            "the two directions must share one visual marking"
+        );
+        for lane in crossings {
+            assert!(
+                lane.geometry.windows(2).any(|pair| {
+                    (points_approximately_equal(pair[0], marking.start)
+                        && points_approximately_equal(pair[1], marking.end))
+                        || (points_approximately_equal(pair[0], marking.end)
+                            && points_approximately_equal(pair[1], marking.start))
+                }),
+                "both directions must traverse the exact rendered asphalt segment"
+            );
+        }
+    }
+
+    let minimum_sidewalk_radius = 4.2;
+    for lane in pedestrian_connections
+        .iter()
+        .copied()
+        .filter(|lane| lane.crosswalk_edge_id.is_none())
+    {
+        assert!(
+            lane.geometry.len() >= 3,
+            "non-crossing turns must follow the sidewalk corner, not a mouth-to-mouth chord"
+        );
+        for segment in lane.geometry.windows(2) {
+            assert!(
+                distance_to_segment_xz(Vector3::ZERO, segment[0], segment[1])
+                    >= minimum_sidewalk_radius,
+                "a non-crosswalk pedestrian connector entered the asphalt junction interior"
+            );
+        }
+    }
+}
+
+#[test]
+fn acute_pedestrian_corner_falls_back_outside_junction_core() {
+    let angle = 2.0_f32.to_radians();
+    let (_graph, lanes, center, _edge_ids) = build_pedestrian_junction(&[
+        Vector3::new(100.0, 0.0, 0.0),
+        Vector3::new(100.0 * angle.cos(), 0.0, 100.0 * angle.sin()),
+    ]);
+    let non_crossing_routes = lanes.node_lanes[&(center as usize)]
+        .iter()
+        .map(|lane_id| &lanes.lanes[*lane_id])
+        .filter(|lane| lane.lane_type == LaneType::Foot && lane.crosswalk_edge_id.is_none())
+        .collect::<Vec<_>>();
+
+    assert!(!non_crossing_routes.is_empty());
+    assert!(
+        non_crossing_routes
+            .iter()
+            .any(|lane| lane.geometry.len() > 3),
+        "the rejected acute miter must use an explicit outside arc"
+    );
+    for lane in non_crossing_routes {
+        assert!(lane.geometry.len() >= 3);
+        for segment in lane.geometry.windows(2) {
+            assert!(
+                distance_to_segment_xz(Vector3::ZERO, segment[0], segment[1]) >= 4.249,
+                "acute-corner fallback entered the asphalt junction core"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_rht_lane_offsets() {
     let mut graph = RegionGraph::new();
@@ -331,7 +492,7 @@ fn test_crosswalk_counts() {
         for &lid in &inbound_lane_ids {
             for &next_id in &lanes.lanes[lid].next_lanes {
                 let next_l = &lanes.lanes[next_id];
-                if next_l.is_crosswalk && next_l.lane_type == LaneType::Foot {
+                if next_l.crosswalk_marking.is_some() && next_l.lane_type == LaneType::Foot {
                     if !crosswalk_lanes.contains(&next_id) {
                         crosswalk_lanes.push(next_id);
                     }

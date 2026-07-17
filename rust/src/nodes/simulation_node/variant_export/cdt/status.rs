@@ -9,16 +9,18 @@ impl SimulationNode {
         include_debug: bool,
     ) {
         Self::append_cdt_contract_metadata(dict);
+        dict.set(
+            "terrain_requires_road_clipping",
+            cached.requires_road_clipping,
+        );
+        if let Some(error_label) = Self::cached_refined_cdt_failure_label(cached) {
+            Self::append_empty_cdt_failure(dict, error_label, include_debug);
+            return;
+        }
         if cached.input_road_loops == 0 {
-            if let Some(error_label) = cached.clip_error_label {
-                Self::append_empty_cdt_failure(dict, error_label, include_debug);
-            } else if cached.road_clip_source_count > 0 {
-                Self::append_empty_cdt_failure(dict, "missing_road_clip_loops", include_debug);
-            } else {
-                dict.set("terrain_cdt_status", GString::from("empty"));
-                dict.set("terrain_cdt_empty_refined", true);
-                dict.set("terrain_cdt_mesh_suppressed", true);
-            }
+            dict.set("terrain_cdt_status", GString::from("empty"));
+            dict.set("terrain_cdt_empty_refined", true);
+            dict.set("terrain_cdt_mesh_suppressed", true);
             return;
         }
 
@@ -27,16 +29,7 @@ impl SimulationNode {
             .iter()
             .filter_map(|window| window.mesh_result.as_ref().ok().map(|mesh| (window, mesh)))
             .collect::<Vec<_>>();
-        if successful_windows.is_empty() {
-            let error_label = cached
-                .windows
-                .iter()
-                .find_map(|window| window.mesh_result.as_ref().err())
-                .map(Self::terrain_cdt_error_label)
-                .unwrap_or("missing_road_clip_loops");
-            Self::append_empty_cdt_failure(dict, error_label, include_debug);
-            return;
-        }
+        debug_assert_eq!(successful_windows.len(), cached.windows.len());
 
         let has_conflicts = successful_windows
             .iter()
@@ -66,6 +59,61 @@ impl SimulationNode {
             )),
         );
         dict.set("terrain_cdt_pathological_output", pathological_output);
+    }
+
+    pub(in crate::nodes::simulation_node) fn cached_refined_cdt_failure_label(
+        cached: &CachedRefinedTerrainPatch,
+    ) -> Option<&'static str> {
+        if let Some(error_label) = Self::terrain_clip_input_failure_label(
+            cached.requires_road_clipping,
+            cached.clip_source_count,
+            cached.road_clip_source_count,
+            cached.road_clip_loop_count,
+            cached.site_clip_loop_count,
+            cached.input_road_loops,
+            cached.clip_error_label,
+        ) {
+            return Some(error_label);
+        }
+        if cached.input_road_loops == 0 {
+            return None;
+        }
+        if cached.windows.is_empty() {
+            return Some("missing_terrain_cdt_windows");
+        }
+        cached
+            .windows
+            .iter()
+            .find_map(|window| window.mesh_result.as_ref().err())
+            .map(Self::terrain_cdt_error_label)
+    }
+
+    pub(in crate::nodes::simulation_node) fn terrain_clip_input_failure_label(
+        requires_road_clipping: bool,
+        clip_source_count: usize,
+        road_clip_source_count: usize,
+        road_clip_loop_count: usize,
+        site_clip_loop_count: usize,
+        input_clip_loop_count: usize,
+        clip_error_label: Option<&'static str>,
+    ) -> Option<&'static str> {
+        if let Some(error_label) = clip_error_label {
+            return Some(error_label);
+        }
+        if requires_road_clipping && road_clip_source_count == 0 {
+            return Some("missing_road_clip_sources");
+        }
+        if requires_road_clipping && road_clip_loop_count == 0 {
+            return Some("missing_road_clip_loops");
+        }
+        let expected_clip_loop_count = road_clip_loop_count.saturating_add(site_clip_loop_count);
+        if input_clip_loop_count != expected_clip_loop_count {
+            return Some("incomplete_terrain_clip_windows");
+        }
+        if input_clip_loop_count == 0 && clip_source_count > 0 {
+            return Some("missing_terrain_clip_loops");
+        }
+        None
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_output_status(

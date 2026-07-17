@@ -200,6 +200,17 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
 }
 
 #[test]
+fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
+    let mut allocator = BuildingAllocator::new();
+    allocator.building_sites.push(square_site_with_surface());
+    let direct = allocator.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+    let snapshot = allocator.terrain_site_snapshot_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+    let detached = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+
+    assert_eq!(detached, direct);
+}
+
+#[test]
 fn support_tie_in_accepts_flat_surroundings() {
     let terrain = TerrainSystem::with_chunking(32, 32, 1.0, 8, 0.0);
     let graph = RegionGraph::new();

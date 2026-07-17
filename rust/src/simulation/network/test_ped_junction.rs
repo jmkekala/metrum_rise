@@ -1,3 +1,5 @@
+//! Pedestrian junction connection-count regressions.
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -76,7 +78,7 @@ mod tests {
     // The connection count at a 4-way junction is invariant to vehicle lane count:
     //
     //   4 edges × 2 sides = 8 sidewalk mouths
-    //   Each mouth connects CW + CCW to the two adjacent mouths = 2 connections
+    //   Each mouth has one marked crossing and one perimeter turn = 2 connections
     //   Total = 8 × 2 = 16
     //
     // This is because sidewalks are always exactly ONE lane per side per edge (lane_idx ±100),
@@ -87,9 +89,9 @@ mod tests {
         for &(fwd, bkw, label) in LANE_CONFIGS {
             let (graph, lanes, n1) = build_4way_junction(fwd, bkw);
             let total = count_sidewalk_connections_at(&graph, &lanes, n1);
-            assert!(
-                total == 16 || total == 24,
-                "[{label}] 4-way junction should have either 16 or 24 sidewalk connections (found {total})."
+            assert_eq!(
+                total, 16,
+                "[{label}] 4-way junction must have exactly one crossing and one perimeter turn from each sidewalk mouth."
             );
         }
     }

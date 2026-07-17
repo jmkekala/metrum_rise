@@ -120,6 +120,35 @@ impl RegionGraph {
             .collect()
     }
 
+    /// Returns node IDs in lookup chunks intersecting an XZ AABB.
+    pub(crate) fn get_nodes_near_aabb(
+        &self,
+        min: godot::prelude::Vector3,
+        max: godot::prelude::Vector3,
+    ) -> Vec<u32> {
+        let min_chunk = Self::get_node_chunk_coords(min);
+        let max_chunk = Self::get_node_chunk_coords(max);
+        let mut nodes = Vec::new();
+        for chunk_x in min_chunk.0..=max_chunk.0 {
+            for chunk_z in min_chunk.1..=max_chunk.1 {
+                let Some(chunk_nodes) = self.spatial_node_grid.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                nodes.extend(chunk_nodes.iter().copied().filter(|&node_id| {
+                    self.nodes.get(node_id as usize).is_some_and(|node| {
+                        node.pos.x >= min.x
+                            && node.pos.x <= max.x
+                            && node.pos.z >= min.z
+                            && node.pos.z <= max.z
+                    })
+                }));
+            }
+        }
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
+    }
+
     /// Returns the coordinates of all chunks (512m) that an edge's AABB overlaps.
     pub fn get_edge_chunks(&self, edge_idx: usize) -> Vec<(i32, i32)> {
         let mut result = Vec::new();

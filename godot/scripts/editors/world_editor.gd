@@ -664,9 +664,9 @@ func _flush_live_sculpt_visuals(force: bool) -> void:
 		return
 	if not force and _live_sculpt_refresh_timer > 0.0:
 		return
-	terrain.update_terrain_visuals()
+	if not terrain.update_terrain_visuals():
+		return
 	_refresh_water_markers()
-	sim.clear_terrain_dirty()
 	_live_sculpt_visual_pending = false
 	_live_sculpt_refresh_timer = LIVE_SCULPT_REFRESH_INTERVAL_SEC
 

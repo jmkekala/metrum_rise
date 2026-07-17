@@ -1,10 +1,10 @@
 ## Terrain patch renderer — uploads chunk-local visual terrain patches and world-edge terrain skirts.
 ##
-## Rust methods called: get_terrain_patch_layout(), get_terrain_patch(), get_dirty_terrain_patches(),
+## Rust methods called: get_terrain_patch_layout(), get_dirty_terrain_patches(),
+##   get_dirty_terrain_patch_payload_states(),
 ##   request_terrain_patch_payloads(), poll_ready_terrain_patch_payloads(),
-##   get_refined_terrain_patch(), get_refined_terrain_patch_debug(),
 ##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
-##   is_terrain_dirty(), clear_terrain_dirty(), sculpt_terrain(), intersect_terrain(),
+##   is_terrain_dirty(), acknowledge_terrain_patches(), sculpt_terrain(), intersect_terrain(),
 ##   get_pollution_image_data(), get_noise_image_data(),
 ##   get_desirability_image_data()
 extends Node3D
@@ -137,7 +137,8 @@ var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
 var patch_payload_requested_generation: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
-var patch_payload_surface_generation: int = -1
+var patch_payload_road_generation: int = -1
+var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 var patch_prewarm_queue: Array[Vector2i] = []
@@ -145,7 +146,7 @@ var patch_lod_refresh_queue: Array[Vector2i] = []
 var patch_lod_refresh_lookup: Dictionary = {}
 var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
-var road_locked_patch_lookup: Dictionary = {}
+var engineered_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var border_loop_positions: PackedVector3Array = PackedVector3Array()
 var border_revision: int = 0
@@ -240,14 +241,15 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_grass_textures()
 	_ensure_border_visuals()
 	_prewarm_terrain_patch_resource_pool()
-	_refresh_road_locked_patch_lookup()
+	_refresh_engineered_patch_lookup()
 	_sync_patch_residency(true)
-	_update_overlay_texture()
-	_apply_overlay_mode()
+	var overlay_updated := _update_overlay_texture()
+	if overlay_updated:
+		_apply_overlay_mode()
 	_rebuild_border_skirt()
 	_queue_all_water_patch_texture_syncs()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-	cached_overlay_mode = overlay_mode
+	cached_overlay_mode = overlay_mode if overlay_updated else -1
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
 		_terrain_debug_log(
@@ -279,14 +281,12 @@ func _process(delta: float) -> void:
 	var payload_poll_elapsed_ms := 0.0
 	var payload_poll_count := 0
 	var residency_start_us := frame_start_us
-	var sim_core_busy: bool = simulation_node.is_sim_core_busy()
 	var network_refresh_pending: bool = simulation_node.is_network_dirty()
 	var residency_changed := false
-	if not sim_core_busy:
-		var payload_poll_start_us := Time.get_ticks_usec()
-		payload_poll_count = _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
-		payload_poll_elapsed_ms = float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
-		residency_changed = _sync_patch_residency()
+	var payload_poll_start_us := Time.get_ticks_usec()
+	payload_poll_count = _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	payload_poll_elapsed_ms = float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
+	residency_changed = _sync_patch_residency()
 	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
@@ -296,10 +296,12 @@ func _process(delta: float) -> void:
 	var prewarm_elapsed_ms := 0.0
 	_terrain_lod_last_deferred_count = 0
 	_terrain_prewarm_last_deferred_count = 0
-	if not sim_core_busy and not network_refresh_pending and simulation_node.is_terrain_dirty():
-		_refresh_road_locked_patch_lookup()
+	var terrain_ack_ready := _retry_pending_terrain_ack()
+	if terrain_ack_ready and not network_refresh_pending and simulation_node.is_terrain_dirty():
+		_refresh_engineered_patch_lookup()
 		var dirty_start_us := Time.get_ticks_usec()
-		var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
+		var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
+		var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
 		_terrain_debug_dirty_batches += 1
 		_terrain_debug_dirty_patch_total += dirty_keys.size()
 		var dirty_upload_pending := false
@@ -319,7 +321,7 @@ func _process(delta: float) -> void:
 			if not dirty_keys.is_empty() and _dirty_patch_keys_touch_border(dirty_keys):
 				_rebuild_border_skirt()
 			border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
-			simulation_node.clear_terrain_dirty()
+			_acknowledge_terrain_batch(dirty_states)
 	if not simulation_node.is_terrain_dirty():
 		_prune_patch_payload_cache()
 
@@ -330,10 +332,10 @@ func _process(delta: float) -> void:
 	)
 	water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 
-	if overlay_mode != cached_overlay_mode:
-		_update_overlay_texture()
-		_apply_overlay_mode()
-		cached_overlay_mode = overlay_mode
+	if overlay_texture == null or overlay_mode != cached_overlay_mode:
+		if _update_overlay_texture():
+			_apply_overlay_mode()
+			cached_overlay_mode = overlay_mode
 
 	if _terrain_frame_headroom_available(frame_start_us, PATCH_LOD_START_HEADROOM_MS):
 		if perf_enabled:
@@ -362,8 +364,7 @@ func _process(delta: float) -> void:
 		)
 
 	if (
-		not sim_core_busy
-		and not network_refresh_pending
+		not network_refresh_pending
 		and not simulation_node.is_terrain_dirty()
 		and not residency_changed
 		and not _terrain_residency_pending_mutations
@@ -449,11 +450,14 @@ func refresh_water_patch_binding(key: Vector2i) -> void:
 	_queue_water_patch_texture_sync(key)
 
 func update_terrain_visuals() -> bool:
-	_refresh_road_locked_patch_lookup()
-	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
+	if not _retry_pending_terrain_ack():
+		return false
+	_refresh_engineered_patch_lookup()
+	var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
+	var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
 	if dirty_keys.is_empty():
 		_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-		return true
+		return not simulation_node.is_terrain_dirty()
 
 	_poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	if not _dirty_patch_payloads_ready_for_atomic_upload(dirty_keys):
@@ -471,7 +475,9 @@ func update_terrain_visuals() -> bool:
 	if not upload_pending and (dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys)):
 		_rebuild_border_skirt()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-	return not upload_pending
+	if upload_pending:
+		return false
+	return _acknowledge_terrain_batch(dirty_states)
 
 func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 	if patch_cols <= 0 or patch_rows <= 0:
@@ -691,7 +697,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var patch_data: Dictionary = _terrain_patch_data_for_key(key, false, allow_async)
 	if patch_data.is_empty():
 		return
-	if road_locked_patch_lookup.has(key) and not _road_locked_patch_data_is_renderable(patch_data):
+	if _patch_requires_engineered_refinement(key, patch_data) and not _engineered_patch_data_is_renderable(patch_data):
 		if _road_debug_enabled:
 			print(
 				"[DEBUG:road] terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
@@ -880,7 +886,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"lod_step": initial_lod_step,
 		"subdivision_factor": initial_subdivision_factor,
 		"height_is_baked": height_is_baked,
-		"road_locked_bad_cdt_blocked": false,
+		"engineered_bad_cdt_blocked": false,
 		"last_patch_data": patch_data,
 	}
 
@@ -907,11 +913,11 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			)
 		return false
 	var patch: Dictionary = patches[key]
-	var road_locked_patch := road_locked_patch_lookup.has(key)
-	if road_locked_patch and not _road_locked_patch_data_is_renderable(patch_data):
-		var previous_patch_data := _last_renderable_road_locked_patch_data(patch)
+	var engineered_patch := _patch_requires_engineered_refinement(key, patch_data)
+	if engineered_patch and not _engineered_patch_data_is_renderable(patch_data):
+		var previous_patch_data := _last_renderable_engineered_patch_data(patch)
 		if not previous_patch_data.is_empty():
-			patch["road_locked_bad_cdt_blocked"] = false
+			patch["engineered_bad_cdt_blocked"] = false
 			_apply_patch_visibility_for_residency(key, patch, previous_patch_data)
 			if _road_debug_enabled:
 				print(
@@ -925,8 +931,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 					]
 				)
-			return true
-		_block_road_locked_patch_until_valid_cdt(patch)
+			_request_terrain_patch_payload(key, true)
+			return false
+		_block_engineered_patch_until_valid_cdt(patch)
 		if _road_debug_enabled:
 			print(
 				"[DEBUG:road] terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
@@ -941,12 +948,8 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			)
 		_request_terrain_patch_payload(key, true)
 		return false
-	elif _patch_has_unusable_refined_cdt(patch_data):
-		var fallback_patch_data: Dictionary = simulation_node.get_terrain_patch(key.x, key.y)
-		if not fallback_patch_data.is_empty():
-			patch_data = fallback_patch_data
 	patch["last_patch_data"] = patch_data
-	patch["road_locked_bad_cdt_blocked"] = false
+	patch["engineered_bad_cdt_blocked"] = false
 	var metadata_start_us := Time.get_ticks_usec()
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
@@ -1046,11 +1049,11 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 				patch_data["terrain_retaining_wall_mesh_indices"] as PackedInt32Array
 			).size()
 		print(
-			"[DEBUG:road] terrain_upload key=(%d,%d) road_locked=%s include_debug=%s fetch_ms=%.3f metadata_ms=%.3f texture_ms=%.3f patch_update_ms=%.3f mesh_ms=%.3f retaining_ms=%.3f position_ms=%.3f total_ms=%.3f terrain_vertices=%d terrain_indices=%d retaining_vertices=%d retaining_indices=%d"
+			"[DEBUG:road] terrain_upload key=(%d,%d) engineered_owned=%s include_debug=%s fetch_ms=%.3f metadata_ms=%.3f texture_ms=%.3f patch_update_ms=%.3f mesh_ms=%.3f retaining_ms=%.3f position_ms=%.3f total_ms=%.3f terrain_vertices=%d terrain_indices=%d retaining_vertices=%d retaining_indices=%d"
 			% [
 				key.x,
 				key.y,
-				str(road_locked_patch_lookup.has(key)),
+				str(engineered_patch_lookup.has(key)),
 				"false",
 				fetch_ms,
 				metadata_ms,
@@ -1068,8 +1071,8 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		)
 	return true
 
-func _block_road_locked_patch_until_valid_cdt(patch: Dictionary) -> void:
-	patch["road_locked_bad_cdt_blocked"] = true
+func _block_engineered_patch_until_valid_cdt(patch: Dictionary) -> void:
+	patch["engineered_bad_cdt_blocked"] = true
 	patch["last_patch_data"] = {}
 	patch["height_is_baked"] = true
 	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
@@ -1082,7 +1085,7 @@ func _block_road_locked_patch_until_valid_cdt(patch: Dictionary) -> void:
 		retaining_wall_node.mesh = null
 
 func _patch_is_blocked_by_bad_cdt(patch: Dictionary) -> bool:
-	return bool(patch.get("road_locked_bad_cdt_blocked", false))
+	return bool(patch.get("engineered_bad_cdt_blocked", false))
 
 func _apply_patch_visibility_for_residency(
 	key: Vector2i,
@@ -1112,8 +1115,8 @@ func _activate_patch(key: Vector2i) -> bool:
 	if (
 		_patch_is_blocked_by_bad_cdt(patch)
 		or (
-			road_locked_patch_lookup.has(key)
-			and not _road_locked_patch_data_is_renderable(last_patch_data)
+			engineered_patch_lookup.has(key)
+			and not _engineered_patch_data_is_renderable(last_patch_data)
 		)
 	):
 		if not _upload_patch(key, true):
@@ -1204,7 +1207,8 @@ func _clear_patches() -> void:
 	patch_payload_requested.clear()
 	patch_payload_requested_generation.clear()
 	patch_payload_ready.clear()
-	patch_payload_surface_generation = -1
+	patch_payload_road_generation = -1
+	pending_terrain_ack_states = PackedInt64Array()
 	patch_prewarm_queue.clear()
 	patch_lod_refresh_queue.clear()
 	patch_lod_refresh_lookup.clear()
@@ -1452,6 +1456,51 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
 
+func _dirty_patch_payload_keys_from_states(
+	flat_states: PackedInt64Array
+) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	var state_count := flat_states.size() / 3
+	for index in range(state_count):
+		var key := Vector2i(
+			int(flat_states[index * 3]),
+			int(flat_states[index * 3 + 1])
+		)
+		var generation := int(flat_states[index * 3 + 2])
+		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
+		keys.append(key)
+		if patch_payload_requested.has(key) and (
+			int(patch_payload_requested.get(key, -1)) != render_step_mm
+			or int(patch_payload_requested_generation.get(key, -1)) != generation
+		):
+			patch_payload_requested.erase(key)
+			patch_payload_requested_generation.erase(key)
+		if patch_payload_ready.has(key):
+			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+			if (
+				int(ready_patch_data.get("render_step_mm", -1)) != render_step_mm
+				or int(ready_patch_data.get("surface_generation", -1)) != generation
+			):
+				patch_payload_ready.erase(key)
+	return keys
+
+func _acknowledge_terrain_batch(flat_states: PackedInt64Array) -> bool:
+	if flat_states.is_empty():
+		return true
+	if simulation_node.acknowledge_terrain_patches(flat_states):
+		pending_terrain_ack_states = PackedInt64Array()
+		return true
+	pending_terrain_ack_states = flat_states.duplicate()
+	return false
+
+func _retry_pending_terrain_ack() -> bool:
+	if pending_terrain_ack_states.is_empty():
+		return true
+	if not simulation_node.acknowledge_terrain_patches(pending_terrain_ack_states):
+		return false
+	pending_terrain_ack_states = PackedInt64Array()
+	return true
+
 func _dirty_patch_keys_touch_border(keys: Array[Vector2i]) -> bool:
 	for key in keys:
 		if key.x <= 0 or key.y <= 0 or key.x >= patch_cols - 1 or key.y >= patch_rows - 1:
@@ -1534,12 +1583,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_seam_quality_samples: String = _road_geometry_terrain_seam_quality_samples_label(patch_data)
 		var cdt_tie_in_widened_samples: String = _road_geometry_terrain_tie_in_widened_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d baked_mesh=%s cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_spade_missing_road_constraints=%d cdt_rejected_road_constraints=%d cdt_internal_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_longest_triangle_edge=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
+			"terrain_patch key=(%d,%d) resident=%s engineered_owned=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) watermap=terrain_aligned:%dx%d water_nonzero=%d water_world_origin=(%.3f,%.3f) water_world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d retaining_vertices=%d baked_mesh=%s cdt_status=%s cdt_error=%s cdt_stage=%s cdt_backend=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_spade_missing_road_constraints=%d cdt_rejected_road_constraints=%d cdt_internal_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_retaining_wall_emitted_faces=%d cdt_terrain_face_sources=%s cdt_retaining_wall_face_sources=%s cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_longest_triangle_edge=%.3f cdt_road_seam_faces=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_retaining_wall_faces=%d cdt_retaining_wall_max_y_delta=%.3f cdt_retaining_wall_max_slope=%.3f cdt_seam_quality={accepted=%d,merged_subbudget=%d,omitted_near_samples=%d,retaining_wall_required_edges=%d,retaining_wall_required_faces=%d,blocking_degenerate=%d,samples=%s} cdt_tie_in_widened_samples=%d cdt_tie_in_widened_max_y_delta=%.3f cdt_tie_in_widened_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s cdt_retaining_wall_samples=%s cdt_tie_in_widened_sample_points=%s"
 			% [
 				key.x,
 				key.y,
 				str(resident_patch_lookup.has(key)),
-				str(road_locked_patch_lookup.has(key)),
+				str(engineered_patch_lookup.has(key)),
 				_road_geometry_mesh_label(mesh),
 				int(patch_data["sample_width"]),
 				int(patch_data["sample_height"]),
@@ -1614,23 +1663,22 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 	return lines
 
 func _terrain_patch_payload_render_step_mm(key: Vector2i) -> int:
-	if road_locked_patch_lookup.has(key):
+	if engineered_patch_lookup.has(key):
 		return int(round(ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M * 1000.0))
 	return 0
 
-func _terrain_patch_payload_surface_generation() -> int:
+func _road_surface_payload_generation() -> int:
 	if simulation_node.has_method("get_road_tool_surface_generation"):
 		return int(simulation_node.get_road_tool_surface_generation())
 	return 0
 
-func _sync_patch_payload_surface_generation() -> int:
-	var surface_generation := _terrain_patch_payload_surface_generation()
-	if surface_generation != patch_payload_surface_generation:
+func _sync_patch_payload_road_generation() -> void:
+	var road_generation := _road_surface_payload_generation()
+	if road_generation != patch_payload_road_generation:
 		patch_payload_requested.clear()
 		patch_payload_requested_generation.clear()
 		patch_payload_ready.clear()
-		patch_payload_surface_generation = surface_generation
-	return surface_generation
+		patch_payload_road_generation = road_generation
 
 func _request_terrain_patch_payload(key: Vector2i, include_existing: bool = false) -> bool:
 	var keys: Array[Vector2i] = []
@@ -1647,35 +1695,42 @@ func _request_terrain_patch_payloads(
 	var flat_requests := PackedInt32Array()
 	var requested_count := 0
 	var refined_requested_count := 0
-	var surface_generation := _sync_patch_payload_surface_generation()
+	_sync_patch_payload_road_generation()
 	for key in keys:
 		if requested_count >= budget:
 			break
 		if not include_existing and patches.has(key):
 			continue
+		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
 		if patch_payload_ready.has(key):
 			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-			if int(ready_patch_data.get("surface_generation", -1)) == surface_generation:
+			if int(ready_patch_data.get("render_step_mm", -1)) == render_step_mm:
 				continue
 			patch_payload_ready.erase(key)
-		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
 		if render_step_mm > 0 and refined_requested_count >= REFINED_PATCH_PAYLOAD_REQUEST_BUDGET_PER_FRAME:
 			continue
-		if (
-			int(patch_payload_requested.get(key, -1)) == render_step_mm
-			and int(patch_payload_requested_generation.get(key, -1)) == surface_generation
-		):
+		if int(patch_payload_requested.get(key, -1)) == render_step_mm:
 			continue
 		flat_requests.push_back(key.x)
 		flat_requests.push_back(key.y)
 		flat_requests.push_back(render_step_mm)
-		patch_payload_requested[key] = render_step_mm
-		patch_payload_requested_generation[key] = surface_generation
 		requested_count += 1
 		if render_step_mm > 0:
 			refined_requested_count += 1
 	if not flat_requests.is_empty():
-		simulation_node.request_terrain_patch_payloads(flat_requests)
+		var result: Dictionary = simulation_node.request_terrain_patch_payloads(flat_requests)
+		var tracked_requests: PackedInt64Array = result.get(
+			"tracked_requests",
+			PackedInt64Array()
+		) as PackedInt64Array
+		var tracked_count := tracked_requests.size() / 4
+		for index in range(tracked_count):
+			var key := Vector2i(
+				int(tracked_requests[index * 4]),
+				int(tracked_requests[index * 4 + 1])
+			)
+			patch_payload_requested[key] = int(tracked_requests[index * 4 + 2])
+			patch_payload_requested_generation[key] = int(tracked_requests[index * 4 + 3])
 	return requested_count
 
 func _poll_ready_terrain_patch_payloads(budget: int) -> int:
@@ -1684,7 +1739,25 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 	var result: Dictionary = simulation_node.poll_ready_terrain_patch_payloads(budget) as Dictionary
 	var payloads: Array = result.get("patches", []) as Array
 	var accepted_count := 0
-	var surface_generation := _sync_patch_payload_surface_generation()
+	_sync_patch_payload_road_generation()
+	var retry_requests: PackedInt64Array = result.get(
+		"retry_requests",
+		PackedInt64Array()
+	) as PackedInt64Array
+	var retry_count := retry_requests.size() / 4
+	for index in range(retry_count):
+		var retry_key := Vector2i(
+			int(retry_requests[index * 4]),
+			int(retry_requests[index * 4 + 1])
+		)
+		var retry_render_step_mm := int(retry_requests[index * 4 + 2])
+		var retry_generation := int(retry_requests[index * 4 + 3])
+		if (
+			int(patch_payload_requested.get(retry_key, -1)) == retry_render_step_mm
+			and int(patch_payload_requested_generation.get(retry_key, -1)) == retry_generation
+		):
+			patch_payload_requested.erase(retry_key)
+			patch_payload_requested_generation.erase(retry_key)
 	for payload_variant in payloads:
 		var patch_data: Dictionary = payload_variant as Dictionary
 		var key := Vector2i(
@@ -1697,7 +1770,7 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 			continue
 		var payload_generation := int(patch_data.get("surface_generation", -1))
 		var requested_generation := int(patch_payload_requested_generation.get(key, -1))
-		if payload_generation != requested_generation or payload_generation != surface_generation:
+		if payload_generation != requested_generation:
 			continue
 		var render_step_mm := int(patch_data.get("render_step_mm", _terrain_patch_payload_render_step_mm(key)))
 		if int(patch_payload_requested.get(key, -1)) != render_step_mm:
@@ -1714,13 +1787,9 @@ func _poll_ready_terrain_patch_payloads(budget: int) -> int:
 	return accepted_count
 
 func _prune_patch_payload_cache() -> void:
-	var surface_generation := _sync_patch_payload_surface_generation()
+	_sync_patch_payload_road_generation()
 	for key_variant in patch_payload_ready.keys():
 		var key: Vector2i = key_variant
-		var patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-		if int(patch_data.get("surface_generation", -1)) != surface_generation:
-			patch_payload_ready.erase(key)
-			continue
 		if patches.has(key):
 			patch_payload_ready.erase(key)
 			continue
@@ -1732,13 +1801,10 @@ func _prune_patch_payload_cache() -> void:
 	for key_variant in patch_payload_requested.keys():
 		var key: Vector2i = key_variant
 		if (
-			int(patch_payload_requested_generation.get(key, -1)) != surface_generation
-			or (
-				_terrain_residency_target_bounds_valid
-				and not patches.has(key)
-				and not resident_patch_lookup.has(key)
-				and not _patch_key_in_bounds(key, _terrain_residency_target_bounds)
-			)
+			_terrain_residency_target_bounds_valid
+			and not patches.has(key)
+			and not resident_patch_lookup.has(key)
+			and not _patch_key_in_bounds(key, _terrain_residency_target_bounds)
 		):
 			patch_payload_requested.erase(key)
 			patch_payload_requested_generation.erase(key)
@@ -1754,13 +1820,10 @@ func _dirty_patch_payloads_ready_for_atomic_upload(keys: Array[Vector2i]) -> boo
 
 func _patch_payload_ready_for_key(key: Vector2i) -> bool:
 	var expected_render_step_mm := _terrain_patch_payload_render_step_mm(key)
-	var expected_generation := _sync_patch_payload_surface_generation()
+	_sync_patch_payload_road_generation()
 	if patch_payload_ready.has(key):
 		var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-		if (
-			int(ready_patch_data.get("render_step_mm", expected_render_step_mm)) == expected_render_step_mm
-			and int(ready_patch_data.get("surface_generation", -1)) == expected_generation
-		):
+		if int(ready_patch_data.get("render_step_mm", expected_render_step_mm)) == expected_render_step_mm:
 			return true
 		patch_payload_ready.erase(key)
 	_request_terrain_patch_payload(key, true)
@@ -1768,51 +1831,28 @@ func _patch_payload_ready_for_key(key: Vector2i) -> bool:
 
 func _terrain_patch_data_for_key(
 	key: Vector2i,
-	include_debug: bool = false,
-	allow_async: bool = false
+	_include_debug: bool = false,
+	_allow_async: bool = false
 ) -> Dictionary:
-	if allow_async and not include_debug and simulation_node.has_method("request_terrain_patch_payloads"):
-		var expected_render_step_mm := _terrain_patch_payload_render_step_mm(key)
-		var expected_generation := _sync_patch_payload_surface_generation()
-		if patch_payload_ready.has(key):
-			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-			if (
-				int(ready_patch_data.get("render_step_mm", expected_render_step_mm)) == expected_render_step_mm
-				and int(ready_patch_data.get("surface_generation", -1)) == expected_generation
-			):
-				patch_payload_ready.erase(key)
-				patch_payload_requested.erase(key)
-				patch_payload_requested_generation.erase(key)
-				return _terrain_patch_data_or_empty_refined_fallback(key, ready_patch_data)
+	var expected_render_step_mm := _terrain_patch_payload_render_step_mm(key)
+	_sync_patch_payload_road_generation()
+	if patch_payload_ready.has(key):
+		var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+		if int(ready_patch_data.get("render_step_mm", expected_render_step_mm)) == expected_render_step_mm:
 			patch_payload_ready.erase(key)
-		_request_terrain_patch_payload(key, patches.has(key))
-		return {}
-	if road_locked_patch_lookup.has(key):
-		if include_debug:
-			return simulation_node.get_refined_terrain_patch_debug(
-				key.x,
-				key.y,
-				ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M
-			)
-		var refined_patch_data: Dictionary = simulation_node.get_refined_terrain_patch(
-			key.x,
-			key.y,
-			ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M
-		)
-		return _terrain_patch_data_or_empty_refined_fallback(key, refined_patch_data)
-	return simulation_node.get_terrain_patch(key.x, key.y)
+			patch_payload_requested.erase(key)
+			patch_payload_requested_generation.erase(key)
+			return ready_patch_data
+		patch_payload_ready.erase(key)
+	_request_terrain_patch_payload(key, patches.has(key))
+	return {}
 
-func _terrain_patch_data_or_empty_refined_fallback(
-	key: Vector2i,
-	patch_data: Dictionary
-) -> Dictionary:
-	if road_locked_patch_lookup.has(key):
-		return patch_data
-	if _patch_has_empty_refined_cdt(patch_data):
-		return simulation_node.get_terrain_patch(key.x, key.y)
-	if _patch_has_unusable_refined_cdt(patch_data) and not patches.has(key):
-		return simulation_node.get_terrain_patch(key.x, key.y)
-	return patch_data
+func _patch_requires_engineered_refinement(key: Vector2i, patch_data: Dictionary) -> bool:
+	return (
+		engineered_patch_lookup.has(key)
+		or bool(patch_data.get("terrain_requires_engineered_refinement", false))
+		or bool(patch_data.get("terrain_requires_road_clipping", false))
+	)
 
 func _terrain_patch_height_bytes(patch_data: Dictionary) -> PackedByteArray:
 	var height_bytes: PackedByteArray = (
@@ -1903,13 +1943,13 @@ func _patch_has_unusable_refined_cdt(patch_data: Dictionary) -> bool:
 		return true
 	return _patch_has_empty_refined_cdt(patch_data) or _patch_has_bad_refined_cdt_status(patch_data)
 
-func _last_renderable_road_locked_patch_data(patch: Dictionary) -> Dictionary:
+func _last_renderable_engineered_patch_data(patch: Dictionary) -> Dictionary:
 	var previous_patch_data: Dictionary = patch.get("last_patch_data", {}) as Dictionary
-	if _road_locked_patch_data_is_renderable(previous_patch_data):
+	if _engineered_patch_data_is_renderable(previous_patch_data):
 		return previous_patch_data
 	return {}
 
-func _road_locked_patch_data_is_renderable(patch_data: Dictionary) -> bool:
+func _engineered_patch_data_is_renderable(patch_data: Dictionary) -> bool:
 	if patch_data.is_empty():
 		return false
 	if _patch_has_unusable_refined_cdt(patch_data):
@@ -2159,7 +2199,7 @@ func _mesh_subdivisions_for_sample_count(
 	return max(0, lod_vertex_count - 2)
 
 func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> int:
-	if not road_locked_patch_lookup.has(key):
+	if not engineered_patch_lookup.has(key):
 		return 1
 	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
 
@@ -2178,7 +2218,7 @@ func _mesh_lod_step_for_patch_with_camera(
 ) -> int:
 	if _terrain_force_lod1:
 		return 1
-	if road_locked_patch_lookup.has(key):
+	if engineered_patch_lookup.has(key):
 		return 1
 	if not camera_valid:
 		return 1
@@ -2344,7 +2384,7 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 		patch_data = _terrain_patch_data_for_key(key, false)
 	if patch_data.is_empty():
 		return false
-	if road_locked_patch_lookup.has(key) and not _road_locked_patch_data_is_renderable(patch_data):
+	if engineered_patch_lookup.has(key) and not _engineered_patch_data_is_renderable(patch_data):
 		return false
 	patch["lod_step"] = target_lod_step
 	patch["subdivision_factor"] = target_subdivision_factor
@@ -2372,22 +2412,48 @@ func _record_lod_perf_counters(
 	_terrain_lod_last_replaced_count = replaced_count
 	_terrain_lod_last_skipped_count = skipped_count
 
-func _refresh_road_locked_patch_lookup() -> void:
-	road_locked_patch_lookup.clear()
-	var flat_pairs: PackedInt32Array = simulation_node.get_road_locked_terrain_patches()
+func _refresh_engineered_patch_lookup() -> void:
+	engineered_patch_lookup.clear()
+	var flat_pairs: PackedInt32Array = simulation_node.get_engineered_terrain_patches()
 	var pair_count: int = flat_pairs.size() / 2
 	for index in range(pair_count):
-		road_locked_patch_lookup[Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])] = true
+		engineered_patch_lookup[Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])] = true
 
-func _ensure_overlay_texture() -> void:
+func _ensure_overlay_texture() -> bool:
 	var dims: Vector2 = simulation_node.get_heightmap_size()
-	overlay_image = Image.create(int(dims.x), int(dims.y), false, Image.FORMAT_RGBA8)
-	overlay_texture = ImageTexture.create_from_image(overlay_image)
+	var width := int(dims.x)
+	var height := int(dims.y)
+	if width <= 0 or height <= 0:
+		overlay_image = null
+		overlay_texture = null
+		return false
+	if (
+		overlay_image != null
+		and overlay_texture != null
+		and overlay_image.get_width() == width
+		and overlay_image.get_height() == height
+	):
+		return true
 
-func _update_overlay_texture() -> void:
-	if overlay_image == null:
-		return
-	var dims: Vector2 = simulation_node.get_heightmap_size()
+	var image := Image.create(width, height, false, Image.FORMAT_RGBA8)
+	if image == null or image.is_empty():
+		overlay_image = null
+		overlay_texture = null
+		return false
+	var texture := ImageTexture.create_from_image(image)
+	if texture == null:
+		overlay_image = null
+		overlay_texture = null
+		return false
+	overlay_image = image
+	overlay_texture = texture
+	return true
+
+func _update_overlay_texture() -> bool:
+	if not _ensure_overlay_texture():
+		return false
+	var width := overlay_image.get_width()
+	var height := overlay_image.get_height()
 	var overlay_bytes := PackedByteArray()
 	if overlay_mode == 1:
 		overlay_bytes = simulation_node.get_pollution_image_data()
@@ -2399,8 +2465,11 @@ func _update_overlay_texture() -> void:
 	if overlay_bytes.is_empty():
 		overlay_image.fill(Color(0.0, 0.0, 0.0, 0.0))
 	else:
-		overlay_image.set_data(int(dims.x), int(dims.y), false, Image.FORMAT_RGBA8, overlay_bytes)
+		if overlay_bytes.size() != width * height * 4:
+			return false
+		overlay_image.set_data(width, height, false, Image.FORMAT_RGBA8, overlay_bytes)
 	overlay_texture.update(overlay_image)
+	return true
 
 func _apply_overlay_mode() -> void:
 	for key in patches.keys():

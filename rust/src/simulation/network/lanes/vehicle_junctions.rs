@@ -153,7 +153,8 @@ pub fn build_vehicle_connections_at_node(
                 frontage_delay_penalty_s: 0.0,
                 cum_dist: conn_cum,
                 lane_type: LaneType::Vehicle,
-                is_crosswalk: false,
+                crosswalk_edge_id: None,
+                crosswalk_marking: None,
                 next_lanes: vec![out_lid],
                 node_id,
             });

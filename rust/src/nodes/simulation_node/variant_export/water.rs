@@ -3,18 +3,6 @@
 use super::super::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn water_patch_dict(
-        patch: &crate::simulation::water::WaterPatchSnapshot,
-    ) -> VarDictionary {
-        let mut dict = Self::water_patch_metadata_dict(patch);
-        dict.set(
-            "depth_data",
-            PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
-        );
-        dict.set("depth_bytes", Self::packed_f32_bytes(&patch.depth_data));
-        dict
-    }
-
     pub(in crate::nodes::simulation_node) fn water_patch_metadata_dict(
         patch: &crate::simulation::water::WaterPatchSnapshot,
     ) -> VarDictionary {
@@ -67,6 +55,14 @@ impl SimulationNode {
         dict.set(
             "depth_bytes",
             PackedByteArray::from_iter(payload.depth_bytes.iter().copied()),
+        );
+        dict.set(
+            "source_generation",
+            i64::try_from(payload.source_generation).unwrap_or(i64::MAX),
+        );
+        dict.set(
+            "surface_generation",
+            i64::try_from(payload.surface_generation).unwrap_or(i64::MAX),
         );
         Self::append_road_clip_query(&mut dict, &payload.road_clip_query);
         dict

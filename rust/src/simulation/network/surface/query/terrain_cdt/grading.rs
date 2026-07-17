@@ -29,6 +29,7 @@ impl RoadSurfaceSystem {
     }
 
     /// Returns the largest support distance required by visible grounded roads.
+    #[cfg(test)]
     pub(crate) fn terrain_cdt_required_grading_margin_for_visible_roads(
         &self,
         graph: &RegionGraph,

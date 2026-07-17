@@ -4,18 +4,6 @@ use super::super::super::super::*;
 use super::super::types::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn append_regular_terrain_mesh_outside_cdt_patch(
-        export: &mut TerrainCdtTriangleBufferExport,
-        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        cdt_patch: TerrainCdtPatch,
-        boundary_step_m: f32,
-    ) {
-        let windows = Self::terrain_cdt_window_bounds(patch, cdt_patch, boundary_step_m)
-            .into_iter()
-            .collect::<Vec<_>>();
-        Self::append_regular_terrain_mesh_outside_cdt_windows(export, patch, &windows);
-    }
-
     pub(in crate::nodes::simulation_node) fn append_regular_terrain_mesh_outside_cdt_windows(
         export: &mut TerrainCdtTriangleBufferExport,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,

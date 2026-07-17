@@ -5,7 +5,7 @@ use crate::simulation::terrain::cdt::TerrainCdtRoadLoop;
 use crate::simulation::water::WaterPatchSnapshot;
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 const WATER_MIN_VISIBLE_DEPTH_M: f32 = 0.001;
 const WATER_POINT_EPSILON: f32 = 0.000001;
@@ -164,27 +164,6 @@ impl SimCore {
             .collect::<Vec<_>>();
         entries.sort_by_key(|entry| (entry.key.patch_z, entry.key.patch_x, entry.key.lod_step));
         entries
-    }
-
-    /// Inserts completed water mesh cache entries.
-    pub(crate) fn insert_water_patch_mesh_cache_entries(
-        &mut self,
-        entries: Vec<CachedWaterPatchMesh>,
-    ) {
-        for entry in entries {
-            self.water_patch_mesh_cache.insert(entry.key, entry);
-        }
-    }
-
-    /// Removes cached mesh variants for patches whose depth or road clip inputs changed.
-    pub(crate) fn clear_water_patch_mesh_cache_entries(&mut self, patch_keys: &[(usize, usize)]) {
-        if patch_keys.is_empty() {
-            self.water_patch_mesh_cache.clear();
-            return;
-        }
-        let patch_key_lookup = patch_keys.iter().copied().collect::<HashSet<_>>();
-        self.water_patch_mesh_cache
-            .retain(|key, _| !patch_key_lookup.contains(&(key.patch_x, key.patch_z)));
     }
 }
 

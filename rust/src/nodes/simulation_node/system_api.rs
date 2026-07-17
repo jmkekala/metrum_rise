@@ -26,28 +26,13 @@ impl SimulationNode {
 
     // ── System ──
 
-    /// Undoes the last action.
+    /// Queues the latest authoring action for undo on the simulation thread.
     #[func]
     pub fn undo_action(&mut self) -> bool {
-        let cache_inputs = {
-            let mut core = self.lock_core();
-            if !core.undo_action_internal() {
-                return false;
-            }
-            core.rebuild_network_surface_terrain_internal();
-            core.precompute_road_mesh_data();
-            core.bump_road_tool_surface_generation();
-            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M)
-        };
-
-        self.lock_terrain_patch_payload_jobs().clear();
-
-        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
-        {
-            let mut core = self.lock_core();
-            core.insert_refined_terrain_patch_cache_entries(cache_entries);
+        if self.cmd_tx.send(SimCommand::Undo).is_err() {
+            return false;
         }
-        self.refresh_snapshot_from_core();
+        self.lock_terrain_patch_payload_jobs().clear();
         true
     }
 
@@ -127,7 +112,9 @@ impl SimulationNode {
     /// Returns debug path geometry for active agents.
     #[func]
     pub fn get_agent_paths_debug(&self) -> VarDictionary {
-        self.lock_core().get_agent_paths_debug_internal()
+        self.try_lock_core()
+            .map(|core| core.get_agent_paths_debug_internal())
+            .unwrap_or_default()
     }
 
     /// Returns `true` when the node was launched with `--asset-editor`.

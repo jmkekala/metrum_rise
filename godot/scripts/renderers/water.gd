@@ -1,10 +1,10 @@
 ## Water patch renderer — uploads chunk-local visible water patches and world-edge water curtains.
 ##
-## Rust methods called: get_water_patch(), get_water_patch_debug(),
-##   get_water_patch_authored_fill_debug(), get_dirty_water_patches(), get_water_border_depths(),
+## Rust methods called: get_water_patch_debug(), get_water_patch_authored_fill_debug(),
+##   get_dirty_water_patch_payload_states(), get_water_border_depths(),
 ##   request_water_patch_payloads(), poll_ready_water_patch_payloads(),
 ##   request_water_patch_meshes(), poll_ready_water_patch_meshes(),
-##   clear_water_patch_mesh_cache(), is_water_dirty(), clear_water_dirty()
+##   clear_water_patch_mesh_cache(), is_water_dirty(), acknowledge_water_patches()
 extends Node3D
 
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
@@ -89,6 +89,7 @@ var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
+var pending_water_ack_states: PackedInt64Array = PackedInt64Array()
 var patch_prewarm_queue: Array[Vector2i] = []
 var height_texture_rebind_queue: Array[Vector2i] = []
 var height_texture_rebind_lookup: Dictionary = {}
@@ -221,12 +222,11 @@ func _process(delta: float) -> void:
 	height_rebind_elapsed_ms = float(Time.get_ticks_usec() - height_rebind_start_us) / 1000.0
 
 	var border_changed := _current_terrain_border_revision() != terrain_border_revision
-	if simulation_node.is_water_dirty():
+	var water_ack_ready := _retry_pending_water_ack()
+	if water_ack_ready and simulation_node.is_water_dirty():
 		var upload_start_us := Time.get_ticks_usec()
-		var water_upload_complete := update_water_visuals(true)
+		update_water_visuals(true)
 		upload_elapsed_ms = float(Time.get_ticks_usec() - upload_start_us) / 1000.0
-		if water_upload_complete:
-			simulation_node.clear_water_dirty()
 	elif border_changed:
 		var border_start_us := Time.get_ticks_usec()
 		_rebuild_water_border()
@@ -331,23 +331,24 @@ func _process(delta: float) -> void:
 		_water_mesh_last_frame_elapsed_ms = float(Time.get_ticks_usec() - frame_start_us) / 1000.0
 
 func update_water_visuals(allow_async: bool = false) -> bool:
-	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_water_patches())
+	if not _retry_pending_water_ack():
+		return false
+	var dirty_states: PackedInt64Array = simulation_node.get_dirty_water_patch_payload_states()
+	var dirty_keys := _dirty_water_patch_keys_from_states(dirty_states)
 	var dirty_upload_pending := false
 	if dirty_keys.is_empty():
-		for key in get_resident_patch_keys():
-			if not _upload_patch(key, false, allow_async):
-				dirty_upload_pending = true
+		return not simulation_node.is_water_dirty()
 	else:
 		for key in dirty_keys:
 			if patches.has(key):
-				if _upload_patch(key, false, allow_async):
+				if _upload_patch(key, allow_async):
 					_queue_terrain_patch_binding(key)
 				else:
 					dirty_upload_pending = true
 	if dirty_upload_pending:
 		return false
 	_rebuild_water_border()
-	return true
+	return _acknowledge_water_batch(dirty_states)
 
 func get_resident_patch_keys() -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
@@ -616,52 +617,17 @@ func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
 		simulation_node.clear_water_patch_mesh_cache(flat_pairs)
 	for key in dirty_keys:
 		if patches.has(key):
+			patch_payload_requested.erase(key)
+			patch_payload_ready.erase(key)
 			_upload_patch(key, true)
 
-func _upload_patch(
-	key: Vector2i,
-	road_clip_only: bool = false,
-	allow_async: bool = false
-) -> bool:
+func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	if not patches.has(key):
 		return false
 	var total_start_us := Time.get_ticks_usec()
 	var patch: Dictionary = patches[key]
 	var fetch_start_us := total_start_us
 	var fetch_elapsed_ms := 0.0
-	if road_clip_only and simulation_node.has_method("get_water_patch_road_clip"):
-		var clip_data: Dictionary = simulation_node.get_water_patch_road_clip(
-			key.x,
-			key.y,
-			float(patch["world_origin_x"]),
-			float(patch["world_origin_z"]),
-			float(patch["world_origin_x"]) + float(patch["world_size_x"]),
-			float(patch["world_origin_z"]) + float(patch["world_size_z"])
-		)
-		fetch_elapsed_ms = float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
-		if clip_data.is_empty():
-			return false
-		var clip_signature := _patch_road_clip_signature(clip_data)
-		var clip_signature_changed := int(patch.get("road_clip_signature", clip_signature - 1)) != clip_signature
-		var cached_depth_nonzero_count := int(patch.get("depth_nonzero_count", 0))
-		if not clip_signature_changed or cached_depth_nonzero_count <= 0:
-			patch["road_clip_signature"] = clip_signature
-			if _terrain_debug_enabled and fetch_elapsed_ms >= 2.0:
-				_water_debug_log(
-					"water_upload key=(%d,%d) road_clip_only=true depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s texture_ms=0.000 mesh_ms=0.000 fetch_ms=%.3f total_ms=%.3f"
-					% [
-						key.x,
-						key.y,
-						cached_depth_nonzero_count,
-						int(clip_data.get("road_clip_loop_count", 0)),
-						int(clip_data.get("road_clip_point_count", 0)),
-						str(clip_signature_changed),
-						fetch_elapsed_ms,
-						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
-					]
-				)
-			return true
-		fetch_start_us = Time.get_ticks_usec()
 	var patch_data: Dictionary = _water_patch_data_for_key(key, allow_async)
 	fetch_elapsed_ms += float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
 	if patch_data.is_empty():
@@ -680,7 +646,7 @@ func _upload_patch(
 	var depth_signature_changed: bool = int(patch.get("depth_signature", depth_signature - 1)) != depth_signature
 	var depth_visibility_changed := int(patch.get("depth_nonzero_count", depth_nonzero_count - 1)) != depth_nonzero_count
 	var texture_shape_changed := int(patch.get("texture_width", texture_width)) != texture_width or int(patch.get("texture_height", texture_height)) != texture_height
-	var should_upload_textures := not road_clip_only or texture_shape_changed
+	var should_upload_textures := depth_signature_changed or texture_shape_changed
 	var texture_elapsed_ms := 0.0
 	if should_upload_textures:
 		var texture_start_us := Time.get_ticks_usec()
@@ -717,7 +683,7 @@ func _upload_patch(
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
 	var lod_step := int(patch.get("lod_step", 1))
-	var should_refresh_mesh := not road_clip_only or signature_changed or depth_signature_changed or depth_visibility_changed
+	var should_refresh_mesh := signature_changed or depth_signature_changed or depth_visibility_changed
 	var mesh_elapsed_ms := 0.0
 	var mesh_stats: Dictionary = patch.get("mesh_stats", _empty_water_mesh_stats(lod_step))
 	if should_refresh_mesh:
@@ -754,11 +720,10 @@ func _upload_patch(
 		var total_elapsed_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if total_elapsed_ms >= 2.0:
 			_water_debug_log(
-				"water_upload key=(%d,%d) road_clip_only=%s depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s mesh_cells=%d full=%d partial=%d conservative=%d dry=%d road_clipped=%d mesh_tris=%d texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
+				"water_upload key=(%d,%d) depth_nonzero=%d clip_loops=%d clip_points=%d signature_changed=%s mesh_cells=%d full=%d partial=%d conservative=%d dry=%d road_clipped=%d mesh_tris=%d texture_ms=%.3f mesh_ms=%.3f fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
-					str(road_clip_only),
 					depth_nonzero_count,
 					int(patch_data.get("road_clip_loop_count", 0)),
 					int(patch_data.get("road_clip_point_count", 0)),
@@ -838,6 +803,7 @@ func _clear_patches() -> void:
 	resident_patch_lookup.clear()
 	patch_payload_requested.clear()
 	patch_payload_ready.clear()
+	pending_water_ack_states = PackedInt64Array()
 	patch_prewarm_queue.clear()
 	height_texture_rebind_queue.clear()
 	height_texture_rebind_lookup.clear()
@@ -1191,6 +1157,35 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
 
+func _dirty_water_patch_keys_from_states(
+	flat_states: PackedInt64Array
+) -> Array[Vector2i]:
+	var keys: Array[Vector2i] = []
+	var state_count := flat_states.size() / 3
+	for index in range(state_count):
+		keys.append(Vector2i(
+			int(flat_states[index * 3]),
+			int(flat_states[index * 3 + 1])
+		))
+	return keys
+
+func _acknowledge_water_batch(flat_states: PackedInt64Array) -> bool:
+	if flat_states.is_empty():
+		return true
+	if simulation_node.acknowledge_water_patches(flat_states):
+		pending_water_ack_states = PackedInt64Array()
+		return true
+	pending_water_ack_states = flat_states.duplicate()
+	return false
+
+func _retry_pending_water_ack() -> bool:
+	if pending_water_ack_states.is_empty():
+		return true
+	if not simulation_node.acknowledge_water_patches(pending_water_ack_states):
+		return false
+	pending_water_ack_states = PackedInt64Array()
+	return true
+
 func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[String]:
 	var lines: Array[String] = []
 	lines.append(_road_geometry_water_border_line())
@@ -1412,16 +1407,14 @@ func _poll_ready_water_patch_payloads(budget: int) -> int:
 		accepted_count += 1
 	return accepted_count
 
-func _water_patch_data_for_key(key: Vector2i, allow_async: bool = false) -> Dictionary:
-	if allow_async and simulation_node.has_method("request_water_patch_payloads"):
-		if patch_payload_ready.has(key):
-			var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
-			patch_payload_ready.erase(key)
-			patch_payload_requested.erase(key)
-			return ready_patch_data
-		_request_water_patch_payload(key, patches.has(key))
-		return {}
-	return simulation_node.get_water_patch(key.x, key.y)
+func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dictionary:
+	if patch_payload_ready.has(key):
+		var ready_patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+		patch_payload_ready.erase(key)
+		patch_payload_requested.erase(key)
+		return ready_patch_data
+	_request_water_patch_payload(key, patches.has(key))
+	return {}
 
 func _water_patch_depth_bytes(patch_data: Dictionary) -> PackedByteArray:
 	var depth_bytes: PackedByteArray = (
@@ -1993,7 +1986,17 @@ func _submit_water_patch_mesh_requests(
 		if requests.is_empty():
 			continue
 		var request_result: Dictionary = simulation_node.request_water_patch_meshes(requests) as Dictionary
-		var batch_submitted_count: int = int(request_result.get("accepted_count", requests.size() / 3))
+		if bool(request_result.get("core_busy", false)):
+			for request_index in range(requests.size() / 3):
+				var request_key := Vector2i(
+					requests[request_index * 3],
+					requests[request_index * 3 + 1]
+				)
+				var request_lod := int(requests[request_index * 3 + 2])
+				mesh_pending_lod.erase(request_key)
+				_queue_patch_mesh_refresh(request_key, request_lod)
+			break
+		var batch_submitted_count: int = int(request_result.get("accepted_count", 0))
 		request_sent_count += requests.size() / 3
 		request_raw_count += int(request_result.get("raw_count", requests.size() / 3))
 		request_accepted_count += batch_submitted_count

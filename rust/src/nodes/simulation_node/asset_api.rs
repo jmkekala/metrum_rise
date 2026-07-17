@@ -50,69 +50,99 @@ impl SimulationNode {
         get_building_mesh_part_lod0_native_path(&self.lock_core(), qualified_id, part_index)
     }
 
-    /// Returns the packed 12-float transforms for all placed buildings of the given asset part.
+    /// Returns one coherent building-render frame, or `busy = true` without waiting for SimCore.
+    ///
+    /// Asset-part and zone outputs preserve the order of the supplied request arrays. Site mesh
+    /// buffers are included only when their revision differs from `known_site_revision`.
     #[func]
-    pub fn get_building_transforms_for_asset_part(
+    pub fn try_get_building_render_frame(
         &self,
-        asset_id: GString,
-        part_index: i32,
-    ) -> PackedFloat32Array {
-        self.lock_core()
-            .get_building_transforms_for_asset_part_internal(&asset_id.to_string(), part_index)
-    }
+        asset_ids: PackedStringArray,
+        part_indices: PackedInt32Array,
+        zone_ids: PackedInt32Array,
+        known_site_revision: i64,
+    ) -> VarDictionary {
+        let mut frame = VarDictionary::new();
+        frame.set("busy", true);
+        let Some(core) = self.try_lock_core() else {
+            return frame;
+        };
 
-    /// Returns the packed 12-float transforms for all deserted buildings of the given asset part.
-    #[func]
-    pub fn get_deserted_building_transforms_for_asset_part(
-        &self,
-        asset_id: GString,
-        part_index: i32,
-    ) -> PackedFloat32Array {
-        self.lock_core()
-            .get_deserted_building_transforms_for_asset_part_internal(
-                &asset_id.to_string(),
-                part_index,
-            )
-    }
+        let part_count = asset_ids.len().min(part_indices.len());
+        let mut building_transforms = VarArray::new();
+        let mut deserted_transforms = VarArray::new();
+        for index in 0..part_count {
+            let asset_id = asset_ids[index].to_string();
+            let part_index = part_indices[index];
+            building_transforms.push(
+                &core
+                    .get_building_transforms_for_asset_part_internal(&asset_id, part_index)
+                    .to_variant(),
+            );
+            deserted_transforms.push(
+                &core
+                    .get_deserted_building_transforms_for_asset_part_internal(&asset_id, part_index)
+                    .to_variant(),
+            );
+        }
 
-    /// Returns the packed transforms for building plots/foundations of a specific zone type.
-    #[func]
-    pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.lock_core()
-            .get_building_plot_transforms_internal(zone_type_int)
-    }
+        let mut plot_transforms = VarArray::new();
+        let mut construction_site_transforms = VarArray::new();
+        let mut construction_foundation_transforms = VarArray::new();
+        let mut construction_scaffold_transforms = VarArray::new();
+        for &zone_id in zone_ids.as_slice() {
+            let zone_id = u8::try_from(zone_id).unwrap_or(0);
+            plot_transforms.push(
+                &core
+                    .get_building_plot_transforms_internal(zone_id)
+                    .to_variant(),
+            );
+            construction_site_transforms.push(
+                &core
+                    .get_construction_site_transforms_internal(zone_id)
+                    .to_variant(),
+            );
+            construction_foundation_transforms.push(
+                &core
+                    .get_construction_foundation_transforms_internal(zone_id)
+                    .to_variant(),
+            );
+            construction_scaffold_transforms.push(
+                &core
+                    .get_construction_scaffold_transforms_internal(zone_id)
+                    .to_variant(),
+            );
+        }
 
-    /// Returns the packed construction-site slab transforms for a specific zone type.
-    #[func]
-    pub fn get_construction_site_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.lock_core()
-            .get_construction_site_transforms_internal(zone_type_int)
-    }
-
-    /// Returns the packed construction-foundation transforms for a specific zone type.
-    #[func]
-    pub fn get_construction_foundation_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.lock_core()
-            .get_construction_foundation_transforms_internal(zone_type_int)
-    }
-
-    /// Returns the packed procedural scaffold bar transforms for a specific zone type.
-    #[func]
-    pub fn get_construction_scaffold_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.lock_core()
-            .get_construction_scaffold_transforms_internal(zone_type_int)
-    }
-
-    /// Returns the live building-site mesh revision.
-    #[func]
-    pub fn get_building_site_revision(&self) -> i64 {
-        i64::try_from(self.lock_core().get_building_site_revision_internal()).unwrap_or(i64::MAX)
-    }
-
-    /// Returns world-space triangle buffers for flat building-site top surfaces.
-    #[func]
-    pub fn get_building_site_mesh_data(&self) -> VarDictionary {
-        self.lock_core().get_building_site_mesh_data_internal()
+        let site_revision = core.get_building_site_revision_internal();
+        frame.set("busy", false);
+        frame.set("building_transforms", building_transforms.to_variant());
+        frame.set("deserted_transforms", deserted_transforms.to_variant());
+        frame.set("plot_transforms", plot_transforms.to_variant());
+        frame.set(
+            "construction_site_transforms",
+            construction_site_transforms.to_variant(),
+        );
+        frame.set(
+            "construction_foundation_transforms",
+            construction_foundation_transforms.to_variant(),
+        );
+        frame.set(
+            "construction_scaffold_transforms",
+            construction_scaffold_transforms.to_variant(),
+        );
+        frame.set(
+            "site_revision",
+            i64::try_from(site_revision).unwrap_or(i64::MAX),
+        );
+        if known_site_revision < 0 || u64::try_from(known_site_revision).ok() != Some(site_revision)
+        {
+            frame.set(
+                "site_mesh_data",
+                core.get_building_site_mesh_data_internal().to_variant(),
+            );
+        }
+        frame
     }
 
     /// Returns a Dictionary of live stats for the building whose centre is closest to

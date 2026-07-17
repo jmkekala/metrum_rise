@@ -655,6 +655,11 @@ impl TerrainSystem {
         }
     }
 
+    /// Acknowledges one render patch without disturbing dirtiness added to other patches.
+    pub(crate) fn clear_render_patch_dirty(&mut self, patch_x: usize, patch_z: usize) {
+        self.dirty_render_patches.remove(&(patch_x, patch_z));
+    }
+
     /// Returns the render-patch keys whose sample bounds overlap the given world-space rectangle.
     pub(crate) fn render_patch_keys_for_world_bounds(
         &self,
@@ -681,6 +686,18 @@ impl TerrainSystem {
         keys
     }
 
+    /// Returns the owned world-space rectangle for one terrain render patch.
+    pub(crate) fn render_patch_world_bounds(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let (start_x, end_x, start_z, end_z) = self.render_patch_sample_bounds(patch_x, patch_z)?;
+        let (min_x, min_z) = self.grid_to_world_coords(start_x, start_z);
+        let (max_x, max_z) = self.grid_to_world_coords(end_x, end_z);
+        Some((min_x, min_z, max_x, max_z))
+    }
+
     /// Marks all render patches overlapping a world-space rectangle as dirty.
     pub(crate) fn mark_render_patches_for_world_bounds(
         &mut self,
@@ -703,10 +720,6 @@ impl TerrainSystem {
     }
 
     /// Clears the terrain render-patch dirtiness set.
-    pub(crate) fn clear_dirty_render_patches(&mut self) {
-        self.dirty_render_patches.clear();
-    }
-
     /// Returns one visual-terrain render patch with a one-sample border ring.
     pub(crate) fn visual_patch_snapshot(
         &self,

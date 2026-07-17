@@ -142,6 +142,12 @@ pub struct HouseholdSystem {
     pub(super) last_city_service_wage_cost: f32,
 }
 
+/// Household records changed when one building is removed.
+pub(crate) struct HouseholdBuildingUndo {
+    pub(crate) records: Vec<(usize, Household, DailyHouseholdLedger)>,
+    pub(crate) mutated_building_ids: Vec<usize>,
+}
+
 impl HouseholdSystem {
     /// Creates an empty household system.
     pub fn new() -> Self {
@@ -165,6 +171,56 @@ impl HouseholdSystem {
             last_power_settlement: DailyPowerSettlementSummary::default(),
             last_city_service_wage_cost: 0.0,
         }
+    }
+
+    /// Captures only household and store records that building invalidation can mutate.
+    pub(crate) fn capture_building_undo(
+        &mut self,
+        removed_building: usize,
+    ) -> HouseholdBuildingUndo {
+        self.ensure_daily_ledger_len();
+        let mut records = Vec::new();
+        let mut mutated_building_ids = Vec::new();
+        for (household_id, household) in self.households.iter().enumerate() {
+            let removed_home = household.home_building_id == removed_building;
+            let removed_store = household.reserved_store_building_id == removed_building;
+            if !removed_home && !removed_store {
+                continue;
+            }
+            records.push((
+                household_id,
+                household.clone(),
+                self.daily_ledgers[household_id],
+            ));
+            if household.replenishment_state == REPLENISHMENT_SHOPPING_TO_STORE
+                && household.reserved_store_building_id != removed_building
+            {
+                mutated_building_ids.push(household.reserved_store_building_id);
+            }
+        }
+        mutated_building_ids.sort_unstable();
+        mutated_building_ids.dedup();
+        HouseholdBuildingUndo {
+            records,
+            mutated_building_ids,
+        }
+    }
+
+    /// Restores records captured by [`Self::capture_building_undo`].
+    pub(crate) fn restore_building_undo(&mut self, undo: HouseholdBuildingUndo) {
+        self.ensure_daily_ledger_len();
+        for (household_id, household, ledger) in undo.records {
+            if let Some(target) = self.households.get_mut(household_id) {
+                *target = household;
+            }
+            if let Some(target) = self.daily_ledgers.get_mut(household_id) {
+                *target = ledger;
+            }
+        }
+        self.workplace_route_cache.clear();
+        self.workplace_route_cache_building_revision = u64::MAX;
+        self.workplace_route_cache_entrance_revision = u64::MAX;
+        self.workplace_route_cache_cch_generation = u32::MAX;
     }
 
     /// Clears all households.

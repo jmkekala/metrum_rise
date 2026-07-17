@@ -178,7 +178,7 @@ reservations, so player zoning cannot claim land already reserved by a city serv
 Parcel overlay:
 
 ```text
-get_zoning_parcels_overlay() -> Array[Dictionary]
+try_get_zoning_parcels_overlay_packed() -> Dictionary
 ```
 
 Road no-build tool support:
@@ -186,8 +186,11 @@ Road no-build tool support:
 ```text
 set_no_building_spawn(edge_idx, enabled)
 get_no_building_spawn(edge_idx) -> bool
-get_no_building_spawn_edge_indices() -> PackedInt32Array
+try_get_no_building_spawn_lines() -> Dictionary
 ```
+
+Both renderer payloads return `busy = true` instead of waiting on the simulation mutex; Godot keeps
+the previous overlay and retries while the authoritative state is busy.
 
 No Godot API may compute zoning legality or repair parcel placement. Godot may only request,
 preview, submit, and render Rust-authored results.

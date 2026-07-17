@@ -65,109 +65,6 @@ impl SimulationNode {
         PackedByteArray::from_iter(bytes)
     }
 
-    pub(in crate::nodes::simulation_node) fn refined_terrain_patch_dict(
-        core: &crate::nodes::sim::core::SimCore,
-        patch_x: usize,
-        patch_z: usize,
-        render_step_m: f32,
-        include_debug: bool,
-    ) -> VarDictionary {
-        let road_debug = crate::debug::category_enabled("road");
-        let total_start = road_debug.then(Instant::now);
-        let snapshot_start = road_debug.then(Instant::now);
-        let Some(base_patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
-            return VarDictionary::new();
-        };
-        let snapshot_ms = snapshot_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-
-        let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let dict_start = road_debug.then(Instant::now);
-        let mut dict = Self::terrain_patch_dict(&base_patch);
-        let base_dict_ms = dict_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let clip_start = road_debug.then(Instant::now);
-        let road_clip_query = Self::road_clip_loop_query_for_bounds(
-            core,
-            base_patch.world_origin_x,
-            base_patch.world_origin_z,
-            base_patch.world_origin_x + base_patch.world_size_x,
-            base_patch.world_origin_z + base_patch.world_size_z,
-        );
-        let clip_ms = clip_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let clip_loops = road_clip_query.cdt_road_loops.len();
-        let clip_points: usize = road_clip_query
-            .cdt_road_loops
-            .iter()
-            .map(|road_loop| road_loop.vertices.len())
-            .sum();
-        let clip_dict_start = road_debug.then(Instant::now);
-        if include_debug {
-            Self::append_road_clip_query(&mut dict, &road_clip_query);
-        } else {
-            Self::append_road_clip_status(&mut dict, &road_clip_query);
-        }
-        let clip_dict_ms = clip_dict_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let cdt_input_start = road_debug.then(Instant::now);
-        let cdt_input = Self::terrain_cdt_input(
-            &core.heightmap,
-            &base_patch,
-            &road_clip_query.cdt_road_loops,
-            safe_render_step_m,
-            Some(TerrainCdtSiteGradingContext {
-                allocator: &core.allocator,
-                graph: &core.region_graph,
-                road_surface: &core.transit_network.road_surface,
-            }),
-        );
-        let cdt_input_ms = cdt_input_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        let cdt_source_samples = cdt_input.source_samples.len();
-        let cdt_append_start = road_debug.then(Instant::now);
-        Self::append_cdt_terrain_mesh(
-            &mut dict,
-            &base_patch,
-            cdt_input,
-            safe_render_step_m,
-            road_clip_query.source_count > 0,
-            true,
-            road_clip_query.clip_error_label,
-            include_debug,
-        );
-        let cdt_append_ms = cdt_append_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-        if road_debug {
-            debug_log!(
-                "road",
-                "refined_patch key=({},{}) include_debug={} snapshot_ms={:.3} base_dict_ms={:.3} clip_query_ms={:.3} clip_dict_ms={:.3} cdt_input_ms={:.3} cdt_append_ms={:.3} total_ms={:.3} clip_loops={} clip_points={} cdt_source_samples={}",
-                patch_x,
-                patch_z,
-                include_debug,
-                snapshot_ms,
-                base_dict_ms,
-                clip_ms,
-                clip_dict_ms,
-                cdt_input_ms,
-                cdt_append_ms,
-                total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0),
-                clip_loops,
-                clip_points,
-                cdt_source_samples
-            );
-        }
-        dict
-    }
-
     pub(in crate::nodes::simulation_node) fn refined_patch_cache_key(
         patch_x: usize,
         patch_z: usize,
@@ -187,7 +84,10 @@ impl SimulationNode {
         let mut dict = Self::terrain_patch_dict(&cached.patch);
         let road_clip_query = RoadClipLoopQuery {
             cdt_road_loops: Vec::new(),
-            source_count: cached.road_clip_source_count,
+            source_count: cached.clip_source_count,
+            road_source_count: cached.road_clip_source_count,
+            road_loop_count: cached.road_clip_loop_count,
+            site_loop_count: cached.site_clip_loop_count,
             clip_error_label: cached.clip_error_label,
         };
         Self::append_road_clip_status(&mut dict, &road_clip_query);
@@ -198,6 +98,10 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_dict(
         payload: &TerrainPatchPayload,
     ) -> VarDictionary {
+        let requires_engineered_refinement = match &payload.data {
+            TerrainPatchPayloadData::Regular { .. } => false,
+            TerrainPatchPayloadData::Refined { patch } => patch.requires_engineered_refinement,
+        };
         let mut dict = match &payload.data {
             TerrainPatchPayloadData::Regular {
                 patch,
@@ -215,6 +119,10 @@ impl SimulationNode {
             }
         };
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
+        dict.set(
+            "terrain_requires_engineered_refinement",
+            requires_engineered_refinement,
+        );
         dict.set(
             "surface_generation",
             i64::try_from(payload.surface_generation).unwrap_or(i64::MAX),

@@ -8,6 +8,7 @@ use super::super::{
     RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
     RoadSurfaceTerrainClipLoopTopology, RoadSurfaceVisualNodePieceKind,
     backend::RoadVec3,
+    earthwork::EARTHWORK_MAX_MARGIN_M,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
 };
 use crate::simulation::network::graph::RegionGraph;

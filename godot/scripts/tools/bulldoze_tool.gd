@@ -4,8 +4,6 @@
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
-@onready var terrain_node = $"../Terrain"
-@onready var buildings_node = $"../Buildings"
 
 var active: bool = false
 
@@ -56,15 +54,9 @@ func _delete_hovered_target() -> void:
 	if not _target_valid:
 		return
 	var result: Dictionary = simulation_node.bulldoze_at(_target_world_pos.x, _target_world_pos.y)
-	if not bool(result.get("deleted", false)):
+	if not bool(result.get("queued", false)):
 		_clear_hover()
 		return
-	var kind := str(result.get("kind", ""))
-	if kind == "building":
-		if buildings_node:
-			buildings_node.update_all_buildings()
-		if terrain_node:
-			terrain_node.update_terrain_visuals()
 	_clear_hover()
 
 func _clear_hover() -> void:

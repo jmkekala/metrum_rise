@@ -12,6 +12,10 @@ impl RoadSurfaceSystem {
         self.surface_chunk_nodes.clear();
         self.earthwork_chunk_spans.clear();
         self.earthwork_chunk_nodes.clear();
+        self.query_span_chunks.clear();
+        self.query_node_chunks.clear();
+        self.query_chunk_spans.clear();
+        self.query_chunk_nodes.clear();
     }
 
     pub(in crate::simulation::network::surface) fn remove_span_piece_coverage(
@@ -32,6 +36,8 @@ impl RoadSurfaceSystem {
             edge_idx,
             &terrain_chunks,
         );
+        let query_chunks = self.query_span_chunks.remove(&edge_idx).unwrap_or_default();
+        Self::remove_owner_chunk_coverage(&mut self.query_chunk_spans, edge_idx, &query_chunks);
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
         (surface_chunks, terrain_chunks)
     }
@@ -54,6 +60,8 @@ impl RoadSurfaceSystem {
             node_id,
             &terrain_chunks,
         );
+        let query_chunks = self.query_node_chunks.remove(&node_id).unwrap_or_default();
+        Self::remove_owner_chunk_coverage(&mut self.query_chunk_nodes, node_id, &query_chunks);
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
         (surface_chunks, terrain_chunks)
     }
@@ -82,6 +90,14 @@ impl RoadSurfaceSystem {
             piece.edge_idx,
             &terrain_chunks,
         );
+        let query_chunks = Self::canonical_chunk_vec(self.visual_span_piece_query_chunks(piece));
+        self.query_span_chunks
+            .insert(piece.edge_idx, query_chunks.clone());
+        Self::insert_owner_chunk_coverage(
+            &mut self.query_chunk_spans,
+            piece.edge_idx,
+            &query_chunks,
+        );
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
         (surface_chunks, terrain_chunks)
     }
@@ -109,6 +125,14 @@ impl RoadSurfaceSystem {
             &mut self.earthwork_chunk_nodes,
             piece.node_id,
             &terrain_chunks,
+        );
+        let query_chunks = Self::canonical_chunk_vec(self.visual_node_piece_query_chunks(piece));
+        self.query_node_chunks
+            .insert(piece.node_id, query_chunks.clone());
+        Self::insert_owner_chunk_coverage(
+            &mut self.query_chunk_nodes,
+            piece.node_id,
+            &query_chunks,
         );
         self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
         (surface_chunks, terrain_chunks)
@@ -170,6 +194,32 @@ impl RoadSurfaceSystem {
         self.visual_node_piece_bounds(piece, kind)
             .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
             .unwrap_or_default()
+    }
+
+    fn visual_span_piece_query_chunks(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) -> Vec<SurfaceChunkKey> {
+        let mut chunks = Vec::new();
+        for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
+            if let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) {
+                chunks.extend(Self::bounds_to_query_chunk_keys(min, max));
+            }
+        }
+        chunks
+    }
+
+    fn visual_node_piece_query_chunks(
+        &self,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) -> Vec<SurfaceChunkKey> {
+        let mut chunks = Vec::new();
+        for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
+            if let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) {
+                chunks.extend(Self::bounds_to_query_chunk_keys(min, max));
+            }
+        }
+        chunks
     }
 
     fn canonical_chunk_vec(mut chunks: Vec<SurfaceChunkKey>) -> Vec<SurfaceChunkKey> {

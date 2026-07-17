@@ -38,29 +38,31 @@
 //! | | `smooth_terrain` | `world_editor.gd` |
 //! | | `slope_terrain` | `world_editor.gd` |
 //! | | `is_terrain_dirty` | `terrain.gd` |
-//! | | `clear_terrain_dirty` | `terrain.gd` |
+//! | | `acknowledge_terrain_patches` | `terrain.gd` |
 //! | | `get_terrain_patch_layout` | `terrain.gd`, `water.gd` |
-//! | | `get_dirty_terrain_patches` | `terrain.gd` |
-//! | | `get_terrain_patch` | `terrain.gd` |
+//! | | `get_dirty_terrain_patch_payload_states` | `terrain.gd` |
+//! | | `request_terrain_patch_payloads` | `terrain.gd` |
+//! | | `poll_ready_terrain_patch_payloads` | `terrain.gd` |
 //! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
 //! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
 //! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd` |
 //! | **Water** | `is_water_dirty` | `water.gd` |
-//! | | `clear_water_dirty` | `water.gd` |
-//! | | `get_dirty_water_patches` | `water.gd` |
-//! | | `get_water_patch` | `water.gd` |
+//! | | `acknowledge_water_patches` | `water.gd` |
+//! | | `get_dirty_water_patch_payload_states` | `water.gd` |
+//! | | `request_water_patch_payloads` | `water.gd` |
+//! | | `poll_ready_water_patch_payloads` | `water.gd` |
 //! | | `request_water_patch_meshes` | `water.gd` |
 //! | | `poll_ready_water_patch_meshes` | `water.gd` |
-//! | | `poll_water_patch_meshes` | `water.gd` |
 //! | | `clear_water_patch_mesh_cache` | `water.gd` |
 //! | | `get_water_patch_debug` | `water.gd` |
 //! | | `get_water_patch_authored_fill_debug` | `water.gd` |
 //! | | `get_water_border_depths` | `water.gd` |
 //! | **Network** | `add_road` | `road_tool.gd` |
 //! | | `is_network_dirty` | `network_renderer.gd` |
-//! | | `clear_network_dirty` | `network_renderer.gd` |
+//! | | `get_network_render_generation` | `network_renderer.gd` |
+//! | | `acknowledge_network_render` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
 //! | | `validate_road_candidate` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
@@ -89,7 +91,7 @@
 //! | | `get_zoning_overlay_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_overlay_occupancy_revision` | `zoning_overlay.gd` |
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
-//! | | `get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
+//! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
 //! | | `get_car_render_ids` | `agent_renderer.gd` |
@@ -101,11 +103,11 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury, DailyBudgetLedgerEntry,
-    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
-    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
-    SimCore, road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
+    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
+    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
+    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
+    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, road_tool_snapshots_from_core,
+    run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -115,7 +117,8 @@ use crate::nodes::sim::render::water::{
     water_patch_depth_signature,
 };
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, BuildingSiteGradingRequest, ExplicitServicePlacementRejection,
+    BuildingAllocator, BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot,
+    ExplicitServicePlacementRejection,
 };
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -166,6 +169,7 @@ use async_terrain::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
     TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
     WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
+    WaterPatchPayloadRequestState,
 };
 use variant_export::{
     budget_ledger_entry_dict, zoning_geometries_without_explicit_sites,
@@ -190,9 +194,43 @@ const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 
 #[derive(Clone, Copy)]
 struct TerrainCdtSiteGradingContext<'a> {
-    allocator: &'a BuildingAllocator,
+    source: TerrainCdtSiteGradingSource<'a>,
     graph: &'a crate::simulation::network::graph::RegionGraph,
     road_surface: &'a RoadSurfaceSystem,
+}
+
+#[derive(Clone, Copy)]
+enum TerrainCdtSiteGradingSource<'a> {
+    Snapshot(&'a BuildingSiteTerrainSnapshot),
+}
+
+impl TerrainCdtSiteGradingContext<'_> {
+    fn append_guides(
+        self,
+        terrain: &TerrainSystem,
+        world_bounds: (f32, f32, f32, f32),
+        render_step_m: f32,
+        tie_in_guide_samples: &mut Vec<crate::simulation::terrain::cdt::TerrainCdtTieInGuideSample>,
+        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    ) {
+        let request = || {
+            BuildingSiteGradingRequest::new(
+                terrain,
+                self.graph,
+                self.road_surface,
+                world_bounds,
+                render_step_m,
+            )
+        };
+        match self.source {
+            TerrainCdtSiteGradingSource::Snapshot(snapshot) => snapshot
+                .append_terrain_cdt_site_grading_guides_for_world_bounds(
+                    request(),
+                    tie_in_guide_samples,
+                    sample_keys,
+                ),
+        }
+    }
 }
 
 #[derive(GodotClass)]
@@ -251,6 +289,9 @@ pub struct SimulationNode {
 struct RoadClipLoopQuery {
     cdt_road_loops: Vec<TerrainCdtRoadLoop>,
     source_count: usize,
+    road_source_count: usize,
+    road_loop_count: usize,
+    site_loop_count: usize,
     clip_error_label: Option<&'static str>,
 }
 
@@ -392,7 +433,7 @@ impl INode3D for SimulationNode {
 
         let benchmark_mode = run_benchmark || generate_benchmark;
 
-        let core = SimCore {
+        let mut core = SimCore {
             time: TimeSystem::new(),
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
@@ -434,8 +475,14 @@ impl INode3D for SimulationNode {
             last_road_timing: String::new(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
-            water_patch_mesh_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
+            road_locked_terrain_patch_margins: BTreeMap::new(),
+            building_site_owned_terrain_patch_keys: HashSet::new(),
+            engineered_terrain_patch_keys: Vec::new(),
+            engineered_terrain_patch_margins: BTreeMap::new(),
+            terrain_payload_generation_counter: 1,
+            terrain_payload_global_generation: 1,
+            terrain_payload_patch_generations: HashMap::new(),
             cached_road_mesh_data: None,
             cached_network_node_positions: Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
@@ -443,6 +490,7 @@ impl INode3D for SimulationNode {
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 
+        let initial_snapshot = core.build_snapshot();
         let (road_preview_context, road_tool_query_snapshot) = road_tool_snapshots_from_core(&core);
         let road_preview_context = Arc::new(RwLock::new(road_preview_context));
         let road_tool_query_snapshot = Arc::new(RwLock::new(road_tool_query_snapshot));
@@ -460,7 +508,7 @@ impl INode3D for SimulationNode {
         };
 
         let core_arc = Arc::new(Mutex::new(core));
-        let snapshot = Arc::new(RwLock::new(RenderSnapshot::default()));
+        let snapshot = Arc::new(RwLock::new(initial_snapshot));
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
 
         if generate_benchmark {

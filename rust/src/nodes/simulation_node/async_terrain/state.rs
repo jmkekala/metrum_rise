@@ -14,6 +14,8 @@ pub(crate) struct WaterPatchMeshAsyncState {
     pub(crate) ready_lookup: HashSet<WaterPatchMeshCacheKey>,
     /// Completed meshes waiting to be inserted into the render cache.
     pub(crate) completed: Vec<CachedWaterPatchMesh>,
+    /// Derived meshes owned entirely by the renderer job pipeline.
+    pub(crate) cache: HashMap<WaterPatchMeshCacheKey, CachedWaterPatchMesh>,
 }
 
 impl WaterPatchMeshAsyncState {
@@ -24,6 +26,7 @@ impl WaterPatchMeshAsyncState {
             ready: Vec::new(),
             ready_lookup: HashSet::new(),
             completed: Vec::new(),
+            cache: HashMap::new(),
         }
     }
 
@@ -52,6 +55,26 @@ impl WaterPatchMeshAsyncState {
         self.ready.clear();
         self.ready_lookup.clear();
         self.completed.clear();
+        self.cache.clear();
+    }
+
+    pub(in crate::nodes::simulation_node) fn forget_patch(
+        &mut self,
+        patch_x: usize,
+        patch_z: usize,
+    ) {
+        self.in_flight
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.requested
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.ready_lookup
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.ready
+            .retain(|key| key.patch_x != patch_x || key.patch_z != patch_z);
+        self.completed
+            .retain(|entry| entry.key.patch_x != patch_x || entry.key.patch_z != patch_z);
+        self.cache
+            .retain(|key, _| key.patch_x != patch_x || key.patch_z != patch_z);
     }
 }
 
@@ -79,6 +102,8 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadRequest {
 pub(in crate::nodes::simulation_node) struct WaterPatchPayloadRequest {
     pub(in crate::nodes::simulation_node) key: WaterPatchPayloadKey,
     pub(in crate::nodes::simulation_node) request_id: u64,
+    pub(in crate::nodes::simulation_node) source_generation: u64,
+    pub(in crate::nodes::simulation_node) surface_generation: u64,
 }
 
 pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadData {
@@ -112,12 +137,35 @@ pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildJob {
     },
 }
 
+pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildSource {
+    Ready(TerrainPatchPayload),
+    Refined(RefinedTerrainPatchBuildSource),
+}
+
+pub(in crate::nodes::simulation_node) struct RefinedTerrainPatchBuildSource {
+    pub(in crate::nodes::simulation_node) request: TerrainPatchPayloadRequest,
+    pub(in crate::nodes::simulation_node) patch: TerrainPatchSnapshot,
+    pub(in crate::nodes::simulation_node) requires_engineered_refinement: bool,
+    pub(in crate::nodes::simulation_node) requires_road_clipping: bool,
+    pub(in crate::nodes::simulation_node) road_locked_margin_m: f32,
+    pub(in crate::nodes::simulation_node) sites: BuildingSiteTerrainSnapshot,
+}
+
 pub(in crate::nodes::simulation_node) struct WaterPatchPayload {
     pub(in crate::nodes::simulation_node) key: WaterPatchPayloadKey,
     pub(in crate::nodes::simulation_node) request_id: u64,
+    pub(in crate::nodes::simulation_node) source_generation: u64,
+    pub(in crate::nodes::simulation_node) surface_generation: u64,
     pub(in crate::nodes::simulation_node) patch: WaterPatchSnapshot,
     pub(in crate::nodes::simulation_node) depth_bytes: Vec<u8>,
     pub(in crate::nodes::simulation_node) road_clip_query: RoadClipLoopQuery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::nodes::simulation_node) struct WaterPatchPayloadRequestState {
+    pub(in crate::nodes::simulation_node) request_id: u64,
+    pub(in crate::nodes::simulation_node) source_generation: u64,
+    pub(in crate::nodes::simulation_node) surface_generation: u64,
 }
 
 pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
@@ -131,6 +179,7 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadAsyncState {
     pub(in crate::nodes::simulation_node) payloads:
         HashMap<TerrainPatchPayloadKey, TerrainPatchPayload>,
     pub(in crate::nodes::simulation_node) completed: Vec<TerrainPatchPayload>,
+    pub(in crate::nodes::simulation_node) failed: Vec<TerrainPatchPayloadRequest>,
 }
 
 impl TerrainPatchPayloadAsyncState {
@@ -143,6 +192,7 @@ impl TerrainPatchPayloadAsyncState {
             ready_lookup: HashSet::new(),
             payloads: HashMap::new(),
             completed: Vec::new(),
+            failed: Vec::new(),
         }
     }
 
@@ -151,6 +201,10 @@ impl TerrainPatchPayloadAsyncState {
         key: TerrainPatchPayloadKey,
         surface_generation: u64,
     ) -> u64 {
+        debug_assert!(
+            !self.in_flight.contains_key(&key),
+            "terrain patch payload requests must coalesce behind the physical in-flight job"
+        );
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
         let state = TerrainPatchPayloadRequestState {
@@ -178,12 +232,6 @@ impl TerrainPatchPayloadAsyncState {
         self.ready.retain(|ready_key| *ready_key != key);
     }
 
-    pub(in crate::nodes::simulation_node) fn remove_key(&mut self, key: TerrainPatchPayloadKey) {
-        self.requested.remove(&key);
-        self.in_flight.remove(&key);
-        self.remove_ready_payload(key);
-    }
-
     pub(in crate::nodes::simulation_node) fn drop_stale_key_for_generation(
         &mut self,
         key: TerrainPatchPayloadKey,
@@ -193,18 +241,17 @@ impl TerrainPatchPayloadAsyncState {
             .requested
             .get(&key)
             .is_some_and(|state| state.surface_generation != surface_generation);
-        let in_flight_stale = self
-            .in_flight
-            .get(&key)
-            .is_some_and(|state| state.surface_generation != surface_generation);
         let payload_stale = self
             .payloads
             .get(&key)
             .is_some_and(|payload| payload.surface_generation != surface_generation);
         let ready_without_payload =
             self.ready_lookup.contains(&key) && !self.payloads.contains_key(&key);
-        if requested_stale || in_flight_stale || payload_stale || ready_without_payload {
-            self.remove_key(key);
+        if requested_stale {
+            self.requested.remove(&key);
+        }
+        if payload_stale || ready_without_payload {
+            self.remove_ready_payload(key);
         }
     }
 
@@ -218,14 +265,11 @@ impl TerrainPatchPayloadAsyncState {
             .is_some_and(|state| state.surface_generation == surface_generation)
     }
 
-    pub(in crate::nodes::simulation_node) fn has_current_in_flight(
+    pub(in crate::nodes::simulation_node) fn has_in_flight(
         &self,
         key: TerrainPatchPayloadKey,
-        surface_generation: u64,
     ) -> bool {
-        self.in_flight
-            .get(&key)
-            .is_some_and(|state| state.surface_generation == surface_generation)
+        self.in_flight.contains_key(&key)
     }
 
     pub(in crate::nodes::simulation_node) fn has_current_ready(
@@ -259,6 +303,24 @@ impl TerrainPatchPayloadAsyncState {
         }
     }
 
+    pub(in crate::nodes::simulation_node) fn ingest_failed(
+        &mut self,
+        failed: Vec<TerrainPatchPayloadRequest>,
+    ) {
+        for request in failed {
+            let state = TerrainPatchPayloadRequestState {
+                request_id: request.request_id,
+                surface_generation: request.surface_generation,
+            };
+            if self.in_flight.get(&request.key).copied() == Some(state) {
+                self.in_flight.remove(&request.key);
+            }
+            if self.requested.get(&request.key).copied() == Some(state) {
+                self.requested.remove(&request.key);
+            }
+        }
+    }
+
     pub(in crate::nodes::simulation_node) fn clear(&mut self) {
         self.requested.clear();
         self.in_flight.clear();
@@ -266,19 +328,22 @@ impl TerrainPatchPayloadAsyncState {
         self.ready_lookup.clear();
         self.payloads.clear();
         self.completed.clear();
+        self.failed.clear();
     }
 }
 
 pub(in crate::nodes::simulation_node) struct WaterPatchPayloadAsyncState {
     pub(in crate::nodes::simulation_node) next_request_id: u64,
-    pub(in crate::nodes::simulation_node) requested: HashMap<WaterPatchPayloadKey, u64>,
-    pub(in crate::nodes::simulation_node) in_flight: HashMap<WaterPatchPayloadKey, u64>,
+    pub(in crate::nodes::simulation_node) requested:
+        HashMap<WaterPatchPayloadKey, WaterPatchPayloadRequestState>,
+    pub(in crate::nodes::simulation_node) in_flight:
+        HashMap<WaterPatchPayloadKey, WaterPatchPayloadRequestState>,
     pub(in crate::nodes::simulation_node) ready: Vec<WaterPatchPayloadKey>,
     pub(in crate::nodes::simulation_node) ready_lookup: HashSet<WaterPatchPayloadKey>,
     pub(in crate::nodes::simulation_node) payloads:
         HashMap<WaterPatchPayloadKey, WaterPatchPayload>,
     pub(in crate::nodes::simulation_node) completed: Vec<WaterPatchPayload>,
-    pub(in crate::nodes::simulation_node) failed: Vec<(WaterPatchPayloadKey, u64)>,
+    pub(in crate::nodes::simulation_node) failed: Vec<WaterPatchPayloadRequest>,
 }
 
 impl WaterPatchPayloadAsyncState {
@@ -295,13 +360,45 @@ impl WaterPatchPayloadAsyncState {
         }
     }
 
-    pub(in crate::nodes::simulation_node) fn request(&mut self, key: WaterPatchPayloadKey) -> u64 {
+    pub(in crate::nodes::simulation_node) fn request(
+        &mut self,
+        key: WaterPatchPayloadKey,
+        source_generation: u64,
+        surface_generation: u64,
+    ) -> u64 {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
-        self.requested.insert(key, request_id);
-        self.in_flight.insert(key, request_id);
+        let state = WaterPatchPayloadRequestState {
+            request_id,
+            source_generation,
+            surface_generation,
+        };
+        self.requested.insert(key, state);
+        self.in_flight.insert(key, state);
         self.remove_ready_payload(key);
         request_id
+    }
+
+    pub(in crate::nodes::simulation_node) fn drop_stale_key_for_generation(
+        &mut self,
+        key: WaterPatchPayloadKey,
+        source_generation: u64,
+        surface_generation: u64,
+    ) {
+        let requested_stale = self.requested.get(&key).is_some_and(|state| {
+            state.source_generation != source_generation
+                || state.surface_generation != surface_generation
+        });
+        let payload_stale = self.payloads.get(&key).is_some_and(|payload| {
+            payload.source_generation != source_generation
+                || payload.surface_generation != surface_generation
+        });
+        if requested_stale {
+            self.requested.remove(&key);
+        }
+        if payload_stale {
+            self.remove_ready_payload(key);
+        }
     }
 
     pub(in crate::nodes::simulation_node) fn queue_ready(&mut self, key: WaterPatchPayloadKey) {
@@ -334,13 +431,19 @@ impl WaterPatchPayloadAsyncState {
         }
     }
 
-    pub(in crate::nodes::simulation_node) fn has_pending_or_ready(
+    pub(in crate::nodes::simulation_node) fn has_current_pending_or_ready(
         &self,
         key: WaterPatchPayloadKey,
+        source_generation: u64,
+        surface_generation: u64,
     ) -> bool {
-        self.requested.contains_key(&key)
-            || self.in_flight.contains_key(&key)
-            || self.payloads.contains_key(&key)
+        self.requested.get(&key).is_some_and(|state| {
+            state.source_generation == source_generation
+                && state.surface_generation == surface_generation
+        }) || self.payloads.get(&key).is_some_and(|payload| {
+            payload.source_generation == source_generation
+                && payload.surface_generation == surface_generation
+        })
     }
 
     pub(in crate::nodes::simulation_node) fn ingest_completed(
@@ -349,11 +452,15 @@ impl WaterPatchPayloadAsyncState {
     ) {
         for payload in completed {
             let key = payload.key;
-            let request_id = payload.request_id;
-            if self.in_flight.get(&key).copied() == Some(request_id) {
+            let state = WaterPatchPayloadRequestState {
+                request_id: payload.request_id,
+                source_generation: payload.source_generation,
+                surface_generation: payload.surface_generation,
+            };
+            if self.in_flight.get(&key).copied() == Some(state) {
                 self.in_flight.remove(&key);
             }
-            if self.requested.get(&key).copied() != Some(request_id) {
+            if self.requested.get(&key).copied() != Some(state) {
                 continue;
             }
             self.payloads.insert(key, payload);
@@ -363,12 +470,18 @@ impl WaterPatchPayloadAsyncState {
 
     pub(in crate::nodes::simulation_node) fn ingest_failed(
         &mut self,
-        failed: Vec<(WaterPatchPayloadKey, u64)>,
+        failed: Vec<WaterPatchPayloadRequest>,
     ) -> Vec<WaterPatchPayloadKey> {
         let mut retryable = Vec::with_capacity(failed.len());
-        for (key, request_id) in failed {
-            let requested_matches = self.requested.get(&key).copied() == Some(request_id);
-            let in_flight_matches = self.in_flight.get(&key).copied() == Some(request_id);
+        for request in failed {
+            let key = request.key;
+            let state = WaterPatchPayloadRequestState {
+                request_id: request.request_id,
+                source_generation: request.source_generation,
+                surface_generation: request.surface_generation,
+            };
+            let requested_matches = self.requested.get(&key).copied() == Some(state);
+            let in_flight_matches = self.in_flight.get(&key).copied() == Some(state);
             if requested_matches {
                 self.requested.remove(&key);
                 self.remove_ready_payload(key);

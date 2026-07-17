@@ -19,42 +19,48 @@ impl RoadSurfaceSystem {
     ) -> Option<f32> {
         let world_x = f64::from(world_x);
         let world_z = f64::from(world_z);
-        let chunk = self.chunk_coords_for_world(world_x, world_z);
         let point = RoadVec2::new(world_x, world_z);
+        let chunk = Self::query_chunk_coords_for_world(world_x, world_z);
+        let edge_indices = self.query_chunk_spans.get(&chunk);
+        let node_ids = self.query_chunk_nodes.get(&chunk);
         let mut top_surface_height_m: Option<f32> = None;
 
-        self.visit_point_query_chunk_contributors(chunk, &mut |edge_indices, node_ids| {
-            self.visit_visible_top_surface_query_triangles(
-                graph,
-                terrain,
-                edge_indices,
-                node_ids,
-                &mut |triangle| {
-                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                        keep_max_height(&mut top_surface_height_m, height_m);
-                    }
-                },
-            );
-        });
+        self.visit_visible_top_surface_query_triangles(
+            graph,
+            terrain,
+            edge_indices
+                .into_iter()
+                .flat_map(|owners| owners.iter().copied()),
+            node_ids
+                .into_iter()
+                .flat_map(|owners| owners.iter().copied()),
+            &mut |triangle| {
+                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    keep_max_height(&mut top_surface_height_m, height_m);
+                }
+            },
+        );
 
         if top_surface_height_m.is_some() {
             return top_surface_height_m;
         }
 
         let mut earthwork_height_m: Option<f32> = None;
-        self.visit_point_query_chunk_contributors(chunk, &mut |edge_indices, node_ids| {
-            self.visit_visible_earthwork_query_triangles(
-                graph,
-                terrain,
-                edge_indices,
-                node_ids,
-                &mut |triangle| {
-                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                        keep_max_height(&mut earthwork_height_m, height_m);
-                    }
-                },
-            );
-        });
+        self.visit_visible_earthwork_query_triangles(
+            graph,
+            terrain,
+            edge_indices
+                .into_iter()
+                .flat_map(|owners| owners.iter().copied()),
+            node_ids
+                .into_iter()
+                .flat_map(|owners| owners.iter().copied()),
+            &mut |triangle| {
+                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    keep_max_height(&mut earthwork_height_m, height_m);
+                }
+            },
+        );
 
         earthwork_height_m
     }
@@ -68,59 +74,42 @@ impl RoadSurfaceSystem {
     ) -> Option<f32> {
         let world_x = f64::from(world_x);
         let world_z = f64::from(world_z);
-        let chunk = self.chunk_coords_for_world(world_x, world_z);
+        let chunk = Self::query_chunk_coords_for_world(world_x, world_z);
+        let edge_indices = self.query_chunk_spans.get(&chunk);
+        let node_ids = self.query_chunk_nodes.get(&chunk);
         let point = RoadVec2::new(world_x, world_z);
         let mut road_surface_height_m: Option<f32> = None;
 
-        self.visit_point_query_chunk_contributors(chunk, &mut |edge_indices, node_ids| {
-            for &node_id in node_ids {
-                let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                    continue;
-                };
-                if !self.node_uses_visible_surface(graph, terrain, node_id) {
-                    continue;
-                }
-                for polygon in &piece.road_surface_polygons {
-                    Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                        if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                            keep_max_height(&mut road_surface_height_m, height_m);
-                        }
-                    });
-                }
+        for &node_id in node_ids.into_iter().flatten() {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            if !self.node_uses_visible_surface(graph, terrain, node_id) {
+                continue;
             }
-
-            for &edge_idx in edge_indices {
-                let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                    continue;
-                };
-                for polygon in &piece.road_surface_polygons {
-                    Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                        if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                            keep_max_height(&mut road_surface_height_m, height_m);
-                        }
-                    });
-                }
-            }
-        });
-
-        road_surface_height_m
-    }
-
-    fn visit_point_query_chunk_contributors<F>(&self, chunk: SurfaceChunkKey, visitor: &mut F)
-    where
-        F: FnMut(&[usize], &[u32]),
-    {
-        for cx in (chunk.0 - 1)..=(chunk.0 + 1) {
-            for cz in (chunk.1 - 1)..=(chunk.1 + 1) {
-                let query_chunk = (cx, cz);
-                if let Some(entry) = self.surface_chunk_cache.get(&query_chunk) {
-                    visitor(&entry.edge_indices, &entry.node_ids);
-                }
-                if let Some(entry) = self.earthwork_chunk_cache.get(&query_chunk) {
-                    visitor(&entry.edge_indices, &entry.node_ids);
-                }
+            for polygon in &piece.road_surface_polygons {
+                Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                        keep_max_height(&mut road_surface_height_m, height_m);
+                    }
+                });
             }
         }
+
+        for &edge_idx in edge_indices.into_iter().flatten() {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            for polygon in &piece.road_surface_polygons {
+                Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                        keep_max_height(&mut road_surface_height_m, height_m);
+                    }
+                });
+            }
+        }
+
+        road_surface_height_m
     }
 
     #[cfg(test)]
@@ -219,8 +208,8 @@ impl RoadSurfaceSystem {
         self.visit_visible_top_surface_query_triangles(
             graph,
             terrain,
-            &edge_indices,
-            &node_ids,
+            edge_indices.iter().copied(),
+            node_ids.iter().copied(),
             &mut |triangle| {
                 update_closest_ray_hit(
                     triangle,
@@ -234,8 +223,8 @@ impl RoadSurfaceSystem {
         self.visit_visible_earthwork_query_triangles(
             graph,
             terrain,
-            &edge_indices,
-            &node_ids,
+            edge_indices.iter().copied(),
+            node_ids.iter().copied(),
             &mut |triangle| {
                 update_closest_ray_hit(
                     triangle,

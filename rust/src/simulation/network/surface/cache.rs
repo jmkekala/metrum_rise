@@ -14,6 +14,8 @@ mod coverage;
 mod dirty;
 mod rebuild;
 
+const SURFACE_QUERY_CHUNK_SPAN_M: f64 = 32.0;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ChunkCacheKind {
     Surface,

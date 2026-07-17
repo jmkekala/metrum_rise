@@ -3,6 +3,130 @@
 use super::super::*;
 
 impl SimCore {
+    pub(crate) fn terrain_patch_requires_engineered_refinement(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> bool {
+        let key = (patch_x, patch_z);
+        self.engineered_terrain_patch_margins.contains_key(&key)
+            || self.road_locked_terrain_patch_margins.contains_key(&key)
+            || self.building_site_owned_terrain_patch_keys.contains(&key)
+    }
+
+    fn set_sorted_patch_membership(
+        keys: &mut Vec<(usize, usize)>,
+        key: (usize, usize),
+        present: bool,
+    ) {
+        match (keys.binary_search(&key), present) {
+            (Err(index), true) => keys.insert(index, key),
+            (Ok(index), false) => {
+                keys.remove(index);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn refresh_engineered_terrain_patch_ownership_for_keys(
+        &mut self,
+        render_step_m: f32,
+        patch_keys: &[(usize, usize)],
+    ) -> usize {
+        if patch_keys.is_empty() {
+            return 0;
+        }
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            &self.heightmap,
+            safe_render_step_m,
+        );
+        let mut unique_keys = patch_keys.to_vec();
+        unique_keys.sort_unstable();
+        unique_keys.dedup();
+        let road_margins = self
+            .transit_network
+            .road_surface
+            .terrain_render_patch_grading_margins_for_patches(
+                &self.region_graph,
+                &self.heightmap,
+                safe_render_step_m,
+                &unique_keys,
+            );
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+
+        let cache_key_for = |key: (usize, usize)| {
+            SimulationNode::refined_patch_cache_key(key.0, key.1, safe_render_step_m)
+        };
+        let mut changed_keys = Vec::new();
+        let mut invalidated_cache_entries = 0usize;
+        for key in unique_keys {
+            let old_engineered_margin = self.engineered_terrain_patch_margins.get(&key).copied();
+            let road_margin = road_margins.get(&key).copied();
+            if let Some(margin_m) = road_margin {
+                self.road_locked_terrain_patch_margins.insert(key, margin_m);
+            } else {
+                self.road_locked_terrain_patch_margins.remove(&key);
+            }
+            Self::set_sorted_patch_membership(
+                &mut self.road_locked_terrain_patch_keys,
+                key,
+                road_margin.is_some(),
+            );
+
+            let site_owned = self
+                .heightmap
+                .render_patch_world_bounds(key.0, key.1)
+                .is_some_and(|(min_x, min_z, max_x, max_z)| {
+                    self.allocator.has_building_site_for_world_bounds(
+                        min_x - site_margin_m,
+                        min_z - site_margin_m,
+                        max_x + site_margin_m,
+                        max_z + site_margin_m,
+                    )
+                });
+            if site_owned {
+                self.building_site_owned_terrain_patch_keys.insert(key);
+            } else {
+                self.building_site_owned_terrain_patch_keys.remove(&key);
+            }
+
+            let engineered_margin = match (road_margin, site_owned) {
+                (Some(road_margin_m), true) => Some(road_margin_m.max(site_margin_m)),
+                (Some(road_margin_m), false) => Some(road_margin_m),
+                (None, true) => Some(site_margin_m),
+                (None, false) => None,
+            };
+            if let Some(margin_m) = engineered_margin {
+                self.engineered_terrain_patch_margins.insert(key, margin_m);
+            } else {
+                self.engineered_terrain_patch_margins.remove(&key);
+            }
+            Self::set_sorted_patch_membership(
+                &mut self.engineered_terrain_patch_keys,
+                key,
+                engineered_margin.is_some(),
+            );
+
+            if old_engineered_margin != engineered_margin {
+                self.heightmap.mark_render_patch_dirty(key.0, key.1);
+                if self
+                    .refined_terrain_patch_cache
+                    .remove(&cache_key_for(key))
+                    .is_some()
+                {
+                    invalidated_cache_entries += 1;
+                }
+                changed_keys.push(key);
+            }
+        }
+        self.bump_terrain_payload_patch_generations(&changed_keys);
+        self.terrain_dirty |= !changed_keys.is_empty();
+        invalidated_cache_entries
+    }
+
+    #[cfg(test)]
     pub(crate) fn collect_refined_terrain_patch_build_inputs(
         &mut self,
         render_step_m: f32,
@@ -10,94 +134,39 @@ impl SimCore {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
-        let road_locked_start = road_debug.then(Instant::now);
         self.transit_network.road_surface.compile_dirty_with_reason(
             &self.region_graph,
             &self.heightmap,
             RoadSurfaceCompileReason::TerrainEarthwork,
         );
-        let max_road_locked_margin_m = self
-            .transit_network
-            .road_surface
-            .terrain_cdt_required_grading_margin_for_visible_roads(
-                &self.region_graph,
-                &self.heightmap,
-                safe_render_step_m,
-            );
-        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            &self.heightmap,
-            safe_render_step_m,
-        );
-        let mut road_locked_patch_margins = self
-            .transit_network
-            .road_surface
-            .terrain_render_patch_grading_margins_for_visible_roads(
-                &self.region_graph,
-                &self.heightmap,
-                safe_render_step_m,
-            );
-        for key in self
-            .allocator
-            .terrain_render_patch_keys_with_building_site_margin(&self.heightmap, site_margin_m)
-        {
-            road_locked_patch_margins
-                .entry(key)
-                .and_modify(|existing| *existing = existing.max(site_margin_m))
-                .or_insert(site_margin_m);
-        }
-        let mut road_locked_key_vec = road_locked_patch_margins
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        road_locked_key_vec.sort_unstable();
-        road_locked_key_vec.dedup();
-        let old_road_locked_keys: HashSet<(usize, usize)> = self
-            .road_locked_terrain_patch_keys
-            .iter()
-            .copied()
-            .collect();
-        let road_locked_keys: HashSet<(usize, usize)> =
-            road_locked_key_vec.iter().copied().collect();
-        let mut road_locked_changed_patches = 0usize;
-        for key in old_road_locked_keys.symmetric_difference(&road_locked_keys) {
-            self.heightmap.mark_render_patch_dirty(key.0, key.1);
-            self.refined_terrain_patch_cache
-                .remove(&SimulationNode::refined_patch_cache_key(
-                    key.0,
-                    key.1,
-                    safe_render_step_m,
-                ));
-            road_locked_changed_patches += 1;
-        }
-        self.road_locked_terrain_patch_keys = road_locked_key_vec;
-        let road_locked_ms = road_locked_start
-            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-            .unwrap_or(0.0);
-
-        let dirty_patches: Vec<(usize, usize)> = self
+        let mut dirty_patches: Vec<(usize, usize)> = self
             .heightmap
             .dirty_render_patches()
             .iter()
             .copied()
             .collect();
+        dirty_patches.sort_unstable();
+        self.refresh_engineered_terrain_patch_ownership_for_keys(
+            safe_render_step_m,
+            &dirty_patches,
+        );
         if dirty_patches.is_empty() {
             return Vec::new();
         }
 
-        let surface_generation = self.road_tool_surface_generation;
         let mut inputs = Vec::new();
         for (patch_x, patch_z) in dirty_patches.iter().copied() {
-            if !road_locked_keys.contains(&(patch_x, patch_z)) {
+            if !self.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
                 continue;
             }
             let Some(base_patch) = self.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
                 continue;
             };
-            let patch_margin_m = road_locked_patch_margins
+            let patch_margin_m = self
+                .engineered_terrain_patch_margins
                 .get(&(patch_x, patch_z))
                 .copied()
-                .unwrap_or(site_margin_m)
-                .max(site_margin_m);
+                .unwrap_or_default();
             let road_clip_query = SimulationNode::road_clip_loop_query_for_bounds(
                 self,
                 base_patch.world_origin_x - patch_margin_m,
@@ -106,6 +175,7 @@ impl SimCore {
                 base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
             );
             let key = SimulationNode::refined_patch_cache_key(patch_x, patch_z, safe_render_step_m);
+            let surface_generation = self.terrain_payload_generation_for_patch(patch_x, patch_z);
             if self
                 .refined_terrain_patch_cache
                 .get(&key)
@@ -119,24 +189,41 @@ impl SimCore {
                 self.refined_terrain_patch_cache.remove(&key);
             }
             let previous = self.refined_terrain_patch_cache.get(&key);
+            let sites = self.allocator.terrain_site_snapshot_for_world_bounds(
+                base_patch.world_origin_x - patch_margin_m,
+                base_patch.world_origin_z - patch_margin_m,
+                base_patch.world_origin_x + base_patch.world_size_x + patch_margin_m,
+                base_patch.world_origin_z + base_patch.world_size_z + patch_margin_m,
+            );
             let windows = SimulationNode::terrain_cdt_window_build_inputs(
                 &self.heightmap,
                 &base_patch,
                 &road_clip_query.cdt_road_loops,
                 safe_render_step_m,
                 Some(TerrainCdtSiteGradingContext {
-                    allocator: &self.allocator,
+                    source: TerrainCdtSiteGradingSource::Snapshot(&sites),
                     graph: &self.region_graph,
                     road_surface: &self.transit_network.road_surface,
                 }),
                 previous,
+            );
+            let requires_road_clipping = SimulationNode::road_clip_query_requires_road_clipping(
+                &road_clip_query,
+                self.road_locked_terrain_patch_margins
+                    .contains_key(&(patch_x, patch_z)),
             );
             inputs.push(RefinedTerrainPatchBuildInput {
                 key,
                 surface_generation,
                 patch: base_patch,
                 windows,
-                road_clip_source_count: road_clip_query.source_count,
+                requires_engineered_refinement: self
+                    .terrain_patch_requires_engineered_refinement(patch_x, patch_z),
+                requires_road_clipping,
+                clip_source_count: road_clip_query.source_count,
+                road_clip_source_count: road_clip_query.road_source_count,
+                road_clip_loop_count: road_clip_query.road_loop_count,
+                site_clip_loop_count: road_clip_query.site_loop_count,
                 clip_error_label: road_clip_query.clip_error_label,
             });
         }
@@ -144,14 +231,11 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "refined_patch_precompute_inputs dirty_patches={} road_locked_patches={} changed_locked_patches={} inputs={} max_road_locked_margin_m={:.3} site_margin_m={:.3} road_locked_ms={:.3} total_ms={:.3}",
+                "refined_patch_precompute_inputs dirty_patches={} road_owned_patches={} engineered_patches={} inputs={} total_ms={:.3}",
                 dirty_patches.len(),
-                road_locked_keys.len(),
-                road_locked_changed_patches,
+                self.road_locked_terrain_patch_keys.len(),
+                self.engineered_terrain_patch_keys.len(),
                 inputs.len(),
-                max_road_locked_margin_m,
-                site_margin_m,
-                road_locked_ms,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
@@ -161,7 +245,7 @@ impl SimCore {
         inputs
     }
 
-    /// Refreshes road-locked terrain patch membership and invalidates stale refined terrain cache.
+    /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
     pub(crate) fn refresh_road_locked_terrain_patch_state(&mut self, render_step_m: f32) -> usize {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
@@ -171,69 +255,19 @@ impl SimCore {
             &self.heightmap,
             RoadSurfaceCompileReason::TerrainEarthwork,
         );
-        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
-            &self.heightmap,
-            safe_render_step_m,
-        );
-        let mut road_locked_patch_margins = self
-            .transit_network
-            .road_surface
-            .terrain_render_patch_grading_margins_for_visible_roads(
-                &self.region_graph,
-                &self.heightmap,
-                safe_render_step_m,
-            );
-        for key in self
-            .allocator
-            .terrain_render_patch_keys_with_building_site_margin(&self.heightmap, site_margin_m)
-        {
-            road_locked_patch_margins
-                .entry(key)
-                .and_modify(|existing| *existing = existing.max(site_margin_m))
-                .or_insert(site_margin_m);
-        }
-        let mut road_locked_key_vec = road_locked_patch_margins
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        road_locked_key_vec.sort_unstable();
-        road_locked_key_vec.dedup();
-        let old_road_locked_keys: HashSet<(usize, usize)> = self
-            .road_locked_terrain_patch_keys
-            .iter()
-            .copied()
-            .collect();
-        let road_locked_keys: HashSet<(usize, usize)> =
-            road_locked_key_vec.iter().copied().collect();
-        let mut road_locked_changed_patches = 0usize;
-        let mut invalidated_refined_cache_entries = 0usize;
-        for key in old_road_locked_keys.symmetric_difference(&road_locked_keys) {
-            self.heightmap.mark_render_patch_dirty(key.0, key.1);
-            if self
-                .refined_terrain_patch_cache
-                .remove(&SimulationNode::refined_patch_cache_key(
-                    key.0,
-                    key.1,
-                    safe_render_step_m,
-                ))
-                .is_some()
-            {
-                invalidated_refined_cache_entries += 1;
-            }
-            road_locked_changed_patches += 1;
-        }
-        self.road_locked_terrain_patch_keys = road_locked_key_vec;
-
-        let dirty_patches: Vec<(usize, usize)> = self
+        let mut dirty_patches: Vec<(usize, usize)> = self
             .heightmap
             .dirty_render_patches()
             .iter()
             .copied()
             .collect();
+        dirty_patches.sort_unstable();
+        let mut invalidated_refined_cache_entries = self
+            .refresh_engineered_terrain_patch_ownership_for_keys(
+                safe_render_step_m,
+                &dirty_patches,
+            );
         for (patch_x, patch_z) in dirty_patches.iter().copied() {
-            if !road_locked_keys.contains(&(patch_x, patch_z)) {
-                continue;
-            }
             if self
                 .refined_terrain_patch_cache
                 .remove(&SimulationNode::refined_patch_cache_key(
@@ -250,10 +284,10 @@ impl SimCore {
         if road_debug {
             debug_log!(
                 "road",
-                "refined_patch_state_refresh dirty_patches={} road_locked_patches={} changed_locked_patches={} invalidated_cache_entries={} total_ms={:.3}",
+                "refined_patch_state_refresh dirty_patches={} road_owned_patches={} engineered_patches={} invalidated_cache_entries={} total_ms={:.3}",
                 dirty_patches.len(),
-                road_locked_keys.len(),
-                road_locked_changed_patches,
+                self.road_locked_terrain_patch_keys.len(),
+                self.engineered_terrain_patch_keys.len(),
                 invalidated_refined_cache_entries,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -324,7 +358,12 @@ impl SimCore {
                     input_road_loops,
                     input_source_samples,
                     windows,
+                    requires_engineered_refinement: input.requires_engineered_refinement,
+                    requires_road_clipping: input.requires_road_clipping,
+                    clip_source_count: input.clip_source_count,
                     road_clip_source_count: input.road_clip_source_count,
+                    road_clip_loop_count: input.road_clip_loop_count,
+                    site_clip_loop_count: input.site_clip_loop_count,
                     clip_error_label: input.clip_error_label,
                     cdt_ms,
                     reused_windows,
@@ -340,11 +379,7 @@ impl SimCore {
                         SimulationNode::terrain_cdt_stats_have_constraint_conflicts(mesh.stats)
                     })
                 });
-                let error_label = entry
-                    .windows
-                    .iter()
-                    .find_map(|window| window.mesh_result.as_ref().err())
-                    .map(SimulationNode::terrain_cdt_error_label);
+                let error_label = SimulationNode::cached_refined_cdt_failure_label(entry);
                 let mut max_face_y_delta_m = 0.0_f32;
                 let mut max_face_slope_ratio = 0.0_f32;
                 let mut longest_triangle_edge_m = 0.0_f32;
@@ -366,7 +401,8 @@ impl SimCore {
                     tie_in_widened_source_samples += mesh.stats.tie_in_widened_source_samples;
                     retaining_wall_faces += mesh.stats.retaining_wall_faces;
                 }
-                let final_buffer_summary = if successful_windows.is_empty() {
+                let final_buffer_summary = if successful_windows.is_empty() || error_label.is_some()
+                {
                     None
                 } else {
                     Some(SimulationNode::terrain_cdt_window_final_buffer_stats(
@@ -386,12 +422,12 @@ impl SimCore {
                 let pathological_terrain_longest_edge_m = final_buffer_summary
                     .map(|summary| summary.terrain_longest_triangle_edge_m)
                     .unwrap_or(longest_triangle_edge_m);
-                let status = if entry.windows.is_empty() {
+                let status = if let Some(error_label) = error_label {
+                    error_label
+                } else if entry.windows.is_empty() {
                     "empty"
                 } else if has_conflicts {
                     "conflicted"
-                } else if let Some(error_label) = error_label {
-                    error_label
                 } else {
                     SimulationNode::terrain_cdt_output_status(
                         false,
@@ -411,13 +447,22 @@ impl SimCore {
                 );
                 debug_log!(
                     "road",
-                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} reused_windows={} road_loops={} source_samples={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3}",
+                    "refined_patch_precompute key=({},{}) render_step_mm={} status={} windows={} failed_windows={} reused_windows={} requires_road_clipping={} road_sources={} road_loops={} site_loops={} input_clip_loops={} source_samples={} max_face_y_delta_m={:.3} max_face_slope={:.3} tie_in_widened_samples={} retaining_wall_faces={} longest_triangle_edge_m={:.3} cdt_ms={:.3}",
                     entry.key.patch_x,
                     entry.key.patch_z,
                     entry.key.render_step_mm,
                     status,
                     entry.windows.len(),
+                    entry
+                        .windows
+                        .iter()
+                        .filter(|window| window.mesh_result.is_err())
+                        .count(),
                     entry.reused_windows,
+                    entry.requires_road_clipping,
+                    entry.road_clip_source_count,
+                    entry.road_clip_loop_count,
+                    entry.site_clip_loop_count,
                     entry.input_road_loops,
                     entry.input_source_samples,
                     max_face_y_delta_m,
@@ -446,8 +491,9 @@ impl SimCore {
         &mut self,
         entries: Vec<CachedRefinedTerrainPatch>,
     ) {
-        let surface_generation = self.road_tool_surface_generation;
         for entry in entries {
+            let surface_generation =
+                self.terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z);
             if SimulationNode::refined_terrain_patch_cache_entry_is_current(
                 &entry,
                 surface_generation,

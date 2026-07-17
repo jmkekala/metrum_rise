@@ -237,6 +237,11 @@ Deterministic seam contract:
     cross a road-owned footprint loop
   - CDT triangulation failures are hard errors in debug output and must not fall back to cell
     subtraction, seam carpets, closure strips, water, or shader masks
+  - all local CDT windows in one refined render-patch generation are one atomic replacement; if any
+    window fails, the entire generation is non-renderable and the renderer keeps the last valid
+    clipped patch rather than filling the failed window from raw terrain
+  - a building-site loop cannot satisfy road clipping: a patch already owned by grounded roads must
+    retain nonempty authoritative road sources and road loops on every refined generation
   - CDT outputs whose ordinary terrain mesh has pathological face slope or triangle span are loud
     diagnostic failures; the exporter omits only pathological ordinary terrain faces while keeping
     the clipped baked patch mesh active, records the omitted count, and keeps the status/pathology
@@ -845,6 +850,14 @@ The building-site implementation must reuse existing ownership and indexing syst
 - building chunk indices for nearby fixed-site adjacency checks
 - asset `[[anchors]]` and `[[site_surfaces]]` schemas for local layout metadata
 - building-site render buffers are rebuilt from allocator revisions, not every frame
+- asynchronous site-terrain rebuilds copy only chunk-indexed sites overlapping the affected patch;
+  site grading samples the bounded road-surface ownership index and must not scan all buildings or
+  all compiled roads
+- creating, changing, or removing a site invalidates only intersecting terrain payload revisions;
+  it must not invalidate unrelated patches or permanently add a site-only patch to road ownership
+- road and building-site ownership remain distinct authoritative sets plus one engineered union;
+  raw terrain is forbidden for the union, and every refined Rust payload carries that provenance so
+  renderer safety cannot depend on a later Godot membership query
 
 Deterministic ordering rules:
 

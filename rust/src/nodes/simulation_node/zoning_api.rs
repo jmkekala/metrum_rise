@@ -227,33 +227,35 @@ impl SimulationNode {
         }
     }
 
-    /// Deletes one building or road target at one world-space point.
+    /// Queues one building or road deletion on the simulation thread.
     #[func]
     pub fn bulldoze_at(&mut self, world_x: f32, world_z: f32) -> VarDictionary {
-        let (payload, road_deleted, cache_inputs) = {
-            let mut core = self.lock_core();
-            let result = core.bulldoze_at_internal(world_x, world_z);
-            if !result.deleted {
-                return result.payload;
-            }
-            let cache_inputs = if result.road_deleted {
-                core.rebuild_network_surface_terrain_internal();
-                core.precompute_road_mesh_data();
-                core.bump_road_tool_surface_generation();
-                core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M)
-            } else {
-                Vec::new()
+        let prepared = {
+            let Some(mut core) = self.try_lock_core() else {
+                let mut payload = VarDictionary::new();
+                payload.set("valid", false);
+                payload.set("deleted", false);
+                payload.set("queued", false);
+                payload.set("reason", GString::from("simulation busy"));
+                return payload;
             };
-            (result.payload, result.road_deleted, cache_inputs)
+            core.prepare_bulldoze_command_internal(world_x, world_z)
         };
-
-        if road_deleted {
-            self.clear_terrain_patch_payload_jobs();
-            let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
-            let mut core = self.lock_core();
-            core.insert_refined_terrain_patch_cache_entries(cache_entries);
+        let Some((target, mut payload)) = prepared else {
+            let mut payload = VarDictionary::new();
+            payload.set("valid", false);
+            payload.set("deleted", false);
+            payload.set("queued", false);
+            payload.set("reason", GString::from("nothing targetable"));
+            return payload;
+        };
+        if self.cmd_tx.send(SimCommand::Bulldoze { target }).is_err() {
+            payload.set("queued", false);
+            payload.set("reason", GString::from("simulation thread unavailable"));
+            return payload;
         }
-        self.refresh_snapshot_from_core();
+        payload.set("queued", true);
+        self.clear_terrain_patch_payload_jobs();
         payload
     }
 
@@ -623,10 +625,14 @@ impl SimulationNode {
         i64::try_from(revision).unwrap_or(i64::MAX)
     }
 
-    /// Returns committed zoning parcels as packed mesh buffers for the overlay renderer.
+    /// Returns committed zoning parcel buffers without waiting when the simulation is busy.
     #[func]
-    pub fn get_zoning_parcels_overlay_packed(&self) -> VarDictionary {
-        let core = self.lock_core();
+    pub fn try_get_zoning_parcels_overlay_packed(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("busy", true);
+        let Some(core) = self.try_lock_core() else {
+            return dict;
+        };
         let revision = core.zoning.overlay_revision();
         let occupancy_revision = core.zoning.overlay_occupancy_revision();
         let parcel_count = core.zoning.parcels().len();
@@ -669,7 +675,7 @@ impl SimulationNode {
             }
         }
 
-        let mut dict = VarDictionary::new();
+        dict.set("busy", false);
         dict.set("revision", i64::try_from(revision).unwrap_or(i64::MAX));
         dict.set(
             "occupancy_revision",

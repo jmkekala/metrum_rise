@@ -1,8 +1,7 @@
 ## Zone overlay -- builds a mesh from Rust-authored road-aligned parcel geometry.
 ##
 ## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),
-##   get_zoning_parcels_overlay_packed(), get_no_building_spawn_edge_indices(),
-##   get_edge_geometry_3d()
+##   try_get_zoning_parcels_overlay_packed(), try_get_no_building_spawn_lines()
 extends MeshInstance3D
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -43,11 +42,9 @@ func _process(delta):
 			_refresh_zone_dirty_from_revision()
 
 		if overlay_requested and _zone_dirty:
-			_rebuild_parcel_overlay()
-			_zone_dirty = false
+			_zone_dirty = not _rebuild_parcel_overlay()
 		if overlay_requested and _no_build_dirty:
-			_rebuild_no_build_overlay()
-			_no_build_dirty = false
+			_no_build_dirty = not _rebuild_no_build_overlay()
 		elif _no_build_mesh_instance and not overlay_requested:
 			_no_build_mesh_instance.visible = false
 		return
@@ -67,15 +64,15 @@ func _process(delta):
 	var parcel_elapsed_ms := 0.0
 	if overlay_requested and _zone_dirty:
 		var parcel_start_us := Time.get_ticks_usec()
-		_rebuild_parcel_overlay()
+		var parcel_rebuilt := _rebuild_parcel_overlay()
 		parcel_elapsed_ms = float(Time.get_ticks_usec() - parcel_start_us) / 1000.0
-		_zone_dirty = false
+		_zone_dirty = not parcel_rebuilt
 	var no_build_elapsed_ms := 0.0
 	if overlay_requested and _no_build_dirty:
 		var no_build_start_us := Time.get_ticks_usec()
-		_rebuild_no_build_overlay()
+		var no_build_rebuilt := _rebuild_no_build_overlay()
 		no_build_elapsed_ms = float(Time.get_ticks_usec() - no_build_start_us) / 1000.0
-		_no_build_dirty = false
+		_no_build_dirty = not no_build_rebuilt
 	elif _no_build_mesh_instance and not overlay_requested:
 		_no_build_mesh_instance.visible = false
 	PerfDebug.record(
@@ -134,8 +131,10 @@ func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[Str
 		% [str(visible), _tool_active, _tool_active_target, _parcel_debug_count]
 	]
 
-func _rebuild_parcel_overlay():
-	var payload: Dictionary = simulation_node.get_zoning_parcels_overlay_packed()
+func _rebuild_parcel_overlay() -> bool:
+	var payload: Dictionary = simulation_node.try_get_zoning_parcels_overlay_packed()
+	if bool(payload.get("busy", true)):
+		return false
 	_zone_revision_seen = int(payload.get("revision", _zone_revision_seen))
 	_parcel_debug_count = int(payload.get("parcel_count", 0))
 	var triangle_vertices := payload.get("triangle_vertices", PackedVector3Array()) as PackedVector3Array
@@ -145,7 +144,7 @@ func _rebuild_parcel_overlay():
 	_zone_occupancy_revision_seen = int(payload.get("occupancy_revision", _zone_occupancy_revision_seen))
 	if triangle_vertices.is_empty() and line_vertices.is_empty():
 		mesh = null
-		return
+		return true
 
 	var overlay_mesh := ArrayMesh.new()
 	if triangle_vertices.size() >= 3 and triangle_vertices.size() == triangle_colors.size():
@@ -162,8 +161,9 @@ func _rebuild_parcel_overlay():
 		overlay_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, line_arrays)
 
 	mesh = overlay_mesh if overlay_mesh.get_surface_count() > 0 else null
+	return true
 
-func _rebuild_no_build_overlay():
+func _rebuild_no_build_overlay() -> bool:
 	if not _no_build_mesh_instance:
 		_no_build_mesh_instance = MeshInstance3D.new()
 		_no_build_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -177,17 +177,18 @@ func _rebuild_no_build_overlay():
 
 	_no_build_mesh_instance.visible = _tool_active_target > 0.5
 
-	var indices: PackedInt32Array = simulation_node.get_no_building_spawn_edge_indices()
-	if indices.is_empty():
+	var payload: Dictionary = simulation_node.try_get_no_building_spawn_lines()
+	if bool(payload.get("busy", true)):
+		return false
+	var line_vertices := payload.get("line_vertices", PackedVector3Array()) as PackedVector3Array
+	if line_vertices.is_empty():
 		_no_build_mesh_instance.mesh = null
-		return
+		return true
 
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
-	for edge_idx in indices:
-		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
-		for i in range(pts.size() - 1):
-			im.surface_add_vertex(pts[i])
-			im.surface_add_vertex(pts[i + 1])
+	for point in line_vertices:
+		im.surface_add_vertex(point)
 	im.surface_end()
 	_no_build_mesh_instance.mesh = im
+	return true

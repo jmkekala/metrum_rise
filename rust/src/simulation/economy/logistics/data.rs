@@ -188,6 +188,14 @@ pub struct ShipmentSystem {
     pub(super) owa_export_saturation_by_resource: Vec<f32>,
 }
 
+/// Freight records removed when one building is bulldozed.
+pub(crate) struct ShipmentBuildingUndo {
+    pub(crate) shipments: Vec<(usize, Shipment)>,
+    pub(crate) request_failures: Vec<(FreightRequestKey, FreightRequestFailure)>,
+    pub(crate) carrier_agent_ids: Vec<usize>,
+    pub(crate) mutated_building_ids: Vec<usize>,
+}
+
 impl ShipmentSystem {
     /// Creates an empty shipment system.
     pub fn new() -> Self {
@@ -201,6 +209,66 @@ impl ShipmentSystem {
             freight_route_cache_cch_generation: u32::MAX,
             owa_export_saturation_by_resource: Vec::new(),
         }
+    }
+
+    /// Captures only freight state that building invalidation removes or refunds.
+    pub(crate) fn capture_building_undo(&self, removed_building: usize) -> ShipmentBuildingUndo {
+        let mut shipments = Vec::new();
+        let mut carrier_agent_ids = Vec::new();
+        let mut mutated_building_ids = Vec::new();
+        for (shipment_idx, shipment) in self.shipments.iter().enumerate() {
+            let touches_removed = shipment.source.touches_building(removed_building)
+                || shipment.destination.touches_building(removed_building);
+            if !touches_removed {
+                continue;
+            }
+            shipments.push((shipment_idx, shipment.clone()));
+            if shipment.carrier_agent_id != usize::MAX {
+                carrier_agent_ids.push(shipment.carrier_agent_id);
+            }
+            if shipment.source.touches_building(removed_building)
+                && let Some(destination_id) = shipment.destination.building_id()
+                && destination_id != removed_building
+            {
+                mutated_building_ids.push(destination_id);
+            }
+        }
+        carrier_agent_ids.sort_unstable();
+        carrier_agent_ids.dedup();
+        mutated_building_ids.sort_unstable();
+        mutated_building_ids.dedup();
+        let request_failures = self
+            .request_failures
+            .iter()
+            .filter(|(key, _)| key.destination_building_id == removed_building)
+            .map(|(&key, &failure)| (key, failure))
+            .collect();
+        ShipmentBuildingUndo {
+            shipments,
+            request_failures,
+            carrier_agent_ids,
+            mutated_building_ids,
+        }
+    }
+
+    /// Reinserts freight state removed by building invalidation.
+    pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) {
+        for (shipment_idx, shipment) in undo.shipments {
+            self.shipments
+                .insert(shipment_idx.min(self.shipments.len()), shipment);
+        }
+        for (key, failure) in undo.request_failures {
+            self.request_failures.insert(key, failure);
+        }
+        self.invalidate_route_cache();
+    }
+
+    /// Clears route-derived state after an undo remaps building or carrier indices.
+    pub(crate) fn invalidate_route_cache(&mut self) {
+        self.freight_route_cache.clear();
+        self.freight_route_cache_building_revision = u64::MAX;
+        self.freight_route_cache_entrance_revision = u64::MAX;
+        self.freight_route_cache_cch_generation = u32::MAX;
     }
 
     /// Clears all active shipments and freight request diagnostics.

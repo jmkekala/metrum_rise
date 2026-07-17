@@ -4,19 +4,26 @@ use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
 
 impl SimCore {
-    /// Determines if a crosswalk exists (either by procedural logic or user override).
+    /// Reports whether the lane rebuild emitted a visible crossing for this road arm.
     pub fn has_crosswalk_internal(&self, node_id: u32, edge_id: i32) -> bool {
         let valid_id = self.region_graph.get_valid_node(node_id);
         if valid_id as usize >= self.region_graph.node_count() || edge_id < 0 {
             return false;
         }
-        let node = self.region_graph.node(valid_id);
-        if let Some(&forced) = node.crosswalk_overrides.get(&(edge_id as usize)) {
-            return forced;
-        }
-        // Procedural fallback
-        let deg = self.region_graph.node_adjacency_count_at(valid_id);
-        deg > 2
+        self.transit_network
+            .lane_system
+            .node_lanes
+            .get(&(valid_id as usize))
+            .is_some_and(|lane_ids| {
+                lane_ids.iter().any(|lane_id| {
+                    self.transit_network
+                        .lane_system
+                        .lanes
+                        .get(*lane_id)
+                        .and_then(|lane| lane.crosswalk_marking)
+                        .is_some_and(|crosswalk| crosswalk.edge_id == edge_id as usize)
+                })
+            })
     }
 
     /// Returns an array of current lane turn restrictions at a node.

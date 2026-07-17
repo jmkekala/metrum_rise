@@ -9,10 +9,7 @@ impl SimulationNode {
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.lock_core()
             .sculpt_terrain_internal(pos, radius, strength);
-        let mut snapshot = self.snapshot.write().unwrap();
-        snapshot.terrain_dirty = true;
-        snapshot.water_dirty = true;
-        snapshot.network_dirty = true;
+        self.refresh_snapshot_from_core();
     }
 
     /// Begins one batched world-editor terrain stroke.
@@ -24,21 +21,12 @@ impl SimulationNode {
     /// Finalizes one batched world-editor terrain stroke.
     #[func]
     pub fn end_terrain_stroke(&mut self) -> bool {
-        let (ended, terrain_dirty, water_dirty, network_dirty) = {
+        let ended = {
             let mut core = self.lock_core();
-            let ended = core.end_terrain_stroke_internal();
-            (
-                ended,
-                core.terrain_dirty,
-                core.water_dirty,
-                core.network_dirty,
-            )
+            core.end_terrain_stroke_internal()
         };
         if ended {
-            let mut snapshot = self.snapshot.write().unwrap();
-            snapshot.terrain_dirty = terrain_dirty;
-            snapshot.water_dirty = water_dirty;
-            snapshot.network_dirty = network_dirty;
+            self.refresh_snapshot_from_core();
         }
         ended
     }
@@ -46,9 +34,12 @@ impl SimulationNode {
     /// Applies one batched terrain sculpt step during an active editor stroke.
     #[func]
     pub fn sculpt_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.lock_core()
-            .sculpt_terrain_stroke_step_internal(pos, radius, strength);
-        self.snapshot.write().unwrap().terrain_dirty = true;
+        let core = {
+            let mut core = self.lock_core();
+            core.sculpt_terrain_stroke_step_internal(pos, radius, strength);
+            core
+        };
+        Self::publish_terrain_render_state(&mut self.snapshot.write().unwrap(), &core);
     }
 
     /// Moves terrain toward a clicked rendered heightmap level.
@@ -62,10 +53,7 @@ impl SimulationNode {
     ) {
         self.lock_core()
             .level_terrain_internal(pos, radius, target_height_m, strength);
-        let mut snapshot = self.snapshot.write().unwrap();
-        snapshot.terrain_dirty = true;
-        snapshot.water_dirty = true;
-        snapshot.network_dirty = true;
+        self.refresh_snapshot_from_core();
     }
 
     /// Applies one batched terrain-level step during an active editor stroke.
@@ -77,9 +65,12 @@ impl SimulationNode {
         target_height_m: f32,
         strength: f32,
     ) {
-        self.lock_core()
-            .level_terrain_stroke_step_internal(pos, radius, target_height_m, strength);
-        self.snapshot.write().unwrap().terrain_dirty = true;
+        let core = {
+            let mut core = self.lock_core();
+            core.level_terrain_stroke_step_internal(pos, radius, target_height_m, strength);
+            core
+        };
+        Self::publish_terrain_render_state(&mut self.snapshot.write().unwrap(), &core);
     }
 
     /// Smooths terrain toward the local neighborhood average.
@@ -87,18 +78,18 @@ impl SimulationNode {
     pub fn smooth_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.lock_core()
             .smooth_terrain_internal(pos, radius, strength);
-        let mut snapshot = self.snapshot.write().unwrap();
-        snapshot.terrain_dirty = true;
-        snapshot.water_dirty = true;
-        snapshot.network_dirty = true;
+        self.refresh_snapshot_from_core();
     }
 
     /// Applies one batched terrain-smooth step during an active editor stroke.
     #[func]
     pub fn smooth_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.lock_core()
-            .smooth_terrain_stroke_step_internal(pos, radius, strength);
-        self.snapshot.write().unwrap().terrain_dirty = true;
+        let core = {
+            let mut core = self.lock_core();
+            core.smooth_terrain_stroke_step_internal(pos, radius, strength);
+            core
+        };
+        Self::publish_terrain_render_state(&mut self.snapshot.write().unwrap(), &core);
     }
 
     /// Moves terrain toward a slope defined by two clicked rendered anchor points.
@@ -122,10 +113,7 @@ impl SimulationNode {
             end_height_m,
             strength,
         );
-        let mut snapshot = self.snapshot.write().unwrap();
-        snapshot.terrain_dirty = true;
-        snapshot.water_dirty = true;
-        snapshot.network_dirty = true;
+        self.refresh_snapshot_from_core();
     }
 
     /// Applies one batched terrain-slope step during an active editor stroke.
@@ -140,16 +128,28 @@ impl SimulationNode {
         end_height_m: f32,
         strength: f32,
     ) {
-        self.lock_core().slope_terrain_stroke_step_internal(
-            pos,
-            radius,
-            start_world,
-            start_height_m,
-            end_world,
-            end_height_m,
-            strength,
-        );
-        self.snapshot.write().unwrap().terrain_dirty = true;
+        let core = {
+            let mut core = self.lock_core();
+            core.slope_terrain_stroke_step_internal(
+                pos,
+                radius,
+                start_world,
+                start_height_m,
+                end_world,
+                end_height_m,
+                strength,
+            );
+            core
+        };
+        Self::publish_terrain_render_state(&mut self.snapshot.write().unwrap(), &core);
+    }
+
+    fn publish_terrain_render_state(snapshot: &mut RenderSnapshot, core: &SimCore) {
+        snapshot.terrain_dirty = core.terrain_dirty;
+        snapshot.terrain_dirty_patch_states = Arc::new(core.terrain_dirty_patch_states());
+        snapshot.terrain_payload_global_generation = core.terrain_payload_global_generation;
+        snapshot.terrain_payload_patch_generations =
+            Arc::new(core.terrain_payload_patch_generations.clone());
     }
 
     /// Returns whether the terrain mesh needs rebuilding.
@@ -158,104 +158,134 @@ impl SimulationNode {
         self.snapshot.read().unwrap().terrain_dirty
     }
 
-    /// Clears the terrain dirty flag.
+    /// Acknowledges rendered terrain patch revisions without erasing newer mutations.
     #[func]
-    pub fn clear_terrain_dirty(&mut self) {
-        let (preview_context, road_query_snapshot) = {
-            let mut core = self.lock_core();
-            core.terrain_dirty = false;
-            core.heightmap.clear_dirty_render_patches();
-            road_tool_snapshots_from_core(&core)
+    pub fn acknowledge_terrain_patches(&mut self, flat_states: PackedInt64Array) -> bool {
+        let acknowledged = flat_states
+            .as_slice()
+            .chunks_exact(3)
+            .filter_map(|state| {
+                Some((
+                    usize::try_from(state[0]).ok()?,
+                    usize::try_from(state[1]).ok()?,
+                    u64::try_from(state[2]).ok()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let Some(mut core) = self.try_lock_core() else {
+            return false;
         };
-        *self.road_preview_context.write().unwrap() = preview_context;
-        *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
-        self.snapshot.write().unwrap().terrain_dirty = false;
+        for (patch_x, patch_z, generation) in acknowledged {
+            core.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
+        }
+        core.terrain_dirty = !core.heightmap.dirty_render_patches().is_empty();
+        let terrain_dirty = core.terrain_dirty;
+        let states = core.terrain_dirty_patch_states();
+        let global_generation = core.terrain_payload_global_generation;
+        let patch_generations = core.terrain_payload_patch_generations.clone();
+        drop(core);
+
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.terrain_dirty = terrain_dirty;
+        snapshot.terrain_dirty_patch_states = Arc::new(states);
+        snapshot.terrain_payload_global_generation = global_generation;
+        snapshot.terrain_payload_patch_generations = Arc::new(patch_generations);
+        true
     }
 
     /// Returns true if the road/rail network was mutated and the visual mesh needs a rebuild.
     ///
     /// `NetworkRenderer._process` polls this each frame. The flag stays `true` until
-    /// `clear_network_dirty()` is called by GDScript after the refresh is complete,
-    /// matching the same explicit-clear pattern used by `terrain_dirty` and `water_dirty`.
+    /// Godot acknowledges the exact revision it uploaded.
     #[func]
     pub fn is_network_dirty(&self) -> bool {
         self.snapshot.read().unwrap().network_dirty
     }
 
-    /// Returns true when the background sim thread currently owns the core mutex.
+    /// Returns the exact network mesh revision currently published to the renderer.
     #[func]
-    pub fn is_sim_core_busy(&self) -> bool {
-        match self.core.try_lock() {
-            Ok(_) => false,
-            Err(std::sync::TryLockError::WouldBlock) => true,
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                panic!("simulation core lock poisoned by a failed authoritative phase")
-            }
-        }
+    pub fn get_network_render_generation(&self) -> i64 {
+        i64::try_from(self.snapshot.read().unwrap().network_generation).unwrap_or(i64::MAX)
     }
 
-    /// Clears the network-dirty flag after `NetworkRenderer` has rebuilt the road/rail mesh.
+    /// Acknowledges one published network revision without erasing a newer road edit.
     #[func]
-    pub fn clear_network_dirty(&mut self) {
-        self.lock_core().network_dirty = false;
-        self.snapshot.write().unwrap().network_dirty = false;
+    pub fn acknowledge_network_render(&mut self, generation: i64) -> bool {
+        let Ok(generation) = u64::try_from(generation) else {
+            return false;
+        };
+        let Some(mut core) = self.try_lock_core() else {
+            return false;
+        };
+        core.acknowledge_network_render_generation(generation);
+        let network_dirty = core.network_dirty;
+        let current_generation = core.road_tool_surface_generation;
+        drop(core);
+
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.network_dirty = network_dirty;
+        snapshot.network_generation = current_generation;
+        true
     }
 
     /// Returns render-patch layout metadata shared by terrain and water renderers.
     #[func]
     pub fn get_terrain_patch_layout(&self) -> VarDictionary {
-        let core = self.lock_core();
+        let snapshot = self.snapshot.read().unwrap();
         let mut dict = VarDictionary::new();
         dict.set(
             "patch_cols",
-            i64::try_from(core.heightmap.render_patch_cols()).unwrap_or(0),
+            i64::try_from(snapshot.terrain_patch_cols).unwrap_or(0),
         );
         dict.set(
             "patch_rows",
-            i64::try_from(core.heightmap.render_patch_rows()).unwrap_or(0),
+            i64::try_from(snapshot.terrain_patch_rows).unwrap_or(0),
         );
         dict.set(
             "patch_interval_cells",
-            i64::try_from(core.heightmap.render_patch_interval_cells()).unwrap_or(0),
+            i64::try_from(snapshot.terrain_patch_interval_cells).unwrap_or(0),
         );
-        dict.set("terrain_cell_m", f64::from(core.config.terrain_cell_m));
-        dict.set("chunk_span_m", f64::from(core.heightmap.chunk_span_m()));
+        dict.set("terrain_cell_m", f64::from(snapshot.terrain_cell_m));
+        dict.set("chunk_span_m", f64::from(snapshot.terrain_chunk_span_m));
         dict
     }
 
     /// Returns the currently dirty terrain render patches as flat `(x, z)` pairs.
     #[func]
     pub fn get_dirty_terrain_patches(&self) -> PackedInt32Array {
-        let core = self.lock_core();
-        let mut patches: Vec<(usize, usize)> = core
-            .heightmap
-            .dirty_render_patches()
-            .iter()
-            .copied()
-            .collect();
-        patches.sort_unstable();
+        let snapshot = self.snapshot.read().unwrap();
         let mut packed = PackedInt32Array::new();
-        for (patch_x, patch_z) in patches {
+        for &(patch_x, patch_z, _) in snapshot.terrain_dirty_patch_states.iter() {
             packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
             packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
         }
         packed
     }
 
-    /// Returns one visual-terrain render patch, including its one-sample border ring.
+    /// Returns dirty terrain patches as flat `(x, z, payload_generation)` triples.
     #[func]
-    pub fn get_terrain_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
-        let Ok(patch_x) = usize::try_from(patch_x) else {
-            return VarDictionary::new();
-        };
-        let Ok(patch_z) = usize::try_from(patch_z) else {
-            return VarDictionary::new();
-        };
-        let core = self.lock_core();
-        let Some(patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
-            return VarDictionary::new();
-        };
-        Self::terrain_patch_dict(&patch)
+    pub fn get_dirty_terrain_patch_payload_states(&self) -> PackedInt64Array {
+        let snapshot = self.snapshot.read().unwrap();
+        let mut packed = PackedInt64Array::new();
+        for &(patch_x, patch_z, generation) in snapshot.terrain_dirty_patch_states.iter() {
+            packed.push(i64::try_from(patch_x).unwrap_or(i64::MAX));
+            packed.push(i64::try_from(patch_z).unwrap_or(i64::MAX));
+            packed.push(i64::try_from(generation).unwrap_or(i64::MAX));
+        }
+        packed
+    }
+
+    fn packed_terrain_patch_payload_states(
+        states: impl IntoIterator<Item = (usize, usize, u32, u64)>,
+    ) -> PackedInt64Array {
+        let mut packed = PackedInt64Array::new();
+        for (patch_x, patch_z, render_step_mm, generation) in states {
+            packed.push(i64::try_from(patch_x).unwrap_or(i64::MAX));
+            packed.push(i64::try_from(patch_z).unwrap_or(i64::MAX));
+            packed.push(i64::from(render_step_mm));
+            packed.push(i64::try_from(generation).unwrap_or(i64::MAX));
+        }
+        packed
     }
 
     /// Requests async terrain patch payload preparation for flat `(patch_x, patch_z, render_step_mm)` tuples.
@@ -273,9 +303,23 @@ impl SimulationNode {
         stats.set("in_flight_count", 0_i64);
         stats.set("ready_count", 0_i64);
         stats.set("build_queued_count", 0_i64);
+        stats.set("tracked_requests", PackedInt64Array::new().to_variant());
         if requests.is_empty() {
             return stats;
         }
+
+        let requests = {
+            let snapshot = self.snapshot.read().unwrap();
+            requests
+                .into_iter()
+                .map(|key| {
+                    let generation =
+                        snapshot.terrain_payload_generation_for_patch(key.patch_x, key.patch_z);
+                    (key, generation)
+                })
+                .collect::<Vec<_>>()
+        };
+        let road_query_snapshot = self.road_tool_query_snapshot.read().unwrap().clone();
 
         let mut accepted_count = 0_usize;
         let mut duplicate_count = 0_usize;
@@ -283,26 +327,29 @@ impl SimulationNode {
         let mut ready_count = 0_usize;
         let mut build_queued_count = 0_usize;
         let mut build_requests = Vec::new();
-        let surface_generation = self
-            .road_tool_query_snapshot
-            .read()
-            .unwrap()
-            .surface_generation;
+        let mut tracked_requests = Vec::new();
         {
             let mut jobs = self.lock_terrain_patch_payload_jobs();
             let mut requested_key_lookup = HashSet::new();
-            for key in requests {
+            for (key, surface_generation) in requests {
                 if !requested_key_lookup.insert(key) {
                     duplicate_count += 1;
                     continue;
                 }
                 jobs.drop_stale_key_for_generation(key, surface_generation);
-                let in_flight = jobs.has_current_in_flight(key, surface_generation);
+                let in_flight = jobs.has_in_flight(key);
                 let ready = jobs.has_current_ready(key, surface_generation);
-                if jobs.has_current_request(key, surface_generation) || in_flight || ready {
+                let current_request = jobs.has_current_request(key, surface_generation);
+                if current_request || ready {
                     duplicate_count += 1;
                     in_flight_count += usize::from(in_flight);
                     ready_count += usize::from(ready);
+                    tracked_requests.push((key, surface_generation));
+                    continue;
+                }
+                if in_flight {
+                    duplicate_count += 1;
+                    in_flight_count += 1;
                     continue;
                 }
                 let request_id = jobs.request(key, surface_generation);
@@ -313,6 +360,7 @@ impl SimulationNode {
                 });
                 accepted_count += 1;
                 build_queued_count += 1;
+                tracked_requests.push((key, surface_generation));
             }
         }
 
@@ -327,35 +375,55 @@ impl SimulationNode {
             rayon::spawn(move || {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::is_perf_enabled();
-                let (mut built, refined_requests, refined_inputs) = {
+                let snapshot_start = Instant::now();
+                let (sources, mut failed_requests) = {
                     let mut core = core
                         .lock()
-                        .expect("simulation core lock poisoned during terrain payload input build");
-                    let input_start = Instant::now();
-                    let build_jobs = build_requests
-                        .into_iter()
-                        .filter_map(|request| {
-                            SimulationNode::terrain_patch_payload_build_job_for_request(
+                        .expect("simulation core lock poisoned during terrain payload snapshot");
+                    let mut sources = Vec::with_capacity(build_requests.len());
+                    let mut failed = Vec::new();
+                    for request in build_requests {
+                        if let Some(source) =
+                            SimulationNode::terrain_patch_payload_build_source_for_request(
                                 &mut core, request,
                             )
-                        })
-                        .collect::<Vec<_>>();
-                    let split = SimulationNode::split_terrain_patch_payload_jobs(build_jobs);
-                    if perf_enabled {
-                        let input_ms = input_start.elapsed().as_secs_f64() * 1000.0;
-                        if input_ms >= 4.0 || refined_request_count > 0 {
-                            println!(
-                                "[DEBUG:perf] terrain_payload_worker_input requests={} refined_requests={} ready={} refined_inputs={} input_ms={:.3}",
-                                request_count,
-                                refined_request_count,
-                                split.0.len(),
-                                split.2.len(),
-                                input_ms
-                            );
+                        {
+                            sources.push(source);
+                        } else {
+                            failed.push(request);
                         }
                     }
-                    split
+                    (sources, failed)
                 };
+                let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
+
+                let input_start = Instant::now();
+                let build_jobs = sources
+                    .into_par_iter()
+                    .map(|source| {
+                        SimulationNode::terrain_patch_payload_build_job_for_source(
+                            &road_query_snapshot,
+                            source,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let (mut built, refined_requests, refined_inputs) =
+                    SimulationNode::split_terrain_patch_payload_jobs(build_jobs);
+                let input_ms = input_start.elapsed().as_secs_f64() * 1000.0;
+                if perf_enabled
+                    && (snapshot_ms >= 4.0 || input_ms >= 4.0 || refined_request_count > 0)
+                {
+                    println!(
+                        "[DEBUG:perf] terrain_payload_worker_input requests={} refined_requests={} ready={} refined_inputs={} failed={} snapshot_lock_ms={:.3} input_ms={:.3}",
+                        request_count,
+                        refined_request_count,
+                        built.len(),
+                        refined_inputs.len(),
+                        failed_requests.len(),
+                        snapshot_ms,
+                        input_ms
+                    );
+                }
 
                 let cdt_start = Instant::now();
                 let refined_entries = if refined_inputs.is_empty() {
@@ -364,6 +432,34 @@ impl SimulationNode {
                     SimCore::build_refined_terrain_patch_cache_entries(refined_inputs)
                 };
                 let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+                let refined_entry_count = refined_entries.len();
+                let refined_window_count = refined_entries
+                    .iter()
+                    .map(|entry| entry.windows.len())
+                    .sum::<usize>();
+                let refined_failed_window_count = refined_entries
+                    .iter()
+                    .flat_map(|entry| &entry.windows)
+                    .filter(|window| window.mesh_result.is_err())
+                    .count();
+                let refined_invalid_entry_count = refined_entries
+                    .iter()
+                    .filter(|entry| {
+                        SimulationNode::cached_refined_cdt_failure_label(entry).is_some()
+                    })
+                    .count();
+                let refined_road_loop_count = refined_entries
+                    .iter()
+                    .map(|entry| entry.road_clip_loop_count)
+                    .sum::<usize>();
+                let refined_site_loop_count = refined_entries
+                    .iter()
+                    .map(|entry| entry.site_clip_loop_count)
+                    .sum::<usize>();
+                let first_refined_error = refined_entries
+                    .iter()
+                    .find_map(SimulationNode::cached_refined_cdt_failure_label)
+                    .unwrap_or("none");
                 Self::append_refined_terrain_patch_payloads_for_requests(
                     &mut built,
                     &refined_requests,
@@ -386,16 +482,23 @@ impl SimulationNode {
                     .lock()
                     .expect("terrain payload job lock poisoned during result publication");
                 job_state.completed.extend(built);
+                job_state.failed.append(&mut failed_requests);
                 if perf_enabled
                     && (worker_start.elapsed().as_secs_f64() * 1000.0 >= 8.0
                         || cdt_ms >= 4.0
                         || refined_request_count > 0)
                 {
                     println!(
-                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} cache_inserted={} cdt_ms={:.3} total_ms={:.3}",
+                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} refined_windows={} failed_windows={} invalid_entries={} road_loops={} site_loops={} first_error={} cache_inserted={} cdt_ms={:.3} total_ms={:.3}",
                         request_count,
                         refined_request_count,
-                        refined_requests.len(),
+                        refined_entry_count,
+                        refined_window_count,
+                        refined_failed_window_count,
+                        refined_invalid_entry_count,
+                        refined_road_loop_count,
+                        refined_site_loop_count,
+                        first_refined_error,
                         cache_inserted,
                         cdt_ms,
                         worker_start.elapsed().as_secs_f64() * 1000.0
@@ -424,20 +527,23 @@ impl SimulationNode {
             "build_queued_count",
             i64::try_from(build_queued_count).unwrap_or(i64::MAX),
         );
+        let packed_tracked_requests =
+            Self::packed_terrain_patch_payload_states(tracked_requests.into_iter().map(
+                |(key, generation)| (key.patch_x, key.patch_z, key.render_step_mm, generation),
+            ));
+        stats.set("tracked_requests", packed_tracked_requests.to_variant());
         stats
     }
 
     /// Returns ready async terrain patch payloads without blocking on patch extraction.
     #[func]
     pub fn poll_ready_terrain_patch_payloads(&mut self, max_patches: i32) -> VarDictionary {
-        let completed_payloads = self.drain_completed_terrain_patch_payload_jobs();
+        let (completed_payloads, failed_requests) =
+            self.drain_completed_terrain_patch_payload_jobs();
         let completed_count = completed_payloads.len();
+        let failed_count = failed_requests.len();
+        let mut retry_requests = failed_requests.clone();
         let max_patches = usize::try_from(max_patches).unwrap_or(0);
-        let current_surface_generation = self
-            .road_tool_query_snapshot
-            .read()
-            .unwrap()
-            .surface_generation;
         let mut patches = VarArray::new();
         let mut stats = VarDictionary::new();
         stats.set("patches", patches.to_variant());
@@ -451,10 +557,36 @@ impl SimulationNode {
         stats.set("missing_ready_count", 0_i64);
         stats.set("requested_before_count", 0_i64);
         stats.set("requested_after_count", 0_i64);
+        stats.set(
+            "failed_count",
+            i64::try_from(failed_count).unwrap_or(i64::MAX),
+        );
+        stats.set(
+            "retry_requests",
+            Self::packed_terrain_patch_payload_states(retry_requests.iter().map(|request| {
+                (
+                    request.key.patch_x,
+                    request.key.patch_z,
+                    request.key.render_step_mm,
+                    request.surface_generation,
+                )
+            }))
+            .to_variant(),
+        );
 
+        let (global_generation, patch_generations) = {
+            let snapshot = self.snapshot.read().unwrap();
+            (
+                snapshot.terrain_payload_global_generation,
+                Arc::clone(&snapshot.terrain_payload_patch_generations),
+            )
+        };
         let mut jobs = self.lock_terrain_patch_payload_jobs();
         if !completed_payloads.is_empty() {
             jobs.ingest_completed(completed_payloads);
+        }
+        if !failed_requests.is_empty() {
+            jobs.ingest_failed(failed_requests);
         }
         let ready_before_count = jobs.ready.len();
         let requested_before_count = jobs.requested.len();
@@ -477,6 +609,7 @@ impl SimulationNode {
         let mut emitted_count = 0_usize;
         let mut stale_ready_count = 0_usize;
         let mut missing_ready_count = 0_usize;
+        let mut emitted_payloads = Vec::with_capacity(max_patches.min(jobs.ready.len()));
         while emitted_count < max_patches {
             let Some(key) = jobs.ready.pop() else {
                 break;
@@ -484,7 +617,13 @@ impl SimulationNode {
             jobs.ready_lookup.remove(&key);
             let Some(payload) = jobs.payloads.remove(&key) else {
                 missing_ready_count += 1;
-                jobs.requested.remove(&key);
+                if let Some(state) = jobs.requested.remove(&key) {
+                    retry_requests.push(TerrainPatchPayloadRequest {
+                        key,
+                        request_id: state.request_id,
+                        surface_generation: state.surface_generation,
+                    });
+                }
                 continue;
             };
             let payload_state = TerrainPatchPayloadRequestState {
@@ -495,17 +634,42 @@ impl SimulationNode {
                 stale_ready_count += 1;
                 continue;
             }
-            if payload.surface_generation != current_surface_generation {
+            let current_generation = patch_generations
+                .get(&(key.patch_x, key.patch_z))
+                .copied()
+                .unwrap_or(0)
+                .max(global_generation);
+            if payload.surface_generation != current_generation {
                 stale_ready_count += 1;
                 jobs.requested.remove(&key);
+                retry_requests.push(TerrainPatchPayloadRequest {
+                    key,
+                    request_id: payload.request_id,
+                    surface_generation: payload.surface_generation,
+                });
                 continue;
             }
             jobs.requested.remove(&key);
-            patches.push(&Self::terrain_patch_payload_dict(&payload).to_variant());
+            emitted_payloads.push(payload);
             emitted_count += 1;
         }
+        let requested_after_count = jobs.requested.len();
+        drop(jobs);
+        for payload in emitted_payloads {
+            patches.push(&Self::terrain_patch_payload_dict(&payload).to_variant());
+        }
+        let packed_retry_requests =
+            Self::packed_terrain_patch_payload_states(retry_requests.into_iter().map(|request| {
+                (
+                    request.key.patch_x,
+                    request.key.patch_z,
+                    request.key.render_step_mm,
+                    request.surface_generation,
+                )
+            }));
 
         stats.set("patches", patches.to_variant());
+        stats.set("retry_requests", packed_retry_requests.to_variant());
         stats.set(
             "ready_before_count",
             i64::try_from(ready_before_count).unwrap_or(i64::MAX),
@@ -528,103 +692,32 @@ impl SimulationNode {
         );
         stats.set(
             "requested_after_count",
-            i64::try_from(jobs.requested.len()).unwrap_or(i64::MAX),
+            i64::try_from(requested_after_count).unwrap_or(i64::MAX),
         );
         stats
-    }
-
-    /// Returns one visible-terrain render patch resampled at a finer render step.
-    #[func]
-    pub fn get_refined_terrain_patch(
-        &self,
-        patch_x: i32,
-        patch_z: i32,
-        render_step_m: f32,
-    ) -> VarDictionary {
-        let Ok(patch_x) = usize::try_from(patch_x) else {
-            return VarDictionary::new();
-        };
-        let Ok(patch_z) = usize::try_from(patch_z) else {
-            return VarDictionary::new();
-        };
-        let mut core = self.lock_core();
-        let cache_key = Self::refined_patch_cache_key(patch_x, patch_z, render_step_m);
-        let surface_generation = core.road_tool_surface_generation;
-        if core
-            .refined_terrain_patch_cache
-            .get(&cache_key)
-            .is_some_and(|cached| {
-                !Self::refined_terrain_patch_cache_entry_is_current(cached, surface_generation)
-            })
-        {
-            core.refined_terrain_patch_cache.remove(&cache_key);
-        }
-        if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
-            let road_debug = crate::debug::category_enabled("road");
-            let total_start = road_debug.then(Instant::now);
-            let dict = Self::cached_refined_terrain_patch_dict(cached, false);
-            if road_debug {
-                debug_log!(
-                    "road",
-                    "refined_patch_cache_hit key=({},{}) render_step_mm={} windows={} reused_windows={} input_road_loops={} source_samples={} cdt_ms={:.3} total_ms={:.3}",
-                    patch_x,
-                    patch_z,
-                    cache_key.render_step_mm,
-                    cached.windows.len(),
-                    cached.reused_windows,
-                    cached.input_road_loops,
-                    cached.input_source_samples,
-                    cached.cdt_ms,
-                    total_start
-                        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                        .unwrap_or(0.0)
-                );
-            }
-            return dict;
-        }
-        if crate::debug::category_enabled("road") {
-            debug_log!(
-                "road",
-                "refined_patch_cache_miss_fallback key=({},{}) render_step_mm={}",
-                patch_x,
-                patch_z,
-                cache_key.render_step_mm
-            );
-        }
-        core.heightmap
-            .visual_patch_snapshot(patch_x, patch_z)
-            .map(|patch| Self::terrain_patch_dict(&patch))
-            .unwrap_or_else(VarDictionary::new)
-    }
-
-    /// Returns a refined terrain patch with CDT provenance sidecars for diagnostics.
-    #[func]
-    pub fn get_refined_terrain_patch_debug(
-        &self,
-        patch_x: i32,
-        patch_z: i32,
-        render_step_m: f32,
-    ) -> VarDictionary {
-        let Ok(patch_x) = usize::try_from(patch_x) else {
-            return VarDictionary::new();
-        };
-        let Ok(patch_z) = usize::try_from(patch_z) else {
-            return VarDictionary::new();
-        };
-        let core = self.lock_core();
-        Self::refined_terrain_patch_dict(&core, patch_x, patch_z, render_step_m, true)
     }
 
     /// Returns the terrain-border perimeter loop as world-space top positions.
     #[func]
     pub fn get_terrain_border_loop(&self) -> PackedVector3Array {
-        PackedVector3Array::from_iter(self.lock_core().heightmap.border_loop_positions())
+        PackedVector3Array::from_iter(
+            self.snapshot
+                .read()
+                .unwrap()
+                .terrain_border_loop
+                .iter()
+                .copied(),
+        )
     }
 
     /// Returns the dimensions of the heightmap.
     #[func]
     pub fn get_heightmap_size(&self) -> Vector2 {
-        self.get_heightmap_size_internal()
+        let snapshot = self.snapshot.read().unwrap();
+        Vector2::new(
+            snapshot.heightmap_width as f32,
+            snapshot.heightmap_height as f32,
+        )
     }
 
     /// Returns the terrain world extent in metres.

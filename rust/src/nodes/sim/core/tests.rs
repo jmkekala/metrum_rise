@@ -32,6 +32,7 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector3;
+use std::collections::HashSet;
 use std::collections::{HashMap, VecDeque};
 
 fn test_core() -> SimCore {
@@ -74,8 +75,14 @@ fn test_core() -> SimCore {
         last_road_timing: String::new(),
         last_surface_debug_edges: Vec::new(),
         refined_terrain_patch_cache: HashMap::new(),
-        water_patch_mesh_cache: HashMap::new(),
         road_locked_terrain_patch_keys: Vec::new(),
+        road_locked_terrain_patch_margins: std::collections::BTreeMap::new(),
+        building_site_owned_terrain_patch_keys: HashSet::new(),
+        engineered_terrain_patch_keys: Vec::new(),
+        engineered_terrain_patch_margins: std::collections::BTreeMap::new(),
+        terrain_payload_generation_counter: 1,
+        terrain_payload_global_generation: 1,
+        terrain_payload_patch_generations: HashMap::new(),
         cached_road_mesh_data: None,
         cached_network_node_positions: std::sync::Arc::new(Vec::new()),
         cached_network_node_positions_dirty: true,
@@ -91,6 +98,62 @@ fn test_core_keeps_road_surface_chunks_aligned_to_terrain_chunks() {
         core.transit_network.road_surface.chunk_span_m(),
         core.config.terrain_chunk_m
     );
+}
+
+#[test]
+fn stale_terrain_acknowledgement_preserves_newer_patch_dirtiness() {
+    let mut core = test_core();
+    core.heightmap.mark_render_patch_dirty(0, 0);
+    let stale_generation = core.terrain_payload_generation_for_patch(0, 0);
+    core.bump_terrain_payload_patch_generations(&[(0, 0)]);
+
+    assert!(!core.acknowledge_terrain_render_patch(0, 0, stale_generation));
+    assert!(core.heightmap.dirty_render_patches().contains(&(0, 0)));
+
+    let current_generation = core.terrain_payload_generation_for_patch(0, 0);
+    assert!(core.acknowledge_terrain_render_patch(0, 0, current_generation));
+    assert!(!core.heightmap.dirty_render_patches().contains(&(0, 0)));
+}
+
+#[test]
+fn terrain_stroke_steps_advance_touched_patch_revisions() {
+    let mut core = test_core();
+    for (patch_x, patch_z, generation) in core.terrain_dirty_patch_states() {
+        core.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
+    }
+
+    core.start_terrain_stroke_internal();
+    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 0.1);
+    let first_states = core.terrain_dirty_patch_states();
+    let &(patch_x, patch_z, stale_generation) = first_states
+        .first()
+        .expect("terrain stroke should dirty at least one render patch");
+
+    core.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 12.0, 0.1);
+    let current_generation = core.terrain_payload_generation_for_patch(patch_x, patch_z);
+
+    assert!(current_generation > stale_generation);
+    assert!(!core.acknowledge_terrain_render_patch(patch_x, patch_z, stale_generation));
+    assert!(
+        core.heightmap
+            .dirty_render_patches()
+            .contains(&(patch_x, patch_z))
+    );
+}
+
+#[test]
+fn stale_network_acknowledgement_preserves_newer_render_revision() {
+    let mut core = test_core();
+    core.mark_network_render_dirty();
+    let stale_generation = core.road_tool_surface_generation;
+    core.mark_network_render_dirty();
+
+    assert!(!core.acknowledge_network_render_generation(stale_generation));
+    assert!(core.network_dirty);
+
+    let current_generation = core.road_tool_surface_generation;
+    assert!(core.acknowledge_network_render_generation(current_generation));
+    assert!(!core.network_dirty);
 }
 
 #[test]
@@ -110,6 +173,25 @@ fn build_snapshot_reuses_cached_network_nodes_until_network_dirty() {
     let third = core.build_snapshot();
     assert_eq!(third.node_positions.len(), 2);
     assert!(!std::sync::Arc::ptr_eq(&first_nodes, &third.node_positions));
+}
+
+#[test]
+fn build_snapshot_publishes_terrain_layout_before_first_tick() {
+    let mut core = test_core();
+    let expected_width = core.heightmap.width;
+    let expected_height = core.heightmap.height;
+    let expected_world_size = core.heightmap.world_size();
+
+    let snapshot = core.build_snapshot();
+
+    assert_eq!(snapshot.heightmap_width, expected_width);
+    assert_eq!(snapshot.heightmap_height, expected_height);
+    assert_eq!(
+        snapshot.terrain_world_size,
+        godot::prelude::Vector2::new(expected_world_size.0, expected_world_size.1)
+    );
+    assert!(snapshot.terrain_patch_cols > 0);
+    assert!(snapshot.terrain_patch_rows > 0);
 }
 
 #[test]
@@ -457,7 +539,7 @@ fn pedestrian_lane_surface_height_matches_lane_semantics() {
 
     let crosswalk = Lane {
         edge_id: usize::MAX,
-        is_crosswalk: true,
+        crosswalk_edge_id: Some(7),
         lane_type: LaneType::Foot,
         ..Lane::default()
     };

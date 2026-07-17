@@ -3,19 +3,6 @@
 use super::super::super::*;
 
 impl SimulationNode {
-    pub(in crate::nodes::simulation_node) fn append_road_clip_loops_for_bounds(
-        dict: &mut VarDictionary,
-        core: &SimCore,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
-    ) {
-        let road_clip_query =
-            Self::road_clip_loop_query_for_bounds(core, min_x, min_z, max_x, max_z);
-        Self::append_road_clip_query(dict, &road_clip_query);
-    }
-
     pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_bounds(
         core: &SimCore,
         min_x: f32,
@@ -23,31 +10,74 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> RoadClipLoopQuery {
-        match core
-            .transit_network
-            .road_surface
-            .terrain_cdt_road_loops_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z)
+        let site_loops = core
+            .allocator
+            .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
+        Self::road_clip_loop_query_for_sources(
+            &core.region_graph,
+            &core.transit_network.road_surface,
+            site_loops,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+        )
+    }
+
+    pub(in crate::nodes::simulation_node) fn road_clip_loop_query_for_snapshot(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        sites: &BuildingSiteTerrainSnapshot,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> RoadClipLoopQuery {
+        let site_loops = sites.terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
+        Self::road_clip_loop_query_for_sources(
+            graph,
+            road_surface,
+            site_loops,
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+        )
+    }
+
+    fn road_clip_loop_query_for_sources(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        site_loops: Vec<TerrainCdtRoadLoop>,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> RoadClipLoopQuery {
+        match road_surface
+            .terrain_cdt_road_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z)
         {
             Ok((mut cdt_road_loops, source_count)) => {
-                let site_loops = core
-                    .allocator
-                    .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
-                let site_source_count = site_loops.len();
+                let road_loop_count = cdt_road_loops.len();
+                let site_loop_count = site_loops.len();
                 cdt_road_loops.extend(site_loops);
                 RoadClipLoopQuery {
                     cdt_road_loops,
-                    source_count: source_count + site_source_count,
+                    source_count: source_count + site_loop_count,
+                    road_source_count: source_count,
+                    road_loop_count,
+                    site_loop_count,
                     clip_error_label: None,
                 }
             }
             Err(err) => {
-                let site_loops = core
-                    .allocator
-                    .terrain_cdt_site_loops_for_world_bounds(min_x, min_z, max_x, max_z);
-                let source_count = site_loops.len();
+                let site_loop_count = site_loops.len();
                 RoadClipLoopQuery {
                     cdt_road_loops: site_loops,
-                    source_count,
+                    source_count: site_loop_count,
+                    road_source_count: 0,
+                    road_loop_count: 0,
+                    site_loop_count,
                     clip_error_label: Some(err.debug_label()),
                 }
             }
@@ -66,6 +96,16 @@ impl SimulationNode {
         Self::append_road_clip_loops(dict, &road_clip_query.cdt_road_loops);
     }
 
+    pub(in crate::nodes::simulation_node) fn road_clip_query_requires_road_clipping(
+        road_clip_query: &RoadClipLoopQuery,
+        patch_is_known_road_locked: bool,
+    ) -> bool {
+        patch_is_known_road_locked
+            || road_clip_query.road_source_count > 0
+            || road_clip_query.road_loop_count > 0
+            || road_clip_query.clip_error_label.is_some()
+    }
+
     pub(in crate::nodes::simulation_node) fn append_road_clip_status(
         dict: &mut VarDictionary,
         road_clip_query: &RoadClipLoopQuery,
@@ -74,6 +114,18 @@ impl SimulationNode {
         dict.set("road_clip_status", GString::from(status));
         dict.set("road_clip_error", GString::from(error));
         dict.set("road_clip_source_count", source_count);
+        dict.set(
+            "road_clip_road_source_count",
+            i64::try_from(road_clip_query.road_source_count).unwrap_or(0),
+        );
+        dict.set(
+            "road_clip_road_loop_count",
+            i64::try_from(road_clip_query.road_loop_count).unwrap_or(0),
+        );
+        dict.set(
+            "road_clip_site_loop_count",
+            i64::try_from(road_clip_query.site_loop_count).unwrap_or(0),
+        );
     }
 
     pub(in crate::nodes::simulation_node) fn road_clip_status_values(
@@ -154,6 +206,9 @@ impl SimulationNode {
     ) -> i64 {
         let mut hash = 0xcbf29ce484222325_u64;
         Self::mix_road_clip_signature(&mut hash, road_clip_query.source_count as u64);
+        Self::mix_road_clip_signature(&mut hash, road_clip_query.road_source_count as u64);
+        Self::mix_road_clip_signature(&mut hash, road_clip_query.road_loop_count as u64);
+        Self::mix_road_clip_signature(&mut hash, road_clip_query.site_loop_count as u64);
         if let Some(error_label) = road_clip_query.clip_error_label {
             for byte in error_label.as_bytes() {
                 Self::mix_road_clip_signature(&mut hash, u64::from(*byte));

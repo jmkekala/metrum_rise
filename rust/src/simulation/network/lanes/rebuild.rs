@@ -290,7 +290,8 @@ impl LaneSystem {
                 if let Some(old_ids) = self.node_lanes.remove(&node_id) {
                     for lid in old_ids {
                         if lid < self.lanes.len() {
-                            self.lanes[lid].is_crosswalk = false;
+                            self.lanes[lid].crosswalk_edge_id = None;
+                            self.lanes[lid].crosswalk_marking = None;
                             self.lanes[lid].geometry.clear();
                             self.lanes[lid].next_lanes.clear();
                         }

@@ -6,7 +6,8 @@
 ## Centralising the refresh here means adding a new transport mode (rail, etc.) only
 ## requires wiring that tool's mesh update call in one place.
 ##
-## Rust methods called: is_network_dirty(), get_dirty_terrain_patches(), clear_terrain_dirty()
+## Rust methods called: is_network_dirty(), get_network_render_generation(),
+##   get_dirty_terrain_patches(), acknowledge_network_render()
 extends Node
 
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -59,9 +60,7 @@ func _process(_delta: float) -> void:
 		var terrain_visuals_start_us := Time.get_ticks_usec()
 		terrain_visuals_ready = terrain.update_terrain_visuals()
 		terrain_visuals_ms = float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
-	if terrain_visuals_ready:
-		simulation_node.clear_terrain_dirty()
-	else:
+	if not terrain_visuals_ready:
 		var pending_total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if perf_enabled:
 			PerfDebug.record(
@@ -81,7 +80,9 @@ func _process(_delta: float) -> void:
 	#    mismatch reaches the renderer.
 	if _road_mesh_refreshed_surface_generation != surface_generation:
 		var road_mesh_start_us := Time.get_ticks_usec()
-		road_tool.update_main_mesh()
+		var rendered_generation: int = road_tool.update_main_mesh(surface_generation)
+		if rendered_generation != surface_generation:
+			return
 		road_tool.mark_network_topology_dirty()
 		road_mesh_ms = float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
 		_road_mesh_refreshed_surface_generation = surface_generation
@@ -101,10 +102,9 @@ func _process(_delta: float) -> void:
 	# 5. Road geometry changed → refresh no-build edge overlay geometry.
 	if zoning_overlay: zoning_overlay.mark_no_build_dirty()
 
-	# 6. Clear the flag only after terrain accepted the road-locked uploads. Otherwise the next
-	# frame must retry this coordinated visual refresh instead of waiting for another road edit.
-	if terrain_visuals_ready:
-		simulation_node.clear_network_dirty()
+	# 6. Acknowledge only the exact road revision paired with the accepted terrain uploads. A newer
+	# revision remains dirty and retries this coordinated refresh on the next frame.
+	if terrain_visuals_ready and simulation_node.acknowledge_network_render(surface_generation):
 		_road_mesh_refreshed_surface_generation = -1
 
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
@@ -136,8 +136,8 @@ func _process(_delta: float) -> void:
 			_print_road_geometry_patch_debug(dirty_terrain_patch_keys)
 
 func _current_road_surface_generation() -> int:
-	if simulation_node.has_method("get_road_tool_surface_generation"):
-		return int(simulation_node.get_road_tool_surface_generation())
+	if simulation_node.has_method("get_network_render_generation"):
+		return int(simulation_node.get_network_render_generation())
 	return 0
 
 func _is_road_debug_enabled() -> bool:

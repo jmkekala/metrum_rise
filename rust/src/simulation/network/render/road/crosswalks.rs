@@ -11,10 +11,11 @@ pub(super) fn emit_crosswalk_markings(
 ) {
     use crate::simulation::network::lanes::LaneType;
     for lane in &lane_system.lanes {
-        if lane.edge_id == usize::MAX && lane.lane_type == LaneType::Foot && lane.is_crosswalk {
-            if lane.geometry.len() >= 2 {
-                emit_zebra_stripes(mesh, graph, lane, terrain, road_surface);
-            }
+        if lane.edge_id == usize::MAX
+            && lane.lane_type == LaneType::Foot
+            && let Some(marking) = lane.crosswalk_marking
+        {
+            emit_zebra_stripes(mesh, graph, marking, terrain, road_surface);
         }
     }
 }
@@ -26,16 +27,21 @@ const CROSSWALK_STRIPE_GAP: f32 = 0.4;
 fn emit_zebra_stripes(
     mesh: &mut NetworkMeshData,
     graph: &crate::simulation::network::graph::RegionGraph,
-    lane: &crate::simulation::network::lanes::Lane,
+    marking: crate::simulation::network::lanes::CrosswalkMarking,
     terrain: &crate::simulation::terrain::TerrainSystem,
     road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
 ) {
+    let geometry = [marking.start, marking.end];
+    let length = marking.start.distance_to(marking.end);
+    if length <= f32::EPSILON {
+        return;
+    }
     let color = Color::from_rgb(1.0, 1.0, 1.0);
     let step = CROSSWALK_STRIPE_WIDTH + CROSSWALK_STRIPE_GAP;
     let mut travelled = 0.0;
-    while travelled + CROSSWALK_STRIPE_WIDTH <= lane.length {
-        let t_param = (travelled + CROSSWALK_STRIPE_WIDTH * 0.5) / lane.length;
-        let (p, tangent) = sample_polyline_pos_tangent(&lane.geometry, t_param);
+    while travelled + CROSSWALK_STRIPE_WIDTH <= length {
+        let t_param = (travelled + CROSSWALK_STRIPE_WIDTH * 0.5) / length;
+        let (p, tangent) = sample_polyline_pos_tangent(&geometry, t_param);
         let normal = Vector3::new(-tangent.z, 0.0, tangent.x).normalized();
         let hw = CROSSWALK_STRIPE_WIDTH * 0.5;
         let hl = CROSSWALK_STRIPE_LEN * 0.5;

@@ -7,8 +7,8 @@ mod queries;
 mod restore;
 mod validation;
 
-use super::ParcelStore;
 use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
+use super::{ParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,6 +24,18 @@ pub struct ZoningSystem {
     pub config: WorldConfig,
     overlay_revision: u64,
     overlay_occupancy_revision: u64,
+}
+
+/// Operation-local parcel records removed by one road bulldoze.
+pub(crate) struct ZoningParcelRemovalUndo {
+    original_parcel_count: usize,
+    parcels: Vec<(usize, ZoningParcel)>,
+}
+
+impl ZoningParcelRemovalUndo {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.parcels.is_empty()
+    }
 }
 
 impl ZoningSystem {
@@ -62,6 +74,24 @@ impl ZoningSystem {
             self.bump_overlay_revision();
         }
         removed
+    }
+
+    pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {
+        ZoningParcelRemovalUndo {
+            original_parcel_count: self.parcels.parcels().len(),
+            parcels: self.parcels.capture_attached_to_edge(edge_idx),
+        }
+    }
+
+    pub(crate) fn can_restore_parcel_removal_undo(&self, undo: &ZoningParcelRemovalUndo) -> bool {
+        self.parcels
+            .can_restore_removed(undo.original_parcel_count, &undo.parcels)
+    }
+
+    pub(crate) fn restore_parcel_removal_undo(&mut self, undo: ZoningParcelRemovalUndo) {
+        self.parcels
+            .restore_removed(undo.original_parcel_count, undo.parcels);
+        self.bump_overlay_revision();
     }
 
     pub(crate) fn overlay_revision(&self) -> u64 {

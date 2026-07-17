@@ -277,12 +277,7 @@ func _handle_undo():
 		zoning_tool.undo()
 		return
 	if simulation_node.undo_action():
-		print("Undo Executed Globally")
-		if buildings_node: buildings_node.update_all_buildings()
-		if terrain_node: terrain_node.update_terrain_visuals()
-		if road_tool:
-			road_tool.update_main_mesh()
-			road_tool.mark_network_topology_dirty()
+		print("Undo Queued Globally")
 
 func _handle_money_and_demand_cheat() -> void:
 	if not simulation_node or not simulation_node.has_method("apply_money_and_max_demand_cheat"):
@@ -317,10 +312,6 @@ func _refresh_after_world_load():
 	if zoning_overlay: zoning_overlay.full_refresh()
 	if agents_node:
 		agents_node.update_swarm()
-	if simulation_node:
-		simulation_node.clear_terrain_dirty()
-		simulation_node.clear_water_dirty()
-		simulation_node.clear_network_dirty()
 
 func _handle_save_game():
 	_ensure_saves_dir()

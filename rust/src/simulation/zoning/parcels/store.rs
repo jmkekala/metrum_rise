@@ -105,13 +105,18 @@ impl ParcelStore {
             .retain(|parcel| parcel.edge_idx() != usize::MAX);
         changed |= self.parcels.len() != before;
         if changed {
-            self.id_to_index.clear();
-            for (idx, parcel) in self.parcels.iter().enumerate() {
-                self.id_to_index.insert(parcel.id(), idx);
-            }
-            self.rebuild_chunk_index();
+            self.rebuild_indices();
         }
         changed
+    }
+
+    pub(crate) fn capture_attached_to_edge(&self, edge_idx: usize) -> Vec<(usize, ZoningParcel)> {
+        self.parcels
+            .iter()
+            .enumerate()
+            .filter(|(_, parcel)| parcel.edge_idx() == edge_idx)
+            .map(|(index, parcel)| (index, parcel.clone()))
+            .collect()
     }
 
     pub(crate) fn remove_attached_to_edge(&mut self, edge_idx: usize) -> usize {
@@ -119,13 +124,62 @@ impl ParcelStore {
         self.parcels.retain(|parcel| parcel.edge_idx() != edge_idx);
         let removed = before - self.parcels.len();
         if removed > 0 {
-            self.id_to_index.clear();
-            for (idx, parcel) in self.parcels.iter().enumerate() {
-                self.id_to_index.insert(parcel.id(), idx);
-            }
-            self.rebuild_chunk_index();
+            self.rebuild_indices();
         }
         removed
+    }
+
+    pub(crate) fn can_restore_removed(
+        &self,
+        original_count: usize,
+        removed: &[(usize, ZoningParcel)],
+    ) -> bool {
+        if self.parcels.len().saturating_add(removed.len()) != original_count {
+            return false;
+        }
+
+        let mut previous_index = None;
+        for (index, parcel) in removed {
+            if *index >= original_count
+                || previous_index.is_some_and(|previous| previous >= *index)
+                || self.id_to_index.contains_key(&parcel.id())
+            {
+                return false;
+            }
+            previous_index = Some(*index);
+        }
+        true
+    }
+
+    pub(crate) fn restore_removed(
+        &mut self,
+        original_count: usize,
+        removed: Vec<(usize, ZoningParcel)>,
+    ) {
+        debug_assert!(self.can_restore_removed(original_count, &removed));
+        let mut retained = std::mem::take(&mut self.parcels).into_iter();
+        let mut removed = removed.into_iter().peekable();
+        let mut restored = Vec::with_capacity(original_count);
+
+        for index in 0..original_count {
+            if removed
+                .peek()
+                .is_some_and(|(removed_index, _)| *removed_index == index)
+            {
+                restored.push(removed.next().expect("peeked zoning undo parcel").1);
+            } else {
+                restored.push(
+                    retained
+                        .next()
+                        .expect("prevalidated retained zoning parcel"),
+                );
+            }
+        }
+        debug_assert!(removed.next().is_none());
+        debug_assert!(retained.next().is_none());
+
+        self.parcels = restored;
+        self.rebuild_indices();
     }
 
     pub(crate) fn find_at_point(&self, point: Vector2) -> Option<ParcelId> {
@@ -297,5 +351,13 @@ impl ParcelStore {
         for idx in 0..self.parcels.len() {
             self.index_parcel(idx);
         }
+    }
+
+    fn rebuild_indices(&mut self) {
+        self.id_to_index.clear();
+        for (idx, parcel) in self.parcels.iter().enumerate() {
+            self.id_to_index.insert(parcel.id(), idx);
+        }
+        self.rebuild_chunk_index();
     }
 }

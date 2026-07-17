@@ -3,7 +3,7 @@
 use super::super::types::*;
 use godot::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A spatial index entry for a road edge.
 #[derive(Clone, Copy, Debug)]
@@ -173,6 +173,15 @@ pub struct RegionGraph {
     pub(in crate::simulation::network) spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
+/// Local authoritative graph checkpoint used by the bounded undo history.
+pub(crate) struct RegionGraphUndoDelta {
+    original_node_count: usize,
+    original_edge_count: usize,
+    nodes: Vec<(u32, Node)>,
+    edges: Vec<(usize, Edge)>,
+    aliases: Vec<(u32, Option<u32>)>,
+}
+
 impl RegionGraph {
     /// Creates a new, empty road graph.
     pub fn new() -> Self {
@@ -183,6 +192,146 @@ impl RegionGraph {
             spatial_edge_rt: RTree::new(),
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
+        }
+    }
+
+    /// Captures graph records that can be changed by a polyline edit and nearby junction solving.
+    pub(crate) fn capture_undo_for_polyline(
+        &self,
+        points: &[Vector3],
+        margin_m: f32,
+    ) -> RegionGraphUndoDelta {
+        let margin_m = margin_m.max(0.0);
+        let mut edge_ids = HashSet::new();
+        let mut node_ids = HashSet::new();
+        for segment in points.windows(2) {
+            let min = Vector3::new(
+                segment[0].x.min(segment[1].x) - margin_m,
+                0.0,
+                segment[0].z.min(segment[1].z) - margin_m,
+            );
+            let max = Vector3::new(
+                segment[0].x.max(segment[1].x) + margin_m,
+                0.0,
+                segment[0].z.max(segment[1].z) + margin_m,
+            );
+            edge_ids.extend(self.get_edges_near_aabb(min, max));
+            node_ids.extend(self.get_nodes_near_aabb(min, max));
+        }
+        self.capture_undo_for_local_topology(edge_ids, node_ids)
+    }
+
+    /// Captures specified topology plus one incident edge ring used by junction profile solving.
+    pub(crate) fn capture_undo_for_local_topology(
+        &self,
+        mut edge_ids: HashSet<usize>,
+        mut node_ids: HashSet<u32>,
+    ) -> RegionGraphUndoDelta {
+        for &edge_idx in edge_ids.clone().iter() {
+            let Some(edge) = self.edges.get(edge_idx) else {
+                continue;
+            };
+            node_ids.insert(self.get_valid_node(edge.start_node));
+            node_ids.insert(self.get_valid_node(edge.end_node));
+        }
+        for &node_id in node_ids.clone().iter() {
+            let canonical = self.get_valid_node(node_id);
+            node_ids.insert(canonical);
+            if let Some(incident) = self.adjacency.get(canonical as usize) {
+                edge_ids.extend(incident.iter().copied());
+            }
+        }
+        for &edge_idx in &edge_ids {
+            let Some(edge) = self.edges.get(edge_idx) else {
+                continue;
+            };
+            node_ids.insert(self.get_valid_node(edge.start_node));
+            node_ids.insert(self.get_valid_node(edge.end_node));
+        }
+
+        let mut nodes = node_ids
+            .iter()
+            .filter_map(|&node_id| {
+                self.nodes
+                    .get(node_id as usize)
+                    .cloned()
+                    .map(|node| (node_id, node))
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|(node_id, _)| *node_id);
+        let mut edges = edge_ids
+            .iter()
+            .filter_map(|&edge_idx| {
+                self.edges
+                    .get(edge_idx)
+                    .cloned()
+                    .map(|edge| (edge_idx, edge))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by_key(|(edge_idx, _)| *edge_idx);
+
+        let mut alias_keys = node_ids;
+        for (&alias, &canonical) in &self.node_aliases {
+            if alias_keys.contains(&canonical) {
+                alias_keys.insert(alias);
+            }
+        }
+        let mut aliases = alias_keys
+            .into_iter()
+            .map(|node_id| (node_id, self.node_aliases.get(&node_id).copied()))
+            .collect::<Vec<_>>();
+        aliases.sort_by_key(|(node_id, _)| *node_id);
+
+        RegionGraphUndoDelta {
+            original_node_count: self.nodes.len(),
+            original_edge_count: self.edges.len(),
+            nodes,
+            edges,
+            aliases,
+        }
+    }
+
+    /// Captures the complete graph for legacy callers that have no spatial edit scope.
+    pub(crate) fn capture_full_undo(&self) -> RegionGraphUndoDelta {
+        self.capture_undo_for_local_topology(
+            (0..self.edges.len()).collect(),
+            (0..self.nodes.len())
+                .map(|node_id| node_id as u32)
+                .collect(),
+        )
+    }
+
+    /// Restores a local graph checkpoint and rebuilds all derived spatial and adjacency indices.
+    pub(crate) fn restore_undo_delta(&mut self, delta: RegionGraphUndoDelta) {
+        self.nodes.truncate(delta.original_node_count);
+        self.edges.truncate(delta.original_edge_count);
+        for (node_id, node) in delta.nodes {
+            if let Some(target) = self.nodes.get_mut(node_id as usize) {
+                *target = node;
+            }
+        }
+        for (edge_idx, edge) in delta.edges {
+            if let Some(target) = self.edges.get_mut(edge_idx) {
+                *target = edge;
+            }
+        }
+        self.node_aliases
+            .retain(|&node_id, _| (node_id as usize) < delta.original_node_count);
+        for (node_id, previous) in delta.aliases {
+            if let Some(canonical) = previous {
+                self.node_aliases.insert(node_id, canonical);
+            } else {
+                self.node_aliases.remove(&node_id);
+            }
+        }
+        self.rebuild_adjacency_list();
+        self.spatial_edge_rt = RTree::new();
+        for edge_idx in 0..self.edges.len() {
+            self.add_to_spatial_index(edge_idx);
+        }
+        self.spatial_node_grid.clear();
+        for node_id in 0..self.nodes.len() {
+            self.add_node_to_spatial_index(node_id as u32);
         }
     }
 

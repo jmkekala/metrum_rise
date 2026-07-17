@@ -18,6 +18,7 @@ pub use parcels::{ParcelGeometry, ParcelId, ParcelPlacementError, ParcelStore, Z
 pub use profiles::{
     ZoneDensity, ZoneProfileRuntime, ZoningProfileRegistry, load_builtin_profile_registry,
 };
+pub(crate) use system::ZoningParcelRemovalUndo;
 pub use system::ZoningSystem;
 pub use zone_type::ZoneType;
 

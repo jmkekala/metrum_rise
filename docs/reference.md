@@ -193,8 +193,8 @@ These modes are selected with `--debug building-sites-visual <mode>`.
 | Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap; visible baseline still-water depth in world metres. |
 | Pedestrian transforms | `VarDictionary` | Keys = `pedestrian_type`; values = `PackedFloat32Array` with `12` floats per instance: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]`. |
 | Car transforms | `VarDictionary` | Keys = `(vehicle_type * 10 + color_variant)`; values = `PackedFloat32Array` with the same `12`-float `Transform3D` layout. |
-| Building transforms | `PackedFloat32Array` | Returned per asset ID by `get_building_transforms_for_asset(asset_id)`, same `12`-float transform layout. |
-| Building plot transforms | `PackedFloat32Array` | Returned per zone ID by `get_building_plot_transforms(zone_id)`, same `12`-float transform layout; used for zoned building footprint or foundation preview, not for a separate parcel system. |
+| Building render frame | `VarDictionary` | `try_get_building_render_frame(...)` returns asset-part and zone arrays whose entries are `PackedFloat32Array` buffers with the same `12`-float transform layout; `busy = true` means retain the previous frame and retry without waiting on the simulation mutex. |
+| Building plot transforms | `PackedFloat32Array` | Zone-aligned entries inside the building render frame; used for zoned building footprints or foundation previews, not for a separate parcel system. |
 | Agent path debug | `VarDictionary` | `points: PackedVector3Array`, `colors: PackedColorArray`. |
 | Pollution / Noise / Desirability overlays | `PackedByteArray` | RGBA8, one pixel per heightmap cell, uploaded as shader textures. |
 | Zone texture | `PackedByteArray` | R8, one byte per world-space zone cell. |

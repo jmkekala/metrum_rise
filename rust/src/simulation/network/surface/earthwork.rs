@@ -41,7 +41,6 @@ impl RoadSurfaceSystem {
     /// Marks terrain render patches touched by dirty road chunks and local CDT grading support.
     pub(crate) fn mark_render_patches_for_chunk_grading_envelopes(
         &self,
-        graph: &RegionGraph,
         terrain: &mut TerrainSystem,
         chunks: &[SurfaceChunkKey],
         render_step_m: f32,
@@ -49,44 +48,17 @@ impl RoadSurfaceSystem {
         if chunks.is_empty() {
             return 0;
         }
-
+        let grading_envelope_m = EARTHWORK_MAX_MARGIN_M
+            + crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, render_step_m);
         let mut dirty_patch_keys = Vec::new();
         for &chunk in chunks {
             let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
             dirty_patch_keys.extend(terrain.render_patch_keys_for_world_bounds(
-                chunk_min.x as f32,
-                chunk_min.z as f32,
-                chunk_max.x as f32,
-                chunk_max.z as f32,
+                chunk_min.x as f32 - grading_envelope_m,
+                chunk_min.z as f32 - grading_envelope_m,
+                chunk_max.x as f32 + grading_envelope_m,
+                chunk_max.z as f32 + grading_envelope_m,
             ));
-        }
-
-        let road_locked_patch_margins = self
-            .terrain_render_patch_grading_margins_for_visible_roads(graph, terrain, render_step_m);
-        for ((patch_x, patch_z), margin_m) in road_locked_patch_margins {
-            let Some(patch) = terrain.visual_patch_snapshot(patch_x, patch_z) else {
-                continue;
-            };
-            let patch_min_x = f64::from(patch.world_origin_x);
-            let patch_min_z = f64::from(patch.world_origin_z);
-            let patch_max_x = f64::from(patch.world_origin_x + patch.world_size_x);
-            let patch_max_z = f64::from(patch.world_origin_z + patch.world_size_z);
-            let margin_m = f64::from(margin_m.max(0.0));
-            if chunks.iter().any(|&chunk| {
-                let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
-                Self::terrain_bounds_overlap_xz(
-                    patch_min_x,
-                    patch_min_z,
-                    patch_max_x,
-                    patch_max_z,
-                    chunk_min.x - margin_m,
-                    chunk_min.z - margin_m,
-                    chunk_max.x + margin_m,
-                    chunk_max.z + margin_m,
-                )
-            }) {
-                dirty_patch_keys.push((patch_x, patch_z));
-            }
         }
 
         dirty_patch_keys.sort_unstable();
@@ -96,19 +68,6 @@ impl RoadSurfaceSystem {
             terrain.mark_render_patch_dirty(patch_x, patch_z);
         }
         dirty_patch_count
-    }
-
-    fn terrain_bounds_overlap_xz(
-        min_x_a: f64,
-        min_z_a: f64,
-        max_x_a: f64,
-        max_z_a: f64,
-        min_x_b: f64,
-        min_z_b: f64,
-        max_x_b: f64,
-        max_z_b: f64,
-    ) -> bool {
-        min_x_a <= max_x_b && max_x_a >= min_x_b && min_z_a <= max_z_b && max_z_a >= min_z_b
     }
 
     /// Rebuilds terrain earthworks only for the currently dirty road-surface chunks.

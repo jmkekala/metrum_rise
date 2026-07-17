@@ -171,4 +171,26 @@ impl RoadSurfaceSystem {
         }
         chunks
     }
+
+    pub(in crate::simulation::network::surface) fn query_chunk_coords_for_world(
+        world_x: f64,
+        world_z: f64,
+    ) -> SurfaceChunkKey {
+        (
+            (world_x / SURFACE_QUERY_CHUNK_SPAN_M).floor() as i32,
+            (world_z / SURFACE_QUERY_CHUNK_SPAN_M).floor() as i32,
+        )
+    }
+
+    pub(super) fn bounds_to_query_chunk_keys(min: RoadVec3, max: RoadVec3) -> Vec<SurfaceChunkKey> {
+        let min_chunk = Self::query_chunk_coords_for_world(min.x, min.z);
+        let max_chunk = Self::query_chunk_coords_for_world(max.x, max.z);
+        let mut chunks = Vec::new();
+        for cx in min_chunk.0..=max_chunk.0 {
+            for cz in min_chunk.1..=max_chunk.1 {
+                chunks.push((cx, cz));
+            }
+        }
+        chunks
+    }
 }

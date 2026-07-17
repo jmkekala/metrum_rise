@@ -14,7 +14,7 @@ mod replenishment;
 mod tests;
 mod tick;
 
-pub(crate) use data::DailyPowerSettlementSummary;
+pub(crate) use data::{DailyPowerSettlementSummary, HouseholdBuildingUndo};
 pub use data::{Household, HouseholdSystem};
 pub use replenishment::{
     REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,

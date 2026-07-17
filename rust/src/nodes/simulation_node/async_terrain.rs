@@ -8,6 +8,7 @@ pub(in crate::nodes::simulation_node) use state::{
     TerrainPatchPayload, TerrainPatchPayloadAsyncState, TerrainPatchPayloadData,
     TerrainPatchPayloadRequest, TerrainPatchPayloadRequestState, WaterPatchMeshAsyncState,
     WaterPatchPayload, WaterPatchPayloadAsyncState, WaterPatchPayloadRequest,
+    WaterPatchPayloadRequestState,
 };
 
 #[cfg(test)]

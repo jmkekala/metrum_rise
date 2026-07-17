@@ -66,6 +66,7 @@ impl RoadSurfaceSystem {
     }
 
     /// Returns road-locked render patches with the largest grading margin needed per patch.
+    #[cfg(test)]
     pub(crate) fn terrain_render_patch_grading_margins_for_visible_roads(
         &self,
         graph: &RegionGraph,
@@ -112,6 +113,49 @@ impl RoadSurfaceSystem {
         patch_margins
     }
 
+    /// Resolves road grading ownership only for changed terrain patches.
+    pub(crate) fn terrain_render_patch_grading_margins_for_patches(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        render_step_m: f32,
+        patch_keys: &[(usize, usize)],
+    ) -> BTreeMap<(usize, usize), f32> {
+        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        let query_margin_m = EARTHWORK_MAX_MARGIN_M + base_margin_m;
+        let mut patch_margins = BTreeMap::new();
+
+        for &(patch_x, patch_z) in patch_keys {
+            let Some((min_x, min_z, max_x, max_z)) =
+                terrain.render_patch_world_bounds(patch_x, patch_z)
+            else {
+                continue;
+            };
+            let loops = self.terrain_clip_boundary_loops_for_world_bounds(
+                graph,
+                min_x - query_margin_m,
+                min_z - query_margin_m,
+                max_x + query_margin_m,
+                max_z + query_margin_m,
+            );
+            let mut local_margins = BTreeMap::new();
+            for boundary_loop in &loops {
+                Self::insert_terrain_patch_grading_margins_for_loop(
+                    terrain,
+                    boundary_loop,
+                    render_step_m,
+                    base_margin_m,
+                    &mut local_margins,
+                );
+            }
+            if let Some(&margin_m) = local_margins.get(&(patch_x, patch_z)) {
+                patch_margins.insert((patch_x, patch_z), margin_m);
+            }
+        }
+
+        patch_margins
+    }
+
     pub(super) fn terrain_clip_boundary_loops_for_world_bounds(
         &self,
         graph: &RegionGraph,
@@ -121,10 +165,17 @@ impl RoadSurfaceSystem {
         max_z: f32,
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut boundary_loops = Vec::new();
+        let (edge_indices, node_ids) = self.collect_spatial_query_contributors_for_bounds(
+            f64::from(min_x),
+            f64::from(min_z),
+            f64::from(max_x),
+            f64::from(max_z),
+        );
 
-        let mut span_pieces = self.compiled_visual_span_pieces.iter().collect::<Vec<_>>();
-        span_pieces.sort_by_key(|(edge_idx, _)| **edge_idx);
-        for (_, piece) in span_pieces {
+        for edge_idx in edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
             if piece.edge_class != EdgeClass::Standard {
                 continue;
             }
@@ -138,9 +189,10 @@ impl RoadSurfaceSystem {
             );
         }
 
-        let mut node_pieces = self.compiled_visual_node_pieces.iter().collect::<Vec<_>>();
-        node_pieces.sort_by_key(|(node_id, _)| **node_id);
-        for (&node_id, piece) in node_pieces {
+        for node_id in node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
             if !self.node_has_standard_surface_edges(graph, node_id) {
                 continue;
             }
