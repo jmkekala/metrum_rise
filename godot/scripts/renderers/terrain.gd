@@ -144,6 +144,8 @@ var patch_payload_requested_generation: Dictionary = {}
 var patch_payload_ready: Dictionary = {}
 var patch_payload_road_generation: int = -1
 var pending_terrain_ack_states: PackedInt64Array = PackedInt64Array()
+var dirty_patch_payload_generations: Dictionary = {}
+var handled_bad_cdt_patch_generations: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_resource_pool: Array[Dictionary] = []
 var patch_prewarm_queue: Array[Vector2i] = []
@@ -318,7 +320,7 @@ func _process(delta: float) -> void:
 					if _upload_patch(key, true):
 						_refresh_one_patch_mesh_lod(key)
 						_queue_water_patch_texture_sync(key)
-					else:
+					elif not _dirty_engineered_patch_has_handled_bad_cdt(key):
 						dirty_upload_pending = true
 		upload_elapsed_ms = float(Time.get_ticks_usec() - dirty_start_us) / 1000.0
 		if not dirty_upload_pending:
@@ -485,7 +487,7 @@ func update_terrain_visuals() -> bool:
 			if _upload_patch(key, true):
 				_refresh_one_patch_mesh_lod(key)
 				_queue_water_patch_texture_sync(key)
-			else:
+			elif not _dirty_engineered_patch_has_handled_bad_cdt(key):
 				upload_pending = true
 	if not upload_pending and (dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys)):
 		_rebuild_border_skirt()
@@ -931,6 +933,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	var engineered_patch := _patch_requires_engineered_refinement(key, patch_data)
 	if engineered_patch and not _engineered_patch_data_is_renderable(patch_data):
 		var previous_patch_data := _last_renderable_engineered_patch_data(patch)
+		_mark_bad_cdt_generation_handled(key, patch_data)
 		if not previous_patch_data.is_empty():
 			patch["engineered_bad_cdt_blocked"] = false
 			_apply_patch_visibility_for_residency(key, patch, previous_patch_data)
@@ -946,7 +949,6 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 						float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 					]
 				)
-			_request_terrain_patch_payload(key, true)
 			return false
 		_block_engineered_patch_until_valid_cdt(patch)
 		if _road_debug_enabled:
@@ -961,10 +963,10 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 					float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 				]
 			)
-		_request_terrain_patch_payload(key, true)
 		return false
 	patch["last_patch_data"] = patch_data
 	patch["engineered_bad_cdt_blocked"] = false
+	_clear_bad_cdt_generation_handled(key)
 	var metadata_start_us := Time.get_ticks_usec()
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
@@ -1222,6 +1224,8 @@ func _clear_patches() -> void:
 	patch_payload_requested.clear()
 	patch_payload_requested_generation.clear()
 	patch_payload_ready.clear()
+	dirty_patch_payload_generations.clear()
+	handled_bad_cdt_patch_generations.clear()
 	patch_payload_road_generation = -1
 	pending_terrain_ack_states = PackedInt64Array()
 	patch_prewarm_queue.clear()
@@ -1475,6 +1479,7 @@ func _dirty_patch_payload_keys_from_states(
 	flat_states: PackedInt64Array
 ) -> Array[Vector2i]:
 	var keys: Array[Vector2i] = []
+	dirty_patch_payload_generations.clear()
 	var state_count := flat_states.size() / 3
 	for index in range(state_count):
 		var key := Vector2i(
@@ -1484,6 +1489,7 @@ func _dirty_patch_payload_keys_from_states(
 		var generation := int(flat_states[index * 3 + 2])
 		var render_step_mm := _terrain_patch_payload_render_step_mm(key)
 		keys.append(key)
+		dirty_patch_payload_generations[key] = generation
 		if patch_payload_requested.has(key) and (
 			int(patch_payload_requested.get(key, -1)) != render_step_mm
 			or int(patch_payload_requested_generation.get(key, -1)) != generation
@@ -1497,7 +1503,24 @@ func _dirty_patch_payload_keys_from_states(
 				or int(ready_patch_data.get("surface_generation", -1)) != generation
 			):
 				patch_payload_ready.erase(key)
+		if int(handled_bad_cdt_patch_generations.get(key, -1)) != generation:
+			handled_bad_cdt_patch_generations.erase(key)
 	return keys
+
+func _dirty_engineered_patch_has_handled_bad_cdt(key: Vector2i) -> bool:
+	var generation := int(dirty_patch_payload_generations.get(key, -1))
+	return generation >= 0 and int(handled_bad_cdt_patch_generations.get(key, -1)) == generation
+
+func _mark_bad_cdt_generation_handled(key: Vector2i, patch_data: Dictionary) -> void:
+	var generation := int(patch_data.get("surface_generation", -1))
+	if generation >= 0:
+		handled_bad_cdt_patch_generations[key] = generation
+	patch_payload_ready.erase(key)
+	patch_payload_requested.erase(key)
+	patch_payload_requested_generation.erase(key)
+
+func _clear_bad_cdt_generation_handled(key: Vector2i) -> void:
+	handled_bad_cdt_patch_generations.erase(key)
 
 func _acknowledge_terrain_batch(flat_states: PackedInt64Array) -> bool:
 	if flat_states.is_empty():

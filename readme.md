@@ -13,18 +13,12 @@ Open Source (GPLv2) city building game build with Godot game engine and Rust pro
 To start the game, run the following command in terminal:
 '''./run.sh --release'''
 
-
-shortcuts
-left click- paint terrain
-shift left click - paint steep terrain
-ctrl shift - lower terrain
-alt left click - paint road
-right mouse button - create water
-enter - save map
-ctrl + l - load map
-
+## Bugs
+Loads of bugs. At leas this is "game breaking":
+- Walking agents might get stuck to the junctions
 
 ## Credits
+
 ### Kuopio map:
 Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 19.04.2026)
 
@@ -36,3 +30,9 @@ https://polyhaven.com/a/asphalt_04
 https://polyhaven.com/a/clean_asphalt
 https://quaternius.com/
 https://kenney.itch.io/
+
+
+## Screenshots
+
+They are at the "screenshots" folder.
+[![Main view](/screenshots/town_01.png)
