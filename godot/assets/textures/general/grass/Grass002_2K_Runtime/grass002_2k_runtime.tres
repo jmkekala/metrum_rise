@@ -1,0 +1,20 @@
+[gd_resource type="StandardMaterial3D" load_steps=6 format=3]
+
+[ext_resource type="Texture2D" path="res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg" id="1_albedo"]
+[ext_resource type="Texture2D" path="res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_ao.jpg" id="2_ao"]
+[ext_resource type="Texture2D" path="res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg" id="3_height"]
+[ext_resource type="Texture2D" path="res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_normal_gl.jpg" id="4_normal"]
+[ext_resource type="Texture2D" path="res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_roughness.jpg" id="5_roughness"]
+
+[resource]
+albedo_texture = ExtResource("1_albedo")
+ao_enabled = true
+ao_texture = ExtResource("2_ao")
+ao_texture_channel = 4
+heightmap_enabled = true
+heightmap_texture = ExtResource("3_height")
+heightmap_scale = 0.05
+normal_enabled = true
+normal_texture = ExtResource("4_normal")
+roughness_texture = ExtResource("5_roughness")
+roughness_texture_channel = 4

@@ -1,0 +1,17 @@
+{
+  "char_name": "male",
+  "num_verts": 941,
+  "num_frames": 30,
+  "source_frames": [
+    0,
+    25
+  ],
+  "walk_action": "Man_Walk",
+  "target_height_m": 1.8,
+  "source_height_m": 4.723852317314595,
+  "source_to_runtime_scale": 0.38104493516919685,
+  "texture": "male_vat_walk.exr",
+  "palette": "male_palette.png",
+  "mesh": "male_walk_rest.gltf",
+  "shader_note": "VERTEX += texture(vat_tex, vec2(UV2.x, (phase*(num_frames-1)+0.5)/num_frames)).rgb;"
+}

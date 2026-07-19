@@ -1,0 +1,23 @@
+Grass002 2K runtime texture set
+
+Source pack:
+../Grass002_2K-JPG/
+
+Source asset:
+Grass002 by ambientCG
+https://ambientcg.com/a/Grass002
+CC0 1.0 Public Domain Dedication
+
+Runtime maps:
+grass002_2k_albedo.jpg    - sRGB color/albedo
+grass002_2k_height.jpg    - raw grayscale displacement/height
+grass002_2k_normal_gl.jpg - raw OpenGL normal map for Godot
+grass002_2k_roughness.jpg - raw grayscale roughness
+grass002_2k_ao.jpg        - raw grayscale ambient occlusion
+grass002_preview.png      - preview thumbnail only
+
+Notes:
+- NormalDX is intentionally omitted; Godot should use the OpenGL normal map.
+- JPG maps were losslessly optimized and stripped with jpegtran.
+- Current terrain shader uses only albedo and height. Normal, roughness, and AO
+  are kept here for future lit/detail terrain material work.
