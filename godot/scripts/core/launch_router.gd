@@ -4,7 +4,10 @@
 ## --economy-editor → EconomyEditor.tscn. --world-editor → WorldEditor.tscn.
 extends Node
 
+const UserDataBootstrap = preload("res://scripts/core/user_data_bootstrap.gd")
+
 func _ready() -> void:
+	UserDataBootstrap.run()
 	var args := OS.get_cmdline_user_args()
 	if "--asset-editor" in args:
 		get_tree().change_scene_to_file.call_deferred("res://scenes/AssetEditor.tscn")

@@ -147,6 +147,8 @@ Shipped design:
 
 - Built-in first-party content can remain bundled with the game.
 - V1 canonical mod install location: `user://mods/`
+- Release bootstrap content may be bundled under `res://bootstrap/mods/`; startup copies each
+  missing top-level pack into `user://mods/` and never merges into an existing user pack.
 
 ```text
 user://mods/

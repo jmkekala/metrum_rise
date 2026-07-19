@@ -690,6 +690,7 @@ Gameplay now has a first-pass authored-world handoff.
 
 Current deterministic rules:
 
+- startup seeds missing bundled world entries from `res://bootstrap/worlds/` into `user://worlds/`
 - gameplay `File -> New Game` opens a world picker rooted at `user://worlds/`
 - selecting one `WorldDefinition` loads it into the live gameplay scene
 - gameplay world load reuses the same scene refresh path as save-load:

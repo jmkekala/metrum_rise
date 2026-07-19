@@ -1,0 +1,90 @@
+asset_id = "building.commercial.small_grocery_store"
+display_name = "Small Grocery Store"
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "commercial"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+level = 1
+worker_capacity = 15
+flat_size_m2 = 60.0
+economy_profile = "grocery_basic"
+
+[[mesh_parts]]
+name = "part_1"
+position = [3.39, 0, -0.51]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-c.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [1.98, 0, -2.36]
+forward = [0, 0, -1]
+
+[[anchors]]
+type = "parking"
+position = [-4.47, 0, -4.97]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.53, 0, -1.76]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.48, 0, 1.46]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.64, 0, 4.71]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.63, 0, 7.65]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "driveway"
+position = [-2, 0, -10]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[anchors]]
+type = "loading_bay"
+position = [1.06, 0, -7.51]
+forward = [1, 0, 0]
+width_m = 3.5
+length_m = 8
+vehicle_class = "freight"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [10, -10], [10, -4.18], [2.88, -4.3], [2.87, -2.29], [0.54, -2.41], [0.87, 10], [-10, 10]]

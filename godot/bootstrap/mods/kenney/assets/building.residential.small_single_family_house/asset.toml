@@ -1,0 +1,62 @@
+asset_id = "building.residential.small_single_family_house"
+display_name = "Small Single-Family House"
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+level = 1
+household_capacity = 1
+flat_size_m2 = 65.5
+
+[[mesh_parts]]
+name = "part_1"
+position = [3.56, 0, -0.02]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-type-a.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [3.83, 0, -2.29]
+forward = [0, 0, -1]
+
+[[anchors]]
+type = "driveway"
+position = [-4.93, 0, -10]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-7.38, 0, -2.19]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-3.33, 0, -2.4]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [-0.93, -10], [-0.91, 3.47], [-10, 3.42]]
+
+[[site_surfaces]]
+material = "concrete"
+y_m = 0.01
+vertices = [[2.51, -4.77], [-0.98, -4.8], [-1.03, -7.43], [5.25, -7.29], [5.01, -2.51], [2.44, -2.49]]

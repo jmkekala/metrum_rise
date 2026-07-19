@@ -1,0 +1,127 @@
+asset_id = "building.power.coal_power_plant"
+display_name = "Coal Power Plant"
+
+[building]
+placement_mode = "explicit"
+lot_width_cells = 4
+lot_depth_cells = 3
+frontage_forward = [0, 0, -1]
+level = 1
+worker_capacity = 20
+flat_size_m2 = 60.0
+service_class = "power"
+economy_profile = "power_plant_basic"
+
+[[mesh_parts]]
+name = "part_1"
+position = [10.99, 0, 6.52]
+rotation_degrees = [0, 90, 0]
+scale = 7
+pivot_offset = [-0.096, 0, -0.143]
+
+[[mesh_parts.lods]]
+file = "building-c.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_2"
+position = [13.52, 0, -7.9]
+rotation_degrees = [0, 90, 0]
+scale = 7
+pivot_offset = [0, 0, -0.249]
+
+[[mesh_parts.lods]]
+file = "building-e.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_3"
+position = [-3.58, 0, 8.71]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-p.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [9.5, 0, -3.64]
+forward = [-1, 0, 0]
+
+[[anchors]]
+type = "driveway"
+position = [-2.68, 0, -15]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [2.52, 0, -11.14]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-12.51, 0, 1.84]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-12.55, 0, -1.16]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "loading_bay"
+position = [-6.82, 0, 2.97]
+forward = [1, 0, 0]
+width_m = 3.5
+length_m = 8
+vehicle_class = "freight"
+
+[[anchors]]
+type = "parking"
+position = [-12.66, 0, -3.96]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-12.71, 0, -6.78]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [2.54, 0, -7.78]
+forward = [1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-12.64, 0, -9.48]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-5.31, -15], [5.86, -15], [15.29, -15], [20, -15], [20, 15], [-20, 15], [-20, -15], [-8.8, -15]]

@@ -1,0 +1,99 @@
+asset_id = "building.industrial.small_farm"
+display_name = "Small Farm"
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "industrial"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+level = 1
+worker_capacity = 10
+flat_size_m2 = 60.0
+economy_profile = "food_processor_basic"
+
+[[mesh_parts]]
+name = "part_1"
+position = [5.11, 0, 0.41]
+rotation_degrees = [0, 0, 0]
+scale = 7
+pivot_offset = [0.435, 0, -0.274]
+
+[[mesh_parts.lods]]
+file = "building-j.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [2.49, 0, 3.5]
+forward = [-1, 0, 0]
+
+[[anchors]]
+type = "parking"
+position = [-7.22, 0, 3.96]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-3.79, 0, 3.76]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-0.17, 0, 3.53]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-5, 0, -7.24]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-5, 0, -1.13]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-5, 0, -4.12]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "driveway"
+position = [-1.81, 0, -10]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[anchors]]
+type = "loading_bay"
+position = [1.17, 0, -6.62]
+forward = [1, 0, 0]
+width_m = 3.5
+length_m = 8
+vehicle_class = "freight"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [10, -10], [10, -3.43], [2.7, -3.49], [3.11, 10], [-10, 10]]

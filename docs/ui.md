@@ -51,6 +51,8 @@ map before the player chooses content.
 Current deterministic rules:
 
 - normal launch routes to `MainMenu.tscn`
+- startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then copies missing
+  bundled starter entries from `res://bootstrap/worlds/` and `res://bootstrap/mods/`
 - `MainMenu` contains no `SimulationNode`
 - `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
 - `New Game` opens a file picker rooted at `user://worlds/`
