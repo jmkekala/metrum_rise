@@ -61,6 +61,7 @@ impl TerrainCdtSourceExport {
 pub(in crate::nodes::simulation_node) struct TerrainCdtTriangleBufferExport {
     pub(in crate::nodes::simulation_node) vertices: Vec<Vector3>,
     pub(in crate::nodes::simulation_node) normals: Vec<Vector3>,
+    pub(in crate::nodes::simulation_node) normal_sum_lengths: Vec<f32>,
     pub(in crate::nodes::simulation_node) uvs: Vec<Vector2>,
     pub(in crate::nodes::simulation_node) indices: Vec<i32>,
     pub(in crate::nodes::simulation_node) face_sources: TerrainCdtSourceExport,
@@ -76,6 +77,7 @@ impl TerrainCdtTriangleBufferExport {
         Self {
             vertices: Vec::new(),
             normals: Vec::new(),
+            normal_sum_lengths: Vec::new(),
             uvs: Vec::new(),
             indices: Vec::new(),
             face_sources: TerrainCdtSourceExport::default(),
@@ -97,11 +99,24 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtMeshBufferSummary {
     pub(in crate::nodes::simulation_node) terrain_longest_triangle_edge_m: f32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBounds {
+    /// Parent-patch-clipped minimum world X.
     pub(in crate::nodes::simulation_node) min_x: f32,
+    /// Parent-patch-clipped minimum world Z.
     pub(in crate::nodes::simulation_node) min_z: f32,
+    /// Parent-patch-clipped maximum world X.
     pub(in crate::nodes::simulation_node) max_x: f32,
+    /// Parent-patch-clipped maximum world Z.
     pub(in crate::nodes::simulation_node) max_z: f32,
-    pub(in crate::nodes::simulation_node) boundary_step_m: f32,
+    /// Canonical fixed-window boundary sample cadence in quantized millimetres.
+    pub(in crate::nodes::simulation_node) boundary_step_mm: i64,
+    /// Canonical Z samples emitted on the minimum-X side.
+    pub(in crate::nodes::simulation_node) min_x_side_zs: Vec<f32>,
+    /// Canonical Z samples emitted on the maximum-X side.
+    pub(in crate::nodes::simulation_node) max_x_side_zs: Vec<f32>,
+    /// Canonical X samples emitted on the minimum-Z side.
+    pub(in crate::nodes::simulation_node) min_z_side_xs: Vec<f32>,
+    /// Canonical X samples emitted on the maximum-Z side.
+    pub(in crate::nodes::simulation_node) max_z_side_xs: Vec<f32>,
 }

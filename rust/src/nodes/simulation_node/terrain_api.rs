@@ -217,14 +217,19 @@ impl SimulationNode {
         let Some(mut core) = self.try_lock_core() else {
             return false;
         };
-        core.acknowledge_network_render_generation(generation);
+        let accepted = core.acknowledge_network_render_generation(generation);
         let network_dirty = core.network_dirty;
-        let current_generation = core.road_tool_surface_generation;
+        let mesh_generation = core.cached_road_mesh_generation;
+        let road_mesh_data = core.cached_road_mesh_data.clone();
         drop(core);
+        if !accepted {
+            return false;
+        }
 
         let mut snapshot = self.snapshot.write().unwrap();
         snapshot.network_dirty = network_dirty;
-        snapshot.network_generation = current_generation;
+        snapshot.network_generation = mesh_generation;
+        snapshot.road_mesh_data = road_mesh_data;
         true
     }
 
@@ -407,8 +412,9 @@ impl SimulationNode {
                         )
                     })
                     .collect::<Vec<_>>();
-                let (mut built, refined_requests, refined_inputs) =
+                let (mut built, refined_requests, refined_inputs, mut stale_snapshot_requests) =
                     SimulationNode::split_terrain_patch_payload_jobs(build_jobs);
+                failed_requests.append(&mut stale_snapshot_requests);
                 let input_ms = input_start.elapsed().as_secs_f64() * 1000.0;
                 if perf_enabled
                     && (snapshot_ms >= 4.0 || input_ms >= 4.0 || refined_request_count > 0)
@@ -458,26 +464,39 @@ impl SimulationNode {
                     .sum::<usize>();
                 let first_refined_error = refined_entries
                     .iter()
-                    .find_map(SimulationNode::cached_refined_cdt_failure_label)
+                    .find_map(|entry| {
+                        SimulationNode::cached_refined_cdt_failure_label(entry.as_ref())
+                    })
                     .unwrap_or("none");
+                let valid_refined_keys = refined_entries
+                    .iter()
+                    .filter(|entry| {
+                        SimulationNode::cached_refined_cdt_failure_label(entry).is_none()
+                    })
+                    .map(|entry| entry.key)
+                    .collect::<HashSet<_>>();
+                failed_requests.extend(refined_requests.iter().copied().filter(|request| {
+                    !valid_refined_keys.contains(&RefinedTerrainPatchCacheKey {
+                        patch_x: request.key.patch_x,
+                        patch_z: request.key.patch_z,
+                        render_step_mm: request.key.render_step_mm,
+                    })
+                }));
                 Self::append_refined_terrain_patch_payloads_for_requests(
                     &mut built,
                     &refined_requests,
                     &refined_entries,
                 );
-                let mut cache_inserted = false;
-                if !refined_entries.is_empty() {
-                    match core.try_lock() {
-                        Ok(mut core) => {
-                            core.insert_refined_terrain_patch_cache_entries(refined_entries);
-                            cache_inserted = true;
-                        }
-                        Err(std::sync::TryLockError::WouldBlock) => {}
-                        Err(std::sync::TryLockError::Poisoned(_)) => panic!(
-                            "simulation core lock poisoned during refined terrain cache insertion"
-                        ),
-                    }
-                }
+                let cache_inserted_count = if refined_entries.is_empty() {
+                    0
+                } else {
+                    core.lock()
+                        .expect(
+                            "simulation core lock poisoned during refined terrain cache insertion",
+                        )
+                        .insert_refined_terrain_patch_cache_entries(refined_entries)
+                };
+                let cache_inserted = cache_inserted_count > 0;
                 let mut job_state = jobs
                     .lock()
                     .expect("terrain payload job lock poisoned during result publication");

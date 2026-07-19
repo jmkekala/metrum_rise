@@ -484,9 +484,11 @@ Required direction:
 
 Current repository state:
 
-- road edits retain bounded local graph deltas and rebuild derived road/CDT render caches after
-  restore; attached zoning removal uses an index-stable local parcel journal rather than cloning
-  the zoning system
+- road edits retain bounded local graph deltas; road undo restores the affected pre-edit compiled
+  surface records, removes post-edit owners, and rebuilds old-plus-restored surface, earthwork, and
+  query chunks without cold-compiling an unchanged junction; the immutable previous refined
+  generation stays reusable, while attached zoning removal uses an index-stable local parcel
+  journal rather than cloning the zoning system
 - road bulldoze and undo queue their graph/surface/terrain work on the simulation thread; the
   Godot input path never performs the road-surface, road-mesh, or refined-CDT rebuild synchronously
 - building deletion retains an operation-local inverse journal for touched buildings, sites,
@@ -726,6 +728,8 @@ Deterministic terrain-render rules:
 - rebuilding or uploading one patch may read only:
   - the local visual-terrain window for that patch
   - one fixed border sample ring if needed for interpolation, normals, or shading continuity
+  - exact indexed contributor and grading-influence coverage required by local engineered-ground
+    clients
 - unchanged patches must keep their existing GPU resources
 - camera motion alone must not rebuild or reupload already resident unchanged patch textures
 - camera motion may change the mesh-detail tier of an already resident patch, but that change must
@@ -746,21 +750,46 @@ Deterministic terrain-render rules:
   validating a request revision and copying bounded patch-local terrain/site inputs; road clipping,
   road/site grading, CDT input construction, triangulation, and Godot payload conversion must run
   after that lock is released
-- terrain payload revisions are patch-local for building-site changes and global only for source
-  terrain or road-surface changes; one physical build per patch/render-step may be in flight, stale
-  results are discarded, and revision churn coalesces into at most one current follow-up build
+- terrain payload publication revisions are patch-local for local terrain, road, and building-site
+  changes; global invalidation is reserved for world-wide source/layout changes; one physical build
+  per patch/render-step may be in flight, stale results are rejected, and revision churn coalesces
+  into at most one current follow-up build
 - terrain/site height sampling and road-footprint collection must use the existing building and
   road-surface ownership indices; full-building or full-road scans are not allowed in patch jobs or
   repeated point queries
-- refined patch publication is atomic across its local CDT windows; one failed window, a failed road
-  clip query, or missing road loops on a road-owned patch suppresses the complete new payload and
-  preserves the renderer's last valid clipped patch
+- refined terrain divides each render patch into fixed world-aligned bounded CDT core tiles clipped
+  to the parent patch; every tile uses exact indexed contributor and required grading-influence
+  coverage rather than an assumed fixed-neighbor halo
+- tile identity is separate from a full local content fingerprint covering clipped contours and
+  provenance, local terrain samples, grading guides/constraints, render step, core bounds, and
+  contract revision; unchanged fingerprints reuse immutable compiled geometry and per-tile render
+  buffers from the last accepted generation
+- an edit plans `old_coverage union new_coverage` plus deterministic seam-dependency tiles; removed
+  contributors omit their old refined coverage so regular terrain fills it again, while unrelated
+  tile fingerprints and compiled meshes remain unchanged
+- only changed tiles build through Rayon; completed tile results are sorted canonically before patch
+  composition so scheduling order cannot change topology or shared seam identity
+- successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
+  normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
+  window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles
+- canonical world-aligned boundary-lattice samples remain local to directly adjacent seam filler;
+  only non-lattice geometry breakpoints propagate into patch-wide filler partitions, so adding
+  fixed tiles cannot create a Cartesian filler-grid expansion
+- atomic composition still copies the complete bounded render-patch mesh because Godot owns one
+  surface per patch; concatenation, regular filler, duplicate-normal reconciliation, and upload
+  remain `O(patch output vertices + indices)`, while contributor queries, CDT input assembly,
+  triangulation, and tile conversion are proportional to changed plus deterministic seam tiles and
+  never revisit every connected road in the patch
+- refined patch publication is atomic for the exact requested generation; one failed tile, a failed
+  road clip query, or missing road ownership on a road-owned patch suppresses the complete new
+  payload, stale jobs cannot publish, and the immutable last accepted generation remains visible
+  and available for reuse until a complete replacement is accepted
 - a road-locked patch selected through the grading-ray safety pad expands its clip-source query by
   that same render-step / terrain-cell pad; bridge-to-ground transitions cannot mark a neighboring
   patch as road-owned while querying just short of the responsible road seam
-- a road loop discovered only through that padded query does not create a local CDT window unless
-  its grading bounds retain positive two-dimensional area after clamping to the patch; margin-only
-  neighboring loops must not materialize zero-width refined patches
+- a road loop discovered only through that padded query contributes to a CDT tile only when its
+  exact grading influence overlaps positive-area tile core coverage after parent-patch clipping;
+  margin-only neighboring loops must not materialize phantom refined coverage
 - engineered ownership travels with the Rust payload, and Rust must reject raw-heightmap payload
   requests for known road- or building-site-owned patches even if the renderer's patch-membership
   lookup is stale

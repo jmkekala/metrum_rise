@@ -27,11 +27,13 @@ pub(in crate::simulation::network::surface::node::ownership) use canonicalizatio
     canonicalize_final_owned_region_boundary_edges,
     canonicalize_owned_region_rings_with_rail_point_set,
 };
-pub(in crate::simulation::network::surface::node::ownership) use edges::dedup_consecutive_overlay_points;
 #[cfg(test)]
 use edges::noded_owned_region_edge_points_with_rail_paths;
+pub(in crate::simulation::network::surface::node::ownership) use edges::{
+    NodeOwnershipPointIndex, dedup_consecutive_overlay_points,
+};
 use edges::{
-    NodeOwnershipPointIndex, noded_owned_region_contour_with_point_index,
+    noded_owned_region_contour_with_point_index,
     noded_owned_region_contour_with_rail_paths_and_point_index,
 };
 use rail_paths::rail_path_points_between;

@@ -56,7 +56,7 @@ pub(crate) enum SimCommand {
 
 fn finalize_network_render_products(
     core: &mut SimCore,
-) -> (RoadPreviewWorkerContext, RoadToolQuerySnapshot) {
+) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
     core.rebuild_network_surface_terrain_internal();
     core.precompute_road_mesh_data();
     core.refresh_road_locked_terrain_patch_state(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
@@ -129,7 +129,7 @@ pub(crate) fn run_sim_thread(
                         if !core.undo_action_internal() {
                             None
                         } else if core.road_tool_surface_generation != generation_before {
-                            Some(finalize_network_render_products(&mut core))
+                            finalize_network_render_products(&mut core)
                         } else {
                             None
                         }
@@ -152,7 +152,7 @@ pub(crate) fn run_sim_thread(
                             .bulldoze_prepared_target_internal(target)
                             .unwrap_or(false);
                         if road_deleted {
-                            Some(finalize_network_render_products(&mut core))
+                            finalize_network_render_products(&mut core)
                         } else {
                             None
                         }
@@ -176,8 +176,7 @@ pub(crate) fn run_sim_thread(
                     let road_total = Instant::now();
                     let lock_wait_start = Instant::now();
                     let (
-                        preview_context,
-                        query_snapshot,
+                        road_snapshots,
                         road_lock_wait_ms,
                         add_internal_ms,
                         finalize_ms,
@@ -265,7 +264,7 @@ pub(crate) fn run_sim_thread(
                         c.precompute_road_mesh_data();
                         let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
                         let snapshot_start = Instant::now();
-                        let (preview_context, query_snapshot) = road_tool_snapshots_from_core(&c);
+                        let road_snapshots = road_tool_snapshots_from_core(&c);
                         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
                         let collect_refined_start = Instant::now();
                         let invalidated_refined_cache_entries = c
@@ -275,8 +274,7 @@ pub(crate) fn run_sim_thread(
                         let collect_refined_ms =
                             collect_refined_start.elapsed().as_secs_f64() * 1000.0;
                         (
-                            preview_context,
-                            query_snapshot,
+                            road_snapshots,
                             road_lock_wait_ms,
                             add_internal_ms,
                             finalize_ms,
@@ -290,12 +288,14 @@ pub(crate) fn run_sim_thread(
                     let refined_input_count = 0usize;
                     let refined_window_count = 0usize;
                     let refined_reused_windows = 0usize;
-                    publish_road_tool_snapshots(
-                        &road_preview_context,
-                        &road_query_snapshot,
-                        preview_context,
-                        query_snapshot,
-                    );
+                    if let Some((preview_context, query_snapshot)) = road_snapshots {
+                        publish_road_tool_snapshots(
+                            &road_preview_context,
+                            &road_query_snapshot,
+                            preview_context,
+                            query_snapshot,
+                        );
+                    }
                     if crate::debug::is_perf_enabled() {
                         println!(
                             "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_build_ms={:.3} refined_cdt_sum_ms={:.3} refined_inputs={} refined_entries={} refined_windows={} refined_reused_windows={} refined_cache_invalidated={} insert_lock_wait_ms={:.3} insert_ms={:.3} refined_prebuild=skipped",

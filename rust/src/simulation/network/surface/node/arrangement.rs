@@ -22,6 +22,7 @@ pub(crate) use model::{
 pub(in crate::simulation::network::surface::node) use seams::seam_constraints_covering_surface_key_edge_as_fragments;
 pub(crate) use seams::{NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous};
 pub(crate) use steps::{
-    NodeExplicitVerticalStepSegment, explicit_vertical_step_segments_authorize_height_side_at_key,
+    NodeExplicitVerticalStepSegment, NodeFinalExplicitStepTopologyCache,
+    explicit_vertical_step_segments_authorize_height_side_at_key,
     owners_form_explicit_vertical_step_pair,
 };

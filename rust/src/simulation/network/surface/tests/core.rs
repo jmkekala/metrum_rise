@@ -243,6 +243,85 @@ fn point_query_index_excludes_distant_road_in_same_terrain_chunk() {
 }
 
 #[test]
+fn query_chunk_world_bounds_use_the_fixed_query_grid() {
+    let (min, max) = RoadSurfaceSystem::query_chunk_world_bounds((-2, 3));
+
+    assert_eq!(min, backend::RoadVec3::new(-64.0, 0.0, 96.0));
+    assert_eq!(max, backend::RoadVec3::new(-32.0, 0.0, 128.0));
+}
+
+#[test]
+fn clear_resets_query_chunk_rebuild_tracking() {
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.dirty_query_chunks.insert((1, 2));
+    surface.last_rebuilt_query_chunks.push((3, 4));
+
+    surface.clear();
+
+    assert!(surface.dirty_query_chunks().is_empty());
+    assert!(surface.last_rebuilt_query_chunks().is_empty());
+}
+
+#[test]
+fn dirty_compile_reports_sorted_old_and_new_query_coverage() {
+    let terrain = flat_terrain(320, 128);
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(-110.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(-90.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        n0,
+        n1,
+        vec![
+            Vector3::new(-110.0, 0.0, 0.0),
+            Vector3::new(-90.0, 0.0, 0.0),
+        ],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let old_query_chunks: BTreeSet<SurfaceChunkKey> = surface
+        .query_chunk_spans
+        .keys()
+        .chain(surface.query_chunk_nodes.keys())
+        .copied()
+        .collect();
+    assert!(!old_query_chunks.is_empty());
+    assert_eq!(
+        surface.last_rebuilt_query_chunks(),
+        old_query_chunks.iter().copied().collect::<Vec<_>>()
+    );
+
+    let moved_points = vec![Vector3::new(90.0, 0.0, 0.0), Vector3::new(110.0, 0.0, 0.0)];
+    graph.set_node_pos(n0, moved_points[0]);
+    graph.set_node_pos(n1, moved_points[1]);
+    {
+        let edge = graph.edge_mut(edge_idx);
+        edge.geometry = moved_points.clone();
+        edge.physical_geometry = moved_points;
+    }
+    graph.rebuild_intersection_clips();
+    surface.mark_edge_dirty(&graph, edge_idx);
+    surface.compile_dirty(&graph, &terrain);
+
+    let new_query_chunks: BTreeSet<SurfaceChunkKey> = surface
+        .query_chunk_spans
+        .keys()
+        .chain(surface.query_chunk_nodes.keys())
+        .copied()
+        .collect();
+    assert!(!new_query_chunks.is_empty());
+    assert!(old_query_chunks.is_disjoint(&new_query_chunks));
+    let expected_query_chunks: Vec<SurfaceChunkKey> =
+        old_query_chunks.union(&new_query_chunks).copied().collect();
+    assert_eq!(surface.last_rebuilt_query_chunks(), expected_query_chunks);
+    assert!(surface.dirty_query_chunks().is_empty());
+}
+
+#[test]
 fn terrain_edit_marks_nearby_edges_nodes_and_chunks() {
     let mut graph = RegionGraph::new();
     let near_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -673,6 +752,7 @@ fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
     let input = crate::simulation::network::surface::RoadSurfaceVisualNodeCompileInput {
         kind: RoadSurfaceVisualNodePieceKind::Terminal,
         mouths: Vec::new(),
+        mouth_edge_classes: Vec::new(),
     };
     let mut surface = RoadSurfaceSystem::new(16.0);
 
@@ -682,6 +762,9 @@ fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
     surface
         .compiled_visual_node_inputs
         .insert(node_id, input.clone());
+    surface
+        .compiled_visual_node_earthwork_boundaries
+        .insert(node_id, std::sync::Arc::new(Vec::new()));
     surface
         .surface_node_chunks
         .insert(node_id, vec![surface_chunk]);
@@ -703,6 +786,11 @@ fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
 
     assert!(!surface.compiled_visual_node_pieces.contains_key(&node_id));
     assert!(!surface.compiled_visual_node_inputs.contains_key(&node_id));
+    assert!(
+        !surface
+            .compiled_visual_node_earthwork_boundaries
+            .contains_key(&node_id)
+    );
     assert!(!surface.surface_node_chunks.contains_key(&node_id));
     assert!(!surface.earthwork_node_chunks.contains_key(&node_id));
     assert!(!surface.surface_chunk_nodes.contains_key(&surface_chunk));

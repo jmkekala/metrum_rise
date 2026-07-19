@@ -6,11 +6,14 @@ use super::derive::{
 };
 use super::geometry::{signed_polygon_area, site_radius_m};
 use super::grading::{
-    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, SiteGradingContext, SiteGradingGuideSink,
-    append_building_site_grading_guides, building_site_grading_target_height,
-    building_site_road_connection_lateral_offset_m, nearest_building_site_road_surface_sample,
+    BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, BuildingSiteGradingRequest,
+    SiteGradingContext, SiteGradingGuideSink, append_building_site_grading_guides,
+    building_site_grading_target_height, building_site_road_connection_lateral_offset_m,
+    nearest_building_site_road_surface_sample,
 };
-use super::model::BuildingSiteSurfaceClient;
+use super::model::{
+    BuildingSiteSurfaceClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot,
+};
 use super::{BuildingSiteClient, building_site_support_tie_in_is_valid};
 use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurfaceMaterial};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -197,6 +200,48 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
     assert!(samples.iter().all(|sample| {
         !site.contains_point(Vector2::new(sample.vertex.x as f32, sample.vertex.z as f32))
     }));
+}
+
+#[test]
+fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
+    let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
+    let graph = RegionGraph::new();
+    let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    let snapshot = BuildingSiteTerrainSnapshot {
+        sites: vec![BuildingSiteTerrainClient {
+            building_idx: 0,
+            footprint_world: vec![
+                Vector2::new(58.0, 10.0),
+                Vector2::new(62.0, 10.0),
+                Vector2::new(62.0, 14.0),
+                Vector2::new(58.0, 14.0),
+            ],
+            support_height_m: 4.0,
+        }],
+    };
+    let mut samples = Vec::new();
+    let mut sample_keys = BTreeMap::new();
+
+    snapshot.append_terrain_cdt_site_grading_guides_for_world_bounds(
+        BuildingSiteGradingRequest::new(
+            &terrain,
+            &graph,
+            &road_surface,
+            (64.0, 0.0, 128.0, 64.0),
+            2.0,
+        ),
+        &mut samples,
+        &mut sample_keys,
+    );
+
+    assert!(
+        samples.iter().any(|sample| {
+            (sample.vertex.x - 64.0).abs() <= 0.001
+                && (sample.vertex.z - 12.0).abs() <= 0.001
+                && (sample.vertex.height_m - 3.0).abs() <= 0.001
+        }),
+        "the apron must enter the right tile even though the site footprint ends at x=62"
+    );
 }
 
 #[test]

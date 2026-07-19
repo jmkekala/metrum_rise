@@ -31,7 +31,8 @@ pub(crate) use snapshot::{
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use terrain_payloads::{
-    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
+    ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyScope,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey,
 };

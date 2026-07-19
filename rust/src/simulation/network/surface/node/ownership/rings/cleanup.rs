@@ -9,6 +9,7 @@ use super::super::super::{
 };
 use super::super::domains::overlay_union;
 use super::super::rail_authority::NodeRailCanonicalPointSet;
+use super::super::reuse::NodeOwnershipBuildReuseContext;
 use super::super::seams::{ConstraintOverlapMode, owned_shape_is_discardable_numeric_dust};
 use super::super::topology_keys::{NodeOwnershipPointKey, ownership_key_from_overlay_point};
 use super::super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
@@ -41,13 +42,14 @@ impl OwnedRegionRebuildSource {
     }
 }
 
-pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_owned_region_shapes(
+pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_owned_region_shapes_with_reuse(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
     rail_canonical_points: &NodeRailCanonicalPointSet,
     overlap_mode: ConstraintOverlapMode,
     piece_kind: RoadSurfaceVisualNodePieceKind,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let mut cleaned_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
@@ -56,10 +58,9 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
             region.shape,
             overlap_mode.cleans_overlay_numeric_spikes(),
             "owned_region_ring_clean",
+            reuse,
         )?;
-        for shape in shapes.into_iter().flat_map(|shape| {
-            split_self_touching_owned_shape(shape, overlap_mode.cleans_overlay_numeric_spikes())
-        }) {
+        for shape in shapes {
             if let Some(region) = rebuilt_owned_region_for_shape(source, shape, rail_constraints) {
                 cleaned_regions.push(region);
             }
@@ -70,7 +71,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
         rail_canonical_points,
         piece_kind,
     )?;
-    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
+    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
         rail_canonical_points,
@@ -82,7 +83,7 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
         rail_canonical_points,
         piece_kind,
     )?;
-    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
+    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_final_owned_region_boundary_edges_for_piece_kind(
         &mut cleaned_regions,
         footprint_shapes,
@@ -93,13 +94,14 @@ pub(in crate::simulation::network::surface::node::ownership) fn clean_canonical_
         &mut cleaned_regions,
         rail_constraints,
         ConstraintOverlapMode::ExactCanonical,
+        reuse,
     );
     canonicalize_owned_region_rings_with_rail_point_set_for_piece_kind(
         &mut cleaned_regions,
         rail_canonical_points,
         piece_kind,
     )?;
-    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode)?;
+    clean_owned_region_shapes_once(&mut cleaned_regions, rail_constraints, overlap_mode, reuse)?;
     canonicalize_final_join_or_cap_owned_region_boundary_edges(
         &mut cleaned_regions,
         footprint_shapes,
@@ -113,14 +115,18 @@ fn split_final_canonical_owned_region_self_touches(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     rail_constraints: &[NodeRailConstraint],
     overlap_mode: ConstraintOverlapMode,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) {
     let mut split_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
         let source = OwnedRegionRebuildSource::from_region(&region);
-        for shape in split_self_touching_owned_shape(
-            region.shape,
-            overlap_mode.cleans_overlay_numeric_spikes(),
-        ) {
+        let clean_numeric_spikes = overlap_mode.cleans_overlay_numeric_spikes();
+        let input_shape = region.shape;
+        let shapes =
+            reuse.final_self_touch_owned_shapes(&input_shape, clean_numeric_spikes, || {
+                split_self_touching_owned_shape(input_shape.clone(), clean_numeric_spikes)
+            });
+        for shape in shapes {
             if let Some(region) = rebuilt_owned_region_for_shape(source, shape, rail_constraints) {
                 split_regions.push(region);
             }
@@ -133,6 +139,7 @@ fn clean_owned_region_shapes_once(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     rail_constraints: &[NodeRailConstraint],
     overlap_mode: ConstraintOverlapMode,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let mut cleaned_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
@@ -141,10 +148,9 @@ fn clean_owned_region_shapes_once(
             region.shape,
             overlap_mode.cleans_overlay_numeric_spikes(),
             "owned_region_constraint_noded_clean",
+            reuse,
         )?;
-        for shape in shapes.into_iter().flat_map(|shape| {
-            split_self_touching_owned_shape(shape, overlap_mode.cleans_overlay_numeric_spikes())
-        }) {
+        for shape in shapes {
             if let Some(region) = rebuilt_owned_region_for_shape(source, shape, rail_constraints) {
                 cleaned_regions.push(region);
             }
@@ -158,17 +164,25 @@ fn cleaned_or_unioned_owned_region_shapes(
     shape: NodeOverlayShape,
     clean_numeric_spikes: bool,
     union_stage: &'static str,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<NodeOverlayShapes, NodeBooleanOwnershipError> {
-    let cleaned = cleaned_owned_shape(shape.clone(), clean_numeric_spikes);
-    if cleaned.is_empty() {
-        return Ok(Vec::new());
-    }
-    if owned_shape_is_single_simple_contour(&cleaned) {
-        return Ok(vec![cleaned]);
-    }
-    let mut shapes = overlay_union(&shape, union_stage)?;
-    RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
-    Ok(shapes)
+    reuse.cleaned_owned_shapes(&shape, clean_numeric_spikes, || {
+        let cleaned = cleaned_owned_shape(shape.clone(), clean_numeric_spikes);
+        if cleaned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let shapes = if owned_shape_is_single_simple_contour(&cleaned) {
+            vec![cleaned]
+        } else {
+            let mut shapes = overlay_union(&shape, union_stage)?;
+            RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
+            shapes
+        };
+        Ok(shapes
+            .into_iter()
+            .flat_map(|shape| split_self_touching_owned_shape(shape, clean_numeric_spikes))
+            .collect())
+    })
 }
 
 fn rebuilt_owned_region_for_shape(

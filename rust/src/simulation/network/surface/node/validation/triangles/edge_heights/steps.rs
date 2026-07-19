@@ -1,6 +1,7 @@
 //! Explicit vertical-step authorization for cross-region height edges.
 
 use super::*;
+use crate::simulation::network::surface::RoadSurfaceVisualNodePieceKind;
 
 pub(super) fn cross_region_edges_form_explicit_vertical_step(
     solution: &NodeTriangulationSolution,
@@ -91,21 +92,45 @@ fn explicit_vertical_step_handoff_authorizes_owner(
     missing_edge: HeightedTriangleEdge,
     direct_owner: NodeBandOwner,
 ) -> bool {
+    if solution.piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN {
+        return false;
+    }
     let Some(bridge_owner) = explicit_step_segment_bridge_owner(step_segment, direct_owner) else {
         return false;
     };
     if bridge_owner.kind() != missing_owner.kind() || bridge_owner == missing_owner {
         return false;
     }
-    if !solution
+    let Some(missing_height_field) = solution
+        .regions
+        .get(missing_edge.region_index)
+        .map(|region| region.height_field_id)
+    else {
+        return false;
+    };
+    if !solution.regions.iter().any(|region| {
+        region.owner == bridge_owner
+            && region.height_field_id.kind() == missing_height_field.kind()
+            && region.height_field_id.band_index() == missing_height_field.band_index()
+    }) {
+        return false;
+    }
+    let has_same_kind_handoff = solution
         .explicit_vertical_step_segments
         .iter()
         .copied()
         .any(|segment| {
             explicit_vertical_step_owners_match_regions(segment, bridge_owner, missing_owner)
                 && edge_lies_on_explicit_vertical_step(segment, edge)
-        })
-    {
+        });
+    let has_paired_step_handoff = solution
+        .explicit_vertical_step_segments
+        .iter()
+        .copied()
+        .filter(|segment| edge_lies_on_explicit_vertical_step(*segment, edge))
+        .filter_map(|segment| explicit_step_segment_bridge_owner(segment, missing_owner))
+        .any(|paired_owner| paired_owner.kind() == direct_owner.kind());
+    if !has_same_kind_handoff && !has_paired_step_handoff {
         return false;
     }
     edge_index.owner_covers_edge_with_matching_heights(bridge_owner, edge, missing_edge)

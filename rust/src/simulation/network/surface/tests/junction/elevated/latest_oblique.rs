@@ -148,3 +148,148 @@ fn logged_latest_elevated_oblique_three_way_compiles_with_endpoint_profile_solve
         );
     }
 }
+
+fn compile_remote_crossing_case(
+    branch_angle_degrees: f32,
+    crossing_angle_offset_degrees: f32,
+    gradient_x: f32,
+    gradient_z: f32,
+    phase: f32,
+) -> (TransitNetwork, RegionGraph, u32, u32) {
+    let terrain = TerrainSystem::with_chunking(257, 257, 1.0, 128, 140.0);
+    let height = |x: f32, z: f32| {
+        140.0
+            + x * gradient_x
+            + z * gradient_z
+            + 0.22 * (x * 0.07 + phase).sin()
+            + 0.17 * (z * 0.055 - phase).cos()
+            + 0.08 * ((x + z) * 0.11).sin()
+    };
+    let dense_segment = |start: Vector2, end: Vector2| {
+        let steps = (start.distance_to(end) / 1.5).ceil() as usize;
+        (0..=steps)
+            .map(|step| {
+                let xz = start.lerp(end, step as f32 / steps as f32);
+                Vector3::new(xz.x, height(xz.x, xz.y), xz.y)
+            })
+            .collect::<Vec<_>>()
+    };
+    let center = Vector2::new(-49.109577, 34.990925);
+    let main_angle = 19.25_f32.to_radians();
+    let main_direction = Vector2::new(main_angle.cos(), main_angle.sin());
+    let branch_angle = main_angle + branch_angle_degrees.to_radians();
+    let branch_direction = Vector2::new(branch_angle.cos(), branch_angle.sin());
+    let branch_end = center + branch_direction * 100.0;
+
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let config = crate::simulation::core::config::WorldConfig::default();
+    let mut zoning = crate::simulation::zoning::ZoningSystem::new(&config);
+    let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+    network.add_road(
+        &mut graph,
+        dense_segment(
+            center - main_direction * 100.0,
+            center + main_direction * 100.0,
+        ),
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    // Keep the old junction at the end of this authored edge. A remote split then replaces the
+    // incident half-edge and must force the existing JunctionN through the same dirty path as play.
+    network.add_road(
+        &mut graph,
+        dense_segment(branch_end, center),
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&graph, &terrain);
+
+    let old_junction = (0..graph.node_count() as u32)
+        .find(|&node_id| {
+            graph.get_valid_node(node_id) == node_id
+                && graph.live_node_connection_count(node_id) == 3
+        })
+        .expect("branch endpoint must split the main road into a three-way junction");
+    assert!(
+        network
+            .road_surface
+            .compiled_visual_node_pieces()
+            .contains_key(&old_junction),
+        "the pre-edit three-way JunctionN must compile: {}",
+        canonical_junction_pipeline_report(&network.road_surface, &graph, old_junction)
+    );
+
+    let crossing_center = center + branch_direction * 50.0;
+    let crossing_angle = branch_angle + crossing_angle_offset_degrees.to_radians();
+    let crossing_direction = Vector2::new(crossing_angle.cos(), crossing_angle.sin());
+    network.add_road(
+        &mut graph,
+        dense_segment(
+            crossing_center - crossing_direction * 18.0,
+            crossing_center + crossing_direction * 18.0,
+        ),
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&graph, &terrain);
+
+    let new_junction = (0..graph.node_count() as u32)
+        .filter(|&node_id| node_id != old_junction)
+        .find(|&node_id| {
+            graph.get_valid_node(node_id) == node_id
+                && graph.live_node_connection_count(node_id) == 4
+        })
+        .expect("remote crossing must create a four-way junction");
+
+    (network, graph, old_junction, new_junction)
+}
+
+#[test]
+fn remote_crossing_keeps_existing_and_new_sloped_junctions_compilable() {
+    let (network, graph, old_junction, new_junction) =
+        compile_remote_crossing_case(35.0, 80.0, 0.0074, -0.0168, 0.74);
+    for node_id in [old_junction, new_junction] {
+        assert!(
+            network
+                .road_surface
+                .compiled_visual_node_pieces()
+                .contains_key(&node_id),
+            "remote crossing must retain JunctionN node={node_id}: {}",
+            canonical_junction_pipeline_report(&network.road_surface, &graph, node_id)
+        );
+    }
+}
+
+#[test]
+fn remote_crossing_compiles_new_junction_with_dust_near_source_segment_candidates() {
+    let (network, graph, old_junction, new_junction) =
+        compile_remote_crossing_case(50.0, 95.0, 0.0095, -0.0135, 1.85);
+    for node_id in [old_junction, new_junction] {
+        if network
+            .road_surface
+            .compiled_visual_node_pieces()
+            .contains_key(&node_id)
+        {
+            continue;
+        }
+        // A failed atomic incremental publication deliberately retains the prior span generation,
+        // so rebuild from the current graph to report the actual affected-node diagnostic.
+        let terrain = TerrainSystem::with_chunking(257, 257, 1.0, 128, 140.0);
+        let mut diagnostic_surface = RoadSurfaceSystem::new(16.0);
+        diagnostic_surface.compile_dirty(&graph, &terrain);
+        panic!(
+            "the remote crossing must preserve both JunctionN pieces while resolving dust-near source candidates, failed node={node_id}: {}",
+            canonical_junction_pipeline_report(&diagnostic_surface, &graph, node_id)
+        );
+    }
+}

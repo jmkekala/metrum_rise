@@ -83,7 +83,9 @@ fn test_core() -> SimCore {
         terrain_payload_generation_counter: 1,
         terrain_payload_global_generation: 1,
         terrain_payload_patch_generations: HashMap::new(),
+        refined_terrain_assembly_ledgers: HashMap::new(),
         cached_road_mesh_data: None,
+        cached_road_mesh_generation: 0,
         cached_network_node_positions: std::sync::Arc::new(Vec::new()),
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,
@@ -113,6 +115,57 @@ fn stale_terrain_acknowledgement_preserves_newer_patch_dirtiness() {
     let current_generation = core.terrain_payload_generation_for_patch(0, 0);
     assert!(core.acknowledge_terrain_render_patch(0, 0, current_generation));
     assert!(!core.heightmap.dirty_render_patches().contains(&(0, 0)));
+}
+
+#[test]
+fn local_road_terrain_scopes_accumulate_until_exact_acknowledgement() {
+    let mut core = test_core();
+    let initial_generation = core.terrain_payload_generation_for_patch(0, 0);
+    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(1, 2)]);
+    let first_generation = core.terrain_payload_generation_for_patch(0, 0);
+    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(3, 4)]);
+    let second_generation = core.terrain_payload_generation_for_patch(0, 0);
+
+    let ledger = core
+        .refined_terrain_assembly_ledgers
+        .get(&(0, 0))
+        .expect("local road edits should retain assembly scope");
+    assert!(first_generation > initial_generation);
+    assert!(second_generation > first_generation);
+    assert_eq!(
+        ledger.road_query_chunk_dirty_at.get(&(1, 2)),
+        Some(&first_generation)
+    );
+    assert_eq!(
+        ledger.road_query_chunk_dirty_at.get(&(3, 4)),
+        Some(&second_generation)
+    );
+
+    assert!(!core.acknowledge_terrain_render_patch(0, 0, first_generation));
+    assert!(
+        core.refined_terrain_assembly_ledgers.contains_key(&(0, 0)),
+        "a stale acknowledgement must not discard newer local scope"
+    );
+    assert!(core.acknowledge_terrain_render_patch(0, 0, second_generation));
+    assert!(
+        !core.refined_terrain_assembly_ledgers.contains_key(&(0, 0)),
+        "the exact uploaded generation may garbage-collect incorporated scope"
+    );
+}
+
+#[test]
+fn full_patch_invalidation_dominates_local_road_scope() {
+    let mut core = test_core();
+    core.bump_local_road_terrain_payload_generations(&[(0, 0)], &[(1, 2)]);
+    core.bump_terrain_payload_patch_generations(&[(0, 0)]);
+    let current_generation = core.terrain_payload_generation_for_patch(0, 0);
+    let ledger = core
+        .refined_terrain_assembly_ledgers
+        .get(&(0, 0))
+        .expect("full invalidation should retain a generation stamp");
+
+    assert_eq!(ledger.full_dirty_at, Some(current_generation));
+    assert_eq!(ledger.road_query_chunk_dirty_at.len(), 1);
 }
 
 #[test]
@@ -157,10 +210,66 @@ fn stale_network_acknowledgement_preserves_newer_render_revision() {
 }
 
 #[test]
+fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
+    let mut core = test_core();
+    core.cached_road_mesh_data = Some(std::sync::Arc::new(
+        crate::simulation::network::NetworkMeshData::new(),
+    ));
+    core.cached_road_mesh_generation = core.road_tool_surface_generation;
+    core.cached_network_node_positions = std::sync::Arc::new(vec![Vector3::new(12.0, 3.0, -8.0)]);
+    core.cached_network_node_positions_dirty = false;
+    let previous_mesh = std::sync::Arc::clone(
+        core.cached_road_mesh_data
+            .as_ref()
+            .expect("test road mesh cache"),
+    );
+    let previous_node_positions = std::sync::Arc::clone(&core.cached_network_node_positions);
+    let unchanged_generation = core.terrain_payload_generation_for_patch(9, 9);
+    let road_query_generation = core.road_tool_surface_generation;
+
+    core.bump_terrain_payload_patch_generations(&[(1, 2)]);
+    core.mark_local_network_render_dirty();
+
+    assert!(
+        core.terrain_payload_generation_for_patch(1, 2) > unchanged_generation,
+        "the road-touched patch must advance"
+    );
+    assert_eq!(
+        core.terrain_payload_generation_for_patch(9, 9),
+        unchanged_generation,
+        "a local road edit must not cancel unrelated terrain payload work"
+    );
+    assert!(core.road_tool_surface_generation > road_query_generation);
+    assert!(core.network_dirty);
+    assert!(std::sync::Arc::ptr_eq(
+        core.cached_road_mesh_data
+            .as_ref()
+            .expect("local invalidation must retain the last-good road mesh"),
+        &previous_mesh
+    ));
+    let snapshot = core.build_snapshot();
+    assert_eq!(
+        snapshot.network_generation, road_query_generation,
+        "a retained mesh must keep its last-successful generation token"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&snapshot.node_positions, &previous_node_positions),
+        "a failed-generation snapshot must retain node positions matching the last-good mesh"
+    );
+
+    core.mark_network_render_dirty();
+    assert!(
+        core.cached_road_mesh_data.is_none(),
+        "world-wide invalidation must discard a mesh from the previous world generation"
+    );
+}
+
+#[test]
 fn build_snapshot_reuses_cached_network_nodes_until_network_dirty() {
     let mut core = test_core();
     add_test_border_road(&mut core);
     core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
 
     let first = core.build_snapshot();
     assert_eq!(first.node_positions.len(), 2);
@@ -170,6 +279,7 @@ fn build_snapshot_reuses_cached_network_nodes_until_network_dirty() {
     assert!(std::sync::Arc::ptr_eq(&first_nodes, &second.node_positions));
 
     core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
     let third = core.build_snapshot();
     assert_eq!(third.node_positions.len(), 2);
     assert!(!std::sync::Arc::ptr_eq(&first_nodes, &third.node_positions));
@@ -214,8 +324,10 @@ fn recycled_snapshot_keeps_capacity_without_stale_instances() {
 
 #[test]
 fn road_preview_rejects_a_mismatched_surface_generation() {
-    let core = test_core();
-    let (context, query) = road_tool_snapshots_from_core(&core);
+    let mut core = test_core();
+    core.precompute_road_mesh_data();
+    let (context, query) =
+        road_tool_snapshots_from_core(&core).expect("the initial surface must be publishable");
     let preview = super::road_preview::compile_road_preview_from_context(
         &context,
         RoadPreviewRequest {
@@ -233,6 +345,112 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
         preview.validation.invalid_reason,
         "stale_surface_generation"
     );
+}
+
+#[test]
+fn failed_junction_precompute_retains_matching_render_and_road_tool_generation() {
+    let mut core = test_core();
+    let center_pos = Vector3::ZERO;
+    let center = core.region_graph.add_node(center_pos, NodeType::Junction);
+    let mut endpoints = Vec::new();
+    let mut edge_ids = Vec::new();
+    for (endpoint_pos, starts_at_center) in [
+        (Vector3::new(-80.0, 0.0, 0.0), false),
+        (Vector3::new(80.0, 0.0, 0.0), true),
+        (Vector3::new(0.0, 0.0, -80.0), false),
+        (Vector3::new(0.0, 0.0, 80.0), true),
+    ] {
+        let endpoint = core.region_graph.add_node(endpoint_pos, NodeType::Junction);
+        let (start, end, points) = if starts_at_center {
+            (center, endpoint, vec![center_pos, endpoint_pos])
+        } else {
+            (endpoint, center, vec![endpoint_pos, center_pos])
+        };
+        endpoints.push(endpoint);
+        edge_ids.push(
+            core.region_graph
+                .add_edge(test_road_edge(start, end, points)),
+        );
+    }
+    core.region_graph.rebuild_adjacency_list();
+    core.region_graph.rebuild_intersection_clips();
+    core.precompute_road_mesh_data();
+
+    let published_mesh = std::sync::Arc::clone(
+        core.cached_road_mesh_data
+            .as_ref()
+            .expect("the flat four-way junction must publish a baseline mesh"),
+    );
+    let published_generation = core.cached_road_mesh_generation;
+    let published_node_positions = core.build_snapshot().node_positions;
+    assert!(
+        road_tool_snapshots_from_core(&core).is_some(),
+        "the baseline road-tool source must be publishable"
+    );
+
+    for (&endpoint, height_m) in endpoints.iter().zip([80.0, -80.0, 64.0, -64.0]) {
+        let mut pos = core.region_graph.node(endpoint).pos;
+        pos.y = height_m;
+        core.region_graph.set_node_pos(endpoint, pos);
+    }
+    for &edge_idx in &edge_ids {
+        let edge = core.region_graph.edge(edge_idx);
+        let points = vec![
+            core.region_graph.node(edge.start_node).pos,
+            core.region_graph.node(edge.end_node).pos,
+        ];
+        let edge = core.region_graph.edge_mut(edge_idx);
+        edge.geometry = points.clone();
+        edge.physical_geometry = points;
+    }
+    core.transit_network.solve_dirty_junction_endpoint_profiles(
+        &mut core.region_graph,
+        &HashSet::from([center]),
+        &edge_ids.iter().copied().collect(),
+    );
+    core.region_graph.rebuild_intersection_clips();
+    for &edge_idx in &edge_ids {
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, edge_idx);
+    }
+    core.transit_network
+        .road_surface
+        .mark_node_dirty(&core.region_graph, center);
+    core.mark_local_network_render_dirty();
+    core.precompute_road_mesh_data();
+
+    assert!(
+        !core
+            .transit_network
+            .road_surface
+            .published_generation_matches_source(),
+        "the contradictory JunctionN must exercise the failed-production path"
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        core.cached_road_mesh_data
+            .as_ref()
+            .expect("failed precompute must retain the last-good mesh"),
+        &published_mesh
+    ));
+    assert_eq!(core.cached_road_mesh_generation, published_generation);
+    assert!(
+        road_tool_snapshots_from_core(&core).is_none(),
+        "a current graph with a stale latched surface must not become a road-tool snapshot"
+    );
+    let failed_snapshot = core.build_snapshot();
+    assert_eq!(failed_snapshot.network_generation, published_generation);
+    assert!(std::sync::Arc::ptr_eq(
+        failed_snapshot
+            .road_mesh_data
+            .as_ref()
+            .expect("failed render snapshot must retain the last-good mesh"),
+        &published_mesh
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &failed_snapshot.node_positions,
+        &published_node_positions
+    ));
 }
 
 #[test]

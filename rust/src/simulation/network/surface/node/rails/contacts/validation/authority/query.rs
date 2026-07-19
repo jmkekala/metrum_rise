@@ -2,9 +2,12 @@
 
 use super::super::super::{
     GeneratedContourEdgeKey, NodeBandOwner, NodeRailConstraintKind, NodeRailPointKey,
-    RoadSurfaceBandKind, owners_match_unordered,
+    RoadSurfaceBandKind,
 };
-use super::{ExactGeneratedSourceAuthority, exact_generated_contact_owner_pair};
+use super::{
+    ExactContactSourceBucket, ExactGeneratedSourceAuthority, exact_contact_presence_key,
+    exact_generated_contact_owner_pair,
+};
 use std::collections::BTreeSet;
 
 impl ExactGeneratedSourceAuthority {
@@ -29,18 +32,13 @@ impl ExactGeneratedSourceAuthority {
         let (Some(owner), Some(opposite_owner)) = (owners[0], owners[1]) else {
             return false;
         };
-        self.segments_by_contact_source.keys().any(
-            |(_, source_owner, source_opposite_owner, source_mouth, source_band)| {
-                *source_mouth == source_mouth_order_index
-                    && *source_band == source_band_index
-                    && owners_match_unordered(
-                        Some(*source_owner),
-                        Some(*source_opposite_owner),
-                        owner,
-                        opposite_owner,
-                    )
-            },
-        )
+        self.contact_sources_by_presence
+            .contains_key(&exact_contact_presence_key(
+                owner,
+                opposite_owner,
+                source_mouth_order_index,
+                source_band_index,
+            ))
     }
 
     pub(in crate::simulation::network::surface::node::rails::contacts::validation) fn has_exact_point(
@@ -127,22 +125,12 @@ impl ExactGeneratedSourceAuthority {
         if !self.owner_geometry_has_exact_key(final_owner, point) {
             return false;
         }
-        self.segments_by_contact_source
+        self.contact_sources_for_owner_kind(kind, retained_owner, final_owner.kind())
             .iter()
-            .filter(|((source_kind, _, _, source_mouth, source_band), _)| {
-                *source_kind == kind
-                    && *source_mouth == source_mouth_order_index
-                    && *source_band == source_band_index
+            .filter(|source| {
+                source.key.3 == source_mouth_order_index && source.key.4 == source_band_index
             })
-            .any(
-                |((_, source_owner, source_opposite_owner, _, _), segments)| {
-                    let same_kind_handoff = (*source_owner == retained_owner
-                        && source_opposite_owner.kind() == final_owner.kind())
-                        || (*source_opposite_owner == retained_owner
-                            && source_owner.kind() == final_owner.kind());
-                    same_kind_handoff && generated_segments_have_endpoint(segments, point)
-                },
-            )
+            .any(|source| generated_segments_have_endpoint(&source.segments, point))
     }
 
     pub(in crate::simulation::network::surface::node::rails::contacts::validation) fn has_exact_cross_source_same_kind_contact_key(
@@ -196,24 +184,14 @@ impl ExactGeneratedSourceAuthority {
         required_source_band_index: Option<usize>,
         point: NodeRailPointKey,
     ) -> bool {
-        self.segments_by_contact_source
+        self.contact_sources_for_owner_kind(kind, owner, counterpart_kind)
             .iter()
-            .filter(|((source_kind, _, _, source_mouth, source_band), _)| {
-                *source_kind == kind
-                    && required_source_mouth_order_index
-                        .is_none_or(|required| *source_mouth == required)
+            .filter(|source| {
+                required_source_mouth_order_index.is_none_or(|required| source.key.3 == required)
                     && required_source_band_index
-                        .is_none_or(|required| *source_band == Some(required))
+                        .is_none_or(|required| source.key.4 == Some(required))
             })
-            .any(
-                |((_, source_owner, source_opposite_owner, _, _), segments)| {
-                    let owner_matches = (*source_owner == owner
-                        && source_opposite_owner.kind() == counterpart_kind)
-                        || (*source_opposite_owner == owner
-                            && source_owner.kind() == counterpart_kind);
-                    owner_matches && generated_segments_have_endpoint(segments, point)
-                },
-            )
+            .any(|source| generated_segments_have_endpoint(&source.segments, point))
     }
 
     fn owner_geometry_has_exact_key(&self, owner: NodeBandOwner, point: NodeRailPointKey) -> bool {
@@ -224,6 +202,17 @@ impl ExactGeneratedSourceAuthority {
                 .segments_by_owner
                 .get(&owner)
                 .is_some_and(|segments| generated_segments_have_endpoint(segments, point))
+    }
+
+    fn contact_sources_for_owner_kind(
+        &self,
+        kind: NodeRailConstraintKind,
+        owner: NodeBandOwner,
+        counterpart_kind: RoadSurfaceBandKind,
+    ) -> &[ExactContactSourceBucket] {
+        self.contact_sources_by_owner_kind
+            .get(&(kind, owner, counterpart_kind))
+            .map_or(&[], AsRef::as_ref)
     }
 }
 

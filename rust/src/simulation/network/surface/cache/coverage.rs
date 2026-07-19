@@ -38,7 +38,7 @@ impl RoadSurfaceSystem {
         );
         let query_chunks = self.query_span_chunks.remove(&edge_idx).unwrap_or_default();
         Self::remove_owner_chunk_coverage(&mut self.query_chunk_spans, edge_idx, &query_chunks);
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
         (surface_chunks, terrain_chunks)
     }
 
@@ -62,7 +62,7 @@ impl RoadSurfaceSystem {
         );
         let query_chunks = self.query_node_chunks.remove(&node_id).unwrap_or_default();
         Self::remove_owner_chunk_coverage(&mut self.query_chunk_nodes, node_id, &query_chunks);
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
         (surface_chunks, terrain_chunks)
     }
 
@@ -98,7 +98,7 @@ impl RoadSurfaceSystem {
             piece.edge_idx,
             &query_chunks,
         );
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
         (surface_chunks, terrain_chunks)
     }
 
@@ -134,7 +134,7 @@ impl RoadSurfaceSystem {
             piece.node_id,
             &query_chunks,
         );
-        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks, &query_chunks);
         (surface_chunks, terrain_chunks)
     }
 
@@ -142,11 +142,13 @@ impl RoadSurfaceSystem {
         &mut self,
         surface_chunks: &[SurfaceChunkKey],
         terrain_chunks: &[SurfaceChunkKey],
+        query_chunks: &[SurfaceChunkKey],
     ) {
         self.dirty_surface_chunks
             .extend(surface_chunks.iter().copied());
         self.dirty_terrain_chunks
             .extend(terrain_chunks.iter().copied());
+        self.dirty_query_chunks.extend(query_chunks.iter().copied());
     }
 
     fn insert_owner_chunk_coverage<T: Copy + Ord>(

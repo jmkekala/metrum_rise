@@ -1,25 +1,27 @@
 //! Explicit visual node-piece construction and incident-edge classification.
 
+#[cfg(test)]
+use self::boundary::{ArrangementSegmentParameter, arrangement_boundary_point_to_world};
 use self::{
     arrangement::{
         NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
     },
     boundary::{
-        ArrangementBoundaryPointKey, ArrangementSegmentParameter, NodeBoundaryExportError,
-        NodeFootprintBoundaryExportSources, arrangement_boundary_point_to_world,
+        ArrangementBoundaryPointKey, NodeBoundaryExportError, NodeFootprintBoundaryExportSources,
         boundary_points_numeric_area_budget_m2,
         node_earthwork_boundary_segments_from_footprint_loops,
     },
     input::NodeInputExtractionError,
     validation::NodeValidationReport,
 };
+#[cfg(test)]
+use super::band_semantics::ordered_raised_step_kinds;
 use super::{
     CURB_STEP_HEIGHT_M, CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile,
     IncidentSurfaceEdge, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceSource,
     RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipLoop,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    band_semantics::ordered_raised_step_kinds,
 };
 pub(super) use super::{
     IncidentMouthBand, NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M,
@@ -265,8 +267,10 @@ fn node_export_top_source_kind(
 }
 
 pub(crate) mod arrangement;
+#[cfg(test)]
 mod arrangement_faces;
 pub(crate) mod boundary;
+#[cfg(test)]
 mod boundary_edges;
 mod compile;
 mod export;
@@ -284,6 +288,7 @@ pub(crate) mod triangulation;
 pub(crate) mod validation;
 mod vertical_faces;
 
+pub(crate) use compile::{NodeCanonicalTopologyCache, NodeVisualCompileResult};
 pub(crate) use joins::rounded_sidewalk_corner_path_xz;
 pub use piece::RoadSurfaceVisualNodePiece;
 pub(crate) use piece::{

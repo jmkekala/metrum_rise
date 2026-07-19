@@ -44,9 +44,9 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
         chunks: &[SurfaceChunkKey],
         render_step_m: f32,
-    ) -> usize {
+    ) -> Vec<(usize, usize)> {
         if chunks.is_empty() {
-            return 0;
+            return Vec::new();
         }
         let grading_envelope_m = EARTHWORK_MAX_MARGIN_M
             + crate::simulation::terrain::terrain_cdt_local_sample_margin_m(terrain, render_step_m);
@@ -63,11 +63,10 @@ impl RoadSurfaceSystem {
 
         dirty_patch_keys.sort_unstable();
         dirty_patch_keys.dedup();
-        let dirty_patch_count = dirty_patch_keys.len();
-        for (patch_x, patch_z) in dirty_patch_keys {
+        for &(patch_x, patch_z) in &dirty_patch_keys {
             terrain.mark_render_patch_dirty(patch_x, patch_z);
         }
-        dirty_patch_count
+        dirty_patch_keys
     }
 
     /// Rebuilds terrain earthworks only for the currently dirty road-surface chunks.
@@ -89,12 +88,11 @@ impl RoadSurfaceSystem {
         terrain: &mut TerrainSystem,
         reason: RoadSurfaceCompileReason,
     ) -> Vec<SurfaceChunkKey> {
-        let had_dirty_work = !self.compiled_once
-            || !self.dirty_edges.is_empty()
-            || !self.dirty_nodes.is_empty()
-            || !self.dirty_surface_chunks.is_empty()
-            || !self.dirty_terrain_chunks.is_empty();
+        let had_dirty_work = self.has_pending_rebuild_work();
         self.compile_dirty_with_reason(graph, terrain, reason);
+        if !self.published_generation_matches_source() {
+            return Vec::new();
+        }
 
         let chunks = if had_dirty_work {
             self.last_rebuilt_terrain_chunks.clone()
@@ -111,8 +109,11 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         terrain: &mut TerrainSystem,
     ) -> Vec<SurfaceChunkKey> {
-        terrain.reset_visuals_from_source();
         self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::TerrainEarthwork);
+        if !self.published_generation_matches_source() {
+            return Vec::new();
+        }
+        terrain.reset_visuals_from_source();
         let chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
         self.apply_earthwork_chunks(graph, terrain, &chunks);
         chunks

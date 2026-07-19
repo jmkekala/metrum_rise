@@ -95,7 +95,22 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
-    surface.compile_dirty(&graph, &terrain);
+    for edge_idx in 0..graph.edge_count() {
+        surface
+            .compiled_sections
+            .insert(edge_idx, surface.compile_edge_sections(&graph, edge_idx));
+    }
+    for edge_idx in 0..graph.edge_count() {
+        let span_piece = surface
+            .compile_visual_span_piece(&graph, &terrain, edge_idx)
+            .expect("contradictory-height fixture spans must compile independently");
+        surface.apply_span_compile_result(edge_idx, Some(span_piece));
+    }
+    let input = surface
+        .visual_node_compile_input(&graph, center)
+        .expect("contradictory-height fixture must produce a JunctionN input");
+    let node_piece = surface.compile_visual_node_piece_from_input(&graph, &terrain, center, &input);
+    surface.apply_node_compile_result(center, input, node_piece);
 
     let mut max_mouth_abs_y = 0.0_f64;
     for &edge_idx in graph.node_adjacency(center) {

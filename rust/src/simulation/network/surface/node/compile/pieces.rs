@@ -1,6 +1,8 @@
 //! Visual node-piece assembly entry points.
 
 use super::*;
+use crate::simulation::network::types::EdgeClass;
+use std::sync::Arc;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn visual_node_compile_input(
@@ -14,9 +16,11 @@ impl RoadSurfaceSystem {
             CompiledNodeKind::Terminal => {
                 let incident = incidents.first()?;
                 let mouths = self.build_ordered_piece_mouths(graph, &[*incident])?;
+                let mouth_edge_classes = Self::node_mouth_edge_classes(graph, &mouths)?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::Terminal,
                     mouths,
+                    mouth_edge_classes,
                 })
             }
             CompiledNodeKind::PassThrough => None,
@@ -25,9 +29,11 @@ impl RoadSurfaceSystem {
                     return None;
                 }
                 let mouths = self.build_ordered_piece_mouths(graph, &incidents)?;
+                let mouth_edge_classes = Self::node_mouth_edge_classes(graph, &mouths)?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::Bend,
                     mouths,
+                    mouth_edge_classes,
                 })
             }
             CompiledNodeKind::JunctionN => {
@@ -35,14 +41,29 @@ impl RoadSurfaceSystem {
                     return None;
                 }
                 let mouths = self.build_ordered_piece_mouths(graph, &incidents)?;
+                let mouth_edge_classes = Self::node_mouth_edge_classes(graph, &mouths)?;
                 Some(RoadSurfaceVisualNodeCompileInput {
                     kind: RoadSurfaceVisualNodePieceKind::JunctionN,
                     mouths,
+                    mouth_edge_classes,
                 })
             }
         }
     }
 
+    fn node_mouth_edge_classes(
+        graph: &RegionGraph,
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Option<Vec<EdgeClass>> {
+        mouths
+            .iter()
+            .map(|mouth| {
+                (mouth.edge_idx < graph.edge_count()).then(|| graph.edge(mouth.edge_idx).class)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn compile_visual_node_piece_from_input(
         &self,
         graph: &RegionGraph,
@@ -50,18 +71,52 @@ impl RoadSurfaceSystem {
         node_id: u32,
         input: &RoadSurfaceVisualNodeCompileInput,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        self.build_canonical_visual_node_piece(graph, terrain, node_id, input.kind, &input.mouths)
+        self.compile_visual_node_piece_with_earthwork_boundaries(
+            graph, terrain, node_id, input, None,
+        )
+        .map(|result| result.piece)
     }
 
-    fn build_canonical_visual_node_piece(
+    pub(in crate::simulation::network::surface) fn compile_visual_node_piece_with_earthwork_boundaries(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
-        kind: RoadSurfaceVisualNodePieceKind,
-        mouths: &[OrderedIncidentPieceMouth],
-    ) -> Option<RoadSurfaceVisualNodePiece> {
-        let node_regions = self.compile_canonical_node_surface_regions(node_id, kind, mouths)?;
+        input: &RoadSurfaceVisualNodeCompileInput,
+        previous_topology: Option<&NodeCanonicalTopologyCache>,
+    ) -> Option<NodeVisualCompileResult> {
+        self.compile_visual_node_piece_with_earthwork_boundaries_once(
+            graph,
+            terrain,
+            node_id,
+            input,
+            previous_topology,
+        )
+        .or_else(|| {
+            previous_topology.and_then(|_| {
+                self.compile_visual_node_piece_with_earthwork_boundaries_once(
+                    graph, terrain, node_id, input, None,
+                )
+            })
+        })
+    }
+
+    fn compile_visual_node_piece_with_earthwork_boundaries_once(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        input: &RoadSurfaceVisualNodeCompileInput,
+        previous_topology: Option<&NodeCanonicalTopologyCache>,
+    ) -> Option<NodeVisualCompileResult> {
+        let canonical = self.compile_canonical_node_surface_regions_with_topology_cache(
+            node_id,
+            input.kind,
+            &input.mouths,
+            previous_topology,
+        )?;
+        let node_regions = canonical.regions;
+        let earthwork_boundary_segments = node_regions.earthwork_boundary_segments.clone();
         let top_surface_shapes = Self::top_surface_overlay_shapes(
             node_regions
                 .road_surface_polygons
@@ -78,14 +133,14 @@ impl RoadSurfaceSystem {
             .ok()?;
         let earthwork_owner_sources = Self::node_earthwork_owner_sources_from_regions(
             graph,
-            mouths,
+            &input.mouths,
             &node_regions.owned_regions,
             &node_regions.node_top_surface_sources,
         );
 
-        self.assemble_explicit_node_piece(
+        let piece = self.assemble_explicit_node_piece(
             node_id,
-            kind,
+            input.kind,
             node_regions.outer_boundary_loops,
             node_regions.terrain_clip_boundary_loops,
             node_regions.road_surface_polygons,
@@ -101,7 +156,62 @@ impl RoadSurfaceSystem {
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
-        )
+        )?;
+        Some(NodeVisualCompileResult {
+            piece,
+            earthwork_boundaries: Arc::new(earthwork_boundary_segments),
+            topology_cache: canonical.topology_cache.map(Arc::new),
+            rail_topology_reused: canonical.rail_topology_reused,
+            ownership_reused: canonical.ownership_reused,
+            export_reuse_stats: canonical.export_reuse_stats,
+        })
+    }
+
+    pub(in crate::simulation::network::surface) fn refresh_visual_node_piece_earthwork_from_cached_top(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        input: &RoadSurfaceVisualNodeCompileInput,
+        cached_piece: &RoadSurfaceVisualNodePiece,
+        earthwork_boundary_segments: &[Vec<RoadSurfaceEarthworkBoundarySegment>],
+    ) -> Option<RoadSurfaceVisualNodePiece> {
+        if cached_piece.node_id != node_id || cached_piece.kind != input.kind {
+            return None;
+        }
+        let top_surface_shapes = Self::top_surface_overlay_shapes(
+            cached_piece
+                .road_surface_polygons
+                .iter()
+                .chain(&cached_piece.curb_surface_polygons)
+                .chain(&cached_piece.sidewalk_surface_polygons),
+        );
+        let (
+            mut earthwork_surface_polygons,
+            mut earthwork_outer_boundary_loops,
+            mut render_earthwork_faces,
+        ) = self
+            .build_closed_earthwork_geometry_from_boundary_segments(
+                earthwork_boundary_segments,
+                terrain,
+                top_surface_shapes.as_ref(),
+            )
+            .ok()?;
+        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
+        Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
+        Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
+
+        let mut piece = cached_piece.clone();
+        piece.earthwork_owner_sources = Self::node_earthwork_owner_sources_from_regions(
+            graph,
+            &input.mouths,
+            &piece.owned_regions,
+            &piece.node_top_surface_sources,
+        );
+        piece.earthwork_surface_polygons = earthwork_surface_polygons;
+        piece.earthwork_outer_boundary_loops = earthwork_outer_boundary_loops;
+        piece.render_earthwork_faces = render_earthwork_faces;
+        Some(piece)
     }
 
     fn node_earthwork_owner_sources_from_regions(

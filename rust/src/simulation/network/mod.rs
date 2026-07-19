@@ -327,18 +327,31 @@ impl TransitNetwork {
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
+        self.try_generate_mesh_data(graph, terrain)
+            .unwrap_or_else(NetworkMeshData::new)
+    }
+
+    /// Generates mesh data only when the compiled road surface matches the current source graph.
+    pub fn try_generate_mesh_data(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) -> Option<NetworkMeshData> {
         self.road_surface.compile_dirty_with_reason(
             graph,
             terrain,
             RoadSurfaceCompileReason::MeshPrecompute,
         );
+        if !self.road_surface.published_generation_matches_source() {
+            return None;
+        }
         let renderer = RoadRenderer;
-        renderer.generate_mesh_data_with_surface(
+        Some(renderer.generate_mesh_data_with_surface(
             graph,
             &self.lane_system,
             terrain,
             &self.road_surface,
-        )
+        ))
     }
 
     /// Rebuilds terrain earthworks only for the currently dirty roadbed chunks.

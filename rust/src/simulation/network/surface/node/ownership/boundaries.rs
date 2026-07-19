@@ -5,6 +5,7 @@ use super::super::arrangement::{
 };
 use super::super::rails::{NodeGeneratedContourClaimPriority, NodeRailConstraint};
 use super::super::{NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use super::rings::NodeOwnershipPointIndex;
 use super::seams::{
     junctionn_unmaterialized_raised_step_authority_indices_for_edge,
     materialized_endpoint_pair_constraint_indices_for_owned_edge,
@@ -23,6 +24,7 @@ use super::{
 use std::collections::BTreeMap;
 
 impl NodeOwnedRegionArrangement {
+    #[cfg(test)]
     pub(crate) fn from_owned_regions(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -31,11 +33,27 @@ impl NodeOwnedRegionArrangement {
         rail_constraints: &[NodeRailConstraint],
     ) -> Self {
         let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
+        Self::from_owned_regions_with_boundary_refs(
+            node_id,
+            piece_kind,
+            regions,
+            &boundary_refs,
+            rail_constraints,
+        )
+    }
+
+    pub(super) fn from_owned_regions_with_boundary_refs(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        regions: &[NodeBooleanOwnedRegion],
+        boundary_refs: &OwnedRegionBoundaryRefs,
+        rail_constraints: &[NodeRailConstraint],
+    ) -> Self {
         let mut edges = Vec::new();
         let mut diagnostics = Vec::new();
 
-        for (edge_key, refs) in boundary_refs.edges {
-            let refs = canonical_owned_region_edge_refs(&refs);
+        for (edge_key, refs) in &boundary_refs.edges {
+            let refs = canonical_owned_region_edge_refs(refs);
             for edge_ref in &refs {
                 let Some(region) = regions.get(edge_ref.region_index) else {
                     continue;
@@ -375,67 +393,73 @@ pub(super) struct OwnedRegionBoundaryRefs {
     pub(super) edges: BTreeMap<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>,
 }
 
+impl OwnedRegionBoundaryRefs {
+    pub(super) fn from_owned_regions(
+        regions: &[NodeBooleanOwnedRegion],
+        footprint_shapes: &NodeOverlayShapes,
+    ) -> Self {
+        let region_point_index = NodeOwnershipPointIndex::new(&owned_region_point_keys(regions));
+        let footprint_point_index =
+            NodeOwnershipPointIndex::new(&final_footprint_boundary_point_keys(footprint_shapes));
+        let mut edges = BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>::new();
+        for (region_index, region) in regions.iter().enumerate() {
+            for contour in &region.shape {
+                if contour.len() < 2 {
+                    continue;
+                }
+                for edge_index in 0..contour.len() {
+                    let start = ownership_key_from_overlay_point(contour[edge_index]);
+                    let end =
+                        ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
+                    if start == end {
+                        continue;
+                    }
+                    let points = noded_owned_region_boundary_edge_points(
+                        start,
+                        end,
+                        &region_point_index,
+                        &footprint_point_index,
+                    );
+                    for segment in points.windows(2) {
+                        if segment[0] == segment[1] {
+                            continue;
+                        }
+                        let edge_ref = OwnedRegionEdgeRef {
+                            region_index,
+                            owner: region.owner,
+                        };
+                        edges
+                            .entry(OwnedRegionEdgeKey::new(segment[0], segment[1]))
+                            .or_default()
+                            .push(edge_ref);
+                    }
+                }
+            }
+        }
+
+        Self { edges }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn owned_region_boundary_refs(
     regions: &[NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
 ) -> OwnedRegionBoundaryRefs {
-    let region_points = owned_region_point_keys(regions);
-    let footprint_edges = final_footprint_edge_keys(footprint_shapes);
-    let mut edges = BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>::new();
-    for (region_index, region) in regions.iter().enumerate() {
-        for contour in &region.shape {
-            if contour.len() < 2 {
-                continue;
-            }
-            for edge_index in 0..contour.len() {
-                let start = ownership_key_from_overlay_point(contour[edge_index]);
-                let end =
-                    ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
-                if start == end {
-                    continue;
-                }
-                let points = noded_owned_region_boundary_edge_points(
-                    start,
-                    end,
-                    &region_points,
-                    &footprint_edges,
-                );
-                for segment in points.windows(2) {
-                    if segment[0] == segment[1] {
-                        continue;
-                    }
-                    let edge_ref = OwnedRegionEdgeRef {
-                        region_index,
-                        owner: region.owner,
-                    };
-                    edges
-                        .entry(OwnedRegionEdgeKey::new(segment[0], segment[1]))
-                        .or_default()
-                        .push(edge_ref);
-                }
-            }
-        }
-    }
-
-    OwnedRegionBoundaryRefs { edges }
+    OwnedRegionBoundaryRefs::from_owned_regions(regions, footprint_shapes)
 }
 
 fn owned_region_point_keys(regions: &[NodeBooleanOwnedRegion]) -> Vec<(i64, i64)> {
-    let mut points = regions
+    regions
         .iter()
         .flat_map(|region| region.shape.iter())
         .flat_map(|contour| contour.iter().copied())
         .map(ownership_key_from_overlay_point)
-        .collect::<Vec<_>>();
-    points.sort_unstable();
-    points.dedup();
-    points
+        .collect()
 }
 
-fn final_footprint_edge_keys(
-    footprint_shapes: &NodeOverlayShapes,
-) -> Vec<((i64, i64), (i64, i64))> {
-    let mut edges = Vec::new();
+fn final_footprint_boundary_point_keys(footprint_shapes: &NodeOverlayShapes) -> Vec<(i64, i64)> {
+    let mut points = Vec::new();
     for contour in footprint_shapes
         .iter()
         .flat_map(|shape| shape.iter())
@@ -445,20 +469,24 @@ fn final_footprint_edge_keys(
             let start = ownership_key_from_overlay_point(contour[index]);
             let end = ownership_key_from_overlay_point(contour[(index + 1) % contour.len()]);
             if start != end {
-                edges.push((start, end));
+                // The former edge scan only emitted endpoints which themselves lay on the owned
+                // edge. Any such endpoint also proves that its source footprint edge overlaps, so
+                // retaining the endpoint set preserves the same tolerant split-point semantics.
+                points.extend([start, end]);
             }
         }
     }
-    edges
+    points
 }
 
 fn noded_owned_region_boundary_edge_points(
     start: (i64, i64),
     end: (i64, i64),
-    region_points: &[(i64, i64)],
-    footprint_edges: &[((i64, i64), (i64, i64))],
+    region_point_index: &NodeOwnershipPointIndex,
+    footprint_point_index: &NodeOwnershipPointIndex,
 ) -> Vec<(i64, i64)> {
-    let mut split_points = region_points
+    let mut split_points = region_point_index
+        .candidates_between(start, end)
         .iter()
         .copied()
         .filter(|point| *point != start && *point != end)
@@ -467,7 +495,7 @@ fn noded_owned_region_boundary_edge_points(
     split_points.extend(supported_final_footprint_boundary_points_for_edge(
         start,
         end,
-        footprint_edges,
+        footprint_point_index,
     ));
     split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
     split_points.dedup();
@@ -482,35 +510,18 @@ fn noded_owned_region_boundary_edge_points(
 fn supported_final_footprint_boundary_points_for_edge(
     start: (i64, i64),
     end: (i64, i64),
-    final_footprint_edges: &[((i64, i64), (i64, i64))],
+    footprint_point_index: &NodeOwnershipPointIndex,
 ) -> Vec<(i64, i64)> {
-    let mut points = Vec::new();
-    for (edge_start, edge_end) in final_footprint_edges {
-        if !footprint_edges_overlap(start, end, *edge_start, *edge_end) {
-            continue;
-        }
-        points.extend(
-            [*edge_start, *edge_end]
-                .into_iter()
-                .filter(|point| *point != start && *point != end)
-                .filter(|point| point_key_lies_on_segment(*point, start, end)),
-        );
-    }
+    let mut points = footprint_point_index
+        .tolerant_candidates_between(start, end)
+        .iter()
+        .copied()
+        .filter(|point| *point != start && *point != end)
+        .filter(|point| point_key_lies_on_segment(*point, start, end))
+        .collect::<Vec<_>>();
     points.sort_by_key(|point| segment_parameter_key(start, end, *point));
     points.dedup();
     points
-}
-
-fn footprint_edges_overlap(
-    left_start: (i64, i64),
-    left_end: (i64, i64),
-    right_start: (i64, i64),
-    right_end: (i64, i64),
-) -> bool {
-    point_key_lies_on_segment(left_start, right_start, right_end)
-        || point_key_lies_on_segment(left_end, right_start, right_end)
-        || point_key_lies_on_segment(right_start, left_start, left_end)
-        || point_key_lies_on_segment(right_end, left_start, left_end)
 }
 
 pub(super) fn canonical_owned_region_edge_refs(
@@ -582,4 +593,25 @@ pub(super) enum OwnedRegionEdgeNeighbor {
     Ambiguous {
         opposite_owners: Vec<NodeBandOwner>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_boundary_noding_keeps_exact_region_and_tolerant_footprint_semantics() {
+        let region_point_index = NodeOwnershipPointIndex::new(&[(40, 0), (60, 1), (500, 0)]);
+        let footprint_point_index = NodeOwnershipPointIndex::new(&[(20, 2), (80, 3), (500, 0)]);
+
+        assert_eq!(
+            noded_owned_region_boundary_edge_points(
+                (0, 0),
+                (100, 0),
+                &region_point_index,
+                &footprint_point_index,
+            ),
+            vec![(0, 0), (20, 2), (40, 0), (100, 0)]
+        );
+    }
 }

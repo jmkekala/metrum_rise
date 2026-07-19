@@ -85,12 +85,13 @@ impl RoadSurfaceSystem {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
-                Self::insert_terrain_patch_grading_margins_for_loop(
+                let _ = Self::insert_terrain_patch_grading_margins_for_loop(
                     terrain,
                     boundary_loop,
                     render_step_m,
                     base_margin_m,
                     &mut patch_margins,
+                    None,
                 );
             }
         }
@@ -102,12 +103,13 @@ impl RoadSurfaceSystem {
                 continue;
             }
             for boundary_loop in &piece.terrain_clip_boundary_loops {
-                Self::insert_terrain_patch_grading_margins_for_loop(
+                let _ = Self::insert_terrain_patch_grading_margins_for_loop(
                     terrain,
                     boundary_loop,
                     render_step_m,
                     base_margin_m,
                     &mut patch_margins,
+                    None,
                 );
             }
         }
@@ -141,21 +143,50 @@ impl RoadSurfaceSystem {
                 max_z + query_margin_m,
             );
             let mut local_margins = BTreeMap::new();
+            let mut exact_margin_m = None::<f32>;
             for boundary_loop in &loops {
-                Self::insert_terrain_patch_grading_margins_for_loop(
-                    terrain,
-                    boundary_loop,
-                    render_step_m,
-                    base_margin_m,
-                    &mut local_margins,
-                );
+                let (influence_bounds, target_margin_m) =
+                    Self::insert_terrain_patch_grading_margins_for_loop(
+                        terrain,
+                        boundary_loop,
+                        render_step_m,
+                        base_margin_m,
+                        &mut local_margins,
+                        Some((patch_x, patch_z)),
+                    );
+                if let Some(target_margin_m) = Self::terrain_cdt_exact_target_patch_margin(
+                    influence_bounds,
+                    (min_x, min_z, max_x, max_z),
+                    target_margin_m,
+                ) {
+                    exact_margin_m = Some(
+                        exact_margin_m
+                            .map_or(target_margin_m, |current| current.max(target_margin_m)),
+                    );
+                }
             }
-            if let Some(&margin_m) = local_margins.get(&(patch_x, patch_z)) {
+            if let Some(margin_m) = exact_margin_m {
                 patch_margins.insert((patch_x, patch_z), margin_m);
             }
         }
 
         patch_margins
+    }
+
+    fn terrain_cdt_exact_target_patch_margin(
+        influence_bounds: Option<(f32, f32, f32, f32)>,
+        target_bounds: (f32, f32, f32, f32),
+        target_margin_m: Option<f32>,
+    ) -> Option<f32> {
+        let (influence_min_x, influence_min_z, influence_max_x, influence_max_z) =
+            influence_bounds?;
+        let (target_min_x, target_min_z, target_max_x, target_max_z) = target_bounds;
+        let has_exact_influence = influence_max_x.min(target_max_x)
+            - influence_min_x.max(target_min_x)
+            > TERRAIN_CDT_MIN_PATCH_OVERLAP_M
+            && influence_max_z.min(target_max_z) - influence_min_z.max(target_min_z)
+                > TERRAIN_CDT_MIN_PATCH_OVERLAP_M;
+        has_exact_influence.then_some(target_margin_m).flatten()
     }
 
     pub(super) fn terrain_clip_boundary_loops_for_world_bounds(
@@ -266,24 +297,28 @@ impl RoadSurfaceSystem {
         render_step_m: f32,
         base_margin_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
-    ) {
+        target_patch: Option<(usize, usize)>,
+    ) -> (Option<(f32, f32, f32, f32)>, Option<f32>) {
         let vertices = boundary_loop
             .points_world
             .iter()
             .map(|point| TerrainCdtVertex::new(point.x, point.y as f32, point.z))
             .collect::<Vec<_>>();
         if vertices.is_empty() {
-            return;
+            return (None, None);
         }
 
         let safe_step_m = render_step_m.max(f32::EPSILON);
         let base_margin_m = base_margin_m.max(0.0);
-        Self::insert_terrain_patch_grading_margins_for_bounds(
+        let mut required_margin_m = base_margin_m;
+        let mut target_margin_m = Self::insert_terrain_patch_grading_margins_for_bounds(
             terrain,
             vertices.iter().map(|vertex| (vertex.x, vertex.z)),
             base_margin_m,
             patch_margins,
-        );
+            target_patch,
+        )
+        .then_some(base_margin_m);
 
         let uses_clean_grounded_tie_in = vertices.len() >= 3
             && Self::terrain_cdt_vertices_signed_area_xz(&vertices).abs() > f64::EPSILON;
@@ -294,13 +329,22 @@ impl RoadSurfaceSystem {
                 safe_step_m,
                 base_margin_m,
             );
-            Self::insert_terrain_patch_grading_margins_for_bounds(
+            if Self::insert_terrain_patch_grading_margins_for_bounds(
                 terrain,
                 vertices.iter().map(|vertex| (vertex.x, vertex.z)),
                 fallback_margin_m,
                 patch_margins,
+                target_patch,
+            ) {
+                target_margin_m = Some(
+                    target_margin_m
+                        .map_or(fallback_margin_m, |current| current.max(fallback_margin_m)),
+                );
+            }
+            return (
+                Self::terrain_cdt_grading_influence_bounds(&vertices, fallback_margin_m),
+                target_margin_m,
             );
-            return;
         }
 
         let loop_is_ccw = Self::terrain_cdt_vertices_signed_area_xz(&vertices) > 0.0;
@@ -333,7 +377,8 @@ impl RoadSurfaceSystem {
                     safe_step_m,
                     base_margin_m,
                 );
-                Self::insert_terrain_patch_grading_margins_for_ray(
+                required_margin_m = required_margin_m.max(margin_m);
+                if Self::insert_terrain_patch_grading_margins_for_ray(
                     terrain,
                     seam_x,
                     seam_z,
@@ -342,12 +387,19 @@ impl RoadSurfaceSystem {
                     margin_m,
                     safe_step_m,
                     patch_margins,
-                );
+                    target_patch,
+                ) {
+                    target_margin_m =
+                        Some(target_margin_m.map_or(margin_m, |current| current.max(margin_m)));
+                }
             }
         }
 
         if edge_outward_directions.len() != vertices.len() {
-            return;
+            return (
+                Self::terrain_cdt_grading_influence_bounds(&vertices, required_margin_m),
+                target_margin_m,
+            );
         }
         for index in 0..vertices.len() {
             let (previous_outward_x, previous_outward_z) =
@@ -370,7 +422,8 @@ impl RoadSurfaceSystem {
                 safe_step_m,
                 base_margin_m,
             );
-            Self::insert_terrain_patch_grading_margins_for_ray(
+            required_margin_m = required_margin_m.max(margin_m);
+            if Self::insert_terrain_patch_grading_margins_for_ray(
                 terrain,
                 vertex.x,
                 vertex.z,
@@ -379,8 +432,42 @@ impl RoadSurfaceSystem {
                 margin_m,
                 safe_step_m,
                 patch_margins,
-            );
+                target_patch,
+            ) {
+                target_margin_m =
+                    Some(target_margin_m.map_or(margin_m, |current| current.max(margin_m)));
+            }
         }
+        (
+            Self::terrain_cdt_grading_influence_bounds(&vertices, required_margin_m),
+            target_margin_m,
+        )
+    }
+
+    fn terrain_cdt_grading_influence_bounds(
+        vertices: &[TerrainCdtVertex],
+        margin_m: f32,
+    ) -> Option<(f32, f32, f32, f32)> {
+        let mut min_x = f64::INFINITY;
+        let mut min_z = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_z = f64::NEG_INFINITY;
+        for vertex in vertices {
+            min_x = min_x.min(vertex.x);
+            min_z = min_z.min(vertex.z);
+            max_x = max_x.max(vertex.x);
+            max_z = max_z.max(vertex.z);
+        }
+        if !min_x.is_finite() || !min_z.is_finite() || !max_x.is_finite() || !max_z.is_finite() {
+            return None;
+        }
+        let margin_m = f64::from(margin_m.max(0.0));
+        Some((
+            (min_x - margin_m) as f32,
+            (min_z - margin_m) as f32,
+            (max_x + margin_m) as f32,
+            (max_z + margin_m) as f32,
+        ))
     }
 
     fn insert_terrain_patch_grading_margins_for_ray(
@@ -392,7 +479,8 @@ impl RoadSurfaceSystem {
         margin_m: f32,
         render_step_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
-    ) {
+        target_patch: Option<(usize, usize)>,
+    ) -> bool {
         let margin_m = margin_m.max(0.0);
         let pad_m = render_step_m.max(terrain.cell_size_m());
         let end_x = seam_x + direction_x * f64::from(margin_m);
@@ -405,7 +493,8 @@ impl RoadSurfaceSystem {
             seam_z.max(end_z) as f32 + pad_m,
             margin_m,
             patch_margins,
-        );
+            target_patch,
+        )
     }
 
     fn insert_terrain_patch_grading_margins_for_bounds(
@@ -413,7 +502,8 @@ impl RoadSurfaceSystem {
         points: impl IntoIterator<Item = (f64, f64)>,
         margin_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
-    ) {
+        target_patch: Option<(usize, usize)>,
+    ) -> bool {
         let mut min_x = f64::INFINITY;
         let mut min_z = f64::INFINITY;
         let mut max_x = f64::NEG_INFINITY;
@@ -425,7 +515,7 @@ impl RoadSurfaceSystem {
             max_z = max_z.max(z);
         }
         if !min_x.is_finite() {
-            return;
+            return false;
         }
         let margin_m = margin_m.max(0.0);
         Self::insert_terrain_patch_grading_margins_for_rect(
@@ -436,7 +526,8 @@ impl RoadSurfaceSystem {
             max_z as f32 + margin_m,
             margin_m,
             patch_margins,
-        );
+            target_patch,
+        )
     }
 
     fn insert_terrain_patch_grading_margins_for_rect(
@@ -447,11 +538,13 @@ impl RoadSurfaceSystem {
         max_z: f32,
         margin_m: f32,
         patch_margins: &mut BTreeMap<(usize, usize), f32>,
-    ) {
+        target_patch: Option<(usize, usize)>,
+    ) -> bool {
         let query_min_x = min_x.min(max_x);
         let query_min_z = min_z.min(max_z);
         let query_max_x = min_x.max(max_x);
         let query_max_z = min_z.max(max_z);
+        let mut target_inserted = false;
         for key in terrain.render_patch_keys_for_world_bounds(
             query_min_x,
             query_min_z,
@@ -474,7 +567,9 @@ impl RoadSurfaceSystem {
                 .entry(key)
                 .and_modify(|existing| *existing = existing.max(margin_m))
                 .or_insert(margin_m);
+            target_inserted |= Some(key) == target_patch;
         }
+        target_inserted
     }
 
     #[cfg(test)]
@@ -526,6 +621,7 @@ mod tests {
             query_bounds.3,
             10.0,
             &mut patch_margins,
+            None,
         );
 
         assert_eq!(patch_margins.get(&(0, 0)), Some(&10.0));
@@ -533,5 +629,23 @@ mod tests {
             !patch_margins.contains_key(&(1, 0)),
             "a patch touched only along its boundary must not become road-locked"
         );
+    }
+
+    #[test]
+    fn exact_patch_margin_cannot_mix_influence_and_pad_selection_across_loops() {
+        let target_bounds = (0.0, 0.0, 10.0, 10.0);
+        let influence_only = RoadSurfaceSystem::terrain_cdt_exact_target_patch_margin(
+            Some((-2.0, 2.0, 2.0, 8.0)),
+            target_bounds,
+            None,
+        );
+        let pad_only = RoadSurfaceSystem::terrain_cdt_exact_target_patch_margin(
+            Some((12.0, 2.0, 18.0, 8.0)),
+            target_bounds,
+            Some(8.0),
+        );
+
+        assert_eq!(influence_only, None);
+        assert_eq!(pad_only, None);
     }
 }

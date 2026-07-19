@@ -17,12 +17,15 @@ impl SimCore {
     pub fn get_road_mesh_data_internal(&mut self) -> VarDictionary {
         let road_debug = debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
-        let cache_hit = self.cached_road_mesh_data.is_some();
-        if self.cached_road_mesh_data.is_none() {
-            self.cached_road_mesh_data = Some(Arc::new(
-                self.transit_network
-                    .generate_mesh_data(&self.region_graph, &self.heightmap),
-            ));
+        let cache_hit = self.cached_road_mesh_data.is_some() && !self.network_dirty;
+        if self.network_dirty || self.cached_road_mesh_data.is_none() {
+            if let Some(mesh) = self
+                .transit_network
+                .try_generate_mesh_data(&self.region_graph, &self.heightmap)
+            {
+                self.cached_road_mesh_data = Some(Arc::new(mesh));
+                self.cached_road_mesh_generation = self.road_tool_surface_generation;
+            }
         }
         let Some(mesh_data) = self.cached_road_mesh_data.as_ref() else {
             return VarDictionary::new();
@@ -47,10 +50,13 @@ impl SimCore {
     pub(crate) fn precompute_road_mesh_data(&mut self) {
         let road_debug = debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
-        self.cached_road_mesh_data = Some(Arc::new(
-            self.transit_network
-                .generate_mesh_data(&self.region_graph, &self.heightmap),
-        ));
+        if let Some(mesh) = self
+            .transit_network
+            .try_generate_mesh_data(&self.region_graph, &self.heightmap)
+        {
+            self.cached_road_mesh_data = Some(Arc::new(mesh));
+            self.cached_road_mesh_generation = self.road_tool_surface_generation;
+        }
         if road_debug {
             let vertex_count = self
                 .cached_road_mesh_data

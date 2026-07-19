@@ -79,6 +79,8 @@ impl RoadSurfaceSystem {
             .keys()
             .chain(self.earthwork_node_chunks.keys())
             .chain(self.compiled_visual_node_pieces.keys())
+            .chain(self.compiled_visual_node_earthwork_boundaries.keys())
+            .chain(self.compiled_visual_node_topologies.keys())
             .copied()
             .filter(|node_id| (*node_id as usize) >= graph.node_count())
             .collect();
@@ -86,6 +88,9 @@ impl RoadSurfaceSystem {
             self.remove_node_piece_coverage(node_id);
             self.compiled_visual_node_pieces.remove(&node_id);
             self.compiled_visual_node_inputs.remove(&node_id);
+            self.compiled_visual_node_earthwork_boundaries
+                .remove(&node_id);
+            self.compiled_visual_node_topologies.remove(&node_id);
         }
 
         self.compiled_sections.retain(|edge_idx, _| {
@@ -97,6 +102,10 @@ impl RoadSurfaceSystem {
         self.compiled_visual_node_pieces
             .retain(|node_id, _| (*node_id as usize) < graph.node_count());
         self.compiled_visual_node_inputs
+            .retain(|node_id, _| (*node_id as usize) < graph.node_count());
+        self.compiled_visual_node_earthwork_boundaries
+            .retain(|node_id, _| (*node_id as usize) < graph.node_count());
+        self.compiled_visual_node_topologies
             .retain(|node_id, _| (*node_id as usize) < graph.node_count());
         self.surface_chunk_cache
             .retain(|_, entry| !entry.edge_indices.is_empty() || !entry.node_ids.is_empty());

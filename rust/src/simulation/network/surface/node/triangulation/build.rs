@@ -18,11 +18,40 @@ impl RoadSurfaceSystem {
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
         NodeTriangulationSolution::from_arrangement(arrangement)
     }
+
+    /// Triangulates an arrangement while carrying forward step extraction already needed by
+    /// arrangement conflict validation.
+    pub(in crate::simulation::network::surface) fn build_node_triangulation_from_arrangement_with_explicit_steps(
+        arrangement: &NodeArrangement,
+        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+    ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
+        NodeTriangulationSolution::from_arrangement_with_explicit_steps(
+            arrangement,
+            explicit_vertical_step_segments,
+        )
+    }
 }
 
 impl NodeTriangulationSolution {
     pub(crate) fn from_arrangement(
         arrangement: &NodeArrangement,
+    ) -> Result<Self, NodeTriangulationError> {
+        Self::from_arrangement_with_optional_explicit_steps(arrangement, None)
+    }
+
+    fn from_arrangement_with_explicit_steps(
+        arrangement: &NodeArrangement,
+        explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
+    ) -> Result<Self, NodeTriangulationError> {
+        Self::from_arrangement_with_optional_explicit_steps(
+            arrangement,
+            Some(explicit_vertical_step_segments),
+        )
+    }
+
+    fn from_arrangement_with_optional_explicit_steps(
+        arrangement: &NodeArrangement,
+        explicit_vertical_step_segments: Option<&[NodeExplicitVerticalStepSegment]>,
     ) -> Result<Self, NodeTriangulationError> {
         if arrangement.regions().is_empty() {
             return Err(NodeTriangulationError::EmptyHeightSolution {
@@ -74,7 +103,9 @@ impl NodeTriangulationSolution {
             node_id: arrangement.node_id(),
             piece_kind: arrangement.piece_kind(),
             regions,
-            explicit_vertical_step_segments: arrangement.explicit_vertical_step_segments(),
+            explicit_vertical_step_segments: explicit_vertical_step_segments
+                .map(|segments| segments.to_vec())
+                .unwrap_or_else(|| arrangement.explicit_vertical_step_segments()),
         })
     }
 }

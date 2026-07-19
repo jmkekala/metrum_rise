@@ -122,17 +122,30 @@ impl SimCore {
 
     fn finish_terrain_authoring_edit_internal(&mut self) {
         self.terrain_dirty = true;
-        self.cached_road_mesh_data = None;
-        self.mark_network_render_dirty();
+        self.mark_local_network_render_dirty();
 
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
-        self.transit_network
+        let road_surface_had_dirty_work =
+            self.transit_network.road_surface.has_pending_rebuild_work();
+        let dirty_chunks = self
+            .transit_network
             .rebuild_dirty_terrain_earthworks_with_reason(
                 &self.region_graph,
                 &mut self.heightmap,
                 RoadSurfaceCompileReason::TerrainEarthwork,
             );
+        let dirty_patch_keys = self
+            .transit_network
+            .road_surface
+            .mark_render_patches_for_chunk_grading_envelopes(
+                &mut self.heightmap,
+                &dirty_chunks,
+                ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+            );
+        if road_surface_had_dirty_work {
+            self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
+        }
         self.rebuild_building_entrances_internal();
         if self.has_authored_water_internal() {
             if let Err(err) = self.rebuild_authored_water_preview_internal() {
@@ -502,9 +515,8 @@ impl SimCore {
         self.transit_network
             .rebuild_cch_and_check(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
-        self.mark_network_render_dirty();
+        self.mark_local_network_render_dirty();
         self.terrain_dirty = true;
-        self.cached_road_mesh_data = None;
         true
     }
 
@@ -969,8 +981,7 @@ impl SimCore {
                 .deduct_build_cost(build_length_m * ROAD_BUILD_COST_PER_METER);
         }
 
-        self.mark_network_render_dirty();
-        self.cached_road_mesh_data = None;
+        self.mark_local_network_render_dirty();
 
         // Store partial timing so the AddRoad handler can append the remaining phases.
         // Zoning is NOT flushed here — create_edge_internal already called
@@ -1169,8 +1180,7 @@ impl SimCore {
                 &affected_nodes,
             );
             self.transit_network.mark_surface_point_dirty(old_pos);
-            self.mark_network_render_dirty();
-            self.cached_road_mesh_data = None;
+            self.mark_local_network_render_dirty();
         }
     }
 
@@ -1359,6 +1369,8 @@ impl SimCore {
         let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
 
         let earthwork_start = road_debug.then(Instant::now);
+        let road_surface_had_dirty_work =
+            self.transit_network.road_surface.has_pending_rebuild_work();
         let dirty_chunks = self
             .transit_network
             .rebuild_dirty_terrain_earthworks_with_reason(
@@ -1366,7 +1378,7 @@ impl SimCore {
                 &mut self.heightmap,
                 RoadSurfaceCompileReason::SimCommit,
             );
-        let road_locked_dirty_patches = self
+        let road_locked_dirty_patch_keys = self
             .transit_network
             .road_surface
             .mark_render_patches_for_chunk_grading_envelopes(
@@ -1374,6 +1386,18 @@ impl SimCore {
                 &dirty_chunks,
                 ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             );
+        if road_surface_had_dirty_work {
+            let dirty_query_chunks = self
+                .transit_network
+                .road_surface
+                .last_rebuilt_query_chunks()
+                .to_vec();
+            self.bump_local_road_terrain_payload_generations(
+                &road_locked_dirty_patch_keys,
+                &dirty_query_chunks,
+            );
+        }
+        let road_locked_dirty_patches = road_locked_dirty_patch_keys.len();
         let earthwork_ms = earthwork_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -1647,6 +1671,7 @@ mod tests {
     use godot::prelude::{Vector2, Vector3};
     use std::collections::HashSet;
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Arc;
 
     fn test_core() -> SimCore {
         use crate::nodes::sim::core::CityTreasury;
@@ -1697,12 +1722,40 @@ mod tests {
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
+            refined_terrain_assembly_ledgers: HashMap::new(),
             cached_road_mesh_data: None,
+            cached_road_mesh_generation: 0,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
+    }
+
+    fn add_test_road_edge(graph: &mut RegionGraph, start_node: u32, end_node: u32) -> usize {
+        let start = graph.node(start_node).pos;
+        let end = graph.node(end_node).pos;
+        graph.add_edge(Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: start.distance_to(end),
+            physical_length: start.distance_to(end),
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![start, end],
+            physical_geometry: vec![start, end],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        })
     }
 
     fn test_building(asset_id: &str, center_x: f32, support_height_m: f32) -> Building {
@@ -2081,6 +2134,11 @@ mod tests {
         assert_eq!(core.region_graph.edge_count(), 1);
 
         finalize_network_render_for_test(&mut core);
+        let previous_mesh = Arc::clone(
+            core.cached_road_mesh_data
+                .as_ref()
+                .expect("baseline road mesh must be cached before undo"),
+        );
 
         let stale_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
         assert!(!stale_road_locked_patches.is_empty());
@@ -2097,11 +2155,28 @@ mod tests {
 
         assert!(core.undo_action_internal());
         assert_eq!(core.region_graph.edge_count(), 0);
-        assert!(core.road_locked_terrain_patch_keys.is_empty());
-        assert!(core.refined_terrain_patch_cache.is_empty());
-        assert!(core.cached_road_mesh_data.is_none());
+        assert!(
+            !core.refined_terrain_patch_cache.is_empty(),
+            "bounded road undo must retain the immutable previous terrain generation"
+        );
+        assert!(
+            core.transit_network.road_surface.compiled_once,
+            "bounded road undo must not force the next surface pass through compile_all"
+        );
+        assert!(
+            core.transit_network.road_surface.has_pending_rebuild_work(),
+            "removed road coverage must remain queued for local cleanup"
+        );
+        assert!(Arc::ptr_eq(
+            core.cached_road_mesh_data
+                .as_ref()
+                .expect("bounded undo must retain the last-good road mesh"),
+            &previous_mesh
+        ));
         assert!(core.terrain_dirty);
         assert!(core.network_dirty);
+
+        core.rebuild_network_surface_terrain_internal();
         for key in &stale_road_locked_patches {
             assert!(
                 core.heightmap.dirty_render_patches().contains(key),
@@ -2109,11 +2184,14 @@ mod tests {
             );
         }
 
-        core.rebuild_network_surface_terrain_internal();
         let cache_inputs =
             core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         assert!(cache_inputs.is_empty());
         assert!(core.road_locked_terrain_patch_keys.is_empty());
+        assert!(
+            core.refined_terrain_patch_cache.is_empty(),
+            "ownership refresh may discard a previous patch only after no engineered owner remains"
+        );
     }
 
     #[test]
@@ -2122,8 +2200,8 @@ mod tests {
         core.benchmark_mode = false;
         core.add_road_internal(
             vec![
-                Vector3::new(-40.0, 0.0, -16.0),
-                Vector3::new(40.0, 0.0, -16.0),
+                Vector3::new(-40.0, 0.0, 32.0),
+                Vector3::new(40.0, 0.0, 32.0),
             ],
             1,
             1,
@@ -2134,21 +2212,444 @@ mod tests {
 
         core.add_road_internal(
             vec![
-                Vector3::new(-40.0, 0.0, 16.0),
-                Vector3::new(40.0, 0.0, 16.0),
+                Vector3::new(-40.0, 0.0, 160.0),
+                Vector3::new(40.0, 0.0, 160.0),
             ],
             1,
             1,
         );
         finalize_network_render_for_test(&mut core);
         assert_eq!(core.region_graph.edge_count(), 2);
+        for key in &core.road_locked_terrain_patch_keys {
+            let ledger = core
+                .refined_terrain_assembly_ledgers
+                .get(key)
+                .expect("road-owned dirty patches must retain their local assembly scope");
+            assert!(
+                ledger.full_dirty_at.is_none(),
+                "road-only ownership refresh must not replace exact query chunks with full scope"
+            );
+            assert!(!ledger.road_query_chunk_dirty_at.is_empty());
+        }
+        let previous_windows = core
+            .refined_terrain_patch_cache
+            .values()
+            .flat_map(|patch| patch.windows.iter().cloned())
+            .collect::<Vec<_>>();
+        let previous_mesh = Arc::clone(
+            core.cached_road_mesh_data
+                .as_ref()
+                .expect("post-edit road mesh must be cached before undo"),
+        );
+        let global_generation_before_undo = core.terrain_payload_global_generation;
 
         assert!(core.undo_action_internal());
         assert_eq!(core.region_graph.edge_count(), 1);
-        assert!(core.road_locked_terrain_patch_keys.is_empty());
-        assert!(core.refined_terrain_patch_cache.is_empty());
-        assert!(core.cached_road_mesh_data.is_none());
+        assert_eq!(
+            core.terrain_payload_global_generation, global_generation_before_undo,
+            "bounded road undo must preserve patch-local generation semantics"
+        );
+        assert!(
+            !core.refined_terrain_patch_cache.is_empty(),
+            "undo must keep the complete post-edit generation as an immutable reuse source"
+        );
+        assert!(core.transit_network.road_surface.compiled_once);
+        assert!(Arc::ptr_eq(
+            core.cached_road_mesh_data
+                .as_ref()
+                .expect("bounded undo must retain the last-good road mesh"),
+            &previous_mesh
+        ));
         assert!(core.network_dirty);
+
+        core.rebuild_network_surface_terrain_internal();
+        let cache_inputs =
+            core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
+        assert!(
+            !cache_inputs.is_empty(),
+            "undo must enqueue at least one locally revised refined patch"
+        );
+        let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
+        let entry_count = cache_entries.len();
+        let entry_keys = cache_entries
+            .iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>();
+        assert!(
+            cache_entries.iter().any(|entry| entry.reused_windows > 0),
+            "undoing remote road coverage must reuse unchanged fixed terrain tiles"
+        );
+        assert!(
+            cache_entries
+                .iter()
+                .flat_map(|entry| &entry.windows)
+                .any(|window| {
+                    previous_windows
+                        .iter()
+                        .any(|previous| Arc::ptr_eq(window, previous))
+                }),
+            "unchanged undo tiles must retain their previous-generation Arc identity"
+        );
+        assert_eq!(
+            core.insert_refined_terrain_patch_cache_entries(cache_entries),
+            entry_count,
+            "every locally rebuilt undo patch must be complete, current, and publishable"
+        );
+        for key in entry_keys {
+            let published = core
+                .refined_terrain_patch_cache
+                .get(&key)
+                .expect("publishable undo generation must replace its cache entry");
+            assert_eq!(
+                published.surface_generation,
+                core.terrain_payload_generation_for_patch(key.patch_x, key.patch_z)
+            );
+        }
+    }
+
+    #[test]
+    fn undoing_fourth_junction_mouth_restores_exact_pre_edit_surface_topology() {
+        let mut core = test_core();
+        let center = core
+            .region_graph
+            .add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        for endpoint in [
+            Vector3::new(-36.0, 0.0, 0.0),
+            Vector3::new(36.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 36.0),
+        ] {
+            let endpoint = core.region_graph.add_node(endpoint, NodeType::Junction);
+            add_test_road_edge(&mut core.region_graph, center, endpoint);
+        }
+        core.region_graph.rebuild_adjacency_list();
+        finalize_network_render_for_test(&mut core);
+
+        let baseline_piece = core
+            .transit_network
+            .road_surface
+            .compiled_visual_node_pieces
+            .get(&center)
+            .expect("three-mouth JunctionN must compile")
+            .clone();
+        let baseline_input = core
+            .transit_network
+            .road_surface
+            .compiled_visual_node_inputs
+            .get(&center)
+            .expect("three-mouth JunctionN must retain its compiler input")
+            .clone();
+        let baseline_boundaries = core
+            .transit_network
+            .road_surface
+            .compiled_visual_node_earthwork_boundaries
+            .get(&center)
+            .expect("JunctionN must retain its earthwork boundary")
+            .clone();
+        let baseline_topology = core
+            .transit_network
+            .road_surface
+            .compiled_visual_node_topologies
+            .get(&center)
+            .expect("JunctionN must retain its canonical topology")
+            .clone();
+        let baseline_mesh = core
+            .cached_road_mesh_data
+            .as_deref()
+            .expect("baseline road mesh must be precomputed");
+        let baseline_mesh_vertices = (
+            baseline_mesh.earthwork_vertices.clone(),
+            baseline_mesh.curb_vertices.clone(),
+            baseline_mesh.raised_step_vertices.clone(),
+            baseline_mesh.sidewalk_vertices.clone(),
+            baseline_mesh.road_vertices.clone(),
+            baseline_mesh.marking_vertices.clone(),
+            baseline_mesh.concrete_vertices.clone(),
+        );
+
+        core.benchmark_mode = false;
+        let appended_node = core.region_graph.node_count() as u32;
+        let appended_edge = core.region_graph.edge_count();
+        core.add_road_internal(
+            vec![Vector3::new(0.0, 0.0, -36.0), Vector3::new(0.0, 0.0, 0.0)],
+            1,
+            1,
+        );
+        assert!(
+            core.undo_stack
+                .back()
+                .expect("network undo snapshot")
+                .road_surface_topology
+                .is_some(),
+            "a clean compiled surface must capture a bounded pre-edit checkpoint"
+        );
+
+        finalize_network_render_for_test(&mut core);
+        assert_eq!(core.region_graph.node_count(), appended_node as usize + 1);
+        assert_eq!(core.region_graph.edge_count(), 4);
+        assert!(
+            !Arc::ptr_eq(
+                core.transit_network
+                    .road_surface
+                    .compiled_visual_node_topologies
+                    .get(&center)
+                    .expect("four-mouth JunctionN topology"),
+                &baseline_topology,
+            ),
+            "the edit must replace the center JunctionN cache before undo"
+        );
+
+        assert!(core.undo_action_internal());
+        assert_eq!(core.region_graph.edge_count(), 3);
+        assert_eq!(
+            core.transit_network
+                .road_surface
+                .compiled_visual_node_pieces
+                .get(&center),
+            Some(&baseline_piece),
+            "undo must restore the exact pre-edit JunctionN piece without a cold compile"
+        );
+        assert_eq!(
+            core.transit_network
+                .road_surface
+                .compiled_visual_node_inputs
+                .get(&center),
+            Some(&baseline_input),
+            "undo must restore the exact pre-edit JunctionN compiler input"
+        );
+        assert!(Arc::ptr_eq(
+            core.transit_network
+                .road_surface
+                .compiled_visual_node_earthwork_boundaries
+                .get(&center)
+                .expect("restored earthwork boundary"),
+            &baseline_boundaries,
+        ));
+        assert!(Arc::ptr_eq(
+            core.transit_network
+                .road_surface
+                .compiled_visual_node_topologies
+                .get(&center)
+                .expect("restored canonical topology"),
+            &baseline_topology,
+        ));
+        assert!(
+            !core
+                .transit_network
+                .road_surface
+                .compiled_sections
+                .contains_key(&appended_edge)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .compiled_visual_span_pieces
+                    .contains_key(&appended_edge)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .compiled_visual_node_pieces
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .compiled_visual_node_inputs
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .compiled_visual_node_earthwork_boundaries
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .compiled_visual_node_topologies
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .surface_span_chunks
+                    .contains_key(&appended_edge)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .earthwork_span_chunks
+                    .contains_key(&appended_edge)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .query_span_chunks
+                    .contains_key(&appended_edge)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .surface_node_chunks
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .earthwork_node_chunks
+                    .contains_key(&appended_node)
+                && !core
+                    .transit_network
+                    .road_surface
+                    .query_node_chunks
+                    .contains_key(&appended_node),
+            "appended post-edit surface owners must be removed"
+        );
+        assert!(
+            core.transit_network.road_surface.dirty_edges.is_empty()
+                && core.transit_network.road_surface.dirty_nodes.is_empty(),
+            "an exact cache restore must not enqueue owner recompilation"
+        );
+        assert!(
+            !core
+                .transit_network
+                .road_surface
+                .dirty_surface_chunks
+                .is_empty()
+                && !core
+                    .transit_network
+                    .road_surface
+                    .dirty_terrain_chunks
+                    .is_empty()
+                && !core
+                    .transit_network
+                    .road_surface
+                    .dirty_query_chunks
+                    .is_empty(),
+            "old and new owner coverage must enqueue only chunk-shell rebuilds"
+        );
+
+        core.rebuild_network_surface_terrain_internal();
+        core.precompute_road_mesh_data();
+        assert!(
+            core.transit_network.road_surface.dirty_edges.is_empty()
+                && core.transit_network.road_surface.dirty_nodes.is_empty()
+                && core
+                    .transit_network
+                    .road_surface
+                    .dirty_surface_chunks
+                    .is_empty()
+                && core
+                    .transit_network
+                    .road_surface
+                    .dirty_terrain_chunks
+                    .is_empty()
+                && core
+                    .transit_network
+                    .road_surface
+                    .dirty_query_chunks
+                    .is_empty(),
+            "terrain finalization must rebuild dirty chunk shells without compiling owners"
+        );
+        assert!(
+            !core
+                .transit_network
+                .road_surface
+                .last_rebuilt_surface_chunks
+                .is_empty()
+                && !core
+                    .transit_network
+                    .road_surface
+                    .last_rebuilt_terrain_chunks
+                    .is_empty()
+                && !core
+                    .transit_network
+                    .road_surface
+                    .last_rebuilt_query_chunks
+                    .is_empty(),
+            "the restored old/new coverage must be committed to every chunk cache"
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .surface_chunk_cache
+                .values()
+                .all(|entry| !entry.edge_indices.contains(&appended_edge)
+                    && !entry.node_ids.contains(&appended_node))
+                && core
+                    .transit_network
+                    .road_surface
+                    .earthwork_chunk_cache
+                    .values()
+                    .all(|entry| !entry.edge_indices.contains(&appended_edge)
+                        && !entry.node_ids.contains(&appended_node)),
+            "rebuilt chunk shells must not retain appended owner IDs"
+        );
+        let restored_mesh = core
+            .cached_road_mesh_data
+            .as_deref()
+            .expect("restored road mesh must be precomputed");
+        assert_eq!(
+            (
+                &restored_mesh.earthwork_vertices,
+                &restored_mesh.curb_vertices,
+                &restored_mesh.raised_step_vertices,
+                &restored_mesh.sidewalk_vertices,
+                &restored_mesh.road_vertices,
+                &restored_mesh.marking_vertices,
+                &restored_mesh.concrete_vertices,
+            ),
+            (
+                &baseline_mesh_vertices.0,
+                &baseline_mesh_vertices.1,
+                &baseline_mesh_vertices.2,
+                &baseline_mesh_vertices.3,
+                &baseline_mesh_vertices.4,
+                &baseline_mesh_vertices.5,
+                &baseline_mesh_vertices.6,
+            ),
+            "the final rendered mesh must contain exactly the baseline three-mouth geometry"
+        );
+    }
+
+    #[test]
+    fn network_undo_falls_back_to_owner_recompile_when_surface_capture_is_dirty() {
+        let mut core = test_core();
+        let start = core
+            .region_graph
+            .add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let end = core
+            .region_graph
+            .add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        let edge_idx = add_test_road_edge(&mut core.region_graph, start, end);
+        core.region_graph.rebuild_adjacency_list();
+        finalize_network_render_for_test(&mut core);
+
+        core.transit_network
+            .road_surface
+            .mark_edge_dirty(&core.region_graph, edge_idx);
+        core.push_network_undo_for_local_topology(
+            HashSet::from([edge_idx]),
+            HashSet::from([start]),
+        );
+        assert!(
+            core.undo_stack
+                .back()
+                .expect("network undo snapshot")
+                .road_surface_topology
+                .is_none(),
+            "pending compiler work must reject exact cache capture"
+        );
+
+        core.region_graph
+            .move_node(start, Vector3::new(-30.0, 0.0, 0.0));
+        assert!(core.undo_action_internal());
+        assert_eq!(
+            core.region_graph.node(start).pos,
+            Vector3::new(-24.0, 0.0, 0.0)
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .dirty_edges
+                .contains(&edge_idx)
+                && core
+                    .transit_network
+                    .road_surface
+                    .dirty_nodes
+                    .contains(&start),
+            "invalid cache capture must fall back to the bounded owner recompile path"
+        );
     }
 
     #[test]

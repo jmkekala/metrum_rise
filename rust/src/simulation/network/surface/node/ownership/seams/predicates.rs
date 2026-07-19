@@ -88,7 +88,7 @@ pub(super) fn constraint_is_material_transition(constraint: &NodeRailConstraint)
     }
 }
 
-pub(super) fn constraint_applies_to_owner(
+pub(in crate::simulation::network::surface::node::ownership) fn constraint_applies_to_owner(
     constraint: &NodeRailConstraint,
     owner: NodeBandOwner,
 ) -> bool {

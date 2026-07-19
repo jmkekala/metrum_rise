@@ -148,4 +148,16 @@ mod tests {
             vec![(0, 0), (2, 0), (4, 0)]
         );
     }
+
+    #[test]
+    fn non_strict_point_index_preserves_overlay_grid_tolerance_on_axis_edges() {
+        assert_eq!(
+            noded_owned_region_edge_points_with_rail_paths((0, 0), (0, 10), &[(1, 5)], &[], false),
+            vec![(0, 0), (1, 5), (0, 10)]
+        );
+        assert_eq!(
+            noded_owned_region_edge_points_with_rail_paths((0, 0), (10, 0), &[(5, 1)], &[], false),
+            vec![(0, 0), (5, 1), (10, 0)]
+        );
+    }
 }

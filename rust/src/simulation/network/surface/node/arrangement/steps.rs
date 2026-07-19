@@ -21,10 +21,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod authority;
 mod extraction;
+mod reuse;
 mod segment;
 
 use authority::owner_sets_match_step;
 pub(crate) use authority::owners_form_explicit_vertical_step_pair;
+pub(crate) use reuse::NodeFinalExplicitStepTopologyCache;
 pub(crate) use segment::{
     NodeExplicitVerticalStepSegment, explicit_vertical_step_segments_authorize_height_side_at_key,
 };

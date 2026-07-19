@@ -8,7 +8,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 - **Scale target**: at least 1,000,000 total population across simulation tiers in one large world.
 - **Simulation model**: full-FSM simulation stays inside the active area of interest; distant world regions are expected to degrade to coarser flow-field or aggregate simulation.
-- **Current focus**: keep the playable small-to-medium city slice correct, deterministic, and scalable while the docs/planning cleanup continues and baseline water/render performance is hardened.
+- **Current focus**: keep the playable small-to-medium city slice correct, deterministic, and scalable while the docs/planning cleanup continues and baseline water/render plus local road-build performance are hardened.
 
 ## Shipped Foundations
 
@@ -24,6 +24,31 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
+- `ROAD-05`: fixed world-aligned refined-terrain CDT tiles and immutable prior-generation reuse are
+  implemented, including cached tile render buffers, bounded incremental road undo with exact
+  pre-edit surface-cache restoration, stable exact-XZ `JunctionN` contact reuse, and uniform-height
+  ownership reuse. Topology-changing junction rebuilds now also reuse unchanged exact
+  same-material contour-pair contacts, cross-kind raised-step contour-pair output, indexed
+  raised-step source/group contributors, final noded contact components, and retained-contact
+  decisions/authority. Fixed world-aligned source/target tiles and semantic source deduplication
+  make later raised-step passes visit only new sources or changed target groups; point incidence no
+  longer scans every source. Retained-contact authority uses reverse-indexed immutable buckets, and
+  diagnostics separate current-generation duplicate lookups from previous-generation reuse.
+  Node-local keys ignore raw edge-ID churn. Canonical ownership cleanup including final self-touch
+  splitting, seam extraction/materialization, and final-boundary point provenance now promote exact
+  unchanged contributors from the immutable prior generation. An exact final owned-shape/constraint match
+  also replays the complete footprint, seams, boundary arrangement, and diagnostics while retaining
+  the nested seam cache for the next edit; removed entries are dropped after changed builds,
+  Bend-to-JunctionN transitions retain contributor state, and indexed boundary-reference
+  construction replaces full point scans. Remote third-road splits now
+  recompile the existing and newly created `JunctionN` pieces as one atomic surface generation,
+  retaining the last complete render generation on any required-node failure. World-definition
+  and save replacement publish their final road generation before terrain/water workers resume,
+  while water-only query revisions retain valid unchanged road clipping. Semantic node export now
+  reuses final explicit-step topology, exact-XZ height-conflict cohorts, top-boundary contributors,
+  and raised-step spans/faces with current-generation index rebinding; final-step misses use
+  compact edge-local authority keys and spatially indexed compatible overlap candidates. Complete
+  assembled node export buffers and fresh release gameplay measurements remain.
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: validate and harden the first city-owned service-building slice across UI, runtime economy, and save/load.
 - `WATER-01`: harden baseline-water rendering and remove remaining dense compatibility boundaries.

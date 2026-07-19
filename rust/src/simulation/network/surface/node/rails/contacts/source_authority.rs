@@ -12,5 +12,8 @@ pub(super) use kinds::{
 pub(in crate::simulation::network::surface::node::rails) use kinds::{
     generated_raised_step_boundary_role_for_owner, raised_step_band_kinds_can_contact,
 };
-pub(super) use raised_steps::collect_source_authorized_raised_step_contacts;
+pub(in crate::simulation::network::surface::node::rails) use raised_steps::{
+    NodeSourceAuthorizedContactCache, SourceAuthorizedContactReuseStats,
+    collect_source_authorized_raised_step_contacts_with_reuse,
+};
 pub(super) use types::GeneratedSameBandContactConstraint;

@@ -182,6 +182,45 @@ pub(crate) struct RegionGraphUndoDelta {
     aliases: Vec<(u32, Option<u32>)>,
 }
 
+impl RegionGraphUndoDelta {
+    /// Returns every topology ID whose pre-edit record is stored by this inverse.
+    pub(crate) fn stored_topology_ids(&self) -> (HashSet<usize>, HashSet<u32>) {
+        let edge_ids = self
+            .edges
+            .iter()
+            .map(|(edge_idx, _)| *edge_idx)
+            .collect::<HashSet<_>>();
+        let mut node_ids = self
+            .nodes
+            .iter()
+            .map(|(node_id, _)| *node_id)
+            .collect::<HashSet<_>>();
+        for &(alias, canonical) in &self.aliases {
+            node_ids.insert(alias);
+            if let Some(canonical) = canonical {
+                node_ids.insert(canonical);
+            }
+        }
+        (edge_ids, node_ids)
+    }
+
+    /// Returns every stored or subsequently appended topology ID affected by this inverse.
+    pub(crate) fn affected_topology_ids(
+        &self,
+        current_node_count: usize,
+        current_edge_count: usize,
+    ) -> (HashSet<usize>, HashSet<u32>) {
+        let (mut edge_ids, mut node_ids) = self.stored_topology_ids();
+        edge_ids.extend(self.original_edge_count..current_edge_count);
+
+        node_ids.extend(
+            (self.original_node_count..current_node_count)
+                .filter_map(|node_id| u32::try_from(node_id).ok()),
+        );
+        (edge_ids, node_ids)
+    }
+}
+
 impl RegionGraph {
     /// Creates a new, empty road graph.
     pub fn new() -> Self {

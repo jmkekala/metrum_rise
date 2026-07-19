@@ -80,67 +80,59 @@ pub(super) fn canonicalize_input(
         {
             continue;
         }
-        let points = simplified_road_loop(clip_loop_to_patch(original_points, input.patch))?;
-        if points.len() < 3 {
-            continue;
+        for points in clip_loop_to_patch_components(&original_points, input.patch) {
+            let points =
+                split_road_loop_segments_at_source_vertices(points, &original_source_edges)?;
+            if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+                continue;
+            }
+            let seam_quality =
+                harden_terrain_cdt_road_loop_seams(points, &original_source_edges, input.patch);
+            let points = seam_quality.points;
+            let edge_sources = seam_quality.edge_sources;
+            accepted_seam_edges += seam_quality.accepted_seam_edges;
+            merged_subbudget_seam_edges += seam_quality.merged_subbudget_seam_edges;
+            retaining_wall_required_seam_edges += seam_quality.retaining_wall_required_seam_edges;
+            blocking_degenerate_seam_edges += seam_quality.blocking_degenerate_seam_edges;
+            append_seam_quality_samples(&mut seam_quality_samples, seam_quality.samples);
+            if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+                continue;
+            }
+            let loop_indices = points
+                .iter()
+                .map(|&vertex| {
+                    insert_road_vertex(
+                        vertex,
+                        &mut vertices,
+                        &mut vertex_lookup,
+                        &mut road_vertex_heights,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            push_road_loop_constraints(
+                &loop_indices,
+                &vertices,
+                input.patch,
+                TerrainCdtRoadLoopConstraintIdentity {
+                    stable_piece_id: road_loop.stable_piece_id,
+                    local_loop_index: road_loop.local_loop_index,
+                },
+                &edge_sources,
+                &mut road_constraint_edges,
+                &mut road_constraint_sources,
+            )?;
+            let loop_bounds = terrain_cdt_loop_bounds(&points);
+            road_loops.push(CanonicalTerrainCdtRoadLoop {
+                footprint_group_id: road_loop.footprint_group_id,
+                is_hole: road_loop.is_hole,
+                min_x: loop_bounds.min_x,
+                min_z: loop_bounds.min_z,
+                max_x: loop_bounds.max_x,
+                max_z: loop_bounds.max_z,
+                vertices: points,
+                edge_sources,
+            });
         }
-        if signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
-            continue;
-        }
-        let points = ensure_ccw(points);
-        let points = split_road_loop_segments_at_source_vertices(points, &original_source_edges)?;
-        if points.len() < 3 {
-            continue;
-        }
-        if signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
-            continue;
-        }
-        let seam_quality =
-            harden_terrain_cdt_road_loop_seams(points, &original_source_edges, input.patch);
-        let points = seam_quality.points;
-        let edge_sources = seam_quality.edge_sources;
-        accepted_seam_edges += seam_quality.accepted_seam_edges;
-        merged_subbudget_seam_edges += seam_quality.merged_subbudget_seam_edges;
-        retaining_wall_required_seam_edges += seam_quality.retaining_wall_required_seam_edges;
-        blocking_degenerate_seam_edges += seam_quality.blocking_degenerate_seam_edges;
-        append_seam_quality_samples(&mut seam_quality_samples, seam_quality.samples);
-        if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
-            continue;
-        }
-        let loop_indices = points
-            .iter()
-            .map(|&vertex| {
-                insert_road_vertex(
-                    vertex,
-                    &mut vertices,
-                    &mut vertex_lookup,
-                    &mut road_vertex_heights,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        push_road_loop_constraints(
-            &loop_indices,
-            &vertices,
-            input.patch,
-            TerrainCdtRoadLoopConstraintIdentity {
-                stable_piece_id: road_loop.stable_piece_id,
-                local_loop_index: road_loop.local_loop_index,
-            },
-            &edge_sources,
-            &mut road_constraint_edges,
-            &mut road_constraint_sources,
-        )?;
-        let loop_bounds = terrain_cdt_loop_bounds(&points);
-        road_loops.push(CanonicalTerrainCdtRoadLoop {
-            footprint_group_id: road_loop.footprint_group_id,
-            is_hole: road_loop.is_hole,
-            min_x: loop_bounds.min_x,
-            min_z: loop_bounds.min_z,
-            max_x: loop_bounds.max_x,
-            max_z: loop_bounds.max_z,
-            vertices: points,
-            edge_sources,
-        });
     }
 
     input

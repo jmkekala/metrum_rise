@@ -74,6 +74,7 @@ impl SimCore {
         );
         let terrain = TerrainSystem::from_world_config(&config);
         self.reset_to_blank_world_runtime(config, terrain);
+        self.precompute_road_mesh_data();
         Ok(())
     }
 
@@ -478,6 +479,7 @@ impl SimCore {
         self.world_lake_fill_preview = None;
         self.rebuild_authored_water_preview_internal()
             .expect("loaded world definition water preview should rebuild");
+        self.precompute_road_mesh_data();
     }
 
     fn reset_to_blank_world_runtime(&mut self, config: WorldConfig, terrain: TerrainSystem) {
@@ -524,6 +526,7 @@ impl SimCore {
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
         self.refined_terrain_patch_cache.clear();
+        self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
         self.road_locked_terrain_patch_margins.clear();
         self.building_site_owned_terrain_patch_keys.clear();
@@ -984,6 +987,7 @@ mod tests {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
+    use crate::simulation::world_definition::{AuthoredLakeFill, LoadedWorldDefinition};
     use crate::simulation::zoning::ZoningSystem;
     use godot::prelude::Vector2;
     use std::collections::HashSet;
@@ -1039,7 +1043,9 @@ mod tests {
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
+            refined_terrain_assembly_ledgers: HashMap::new(),
             cached_road_mesh_data: None,
+            cached_road_mesh_generation: 0,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
@@ -1060,6 +1066,44 @@ mod tests {
                 core.heightmap.set_height(x, z, height);
             }
         }
+    }
+
+    #[test]
+    fn loaded_authored_water_publishes_matching_empty_road_generation() {
+        let mut core = test_core_with_small_world();
+        carve_closed_basin(&mut core);
+        let loaded = LoadedWorldDefinition {
+            name: "water-test".to_owned(),
+            config: core.config.clone(),
+            terrain: core.heightmap.clone(),
+            lake_fills: vec![AuthoredLakeFill {
+                world_x: 0.0,
+                world_z: 0.0,
+                surface_elevation_m: 100.0,
+            }],
+            open_water_fills: Vec::new(),
+        };
+
+        core.apply_loaded_world_definition(loaded);
+
+        assert!(
+            core.watermap
+                .clone_baseline_depth_dense()
+                .iter()
+                .any(|depth| *depth > 0.0),
+            "the authored lake must survive world instantiation"
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .published_generation_matches_source(),
+            "the replacement empty road surface must be published after authored water rebuild"
+        );
+        assert!(core.cached_road_mesh_data.is_some());
+        assert_eq!(
+            core.cached_road_mesh_generation, core.road_tool_surface_generation,
+            "the snapshot token must identify the final post-water world generation"
+        );
     }
 
     #[test]

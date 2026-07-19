@@ -9,7 +9,8 @@ use super::geometry::{
     generated_overlay_shapes_directed_edges,
 };
 use super::source_authority::{
-    GeneratedSameBandContactConstraint, collect_source_authorized_raised_step_contacts,
+    GeneratedSameBandContactConstraint, NodeSourceAuthorizedContactCache,
+    SourceAuthorizedContactReuseStats, collect_source_authorized_raised_step_contacts_with_reuse,
     generated_raised_step_contact_kind_for_owners, generated_same_band_contact_constraint_key,
 };
 use super::{
@@ -41,6 +42,15 @@ pub(in crate::simulation::network::surface::node::rails) struct GeneratedContact
     pub(in crate::simulation::network::surface::node::rails) authority_rejected: usize,
     pub(in crate::simulation::network::surface::node::rails) same_authority_skipped: usize,
     pub(in crate::simulation::network::surface::node::rails) same_material_overlay_calls: usize,
+    pub(in crate::simulation::network::surface::node::rails) same_material_pair_cache_hits: usize,
+    pub(in crate::simulation::network::surface::node::rails) raised_step_pair_cache_previous_hits:
+        usize,
+    pub(in crate::simulation::network::surface::node::rails) raised_step_pair_cache_misses: usize,
+    pub(in crate::simulation::network::surface::node::rails) source_target_group_cache_hits: usize,
+    pub(in crate::simulation::network::surface::node::rails) source_contact_cache_hits: usize,
+    pub(in crate::simulation::network::surface::node::rails) source_contact_cache_misses: usize,
+    pub(in crate::simulation::network::surface::node::rails) source_pair_cache_hits: usize,
+    pub(in crate::simulation::network::surface::node::rails) source_pair_cache_misses: usize,
     pub(in crate::simulation::network::surface::node::rails) same_material_height_split_candidates:
         usize,
     pub(in crate::simulation::network::surface::node::rails) same_material_height_split_appended:
@@ -200,15 +210,6 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         .collect()
 }
 
-pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn generated_contact_contour_summaries_with_overlay(
-    contours: &[NodeGeneratedContour],
-) -> Vec<GeneratedContactContourSummary> {
-    contours
-        .iter()
-        .map(|contour| GeneratedContactContourSummary::from_contour_with_overlay(contour, true))
-        .collect()
-}
-
 pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn shared_sorted_keys(
     left: &[NodeRailPointKey],
     right: &[NodeRailPointKey],
@@ -233,7 +234,13 @@ pub(in crate::simulation::network::surface::node::rails::contacts) use authority
     GeneratedContactAuthorityIndex, generated_contact_point_has_explicit_roles,
 };
 pub(in crate::simulation::network::surface::node::rails) use emission::{
-    append_generated_material_point_contact_constraints,
+    NodeSameMaterialContactPairCache, append_generated_material_point_contact_constraints,
+    append_generated_same_band_contact_constraints_with_source_reuse,
+    append_source_authorized_raised_step_point_contacts_with_reuse,
+};
+#[cfg(test)]
+pub(in crate::simulation::network::surface::node::rails) use emission::{
     append_generated_same_band_contact_constraints,
+    append_generated_same_band_contact_constraints_with_reuse,
     append_source_authorized_raised_step_point_contacts,
 };

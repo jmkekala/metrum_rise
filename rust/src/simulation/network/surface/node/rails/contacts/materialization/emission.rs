@@ -5,11 +5,21 @@ mod same_band;
 
 use super::*;
 
+#[cfg(test)]
+pub(in crate::simulation::network::surface::node::rails) use point_contacts::append_source_authorized_raised_step_point_contacts;
 pub(in crate::simulation::network::surface::node::rails) use point_contacts::{
     append_generated_material_point_contact_constraints,
-    append_source_authorized_raised_step_point_contacts,
+    append_source_authorized_raised_step_point_contacts_with_reuse,
 };
-pub(in crate::simulation::network::surface::node::rails) use same_band::append_generated_same_band_contact_constraints;
+pub(in crate::simulation::network::surface::node::rails) use same_band::{
+    NodeSameMaterialContactPairCache,
+    append_generated_same_band_contact_constraints_with_source_reuse,
+};
+#[cfg(test)]
+pub(in crate::simulation::network::surface::node::rails) use same_band::{
+    append_generated_same_band_contact_constraints,
+    append_generated_same_band_contact_constraints_with_reuse,
+};
 
 pub(super) fn source_authority_constraints_for_generated_contacts(
     constraints: &[NodeRailConstraint],

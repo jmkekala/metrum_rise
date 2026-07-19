@@ -156,10 +156,10 @@ fn cdt_rejects_conflicting_source_split_heights() {
 fn road_seam_height_owns_a_shared_patch_corner() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]);
     let road = vec![
-        TerrainCdtVertex::new(-2.0, 4.0, -2.0),
-        TerrainCdtVertex::new(5.0, 4.0, -2.0),
+        TerrainCdtVertex::new(0.0, 4.0, 0.0),
+        TerrainCdtVertex::new(5.0, 4.0, 0.0),
         TerrainCdtVertex::new(5.0, 4.0, 5.0),
-        TerrainCdtVertex::new(-2.0, 4.0, 5.0),
+        TerrainCdtVertex::new(0.0, 4.0, 5.0),
     ];
 
     let canonical = canonicalize_input(TerrainCdtInput::new(
@@ -174,6 +174,67 @@ fn road_seam_height_owns_a_shared_patch_corner() {
             && same_coord(vertex.z, patch.min_z)
             && same_height(vertex.height_m, 4.0)
     }));
+}
+
+#[test]
+fn clip_generated_outer_and_hole_rails_keep_retained_terrain_corner_heights() {
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0, 1.0, 2.0, 3.0]);
+    let enclosing_loop =
+        |stable_piece_id: u64, local_loop_index: u32, is_hole: bool, extent: f64, height_m: f32| {
+            let vertices = vec![
+                TerrainCdtVertex::new(-extent, height_m, -extent),
+                TerrainCdtVertex::new(10.0 + extent, height_m, -extent),
+                TerrainCdtVertex::new(10.0 + extent, height_m, 10.0 + extent),
+                TerrainCdtVertex::new(-extent, height_m, 10.0 + extent),
+            ];
+            let source = test_node_boundary_source(
+                u32::try_from(stable_piece_id).unwrap(),
+                TerrainCdtRoadBandKind::Sidewalk,
+                local_loop_index,
+            );
+            let source_edges = vertices
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                    start,
+                    end: vertices[(index + 1) % vertices.len()],
+                    source,
+                })
+                .collect();
+            TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+                stable_piece_id,
+                700,
+                local_loop_index,
+                is_hole,
+                vertices,
+                source_edges,
+            )
+        };
+    let input = TerrainCdtInput::new(
+        patch,
+        vec![
+            enclosing_loop(701, 0, false, 10.0, 4.0),
+            enclosing_loop(702, 1, true, 5.0, 6.0),
+        ],
+        Vec::new(),
+    );
+
+    let mesh = build_road_touched_terrain_patch(input)
+        .expect("clip-generated outer and hole rails must agree on terrain-owned corner heights");
+
+    assert!(
+        !mesh.triangles.is_empty(),
+        "the enclosing hole must retain terrain across the clipped core"
+    );
+    for expected in patch.corners_cw() {
+        assert!(
+            mesh.vertices.iter().any(|vertex| {
+                same_xz(*vertex, expected) && same_height(vertex.height_m, expected.height_m)
+            }),
+            "synthetic clip rails must not replace patch terrain corner {expected:?}"
+        );
+    }
 }
 
 #[test]

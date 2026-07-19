@@ -324,6 +324,16 @@ fn source_segment_provenance_for_point(
     if candidates.is_empty() {
         return Ok(None);
     }
+    if let Some(origin) = generated_side_join_surface_over_dust_near_source_carriers_origin(
+        owner,
+        source,
+        claim_priority,
+        point,
+        &candidates,
+        rails,
+    ) {
+        return Ok(Some(origin));
+    }
     if candidates.len() == 1 {
         return Ok(Some(source_segment_origin(candidates[0])));
     }
@@ -371,6 +381,160 @@ fn source_segment_provenance_for_point(
             candidates,
         },
     )
+}
+
+fn generated_side_join_surface_over_dust_near_source_carriers_origin(
+    owner: NodeBandOwner,
+    source: NodeCarrierSourceKey,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    point: NodeOwnershipPointKey,
+    candidates: &[NodeSourceSegmentAuthorizationCandidate],
+    rails: &NodeRailContourSet,
+) -> Option<NodeCarrierProvenanceOrigin> {
+    if rails.piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN
+        || claim_priority != NodeGeneratedContourClaimPriority::SideJoin
+        || candidates.len() < 2
+        || !candidates
+            .iter()
+            .all(|candidate| projection_is_inside_same_dust_cluster(point, candidate))
+    {
+        return None;
+    }
+    let mut generated_surfaces = rails.contours.iter().enumerate().filter(|(_, contour)| {
+        contour.purpose == NodeGeneratedContourPurpose::JunctionSideJoin
+            && contour.claim_priority == NodeGeneratedContourClaimPriority::SideJoin
+            && generated_contour_matches_source(owner, source, contour)
+            && generated_contour_boundary_contains_point(contour, point)
+    });
+    let (contour_index, contour) = generated_surfaces.next()?;
+    if generated_surfaces.next().is_some() {
+        return None;
+    }
+    let mut exact_candidates = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.canonical_point == point);
+    let exact = exact_candidates.next();
+    if exact_candidates.next().is_some()
+        || exact.is_some_and(|candidate| {
+            !generated_contour_contains_candidate_segment(contour, candidate)
+        })
+        || !candidates
+            .iter()
+            .filter(|candidate| Some(**candidate) != exact)
+            .all(|candidate| {
+                candidate_is_declared_generated_contour_segment(
+                    *candidate,
+                    owner,
+                    source,
+                    NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+                    NodeGeneratedContourClaimPriority::MouthBand,
+                    rails,
+                )
+            })
+    {
+        return None;
+    }
+    Some(NodeCarrierProvenanceOrigin::GeneratedCarrierSurface {
+        contour_index,
+        purpose: contour.purpose,
+        claim_priority: contour.claim_priority,
+    })
+}
+
+fn candidate_is_declared_generated_contour_segment(
+    candidate: NodeSourceSegmentAuthorizationCandidate,
+    owner: NodeBandOwner,
+    source: NodeCarrierSourceKey,
+    purpose: NodeGeneratedContourPurpose,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    rails: &NodeRailContourSet,
+) -> bool {
+    rails.contours.iter().any(|contour| {
+        contour.purpose == purpose
+            && contour.claim_priority == claim_priority
+            && generated_contour_matches_source(owner, source, contour)
+            && generated_contour_contains_candidate_segment(contour, candidate)
+    })
+}
+
+fn generated_contour_contains_candidate_segment(
+    contour: &NodeGeneratedContour,
+    candidate: NodeSourceSegmentAuthorizationCandidate,
+) -> bool {
+    if indexed_path_contains_segment(
+        contour.points_xz.len(),
+        |index| ownership_key_from_road_point(contour.points_xz[index]),
+        candidate.segment_start,
+        candidate.segment_end,
+        true,
+    ) {
+        return true;
+    }
+    contour.height_points_world.as_ref().is_some_and(|points| {
+        indexed_path_contains_segment(
+            points.len(),
+            |index| ownership_key_from_road_point(road_vec3_xz(points[index])),
+            candidate.segment_start,
+            candidate.segment_end,
+            true,
+        )
+    })
+}
+
+fn generated_contour_boundary_contains_point(
+    contour: &NodeGeneratedContour,
+    point: NodeOwnershipPointKey,
+) -> bool {
+    indexed_path_contains_point(
+        contour.points_xz.len(),
+        |index| ownership_key_from_road_point(contour.points_xz[index]),
+        point,
+        true,
+    )
+}
+
+fn indexed_path_contains_segment(
+    len: usize,
+    mut key_at: impl FnMut(usize) -> NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+    closed: bool,
+) -> bool {
+    if len < 2 {
+        return false;
+    }
+    let first = key_at(0);
+    let mut previous = first;
+    for index in 1..len {
+        let current = key_at(index);
+        if segment_matches_keys(previous, current, segment_start, segment_end) {
+            return true;
+        }
+        previous = current;
+    }
+    closed && len > 2 && segment_matches_keys(previous, first, segment_start, segment_end)
+}
+
+fn indexed_path_contains_point(
+    len: usize,
+    mut key_at: impl FnMut(usize) -> NodeOwnershipPointKey,
+    point: NodeOwnershipPointKey,
+    closed: bool,
+) -> bool {
+    if len < 2 {
+        return false;
+    }
+    let first = key_at(0);
+    let mut previous = first;
+    for index in 1..len {
+        let current = key_at(index);
+        if point_key_lies_on_segment(point, previous, current) {
+            return true;
+        }
+        previous = current;
+    }
+    closed && len > 2 && point_key_lies_on_segment(point, previous, first)
 }
 
 fn generated_source_carrier_intersection_origin(

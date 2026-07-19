@@ -12,9 +12,11 @@ use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::caps_and_joins::push_side_join_band_contours;
 use super::constraints::owners_match_unordered;
 use super::contacts::{
-    append_generated_same_band_contact_constraints,
-    append_source_authorized_raised_step_point_contacts, node_generated_contact_source_constraints,
-    synchronize_shared_height_contact_vertices,
+    NodeSourceAuthorizedContactCache, append_generated_same_band_contact_constraints,
+    append_generated_same_band_contact_constraints_with_reuse,
+    append_source_authorized_raised_step_point_contacts,
+    append_source_authorized_raised_step_point_contacts_with_reuse,
+    node_generated_contact_source_constraints, synchronize_shared_height_contact_vertices,
     validate_generated_contact_constraint_endpoints_from_sources,
 };
 use super::contours::{

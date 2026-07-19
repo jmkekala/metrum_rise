@@ -3,8 +3,8 @@
 mod cleanup;
 mod noding;
 
-pub(super) use cleanup::clean_canonical_owned_region_shapes;
-pub(super) use noding::canonicalize_owned_region_rings;
+pub(super) use cleanup::clean_canonical_owned_region_shapes_with_reuse;
+pub(super) use noding::{NodeOwnershipPointIndex, canonicalize_owned_region_rings};
 #[cfg(test)]
 pub(super) use noding::{
     canonicalize_final_owned_region_boundary_edges,

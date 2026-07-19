@@ -414,15 +414,138 @@ Required bounds:
 - one local road edit rebuilds only touched spans, incident node pieces, and affected surface /
   terrain chunks
 - dirty rebuilds use compiled piece coverage and `old_coverage union new_coverage`
+- bounded road undo restores the affected pre-edit surface compiler records, removes post-edit
+  owners, and rebuilds only old-plus-restored chunk shells and refined tiles; unsafe or incomplete
+  captures fall back to bounded owner compilation, while dense terrain-authoring undo remains an
+  explicit full reset
 - steady-state chunk rebuilds use sorted contributor lists; they must not scan every compiled node
   piece in the world
+- refined road-touched terrain uses fixed world-aligned bounded CDT core tiles rather than
+  connected-footprint windows whose bounds grow with the road network
+- an interior border-candidate query must reject against the immutable world snapshot without
+  acquiring the simulation-core lock; only an endpoint actually near the map border may enter the
+  authoritative node lookup
 - independent span and chunk work should use Rayon when mutation boundaries allow it
 - hot-path loops must avoid avoidable allocation
+- road materials are prewarmed when the resident road tool enters the main scene, before the first
+  committed road mesh needs them
 - road debug output must split terrain, water, zoning, and total patch-debug timings
 - road debug output must use cached zoning statistics instead of scanning parcel payloads
 
-The current remaining large editor hitch is synchronous final `JunctionN` compilation on very large
-multi-mouth nodes. Future responsiveness work should be tracked as new road-performance work:
+`ROAD-05` is the active refined-terrain performance contract:
+
+- each tile has stable global-grid identity and parent-patch-clipped core bounds separate from its
+  content fingerprint
+- tile inputs collect exact road/site contributors and their full required grading influence; a
+  guessed fixed-neighbor halo is not an acceptable substitute
+- the full local fingerprint covers every clipped contour and provenance record, local terrain
+  sample, grading guide/constraint, render step, core bound, and contract revision that can affect
+  output, while unrelated world geometry cannot invalidate the tile
+- an edit rebuilds `old_coverage union new_coverage` plus deterministic seam-dependency tiles, so
+  moved or removed ownership cannot leave a stale clipped hole
+- unchanged fingerprints reuse immutable compiled tile geometry and render buffers from the last
+  accepted generation; cached buffers include vertices, normals, UVs, indices, local normal-sum
+  magnitudes, and side-seam manifests, so only changed tiles enter conversion and the Rayon build
+  set
+- regular boundary-lattice samples stay local to directly adjacent seam filler; only non-lattice
+  geometry breakpoints become patch-wide filler partitions, preventing the fixed tile lattice from
+  producing a Cartesian filler-grid expansion
+- one refined patch is published atomically only for the exact requested generation; stale work
+  cannot publish, while the immutable last accepted generation remains the visible and reusable
+  source until a complete replacement is accepted
+- one road-surface edit stages every affected span and required node piece before changing published
+  compiler records or chunk indexes; a failed required `JunctionN` latches that invalidation
+  generation, leaves its dirty work pending, and retains the last complete surface and mesh instead
+  of repeatedly compiling or publishing a mixed old/new generation
+- replacing the runtime world publishes the new final road-surface/mesh generation before terrain
+  and water workers resume; water-only road-tool query revisions continue to use the unchanged
+  published road generation for clipping instead of forcing or waiting for an unrelated mesh rebuild
+- the current Godot contract still publishes one complete mesh per render patch, so final buffer
+  concatenation, filler, duplicate-normal reconciliation, and upload remain
+  `O(patch output vertices + indices)`; that bounded step does not re-query, re-triangulate,
+  reconvert, or rescan triangle normals and window-side vertices for reused tiles
+
+Complex `JunctionN` compilation now retains canonical contact and ownership-topology caches behind
+shallow-cloned immutable handles. An exact compile-input match during terrain-only invalidation
+keeps the final top surface and rebuilds only earthwork. An exact-XZ, height-only edit reprojects
+cached inserted contact vertices onto fresh height carriers and reuses the rail/contact topology
+when ordered node-local mouths, rail topology, and the carrier registry still match. Raw graph edge
+IDs are publication metadata rather than topology identity; projected side joins still receive the
+current generation's edge IDs. When a topology-changing edit prevents whole-rail reuse, exact
+same-material contour-pair contributors retain immutable contact results and only pairs touching a
+changed contributor rerun their overlay work. Raised-step compilation separately caches exact
+target-group unions, source/group contributions, exact source/owner-group-pair overlap,
+source/source contact points, and cross-kind contour-pair output including empty results. A fixed
+world-aligned source/target tile index and exact semantic source registry bound candidate discovery
+before cache lookup. Current-generation results are not replayed into the second pass: only newly
+introduced source contributors, pairs touching them, or changed target groups do geometry work,
+and contact-point incidence queries only the indexed local sources. Cross-kind pair fingerprints
+visit the exact owner-pair authority bucket with cached bounds instead of rescanning all constraints.
+Positional mouth or owner rebinding remains a safe cache miss rather than replaying stale output.
+
+Contact noding retains both exact pair-local candidates and final ordered-XZ output for each
+connected potential-contact component. An unchanged component replays its final keys through the
+canonical contour setter, which reprojects fresh height carriers and updates current constraints;
+any member, relevant role constraint, component merge, split, addition, or removal uses the full
+deterministic fixed-point path. Contact retention keeps exact authority buckets behind immutable
+handles, reverse-indexes source presence and owner/kind handoffs, and reuses collision-checked keep
+decisions whenever their exact relevant buckets are unchanged. One current-generation authority is
+shared by final retention and endpoint validation; building that authority after a source edit
+still traverses current source geometry once, while each decision fingerprint is proportional to
+its relevant buckets instead of all contact sources. Expensive raised-step geometry is therefore
+bounded by changed source/group contributors and source pairs touching new sources; unchanged
+noding components cost their output size, while changed components retain the existing fixed-point
+bound. Whole boolean ownership is still reused for an exact uniform canonical-mm translation across
+every paired contour and carrier height. When a topology or non-uniform-height edit requires fresh
+ownership, canonical cleanup now reuses exact contributor-local clean/union and final self-touch
+split results. Final-boundary construction reuses exact point-provenance decisions keyed by the
+locally relevant footprint point and source-local carrier geometry and heights. Once those points
+produce the same ordered owned shapes and rail constraints as the prior generation, one exact
+assembly entry replays the final footprint, region seams, boundary arrangement, and diagnostics,
+skipping footprint union, seam reconstruction, boundary-reference construction, and arrangement
+construction. Promoting that assembly also preserves only the exact seam contributor keys recorded
+while building it, so unrelated intermediate entries do not accumulate across generations.
+Region-seam extraction and noded edge-seam materialization use the same immutable
+previous-generation promotion rule: only exact contributors encountered directly or recorded as
+constituents of a reused assembly enter its replacement cache; a changed build drops entries it no
+longer encounters. Contributor caches are retained for `Terminal`, `Bend`, and
+`JunctionN`, allowing a two-road `Bend` to seed the common third-road transition; non-junction
+entries retain the contributor state without retaining complete rail and ownership payloads.
+Caches are shallow-cloned behind immutable handles. Boundary-reference construction uses the
+existing quantized point index instead of scanning every region and footprint point for every owned
+edge.
+On assembly misses, global footprint union, fixed-point convergence, arrangement validation, and
+atomic publication remain live deterministic correctness barriers. Topology-changing final
+assembly is therefore reduced by local cleanup/seam reuse but is not yet strictly proportional to
+changed regions; canonical ownership is still only partially incremental.
+
+Node export now promotes immutable semantic products from the last successful topology generation:
+final explicit-step topology, candidate height conflicts per stable exact-XZ vertex cohort, raw
+top-boundary contributions per region geometry, and raised-step spans plus unoriented face
+geometry per exact step/support fingerprint. Current-generation explicit-step authorization,
+global multi-XZ conflict aggregation, owner-wide top-edge cancellation, face deduplication,
+orientation, and sorting remain live. Positional explicit-step and grade-authority indices are
+bound only against the current generation, and a replacement export cache publishes atomically
+with the rest of the successful node topology. The discarded arrangement-derived raised-step face
+pass is test-only; production builds directly from final top support. Export diagnostics split
+final explicit-step topology time from height-split validation and report product-specific reuse.
+Final-step misses use compact edge keys, edge-relevant authority fingerprints, and the shared
+world-aligned segment-tile index, so changed work compares only changed edges with spatially
+overlapping compatible boundary candidates; negative and duplicate global pair keys are not
+materialized.
+Complete cached top-face, boundary, and assembled node-export buffers remain later work.
+
+A remote crossing may replace one half-edge incident to an older junction while creating another
+junction elsewhere on that road. Both nodes belong to the same required publication generation.
+Boolean vertices inside the numeric-dust envelope may select an exact generated side-join over
+dust-near mouth carriers only when that unique side-join contour owns the point and every
+alternative is a declared same-source mouth carrier; raised-step authority may transfer across
+paired same-material owners only when an exact same-height, same-source-band bridge region covers
+the whole edge; and longitudinal curb/sidewalk seam endpoint drift is accepted only inside the
+deterministic overlay-dust envelope.
+
+Topology-changing final `JunctionN` compilation is still synchronous on very large multi-mouth
+nodes. Future final-node responsiveness work should retain these requirements:
 
 - async final compile with versioned jobs
 - immutable compile snapshots
@@ -440,7 +563,8 @@ the roadbed ownership contract itself.
 - dirty edge / node / chunk counts
 - node kind and incident mouth count
 - rail, ownership, arrangement, triangulation, export, and validation timings
-- contact candidate counts and emitted constraint counts
+- contact candidate counts; source/group, source-pair, noding pair/component, and retention-cache
+  hits/misses; and emitted constraint counts
 - terrain CDT input/output counters
 - per-patch final terrain mesh face-delta, face-slope, tie-in widening, retaining-wall face, and
   longest-triangle-edge summaries after the regular filler mesh has been appended
@@ -501,6 +625,8 @@ Maintained coverage must continue to prove:
 - authored and imported DEM terrain agreement
 - deterministic rebuilds and equivalent edit-order identity
 - local invalidation without unrelated chunk rebuilds
+- refined-CDT unchanged-tile reuse, changed-tile rebuild, old-coverage removal, deterministic shared
+  tile seams, and stale-generation rejection
 - rendered mesh upload containing the same canonical raised-step intervals as the compiled surface
 
 Use the focused surface tests for narrow changes and the full `surface` suite when changing shared

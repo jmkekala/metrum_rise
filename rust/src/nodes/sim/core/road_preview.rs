@@ -46,22 +46,29 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) road_surface: Arc<RoadSurfaceSystem>,
     /// Immutable authored-water state used by road placement validation.
     pub(crate) water: Arc<WaterSystem>,
-    pub(crate) ghost_snap_index: RoadGhostSnapIndex,
+    pub(crate) ghost_snap_index: Arc<RoadGhostSnapIndex>,
     pub(crate) surface_generation: u64,
 }
 
 pub(crate) fn road_tool_snapshots_from_core(
     core: &SimCore,
-) -> (RoadPreviewWorkerContext, RoadToolQuerySnapshot) {
+) -> Option<(RoadPreviewWorkerContext, RoadToolQuerySnapshot)> {
+    if !core
+        .transit_network
+        .road_surface
+        .published_generation_matches_source()
+    {
+        return None;
+    }
     let terrain = Arc::new(core.heightmap.clone());
     let region_graph = Arc::new(core.region_graph.clone());
     let road_surface = Arc::new(core.transit_network.road_surface.clone());
     let water = Arc::new(core.watermap.clone());
     let surface_chunk_span_m = road_surface.chunk_span_m();
     let surface_generation = core.road_tool_surface_generation;
-    let ghost_snap_index = RoadGhostSnapIndex::from_graph(region_graph.as_ref());
+    let ghost_snap_index = Arc::new(RoadGhostSnapIndex::from_graph(region_graph.as_ref()));
 
-    (
+    Some((
         RoadPreviewWorkerContext {
             terrain: Arc::clone(&terrain),
             region_graph: Arc::clone(&region_graph),
@@ -78,7 +85,7 @@ pub(crate) fn road_tool_snapshots_from_core(
             ghost_snap_index,
             surface_generation,
         },
-    )
+    ))
 }
 
 pub(crate) fn run_road_preview_worker(

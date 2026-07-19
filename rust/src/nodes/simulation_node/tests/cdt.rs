@@ -24,8 +24,11 @@ fn test_cached_cdt_window(
             [0.0; 4],
         ),
         mesh_result,
+        mesh_buffers: None,
         cdt_ms: 0.0,
-        reused: false,
+        has_engineered_contributor: true,
+        road_clip_fingerprints: vec![min_x_mm as u64],
+        site_clip_fingerprints: Vec::new(),
     }
 }
 
@@ -45,6 +48,71 @@ fn empty_test_cdt_mesh() -> TerrainCdtMesh {
         seam_quality_samples: Vec::new(),
         unpreserved_road_constraint_samples: Vec::new(),
     }
+}
+
+fn planner_test_patch(width_m: f32, height_m: f32) -> TerrainPatchSnapshot {
+    TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 2,
+        sample_height: 2,
+        texture_width: 2,
+        texture_height: 2,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: width_m,
+        world_size_z: height_m,
+        height_data: vec![0.0; 4],
+    }
+}
+
+fn planner_test_loop(
+    stable_piece_id: u64,
+    min_x: f64,
+    min_z: f64,
+    max_x: f64,
+    max_z: f64,
+) -> TerrainCdtRoadLoop {
+    TerrainCdtRoadLoop::new(
+        stable_piece_id,
+        0,
+        vec![
+            TerrainCdtVertex::new(min_x, 0.0, min_z),
+            TerrainCdtVertex::new(max_x, 0.0, min_z),
+            TerrainCdtVertex::new(max_x, 0.0, max_z),
+            TerrainCdtVertex::new(min_x, 0.0, max_z),
+        ],
+    )
+}
+
+fn cached_patch_from_planned_windows(
+    patch: TerrainPatchSnapshot,
+    windows: Vec<RefinedTerrainCdtWindowBuildInput>,
+    input_road_loops: usize,
+) -> CachedRefinedTerrainPatch {
+    let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    cached.patch = patch;
+    cached.input_road_loops = input_road_loops;
+    cached.windows = windows
+        .into_iter()
+        .map(|window| {
+            Arc::new(CachedRefinedTerrainCdtWindow {
+                key: window.key,
+                input_road_loops: window.cdt_input.road_loops.len(),
+                input_source_samples: window.cdt_input.source_samples.len(),
+                cdt_patch: window.cdt_input.patch,
+                mesh_result: Ok(empty_test_cdt_mesh()),
+                mesh_buffers: None,
+                cdt_ms: 0.0,
+                has_engineered_contributor: window.has_engineered_contributor,
+                road_clip_fingerprints: window.road_clip_fingerprints,
+                site_clip_fingerprints: window.site_clip_fingerprints,
+            })
+        })
+        .collect();
+    cached
 }
 
 #[test]
@@ -261,8 +329,11 @@ fn cached_refined_patch_rejects_partial_window_success() {
     cached.site_clip_loop_count = 1;
     cached.input_road_loops = 2;
     cached.windows = vec![
-        test_cached_cdt_window(0, Ok(empty_test_cdt_mesh())),
-        test_cached_cdt_window(2_000, Err(TerrainCdtError::InvalidPatch)),
+        Arc::new(test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()))),
+        Arc::new(test_cached_cdt_window(
+            2_000,
+            Err(TerrainCdtError::InvalidPatch),
+        )),
     ];
 
     assert_eq!(
@@ -272,13 +343,353 @@ fn cached_refined_patch_rejects_partial_window_success() {
 }
 
 #[test]
+fn refined_patch_build_reuses_successful_window_by_arc_identity() {
+    let mut previous_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    let previous_buffers = Arc::new(
+        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
+            &test_patch(),
+            previous_window.cdt_patch,
+            2.0,
+            previous_window
+                .mesh_result
+                .as_ref()
+                .expect("test window should be successful"),
+        ),
+    );
+    previous_window.mesh_buffers = Some(Arc::clone(&previous_buffers));
+    let previous = Arc::new(previous_window);
+    let key = previous.key;
+    let cdt_input = TerrainCdtInput::new(previous.cdt_patch, Vec::new(), Vec::new());
+    let input = RefinedTerrainPatchBuildInput {
+        key: RefinedTerrainPatchCacheKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        },
+        surface_generation: 2,
+        patch: test_patch(),
+        windows: vec![RefinedTerrainCdtWindowBuildInput {
+            key,
+            cdt_input,
+            previous: Some(Arc::clone(&previous)),
+            has_engineered_contributor: true,
+            road_clip_fingerprints: vec![0],
+            site_clip_fingerprints: Vec::new(),
+        }],
+        reused_windows: Vec::new(),
+        input_clip_loop_count: 1,
+        omitted_margin_clip_loop_count: 0,
+        expected_road_clip_fingerprints: vec![0],
+        expected_site_clip_fingerprints: Vec::new(),
+        requires_engineered_refinement: true,
+        requires_road_clipping: true,
+        clip_source_count: 1,
+        road_clip_source_count: 1,
+        road_clip_loop_count: 1,
+        site_clip_loop_count: 0,
+        clip_error_label: None,
+        clip_query_margin_m: 8.0,
+        derive_clip_counts_from_windows: false,
+    };
+
+    let mut entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
+    let entry = entries.pop().expect("one refined patch should be built");
+
+    assert_eq!(entry.surface_generation, 2);
+    assert_eq!(entry.reused_windows, 1);
+    assert_eq!(entry.windows.len(), 1);
+    assert!(Arc::ptr_eq(&entry.windows[0], &previous));
+    assert!(Arc::ptr_eq(
+        entry.windows[0]
+            .mesh_buffers
+            .as_ref()
+            .expect("reused successful window should retain output buffers"),
+        &previous_buffers
+    ));
+    assert!(
+        entry.mesh_buffers.is_some(),
+        "matching-generation mesh composition must finish on the worker"
+    );
+}
+
+#[test]
+fn cached_window_buffers_preserve_multi_window_patch_assembly() {
+    let mut left_mesh = empty_test_cdt_mesh();
+    left_mesh.vertices = vec![
+        TerrainCdtVertex::new(0.0, 0.0, 0.0),
+        TerrainCdtVertex::new(1.0, 0.0, 0.0),
+        TerrainCdtVertex::new(0.0, 0.0, 1.0),
+        TerrainCdtVertex::new(0.0, 2.0, 0.0),
+        TerrainCdtVertex::new(0.001, 1.0, 0.0),
+        TerrainCdtVertex::new(0.0, 0.0, 0.001),
+    ];
+    left_mesh.triangles = vec![[0, 1, 2], [0, 4, 5]];
+    left_mesh.terrain_triangle_sources = vec![Vec::new(), Vec::new()];
+    left_mesh.retaining_wall_triangles = vec![[0, 3, 2]];
+    left_mesh.retaining_wall_triangle_sources = vec![vec![span_source()]];
+
+    let mut right_mesh = empty_test_cdt_mesh();
+    right_mesh.vertices = vec![
+        TerrainCdtVertex::new(1.0, 0.0, 0.0),
+        TerrainCdtVertex::new(2.0, 0.5, 0.0),
+        TerrainCdtVertex::new(1.0, 0.0, 1.0),
+    ];
+    right_mesh.triangles = vec![[0, 1, 2]];
+    right_mesh.terrain_triangle_sources = vec![Vec::new()];
+
+    let patch = test_patch();
+    let mut left_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    let mut right_window = test_cached_cdt_window(1_000, Ok(empty_test_cdt_mesh()));
+    let fallback = SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+        &patch,
+        &[(&left_window, &left_mesh), (&right_window, &right_mesh)],
+        2.0,
+    );
+
+    left_window.mesh_buffers = Some(Arc::new(
+        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
+            &patch,
+            left_window.cdt_patch,
+            2.0,
+            &left_mesh,
+        ),
+    ));
+    right_window.mesh_buffers = Some(Arc::new(
+        SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
+            &patch,
+            right_window.cdt_patch,
+            2.0,
+            &right_mesh,
+        ),
+    ));
+    let cached = SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+        &patch,
+        &[(&left_window, &left_mesh), (&right_window, &right_mesh)],
+        2.0,
+    );
+
+    assert_eq!(
+        cached, fallback,
+        "cached tile conversion must preserve deterministic complete-patch assembly"
+    );
+    assert_eq!(cached.omitted_pathological_terrain_faces, 1);
+    assert_eq!(cached.retaining_emitted_faces, 1);
+    assert!(
+        cached.terrain_emitted_faces > 2,
+        "regular filler must cover the part of the render patch outside both CDT windows"
+    );
+    let shared_vertex = Vector3::new(-4.0, 0.0, -5.0);
+    let shared_normals = cached
+        .terrain_vertices
+        .iter()
+        .zip(&cached.terrain_normals)
+        .filter_map(|(vertex, normal)| (*vertex == shared_vertex).then_some(*normal))
+        .collect::<Vec<_>>();
+    assert!(
+        shared_normals.len() >= 2,
+        "adjacent window assembly must retain duplicate seam vertices"
+    );
+    assert!(
+        shared_normals
+            .windows(2)
+            .all(|pair| (pair[0] - pair[1]).length_squared() <= 0.000_001),
+        "global normal reconciliation must assign one normal to duplicate seam vertices"
+    );
+}
+
+#[test]
+fn local_refined_build_derives_complete_clip_counts_from_window_manifests() {
+    let mut road_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    road_window.road_clip_fingerprints = vec![7];
+    let mut mixed_window = test_cached_cdt_window(1_000, Ok(empty_test_cdt_mesh()));
+    mixed_window.road_clip_fingerprints = vec![7];
+    mixed_window.site_clip_fingerprints = vec![9];
+    let input = RefinedTerrainPatchBuildInput {
+        key: RefinedTerrainPatchCacheKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        },
+        surface_generation: 2,
+        patch: test_patch(),
+        windows: Vec::new(),
+        reused_windows: vec![Arc::new(road_window), Arc::new(mixed_window)],
+        input_clip_loop_count: 99,
+        omitted_margin_clip_loop_count: 0,
+        expected_road_clip_fingerprints: vec![7],
+        expected_site_clip_fingerprints: vec![9],
+        requires_engineered_refinement: true,
+        requires_road_clipping: true,
+        clip_source_count: 99,
+        road_clip_source_count: 99,
+        road_clip_loop_count: 99,
+        site_clip_loop_count: 99,
+        clip_error_label: None,
+        clip_query_margin_m: 8.0,
+        derive_clip_counts_from_windows: true,
+    };
+
+    let entry = SimCore::build_refined_terrain_patch_cache_entries(vec![input])
+        .pop()
+        .expect("one local generation should be built");
+
+    assert_eq!(entry.input_road_loops, 2);
+    assert_eq!(entry.clip_source_count, 2);
+    assert_eq!(entry.road_clip_source_count, 1);
+    assert_eq!(entry.road_clip_loop_count, 1);
+    assert_eq!(entry.site_clip_loop_count, 1);
+    assert_eq!(entry.omitted_margin_clip_loop_count, 0);
+    assert!(SimulationNode::cached_refined_cdt_failure_label(&entry).is_none());
+}
+
+#[test]
+fn local_refined_build_rejects_equal_sized_wrong_contributor_manifest() {
+    let mut road_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    road_window.road_clip_fingerprints = vec![7];
+    let input = RefinedTerrainPatchBuildInput {
+        key: RefinedTerrainPatchCacheKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        },
+        surface_generation: 2,
+        patch: test_patch(),
+        windows: Vec::new(),
+        reused_windows: vec![Arc::new(road_window)],
+        input_clip_loop_count: 1,
+        omitted_margin_clip_loop_count: 0,
+        expected_road_clip_fingerprints: vec![8],
+        expected_site_clip_fingerprints: Vec::new(),
+        requires_engineered_refinement: true,
+        requires_road_clipping: true,
+        clip_source_count: 1,
+        road_clip_source_count: 1,
+        road_clip_loop_count: 1,
+        site_clip_loop_count: 0,
+        clip_error_label: None,
+        clip_query_margin_m: 8.0,
+        derive_clip_counts_from_windows: true,
+    };
+
+    let entry = SimCore::build_refined_terrain_patch_cache_entries(vec![input])
+        .pop()
+        .expect("one local generation should be built");
+
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&entry),
+        Some("incomplete_terrain_clip_windows")
+    );
+    assert!(
+        entry.mesh_buffers.is_none(),
+        "a contributor-identity mismatch must not publish a complete mesh"
+    );
+}
+
+#[test]
+fn refined_patch_build_never_reuses_failed_window() {
+    let previous = Arc::new(test_cached_cdt_window(
+        0,
+        Err(TerrainCdtError::InvalidPatch),
+    ));
+    let key = previous.key;
+    let invalid_patch = TerrainCdtPatch::new(0.0, 0.0, 0.0, 1.0, [0.0; 4]);
+    let input = RefinedTerrainPatchBuildInput {
+        key: RefinedTerrainPatchCacheKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 2000,
+        },
+        surface_generation: 2,
+        patch: test_patch(),
+        windows: vec![RefinedTerrainCdtWindowBuildInput {
+            key,
+            cdt_input: TerrainCdtInput::new(invalid_patch, Vec::new(), Vec::new()),
+            previous: Some(Arc::clone(&previous)),
+            has_engineered_contributor: true,
+            road_clip_fingerprints: vec![1],
+            site_clip_fingerprints: Vec::new(),
+        }],
+        reused_windows: Vec::new(),
+        input_clip_loop_count: 1,
+        omitted_margin_clip_loop_count: 0,
+        expected_road_clip_fingerprints: vec![1],
+        expected_site_clip_fingerprints: Vec::new(),
+        requires_engineered_refinement: true,
+        requires_road_clipping: true,
+        clip_source_count: 1,
+        road_clip_source_count: 1,
+        road_clip_loop_count: 1,
+        site_clip_loop_count: 0,
+        clip_error_label: None,
+        clip_query_margin_m: 8.0,
+        derive_clip_counts_from_windows: false,
+    };
+
+    let mut entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
+    let entry = entries.pop().expect("one refined patch should be built");
+
+    assert_eq!(entry.reused_windows, 0);
+    assert_eq!(entry.windows.len(), 1);
+    assert!(!Arc::ptr_eq(&entry.windows[0], &previous));
+    assert_eq!(
+        entry.windows[0].mesh_result,
+        Err(TerrainCdtError::InvalidPatch)
+    );
+    assert!(
+        entry.mesh_buffers.is_none(),
+        "failed generations must not publish partial mesh buffers"
+    );
+}
+
+#[test]
+fn failed_current_build_does_not_replace_last_successful_baseline() {
+    let mut core = test_core_with_flat_terrain(0.0);
+    core.terrain_payload_generation_counter = 2;
+    core.terrain_payload_global_generation = 2;
+    let successful_window = Arc::new(test_cached_cdt_window(0, Ok(empty_test_cdt_mesh())));
+    let mut baseline = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    baseline.input_road_loops = 1;
+    baseline.requires_engineered_refinement = true;
+    baseline.requires_road_clipping = true;
+    baseline.clip_source_count = 1;
+    baseline.road_clip_source_count = 1;
+    baseline.road_clip_loop_count = 1;
+    baseline.windows = vec![Arc::clone(&successful_window)];
+    let key = baseline.key;
+    core.refined_terrain_patch_cache
+        .insert(key, Arc::new(baseline));
+
+    let mut failed = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 2);
+    failed.input_road_loops = 1;
+    failed.requires_engineered_refinement = true;
+    failed.requires_road_clipping = true;
+    failed.clip_source_count = 1;
+    failed.road_clip_source_count = 1;
+    failed.road_clip_loop_count = 1;
+    failed.windows = vec![Arc::new(test_cached_cdt_window(
+        0,
+        Err(TerrainCdtError::InvalidPatch),
+    ))];
+
+    let inserted = core.insert_refined_terrain_patch_cache_entries(vec![Arc::new(failed)]);
+    let retained = core
+        .refined_terrain_patch_cache
+        .get(&key)
+        .expect("failed current build must retain the previous successful baseline");
+
+    assert_eq!(inserted, 0);
+    assert_eq!(retained.surface_generation, 1);
+    assert!(Arc::ptr_eq(&retained.windows[0], &successful_window));
+}
+
+#[test]
 fn road_locked_refined_patch_rejects_site_only_clip_payload() {
     assert_eq!(
-        SimulationNode::terrain_clip_input_failure_label(true, 1, 0, 0, 1, 1, None,),
+        SimulationNode::terrain_clip_input_failure_label(true, 1, 0, 0, 1, 0, 1, None,),
         Some("missing_road_clip_sources")
     );
     assert_eq!(
-        SimulationNode::terrain_clip_input_failure_label(false, 1, 0, 0, 1, 1, None,),
+        SimulationNode::terrain_clip_input_failure_label(false, 1, 0, 0, 1, 0, 1, None,),
         None,
         "site-only patches remain valid when no grounded road owns the patch"
     );
@@ -287,8 +698,16 @@ fn road_locked_refined_patch_rejects_site_only_clip_payload() {
 #[test]
 fn refined_patch_rejects_dropped_clip_loop_before_cdt() {
     assert_eq!(
-        SimulationNode::terrain_clip_input_failure_label(true, 2, 1, 1, 1, 1, None,),
+        SimulationNode::terrain_clip_input_failure_label(true, 2, 1, 1, 1, 0, 1, None,),
         Some("incomplete_terrain_clip_windows")
+    );
+}
+
+#[test]
+fn refined_patch_accepts_query_margin_loop_without_patch_influence() {
+    assert_eq!(
+        SimulationNode::terrain_clip_input_failure_label(true, 2, 1, 2, 0, 1, 1, None,),
+        None
     );
 }
 
@@ -301,6 +720,7 @@ fn road_clip_failure_cannot_be_masked_by_site_loops() {
             0,
             0,
             1,
+            0,
             1,
             Some("terrain_clip_missing_output_boundary_owner"),
         ),
@@ -476,15 +896,537 @@ fn terrain_cdt_local_window_input_samples_arbitrary_boundary() {
         input
             .source_samples
             .iter()
-            .any(|sample| sample.x == 3.0 && sample.z == 9.0),
-        "local CDT windows must seed non-corner vertices along arbitrary vertical boundaries"
+            .any(|sample| sample.x == 3.0 && sample.z == 5.0),
+        "local CDT windows must seed globally aligned vertices along arbitrary vertical boundaries"
     );
     assert!(
         input
             .source_samples
             .iter()
-            .any(|sample| sample.x == 18.0 && sample.z == 29.0),
-        "local CDT windows must seed non-corner vertices along arbitrary horizontal boundaries"
+            .any(|sample| sample.x == 5.0 && sample.z == 29.0),
+        "local CDT windows must seed globally aligned vertices along arbitrary horizontal boundaries"
+    );
+}
+
+#[test]
+fn terrain_cdt_planner_splits_crossing_loop_into_fixed_world_tiles() {
+    let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(256.0, 64.0);
+    let road_loop = planner_test_loop(123, 10.0, 24.0, 150.0, 32.0);
+
+    let plan = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop],
+        2.0,
+        None,
+        None,
+    );
+
+    assert_eq!(plan.represented_road_loop_count, 1);
+    let actual_road_manifest = plan
+        .windows
+        .iter()
+        .flat_map(|window| window.road_clip_fingerprints.iter().copied())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_road_manifest,
+        plan.expected_road_clip_fingerprints
+            .iter()
+            .copied()
+            .collect(),
+        "the independently planned contributor set must match every emitted road window"
+    );
+    let road_tile_min_x = plan
+        .windows
+        .iter()
+        .filter(|window| !window.cdt_input.road_loops.is_empty())
+        .map(|window| window.key.min_x_mm)
+        .collect::<Vec<_>>();
+    assert_eq!(road_tile_min_x, vec![0, 64_000, 128_000]);
+    assert!(
+        plan.windows.iter().all(|window| {
+            window.key.min_x_mm % 64_000 == 0
+                && window.key.max_x_mm - window.key.min_x_mm <= 64_000
+                && window.key.max_z_mm - window.key.min_z_mm <= 64_000
+        }),
+        "every core must be bounded and anchored to the 64 m world grid"
+    );
+    assert!(
+        plan.windows
+            .iter()
+            .all(|window| window.cdt_input.source_samples.len() <= 1_089),
+        "a 64 m core at the production 2 m step must keep its base grid bounded"
+    );
+    assert!(plan.windows.iter().all(|window| {
+        window
+            .cdt_input
+            .road_loops
+            .iter()
+            .all(|road_loop| road_loop.stable_piece_id != 123)
+    }));
+}
+
+#[test]
+fn terrain_cdt_tile_rekey_preserves_source_outer_hole_ownership_after_clipping() {
+    let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(128.0, 64.0);
+    let grouped_loop = |stable_piece_id, local_loop_index, is_hole, vertices| {
+        TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+            stable_piece_id,
+            77,
+            local_loop_index,
+            is_hole,
+            vertices,
+            Vec::new(),
+        )
+    };
+    let outer = grouped_loop(
+        10,
+        0,
+        false,
+        vec![
+            TerrainCdtVertex::new(-20.0, 0.0, 10.0),
+            TerrainCdtVertex::new(100.0, 0.0, 10.0),
+            TerrainCdtVertex::new(100.0, 0.0, 54.0),
+            TerrainCdtVertex::new(-20.0, 0.0, 54.0),
+        ],
+    );
+    let hole = grouped_loop(
+        11,
+        1,
+        true,
+        vec![
+            TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+            TerrainCdtVertex::new(80.0, 0.0, 20.0),
+            TerrainCdtVertex::new(80.0, 0.0, 44.0),
+            TerrainCdtVertex::new(-10.0, 0.0, 44.0),
+        ],
+    );
+
+    let plan = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[outer, hole],
+        2.0,
+        None,
+        None,
+    );
+    let clipped_tile = plan
+        .windows
+        .iter()
+        .find(|window| window.key.min_x_mm == 64_000)
+        .expect("the grouped footprint should influence the right tile");
+    let outer_group = clipped_tile
+        .cdt_input
+        .road_loops
+        .iter()
+        .find(|road_loop| !road_loop.is_hole)
+        .map(|road_loop| road_loop.footprint_group_id)
+        .expect("the clipped tile should retain the outer contour");
+    let hole_group = clipped_tile
+        .cdt_input
+        .road_loops
+        .iter()
+        .find(|road_loop| road_loop.is_hole)
+        .map(|road_loop| road_loop.footprint_group_id)
+        .expect("the clipped tile should retain the hole contour");
+
+    assert_eq!(
+        outer_group, hole_group,
+        "tile-local topology must preserve the authoritative source group even when clipping puts the hole on the halo boundary"
+    );
+}
+
+#[test]
+fn terrain_cdt_planner_reuses_unchanged_tiles_and_rebuilds_cardinal_seams() {
+    let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(256.0, 64.0);
+    let left = planner_test_loop(10, 10.0, 24.0, 20.0, 32.0);
+    let right = planner_test_loop(20, 210.0, 24.0, 220.0, 32.0);
+    let first = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[left, right.clone()],
+        2.0,
+        None,
+        None,
+    );
+    assert_eq!(first.windows.len(), 4);
+    let previous = cached_patch_from_planned_windows(
+        patch.clone(),
+        first.windows,
+        first.represented_road_loop_count,
+    );
+    let moved_left = planner_test_loop(10, 12.0, 24.0, 20.0, 32.0);
+
+    let changed = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[moved_left, right.clone()],
+        2.0,
+        None,
+        Some(&previous),
+    );
+    let reuse_by_min_x = changed
+        .windows
+        .iter()
+        .map(|window| (window.key.min_x_mm, window.previous.is_some()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(reuse_by_min_x.get(&0), Some(&false));
+    assert_eq!(reuse_by_min_x.get(&64_000), Some(&false));
+    assert_eq!(reuse_by_min_x.get(&128_000), Some(&true));
+    assert_eq!(reuse_by_min_x.get(&192_000), Some(&true));
+
+    let removed = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[right],
+        2.0,
+        None,
+        Some(&previous),
+    );
+    assert_eq!(removed.represented_road_loop_count, 1);
+    assert_eq!(
+        removed
+            .windows
+            .iter()
+            .map(|window| window.key.min_x_mm)
+            .collect::<Vec<_>>(),
+        vec![128_000, 192_000],
+        "old-only tiles must be absent from the complete current generation"
+    );
+    assert!(removed.windows[0].previous.is_none());
+    assert!(removed.windows[1].previous.is_some());
+}
+
+#[test]
+fn terrain_cdt_planner_does_not_reuse_stale_halo_contributor_manifest() {
+    let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(128.0, 64.0);
+    let road_loop = planner_test_loop(7, 10.0, 24.0, 90.0, 32.0);
+    let first = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        std::slice::from_ref(&road_loop),
+        2.0,
+        None,
+        None,
+    );
+    let represented_road_loop_count = first.represented_road_loop_count;
+    let mut previous = cached_patch_from_planned_windows(
+        patch.clone(),
+        first.windows,
+        represented_road_loop_count,
+    );
+    let stale_key = previous.windows[0].key;
+    Arc::make_mut(&mut previous.windows[0]).road_clip_fingerprints = vec![u64::MAX];
+
+    let repeated = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop],
+        2.0,
+        None,
+        Some(&previous),
+    );
+    let stale_tile = repeated
+        .windows
+        .iter()
+        .find(|window| window.key == stale_key)
+        .expect("the unchanged geometry must retain the same tile key");
+
+    assert!(
+        stale_tile.previous.is_none(),
+        "mesh-key equality must not reuse an Arc carrying stale contributor metadata"
+    );
+    assert!(
+        repeated
+            .windows
+            .iter()
+            .filter(|window| window.key != stale_key)
+            .all(|window| window.previous.is_some()),
+        "tiles with matching geometry and contributor manifests must remain reusable"
+    );
+}
+
+#[test]
+fn terrain_cdt_incremental_planner_drops_removed_local_tiles_without_assembling_remote_tiles() {
+    let terrain = TerrainSystem::with_chunking(257, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(256.0, 64.0);
+    let cached_window = |tile_x: i64, has_engineered_contributor| {
+        let min_x_mm = tile_x * 64_000;
+        Arc::new(CachedRefinedTerrainCdtWindow {
+            key: RefinedTerrainCdtWindowKey {
+                min_x_mm,
+                min_z_mm: 0,
+                max_x_mm: min_x_mm + 64_000,
+                max_z_mm: 64_000,
+                fingerprint: tile_x as u64,
+            },
+            input_road_loops: usize::from(has_engineered_contributor),
+            input_source_samples: 0,
+            cdt_patch: TerrainCdtPatch::new(
+                min_x_mm as f64 / 1_000.0,
+                0.0,
+                min_x_mm as f64 / 1_000.0 + 64.0,
+                64.0,
+                [0.0; 4],
+            ),
+            mesh_result: Ok(empty_test_cdt_mesh()),
+            mesh_buffers: None,
+            cdt_ms: 0.0,
+            has_engineered_contributor,
+            road_clip_fingerprints: has_engineered_contributor
+                .then_some(tile_x as u64)
+                .into_iter()
+                .collect(),
+            site_clip_fingerprints: Vec::new(),
+        })
+    };
+    let removed_contributor = cached_window(0, true);
+    let removed_seam = cached_window(1, false);
+    let remote_seam = cached_window(2, false);
+    let remote_contributor = cached_window(3, true);
+    let mut previous = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    previous.patch = patch.clone();
+    previous.windows = vec![
+        Arc::clone(&removed_contributor),
+        Arc::clone(&removed_seam),
+        Arc::clone(&remote_seam),
+        Arc::clone(&remote_contributor),
+    ];
+    let graph = crate::simulation::network::graph::RegionGraph::new();
+    let road_surface = RoadSurfaceSystem::new(512.0);
+    let sites = BuildingSiteTerrainSnapshot::default();
+
+    let (plan, query) = SimulationNode::terrain_cdt_incremental_window_build_inputs(
+        &terrain,
+        &patch,
+        &graph,
+        &road_surface,
+        &sites,
+        &[(0, 0), (1, 0)],
+        2.0,
+        8.0,
+        &previous,
+    );
+
+    assert!(plan.windows.is_empty());
+    assert_eq!(plan.reused_windows.len(), 2);
+    assert!(Arc::ptr_eq(&plan.reused_windows[0], &remote_seam));
+    assert!(Arc::ptr_eq(&plan.reused_windows[1], &remote_contributor));
+    assert_eq!(query.source_count, 0);
+    assert_eq!(plan.represented_road_loop_count, 0);
+    assert_eq!(
+        plan.expected_road_clip_fingerprints, remote_contributor.road_clip_fingerprints,
+        "local removal must retain only the remote contributor ids in the expected generation"
+    );
+}
+
+#[test]
+fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
+    let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(512.0, 512.0);
+    let mut previous = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    previous.patch = patch.clone();
+    for z in 0_i64..8 {
+        for x in 0_i64..8 {
+            let min_x_mm = x * 64_000;
+            let min_z_mm = z * 64_000;
+            previous
+                .windows
+                .push(Arc::new(CachedRefinedTerrainCdtWindow {
+                    key: RefinedTerrainCdtWindowKey {
+                        min_x_mm,
+                        min_z_mm,
+                        max_x_mm: min_x_mm + 64_000,
+                        max_z_mm: min_z_mm + 64_000,
+                        fingerprint: (z * 8 + x) as u64,
+                    },
+                    input_road_loops: 1,
+                    input_source_samples: 0,
+                    cdt_patch: TerrainCdtPatch::new(
+                        min_x_mm as f64 / 1_000.0,
+                        min_z_mm as f64 / 1_000.0,
+                        min_x_mm as f64 / 1_000.0 + 64.0,
+                        min_z_mm as f64 / 1_000.0 + 64.0,
+                        [0.0; 4],
+                    ),
+                    mesh_result: Ok(empty_test_cdt_mesh()),
+                    mesh_buffers: None,
+                    cdt_ms: 0.0,
+                    has_engineered_contributor: true,
+                    road_clip_fingerprints: vec![(z * 8 + x) as u64],
+                    site_clip_fingerprints: Vec::new(),
+                }));
+        }
+    }
+    let graph = crate::simulation::network::graph::RegionGraph::new();
+    let road_surface = RoadSurfaceSystem::new(512.0);
+    let sites = BuildingSiteTerrainSnapshot::default();
+    let local_scope = [(0, 0), (1, 0), (0, 1)];
+
+    let (plan, _) = SimulationNode::terrain_cdt_incremental_window_build_inputs(
+        &terrain,
+        &patch,
+        &graph,
+        &road_surface,
+        &sites,
+        &local_scope,
+        2.0,
+        8.0,
+        &previous,
+    );
+
+    assert_eq!(plan.windows.len(), 2);
+    assert_eq!(plan.reused_windows.len(), 64 - local_scope.len());
+    assert!(
+        plan.windows
+            .iter()
+            .all(|window| window.cdt_input.source_samples.len() <= 1_089),
+        "only the bounded local scope may allocate CDT samples"
+    );
+}
+
+#[test]
+fn terrain_cdt_adjacent_tiles_emit_identical_shared_side_vertices() {
+    let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(128.0, 64.0);
+    let road_loop = TerrainCdtRoadLoop::new(
+        123,
+        0,
+        vec![
+            TerrainCdtVertex::new(48.0, 1.25, 23.3),
+            TerrainCdtVertex::new(80.0, 1.25, 23.3),
+            TerrainCdtVertex::new(80.0, 3.75, 31.7),
+            TerrainCdtVertex::new(48.0, 3.75, 31.7),
+        ],
+    );
+    let plan = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop],
+        2.0,
+        None,
+        None,
+    );
+    let mut shared_side_vertices = BTreeMap::new();
+
+    for window in plan.windows {
+        let min_x_mm = window.key.min_x_mm;
+        let mesh = build_road_touched_terrain_patch(window.cdt_input)
+            .expect("adjacent fixed CDT tiles should triangulate");
+        let referenced_vertices = mesh
+            .triangles
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut side_vertices = mesh
+            .vertices
+            .iter()
+            .enumerate()
+            .filter(|(index, vertex)| {
+                referenced_vertices.contains(index) && (vertex.x - 64.0).abs() <= 0.001
+            })
+            .map(|(_, vertex)| {
+                (
+                    SimulationNode::quantize_cdt_coord_mm(vertex.z),
+                    SimulationNode::quantize_cdt_coord_mm(f64::from(vertex.height_m)),
+                )
+            })
+            .filter(|(z_mm, _)| (0..=64_000).contains(z_mm))
+            .collect::<Vec<_>>();
+        side_vertices.sort_unstable();
+        side_vertices.dedup();
+        shared_side_vertices.insert(min_x_mm, side_vertices);
+    }
+
+    assert_eq!(
+        shared_side_vertices.get(&0),
+        shared_side_vertices.get(&64_000),
+        "adjacent fixed tiles must emit the same complete shared-side vertex sequence"
+    );
+    assert!(
+        shared_side_vertices.get(&0).is_some_and(|vertices| {
+            vertices.contains(&(23_300, 1_250)) && vertices.contains(&(31_700, 3_750))
+        }),
+        "the shared side must retain non-lattice road crossings and their authored heights"
+    );
+}
+
+#[test]
+fn terrain_cdt_tile_keys_ignore_remote_union_ids_but_hash_local_provenance() {
+    let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(64.0, 64.0);
+    let vertices = vec![
+        TerrainCdtVertex::new(10.0, 0.0, 24.0),
+        TerrainCdtVertex::new(20.0, 0.0, 24.0),
+        TerrainCdtVertex::new(20.0, 0.0, 32.0),
+        TerrainCdtVertex::new(10.0, 0.0, 32.0),
+    ];
+    let road_loop = |stable_piece_id, footprint_group_id, building_idx| {
+        let source_edges = vertices
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+                start,
+                end: vertices[(index + 1) % vertices.len()],
+                source: TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                    building_idx,
+                    local_loop_index: 0,
+                    local_edge_index: index as u32,
+                },
+            })
+            .collect();
+        TerrainCdtRoadLoop::new_with_source_edges_and_topology(
+            stable_piece_id,
+            footprint_group_id,
+            0,
+            false,
+            vertices.clone(),
+            source_edges,
+        )
+    };
+    let original = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop(10, 20, 7)],
+        2.0,
+        None,
+        None,
+    );
+    let remote_rekey = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop(999, 888, 7)],
+        2.0,
+        None,
+        None,
+    );
+    let local_provenance_change = SimulationNode::terrain_cdt_window_build_inputs(
+        &terrain,
+        &patch,
+        &[road_loop(999, 888, 8)],
+        2.0,
+        None,
+        None,
+    );
+
+    assert_eq!(original.windows[0].key, remote_rekey.windows[0].key);
+    assert_ne!(
+        original.windows[0].key.fingerprint,
+        local_provenance_change.windows[0].key.fingerprint
+    );
+
+    let mut changed_corner_input = original.windows[0].cdt_input.clone();
+    changed_corner_input.patch.corner_heights_m[0] = 0.25;
+    assert_ne!(
+        original.windows[0].key.fingerprint,
+        SimulationNode::terrain_cdt_input_fingerprint(&changed_corner_input),
+        "tile fingerprint must include sampled terrain corners"
     );
 }
 
@@ -761,5 +1703,183 @@ fn regular_terrain_filler_refines_cdt_window_sides() {
     assert!(
         export_has_world_xz(&export, &patch, 15.0, 10.0),
         "regular filler must share non-corner horizontal CDT-window boundary samples"
+    );
+}
+
+#[test]
+fn regular_terrain_filler_splits_at_non_lattice_cdt_side_vertices() {
+    let patch = TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 5,
+        sample_height: 5,
+        texture_width: 5,
+        texture_height: 5,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: 40.0,
+        world_size_z: 40.0,
+        height_data: vec![0.0; 25],
+    };
+    let cdt_patch = TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]);
+    let mut window = SimulationNode::terrain_cdt_window_bounds(&patch, cdt_patch, 5.0).unwrap();
+    SimulationNode::append_terrain_cdt_mesh_side_samples(
+        &mut window,
+        &[TerrainCdtVertex::new(10.0, 0.0, 17.3)],
+    );
+    let mut export = TerrainCdtTriangleBufferExport::empty();
+
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &[window]);
+
+    assert!(
+        export_has_world_xz(&export, &patch, 10.0, 17.3),
+        "regular filler must split its shared edge at every actual CDT side vertex"
+    );
+}
+
+#[test]
+fn regular_terrain_filler_propagates_cdt_breakpoints_across_filler_partitions() {
+    let patch = TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 5,
+        sample_height: 5,
+        texture_width: 5,
+        texture_height: 5,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: 40.0,
+        world_size_z: 40.0,
+        height_data: vec![0.0; 25],
+    };
+    let mut road_window = SimulationNode::terrain_cdt_window_bounds(
+        &patch,
+        TerrainCdtPatch::new(10.0, 10.0, 30.0, 30.0, [0.0; 4]),
+        5.0,
+    )
+    .unwrap();
+    SimulationNode::append_terrain_cdt_mesh_side_samples(
+        &mut road_window,
+        &[TerrainCdtVertex::new(10.0, 0.0, 17.3)],
+    );
+    let partitioning_window = SimulationNode::terrain_cdt_window_bounds(
+        &patch,
+        TerrainCdtPatch::new(5.0, 32.0, 8.0, 36.0, [0.0; 4]),
+        5.0,
+    )
+    .unwrap();
+    let mut export = TerrainCdtTriangleBufferExport::empty();
+
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(
+        &mut export,
+        &patch,
+        &[road_window, partitioning_window],
+    );
+
+    assert!(
+        export_has_world_xz(&export, &patch, 5.0, 17.3),
+        "a CDT side breakpoint must cross unrelated filler partitions instead of ending in a T-junction"
+    );
+}
+
+#[test]
+fn regular_terrain_filler_does_not_globalize_canonical_window_lattices() {
+    let patch = TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 9,
+        sample_height: 9,
+        texture_width: 9,
+        texture_height: 9,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: 512.0,
+        world_size_z: 512.0,
+        height_data: vec![0.0; 81],
+    };
+    let mut windows = Vec::new();
+    for tile_z in 0..8 {
+        for tile_x in 0..8 {
+            if (tile_x + tile_z) % 2 != 0 {
+                continue;
+            }
+            let min_x = f64::from(tile_x * 64);
+            let min_z = f64::from(tile_z * 64);
+            windows.push(
+                SimulationNode::terrain_cdt_window_bounds(
+                    &patch,
+                    TerrainCdtPatch::new(min_x, min_z, min_x + 64.0, min_z + 64.0, [0.0; 4]),
+                    2.0,
+                )
+                .expect("fixed window should intersect the test patch"),
+            );
+        }
+    }
+    let mut export = TerrainCdtTriangleBufferExport::empty();
+
+    SimulationNode::append_regular_terrain_mesh_outside_cdt_windows(&mut export, &patch, &windows);
+
+    assert!(!export.vertices.is_empty());
+    assert!(
+        export.vertices.len() < 50_000,
+        "canonical 2 m side lattices must not create a patch-wide Cartesian filler grid; emitted {} vertices",
+        export.vertices.len()
+    );
+}
+
+#[test]
+fn terrain_mesh_duplicate_positions_receive_identical_normals() {
+    let vertices = vec![
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.0, 1.0, 1.0),
+        Vector3::new(-1.0, 0.0, 0.0),
+    ];
+    let indices = vec![0, 2, 1, 3, 5, 4];
+    let mut fallback = TerrainCdtTriangleBufferExport::empty();
+    fallback.vertices = vertices.clone();
+    fallback.normals = vec![Vector3::ZERO; fallback.vertices.len()];
+    fallback.indices = indices.clone();
+
+    SimulationNode::reconcile_terrain_mesh_duplicate_normals(&mut fallback);
+
+    assert_eq!(
+        fallback.normals[0], fallback.normals[3],
+        "duplicate seam vertices must use one deterministic accumulated normal"
+    );
+    assert!(fallback.normals[0].length_squared() > 0.99);
+
+    let first_face_normal = (vertices[2] - vertices[0])
+        .cross(vertices[1] - vertices[0])
+        .normalized();
+    let second_face_normal = (vertices[5] - vertices[3])
+        .cross(vertices[4] - vertices[3])
+        .normalized();
+    let mut cached = TerrainCdtTriangleBufferExport::empty();
+    cached.vertices = vertices;
+    cached.normals = vec![
+        first_face_normal,
+        first_face_normal,
+        first_face_normal,
+        second_face_normal,
+        second_face_normal,
+        second_face_normal,
+    ];
+    cached.normal_sum_lengths = vec![1.0; cached.vertices.len()];
+    cached.indices = indices;
+
+    SimulationNode::reconcile_terrain_mesh_duplicate_normals(&mut cached);
+
+    assert_eq!(
+        cached.normals, fallback.normals,
+        "cached local normal sums must preserve the triangle-walk seam result"
     );
 }

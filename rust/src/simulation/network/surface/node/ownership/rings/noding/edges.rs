@@ -3,13 +3,15 @@
 use super::*;
 
 #[derive(Clone, Debug)]
-pub(super) struct NodeOwnershipPointIndex {
+pub(in crate::simulation::network::surface::node::ownership) struct NodeOwnershipPointIndex {
     points_by_x: Vec<NodeOwnershipPointKey>,
     points_by_z: Vec<NodeOwnershipPointKey>,
 }
 
 impl NodeOwnershipPointIndex {
-    pub(super) fn new(points: &[NodeOwnershipPointKey]) -> Self {
+    pub(in crate::simulation::network::surface::node::ownership) fn new(
+        points: &[NodeOwnershipPointKey],
+    ) -> Self {
         let mut points_by_x = points.to_vec();
         points_by_x.sort_unstable();
         points_by_x.dedup();
@@ -21,24 +23,56 @@ impl NodeOwnershipPointIndex {
         }
     }
 
-    fn candidates_between(
+    pub(in crate::simulation::network::surface::node::ownership) fn candidates_between(
+        &self,
+        start: NodeOwnershipPointKey,
+        end: NodeOwnershipPointKey,
+    ) -> &[NodeOwnershipPointKey] {
+        let x_candidates = self.x_candidates_between(start, end);
+        let z_candidates = self.z_candidates_between(start, end);
+        if x_candidates.len() <= z_candidates.len() {
+            x_candidates
+        } else {
+            z_candidates
+        }
+    }
+
+    pub(in crate::simulation::network::surface::node::ownership) fn tolerant_candidates_between(
+        &self,
+        start: NodeOwnershipPointKey,
+        end: NodeOwnershipPointKey,
+    ) -> &[NodeOwnershipPointKey] {
+        if start.0 == end.0 {
+            return self.z_candidates_between(start, end);
+        }
+        if start.1 == end.1 {
+            return self.x_candidates_between(start, end);
+        }
+        self.candidates_between(start, end)
+    }
+
+    fn x_candidates_between(
         &self,
         start: NodeOwnershipPointKey,
         end: NodeOwnershipPointKey,
     ) -> &[NodeOwnershipPointKey] {
         let min_x = start.0.min(end.0);
         let max_x = start.0.max(end.0);
-        let min_z = start.1.min(end.1);
-        let max_z = start.1.max(end.1);
         let x_start = self.points_by_x.partition_point(|point| point.0 < min_x);
         let x_end = self.points_by_x.partition_point(|point| point.0 <= max_x);
+        &self.points_by_x[x_start..x_end]
+    }
+
+    fn z_candidates_between(
+        &self,
+        start: NodeOwnershipPointKey,
+        end: NodeOwnershipPointKey,
+    ) -> &[NodeOwnershipPointKey] {
+        let min_z = start.1.min(end.1);
+        let max_z = start.1.max(end.1);
         let z_start = self.points_by_z.partition_point(|point| point.1 < min_z);
         let z_end = self.points_by_z.partition_point(|point| point.1 <= max_z);
-        if x_end.saturating_sub(x_start) <= z_end.saturating_sub(z_start) {
-            &self.points_by_x[x_start..x_end]
-        } else {
-            &self.points_by_z[z_start..z_end]
-        }
+        &self.points_by_z[z_start..z_end]
     }
 }
 
@@ -150,8 +184,12 @@ fn noded_owned_region_edge_points_with_index(
     point_index: &NodeOwnershipPointIndex,
     exact_segment: bool,
 ) -> Vec<NodeOwnershipPointKey> {
-    let mut split_points = point_index
-        .candidates_between(start, end)
+    let candidates = if exact_segment {
+        point_index.candidates_between(start, end)
+    } else {
+        point_index.tolerant_candidates_between(start, end)
+    };
+    let mut split_points = candidates
         .iter()
         .copied()
         .filter(|point| *point != start && *point != end)

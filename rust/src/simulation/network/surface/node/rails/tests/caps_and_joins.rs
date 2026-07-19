@@ -7,6 +7,48 @@ use crate::simulation::network::surface::{
 use i_overlay::core::overlay_rule::OverlayRule;
 
 #[test]
+fn junction_topology_reuse_uses_node_local_mouth_identity() {
+    let input = side_join_input(RoadSurfaceVisualNodePieceKind::JunctionN);
+    let (_, _, _, topology) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(&input, false, None)
+            .expect("cold junction rails");
+    let mut remapped_input = input.clone();
+    remapped_input.mouths[0].edge_idx = 70;
+    remapped_input.mouths[1].edge_idx = 80;
+
+    let (reused, _, reuse_status, _) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+            &remapped_input,
+            false,
+            Some(&topology),
+        )
+        .expect("edge-id-remapped junction rails");
+    let (cold, _, _, _) = NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+        &remapped_input,
+        false,
+        None,
+    )
+    .expect("independent remapped junction rails");
+
+    assert!(
+        reuse_status.rail_topology_reused,
+        "raw graph edge ids are publication metadata, not node-local rail topology"
+    );
+    assert!(
+        reuse_status.ownership_reuse_safe,
+        "an edge-id-only remap preserves every ownership predicate"
+    );
+    assert_eq!(reused.side_join_gaps, cold.side_join_gaps);
+    assert!(!reused.side_join_gaps.is_empty());
+    assert!(
+        reused.side_join_gaps.iter().all(|gap| {
+            [70, 80].contains(&gap.from_edge_idx) && [70, 80].contains(&gap.to_edge_idx)
+        }),
+        "projected joins must carry the current generation's graph edge ids"
+    );
+}
+
+#[test]
 fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
     let input = nonterminal_input_with_side_join_candidate();
     let contours = NodeRailContourSet::from_input(&input).expect("valid contours");

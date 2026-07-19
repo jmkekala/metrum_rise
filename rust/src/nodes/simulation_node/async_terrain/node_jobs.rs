@@ -2,6 +2,8 @@
 
 use super::super::*;
 use super::state::*;
+use crate::nodes::sim::core::RefinedTerrainAssemblyScope;
+use std::collections::BTreeSet;
 
 impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn lock_water_patch_mesh_jobs(
@@ -161,34 +163,50 @@ impl SimulationNode {
                 },
             }));
         }
+        if !core
+            .transit_network
+            .road_surface
+            .published_generation_matches_source()
+        {
+            return None;
+        }
+        if core.terrain_stroke_active {
+            // Refined inputs sample the immutable road-query terrain snapshot. A batched stroke
+            // publishes that snapshot only at finalization, so intermediate requests must retry.
+            return None;
+        }
 
         let cache_key = RefinedTerrainPatchCacheKey {
             patch_x: request.key.patch_x,
             patch_z: request.key.patch_z,
             render_step_mm: request.key.render_step_mm,
         };
-        if core
-            .refined_terrain_patch_cache
-            .get(&cache_key)
-            .is_some_and(|cached| {
-                !Self::refined_terrain_patch_cache_entry_is_current(
-                    cached,
-                    request.surface_generation,
-                )
-            })
-        {
-            core.refined_terrain_patch_cache.remove(&cache_key);
-        }
         if let Some(cached) = core.refined_terrain_patch_cache.get(&cache_key) {
-            return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
-                key: request.key,
-                request_id: request.request_id,
-                surface_generation: request.surface_generation,
-                data: TerrainPatchPayloadData::Refined {
-                    patch: cached.clone(),
-                },
-            }));
+            if Self::refined_terrain_patch_cache_entry_is_current(
+                cached,
+                request.surface_generation,
+            ) && Self::cached_refined_cdt_failure_label(cached).is_none()
+            {
+                return Some(TerrainPatchPayloadBuildSource::Ready(TerrainPatchPayload {
+                    key: request.key,
+                    request_id: request.request_id,
+                    surface_generation: request.surface_generation,
+                    data: TerrainPatchPayloadData::Refined {
+                        patch: cached.clone(),
+                    },
+                }));
+            }
         }
+        let previous = match core.refined_terrain_patch_cache.get(&cache_key) {
+            Some(cached) if cached.contract_revision == TERRAIN_CDT_CONTRACT_REVISION => {
+                Some(cached.clone())
+            }
+            Some(_) => {
+                core.refined_terrain_patch_cache.remove(&cache_key);
+                None
+            }
+            None => None,
+        };
 
         let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
         let base_patch = core
@@ -219,6 +237,13 @@ impl SimulationNode {
         } else {
             engineered_query_margin_m
         };
+        let assembly_scope = Self::refined_terrain_assembly_scope_for_request(
+            core,
+            &base_patch,
+            previous.as_deref(),
+            request.surface_generation,
+            road_locked_margin_m,
+        );
         core.allocator
             .prepare_building_site_query_index(core.config.zone_cell_m);
         let sites = core.allocator.terrain_site_snapshot_for_world_bounds(
@@ -231,12 +256,84 @@ impl SimulationNode {
             RefinedTerrainPatchBuildSource {
                 request,
                 patch: base_patch,
+                previous,
+                assembly_scope,
                 requires_engineered_refinement,
                 requires_road_clipping,
                 road_locked_margin_m,
+                road_surface_generation: core.road_tool_surface_generation,
                 sites,
             },
         ))
+    }
+
+    fn refined_terrain_assembly_scope_for_request(
+        core: &SimCore,
+        patch: &TerrainPatchSnapshot,
+        previous: Option<&CachedRefinedTerrainPatch>,
+        surface_generation: u64,
+        current_clip_query_margin_m: f32,
+    ) -> RefinedTerrainAssemblyScope {
+        let Some(previous) = previous else {
+            return RefinedTerrainAssemblyScope::FullPatch;
+        };
+        if core.terrain_payload_global_generation > previous.surface_generation {
+            return RefinedTerrainAssemblyScope::FullPatch;
+        }
+        let patch_key = (patch.patch_x, patch.patch_z);
+        let Some(ledger) = core.refined_terrain_assembly_ledgers.get(&patch_key) else {
+            return RefinedTerrainAssemblyScope::FullPatch;
+        };
+        if ledger
+            .full_dirty_at
+            .is_some_and(|stamp| stamp > previous.surface_generation && stamp <= surface_generation)
+        {
+            return RefinedTerrainAssemblyScope::FullPatch;
+        }
+
+        let expansion_m = previous
+            .clip_query_margin_m
+            .max(current_clip_query_margin_m)
+            .max(0.0);
+        let mut dirty_tiles = BTreeSet::new();
+        let mut has_relevant_road_chunks = false;
+        for (&chunk, &stamp) in &ledger.road_query_chunk_dirty_at {
+            if stamp <= previous.surface_generation || stamp > surface_generation {
+                continue;
+            }
+            has_relevant_road_chunks = true;
+            let (chunk_min, chunk_max) = RoadSurfaceSystem::query_chunk_world_bounds(chunk);
+            dirty_tiles.extend(Self::terrain_cdt_tile_ids_for_bounds(
+                patch,
+                (
+                    chunk_min.x as f32 - expansion_m,
+                    chunk_min.z as f32 - expansion_m,
+                    chunk_max.x as f32 + expansion_m,
+                    chunk_max.z as f32 + expansion_m,
+                ),
+            ));
+        }
+        if !has_relevant_road_chunks {
+            return RefinedTerrainAssemblyScope::FullPatch;
+        }
+        let changed_tiles = dirty_tiles.iter().copied().collect::<Vec<_>>();
+        for tile_id in changed_tiles {
+            for (offset_x, offset_z) in TERRAIN_CDT_TILE_NEIGHBORS {
+                let neighbor = TerrainCdtTileId {
+                    x: tile_id.x + offset_x,
+                    z: tile_id.z + offset_z,
+                };
+                if Self::terrain_cdt_tile_bounds(patch, neighbor).is_some() {
+                    dirty_tiles.insert(neighbor);
+                }
+            }
+        }
+        RefinedTerrainAssemblyScope::LocalTiles(
+            dirty_tiles
+                .into_iter()
+                .map(|tile_id| (tile_id.x, tile_id.z))
+                .collect(),
+        )
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_build_job_for_source(
@@ -250,28 +347,60 @@ impl SimulationNode {
             TerrainPatchPayloadBuildSource::Refined(source) => source,
         };
         let request = source.request;
+        if query.surface_generation != source.road_surface_generation {
+            return TerrainPatchPayloadBuildJob::Failed(request);
+        }
         let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
-        let road_clip_query = Self::road_clip_loop_query_for_snapshot(
-            query.region_graph.as_ref(),
-            query.road_surface.as_ref(),
-            &source.sites,
-            source.patch.world_origin_x - source.road_locked_margin_m,
-            source.patch.world_origin_z - source.road_locked_margin_m,
-            source.patch.world_origin_x + source.patch.world_size_x + source.road_locked_margin_m,
-            source.patch.world_origin_z + source.patch.world_size_z + source.road_locked_margin_m,
+        let local_assembly = matches!(
+            &source.assembly_scope,
+            RefinedTerrainAssemblyScope::LocalTiles(_)
         );
-        let windows = Self::terrain_cdt_window_build_inputs(
-            query.terrain.as_ref(),
-            &source.patch,
-            &road_clip_query.cdt_road_loops,
-            render_step_m,
-            Some(TerrainCdtSiteGradingContext {
-                source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
-                graph: query.region_graph.as_ref(),
-                road_surface: query.road_surface.as_ref(),
-            }),
-            None,
-        );
+        let (window_plan, road_clip_query) = match &source.assembly_scope {
+            RefinedTerrainAssemblyScope::FullPatch => {
+                let road_clip_query = Self::road_clip_loop_query_for_snapshot(
+                    query.region_graph.as_ref(),
+                    query.road_surface.as_ref(),
+                    &source.sites,
+                    source.patch.world_origin_x - source.road_locked_margin_m,
+                    source.patch.world_origin_z - source.road_locked_margin_m,
+                    source.patch.world_origin_x
+                        + source.patch.world_size_x
+                        + source.road_locked_margin_m,
+                    source.patch.world_origin_z
+                        + source.patch.world_size_z
+                        + source.road_locked_margin_m,
+                );
+                let window_plan = Self::terrain_cdt_window_build_inputs(
+                    query.terrain.as_ref(),
+                    &source.patch,
+                    &road_clip_query.cdt_road_loops,
+                    render_step_m,
+                    Some(TerrainCdtSiteGradingContext {
+                        source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
+                        graph: query.region_graph.as_ref(),
+                        road_surface: query.road_surface.as_ref(),
+                    }),
+                    source.previous.as_deref(),
+                );
+                (window_plan, road_clip_query)
+            }
+            RefinedTerrainAssemblyScope::LocalTiles(tile_keys) => {
+                let Some(previous) = source.previous.as_ref() else {
+                    return TerrainPatchPayloadBuildJob::Failed(request);
+                };
+                Self::terrain_cdt_incremental_window_build_inputs(
+                    query.terrain.as_ref(),
+                    &source.patch,
+                    query.region_graph.as_ref(),
+                    query.road_surface.as_ref(),
+                    &source.sites,
+                    tile_keys,
+                    render_step_m,
+                    source.road_locked_margin_m,
+                    previous,
+                )
+            }
+        };
         let requires_road_clipping = Self::road_clip_query_requires_road_clipping(
             &road_clip_query,
             source.requires_road_clipping,
@@ -286,7 +415,12 @@ impl SimulationNode {
                 },
                 surface_generation: request.surface_generation,
                 patch: source.patch,
-                windows,
+                windows: window_plan.windows,
+                reused_windows: window_plan.reused_windows,
+                input_clip_loop_count: window_plan.represented_road_loop_count,
+                omitted_margin_clip_loop_count: window_plan.omitted_margin_loop_count,
+                expected_road_clip_fingerprints: window_plan.expected_road_clip_fingerprints,
+                expected_site_clip_fingerprints: window_plan.expected_site_clip_fingerprints,
                 requires_engineered_refinement: source.requires_engineered_refinement,
                 requires_road_clipping,
                 clip_source_count: road_clip_query.source_count,
@@ -294,6 +428,8 @@ impl SimulationNode {
                 road_clip_loop_count: road_clip_query.road_loop_count,
                 site_clip_loop_count: road_clip_query.site_loop_count,
                 clip_error_label: road_clip_query.clip_error_label,
+                clip_query_margin_m: source.road_locked_margin_m,
+                derive_clip_counts_from_windows: local_assembly,
             },
         }
     }
@@ -304,26 +440,29 @@ impl SimulationNode {
         Vec<TerrainPatchPayload>,
         Vec<TerrainPatchPayloadRequest>,
         Vec<RefinedTerrainPatchBuildInput>,
+        Vec<TerrainPatchPayloadRequest>,
     ) {
         let mut ready = Vec::new();
         let mut refined_requests = Vec::new();
         let mut refined_inputs = Vec::new();
+        let mut failed = Vec::new();
         for job in jobs {
             match job {
                 TerrainPatchPayloadBuildJob::Ready(payload) => ready.push(payload),
+                TerrainPatchPayloadBuildJob::Failed(request) => failed.push(request),
                 TerrainPatchPayloadBuildJob::Refined { request, input } => {
                     refined_requests.push(request);
                     refined_inputs.push(input);
                 }
             }
         }
-        (ready, refined_requests, refined_inputs)
+        (ready, refined_requests, refined_inputs, failed)
     }
 
     pub(in crate::nodes::simulation_node) fn append_refined_terrain_patch_payloads_for_requests(
         built: &mut Vec<TerrainPatchPayload>,
         refined_requests: &[TerrainPatchPayloadRequest],
-        refined_entries: &[CachedRefinedTerrainPatch],
+        refined_entries: &[Arc<CachedRefinedTerrainPatch>],
     ) {
         let entries_by_key = refined_entries
             .iter()
@@ -338,12 +477,15 @@ impl SimulationNode {
             let Some(entry) = entries_by_key.get(&cache_key) else {
                 continue;
             };
+            if Self::cached_refined_cdt_failure_label(entry).is_some() {
+                continue;
+            }
             built.push(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
                 data: TerrainPatchPayloadData::Refined {
-                    patch: (**entry).clone(),
+                    patch: Arc::clone(entry),
                 },
             });
         }
@@ -356,7 +498,14 @@ impl SimulationNode {
         if core.watermap.render_generation() != request.source_generation {
             return None;
         }
-        if core.road_tool_surface_generation != request.surface_generation {
+        if core.cached_road_mesh_generation != request.surface_generation {
+            return None;
+        }
+        if !core
+            .transit_network
+            .road_surface
+            .published_generation_matches_source()
+        {
             return None;
         }
         let patch = core
@@ -387,6 +536,13 @@ impl SimulationNode {
         patch_z: usize,
         lod_step: usize,
     ) -> Option<(WaterPatchMeshCacheKey, WaterPatchMeshBuildInput)> {
+        if !core
+            .transit_network
+            .road_surface
+            .published_generation_matches_source()
+        {
+            return None;
+        }
         let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
         let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,

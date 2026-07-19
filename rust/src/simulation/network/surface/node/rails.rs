@@ -12,6 +12,7 @@ mod contours;
 mod geometry;
 mod model;
 mod owners;
+mod reuse;
 mod source_points;
 mod topology;
 
@@ -21,6 +22,7 @@ pub(crate) use model::{
     NodeRailBuildProfile, NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
     NodeRailGenerationError, NodeRailHeightCarrierPaths,
 };
+pub(crate) use reuse::NodeRailTopologyCache;
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = SURFACE_POLYLINE_POINT_EQUAL_EPS_M;
 

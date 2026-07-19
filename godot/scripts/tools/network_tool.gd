@@ -40,6 +40,8 @@ const SURFACE_DEBUG_REFRESH_SEC := 0.2
 const SURFACE_PROBE_REFRESH_SEC := 0.25
 
 func _ready():
+	if name == "RoadTool":
+		WorldMaterials.prewarm_road_materials()
 	_surface_debug_enabled = _is_surface_debug_enabled()
 	_surface_probe_enabled = _is_surface_probe_enabled()
 	_setup_visuals()

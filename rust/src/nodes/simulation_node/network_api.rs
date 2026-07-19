@@ -120,6 +120,28 @@ impl SimulationNode {
     /// Returns the node ID of the nearest graph node near the border, or -1.
     #[func]
     pub fn check_border_candidate(&self, pos: Vector3) -> i64 {
+        // Almost every road endpoint is far from the world edge. Reject those against the
+        // immutable render snapshot so an in-progress surface compile cannot stall the main
+        // thread merely to repeat this bounds check under the authoritative core lock.
+        let terrain_world_size = self.snapshot.read().unwrap().terrain_world_size;
+        let snapshot_has_extents = terrain_world_size.x > 0.0 && terrain_world_size.y > 0.0;
+        if snapshot_has_extents
+            && !Self::road_tool_is_near_border(
+                pos,
+                terrain_world_size.x * 0.5,
+                terrain_world_size.y * 0.5,
+                config::BORDER_DETECTION_THRESHOLD,
+            )
+        {
+            debug_log!(
+                "economy",
+                "border candidate rejected at pos=({:.1}, {:.1}, {:.1}) because it is not near the map boundary",
+                pos.x,
+                pos.y,
+                pos.z
+            );
+            return -1;
+        }
         self.lock_core().check_border_candidate_internal(pos)
     }
 

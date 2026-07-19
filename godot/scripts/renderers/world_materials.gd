@@ -47,6 +47,12 @@ static var _site_ground_material: ShaderMaterial
 static var _site_asphalt_material: ShaderMaterial
 static var _site_concrete_material: ShaderMaterial
 
+static func prewarm_road_materials() -> void:
+	road_asphalt_material()
+	road_sidewalk_material()
+	road_sidewalk_face_material()
+	road_concrete_material()
+
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:
 		_road_asphalt_material = ShaderMaterial.new()

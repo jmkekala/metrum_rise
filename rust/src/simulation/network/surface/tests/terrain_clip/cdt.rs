@@ -339,7 +339,7 @@ fn terrain_clip_loops_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
             center,
             node,
             vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
-            14.0,
+            7.0,
             EdgeClass::Standard,
             TransitType::Road,
             TransitFlags::CAR | TransitFlags::FOOT,

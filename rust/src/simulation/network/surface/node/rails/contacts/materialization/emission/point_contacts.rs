@@ -37,12 +37,33 @@ fn insert_generated_material_point_constraint(
     });
 }
 
+#[cfg(test)]
 pub(in crate::simulation::network::surface::node::rails) fn append_source_authorized_raised_step_point_contacts(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
     source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> usize {
+    let mut current = NodeSourceAuthorizedContactCache::default();
+    append_source_authorized_raised_step_point_contacts_with_reuse(
+        piece_kind,
+        contours,
+        source_constraint_count,
+        constraints,
+        None,
+        &mut current,
+    )
+    .0
+}
+
+pub(in crate::simulation::network::surface::node::rails) fn append_source_authorized_raised_step_point_contacts_with_reuse(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &[NodeGeneratedContour],
+    source_constraint_count: usize,
+    constraints: &mut Vec<NodeRailConstraint>,
+    previous: Option<&NodeSourceAuthorizedContactCache>,
+    current: &mut NodeSourceAuthorizedContactCache,
+) -> (usize, SourceAuthorizedContactReuseStats) {
     let before_len = constraints.len();
     let mut existing = constraints
         .iter()
@@ -53,11 +74,13 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
         constraints,
         source_constraint_count,
     );
-    collect_source_authorized_raised_step_contacts(
+    let stats = collect_source_authorized_raised_step_contacts_with_reuse(
         piece_kind,
         contours,
         &source_constraints,
         &mut contacts,
+        previous,
+        current,
     );
 
     for contact in contacts {
@@ -78,7 +101,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
             ],
         });
     }
-    constraints.len() - before_len
+    (constraints.len() - before_len, stats)
 }
 
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_material_point_contact_constraints(

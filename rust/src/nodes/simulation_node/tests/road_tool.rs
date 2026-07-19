@@ -74,3 +74,35 @@ fn road_tool_sticky_network_snap_rejects_non_network_anchor() {
         8.0,
     ));
 }
+
+#[test]
+fn road_tool_border_precheck_matches_strict_heightmap_bounds() {
+    let half_width_m = 50.0;
+    let half_height_m = 40.0;
+    let threshold_m = 3.0;
+
+    assert!(!SimulationNode::road_tool_is_near_border(
+        Vector3::ZERO,
+        half_width_m,
+        half_height_m,
+        threshold_m,
+    ));
+    assert!(!SimulationNode::road_tool_is_near_border(
+        Vector3::new(47.0, 0.0, 37.0),
+        half_width_m,
+        half_height_m,
+        threshold_m,
+    ));
+    assert!(SimulationNode::road_tool_is_near_border(
+        Vector3::new(47.001, 0.0, 0.0),
+        half_width_m,
+        half_height_m,
+        threshold_m,
+    ));
+    assert!(SimulationNode::road_tool_is_near_border(
+        Vector3::new(0.0, 0.0, -37.001),
+        half_width_m,
+        half_height_m,
+        threshold_m,
+    ));
+}

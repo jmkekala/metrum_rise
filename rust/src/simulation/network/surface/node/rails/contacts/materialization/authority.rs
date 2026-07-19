@@ -100,6 +100,25 @@ impl<'a> GeneratedContactAuthorityIndex<'a> {
                     && authority_constraint.bounds_touch_summary(right)
             })
     }
+
+    /// Visits only constraints in the exact kind/owner bucket whose cached bounds touch both contours.
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn visit_constraints_touching_contour_pair(
+        &self,
+        kind: NodeRailConstraintKind,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        left: &GeneratedContactContourSummary,
+        right: &GeneratedContactContourSummary,
+        mut visit: impl FnMut(&NodeRailConstraint),
+    ) {
+        for authority_constraint in self.constraints_for(kind, owner, opposite_owner) {
+            if authority_constraint.bounds_touch_summary(left)
+                && authority_constraint.bounds_touch_summary(right)
+            {
+                visit(authority_constraint.constraint);
+            }
+        }
+    }
 }
 
 impl<'a> GeneratedContactAuthorityConstraint<'a> {

@@ -27,7 +27,13 @@ impl SimulationNode {
         let successful_windows = cached
             .windows
             .iter()
-            .filter_map(|window| window.mesh_result.as_ref().ok().map(|mesh| (window, mesh)))
+            .filter_map(|window| {
+                window
+                    .mesh_result
+                    .as_ref()
+                    .ok()
+                    .map(|mesh| (window.as_ref(), mesh))
+            })
             .collect::<Vec<_>>();
         debug_assert_eq!(successful_windows.len(), cached.windows.len());
 
@@ -39,13 +45,25 @@ impl SimulationNode {
         }
         let aggregate_stats = Self::aggregate_cdt_window_stats(&successful_windows);
         Self::append_cdt_stats(dict, aggregate_stats);
-        let mesh_buffer_summary = Self::append_cdt_window_mesh_buffers(
-            dict,
-            &cached.patch,
-            &successful_windows,
-            (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
-            include_debug,
-        );
+        let mesh_buffer_summary = if include_debug {
+            Self::append_cdt_window_mesh_buffers(
+                dict,
+                &cached.patch,
+                &successful_windows,
+                (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
+                true,
+            )
+        } else if let Some(buffers) = cached.mesh_buffers.as_deref() {
+            Self::append_cached_refined_terrain_mesh_buffers(dict, buffers)
+        } else {
+            Self::append_cdt_window_mesh_buffers(
+                dict,
+                &cached.patch,
+                &successful_windows,
+                (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
+                false,
+            )
+        };
         let max_face_slope_ratio = mesh_buffer_summary.terrain_max_face_slope_ratio;
         let longest_triangle_edge_m = mesh_buffer_summary.terrain_longest_triangle_edge_m;
         let pathological_output =
@@ -70,6 +88,7 @@ impl SimulationNode {
             cached.road_clip_source_count,
             cached.road_clip_loop_count,
             cached.site_clip_loop_count,
+            cached.omitted_margin_clip_loop_count,
             cached.input_road_loops,
             cached.clip_error_label,
         ) {
@@ -94,6 +113,7 @@ impl SimulationNode {
         road_clip_source_count: usize,
         road_clip_loop_count: usize,
         site_clip_loop_count: usize,
+        omitted_margin_clip_loop_count: usize,
         input_clip_loop_count: usize,
         clip_error_label: Option<&'static str>,
     ) -> Option<&'static str> {
@@ -106,7 +126,9 @@ impl SimulationNode {
         if requires_road_clipping && road_clip_loop_count == 0 {
             return Some("missing_road_clip_loops");
         }
-        let expected_clip_loop_count = road_clip_loop_count.saturating_add(site_clip_loop_count);
+        let expected_clip_loop_count = road_clip_loop_count
+            .saturating_add(site_clip_loop_count)
+            .saturating_sub(omitted_margin_clip_loop_count);
         if input_clip_loop_count != expected_clip_loop_count {
             return Some("incomplete_terrain_clip_windows");
         }

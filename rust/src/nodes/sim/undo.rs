@@ -55,6 +55,7 @@ impl SimCore {
             } else {
                 None
             },
+            road_surface_topology: None,
             zoning: None,
             runtime: if inc_runtime {
                 Some(SimulationRuntimeSnapshot::PendingDemandSpawns(
@@ -105,10 +106,16 @@ impl SimCore {
         graph: RegionGraphUndoDelta,
         zoning: Option<ZoningParcelRemovalUndo>,
     ) {
+        let (edge_ids, node_ids) = graph.stored_topology_ids();
+        let road_surface_topology = self
+            .transit_network
+            .road_surface
+            .capture_topology_undo(&edge_ids, &node_ids);
         self.push_undo_snapshot(SimulationSnapshot {
             terrain: None,
             water: None,
             trans_graph: Some(graph),
+            road_surface_topology,
             zoning,
             runtime: None,
         });
@@ -130,6 +137,7 @@ impl SimCore {
             terrain: None,
             water: None,
             trans_graph: None,
+            road_surface_topology: None,
             zoning: None,
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(runtime)),
         });
@@ -274,11 +282,16 @@ impl SimCore {
                 terrain,
                 water,
                 trans_graph,
+                road_surface_topology,
                 zoning,
                 runtime,
             } = state;
+            let restored_dense_terrain = terrain.is_some();
             let mut sync_trans_graph = false;
-            let old_engineered_patch_keys = self.engineered_terrain_patch_keys.clone();
+            let old_engineered_patch_keys = restored_dense_terrain
+                .then(|| self.engineered_terrain_patch_keys.clone())
+                .unwrap_or_default();
+            let mut restored_topology_scope = None;
 
             if let Some(t_data) = terrain {
                 self.heightmap
@@ -294,6 +307,10 @@ impl SimCore {
                 self.bump_road_tool_query_generation();
             }
             if let Some(tr_graph) = trans_graph {
+                restored_topology_scope = Some(tr_graph.affected_topology_ids(
+                    self.region_graph.node_count(),
+                    self.region_graph.edge_count(),
+                ));
                 self.region_graph.restore_undo_delta(tr_graph);
                 sync_trans_graph = true;
             }
@@ -321,7 +338,15 @@ impl SimCore {
                     .rebuild_cch_and_check(&self.region_graph);
                 self.transit_network.cch_dirty_chunks.clear();
                 self.transit_network.flow_fields.mark_all_dirty();
-                self.reset_network_render_state(old_engineered_patch_keys);
+                if restored_dense_terrain {
+                    self.reset_network_render_state(old_engineered_patch_keys);
+                } else if let Some((edge_ids, node_ids)) = restored_topology_scope {
+                    self.reset_local_network_render_state(
+                        &edge_ids,
+                        &node_ids,
+                        road_surface_topology,
+                    );
+                }
             }
             return true;
         }
@@ -342,6 +367,7 @@ impl SimCore {
 
         self.transit_network.road_surface.clear();
         self.refined_terrain_patch_cache.clear();
+        self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
         self.road_locked_terrain_patch_margins.clear();
         self.building_site_owned_terrain_patch_keys.clear();
@@ -350,6 +376,26 @@ impl SimCore {
         self.cached_road_mesh_data = None;
         self.terrain_dirty = true;
         self.mark_network_render_dirty();
+    }
+
+    fn reset_local_network_render_state(
+        &mut self,
+        edge_ids: &HashSet<usize>,
+        node_ids: &HashSet<u32>,
+        road_surface_topology: Option<crate::simulation::network::surface::RoadSurfaceTopologyUndo>,
+    ) {
+        let restored = road_surface_topology.is_some_and(|topology| {
+            self.transit_network
+                .road_surface
+                .restore_topology_undo(topology, edge_ids, node_ids)
+        });
+        if !restored {
+            self.transit_network
+                .road_surface
+                .mark_topology_restore_dirty(&self.region_graph, edge_ids, node_ids);
+        }
+        self.terrain_dirty = true;
+        self.mark_local_network_render_dirty();
     }
 
     fn can_restore_building_removal_undo(&self, undo: &BuildingRemovalUndo) -> bool {

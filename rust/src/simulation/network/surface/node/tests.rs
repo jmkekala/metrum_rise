@@ -76,6 +76,30 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights(
     raised_start_height_m: f64,
     raised_end_height_m: f64,
 ) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
+    arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_authority(
+        lower_kind,
+        raised_kind,
+        raised_start,
+        raised_end,
+        lower_start_height_m,
+        lower_end_height_m,
+        raised_start_height_m,
+        raised_end_height_m,
+        true,
+    )
+}
+
+fn arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_authority(
+    lower_kind: RoadSurfaceBandKind,
+    raised_kind: RoadSurfaceBandKind,
+    raised_start: RoadVec2,
+    raised_end: RoadVec2,
+    lower_start_height_m: f64,
+    lower_end_height_m: f64,
+    raised_start_height_m: f64,
+    raised_end_height_m: f64,
+    include_region_authority: bool,
+) -> (NodeArrangement, Vec<NodeExplicitVerticalStepSegment>) {
     let lower_owner = owner(lower_kind, 0);
     let raised_owner = owner(raised_kind, 1);
     let lower_height = height_field(lower_owner);
@@ -122,7 +146,9 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights(
         Vec::new(),
         vec![lower_edge],
         1.0,
-        vec![seam.clone()],
+        include_region_authority
+            .then(|| vec![seam.clone()])
+            .unwrap_or_default(),
     );
     arrangement.push_face(
         lower_region,
@@ -164,7 +190,9 @@ fn arrangement_with_owner_pair_vertical_step_support_and_heights(
         Vec::new(),
         Vec::new(),
         1.0,
-        vec![seam],
+        include_region_authority
+            .then(|| vec![seam])
+            .unwrap_or_default(),
     );
     arrangement.push_face(
         upper_region,

@@ -3,6 +3,147 @@
 use super::*;
 
 #[test]
+fn concave_loop_rectangle_clip_preserves_disconnected_components() {
+    let road_loop = disconnected_clip_test_loop();
+    let patch = TerrainCdtPatch::new(-1.0, 4.0, 11.0, 9.0, [0.0; 4]);
+
+    let first = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+    let second = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+
+    assert_eq!(first, second, "component ordering must be deterministic");
+    assert_eq!(
+        first.len(),
+        2,
+        "the clipped U arms must remain disconnected"
+    );
+    let bounds = first
+        .iter()
+        .map(|component| terrain_cdt_loop_bounds(&component.vertices))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bounds
+            .iter()
+            .map(|bounds| {
+                (
+                    quantized_coord(bounds.min_x),
+                    quantized_coord(bounds.min_z),
+                    quantized_coord(bounds.max_x),
+                    quantized_coord(bounds.max_z),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![(0, 4_000, 3_000, 9_000), (7_000, 4_000, 10_000, 9_000)]
+    );
+    assert!(
+        first
+            .iter()
+            .all(|component| component.source_edges.len() == 2),
+        "each arm must retain only its own two source-owned vertical sides"
+    );
+    let source_edge_indices = first
+        .iter()
+        .map(|component| {
+            component
+                .source_edges
+                .iter()
+                .filter_map(|edge| match edge.source {
+                    TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                        local_edge_index,
+                        ..
+                    } => Some(local_edge_index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        source_edge_indices,
+        vec![vec![5, 7], vec![1, 3]],
+        "disconnected components must not inherit provenance from the other arm"
+    );
+    assert!(
+        first
+            .iter()
+            .all(|component| !point_in_polygon(test_vertex(5.0, 6.0), &component.vertices)),
+        "clipping must not synthesize a road-filled bridge across the U opening"
+    );
+}
+
+#[test]
+fn canonicalizer_preserves_disconnected_rectangle_intersection_components() {
+    let patch = TerrainCdtPatch::new(-1.0, 4.0, 11.0, 9.0, [0.0; 4]);
+    let canonical = canonicalize_input(TerrainCdtInput::new(
+        patch,
+        vec![disconnected_clip_test_loop()],
+        Vec::new(),
+    ))
+    .expect("disconnected clipped components should remain valid CDT constraints");
+
+    assert_eq!(
+        canonical.road_loops.len(),
+        2,
+        "the final CDT-core clip must not reconnect disconnected U arms"
+    );
+    assert!(
+        canonical
+            .road_loops
+            .iter()
+            .all(|component| !point_in_polygon(test_vertex(5.0, 6.0), &component.vertices)),
+        "the canonical road ownership loops must leave the U opening as terrain"
+    );
+}
+
+#[test]
+fn submillimetre_curved_edge_intersection_retains_exact_boundary_source() {
+    let patch = TerrainCdtPatch::new(-16.0, -43.0, -15.0, -41.0, [0.0; 4]);
+    let road_loop = TerrainCdtRoadLoop::new(
+        42,
+        0,
+        vec![
+            TerrainCdtVertex::new(-16.451_802, 0.0, -42.235_62),
+            TerrainCdtVertex::new(-15.841_945, 0.0, -42.090_879),
+            TerrainCdtVertex::new(-15.841_945, 0.0, -41.5),
+            TerrainCdtVertex::new(-16.451_802, 0.0, -41.5),
+        ],
+    );
+
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+
+    assert_eq!(clipped.len(), 1);
+    assert!(
+        clipped[0].source_edges.iter().any(|edge| {
+            matches!(
+                edge.source,
+                TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                    local_edge_index: 0,
+                    ..
+                }
+            )
+        }),
+        "the exact curved edge source must survive an overlay intersection that rounds into the adjacent 1 mm bin"
+    );
+    canonicalize_input(TerrainCdtInput::new(patch, clipped, Vec::new()))
+        .expect("the exact clipped source must cover every non-rail road constraint");
+}
+
+fn disconnected_clip_test_loop() -> TerrainCdtRoadLoop {
+    TerrainCdtRoadLoop::new(
+        41,
+        0,
+        vec![
+            test_vertex(0.0, 0.0),
+            test_vertex(10.0, 0.0),
+            test_vertex(10.0, 10.0),
+            test_vertex(7.0, 10.0),
+            test_vertex(7.0, 3.0),
+            test_vertex(3.0, 3.0),
+            test_vertex(3.0, 10.0),
+            test_vertex(0.0, 10.0),
+        ],
+    )
+}
+
+#[test]
 fn sourced_patch_edge_matrix_preserves_sources_after_clipping() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
     let source = test_span_boundary_source(201, TerrainCdtRoadBandKind::CurbOrShoulder, 2);

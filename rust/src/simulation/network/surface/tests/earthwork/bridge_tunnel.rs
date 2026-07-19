@@ -2,6 +2,57 @@
 
 use super::*;
 
+fn assert_structural_terminals_are_span_owned(surface: &RoadSurfaceSystem, start: u32, end: u32) {
+    assert!(
+        surface.published_generation_matches_source(),
+        "span-owned structural terminals must be a complete published generation"
+    );
+    for node_id in [start, end] {
+        assert!(
+            !surface.compiled_visual_node_pieces().contains_key(&node_id),
+            "bridge/tunnel terminal {node_id} must be omitted by policy before node compilation"
+        );
+    }
+}
+
+#[test]
+fn structural_terminal_policy_removes_and_restores_caps_incrementally() {
+    let terrain = flat_terrain(97, 33);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        start,
+        end,
+        vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+        10.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    assert!(surface.compiled_visual_node_pieces().contains_key(&start));
+    assert!(surface.compiled_visual_node_pieces().contains_key(&end));
+
+    graph.edge_mut(edge_idx).class = EdgeClass::Bridge;
+    surface.mark_edge_dirty(&graph, edge_idx);
+    surface.mark_node_dirty(&graph, start);
+    surface.mark_node_dirty(&graph, end);
+    surface.compile_dirty(&graph, &terrain);
+    assert_structural_terminals_are_span_owned(&surface, start, end);
+
+    graph.edge_mut(edge_idx).class = EdgeClass::Standard;
+    surface.mark_edge_dirty(&graph, edge_idx);
+    surface.mark_node_dirty(&graph, start);
+    surface.mark_node_dirty(&graph, end);
+    surface.compile_dirty(&graph, &terrain);
+    assert!(surface.published_generation_matches_source());
+    assert!(surface.compiled_visual_node_pieces().contains_key(&start));
+    assert!(surface.compiled_visual_node_pieces().contains_key(&end));
+}
+
 #[test]
 fn bridge_earthworks_do_not_stamp_terrain() {
     let mut terrain = flat_terrain(97, 33);
@@ -28,6 +79,7 @@ fn bridge_earthworks_do_not_stamp_terrain() {
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("bridge span should compile");
+    assert_structural_terminals_are_span_owned(&surface, start, end);
     assert!(span_piece.span_earthwork_support_regions.is_empty());
     assert!(span_piece.earthwork_surface_polygons.is_empty());
     assert!(span_piece.render_earthwork_faces.is_empty());
@@ -63,6 +115,7 @@ fn bridge_ramp_earthworks_do_not_raise_elevated_terminal_terrain() {
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("bridge ramp span should compile");
+    assert_structural_terminals_are_span_owned(&surface, start, end);
 
     assert!(
         !span_piece.span_earthwork_support_regions.is_empty(),
@@ -110,6 +163,7 @@ fn tunnel_earthworks_only_stamp_portals() {
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("tunnel span should compile");
+    assert_structural_terminals_are_span_owned(&surface, start, end);
     assert!(!span_piece.span_earthwork_support_regions.is_empty());
     assert_span_earthwork_faces_have_support_provenance(span_piece, edge_idx, EdgeClass::Tunnel);
     assert!(

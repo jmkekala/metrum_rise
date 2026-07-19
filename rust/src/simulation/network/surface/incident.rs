@@ -4,6 +4,7 @@ use super::{
     RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
     backend::{RoadVec2, RoadVec3},
 };
+use crate::simulation::network::types::EdgeClass;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub(crate) enum IncidentEdgeSide {
@@ -58,4 +59,5 @@ pub(crate) struct OrderedIncidentPieceMouth {
 pub(crate) struct RoadSurfaceVisualNodeCompileInput {
     pub(crate) kind: RoadSurfaceVisualNodePieceKind,
     pub(crate) mouths: Vec<OrderedIncidentPieceMouth>,
+    pub(crate) mouth_edge_classes: Vec<EdgeClass>,
 }

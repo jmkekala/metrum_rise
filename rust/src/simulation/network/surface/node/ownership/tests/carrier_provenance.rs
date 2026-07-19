@@ -1,7 +1,8 @@
 //! Carrier-provenance closure tests for post-boolean owned vertices.
 
 use super::*;
-use crate::simulation::network::surface::backend::RoadVec3;
+use crate::simulation::network::surface::backend::{RoadVec3, road_vec3_xz};
+use crate::simulation::network::surface::keys::SurfaceHeightMmKey;
 use crate::simulation::network::surface::rails::NodeRailHeightCarrierPaths;
 
 #[test]
@@ -252,6 +253,152 @@ fn carrier_provenance_closure_rejects_independent_second_rail_on_boolean_key() {
             ..
         } if diagnostic_owner == owner && candidates.len() == 2
     ));
+}
+
+#[test]
+fn carrier_provenance_uses_exact_generated_side_join_over_dust_near_mouth_carrier() {
+    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
+    let source = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    let point = (0, 0);
+    let side_join_start = (-1_000, 0);
+    let side_join_end = (1_000, 0);
+    let mouth_start = (1, -1_000);
+    let mouth_end = (1, 1_000);
+    let source_point = |key: NodeOwnershipPointKey, height_m: f64| {
+        let point = road_point_from_key(key);
+        RoadVec3::new(point.x, height_m, point.y)
+    };
+    let contour = |purpose, claim_priority, keys: Vec<NodeOwnershipPointKey>, height_m| {
+        let points_xz = keys
+            .iter()
+            .copied()
+            .map(road_point_from_key)
+            .collect::<Vec<_>>();
+        NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::Band {
+                kind: RoadSurfaceBandKind::Carriageway,
+            },
+            purpose,
+            source_mouth_order_index: source.1,
+            source_band_index: Some(source.2),
+            owner: Some(owner),
+            claim_priority,
+            height_points_world: Some(
+                keys.into_iter()
+                    .map(|key| source_point(key, height_m))
+                    .collect(),
+            ),
+            backend_polyline: road_points_to_polyline(points_xz.clone(), true),
+            points_xz,
+        }
+    };
+    let contours = vec![
+        contour(
+            NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+            NodeGeneratedContourClaimPriority::MouthBand,
+            vec![mouth_start, mouth_end, (2_000, 1_000)],
+            0.00049,
+        ),
+        contour(
+            NodeGeneratedContourPurpose::JunctionSideJoin,
+            NodeGeneratedContourClaimPriority::SideJoin,
+            vec![
+                side_join_start,
+                side_join_end,
+                (1_000, 2_000),
+                (-1_000, 2_000),
+            ],
+            0.00051,
+        ),
+    ];
+    let height_carrier_points_by_source = BTreeMap::from([(
+        source,
+        vec![
+            source_point(mouth_start, 0.00049),
+            source_point(mouth_end, 0.00049),
+        ],
+    )]);
+    let rails = NodeRailContourSet {
+        node_id: 42,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        source_carriers: NodeSourceCarrierRegistry::from_rail_parts(
+            &contours,
+            &[],
+            &BTreeMap::new(),
+            &height_carrier_points_by_source,
+        ),
+        contours,
+        corner_trims: Vec::new(),
+        side_join_gaps: Vec::new(),
+        constraints: Vec::new(),
+        height_carrier_paths_by_source: BTreeMap::new(),
+        height_carrier_points_by_source,
+    };
+    let mut region = region_for_source(
+        owner,
+        source,
+        vec![
+            overlay_point_from_key(point),
+            overlay_point_from_key(side_join_start),
+            overlay_point_from_key(side_join_end),
+        ],
+    );
+    region.claim_priority = NodeGeneratedContourClaimPriority::SideJoin;
+    let rail_points = rail_points_with_source_segments(
+        owner,
+        vec![
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(mouth_start, mouth_end),
+            ),
+            NodeRailSourceSegmentAuthority::new(
+                owner,
+                source,
+                OwnedRegionEdgeKey::new(side_join_start, side_join_end),
+            ),
+        ],
+    );
+
+    let closure =
+        NodeCarrierProvenanceClosure::from_owned_regions(&[region.clone()], &rails, &rail_points)
+            .expect("the exact generated side join must own the dust-near mouth handoff");
+    assert!(closure.records.iter().any(|record| {
+        record.point.raw_tuple() == point
+            && matches!(
+                record.origin,
+                NodeCarrierProvenanceOrigin::GeneratedCarrierSurface {
+                    contour_index: 1,
+                    purpose: NodeGeneratedContourPurpose::JunctionSideJoin,
+                    claim_priority: NodeGeneratedContourClaimPriority::SideJoin,
+                }
+            )
+    }));
+
+    let ownership = NodeBooleanOwnership {
+        node_id: 42,
+        piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+        footprint_shapes: Vec::new(),
+        asphalt_shapes: Vec::new(),
+        non_road_shapes: Vec::new(),
+        owned_regions: vec![region],
+        owned_region_arrangement: NodeOwnedRegionArrangement {
+            node_id: 42,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            region_count: 1,
+            edges: Vec::new(),
+            diagnostics: Vec::new(),
+        },
+        carrier_provenance: closure,
+    };
+    let materialized = rails
+        .height_carrier_points_for_ownership(Some(&ownership))
+        .expect("generated side-join provenance must materialize one deterministic height");
+    let handoff = materialized[&source]
+        .iter()
+        .find(|candidate| ownership_key_from_road_point(road_vec3_xz(**candidate)) == point)
+        .expect("exact generated handoff point");
+    assert_eq!(SurfaceHeightMmKey::from_m_f64(handoff.y).as_i64(), 1);
 }
 
 #[test]

@@ -397,3 +397,69 @@ fn vertical_step_export_does_not_use_overlay_sibling_support() {
         "overlay-neighbor support must not synthesize a vertical face"
     );
 }
+
+#[test]
+fn final_step_cache_drops_removed_positive_boundary_pair() {
+    let (aligned, _) =
+        arrangement_with_vertical_step_support(RoadVec2::new(0.0, 0.0), RoadVec2::new(2.0, 0.0));
+    let (aligned_steps, aligned_cache, aligned_stats) =
+        aligned.final_explicit_vertical_step_segments_with_reuse(&[], None);
+    assert_eq!(aligned_steps.len(), 1);
+    assert!(aligned_stats.pair_misses > 0);
+
+    let (shifted, _) =
+        arrangement_with_vertical_step_support(RoadVec2::new(0.0, 0.01), RoadVec2::new(2.0, 0.01));
+    let (warm_steps, _, warm_stats) =
+        shifted.final_explicit_vertical_step_segments_with_reuse(&[], Some(&aligned_cache));
+    let (cold_steps, _, _) = shifted.final_explicit_vertical_step_segments_with_reuse(&[], None);
+    assert_eq!(warm_steps, cold_steps);
+    assert!(
+        warm_steps.is_empty(),
+        "a removed exact final-boundary overlap must not survive from the previous cache"
+    );
+    assert_eq!(warm_stats.misses, 1);
+    assert_eq!(
+        warm_stats.pair_misses, 0,
+        "separated final boundaries must be rejected by the spatial candidate index"
+    );
+}
+
+#[test]
+fn final_step_cache_invalidates_changed_authority_with_identical_geometry() {
+    let build = |include_region_authority| {
+        arrangement_with_owner_pair_vertical_step_support_and_heights_and_region_authority(
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(2.0, 0.0),
+            0.0,
+            0.0,
+            0.12,
+            0.12,
+            include_region_authority,
+        )
+        .0
+    };
+
+    let authorized = build(true);
+    let (authorized_steps, authorized_cache, authorized_stats) =
+        authorized.final_explicit_vertical_step_segments_with_reuse(&[], None);
+    assert_eq!(authorized_steps.len(), 1);
+    assert!(authorized_stats.pair_misses > 0);
+
+    let unauthorized = build(false);
+    let (warm_steps, _, warm_stats) =
+        unauthorized.final_explicit_vertical_step_segments_with_reuse(&[], Some(&authorized_cache));
+    let (cold_steps, _, _) =
+        unauthorized.final_explicit_vertical_step_segments_with_reuse(&[], None);
+    assert_eq!(warm_steps, cold_steps);
+    assert!(
+        warm_steps.is_empty(),
+        "removing relevant seam authority must invalidate the cached final step"
+    );
+    assert_eq!(warm_stats.pair_previous_hits, 0);
+    assert!(
+        warm_stats.pair_misses > 0,
+        "identical boundary geometry with changed authority must be re-evaluated"
+    );
+}

@@ -100,13 +100,16 @@ fn test_cached_refined_terrain_patch(
         input_road_loops: 0,
         input_source_samples: 0,
         windows: Vec::new(),
+        mesh_buffers: None,
         requires_engineered_refinement: false,
         requires_road_clipping: false,
         clip_source_count: 0,
         road_clip_source_count: 0,
         road_clip_loop_count: 0,
         site_clip_loop_count: 0,
+        omitted_margin_clip_loop_count: 0,
         clip_error_label: None,
+        clip_query_margin_m: 8.0,
         cdt_ms: 0.0,
         reused_windows: 0,
     }
@@ -153,7 +156,7 @@ fn empty_cdt_stats() -> TerrainCdtStats {
 
 fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
     let config = WorldConfig::default();
-    SimCore {
+    let mut core = SimCore {
         time: TimeSystem::new(),
         heightmap: TerrainSystem::with_chunking(8, 8, 10.0, 4, raw_height),
         watermap: WaterSystem::from_world_config(&config),
@@ -199,12 +202,18 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         terrain_payload_generation_counter: 1,
         terrain_payload_global_generation: 1,
         terrain_payload_patch_generations: std::collections::HashMap::new(),
+        refined_terrain_assembly_ledgers: std::collections::HashMap::new(),
         cached_road_mesh_data: None,
+        cached_road_mesh_generation: 0,
         cached_network_node_positions: std::sync::Arc::new(Vec::new()),
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
-    }
+    };
+    core.transit_network
+        .road_surface
+        .compile_dirty(&core.region_graph, &core.heightmap);
+    core
 }
 
 fn source_export_for_samples(

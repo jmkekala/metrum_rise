@@ -102,12 +102,12 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{
-    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainPatch, CityTreasury, DailyBudgetLedgerEntry,
-    ROAD_BUILD_COST_PER_METER, RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey,
-    RefinedTerrainPatchBuildInput, RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest,
-    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
-    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, road_tool_snapshots_from_core,
-    run_road_preview_worker, run_sim_thread,
+    CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
+    CityTreasury, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
+    RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
+    SimCore, road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -172,10 +172,10 @@ use async_terrain::{
     WaterPatchPayloadRequestState,
 };
 use variant_export::{
-    budget_ledger_entry_dict, zoning_geometries_without_explicit_sites,
-    zoning_parcel_cell_dimensions, zoning_parcel_color, zoning_parcel_geometries_array,
-    zoning_parcel_geometries_packed_dict, zoning_parcel_geometry_dict,
-    zoning_parcel_surface_corners,
+    TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtTileId, budget_ledger_entry_dict,
+    zoning_geometries_without_explicit_sites, zoning_parcel_cell_dimensions, zoning_parcel_color,
+    zoning_parcel_geometries_array, zoning_parcel_geometries_packed_dict,
+    zoning_parcel_geometry_dict, zoning_parcel_surface_corners,
 };
 
 const TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL: &str = "cdt_triangulation";
@@ -184,7 +184,7 @@ const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
 const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
-const TERRAIN_CDT_CONTRACT_REVISION: i64 = 2;
+const TERRAIN_CDT_CONTRACT_REVISION: i64 = 4;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
@@ -295,11 +295,6 @@ struct RoadClipLoopQuery {
     clip_error_label: Option<&'static str>,
 }
 
-struct TerrainCdtLoopWindowDraft {
-    bounds: (f32, f32, f32, f32),
-    loops: Vec<TerrainCdtRoadLoop>,
-}
-
 impl SimulationNode {
     // ── Lifecycle ──
 
@@ -374,15 +369,17 @@ impl SimulationNode {
 
     /// Rebuilds the render snapshot immediately from the current core state.
     fn refresh_snapshot_from_core(&self) {
-        let (snapshot, preview_context, road_query_snapshot) = {
+        let (snapshot, road_tool_snapshots) = {
             let mut core = self.lock_core();
             let snapshot = core.build_snapshot();
-            let (preview_context, road_query_snapshot) = road_tool_snapshots_from_core(&core);
-            (snapshot, preview_context, road_query_snapshot)
+            let road_tool_snapshots = road_tool_snapshots_from_core(&core);
+            (snapshot, road_tool_snapshots)
         };
         *self.snapshot.write().unwrap() = snapshot;
-        *self.road_preview_context.write().unwrap() = preview_context;
-        *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
+        if let Some((preview_context, road_query_snapshot)) = road_tool_snapshots {
+            *self.road_preview_context.write().unwrap() = preview_context;
+            *self.road_tool_query_snapshot.write().unwrap() = road_query_snapshot;
+        }
     }
 }
 
@@ -483,15 +480,19 @@ impl INode3D for SimulationNode {
             terrain_payload_generation_counter: 1,
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
+            refined_terrain_assembly_ledgers: HashMap::new(),
             cached_road_mesh_data: None,
+            cached_road_mesh_generation: 0,
             cached_network_node_positions: Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 
+        core.precompute_road_mesh_data();
         let initial_snapshot = core.build_snapshot();
-        let (road_preview_context, road_tool_query_snapshot) = road_tool_snapshots_from_core(&core);
+        let (road_preview_context, road_tool_query_snapshot) = road_tool_snapshots_from_core(&core)
+            .expect("the initial road surface generation must be publishable");
         let road_preview_context = Arc::new(RwLock::new(road_preview_context));
         let road_tool_query_snapshot = Arc::new(RwLock::new(road_tool_query_snapshot));
         let road_preview_result = Arc::new(RwLock::new(None));

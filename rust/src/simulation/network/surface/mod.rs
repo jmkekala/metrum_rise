@@ -33,6 +33,7 @@ pub use span::RoadSurfaceVisualSpanPiece;
 pub use system::RoadSurfaceSystem;
 
 pub(crate) use cache::ChunkCacheKind;
+pub(crate) use cache::RoadSurfaceTopologyUndo;
 pub(crate) use earthwork::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
@@ -44,9 +45,10 @@ pub(crate) use incident::{
     IncidentSurfaceEdge, OrderedIncidentPieceMouth, RoadSurfaceVisualNodeCompileInput,
 };
 pub(crate) use node::{
-    NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
-    NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeTopSurfacePolygonSource,
-    RoadSurfaceVerticalFaceSource, rounded_sidewalk_corner_path_xz,
+    NodeCanonicalTopologyCache, NodeFootprintBoundaryDirectSource,
+    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, NodeOwnedRegion,
+    NodeTopSurfacePolygonSource, NodeVisualCompileResult, RoadSurfaceVerticalFaceSource,
+    rounded_sidewalk_corner_path_xz,
 };
 pub(crate) use node::{arrangement, height};
 #[cfg(test)]

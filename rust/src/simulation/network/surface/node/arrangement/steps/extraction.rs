@@ -8,6 +8,7 @@ impl NodeArrangement {
         segments.into_iter().collect()
     }
 
+    #[cfg(test)]
     pub(in crate::simulation::network::surface::node) fn derived_overlap_explicit_vertical_step_segments(
         &self,
     ) -> BTreeSet<NodeExplicitVerticalStepSegment> {
@@ -117,8 +118,19 @@ impl NodeArrangement {
         &self,
         existing_segments: &BTreeSet<NodeExplicitVerticalStepSegment>,
     ) -> BTreeSet<NodeExplicitVerticalStepSegment> {
-        let mut segments = BTreeSet::new();
         let boundary_edges = self.final_owned_boundary_edge_geometries();
+        self.authorized_final_boundary_raised_step_overlap_segments_from_edges(
+            existing_segments,
+            &boundary_edges,
+        )
+    }
+
+    fn authorized_final_boundary_raised_step_overlap_segments_from_edges(
+        &self,
+        existing_segments: &BTreeSet<NodeExplicitVerticalStepSegment>,
+        boundary_edges: &[NodeArrangementOwnedBoundaryEdgeGeometry],
+    ) -> BTreeSet<NodeExplicitVerticalStepSegment> {
+        let mut segments = BTreeSet::new();
         for left_index in 0..boundary_edges.len() {
             let left = boundary_edges[left_index];
             for right in boundary_edges.iter().skip(left_index + 1).copied() {
@@ -197,7 +209,8 @@ impl NodeArrangement {
         })
     }
 
-    fn final_owned_boundary_edge_geometries(
+    /// Collects owner-local edges exposed by the final attached face set.
+    pub(super) fn final_owned_boundary_edge_geometries(
         &self,
     ) -> Vec<NodeArrangementOwnedBoundaryEdgeGeometry> {
         let mut edge_counts = BTreeMap::<
@@ -703,22 +716,34 @@ impl NodeArrangement {
     }
 }
 
+/// Quantized geometry and endpoint heights for one arrangement edge.
 #[derive(Clone, Copy)]
-struct NodeArrangementEdgeGeometry {
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-    start_height_mm: i64,
-    end_height_mm: i64,
+pub(super) struct NodeArrangementEdgeGeometry {
+    /// First quantized XZ endpoint.
+    pub(super) start: NodeArrangementKey,
+    /// Second quantized XZ endpoint.
+    pub(super) end: NodeArrangementKey,
+    /// Height at `start`, in canonical millimetres.
+    pub(super) start_height_mm: i64,
+    /// Height at `end`, in canonical millimetres.
+    pub(super) end_height_mm: i64,
 }
 
+/// One owner-local final face-boundary edge and its source region.
 #[derive(Clone, Copy, Debug)]
-struct NodeArrangementOwnedBoundaryEdgeGeometry {
-    owner: NodeBandOwner,
-    region: NodeOwnedRegionId,
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-    start_height_mm: i64,
-    end_height_mm: i64,
+pub(super) struct NodeArrangementOwnedBoundaryEdgeGeometry {
+    /// Owner whose final face exposes this edge.
+    pub(super) owner: NodeBandOwner,
+    /// Region supplying the edge's seam authority.
+    pub(super) region: NodeOwnedRegionId,
+    /// First quantized XZ endpoint.
+    pub(super) start: NodeArrangementKey,
+    /// Second quantized XZ endpoint.
+    pub(super) end: NodeArrangementKey,
+    /// Height at `start`, in canonical millimetres.
+    pub(super) start_height_mm: i64,
+    /// Height at `end`, in canonical millimetres.
+    pub(super) end_height_mm: i64,
 }
 
 impl NodeArrangementOwnedBoundaryEdgeGeometry {
@@ -743,7 +768,8 @@ fn normalized_arrangement_key_pair(
     }
 }
 
-fn explicit_segments_cover_owned_boundary_step(
+/// Returns whether an existing owner-pair segment fully covers a boundary-derived candidate.
+pub(super) fn explicit_segments_cover_owned_boundary_step(
     segments: &BTreeSet<NodeExplicitVerticalStepSegment>,
     candidate: NodeExplicitVerticalStepSegment,
 ) -> bool {
@@ -762,7 +788,8 @@ fn explicit_segments_cover_owned_boundary_step(
     })
 }
 
-fn arrangement_edge_overlap_segment(
+/// Finds the positive exact/overlay-grid overlap shared by two quantized edges.
+pub(super) fn arrangement_edge_overlap_segment(
     left: NodeArrangementEdgeGeometry,
     right: NodeArrangementEdgeGeometry,
 ) -> Option<(NodeArrangementKey, NodeArrangementKey)> {
@@ -814,7 +841,8 @@ fn arrangement_overlay_grid_line_parameter(
     SurfaceSegmentParameter::new(segment_parameter_key(start, end, point), dx * dx + dz * dz)
 }
 
-fn arrangement_edges_have_positive_raised_step_delta(
+/// Returns whether the ranked raised edge stays at or above the lower edge and differs somewhere.
+pub(super) fn arrangement_edges_have_positive_raised_step_delta(
     lower: NodeArrangementEdgeGeometry,
     raised: NodeArrangementEdgeGeometry,
     start: NodeArrangementKey,
@@ -873,7 +901,10 @@ fn select_endpoint_path_step_opposite_owner(
     }
 }
 
-fn seam_constraint_authorizes_explicit_height_split(constraint: &NodeRegionSeamConstraint) -> bool {
+/// Returns whether a seam is explicit authority for an owner-pair height split.
+pub(super) fn seam_constraint_authorizes_explicit_height_split(
+    constraint: &NodeRegionSeamConstraint,
+) -> bool {
     if !constraint.is_material_transition || constraint.constrains_shared_height {
         return false;
     }

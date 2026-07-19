@@ -13,7 +13,7 @@ use crate::simulation::economy::logistics::ShipmentBuildingUndo;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::{Lane, LaneType};
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::CURB_STEP_HEIGHT_M;
+use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceTopologyUndo};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
@@ -152,6 +152,8 @@ pub(crate) struct SimulationSnapshot {
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.
     pub(crate) trans_graph: Option<RegionGraphUndoDelta>,
+    /// Bounded pre-edit road-surface compiler state matching `trans_graph`.
+    pub(crate) road_surface_topology: Option<RoadSurfaceTopologyUndo>,
     /// Parcels removed by one road bulldoze.
     pub(crate) zoning: Option<ZoningParcelRemovalUndo>,
     /// Building/economy runtime state.
@@ -160,7 +162,9 @@ pub(crate) struct SimulationSnapshot {
 
 impl SimCore {
     fn network_node_positions_snapshot(&mut self) -> Arc<Vec<Vector3>> {
-        if self.cached_network_node_positions_dirty {
+        if self.cached_network_node_positions_dirty
+            && self.cached_road_mesh_generation == self.road_tool_surface_generation
+        {
             self.cached_network_node_positions = Arc::new(self.build_network_node_positions());
             self.cached_network_node_positions_dirty = false;
         }
@@ -453,7 +457,7 @@ impl SimCore {
         }
         snapshot.water_payload_generation = water_payload_generation;
         snapshot.network_dirty = self.network_dirty;
-        snapshot.network_generation = self.road_tool_surface_generation;
+        snapshot.network_generation = self.cached_road_mesh_generation;
         snapshot.road_mesh_data = self.cached_road_mesh_data.clone();
         snapshot.engineered_terrain_patch_keys =
             Arc::new(self.engineered_terrain_patch_keys.clone());

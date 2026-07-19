@@ -9,6 +9,7 @@ use super::super::authority::{
 use super::super::*;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 type SameMaterialHeightSplitConstraint = (
     NodeBandOwner,
@@ -19,24 +20,183 @@ type SameMaterialHeightSplitConstraint = (
     Option<usize>,
 );
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialContourContributorKey {
+    kind: RoadSurfaceBandKind,
+    // Positional publication fields intentionally remain exact cache inputs.
+    // Replaying old owners or source labels would be incorrect until this
+    // cache has semantic contributor rebinding.
+    owner: NodeBandOwner,
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+    claim_priority: NodeGeneratedContourClaimPriority,
+    has_height_carrier: bool,
+    ordered_points_xz: Vec<NodeRailPointKey>,
+}
+
+impl SameMaterialContourContributorKey {
+    fn from_contour(
+        contour: &NodeGeneratedContour,
+        summary: &GeneratedContactContourSummary,
+    ) -> Option<Self> {
+        Some(Self {
+            kind: summary.kind?,
+            owner: summary.owner?,
+            source_mouth_order_index: contour.source_mouth_order_index,
+            source_band_index: contour.source_band_index,
+            claim_priority: contour.claim_priority,
+            has_height_carrier: contour
+                .height_points_world
+                .as_ref()
+                .is_some_and(|points| !points.is_empty()),
+            ordered_points_xz: generated_contour_keys(contour),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SameMaterialPairContributorKey {
+    left: Arc<SameMaterialContourContributorKey>,
+    right: Arc<SameMaterialContourContributorKey>,
+}
+
+impl SameMaterialPairContributorKey {
+    fn from_indices(
+        contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+        left_index: usize,
+        right_index: usize,
+    ) -> Option<Self> {
+        let left = Arc::clone(contour_contributors.get(left_index)?.as_ref()?);
+        let right = Arc::clone(contour_contributors.get(right_index)?.as_ref()?);
+        Some(Self::new(left, right))
+    }
+
+    fn new(
+        left: Arc<SameMaterialContourContributorKey>,
+        right: Arc<SameMaterialContourContributorKey>,
+    ) -> Self {
+        if left <= right {
+            Self { left, right }
+        } else {
+            Self {
+                left: right,
+                right: left,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RaisedStepAuthorityConstraintContributorKey {
+    constraint_index: usize,
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    ordered_points_xz: Arc<[NodeRailPointKey]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RaisedStepPairContributorKey {
+    contours: SameMaterialPairContributorKey,
+    relevant_authority: Arc<[RaisedStepAuthorityConstraintContributorKey]>,
+}
+
+/// Immutable same-band pair contributions reusable by a later node-rail generation.
+#[derive(Clone, Debug, Default)]
+pub(in crate::simulation::network::surface::node::rails) struct NodeSameMaterialContactPairCache {
+    entries: BTreeMap<SameMaterialPairContributorKey, Arc<[SameMaterialHeightSplitConstraint]>>,
+    raised_step_entries:
+        BTreeMap<RaisedStepPairContributorKey, Arc<[GeneratedSameBandContactConstraint]>>,
+}
+
 const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 64;
 const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 16;
 const SAME_BAND_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
 
+#[cfg(test)]
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
     source_constraint_count: usize,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> GeneratedContactEmissionStats {
+    append_generated_same_band_contact_constraints_with_reuse(
+        piece_kind,
+        contours,
+        source_constraint_count,
+        constraints,
+        None,
+    )
+    .0
+}
+
+/// Emits same-band constraints while retaining exact same-material pair contributions.
+#[cfg(test)]
+pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints_with_reuse(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &[NodeGeneratedContour],
+    source_constraint_count: usize,
+    constraints: &mut Vec<NodeRailConstraint>,
+    previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
+) -> (
+    GeneratedContactEmissionStats,
+    NodeSameMaterialContactPairCache,
+) {
+    let mut current_source_contacts = NodeSourceAuthorizedContactCache::default();
+    append_generated_same_band_contact_constraints_with_source_reuse(
+        piece_kind,
+        contours,
+        source_constraint_count,
+        constraints,
+        previous_same_material_pairs,
+        None,
+        &mut current_source_contacts,
+    )
+}
+
+/// Emits same-band constraints while reusing exact material and source contributors.
+pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints_with_source_reuse(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    contours: &[NodeGeneratedContour],
+    source_constraint_count: usize,
+    constraints: &mut Vec<NodeRailConstraint>,
+    previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
+    previous_source_contacts: Option<&NodeSourceAuthorizedContactCache>,
+    current_source_contacts: &mut NodeSourceAuthorizedContactCache,
+) -> (
+    GeneratedContactEmissionStats,
+    NodeSameMaterialContactPairCache,
+) {
     let before_len = constraints.len();
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
-    let summaries = generated_contact_contour_summaries_with_overlay(contours);
+    let mut summaries = generated_contact_contour_summaries(contours);
+    let contour_contributors = contours
+        .iter()
+        .zip(&summaries)
+        .map(|(contour, summary)| {
+            SameMaterialContourContributorKey::from_contour(contour, summary).map(Arc::new)
+        })
+        .collect::<Vec<_>>();
     let indexed_pairs = same_band_candidate_pair_index(&summaries, &authority_index);
     let mut stats = indexed_pairs.stats;
     let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
     let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
     let pair_indices = indexed_pairs.pair_indices;
+    let raised_step_pair_contributor_keys = raised_step_pair_contributor_keys(
+        &authority_index,
+        &summaries,
+        &pair_indices,
+        &contour_contributors,
+    );
+    populate_required_pair_overlay_summaries(
+        contours,
+        &mut summaries,
+        &pair_indices,
+        &contour_contributors,
+        &raised_step_pair_contributor_keys,
+        previous_same_material_pairs,
+    );
     let pair_results = if pair_indices.len() >= SAME_BAND_PARALLEL_PAIR_THRESHOLD {
         pair_indices
             .par_chunks(SAME_BAND_PARALLEL_PAIR_BATCH)
@@ -47,6 +207,9 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
                     constraints,
                     &authority_index,
                     pair_batch,
+                    &contour_contributors,
+                    &raised_step_pair_contributor_keys,
+                    previous_same_material_pairs,
                 )
             })
             .collect::<Vec<_>>()
@@ -57,24 +220,37 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             constraints,
             &authority_index,
             &pair_indices,
+            &contour_contributors,
+            &raised_step_pair_contributor_keys,
+            previous_same_material_pairs,
         )]
     };
+    let mut same_material_pair_cache = NodeSameMaterialContactPairCache::default();
     for mut result in pair_results {
         merge_contact_emission_stats(&mut stats, result.stats);
         contact_edges.append(&mut result.contact_edges);
         same_material_height_splits.append(&mut result.same_material_height_splits);
+        same_material_pair_cache
+            .entries
+            .append(&mut result.same_material_pair_cache.entries);
+        same_material_pair_cache
+            .raised_step_entries
+            .append(&mut result.same_material_pair_cache.raised_step_entries);
     }
     stats.same_material_height_split_candidates = same_material_height_splits.len();
     let source_constraints = super::source_authority_constraints_for_generated_contacts(
         constraints,
         source_constraint_count,
     );
-    collect_source_authorized_raised_step_contacts(
+    let source_contact_reuse = collect_source_authorized_raised_step_contacts_with_reuse(
         piece_kind,
         contours,
         &source_constraints,
         &mut contact_edges,
+        previous_source_contacts,
+        current_source_contacts,
     );
+    include_source_authorized_contact_reuse_stats(&mut stats, source_contact_reuse);
 
     let mut existing = constraints
         .iter()
@@ -104,7 +280,70 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     stats.same_material_height_split_appended = append_stats.appended;
     stats.same_material_height_split_duplicates = append_stats.duplicates;
     stats.emitted_constraints = constraints.len() - before_len;
-    stats
+    (stats, same_material_pair_cache)
+}
+
+fn include_source_authorized_contact_reuse_stats(
+    stats: &mut GeneratedContactEmissionStats,
+    source: SourceAuthorizedContactReuseStats,
+) {
+    stats.source_target_group_cache_hits += source.target_group_cache_hits;
+    stats.source_contact_cache_hits += source.source_cache_hits;
+    stats.source_contact_cache_misses += source.source_cache_misses;
+    stats.source_pair_cache_hits += source.source_pair_cache_hits;
+    stats.source_pair_cache_misses += source.source_pair_cache_misses;
+}
+
+fn populate_required_pair_overlay_summaries(
+    contours: &[NodeGeneratedContour],
+    summaries: &mut [GeneratedContactContourSummary],
+    pair_indices: &[(usize, usize)],
+    contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+    raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
+    previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
+) {
+    let mut required_indices = BTreeSet::new();
+    for &(left_index, right_index) in pair_indices {
+        let left_summary = &summaries[left_index];
+        let right_summary = &summaries[right_index];
+        let pair_is_cached =
+            if left_summary.kind.is_some() && left_summary.kind == right_summary.kind {
+                SameMaterialPairContributorKey::from_indices(
+                    contour_contributors,
+                    left_index,
+                    right_index,
+                )
+                .is_some_and(|key| {
+                    previous_same_material_pairs
+                        .is_some_and(|previous| previous.entries.contains_key(&key))
+                })
+            } else {
+                raised_step_pair_contributor_keys
+                    .get(&(left_index, right_index))
+                    .is_some_and(|key| {
+                        previous_same_material_pairs
+                            .is_some_and(|previous| previous.raised_step_entries.contains_key(&key))
+                    })
+            };
+        if pair_is_cached {
+            continue;
+        }
+        required_indices.insert(left_index);
+        required_indices.insert(right_index);
+    }
+    let required_indices = required_indices.into_iter().collect::<Vec<_>>();
+    let overlay_summaries = required_indices
+        .par_iter()
+        .map(|&index| {
+            (
+                index,
+                GeneratedContactContourSummary::from_contour_with_overlay(&contours[index], true),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, summary) in overlay_summaries {
+        summaries[index] = summary;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -267,10 +506,105 @@ fn same_material_pair_has_same_height_authority(
         && right.has_height_carrier
 }
 
+fn raised_step_pair_contributor_key(
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
+    contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+    left_index: usize,
+    right_index: usize,
+) -> Option<RaisedStepPairContributorKey> {
+    let contours = SameMaterialPairContributorKey::from_indices(
+        contour_contributors,
+        left_index,
+        right_index,
+    )?;
+    let pair = GeneratedRaisedStepOwnerPair::new(left_summary.owner?, right_summary.owner?)?;
+    let mut relevant_authority = Vec::new();
+    authority_index.visit_constraints_touching_contour_pair(
+        NodeRailConstraintKind::RaisedStepContact,
+        pair.owner,
+        pair.opposite_owner,
+        left_summary,
+        right_summary,
+        |constraint| {
+            debug_assert_eq!(
+                constraint.kind,
+                NodeRailConstraintKind::RaisedStepContact,
+                "authority visitor must stay within its requested kind bucket"
+            );
+            debug_assert!(
+                owners_match_unordered(
+                    constraint.owner,
+                    constraint.opposite_owner,
+                    pair.owner,
+                    pair.opposite_owner,
+                ),
+                "authority visitor must stay within its requested owner-pair bucket"
+            );
+            relevant_authority.push(RaisedStepAuthorityConstraintContributorKey {
+                // Exact-authority selection uses the lowest current constraint
+                // index. Retaining it here prevents a cached source label from
+                // surviving a positional rebind.
+                constraint_index: constraint.constraint_index,
+                source_mouth_order_index: constraint.source_mouth_order_index,
+                source_band_index: constraint.source_band_index,
+                owner: pair.owner,
+                opposite_owner: pair.opposite_owner,
+                ordered_points_xz: Arc::from(
+                    constraint
+                        .points_xz
+                        .iter()
+                        .copied()
+                        .map(road_point_key)
+                        .collect::<Vec<_>>(),
+                ),
+            });
+        },
+    );
+    debug_assert!(
+        !relevant_authority.is_empty(),
+        "raised-step candidate pairs must retain at least one touching authority"
+    );
+    Some(RaisedStepPairContributorKey {
+        contours,
+        // Preserve relevant constraint order: exact-authority selection uses
+        // the first lowest-index constraint when malformed inputs tie.
+        relevant_authority: Arc::from(relevant_authority),
+    })
+}
+
+fn raised_step_pair_contributor_keys(
+    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    summaries: &[GeneratedContactContourSummary],
+    pair_indices: &[(usize, usize)],
+    contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+) -> BTreeMap<(usize, usize), RaisedStepPairContributorKey> {
+    pair_indices
+        .iter()
+        .copied()
+        .filter(|(left_index, right_index)| {
+            summaries[*left_index].kind != summaries[*right_index].kind
+        })
+        .filter_map(|(left_index, right_index)| {
+            raised_step_pair_contributor_key(
+                authority_index,
+                &summaries[left_index],
+                &summaries[right_index],
+                contour_contributors,
+                left_index,
+                right_index,
+            )
+            .map(|key| ((left_index, right_index), key))
+        })
+        .collect()
+}
+
 struct SameBandContactPairResult {
     stats: GeneratedContactEmissionStats,
     contact_edges: BTreeSet<GeneratedSameBandContactConstraint>,
     same_material_height_splits: BTreeSet<SameMaterialHeightSplitConstraint>,
+    same_material_pair_cache: NodeSameMaterialContactPairCache,
 }
 
 impl Default for SameBandContactPairResult {
@@ -279,6 +613,7 @@ impl Default for SameBandContactPairResult {
             stats: GeneratedContactEmissionStats::default(),
             contact_edges: BTreeSet::new(),
             same_material_height_splits: BTreeSet::new(),
+            same_material_pair_cache: NodeSameMaterialContactPairCache::default(),
         }
     }
 }
@@ -289,6 +624,12 @@ impl SameBandContactPairResult {
         self.contact_edges.append(&mut next.contact_edges);
         self.same_material_height_splits
             .append(&mut next.same_material_height_splits);
+        self.same_material_pair_cache
+            .entries
+            .append(&mut next.same_material_pair_cache.entries);
+        self.same_material_pair_cache
+            .raised_step_entries
+            .append(&mut next.same_material_pair_cache.raised_step_entries);
     }
 }
 
@@ -298,6 +639,9 @@ fn collect_same_band_pair_batch_contacts(
     constraints: &[NodeRailConstraint],
     authority_index: &GeneratedContactAuthorityIndex<'_>,
     pair_indices: &[(usize, usize)],
+    contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+    raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
+    previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
 ) -> SameBandContactPairResult {
     let mut batch_result = SameBandContactPairResult::default();
     for &(left_index, right_index) in pair_indices {
@@ -308,6 +652,9 @@ fn collect_same_band_pair_batch_contacts(
             authority_index,
             left_index,
             right_index,
+            contour_contributors,
+            raised_step_pair_contributor_keys,
+            previous_same_material_pairs,
         ));
     }
     batch_result
@@ -320,6 +667,9 @@ fn collect_same_band_pair_contacts(
     authority_index: &GeneratedContactAuthorityIndex<'_>,
     left_index: usize,
     right_index: usize,
+    contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
+    raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
+    previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
 ) -> SameBandContactPairResult {
     let mut result = SameBandContactPairResult::default();
     let left = &contours[left_index];
@@ -351,6 +701,25 @@ fn collect_same_band_pair_contacts(
         return result;
     }
     if kind == right_kind {
+        let contributor_key = SameMaterialPairContributorKey::from_indices(
+            contour_contributors,
+            left_index,
+            right_index,
+        )
+        .expect("same-material candidate pair has band kinds and owners");
+        if let Some(cached) =
+            previous_same_material_pairs.and_then(|previous| previous.entries.get(&contributor_key))
+        {
+            result.stats.same_material_pair_cache_hits = 1;
+            result
+                .same_material_height_splits
+                .extend(cached.iter().copied());
+            result
+                .same_material_pair_cache
+                .entries
+                .insert(contributor_key, Arc::clone(cached));
+            return result;
+        }
         result.stats.same_material_overlay_calls = 1;
         collect_same_material_height_splits_from_edges(
             left,
@@ -362,6 +731,17 @@ fn collect_same_band_pair_contacts(
             right_owner,
             &mut result.same_material_height_splits,
         );
+        let contributions = Arc::<[SameMaterialHeightSplitConstraint]>::from(
+            result
+                .same_material_height_splits
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        result
+            .same_material_pair_cache
+            .entries
+            .insert(contributor_key, contributions);
         return result;
     }
     let Some(contact_kind) = generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
@@ -373,16 +753,22 @@ fn collect_same_band_pair_contacts(
         result.stats.kind_rejected = 1;
         return result;
     };
-    if !authority_index.has_constraints_touching_contour_pair(
-        NodeRailConstraintKind::RaisedStepContact,
-        pair.owner,
-        pair.opposite_owner,
-        left_summary,
-        right_summary,
-    ) {
-        result.stats.kind_rejected = 1;
+    let contributor_key = raised_step_pair_contributor_keys
+        .get(&(left_index, right_index))
+        .cloned()
+        .expect("raised-step candidate pair has contours, owners, and authority");
+    if let Some(cached) = previous_same_material_pairs
+        .and_then(|previous| previous.raised_step_entries.get(&contributor_key))
+    {
+        result.stats.raised_step_pair_cache_previous_hits = 1;
+        result.contact_edges.extend(cached.iter().copied());
+        result
+            .same_material_pair_cache
+            .raised_step_entries
+            .insert(contributor_key, Arc::clone(cached));
         return result;
     }
+    result.stats.raised_step_pair_cache_misses = 1;
     let source_edges = generated_contact_authority_source_edges_touching_contour_pair(
         NodeRailConstraintKind::RaisedStepContact,
         pair.owner,
@@ -494,6 +880,13 @@ fn collect_same_band_pair_contacts(
                 source_band_index: source.source_band_index,
             });
     }
+    let contributions = Arc::<[GeneratedSameBandContactConstraint]>::from(
+        result.contact_edges.iter().copied().collect::<Vec<_>>(),
+    );
+    result
+        .same_material_pair_cache
+        .raised_step_entries
+        .insert(contributor_key, contributions);
     result
 }
 
@@ -553,6 +946,14 @@ fn merge_contact_emission_stats(
     stats.authority_rejected += next.authority_rejected;
     stats.same_authority_skipped += next.same_authority_skipped;
     stats.same_material_overlay_calls += next.same_material_overlay_calls;
+    stats.same_material_pair_cache_hits += next.same_material_pair_cache_hits;
+    stats.raised_step_pair_cache_previous_hits += next.raised_step_pair_cache_previous_hits;
+    stats.raised_step_pair_cache_misses += next.raised_step_pair_cache_misses;
+    stats.source_target_group_cache_hits += next.source_target_group_cache_hits;
+    stats.source_contact_cache_hits += next.source_contact_cache_hits;
+    stats.source_contact_cache_misses += next.source_contact_cache_misses;
+    stats.source_pair_cache_hits += next.source_pair_cache_hits;
+    stats.source_pair_cache_misses += next.source_pair_cache_misses;
     stats.same_material_height_split_candidates += next.same_material_height_split_candidates;
     stats.same_material_height_split_appended += next.same_material_height_split_appended;
     stats.same_material_height_split_duplicates += next.same_material_height_split_duplicates;

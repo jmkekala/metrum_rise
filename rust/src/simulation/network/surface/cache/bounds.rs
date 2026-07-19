@@ -182,6 +182,20 @@ impl RoadSurfaceSystem {
         )
     }
 
+    /// Returns the fixed world-space bounds of one fine road-query chunk.
+    pub fn query_chunk_world_bounds(chunk: SurfaceChunkKey) -> (RoadVec3, RoadVec3) {
+        let min_x = f64::from(chunk.0) * SURFACE_QUERY_CHUNK_SPAN_M;
+        let min_z = f64::from(chunk.1) * SURFACE_QUERY_CHUNK_SPAN_M;
+        (
+            RoadVec3::new(min_x, 0.0, min_z),
+            RoadVec3::new(
+                min_x + SURFACE_QUERY_CHUNK_SPAN_M,
+                0.0,
+                min_z + SURFACE_QUERY_CHUNK_SPAN_M,
+            ),
+        )
+    }
+
     pub(super) fn bounds_to_query_chunk_keys(min: RoadVec3, max: RoadVec3) -> Vec<SurfaceChunkKey> {
         let min_chunk = Self::query_chunk_coords_for_world(min.x, min.z);
         let max_chunk = Self::query_chunk_coords_for_world(max.x, max.z);

@@ -181,13 +181,21 @@ impl NodeArrangement {
     pub(crate) fn from_height_solution(
         heights: &NodeHeightSolution,
     ) -> Result<Self, NodeArrangementError> {
-        Self::from_height_solution_with_profile(heights, false).map(|(arrangement, _)| arrangement)
+        Self::from_height_solution_with_profile(heights, false)
+            .map(|(arrangement, _, _)| arrangement)
     }
 
     pub(crate) fn from_height_solution_with_profile(
         heights: &NodeHeightSolution,
         profile_enabled: bool,
-    ) -> Result<(Self, NodeArrangementBuildProfile), NodeArrangementError> {
+    ) -> Result<
+        (
+            Self,
+            NodeArrangementBuildProfile,
+            Option<Vec<NodeExplicitVerticalStepSegment>>,
+        ),
+        NodeArrangementError,
+    > {
         let total_start = profile_enabled.then(Instant::now);
         let mut profile = NodeArrangementBuildProfile {
             height_regions: heights.regions.len(),
@@ -243,7 +251,8 @@ impl NodeArrangement {
         }
 
         let conflict_start = profile_enabled.then(Instant::now);
-        arrangement.reject_implicit_material_height_conflicts()?;
+        let precomputed_explicit_vertical_step_segments =
+            arrangement.reject_implicit_material_height_conflicts()?;
         profile.conflict_ms = elapsed_profile_ms(conflict_start);
         profile.vertices = arrangement.vertices.len();
         profile.edges = arrangement.edges.len();
@@ -255,12 +264,16 @@ impl NodeArrangement {
             .sum();
         profile.diagnostics = arrangement.diagnostics.len();
         profile.total_ms = elapsed_profile_ms(total_start);
-        Ok((arrangement, profile))
+        Ok((
+            arrangement,
+            profile,
+            precomputed_explicit_vertical_step_segments,
+        ))
     }
 
     pub(super) fn reject_implicit_material_height_conflicts(
         &self,
-    ) -> Result<(), NodeArrangementError> {
+    ) -> Result<Option<Vec<NodeExplicitVerticalStepSegment>>, NodeArrangementError> {
         let mut vertices_by_key =
             BTreeMap::<NodeArrangementKey, Vec<NodeArrangementVertexId>>::new();
         for vertex in &self.vertices {
@@ -281,7 +294,7 @@ impl NodeArrangement {
                 .any(|vertex_id| self.vertices[vertex_id.0].height_key != first_height_key)
         });
         if vertices_by_key.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         let relevant_keys = vertices_by_key.keys().copied().collect::<BTreeSet<_>>();
@@ -356,7 +369,7 @@ impl NodeArrangement {
                 }
             }
         }
-        Ok(())
+        Ok(Some(conflict_index.vertical_step_segments))
     }
 }
 

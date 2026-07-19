@@ -1,9 +1,12 @@
 //! Raised-step vertical face construction from canonical arrangement intervals.
 
+#[cfg(test)]
 use super::arrangement_faces::*;
+#[cfg(test)]
 use super::boundary_edges::*;
 use super::*;
 
+#[derive(Clone, Debug, PartialEq)]
 pub(in crate::simulation::network::surface::node) struct RoadSurfaceRaisedStepFace {
     pub(in crate::simulation::network::surface::node) polygon: RoadSurfaceVisualPolygon,
     pub(in crate::simulation::network::surface::node) source: RoadSurfaceVerticalFaceSource,
@@ -12,6 +15,7 @@ pub(in crate::simulation::network::surface::node) struct RoadSurfaceRaisedStepFa
 }
 
 impl RoadSurfaceSystem {
+    #[cfg(test)]
     pub(super) fn raised_step_face_polygons_from_arrangement(
         arrangement: &NodeArrangement,
         explicit_vertical_step_segments: &[NodeExplicitVerticalStepSegment],
@@ -57,6 +61,7 @@ impl RoadSurfaceSystem {
         faces
     }
 
+    #[cfg(test)]
     fn push_arrangement_vertical_step_faces_from_intervals(
         lower_segment_key: (NodeArrangementKey, NodeArrangementKey),
         raised_segment_key: (NodeArrangementKey, NodeArrangementKey),
@@ -135,6 +140,7 @@ impl RoadSurfaceSystem {
         }
     }
 
+    #[cfg(test)]
     fn arrangement_vertical_step_face_polygon(
         segment_key: (NodeArrangementKey, NodeArrangementKey),
         lower_interval: ArrangementFaceBoundaryInterval,
@@ -194,6 +200,7 @@ impl RoadSurfaceSystem {
     }
 }
 
+#[cfg(test)]
 fn lower_interval_owner_lies_right_of_segment(
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     lower_interval: ArrangementFaceBoundaryInterval,
@@ -213,6 +220,7 @@ fn lower_interval_owner_lies_right_of_segment(
     Some(edge_end_t < edge_start_t)
 }
 
+#[cfg(test)]
 fn arrangement_boundary_segment_order_key(
     point: ArrangementBoundaryPointKey,
     start: ArrangementBoundaryPointKey,
@@ -225,6 +233,7 @@ fn arrangement_boundary_segment_order_key(
     (dx != 0 || dz != 0).then_some(px * dx + pz * dz)
 }
 
+#[cfg(test)]
 fn vertical_face_dedup_key(
     lower_start: ArrangementBoundaryPointKey,
     lower_end: ArrangementBoundaryPointKey,
@@ -240,6 +249,7 @@ fn vertical_face_dedup_key(
     )
 }
 
+#[cfg(test)]
 pub(super) fn canonical_vertical_step_lower_and_raised_owners(
     segment: NodeExplicitVerticalStepSegment,
 ) -> Option<(NodeBandOwner, NodeBandOwner)> {

@@ -62,7 +62,7 @@ impl NodeRailSourceSegmentAuthority {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NodeSourceCarrierRegistry {
     pub(crate) source_segments_by_owner:
         BTreeMap<NodeBandOwner, Vec<NodeRailSourceSegmentAuthority>>,

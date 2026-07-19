@@ -32,6 +32,37 @@ impl SimulationNode {
         for window in windows {
             x_lines.extend([window.min_x, window.max_x]);
             z_lines.extend([window.min_z, window.max_z]);
+            // Only geometry-added side vertices must cross unrelated filler partitions. The
+            // canonical fine boundary lattice remains available to directly adjacent filler
+            // regions below, but promoting it globally creates a Cartesian fine-grid blow-up.
+            Self::extend_axis_with_non_lattice_window_side_samples(
+                &mut x_lines,
+                &window.min_z_side_xs,
+                window.min_x,
+                window.max_x,
+                window.boundary_step_mm,
+            );
+            Self::extend_axis_with_non_lattice_window_side_samples(
+                &mut x_lines,
+                &window.max_z_side_xs,
+                window.min_x,
+                window.max_x,
+                window.boundary_step_mm,
+            );
+            Self::extend_axis_with_non_lattice_window_side_samples(
+                &mut z_lines,
+                &window.min_x_side_zs,
+                window.min_z,
+                window.max_z,
+                window.boundary_step_mm,
+            );
+            Self::extend_axis_with_non_lattice_window_side_samples(
+                &mut z_lines,
+                &window.max_x_side_zs,
+                window.min_z,
+                window.max_z,
+                window.boundary_step_mm,
+            );
         }
         Self::sort_dedup_axis_lines(&mut x_lines);
         Self::sort_dedup_axis_lines(&mut z_lines);
@@ -85,13 +116,38 @@ impl SimulationNode {
         if max_x <= min_x + 0.001 || max_z <= min_z + 0.001 {
             return None;
         }
+        let boundary_step_m = boundary_step_m.max(f32::EPSILON);
+        let boundary_step_mm =
+            Self::quantize_cdt_coord_mm(f64::from(boundary_step_m.max(0.001))).max(1);
+        let side_xs = Self::terrain_cdt_axis_samples(min_x, max_x, boundary_step_m);
+        let side_zs = Self::terrain_cdt_axis_samples(min_z, max_z, boundary_step_m);
         Some(TerrainCdtWindowBounds {
             min_x,
             min_z,
             max_x,
             max_z,
-            boundary_step_m: boundary_step_m.max(f32::EPSILON),
+            boundary_step_mm,
+            min_x_side_zs: side_zs.clone(),
+            max_x_side_zs: side_zs,
+            min_z_side_xs: side_xs.clone(),
+            max_z_side_xs: side_xs,
         })
+    }
+
+    fn extend_axis_with_non_lattice_window_side_samples(
+        axis: &mut Vec<f32>,
+        manifest: &[f32],
+        min: f32,
+        max: f32,
+        boundary_step_mm: i64,
+    ) {
+        let min_mm = Self::quantize_cdt_coord_mm(f64::from(min));
+        let max_mm = Self::quantize_cdt_coord_mm(f64::from(max));
+        let boundary_step_mm = boundary_step_mm.max(1);
+        axis.extend(manifest.iter().copied().filter(|sample| {
+            let sample_mm = Self::quantize_cdt_coord_mm(f64::from(*sample));
+            sample_mm > min_mm && sample_mm < max_mm && sample_mm.rem_euclid(boundary_step_mm) != 0
+        }));
     }
 
     pub(in crate::nodes::simulation_node) fn refine_regular_terrain_axes_for_cdt_window_sides(
@@ -106,36 +162,67 @@ impl SimulationNode {
         for window in windows {
             let z_overlap_min = min_z.max(window.min_z);
             let z_overlap_max = max_z.min(window.max_z);
-            if z_overlap_max > z_overlap_min + 0.001
-                && (Self::axis_lines_touch(max_x, window.min_x)
-                    || Self::axis_lines_touch(min_x, window.max_x))
-            {
-                Self::extend_axis_samples(zs, z_overlap_min, z_overlap_max, window.boundary_step_m);
+            if z_overlap_max > z_overlap_min + 0.001 {
+                if Self::axis_lines_touch(max_x, window.min_x) {
+                    Self::extend_axis_samples_from_manifest(
+                        zs,
+                        z_overlap_min,
+                        z_overlap_max,
+                        &window.min_x_side_zs,
+                    );
+                }
+                if Self::axis_lines_touch(min_x, window.max_x) {
+                    Self::extend_axis_samples_from_manifest(
+                        zs,
+                        z_overlap_min,
+                        z_overlap_max,
+                        &window.max_x_side_zs,
+                    );
+                }
             }
 
             let x_overlap_min = min_x.max(window.min_x);
             let x_overlap_max = max_x.min(window.max_x);
-            if x_overlap_max > x_overlap_min + 0.001
-                && (Self::axis_lines_touch(max_z, window.min_z)
-                    || Self::axis_lines_touch(min_z, window.max_z))
-            {
-                Self::extend_axis_samples(xs, x_overlap_min, x_overlap_max, window.boundary_step_m);
+            if x_overlap_max > x_overlap_min + 0.001 {
+                if Self::axis_lines_touch(max_z, window.min_z) {
+                    Self::extend_axis_samples_from_manifest(
+                        xs,
+                        x_overlap_min,
+                        x_overlap_max,
+                        &window.min_z_side_xs,
+                    );
+                }
+                if Self::axis_lines_touch(min_z, window.max_z) {
+                    Self::extend_axis_samples_from_manifest(
+                        xs,
+                        x_overlap_min,
+                        x_overlap_max,
+                        &window.max_z_side_xs,
+                    );
+                }
             }
         }
     }
 
-    pub(in crate::nodes::simulation_node) fn axis_lines_touch(left: f32, right: f32) -> bool {
-        (left - right).abs() <= 0.001
-    }
-
-    pub(in crate::nodes::simulation_node) fn extend_axis_samples(
+    /// Extends one filler axis with the overlapping portion of a CDT side manifest.
+    pub(in crate::nodes::simulation_node) fn extend_axis_samples_from_manifest(
         samples: &mut Vec<f32>,
         min: f32,
         max: f32,
-        step_m: f32,
+        manifest: &[f32],
     ) {
-        samples.extend(Self::terrain_cdt_axis_samples(min, max, step_m));
+        samples.extend(
+            manifest
+                .iter()
+                .copied()
+                .filter(|sample| *sample >= min - 0.001 && *sample <= max + 0.001),
+        );
         Self::sort_dedup_axis_lines(samples);
+    }
+
+    /// Returns whether two quantized seam axes represent the same world line.
+    pub(in crate::nodes::simulation_node) fn axis_lines_touch(left: f32, right: f32) -> bool {
+        (left - right).abs() <= 0.001
     }
 
     pub(in crate::nodes::simulation_node) fn sort_dedup_axis_lines(values: &mut Vec<f32>) {
@@ -221,6 +308,7 @@ impl SimulationNode {
                     z - center_z,
                 ));
                 export.normals.push(Vector3::ZERO);
+                export.normal_sum_lengths.push(0.0);
                 export.uvs.push(Vector2::new(
                     ((x - patch.world_origin_x) / patch.world_size_x.max(0.001)).clamp(0.0, 1.0),
                     ((z - patch.world_origin_z) / patch.world_size_z.max(0.001)).clamp(0.0, 1.0),
@@ -240,7 +328,11 @@ impl SimulationNode {
             }
         }
 
-        for normal in &mut export.normals[base_index..] {
+        for (normal, normal_sum_length) in export.normals[base_index..]
+            .iter_mut()
+            .zip(&mut export.normal_sum_lengths[base_index..])
+        {
+            *normal_sum_length = normal.length();
             if normal.length_squared() <= 0.000_001 {
                 *normal = Vector3::UP;
             } else {

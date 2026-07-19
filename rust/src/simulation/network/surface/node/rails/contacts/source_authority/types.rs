@@ -6,7 +6,8 @@ use super::super::{
     NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
 };
 
-const SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS: i64 = 4096;
+pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) const SOURCE_AUTHORITY_BOUNDS_MARGIN_KEYS: i64 =
+    4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedSameBandContactConstraint

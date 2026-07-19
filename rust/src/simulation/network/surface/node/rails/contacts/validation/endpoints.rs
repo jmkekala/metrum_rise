@@ -1,12 +1,14 @@
 //! Generated-contact endpoint validation against exact source authority.
 
+#[cfg(test)]
+use super::super::NodeGeneratedContour;
 use super::super::source_authority::generated_contact_kind_from_constraint;
 use super::super::{
-    NodeBandOwner, NodeGeneratedContour, NodeRailConstraint, NodeRailGenerationError,
-    NodeRailPointKey, road_point_key,
+    NodeBandOwner, NodeRailConstraint, NodeRailGenerationError, NodeRailPointKey, road_point_key,
 };
 use super::authority::ExactGeneratedSourceAuthority;
 
+#[cfg(test)]
 pub(in crate::simulation::network::surface::node::rails) fn validate_generated_contact_constraint_endpoints_from_sources(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
@@ -17,6 +19,18 @@ pub(in crate::simulation::network::surface::node::rails) fn validate_generated_c
         constraints,
         generated_constraint_start_index,
     );
+    validate_generated_contact_constraint_endpoints_with_authority(
+        constraints,
+        generated_constraint_start_index,
+        &source_authority,
+    )
+}
+
+pub(in crate::simulation::network::surface::node::rails) fn validate_generated_contact_constraint_endpoints_with_authority(
+    constraints: &[NodeRailConstraint],
+    generated_constraint_start_index: usize,
+    source_authority: &ExactGeneratedSourceAuthority,
+) -> Result<(), NodeRailGenerationError> {
     for constraint in constraints.iter().skip(generated_constraint_start_index) {
         if generated_contact_kind_from_constraint(constraint.kind).is_none() {
             continue;
@@ -37,7 +51,7 @@ pub(in crate::simulation::network::surface::node::rails) fn validate_generated_c
             let key = road_point_key(*point);
             if generated_contact_constraint_endpoint_has_exact_source_authority(
                 constraint,
-                &source_authority,
+                source_authority,
                 owners,
                 source_band_index,
                 key,

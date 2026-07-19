@@ -338,6 +338,7 @@ impl NodeArrangementVertexId {
 }
 
 impl NodeArrangementEdgeId {
+    #[cfg(test)]
     pub(crate) fn index(self) -> usize {
         self.0
     }
@@ -418,6 +419,7 @@ impl NodeOwnedRegion {
         &self.holes
     }
 
+    #[cfg(test)]
     pub(crate) fn boundary_edges(&self) -> &[NodeArrangementEdgeId] {
         &self.boundary_edges
     }

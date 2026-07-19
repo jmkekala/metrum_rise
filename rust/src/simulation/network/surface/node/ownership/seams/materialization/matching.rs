@@ -198,6 +198,14 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
     }
     let exact_owner_pair =
         rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner);
+    if exact_owner_pair
+        && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+        && constraint.kind == NodeRailConstraintKind::RaisedStepContact
+        && !raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
+        && edge_lies_inside_single_constraint_segment_dust_envelope(start, end, constraint)
+    {
+        return true;
+    }
     if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner) {
         if exact_owner_pair && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
             return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
@@ -225,6 +233,90 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
         piece_kind,
         RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::Terminal
     ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+}
+
+fn edge_lies_inside_single_constraint_segment_dust_envelope(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if edge_start == edge_end {
+        return false;
+    }
+    constraint.points_xz.windows(2).any(|segment| {
+        let segment_start = ownership_key_from_road_point(segment[0]);
+        let segment_end = ownership_key_from_road_point(segment[1]);
+        segment_start != segment_end
+            && point_is_inside_constraint_segment_dust_envelope(
+                edge_start,
+                segment_start,
+                segment_end,
+            )
+            && point_is_inside_constraint_segment_dust_envelope(
+                edge_end,
+                segment_start,
+                segment_end,
+            )
+            && edge_is_longitudinal_to_constraint_segment(
+                edge_start,
+                edge_end,
+                segment_start,
+                segment_end,
+            )
+    })
+}
+
+fn edge_is_longitudinal_to_constraint_segment(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+) -> bool {
+    let edge_dx = i128::from(edge_end.0 - edge_start.0);
+    let edge_dz = i128::from(edge_end.1 - edge_start.1);
+    let segment_dx = i128::from(segment_end.0 - segment_start.0);
+    let segment_dz = i128::from(segment_end.1 - segment_start.1);
+    let longitudinal = edge_dx * segment_dx + edge_dz * segment_dz;
+    if longitudinal == 0 {
+        return false;
+    }
+    let transverse = edge_dx * segment_dz - edge_dz * segment_dx;
+    // The envelope admits Boolean endpoint displacement, not a newly angled contact edge.
+    const MAX_TRANSVERSE_RATIO_DENOMINATOR: u128 = 100;
+    transverse
+        .unsigned_abs()
+        .saturating_mul(MAX_TRANSVERSE_RATIO_DENOMINATOR)
+        <= longitudinal.unsigned_abs()
+}
+
+fn point_is_inside_constraint_segment_dust_envelope(
+    point: NodeOwnershipPointKey,
+    segment_start: NodeOwnershipPointKey,
+    segment_end: NodeOwnershipPointKey,
+) -> bool {
+    let dx = i128::from(segment_end.0 - segment_start.0);
+    let dz = i128::from(segment_end.1 - segment_start.1);
+    let length_sq = dx * dx + dz * dz;
+    if length_sq == 0 {
+        return false;
+    }
+    let px = i128::from(point.0 - segment_start.0);
+    let pz = i128::from(point.1 - segment_start.1);
+    let parameter_numerator = px * dx + pz * dz;
+    let dust_key_units = (f64::from(super::super::super::super::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+        * super::super::super::super::super::keys::SURFACE_XZ_KEY_SCALE)
+        .round() as i128;
+    let dust_sq = dust_key_units * dust_key_units;
+    if parameter_numerator <= 0 {
+        return px * px + pz * pz <= dust_sq;
+    }
+    if parameter_numerator >= length_sq {
+        let ex = i128::from(point.0 - segment_end.0);
+        let ez = i128::from(point.1 - segment_end.1);
+        return ex * ex + ez * ez <= dust_sq;
+    }
+    let cross = px * dz - pz * dx;
+    cross * cross <= dust_sq * length_sq
 }
 
 fn materialized_edge_requires_exact_constraint_span(
@@ -285,5 +377,64 @@ mod tests {
                 right_kind: RoadSurfaceBandKind::Sidewalk,
             })
         );
+    }
+
+    #[test]
+    fn junctionn_exact_raised_step_pair_accepts_boolean_endpoint_dust() {
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 4);
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 5);
+        let constraint = NodeRailConstraint {
+            constraint_index: 23,
+            kind: NodeRailConstraintKind::RaisedStepContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(4),
+            source_boundary_index: Some(1),
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            points_xz: vec![
+                road_point_from_key((0, 0)),
+                road_point_from_key((1_000_000, 0)),
+            ],
+        };
+
+        assert!(owned_edge_lies_on_rail_constraint(
+            (15, 29),
+            (500_000, 29),
+            &constraint,
+            curb,
+            sidewalk,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ));
+        assert!(!owned_edge_lies_on_rail_constraint(
+            (15, 300),
+            (500_000, 300),
+            &constraint,
+            curb,
+            sidewalk,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ));
+        assert!(!owned_edge_lies_on_rail_constraint(
+            (500_000, -25),
+            (500_000, 25),
+            &constraint,
+            curb,
+            sidewalk,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ));
+
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 3);
+        let carriageway_curb_constraint = NodeRailConstraint {
+            owner: Some(carriageway),
+            opposite_owner: Some(curb),
+            ..constraint
+        };
+        assert!(!owned_edge_lies_on_rail_constraint(
+            (15, 29),
+            (500_000, 29),
+            &carriageway_curb_constraint,
+            carriageway,
+            curb,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+        ));
     }
 }

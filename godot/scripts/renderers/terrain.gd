@@ -117,7 +117,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 2
+const TERRAIN_CDT_CONTRACT_REVISION := 4
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -1688,12 +1688,9 @@ func _road_surface_payload_generation() -> int:
 	return 0
 
 func _sync_patch_payload_road_generation() -> void:
-	var road_generation := _road_surface_payload_generation()
-	if road_generation != patch_payload_road_generation:
-		patch_payload_requested.clear()
-		patch_payload_requested_generation.clear()
-		patch_payload_ready.clear()
-		patch_payload_road_generation = road_generation
+	# Terrain payload validity is patch-local. Exact dirty-state generations below
+	# retire only affected requests; the road-tool revision is diagnostic here.
+	patch_payload_road_generation = _road_surface_payload_generation()
 
 func _request_terrain_patch_payload(key: Vector2i, include_existing: bool = false) -> bool:
 	var keys: Array[Vector2i] = []

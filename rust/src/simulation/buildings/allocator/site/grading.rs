@@ -124,7 +124,10 @@ impl BuildingSiteTerrainSnapshot {
         for site in &self.sites {
             let (site_min_x, site_min_z, site_max_x, site_max_z) =
                 super::geometry::polygon_slice_bounds(&site.footprint_world);
-            if site_min_x > max_x || site_max_x < min_x || site_min_z > max_z || site_max_z < min_z
+            if site_min_x - max_distance_m > max_x
+                || site_max_x + max_distance_m < min_x
+                || site_min_z - max_distance_m > max_z
+                || site_max_z + max_distance_m < min_z
             {
                 continue;
             }

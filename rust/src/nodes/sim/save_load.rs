@@ -74,6 +74,7 @@ impl SimCore {
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
         self.refined_terrain_patch_cache.clear();
+        self.refined_terrain_assembly_ledgers.clear();
         self.road_locked_terrain_patch_keys.clear();
         self.road_locked_terrain_patch_margins.clear();
         self.building_site_owned_terrain_patch_keys.clear();
@@ -87,5 +88,9 @@ impl SimCore {
         self.water_dirty = true;
         self.cached_road_mesh_data = None;
         self.mark_network_render_dirty();
+        // Loading advances the render-facing road generation after the persisted
+        // surface was rebuilt. Stamp a matching mesh generation before water and
+        // refined-terrain payload workers consume the refreshed snapshot.
+        self.precompute_road_mesh_data();
     }
 }

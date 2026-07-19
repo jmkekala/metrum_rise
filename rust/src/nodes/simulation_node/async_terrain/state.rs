@@ -1,6 +1,7 @@
 //! Async terrain and water request state types.
 
 use super::super::*;
+use crate::nodes::sim::core::RefinedTerrainAssemblyScope;
 
 /// Async water mesh preparation state shared with Rayon jobs.
 pub(crate) struct WaterPatchMeshAsyncState {
@@ -112,7 +113,7 @@ pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadData {
         height_bytes: Vec<u8>,
     },
     Refined {
-        patch: CachedRefinedTerrainPatch,
+        patch: Arc<CachedRefinedTerrainPatch>,
     },
 }
 
@@ -131,6 +132,7 @@ pub(in crate::nodes::simulation_node) struct TerrainPatchPayloadRequestState {
 
 pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildJob {
     Ready(TerrainPatchPayload),
+    Failed(TerrainPatchPayloadRequest),
     Refined {
         request: TerrainPatchPayloadRequest,
         input: RefinedTerrainPatchBuildInput,
@@ -142,12 +144,42 @@ pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadBuildSource {
     Refined(RefinedTerrainPatchBuildSource),
 }
 
+#[cfg(test)]
+impl TerrainPatchPayloadBuildSource {
+    pub(in crate::nodes::simulation_node) fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
+    pub(in crate::nodes::simulation_node) fn previous_surface_generation(&self) -> Option<u64> {
+        let Self::Refined(source) = self else {
+            return None;
+        };
+        source
+            .previous
+            .as_ref()
+            .map(|previous| previous.surface_generation)
+    }
+
+    pub(in crate::nodes::simulation_node) fn local_tile_keys(&self) -> Option<&[(i64, i64)]> {
+        let Self::Refined(source) = self else {
+            return None;
+        };
+        let RefinedTerrainAssemblyScope::LocalTiles(tile_keys) = &source.assembly_scope else {
+            return None;
+        };
+        Some(tile_keys)
+    }
+}
+
 pub(in crate::nodes::simulation_node) struct RefinedTerrainPatchBuildSource {
     pub(in crate::nodes::simulation_node) request: TerrainPatchPayloadRequest,
     pub(in crate::nodes::simulation_node) patch: TerrainPatchSnapshot,
+    pub(in crate::nodes::simulation_node) previous: Option<Arc<CachedRefinedTerrainPatch>>,
+    pub(in crate::nodes::simulation_node) assembly_scope: RefinedTerrainAssemblyScope,
     pub(in crate::nodes::simulation_node) requires_engineered_refinement: bool,
     pub(in crate::nodes::simulation_node) requires_road_clipping: bool,
     pub(in crate::nodes::simulation_node) road_locked_margin_m: f32,
+    pub(in crate::nodes::simulation_node) road_surface_generation: u64,
     pub(in crate::nodes::simulation_node) sites: BuildingSiteTerrainSnapshot,
 }
 

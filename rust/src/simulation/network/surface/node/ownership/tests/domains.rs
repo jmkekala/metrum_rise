@@ -50,6 +50,249 @@ fn boolean_ownership_produces_asphalt_and_band_owned_regions() {
 }
 
 #[test]
+fn exact_ownership_rebuild_reuses_cleanup_and_seam_contributors() {
+    let rails = contour_set();
+    let (cold, previous, cold_stats) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(&rails, None)
+            .expect("cold ownership solve");
+    assert!(cold_stats.cleanup_cache_misses > 0);
+    assert!(cold_stats.seam_extraction_cache_misses > 0);
+    assert!(cold_stats.edge_seam_cache_misses > 0);
+
+    let (warm, _, warm_stats) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(&rails, Some(&previous))
+            .expect("warm ownership solve");
+
+    assert_eq!(warm, cold);
+    assert!(warm_stats.cleanup_previous_hits > 0);
+    assert!(warm_stats.seam_extraction_previous_hits > 0);
+    assert!(warm_stats.edge_seam_previous_hits > 0);
+}
+
+#[test]
+fn local_junction_mouth_addition_and_removal_reuse_unchanged_ownership_contributors() {
+    let three_mouth_rails = junction_contour_set(false);
+    let four_mouth_rails = junction_contour_set(true);
+
+    let (three_mouth_cold, three_mouth_cache, _) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(&three_mouth_rails, None)
+            .expect("three-mouth cold ownership solve");
+    let (four_mouth_warm, four_mouth_cache, addition_stats) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(
+            &four_mouth_rails,
+            Some(&three_mouth_cache),
+        )
+        .expect("four-mouth incremental ownership solve");
+    let four_mouth_cold = NodeBooleanOwnership::from_rails(&four_mouth_rails)
+        .expect("four-mouth cold ownership solve");
+
+    assert_eq!(four_mouth_warm, four_mouth_cold);
+    assert!(
+        addition_stats.cleanup_previous_hits > 0,
+        "adding one mouth must reuse unchanged cleanup contributors: {addition_stats:?}"
+    );
+
+    let (three_mouth_warm, _, removal_stats) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(
+            &three_mouth_rails,
+            Some(&four_mouth_cache),
+        )
+        .expect("three-mouth incremental ownership solve after removal");
+
+    assert_eq!(three_mouth_warm, three_mouth_cold);
+    assert!(
+        removal_stats.cleanup_previous_hits > 0,
+        "removing one mouth must reuse unchanged cleanup contributors: {removal_stats:?}"
+    );
+}
+
+#[test]
+fn local_junction_height_edit_reuses_unchanged_final_boundary_points() {
+    let baseline_rails = junction_contour_set_with_fourth_height(0.0);
+    let changed_rails = junction_contour_set_with_fourth_height(0.75);
+    let (_, baseline_cache, _) =
+        NodeBooleanOwnership::from_rails_with_incremental_reuse(&baseline_rails, None)
+            .expect("baseline four-mouth ownership solve");
+    let (warm, _, stats) = NodeBooleanOwnership::from_rails_with_incremental_reuse(
+        &changed_rails,
+        Some(&baseline_cache),
+    )
+    .expect("height-edited incremental ownership solve");
+    let cold = NodeBooleanOwnership::from_rails(&changed_rails)
+        .expect("height-edited cold ownership solve");
+
+    assert_eq!(warm, cold);
+    assert!(
+        stats.final_boundary_previous_hits > 0,
+        "a one-mouth height edit must reuse unchanged final-boundary point decisions: {stats:?}"
+    );
+    assert!(
+        stats.final_assembly_previous_hits > 0,
+        "a one-mouth height edit with unchanged XZ ownership must reuse final-boundary assembly: {stats:?}"
+    );
+}
+
+fn junction_contour_set(include_fourth_mouth: bool) -> NodeRailContourSet {
+    junction_contour_set_with_optional_fourth_height(include_fourth_mouth.then_some(0.0))
+}
+
+fn junction_contour_set_with_fourth_height(height_delta: f64) -> NodeRailContourSet {
+    junction_contour_set_with_optional_fourth_height(Some(height_delta))
+}
+
+fn junction_contour_set_with_optional_fourth_height(
+    fourth_height_delta: Option<f64>,
+) -> NodeRailContourSet {
+    let mut mouths = vec![
+        junction_mouth(
+            symmetric_profile_x(10.0, RoadVec2::X),
+            symmetric_profile_x(0.0, RoadVec2::X),
+            0.0,
+            RoadVec2::X,
+            1,
+        ),
+        junction_mouth(
+            symmetric_profile_z(12.0, RoadVec2::Y),
+            symmetric_profile_z(0.0, RoadVec2::Y),
+            std::f32::consts::FRAC_PI_2,
+            RoadVec2::Y,
+            2,
+        ),
+        junction_mouth(
+            symmetric_profile_x(-10.0, RoadVec2::NEG_X),
+            symmetric_profile_x(0.0, RoadVec2::NEG_X),
+            std::f32::consts::PI,
+            RoadVec2::NEG_X,
+            3,
+        ),
+    ];
+    if let Some(height_delta) = fourth_height_delta {
+        let mut fourth = junction_mouth(
+            symmetric_profile_z(-12.0, RoadVec2::NEG_Y),
+            symmetric_profile_z(0.0, RoadVec2::NEG_Y),
+            std::f32::consts::PI + std::f32::consts::FRAC_PI_2,
+            RoadVec2::NEG_Y,
+            4,
+        );
+        translate_mouth_height(&mut fourth, height_delta);
+        mouths.push(fourth);
+    }
+    let input = NodeArrangementInput::from_ordered_mouths(
+        42,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &mouths,
+    )
+    .expect("junction mouths should produce canonical input");
+    NodeRailContourSet::from_input(&input).expect("junction input should produce contours")
+}
+
+fn translate_mouth_height(mouth: &mut OrderedIncidentPieceMouth, delta: f64) {
+    for profile in [&mut mouth.profile, &mut mouth.endpoint_profile] {
+        for point in &mut profile.boundary_points_world {
+            point.y += delta;
+        }
+        for band in &mut profile.bands {
+            band.start_point_world.y += delta;
+            band.end_point_world.y += delta;
+        }
+    }
+}
+
+fn junction_mouth(
+    profile: IncidentMouthProfile,
+    endpoint_profile: IncidentMouthProfile,
+    direction_angle_ccw: f32,
+    direction_xz: RoadVec2,
+    edge_idx: usize,
+) -> OrderedIncidentPieceMouth {
+    OrderedIncidentPieceMouth {
+        profile,
+        endpoint_profile,
+        boundary_paths_world: Vec::new(),
+        band_start_paths_world: Vec::new(),
+        band_end_paths_world: Vec::new(),
+        uses_explicit_band_domain_paths: false,
+        direction_angle_ccw,
+        direction_xz,
+        edge_idx,
+        side: IncidentEdgeSide::Start,
+    }
+}
+
+fn symmetric_profile_x(x: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
+    symmetric_profile(
+        vec![
+            RoadVec3::new(x, 4.0, -4.0),
+            RoadVec3::new(x, 4.1, -3.0),
+            RoadVec3::new(x, 4.2, -1.0),
+            RoadVec3::new(x, 4.0, 0.0),
+            RoadVec3::new(x, 4.2, 1.0),
+            RoadVec3::new(x, 4.1, 3.0),
+            RoadVec3::new(x, 4.0, 4.0),
+        ],
+        inward_direction_xz,
+    )
+}
+
+fn symmetric_profile_z(z: f64, inward_direction_xz: RoadVec2) -> IncidentMouthProfile {
+    symmetric_profile(
+        vec![
+            RoadVec3::new(4.0, 4.0, z),
+            RoadVec3::new(3.0, 4.1, z),
+            RoadVec3::new(1.0, 4.2, z),
+            RoadVec3::new(0.0, 4.0, z),
+            RoadVec3::new(-1.0, 4.2, z),
+            RoadVec3::new(-3.0, 4.1, z),
+            RoadVec3::new(-4.0, 4.0, z),
+        ],
+        inward_direction_xz,
+    )
+}
+
+fn symmetric_profile(
+    boundary_points_world: Vec<RoadVec3>,
+    inward_direction_xz: RoadVec2,
+) -> IncidentMouthProfile {
+    let bands = vec![
+        band(
+            RoadSurfaceBandKind::Sidewalk,
+            boundary_points_world[0],
+            boundary_points_world[1],
+        ),
+        band(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            boundary_points_world[1],
+            boundary_points_world[2],
+        ),
+        band(
+            RoadSurfaceBandKind::Carriageway,
+            boundary_points_world[2],
+            boundary_points_world[3],
+        ),
+        band(
+            RoadSurfaceBandKind::Carriageway,
+            boundary_points_world[3],
+            boundary_points_world[4],
+        ),
+        band(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            boundary_points_world[4],
+            boundary_points_world[5],
+        ),
+        band(
+            RoadSurfaceBandKind::Sidewalk,
+            boundary_points_world[5],
+            boundary_points_world[6],
+        ),
+    ];
+    IncidentMouthProfile {
+        inward_direction_xz,
+        boundary_points_world,
+        bands,
+    }
+}
+
+#[test]
 fn boolean_ownership_rejects_unowned_non_road_residual() {
     let mut rails = contour_set();
     rails.contours.retain(|contour| {
