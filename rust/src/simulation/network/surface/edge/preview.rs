@@ -16,20 +16,13 @@ use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
-// Preview validation thresholds.
-const PREVIEW_MAX_GRADE: f32 = ROAD_PROFILE_MAX_GRADE + 0.001;
 const PREVIEW_VALID_REASON: &str = "";
-const PREVIEW_TOO_STEEP_REASON: &str = "too_steep";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
-const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS: f32 = 0.966; // ~15 degrees.
-const PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_SIN: f32 = 0.259; // ~15 degrees.
-const PREVIEW_ENDPOINT_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const PREVIEW_ENDPOINT_WIDTH_CLEARANCE_HALFWIDTH_FACTOR: f32 = 5.0;
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
 #[derive(Clone, Debug, PartialEq)]
@@ -212,11 +205,33 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         existing_surface: &RoadSurfaceSystem,
     ) -> PreviewRoadSurfaceResult {
-        let prepared_input = Self::prepare_road_input_with_extension_to_visible_surface(
+        self.compile_preview_surface_mesh_only_with_existing_surface_snap(
+            raw_points,
+            fwd_lanes,
+            bkw_lanes,
+            terrain,
+            existing_graph,
+            existing_surface,
+            true,
+        )
+    }
+
+    pub(crate) fn compile_preview_surface_mesh_only_with_existing_surface_snap(
+        &self,
+        raw_points: &[Vector3],
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        terrain: &TerrainSystem,
+        existing_graph: &RegionGraph,
+        existing_surface: &RoadSurfaceSystem,
+        snap_to_existing_roads: bool,
+    ) -> PreviewRoadSurfaceResult {
+        let prepared_input = Self::prepare_road_input_for_tool(
             raw_points,
             terrain,
             existing_graph,
             existing_surface,
+            snap_to_existing_roads,
         );
         let mut preview = self.compile_preview_surface_mesh_only_from_prepared(
             prepared_input.points.clone(),
@@ -402,8 +417,8 @@ impl RoadSurfaceSystem {
     pub(crate) fn validate_prepared_road_candidate_fast(
         &self,
         prepared_input: &PreparedRoadInput,
-        fwd_lanes: u8,
-        bkw_lanes: u8,
+        _fwd_lanes: u8,
+        _bkw_lanes: u8,
         terrain: &TerrainSystem,
         existing_graph: &RegionGraph,
     ) -> RoadPreviewValidation {
@@ -422,22 +437,17 @@ impl RoadSurfaceSystem {
             &prepared_input.points,
             existing_graph,
             prepared_input.extension.as_ref(),
+            prepared_input.endpoint_snap_enabled,
         );
         if !validation.is_valid || prepared_input.points.len() < 2 {
             return validation;
         }
 
-        let candidate_roadbed_half_width_m = Self::preview_candidate_roadbed_half_width_m(
-            &prepared_input.points,
-            prepared_input.class,
-            fwd_lanes,
-            bkw_lanes,
-        );
         self.validate_candidate_endpoint_geometry_fast(
             &prepared_input.points,
             existing_graph,
             prepared_input.extension.as_ref(),
-            candidate_roadbed_half_width_m,
+            prepared_input.endpoint_snap_enabled,
             validation,
         )
     }
@@ -484,10 +494,6 @@ impl RoadSurfaceSystem {
         if station_m < PREVIEW_MIN_ENDPOINT_SEGMENT_M {
             return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
         }
-        if validation.max_grade > PREVIEW_MAX_GRADE {
-            return validation.with_invalid_reason(PREVIEW_TOO_STEEP_REASON);
-        }
-
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
         {
@@ -529,7 +535,7 @@ impl RoadSurfaceSystem {
         prepared_points: &[Vector3],
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
-        candidate_roadbed_half_width_m: f32,
+        endpoint_snap_enabled: bool,
         validation: RoadPreviewValidation,
     ) -> RoadPreviewValidation {
         let Some(first) = prepared_points.first().copied() else {
@@ -538,101 +544,24 @@ impl RoadSurfaceSystem {
         let Some(last) = prepared_points.last().copied() else {
             return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
         };
-        let Some(start_dir) = Self::candidate_endpoint_dir(prepared_points, true) else {
-            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
-        };
-        let Some(end_dir) = Self::candidate_endpoint_dir(prepared_points, false) else {
-            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
-        };
 
-        let start_existing =
-            Self::validation_endpoint_existing_node(first, existing_graph, extension);
-        let end_existing = Self::validation_endpoint_existing_node(last, existing_graph, extension);
+        let start_existing = Self::validation_endpoint_existing_node(
+            first,
+            existing_graph,
+            extension,
+            endpoint_snap_enabled,
+        );
+        let end_existing = Self::validation_endpoint_existing_node(
+            last,
+            existing_graph,
+            extension,
+            endpoint_snap_enabled,
+        );
         if start_existing.is_some() && start_existing == end_existing {
             return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
         }
 
-        for (node_id, candidate_dir) in [(start_existing, start_dir), (end_existing, end_dir)] {
-            let Some(node_id) = node_id else {
-                continue;
-            };
-            if !self.endpoint_branch_angle_is_clear(
-                existing_graph,
-                node_id,
-                candidate_dir,
-                candidate_roadbed_half_width_m,
-                extension,
-            ) {
-                return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
-            }
-        }
-
         validation
-    }
-
-    fn candidate_endpoint_dir(prepared_points: &[Vector3], at_start: bool) -> Option<[f32; 2]> {
-        if prepared_points.len() < 2 {
-            return None;
-        }
-        let (from, to) = if at_start {
-            (prepared_points[0], prepared_points[1])
-        } else {
-            (
-                *prepared_points.last().unwrap(),
-                prepared_points[prepared_points.len() - 2],
-            )
-        };
-        Self::normalized_xz_dir(from, to)
-    }
-
-    fn endpoint_branch_angle_is_clear(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        candidate_dir: [f32; 2],
-        candidate_roadbed_half_width_m: f32,
-        extension: Option<&RoadExtensionReprofile>,
-    ) -> bool {
-        let valid_node = graph.get_valid_node(node_id);
-        if valid_node as usize >= graph.node_adjacency_count() {
-            return true;
-        }
-
-        for &edge_idx in graph.node_adjacency(valid_node) {
-            if edge_idx >= graph.edge_count() {
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if !Self::is_surface_edge(edge) {
-                continue;
-            }
-            let Some(edge_dir) =
-                Self::incident_edge_dir_away_from_node(graph, edge_idx, valid_node, extension)
-            else {
-                continue;
-            };
-            let dot = candidate_dir[0] * edge_dir[0] + candidate_dir[1] * edge_dir[1];
-            if dot <= -PREVIEW_ENDPOINT_PASS_THROUGH_DOT_THRESHOLD {
-                continue;
-            }
-            if dot > PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_COS {
-                return false;
-            }
-            let sin_theta = (candidate_dir[0] * edge_dir[1] - candidate_dir[1] * edge_dir[0]).abs();
-            let other_roadbed_half_width_m = Self::visual_roadbed_half_width_m(edge);
-            let width_scale_m = candidate_roadbed_half_width_m.max(other_roadbed_half_width_m)
-                * PREVIEW_ENDPOINT_WIDTH_CLEARANCE_HALFWIDTH_FACTOR;
-            if width_scale_m > SAMPLE_EPSILON_M {
-                let width_required_sin =
-                    ((candidate_roadbed_half_width_m + other_roadbed_half_width_m) / width_scale_m)
-                        .clamp(0.0, 1.0);
-                if sin_theta < PREVIEW_MIN_ENDPOINT_BRANCH_ANGLE_SIN.max(width_required_sin) {
-                    return false;
-                }
-            }
-        }
-
-        true
     }
 
     /// Returns the visible roadbed half-width for one not-yet-committed candidate.
@@ -650,62 +579,32 @@ impl RoadSurfaceSystem {
         Self::visual_roadbed_half_width_m(&edge)
     }
 
-    fn incident_edge_dir_away_from_node(
-        graph: &RegionGraph,
-        edge_idx: usize,
-        node_id: u32,
-        extension: Option<&RoadExtensionReprofile>,
-    ) -> Option<[f32; 2]> {
-        let edge = graph.edge(edge_idx);
-        let points = extension
-            .filter(|extension| extension.existing_edge_idx == edge_idx)
-            .map_or_else(
-                || {
-                    if edge.physical_geometry.is_empty() {
-                        edge.geometry.as_slice()
-                    } else {
-                        edge.physical_geometry.as_slice()
-                    }
-                },
-                |extension| extension.existing_points.as_slice(),
-            );
-        if points.len() < 2 {
-            return None;
-        }
-        let valid_node = graph.get_valid_node(node_id);
-        if graph.get_valid_node(edge.start_node) == valid_node {
-            return Self::normalized_xz_dir(points[0], points[1]);
-        }
-        if graph.get_valid_node(edge.end_node) == valid_node {
-            return Self::normalized_xz_dir(*points.last().unwrap(), points[points.len() - 2]);
-        }
-        None
-    }
-
-    fn normalized_xz_dir(from: Vector3, to: Vector3) -> Option<[f32; 2]> {
-        let dx = to.x - from.x;
-        let dz = to.z - from.z;
-        let len = dx.hypot(dz);
-        (len >= SAMPLE_EPSILON_M).then_some([dx / len, dz / len])
-    }
-
     fn record_preview_endpoint_snap_debug_with_extension(
         validation: &mut RoadPreviewValidation,
         prepared_points: &[Vector3],
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
+        endpoint_snap_enabled: bool,
     ) {
         let (Some(start), Some(end)) = (prepared_points.first(), prepared_points.last()) else {
             return;
         };
-        validation.start_endpoint_snapped_node_id =
-            Self::validation_endpoint_existing_node(*start, existing_graph, extension)
-                .map(Self::debug_node_id)
-                .unwrap_or(-1);
-        validation.end_endpoint_snapped_node_id =
-            Self::validation_endpoint_existing_node(*end, existing_graph, extension)
-                .map(Self::debug_node_id)
-                .unwrap_or(-1);
+        validation.start_endpoint_snapped_node_id = Self::validation_endpoint_existing_node(
+            *start,
+            existing_graph,
+            extension,
+            endpoint_snap_enabled,
+        )
+        .map(Self::debug_node_id)
+        .unwrap_or(-1);
+        validation.end_endpoint_snapped_node_id = Self::validation_endpoint_existing_node(
+            *end,
+            existing_graph,
+            extension,
+            endpoint_snap_enabled,
+        )
+        .map(Self::debug_node_id)
+        .unwrap_or(-1);
     }
 
     fn debug_node_id(node_id: u32) -> i32 {
@@ -783,12 +682,6 @@ impl RoadSurfaceSystem {
                     pair[1].center_height_m - validation.offending_span_end_terrain_height_m;
             }
         }
-        if validation.max_grade > PREVIEW_MAX_GRADE {
-            validation.is_valid = false;
-            validation.invalid_reason = PREVIEW_TOO_STEEP_REASON;
-            return validation;
-        }
-
         if edge_class == EdgeClass::Bridge
             && Self::bridge_profile_is_ground_transition(prepared_points, terrain)
         {
@@ -922,6 +815,7 @@ impl RoadSurfaceSystem {
             prepared_points,
             existing_graph,
             extension,
+            true,
         );
         if !validation.is_valid || prepared_points.len() < 2 {
             return validation;
@@ -990,12 +884,17 @@ impl RoadSurfaceSystem {
         let mut validation_graph = RegionGraph::new();
         let mut node_map = HashMap::new();
         let mut copied_edges = HashSet::new();
-        let start_existing =
-            Self::validation_endpoint_existing_node(prepared_points[0], existing_graph, extension);
+        let start_existing = Self::validation_endpoint_existing_node(
+            prepared_points[0],
+            existing_graph,
+            extension,
+            true,
+        );
         let end_existing = Self::validation_endpoint_existing_node(
             *prepared_points.last().unwrap(),
             existing_graph,
             extension,
+            true,
         );
 
         let start_node = Self::validation_graph_endpoint_node(
@@ -1140,6 +1039,7 @@ impl RoadSurfaceSystem {
         point: Vector3,
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
+        endpoint_snap_enabled: bool,
     ) -> Option<u32> {
         if let Some(extension) = extension {
             let node_pos = existing_graph.node(extension.snapped_node_id).pos;
@@ -1148,6 +1048,9 @@ impl RoadSurfaceSystem {
             if dx.hypot(dz) < config::SNAP_TOLERANCE {
                 return Some(extension.snapped_node_id);
             }
+        }
+        if !endpoint_snap_enabled {
+            return None;
         }
         existing_graph.find_node_within(point, config::SNAP_TOLERANCE)
     }

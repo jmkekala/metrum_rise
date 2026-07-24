@@ -66,9 +66,13 @@ Current live behavior:
 - industrial building actions now read explicit input-coverage and output-headroom signals from the
   live resource-typed building inventory state instead of treating industrial viability as pure
   staffing-plus-buffer approximation
-- fresh-map startup now uses purely organic demand signals — the pioneer demand floor has been
-  removed; the unemployment benefit system in [`economy.md`](economy.md) provides early-city
-  solvency instead
+- household admission now combines budget-backed open-job pull, the first-household bootstrap
+  pull, and an authored regional migration pull; the regional pull requires an external road
+  connection and is damped by household affordability, stock stability, zero-budget households,
+  unhoused households, and a soft household target
+- fresh-map startup no longer uses the old static pioneer floor across R/C/I channels; the
+  unemployment benefit system in [`economy.md`](economy.md) provides early-city solvency while the
+  explicit regional migration pull provides continuing household attraction
 - gameplay cheat mode is the explicit exception to the ordinary organic demand model: once enabled,
   it pins the three R/C/I channels at maximum, persists that override in saves, and lets each
   baseline private-use family with legal candidates plan at least one spawn per demand pass without
@@ -79,6 +83,7 @@ Current derived inputs:
 - housing capacity and vacancy
 - housed-resident presence
 - open and filled job capacity
+- authored regional household migration pull
 - household affordability and stock stability
 - connected external-border availability
 - economy-side residential and non-residential viability gates from `economy/profiles.toml`
@@ -89,8 +94,8 @@ Short version:
 - the current system now owns household-admission and removal pressure plus the hourly admitted
   and daily removed household counts
 - it also now owns the city's ordinary private building-change decisions through hourly action plans
-- baseline fresh-map startup now flows through purely organic demand signals; no hidden
-  allocator-owned founding path or pioneer floor remains
+- baseline fresh-map startup and later household growth now flow through explicit demand-owned
+  signals; no hidden allocator-owned founding path or static R/C/I pioneer floor remains
 
 ## Terminology Conventions
 
@@ -311,6 +316,8 @@ max_households_per_day = 48
 
 [household_action]
 admission_threshold = 0.10
+regional_growth_household_pull = 0.45
+regional_growth_soft_households = 600.0
 admission_unhoused_ratio_penalty = 0.75
 admission_zero_budget_penalty = 0.75
 admission_recent_failure_penalty = 0.85
@@ -355,6 +362,8 @@ Deterministic validation rules:
 - `signal_normalization.household_stock_stability_target_days` must be finite and `> 0.0`
 - `action_budget.max_households_per_day` must be a finite integer `>= 0`
 - `household_action.admission_threshold` must be finite and in `0.0..1.0`
+- `household_action.regional_growth_household_pull` must be finite and in `0.0..1.0`
+- `household_action.regional_growth_soft_households` must be finite and `> 0.0`
 - `household_action.admission_unhoused_ratio_penalty` must be finite and in `0.0..1.0`
 - `household_action.admission_zero_budget_penalty` must be finite and in `0.0..1.0`
 - `household_action.admission_recent_failure_penalty` must be finite and in `0.0..1.0`
@@ -438,6 +447,8 @@ Baseline `v0.1` city-level signal families:
 - `existing_unemployed_member_count`
 - `open_job_slots`
 - `average_open_job_wage_per_day`
+- `regional_growth_household_pull` — an authored outside-world household attraction signal after
+  external connection, city-health damping, and the soft household target are applied
 - `industrial_input_capacity_deficit` — fraction of commercial input value not covered by live
   local industrial output capacity; this is one `IndustrialGrowth` pressure source
 - `commercial_input_need_value` — daily value of active commercial input capacity demand
@@ -462,6 +473,9 @@ Baseline ownership rule:
   per-resource demand against live non-deserted commercial output capacity
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
+- `regional_growth_household_pull` is derived by demand from authored demand tuning plus the
+  current household count and normalized city-health signals. It is not an allocator-owned spawn
+  exception and it does not bypass admission, vacancy, or move-in viability gates.
 - `city_treasury_balance` is read from the city treasury owned by the fiscal ledger
 - `candidate_household_size` is the vacancy-weighted starter immigrant household size for
   currently open residential slots. It must fit the authored flat-size capacity, but it is capped
@@ -554,6 +568,13 @@ commercial_capacity_deficit =
 
 external_connection_available =
     if connected_border_count > 0 then 1.0 else 0.0
+
+regional_growth_household_pull =
+    external_connection_available
+    * regional_growth_household_pull_config
+    * clamp(1.0 - total_household_count / regional_growth_soft_households, 0.0, 1.0)
+    * min(household_affordability, household_stock_stability)
+    * clamp(1.0 - max(unhoused_household_ratio, zero_budget_household_ratio), 0.0, 1.0)
 ```
 
 Interpretation and source rule:
@@ -677,7 +698,10 @@ open_job_household_pull =
 bootstrap_household_pull =
     if total_household_count == 0 then 1.0 else 0.0
 incoming_household_need =
-    max(open_job_household_pull, bootstrap_household_pull)
+    max(
+        open_job_household_pull + regional_growth_household_pull,
+        bootstrap_household_pull
+    )
 incoming_household_pressure =
     clamp(incoming_household_need, 0.0, 1.0)
 ```
@@ -752,8 +776,9 @@ Interpretation:
   buildings are filling up; spawn threshold fires somewhere above 0.5
 - `ResidentialGrowth < 0.5` means net outflow desire — more people are leaving than arriving,
   or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
-- `incoming_household_need` is the deterministic household pull from budget-backed open jobs,
-  plus a one-household bootstrap pull when the city has no households yet
+- `incoming_household_need` is the deterministic household pull from budget-backed open jobs plus
+  regional migration pressure, with a one-household bootstrap pull when the city has no households
+  yet
 - `admission_pressure` and `inflow_desire` deliberately read the same incoming household pressure:
   vacant homes satisfy that pressure and cap actual admission, but they do not create or remove the
   desire for households to enter the city
@@ -1319,17 +1344,18 @@ Interpretation:
 
 An empty map needs an early growth bias or the city deadlocks before the local economy can form.
 
-For `v0.1`, fresh-city bootstrapping is demand-owned through purely organic signals. The pioneer
-demand floor has been removed; the unemployment benefit in [`economy.md`](economy.md) keeps
-early-city households solvent through real economic activity, which in turn generates real spawn
-pressure on commercial and industrial buildings.
+For `v0.1`, fresh-city bootstrapping and later household growth are demand-owned through explicit
+city-level signals. The pioneer demand floor has been removed; the unemployment benefit in
+[`economy.md`](economy.md) keeps early-city households solvent through real economic activity,
+while authored regional migration pressure provides continuing household attraction after the first
+settlement.
 
 Rules:
 
 - empty-city bootstrap may admit the first household when external connection, move-in viability,
   and vacant execution capacity exist
-- after bootstrap, budget-backed open jobs define incoming household pull; vacant homes are
-  execution capacity only
+- after bootstrap, budget-backed open jobs plus authored regional migration pressure define
+  incoming household pull; vacant homes are execution capacity only
 - immigration pressure is driven by coarse city signals only, not by hidden magic or static floors
 - no hard job requirement for the first settlement: people may move to a new city before jobs exist
   when starter savings and reliable unemployment benefit provide the authored search runway
@@ -1989,8 +2015,9 @@ The target end state is:
 
 - demand computes whether immigration should happen and how many households may be admitted
 - demand computes whether private buildings should appear, disappear, upgrade, or downgrade
-- shipped fresh-map startup uses the organic pioneer-demand bootstrap contract; any future special
-  founding-placement scenario rule must stay outside allocator tick
+- shipped fresh-map startup and continuing household growth use demand-owned bootstrap and
+  regional-migration signals; any future special founding-placement scenario rule must stay outside
+  allocator tick
 - economy creates the admitted household records
 - building systems execute legal placement, removal, and level changes once demand has already decided the pressure outcome
 - housing/vacancy logic claims real homes

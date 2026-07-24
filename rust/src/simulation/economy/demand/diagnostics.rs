@@ -12,6 +12,7 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) housing_availability: f32,
     pub(super) incoming_household_need: f32,
     pub(super) open_job_household_pull: f32,
+    pub(super) regional_growth_household_pull: f32,
     pub(super) household_affordability: f32,
     pub(super) move_in_acceptance: f32,
     pub(super) construction_move_in_acceptance: f32,
@@ -157,7 +158,7 @@ impl DemandSystem {
             "economy",
             "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
              vacancy={:.2} vacant_slots={} households={} border_nodes={} \
-             incoming_need={:.2} job_pull={:.2} \
+             incoming_need={:.2} job_pull={:.2} regional_pull={:.2} \
              afford={:.2} accept={:.2} runway={:.2} runway_factor={:.2} \
              build_accept={:.2} build_runway={:.2} build_runway_factor={:.2} build_viability={:.2} \
              candidate_size={:.1} workers={:.1} open_jobs={} physical_worker_capacity={} \
@@ -179,6 +180,7 @@ impl DemandSystem {
             diagnostics.connected_border_count,
             diagnostics.incoming_household_need,
             diagnostics.open_job_household_pull,
+            diagnostics.regional_growth_household_pull,
             diagnostics.household_affordability,
             diagnostics.move_in_acceptance,
             diagnostics.move_in_search_runway_days,

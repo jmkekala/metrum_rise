@@ -73,7 +73,7 @@ impl RoadSurfaceSystem {
         else {
             return Ok(None);
         };
-        if Self::signed_polygon_area_xz(&triangle).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+        if Self::top_surface_triangle_is_numeric_dust(&triangle) {
             return Ok(None);
         }
         let Some(region) = arrangement.regions().get(face.region().index()) else {
@@ -177,6 +177,35 @@ impl RoadSurfaceSystem {
         Some(road_triangle)
     }
 
+    fn top_surface_triangle_is_numeric_dust(triangle: &[RoadVec3; 3]) -> bool {
+        let area_m2 = f64::from(Self::signed_polygon_area_xz(triangle).abs());
+        if area_m2 <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
+            return true;
+        }
+
+        let edge_lengths = [
+            xz_distance(triangle[0], triangle[1]),
+            xz_distance(triangle[1], triangle[2]),
+            xz_distance(triangle[2], triangle[0]),
+        ];
+        let max_edge_m = edge_lengths
+            .iter()
+            .copied()
+            .fold(0.0_f64, |max_edge, edge| max_edge.max(edge));
+        if max_edge_m <= f64::EPSILON {
+            return true;
+        }
+
+        let min_altitude_m = area_m2 * 2.0 / max_edge_m;
+        let perimeter_m = edge_lengths.iter().copied().sum::<f64>() as f32;
+        area_m2
+            <= f64::from(Self::overlay_numeric_area_budget_m2(
+                perimeter_m,
+                triangle.len(),
+            ))
+            && min_altitude_m <= f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+    }
+
     fn arrangement_vertex_canonical_world(
         arrangement: &NodeArrangement,
         vertex_id: arrangement::NodeArrangementVertexId,
@@ -188,6 +217,48 @@ impl RoadSurfaceSystem {
             vertex.height_m(),
             point_xz.y,
         ))
+    }
+}
+
+fn xz_distance(start: RoadVec3, end: RoadVec3) -> f64 {
+    let dx = end.x - start.x;
+    let dz = end.z - start.z;
+    (dx * dx + dz * dz).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_surface_export_rejects_logged_long_sidewalk_dust_sliver() {
+        let logged_long_edge_m = 16.376;
+        let logged_area_m2 = 0.00003701;
+        let logged_dust_width_m = logged_area_m2 * 2.0 / logged_long_edge_m;
+        let triangle = [
+            RoadVec3::new(0.0, 128.392, 0.0),
+            RoadVec3::new(logged_long_edge_m, 128.485, 0.0),
+            RoadVec3::new(0.0, 128.388, logged_dust_width_m),
+        ];
+
+        assert!(
+            RoadSurfaceSystem::top_surface_triangle_is_numeric_dust(&triangle),
+            "junction sidewalk bridge with logged area/length ratio must not become a visual spike"
+        );
+    }
+
+    #[test]
+    fn top_surface_export_keeps_small_real_sidewalk_triangle() {
+        let triangle = [
+            RoadVec3::new(0.0, 0.0, 0.0),
+            RoadVec3::new(0.005, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 0.005),
+        ];
+
+        assert!(
+            !RoadSurfaceSystem::top_surface_triangle_is_numeric_dust(&triangle),
+            "millimeter-scale triangles are small, but not collapsed overlay dust"
+        );
     }
 }
 

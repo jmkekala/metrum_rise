@@ -15,6 +15,18 @@ impl SimulationNode {
         fwd_lanes: i32,
         bkw_lanes: i32,
     ) -> Variant {
+        self.validate_road_candidate_with_snap(points, fwd_lanes, bkw_lanes, true)
+    }
+
+    /// Returns cheap synchronous hover feedback with optional existing-road snapping.
+    #[func]
+    pub fn validate_road_candidate_with_snap(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> Variant {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
@@ -26,13 +38,13 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let (prepared_points, validation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input =
-                RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
-                    &points,
-                    &query.terrain,
-                    &query.region_graph,
-                    &query.road_surface,
-                );
+            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+                &points,
+                &query.terrain,
+                &query.region_graph,
+                &query.road_surface,
+                snap_to_existing_roads,
+            );
             let validation = query.road_surface.validate_prepared_road_candidate_fast(
                 &prepared_input,
                 fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
@@ -90,6 +102,18 @@ impl SimulationNode {
         fwd_lanes: i32,
         bkw_lanes: i32,
     ) -> Variant {
+        self.validate_road_candidate_for_commit_with_snap(points, fwd_lanes, bkw_lanes, true)
+    }
+
+    /// Validates a road-tool candidate by compiling temporary surface geometry with optional snap.
+    #[func]
+    pub fn validate_road_candidate_for_commit_with_snap(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> Variant {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
@@ -103,13 +127,13 @@ impl SimulationNode {
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let (prepared_points, validation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
-            let prepared_input =
-                RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
-                    &points,
-                    &query.terrain,
-                    &query.region_graph,
-                    &query.road_surface,
-                );
+            let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+                &points,
+                &query.terrain,
+                &query.region_graph,
+                &query.road_surface,
+                snap_to_existing_roads,
+            );
             let new_edge_validation = query.road_surface.validate_prepared_road_surface(
                 &prepared_input.points,
                 prepared_input.class,
@@ -184,6 +208,18 @@ impl SimulationNode {
         fwd_lanes: i32,
         bkw_lanes: i32,
     ) -> i64 {
+        self.request_preview_road_surface_with_snap(points, fwd_lanes, bkw_lanes, true)
+    }
+
+    /// Requests temporary preview-surface compilation with optional existing-road snapping.
+    #[func]
+    pub fn request_preview_road_surface_with_snap(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> i64 {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let request_id = self
@@ -210,6 +246,7 @@ impl SimulationNode {
                 points,
                 fwd_lanes,
                 bkw_lanes,
+                snap_to_existing_roads,
             })
             .is_ok();
         let send_ms = send_start

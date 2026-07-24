@@ -44,6 +44,8 @@ pub(crate) enum SimCommand {
         fwd_lanes: i32,
         /// Backward lane count.
         bkw_lanes: i32,
+        /// Whether authored endpoints may snap to nearby existing road nodes.
+        snap_to_existing_roads: bool,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -170,6 +172,7 @@ pub(crate) fn run_sim_thread(
                     points,
                     fwd_lanes,
                     bkw_lanes,
+                    snap_to_existing_roads,
                 }) => {
                     commands_processed += 1;
                     add_road_commands += 1;
@@ -191,10 +194,15 @@ pub(crate) fn run_sim_thread(
                         // Bulk-load defers per-edge rebuilds until finalization.
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
-                        c.add_road_internal(points, fwd_lanes, bkw_lanes);
+                        let road_add = c.add_road_internal_with_snap(
+                            points,
+                            fwd_lanes,
+                            bkw_lanes,
+                            snap_to_existing_roads,
+                        );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
                         let finalize_start = Instant::now();
-                        {
+                        if road_add.committed {
                             let c = &mut *c;
                             c.transit_network.bulk_load = false;
 
@@ -255,10 +263,23 @@ pub(crate) fn run_sim_thread(
                             );
                             debug_log!("road", "{}", msg);
                             c.last_road_timing = msg;
+                        } else {
+                            c.transit_network.bulk_load = false;
                         }
                         let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
                         let surface_start = Instant::now();
-                        c.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+                        if road_add.committed {
+                            c.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+                            if !c
+                                .transit_network
+                                .road_surface
+                                .published_generation_matches_source()
+                            {
+                                c.rollback_unpublishable_road_commit();
+                            } else if !c.benchmark_mode {
+                                c.treasury.deduct_build_cost(road_add.build_cost);
+                            }
+                        }
                         let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
                         let mesh_start = Instant::now();
                         c.precompute_road_mesh_data();

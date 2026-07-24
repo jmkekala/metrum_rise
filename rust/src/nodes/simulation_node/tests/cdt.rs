@@ -320,6 +320,27 @@ fn terrain_cdt_constraint_conflicts_include_unpreserved_road_edges() {
 }
 
 #[test]
+fn terrain_cdt_constraint_conflicts_ignore_unpreserved_site_only_edges() {
+    let mut stats = empty_cdt_stats();
+    stats.road_constraint_edges = 10;
+    stats.building_site_constraint_edges = 10;
+    stats.preserved_road_constraint_edges = 9;
+    stats.preserved_building_site_constraint_edges = 9;
+    stats.invalid_constraint_edges = 0;
+
+    assert!(
+        !SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats),
+        "site meshes own their top surface; unpreserved site boundary edges must not force old terrain fallback"
+    );
+
+    stats.road_constraint_edges = 11;
+    assert!(
+        SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats),
+        "a missing hard road seam must still force fallback"
+    );
+}
+
+#[test]
 fn cached_refined_patch_rejects_partial_window_success() {
     let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
     cached.requires_road_clipping = true;

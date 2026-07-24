@@ -67,6 +67,19 @@ pub(crate) fn build_road_touched_terrain_patch(
         .iter()
         .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
         .count();
+    let building_site_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .filter(|edge| terrain_cdt_constraint_edge_is_building_site(**edge, &canonical))
+        .count();
+    let mut preserved_building_site_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .filter(|edge| {
+            terrain_cdt_constraint_edge_is_building_site(**edge, &canonical)
+                && accepted_edges.contains(&normalize_edge(edge[0], edge[1]))
+        })
+        .count();
     let mut unpreserved_road_constraint_edges = canonical
         .road_constraint_edges
         .iter()
@@ -98,6 +111,14 @@ pub(crate) fn build_road_touched_terrain_patch(
             .road_constraint_edges
             .iter()
             .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
+            .count();
+        preserved_building_site_constraint_edges = canonical
+            .road_constraint_edges
+            .iter()
+            .filter(|edge| {
+                terrain_cdt_constraint_edge_is_building_site(**edge, &canonical)
+                    && accepted_edges.contains(&normalize_edge(edge[0], edge[1]))
+            })
             .count();
         unpreserved_road_constraint_edges = canonical
             .road_constraint_edges
@@ -136,9 +157,11 @@ pub(crate) fn build_road_touched_terrain_patch(
             input_vertices: canonical.vertices.len(),
             constraint_edges: canonical.constraints.len(),
             road_constraint_edges: canonical.road_constraint_edges.len(),
+            building_site_constraint_edges,
             accepted_faces: triangles.len(),
             rejected_road_faces,
             preserved_road_constraint_edges,
+            preserved_building_site_constraint_edges,
             spade_missing_road_constraint_edges,
             rejected_road_constraint_edges,
             internal_road_constraint_edges: canonical.internal_road_constraint_edges,
@@ -175,4 +198,19 @@ pub(crate) fn build_road_touched_terrain_patch(
         seam_quality_samples: canonical.seam_quality_samples,
         unpreserved_road_constraint_samples,
     })
+}
+
+fn terrain_cdt_constraint_edge_is_building_site(
+    edge: [usize; 2],
+    canonical: &CanonicalTerrainCdtInput,
+) -> bool {
+    canonical
+        .road_constraint_sources
+        .get(&edge)
+        .is_some_and(|source| {
+            matches!(
+                source.boundary_source,
+                TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. }
+            )
+        })
 }

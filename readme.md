@@ -2,6 +2,7 @@
 
 ## Description
 Open Source (GPLv2) city building game build with Godot game engine and Rust programming language.
+License: [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
 ## Requirements
 - Godot (4.x)
@@ -11,7 +12,17 @@ Open Source (GPLv2) city building game build with Godot game engine and Rust pro
 ## How-to
 
 To start the game, run the following command in terminal:
-'''./run.sh --release'''
+```
+./run.sh --release
+```
+
+For asset editor
+```
+./run.sh --release --asset-editor
+```
+
+There are also economy and world editor. But these are not update in awhile so they are not that usable currently.
+
 
 ## Bugs
 Loads of bugs. At leas this is "game breaking":
@@ -35,4 +46,5 @@ https://kenney.itch.io/
 ## Screenshots
 
 They are at the "screenshots" folder.
-[![Main view](/screenshots/town_01.png)
+[Main view](/screenshots/town_01.png)
+[Asset Editor](/screenshots/asset_editor_01.png)

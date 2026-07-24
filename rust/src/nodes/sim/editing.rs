@@ -26,6 +26,50 @@ const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
 
+/// Result of a road placement attempt after synchronous input validation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoadAddOutcome {
+    /// True when topology was mutated and the command must run road finalization.
+    pub(crate) committed: bool,
+    /// Deferred treasury charge for the committed physical road length.
+    pub(crate) build_cost: f64,
+}
+
+impl RoadAddOutcome {
+    fn rejected() -> Self {
+        Self {
+            committed: false,
+            build_cost: 0.0,
+        }
+    }
+}
+
+impl SimCore {
+    /// Rolls back the last road commit when its final surface compiler output cannot be published.
+    pub(crate) fn rollback_unpublishable_road_commit(&mut self) -> bool {
+        if self
+            .transit_network
+            .road_surface
+            .published_generation_matches_source()
+        {
+            return false;
+        }
+
+        let rolled_back = !self.benchmark_mode && self.undo_action_internal();
+        debug_log!(
+            "road",
+            "road_commit_rejected reason=surface_geometry_invalid_after_commit rollback={} graph_edges={}",
+            rolled_back,
+            self.region_graph.edge_count()
+        );
+        self.last_road_timing = "rejected=surface_geometry_invalid_after_commit".to_string();
+        if rolled_back {
+            self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+        }
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BulldozeTargetKind {
     Building,
@@ -806,21 +850,32 @@ impl SimCore {
     }
 
     /// Adds a new road segment to the transit network.
-    pub fn add_road_internal(
+    pub(crate) fn add_road_internal(
         &mut self,
         points: Vec<godot::prelude::Vector3>,
         fwd_lanes: i32,
         bkw_lanes: i32,
-    ) {
+    ) -> RoadAddOutcome {
+        self.add_road_internal_with_snap(points, fwd_lanes, bkw_lanes, true)
+    }
+
+    /// Adds a new road segment to the transit network with optional existing-road snapping.
+    pub(crate) fn add_road_internal_with_snap(
+        &mut self,
+        points: Vec<godot::prelude::Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) -> RoadAddOutcome {
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let prepared_input =
-            RoadSurfaceSystem::prepare_road_input_with_extension_to_visible_surface(
-                &points,
-                &self.heightmap,
-                &self.region_graph,
-                &self.transit_network.road_surface,
-            );
+        let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+            &points,
+            &self.heightmap,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            snap_to_existing_roads,
+        );
         let fixed_points = prepared_input.points.clone();
 
         let validation = self
@@ -941,7 +996,7 @@ impl SimCore {
                 validation.start_endpoint_support_delta_m,
                 validation.end_endpoint_support_delta_m
             );
-            return;
+            return RoadAddOutcome::rejected();
         }
 
         let t_undo = Instant::now();
@@ -975,12 +1030,6 @@ impl SimCore {
         );
         let dt_topo_us = t_topo.elapsed().as_micros();
 
-        // Deduct road build cost from city treasury (skipped in benchmark mode).
-        if !self.benchmark_mode {
-            self.treasury
-                .deduct_build_cost(build_length_m * ROAD_BUILD_COST_PER_METER);
-        }
-
         self.mark_local_network_render_dirty();
 
         // Store partial timing so the AddRoad handler can append the remaining phases.
@@ -989,6 +1038,10 @@ impl SimCore {
         // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
         // batching all dirty edges into a single pass instead of N separate passes.
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
+        RoadAddOutcome {
+            committed: true,
+            build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
+        }
     }
 
     fn apply_road_extension_reprofile(
@@ -2120,6 +2173,40 @@ mod tests {
             core.collect_refined_terrain_patch_build_inputs(ROAD_LOCKED_TERRAIN_RENDER_STEP_M);
         let cache_entries = SimCore::build_refined_terrain_patch_cache_entries(cache_inputs);
         core.insert_refined_terrain_patch_cache_entries(cache_entries);
+    }
+
+    #[test]
+    fn unpublishable_committed_road_rolls_back_without_treasury_charge() {
+        let mut core = test_core();
+        core.benchmark_mode = false;
+        core.treasury.balance = 10_000.0;
+        let balance_before = core.treasury.balance;
+        let lifetime_build_cost_before = core.treasury.lifetime_build_cost;
+
+        let outcome = core.add_road_internal(
+            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+            1,
+            1,
+        );
+        assert!(outcome.committed);
+        assert!(outcome.build_cost > 0.0);
+        assert_eq!(core.region_graph.edge_count(), 1);
+        assert_eq!(core.undo_stack.len(), 1);
+
+        core.transit_network.road_surface.clear();
+        assert!(core.rollback_unpublishable_road_commit());
+
+        assert_eq!(core.region_graph.edge_count(), 0);
+        assert!(core.undo_stack.is_empty());
+        assert_eq!(core.treasury.balance, balance_before);
+        assert_eq!(
+            core.treasury.lifetime_build_cost,
+            lifetime_build_cost_before
+        );
+        assert_eq!(
+            core.last_road_timing,
+            "rejected=surface_geometry_invalid_after_commit"
+        );
     }
 
     #[test]

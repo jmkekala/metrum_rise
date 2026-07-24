@@ -3,6 +3,11 @@
 use godot::prelude::*;
 use std::collections::HashMap;
 
+use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
+use crate::simulation::network::types::TransitType;
+use crate::simulation::terrain::TerrainSystem;
+
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 /// Pedestrian sidewalk and crosswalk connection logic.
@@ -116,6 +121,75 @@ impl LaneSystem {
                 .find(|&&id| self.lanes[id].lane_idx == lane_idx as i8)
                 .copied()
         })
+    }
+
+    pub(crate) fn sync_heights_to_visible_surface(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        road_surface: &RoadSurfaceSystem,
+    ) {
+        for lane in &mut self.lanes {
+            if lane.geometry.is_empty() {
+                continue;
+            }
+
+            let sidewalk_base_offset = if lane_is_road_sidewalk(lane, graph) {
+                CURB_STEP_HEIGHT_M
+            } else {
+                0.0
+            };
+            let lane_type = lane.lane_type;
+
+            let mut changed = false;
+            for point in &mut lane.geometry {
+                let Some(surface_y) =
+                    lane_visible_surface_height(lane_type, graph, terrain, road_surface, point)
+                else {
+                    continue;
+                };
+                let target_y = surface_y - sidewalk_base_offset;
+                if (point.y - target_y).abs() > 1e-4 {
+                    point.y = target_y;
+                    changed = true;
+                }
+            }
+
+            if changed {
+                lane.cum_dist = geometry::build_cum_dist(&lane.geometry);
+                lane.length = lane.cum_dist.last().copied().unwrap_or(0.0);
+            }
+        }
+    }
+}
+
+fn lane_is_road_sidewalk(lane: &Lane, graph: &RegionGraph) -> bool {
+    if lane.edge_id == usize::MAX
+        || lane.lane_type != LaneType::Foot
+        || lane.lane_idx.unsigned_abs() != 100
+    {
+        return false;
+    }
+    graph
+        .get_edge(lane.edge_id)
+        .is_some_and(|edge| edge.primary_type == TransitType::Road)
+}
+
+fn lane_visible_surface_height(
+    lane_type: LaneType,
+    graph: &RegionGraph,
+    terrain: &TerrainSystem,
+    road_surface: &RoadSurfaceSystem,
+    point: &Vector3,
+) -> Option<f32> {
+    if lane_type == LaneType::Vehicle {
+        road_surface
+            .sample_visible_carriageway_height(graph, terrain, point.x, point.z)
+            .or_else(|| {
+                road_surface.sample_visible_surface_height(graph, terrain, point.x, point.z)
+            })
+    } else {
+        road_surface.sample_visible_surface_height(graph, terrain, point.x, point.z)
     }
 }
 

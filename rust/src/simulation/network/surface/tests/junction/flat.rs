@@ -1178,11 +1178,11 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
         ),
         CanonicalNodeRawPolygonGolden {
             kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            top_polygon_count: 481,
+            top_polygon_count: 479,
             carrier_record_count: 567,
             source_segment_record_count: 28,
-            polygon_key_set_digest: 18433125960916516512,
-            top_owner_height_field_digest: 3017765074126608807,
+            polygon_key_set_digest: 3103305073605895394,
+            top_owner_height_field_digest: 1053228158815445421,
             carrier_owner_source_height_field_digest: 13238820941424359883,
             source_segment_id_digest: 2898317876464273514,
             source_segment_ids: vec![
@@ -1226,11 +1226,11 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
         ),
         CanonicalNodeRawPolygonGolden {
             kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            top_polygon_count: 604,
+            top_polygon_count: 601,
             carrier_record_count: 706,
             source_segment_record_count: 32,
-            polygon_key_set_digest: 9084159174272668121,
-            top_owner_height_field_digest: 2586669956823001875,
+            polygon_key_set_digest: 4804634371906054559,
+            top_owner_height_field_digest: 15595832286415021780,
             carrier_owner_source_height_field_digest: 13406976634543183515,
             source_segment_id_digest: 6020531977663627717,
             source_segment_ids: vec![

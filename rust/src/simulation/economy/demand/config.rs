@@ -31,6 +31,8 @@ pub(super) struct SignalNormalizationConfig {
 #[derive(Clone, Debug)]
 pub(super) struct HouseholdActionConfig {
     pub(super) admission_threshold: f32,
+    pub(super) regional_growth_household_pull: f32,
+    pub(super) regional_growth_soft_households: f32,
     pub(super) admission_unhoused_ratio_penalty: f32,
     pub(super) admission_zero_budget_penalty: f32,
     pub(super) admission_recent_failure_penalty: f32,
@@ -105,6 +107,8 @@ struct AuthoredSignalNormalization {
 #[serde(deny_unknown_fields)]
 struct AuthoredHouseholdAction {
     admission_threshold: f32,
+    regional_growth_household_pull: f32,
+    regional_growth_soft_households: f32,
     admission_unhoused_ratio_penalty: f32,
     admission_zero_budget_penalty: f32,
     admission_recent_failure_penalty: f32,
@@ -191,6 +195,16 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         0.0,
         1.0,
         "household_action.admission_threshold",
+    )?;
+    validate_range_f32(
+        authored.household_action.regional_growth_household_pull,
+        0.0,
+        1.0,
+        "household_action.regional_growth_household_pull",
+    )?;
+    validate_positive_f32(
+        authored.household_action.regional_growth_soft_households,
+        "household_action.regional_growth_soft_households",
     )?;
     validate_range_f32(
         authored.household_action.admission_unhoused_ratio_penalty,
@@ -390,6 +404,12 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
 
         household_action: HouseholdActionConfig {
             admission_threshold: authored.household_action.admission_threshold,
+            regional_growth_household_pull: authored
+                .household_action
+                .regional_growth_household_pull,
+            regional_growth_soft_households: authored
+                .household_action
+                .regional_growth_soft_households,
             admission_unhoused_ratio_penalty: authored
                 .household_action
                 .admission_unhoused_ratio_penalty,

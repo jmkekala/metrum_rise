@@ -437,12 +437,14 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
+                let old_site_bounds = self.site_world_bounds(building_idx);
                 if let Some(updated_key) = self.apply_level_change_action(
                     building_idx,
                     action,
                     catalog,
                     zoning.config.zone_cell_m,
                 ) {
+                    accumulate_site_dirty_bounds(&mut execution.site_dirty_bounds, old_site_bounds);
                     accumulate_site_dirty_bounds(
                         &mut execution.site_dirty_bounds,
                         self.site_world_bounds(building_idx),
@@ -457,12 +459,14 @@ impl BuildingAllocator {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
+                let old_site_bounds = self.site_world_bounds(building_idx);
                 if let Some(updated_key) = self.apply_level_change_action(
                     building_idx,
                     action,
                     catalog,
                     zoning.config.zone_cell_m,
                 ) {
+                    accumulate_site_dirty_bounds(&mut execution.site_dirty_bounds, old_site_bounds);
                     accumulate_site_dirty_bounds(
                         &mut execution.site_dirty_bounds,
                         self.site_world_bounds(building_idx),

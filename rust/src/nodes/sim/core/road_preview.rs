@@ -37,6 +37,7 @@ pub(crate) struct RoadPreviewRequest {
     pub(crate) points: Vec<godot::prelude::Vector3>,
     pub(crate) fwd_lanes: i32,
     pub(crate) bkw_lanes: i32,
+    pub(crate) snap_to_existing_roads: bool,
 }
 
 #[derive(Clone)]
@@ -149,19 +150,33 @@ pub(crate) fn compile_road_preview_from_context(
 ) -> RoadPreviewSnapshot {
     let request_surface_generation = request.surface_generation;
     let preview_surface = RoadSurfaceSystem::new(context.surface_chunk_span_m);
-    let mut preview = preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
-        &request.points,
-        request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-        request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-        context.terrain.as_ref(),
-        context.region_graph.as_ref(),
-        context.road_surface.as_ref(),
-    );
+    let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+    let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+    let mut preview = if request.snap_to_existing_roads {
+        preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
+            &request.points,
+            fwd_lanes,
+            bkw_lanes,
+            context.terrain.as_ref(),
+            context.region_graph.as_ref(),
+            context.road_surface.as_ref(),
+        )
+    } else {
+        preview_surface.compile_preview_surface_mesh_only_with_existing_surface_snap(
+            &request.points,
+            fwd_lanes,
+            bkw_lanes,
+            context.terrain.as_ref(),
+            context.region_graph.as_ref(),
+            context.road_surface.as_ref(),
+            false,
+        )
+    };
     preview.validation = validate_road_candidate_against_water(
         preview.edge_class,
         &preview.prepared_points,
-        request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-        request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+        fwd_lanes,
+        bkw_lanes,
         context.water.as_ref(),
         preview.validation,
     );

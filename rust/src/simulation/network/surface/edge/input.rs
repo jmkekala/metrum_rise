@@ -26,6 +26,8 @@ pub(crate) struct PreparedRoadInput {
     pub(crate) validation_points: Vec<Vector3>,
     /// Road class inferred from the input heights.
     pub(crate) class: EdgeClass,
+    /// True when endpoint proximity to existing graph nodes is treated as an authored snap.
+    pub(crate) endpoint_snap_enabled: bool,
     /// Existing terminal edge reprofile needed before committing the new edge.
     pub(crate) extension: Option<RoadExtensionReprofile>,
 }
@@ -119,6 +121,7 @@ impl RoadSurfaceSystem {
                 validation_points: points.clone(),
                 points,
                 class,
+                endpoint_snap_enabled: true,
                 extension: None,
             };
         }
@@ -130,6 +133,7 @@ impl RoadSurfaceSystem {
                 points: extension.new_points,
                 validation_points: extension.validation_points,
                 class,
+                endpoint_snap_enabled: true,
                 extension: Some(extension.reprofile),
             };
         }
@@ -138,6 +142,34 @@ impl RoadSurfaceSystem {
             validation_points: points.clone(),
             points,
             class,
+            endpoint_snap_enabled: true,
+            extension: None,
+        }
+    }
+
+    /// Prepares road-tool input with optional endpoint snapping to the existing road graph.
+    pub(crate) fn prepare_road_input_for_tool(
+        raw_points: &[Vector3],
+        terrain: &TerrainSystem,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        snap_to_existing_roads: bool,
+    ) -> PreparedRoadInput {
+        if snap_to_existing_roads {
+            return Self::prepare_road_input_with_extension_to_visible_surface(
+                raw_points,
+                terrain,
+                graph,
+                road_surface,
+            );
+        }
+
+        let (points, class) = Self::prepare_road_input_points(raw_points, terrain);
+        PreparedRoadInput {
+            validation_points: points.clone(),
+            points,
+            class,
+            endpoint_snap_enabled: false,
             extension: None,
         }
     }

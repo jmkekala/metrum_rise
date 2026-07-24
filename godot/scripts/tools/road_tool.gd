@@ -1,7 +1,7 @@
 ## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,
-## angle snapping (Shift, 15° steps), distance + angle HUD label, and SimCity-style ghost guide
+## angle snapping (Shift, 15° steps, no road snap), distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
 ## Commits via NetworkTool.add_road() on left-click after cheap Rust placement validation;
 ## expensive async road-surface previews are visual feedback only.
@@ -43,9 +43,11 @@ var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
 var _preview_cache_fwd_lanes: int = -1
 var _preview_cache_bkw_lanes: int = -1
+var _preview_cache_snap_to_roads: bool = true
 var _preview_request_points: PackedVector3Array = PackedVector3Array()
 var _preview_request_fwd_lanes: int = -1
 var _preview_request_bkw_lanes: int = -1
+var _preview_request_snap_to_roads: bool = true
 var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
@@ -56,8 +58,10 @@ var _candidate_cache_points: PackedVector3Array = PackedVector3Array()
 var _candidate_cache_validation: Dictionary = {}
 var _candidate_cache_fwd_lanes: int = -1
 var _candidate_cache_bkw_lanes: int = -1
+var _candidate_cache_snap_to_roads: bool = true
 var _candidate_cache_surface_generation: int = -1
 var _curve_shape_valid: bool = true
+var _last_snap_to_roads_enabled: bool = true
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
@@ -103,6 +107,14 @@ func _process(delta):
 	super._process(delta)
 	if not active:
 		_clear_sticky_network_snap()
+	var snap_to_roads := _snap_to_roads_enabled()
+	if snap_to_roads != _last_snap_to_roads_enabled:
+		_last_snap_to_roads_enabled = snap_to_roads
+		if not snap_to_roads:
+			_clear_sticky_network_snap()
+		_clear_preview_cache()
+		if current_path != null:
+			_preview_update_pending = true
 	_preview_idle_exact_delay_sec = maxf(_preview_idle_exact_delay_sec - delta, 0.0)
 	if (
 		current_path != null
@@ -137,6 +149,9 @@ func _road_debug_is_enabled() -> bool:
 		if entry == "road":
 			return true
 	return false
+
+func _snap_to_roads_enabled() -> bool:
+	return not Input.is_key_pressed(KEY_SHIFT)
 
 func _update_lanes_label():
 	if active and current_path != null:
@@ -320,12 +335,18 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		not _candidate_cache_validation.is_empty()
 		and _candidate_cache_fwd_lanes == fwd_lanes
 		and _candidate_cache_bkw_lanes == bkw_lanes
+		and _candidate_cache_snap_to_roads == _snap_to_roads_enabled()
 		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
 		and _road_surface_points_match(points, _candidate_cache_points)
 	):
 		return _candidate_cache_validation.duplicate(true)
 
-	var validation_variant = simulation_node.validate_road_candidate(points, fwd_lanes, bkw_lanes)
+	var validation_variant = simulation_node.validate_road_candidate_with_snap(
+		points,
+		fwd_lanes,
+		bkw_lanes,
+		_snap_to_roads_enabled()
+	)
 	var validation: Dictionary = validation_variant if validation_variant is Dictionary else {
 		"is_valid": false,
 		"invalid_reason": "validation_unavailable"
@@ -359,6 +380,7 @@ func _remember_candidate_validation(points: PackedVector3Array, validation: Dict
 	_candidate_cache_validation = validation.duplicate(true)
 	_candidate_cache_fwd_lanes = fwd_lanes
 	_candidate_cache_bkw_lanes = bkw_lanes
+	_candidate_cache_snap_to_roads = _snap_to_roads_enabled()
 	_candidate_cache_surface_generation = simulation_node.get_road_tool_surface_generation()
 
 func _preview_surface_generation_is_current(preview: Dictionary) -> bool:
@@ -518,7 +540,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 		if angle_deg < 0.0: angle_deg += 360.0
 		if angle_deg >= 180.0: angle_deg -= 180.0
 
-	var snap_str := " [snap]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
+	var snap_str := " [angle]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
 	var build_cost := float(preview.get("build_cost", 0.0))
 	if bool(preview.get("is_pending", false)):
 		_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
@@ -610,7 +632,7 @@ func _commit_segment(end_pos):
 		_draw_candidate_preview(points, validation)
 	if points.size() > 1 and preview_valid:
 		var add_road_start_us := Time.get_ticks_usec()
-		simulation_node.add_road(points, fwd_lanes, bkw_lanes)
+		simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
 		add_road_ms = float(Time.get_ticks_usec() - add_road_start_us) / 1000.0
 		# Do NOT trigger the terrain/network visual refresh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
@@ -794,10 +816,16 @@ func get_world_mouse_pos() -> Vector3:
 		return Vector3.ZERO
 	is_valid = true
 	var pos: Vector3 = pos_variant
+	if not _snap_to_roads_enabled():
+		_clear_sticky_network_snap()
+		return pos
 	_update_sticky_network_snap(pos)
 	return pos
 
 func _update_sticky_network_snap(pos: Vector3) -> void:
+	if not _snap_to_roads_enabled():
+		_clear_sticky_network_snap()
+		return
 	if not _can_stick_to_network_snap(pos):
 		_clear_sticky_network_snap()
 		return
@@ -846,6 +874,7 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 			_preview_cache_surface = {}
 			_preview_cache_fwd_lanes = -1
 			_preview_cache_bkw_lanes = -1
+			_preview_cache_snap_to_roads = true
 			cached_preview = {}
 	if not cached_preview.is_empty():
 		_preview_result_pending = false
@@ -883,10 +912,16 @@ func _get_compiled_preview_surface(profile_label: String = "") -> Dictionary:
 
 	var rust_start_us := Time.get_ticks_usec()
 	if not _preview_request_matches(points):
-		_preview_request_id = simulation_node.request_preview_road_surface(points, fwd_lanes, bkw_lanes)
+		_preview_request_id = simulation_node.request_preview_road_surface_with_snap(
+			points,
+			fwd_lanes,
+			bkw_lanes,
+			_snap_to_roads_enabled()
+		)
 		_preview_request_points = points
 		_preview_request_fwd_lanes = fwd_lanes
 		_preview_request_bkw_lanes = bkw_lanes
+		_preview_request_snap_to_roads = _snap_to_roads_enabled()
 		_preview_result_pending = true
 		_preview_exact_waiting = false
 	var preview = simulation_node.get_preview_road_surface_result(_preview_request_id)
@@ -935,11 +970,14 @@ func _remember_preview_surface(points: PackedVector3Array, preview: Dictionary) 
 	_preview_cache_surface = preview.duplicate(true)
 	_preview_cache_fwd_lanes = fwd_lanes
 	_preview_cache_bkw_lanes = bkw_lanes
+	_preview_cache_snap_to_roads = _snap_to_roads_enabled()
 
 func _cached_preview_surface_for_points(points: PackedVector3Array) -> Dictionary:
 	if _preview_cache_surface.is_empty():
 		return {}
 	if _preview_cache_fwd_lanes != fwd_lanes or _preview_cache_bkw_lanes != bkw_lanes:
+		return {}
+	if _preview_cache_snap_to_roads != _snap_to_roads_enabled():
 		return {}
 	if not _road_surface_points_match(points, _preview_cache_points):
 		return {}
@@ -950,6 +988,8 @@ func _preview_request_matches(points: PackedVector3Array) -> bool:
 		return false
 	if _preview_request_fwd_lanes != fwd_lanes or _preview_request_bkw_lanes != bkw_lanes:
 		return false
+	if _preview_request_snap_to_roads != _snap_to_roads_enabled():
+		return false
 	return _road_surface_points_match(points, _preview_request_points)
 
 func _clear_preview_cache() -> void:
@@ -957,14 +997,17 @@ func _clear_preview_cache() -> void:
 	_preview_cache_surface = {}
 	_preview_cache_fwd_lanes = -1
 	_preview_cache_bkw_lanes = -1
+	_preview_cache_snap_to_roads = true
 	_candidate_cache_points = PackedVector3Array()
 	_candidate_cache_validation = {}
 	_candidate_cache_fwd_lanes = -1
 	_candidate_cache_bkw_lanes = -1
+	_candidate_cache_snap_to_roads = true
 	_candidate_cache_surface_generation = -1
 	_preview_request_points = PackedVector3Array()
 	_preview_request_fwd_lanes = -1
 	_preview_request_bkw_lanes = -1
+	_preview_request_snap_to_roads = true
 	_preview_request_id = 0
 	_preview_drawn_request_id = 0
 	_preview_result_pending = false

@@ -77,6 +77,18 @@ impl SimulationNode {
     /// Adds a new road segment to the network.
     #[func]
     pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32) {
+        self.add_road_with_snap(points, fwd_lanes, bkw_lanes, true);
+    }
+
+    /// Adds a new road segment to the network with optional existing-road snapping.
+    #[func]
+    pub fn add_road_with_snap(
+        &mut self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) {
         // Send to the background thread so the Godot main thread is never blocked
         // by the expensive lane-rebuild and zoning-obstruction passes (~500 ms).
         // The road appears on the next sim tick (~16 ms later) — imperceptible delay.
@@ -95,6 +107,7 @@ impl SimulationNode {
                 points,
                 fwd_lanes,
                 bkw_lanes,
+                snap_to_existing_roads,
             })
             .is_ok();
         let send_ms = send_start

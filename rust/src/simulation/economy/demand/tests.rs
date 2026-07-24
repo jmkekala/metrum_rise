@@ -368,6 +368,7 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         housing_availability: 1.0,
         incoming_household_need: 1.0,
         open_job_household_pull: 1.0,
+        regional_growth_household_pull: 0.0,
         household_affordability: 1.0,
         household_stock_stability: 1.0,
         commercial_capacity_deficit: 0.0,
@@ -1209,6 +1210,161 @@ fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_borde
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
     assert!(demand.households_to_admit_today > 0);
+}
+
+#[test]
+fn regional_growth_admits_households_without_open_jobs_after_bootstrap() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(housed_household(0, 2, 1_000.0, 3.0));
+    let graph = graph_with_connected_border();
+    let zoning = empty_zoning();
+    let mut demand = DemandSystem::new();
+
+    for _ in 0..48 {
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+        if demand.households_to_admit_today > 0 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        demand.last_admission_diagnostics.open_job_household_pull,
+        0.0
+    );
+    assert!(
+        demand
+            .last_admission_diagnostics
+            .regional_growth_household_pull
+            > 0.0,
+        "healthy connected city should have durable regional growth pull"
+    );
+    assert!(
+        demand.households_to_admit_today > 0,
+        "regional growth should eventually spend admission credit when homes are vacant: pull={:.3} incoming={:.3} pressure={:.3} accept={:.3} credit={:.3} vacant={}",
+        demand
+            .last_admission_diagnostics
+            .regional_growth_household_pull,
+        demand.last_admission_diagnostics.incoming_household_need,
+        demand.last_admission_diagnostics.pressure,
+        demand.last_admission_diagnostics.move_in_acceptance,
+        demand.last_admission_diagnostics.credit_after,
+        demand.last_admission_diagnostics.max_actionable_households,
+    );
+}
+
+#[test]
+fn regional_growth_requires_external_connection() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(housed_household(0, 2, 1_000.0, 3.0));
+    let graph = RegionGraph::new();
+    let zoning = empty_zoning();
+    let mut demand = DemandSystem::new();
+
+    for _ in 0..24 {
+        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
+    }
+
+    assert_eq!(
+        demand
+            .last_admission_diagnostics
+            .regional_growth_household_pull,
+        0.0
+    );
+    assert_eq!(demand.households_to_admit_today, 0);
+}
+
+#[test]
+fn regional_growth_damps_on_failure_and_soft_target() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "residential", ZoneType::Residential);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+
+    let mut healthy_households = HouseholdSystem::new();
+    healthy_households
+        .households
+        .push(housed_household(0, 2, 1_000.0, 3.0));
+    let healthy = DailyDemandSnapshot::from_runtime(
+        &allocator,
+        &healthy_households,
+        &graph,
+        config.as_ref(),
+        100_000.0,
+    );
+
+    let mut failing_households = HouseholdSystem::new();
+    failing_households
+        .households
+        .push(housed_household(0, 2, 1_000.0, 3.0));
+    failing_households
+        .households
+        .push(unhoused_household(2, 0.0, 0.0));
+    let failing = DailyDemandSnapshot::from_runtime(
+        &allocator,
+        &failing_households,
+        &graph,
+        config.as_ref(),
+        100_000.0,
+    );
+
+    let mut soft_target_households = HouseholdSystem::new();
+    for _ in 0..700 {
+        soft_target_households
+            .households
+            .push(housed_household(0, 2, 1_000.0, 3.0));
+    }
+    let soft_target = DailyDemandSnapshot::from_runtime(
+        &allocator,
+        &soft_target_households,
+        &graph,
+        config.as_ref(),
+        100_000.0,
+    );
+
+    assert!(
+        healthy.regional_growth_household_pull > 0.0,
+        "healthy connected city should have a regional migration signal"
+    );
+    assert!(
+        failing.regional_growth_household_pull < healthy.regional_growth_household_pull,
+        "unhoused/zero-budget households should damp regional growth"
+    );
+    assert_eq!(soft_target.regional_growth_household_pull, 0.0);
 }
 
 #[test]

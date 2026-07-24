@@ -9,6 +9,7 @@ use crate::simulation::terrain::cdt::{
 };
 
 const BUILDING_SITE_FOOTPRINT_GROUP_MASK: u64 = 0x8000_0000_0000_0000;
+const BUILDING_SITE_CDT_LOOP_CLEARANCE_M: f32 = 0.02;
 
 impl BuildingAllocator {
     pub(crate) fn terrain_site_snapshot_for_world_bounds(
@@ -131,7 +132,8 @@ fn building_site_cdt_loop_from_parts(
     support_height_m: f32,
 ) -> TerrainCdtRoadLoop {
     let stable_piece_id = BUILDING_SITE_FOOTPRINT_GROUP_MASK | building_idx as u64;
-    let vertices = footprint_world
+    let cdt_footprint = inset_building_site_cdt_footprint(footprint_world);
+    let vertices = cdt_footprint
         .iter()
         .map(|point| TerrainCdtVertex::new(point.x as f64, support_height_m, point.y as f64))
         .collect::<Vec<_>>();
@@ -157,4 +159,29 @@ fn building_site_cdt_loop_from_parts(
         vertices,
         source_edges,
     )
+}
+
+fn inset_building_site_cdt_footprint(
+    footprint_world: &[godot::prelude::Vector2],
+) -> Vec<godot::prelude::Vector2> {
+    if footprint_world.len() < 3 {
+        return footprint_world.to_vec();
+    }
+    let center = footprint_world
+        .iter()
+        .copied()
+        .fold(godot::prelude::Vector2::ZERO, |sum, point| sum + point)
+        / footprint_world.len() as f32;
+    footprint_world
+        .iter()
+        .map(|&point| {
+            let inward = center - point;
+            let distance_m = inward.length();
+            if distance_m <= BUILDING_SITE_CDT_LOOP_CLEARANCE_M * 2.0 {
+                point
+            } else {
+                point + inward / distance_m * BUILDING_SITE_CDT_LOOP_CLEARANCE_M
+            }
+        })
+        .collect()
 }

@@ -12,6 +12,8 @@ max_households_per_day = 48
 
 [household_action]
 admission_threshold = 0.10
+regional_growth_household_pull = 0.45
+regional_growth_soft_households = 600.0
 admission_unhoused_ratio_penalty = 0.75
 admission_zero_budget_penalty = 0.75
 admission_recent_failure_penalty = 0.85

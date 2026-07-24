@@ -1,8 +1,10 @@
 //! Lane geometry and junction-connectivity regression tests.
 
 use super::super::graph::{Edge, RegionGraph};
+use super::super::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
 use super::super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use super::{LaneSystem, LaneType};
+use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::collections::HashSet;
 
@@ -65,6 +67,74 @@ fn test_lane_geometry_and_length() {
         "BKW lane length should be roughly 100m, was {}",
         l_bkw.length
     );
+}
+
+#[test]
+fn lane_height_sync_matches_compiled_visible_surface() {
+    let terrain = TerrainSystem::new(128, 128);
+    let mut graph = RegionGraph::new();
+    let n1 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+    let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+
+    graph.add_edge(Edge {
+        start_node: n1,
+        end_node: n2,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 10.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 13.0,
+        base_cost: 2.0,
+        physical_length: 40.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+    });
+    graph.rebuild_adjacency_list();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+    for lane in &mut lanes.lanes {
+        for point in &mut lane.geometry {
+            point.y -= 2.0;
+        }
+    }
+
+    let mut road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
+    road_surface.compile_dirty(&graph, &terrain);
+    lanes.sync_heights_to_visible_surface(&graph, &terrain, &road_surface);
+
+    let vehicle_lane = lanes
+        .lanes
+        .iter()
+        .find(|lane| lane.edge_id == 0 && lane.lane_type == LaneType::Vehicle)
+        .expect("vehicle lane");
+    for point in &vehicle_lane.geometry {
+        let expected_y = road_surface
+            .sample_visible_carriageway_height(&graph, &terrain, point.x, point.z)
+            .expect("vehicle lane vertex should be over carriageway");
+        assert!((point.y - expected_y).abs() <= 1e-4);
+    }
+
+    let sidewalk_lane = lanes
+        .lanes
+        .iter()
+        .find(|lane| lane.edge_id == 0 && lane.lane_type == LaneType::Foot && lane.lane_idx == 100)
+        .expect("sidewalk lane");
+    for point in &sidewalk_lane.geometry {
+        let expected_top_y = road_surface
+            .sample_visible_surface_height(&graph, &terrain, point.x, point.z)
+            .expect("sidewalk lane vertex should be over visible sidewalk");
+        assert!((point.y + CURB_STEP_HEIGHT_M - expected_top_y).abs() <= 1e-4);
+    }
 }
 
 #[test]

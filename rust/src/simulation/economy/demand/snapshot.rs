@@ -171,6 +171,7 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) housing_availability: f32,
     pub(super) incoming_household_need: f32,
     pub(super) open_job_household_pull: f32,
+    pub(super) regional_growth_household_pull: f32,
     pub(super) household_affordability: f32,
     pub(super) household_stock_stability: f32,
     pub(super) commercial_capacity_deficit: f32,
@@ -481,7 +482,17 @@ impl DailyDemandSnapshot {
             expected_adult_members_for_household_size(candidate_household_size).max(EPSILON);
         let open_job_household_pull = open_job_slots as f32 / candidate_effective_workers;
         let bootstrap_household_pull = if total_household_count == 0 { 1.0 } else { 0.0 };
-        let incoming_household_need = open_job_household_pull.max(bootstrap_household_pull);
+        let regional_growth_household_pull = regional_growth_household_pull(
+            config,
+            total_household_count,
+            external_connection_available,
+            household_affordability,
+            household_stock_stability,
+            unhoused_household_ratio,
+            zero_budget_household_ratio,
+        );
+        let incoming_household_need = (open_job_household_pull + regional_growth_household_pull)
+            .max(bootstrap_household_pull);
 
         // Fraction of commercial input value sourced from OWA vs local industrial.
         // Uses expected daily input cost as a minimum denominator so a tiny OWA
@@ -502,7 +513,8 @@ impl DailyDemandSnapshot {
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
              unhoused_ratio={:.2} zero_budget_ratio={:.2} stock_stab={:.2} afford={:.2} \
-             incoming_need={:.2} job_pull={:.2} com_cap_def={:.2} unmet_com_units={:.1} \
+             incoming_need={:.2} job_pull={:.2} regional_pull={:.2} \
+             com_cap_def={:.2} unmet_com_units={:.1} \
              ind_cap_def={:.2} com_input_need={:.1} local_ind_capacity={:.1} \
              ind_missing={:.1} pending_home_slots={} owa_dep={:.2} owa_input_value={:.1} \
              treasury={:.0} cand_size={:.1} \
@@ -518,6 +530,7 @@ impl DailyDemandSnapshot {
             household_affordability,
             incoming_household_need,
             open_job_household_pull,
+            regional_growth_household_pull,
             commercial_capacity_deficit,
             unmet_commercial_consumer_demand,
             industrial_input_capacity_deficit,
@@ -549,6 +562,7 @@ impl DailyDemandSnapshot {
             housing_availability,
             incoming_household_need,
             open_job_household_pull,
+            regional_growth_household_pull,
             household_affordability,
             household_stock_stability,
             commercial_capacity_deficit,
@@ -583,6 +597,37 @@ impl DailyDemandSnapshot {
             commercial_owa_input_value: total_commercial_owa_input,
         }
     }
+}
+
+fn regional_growth_household_pull(
+    config: &DemandConfig,
+    total_household_count: u32,
+    external_connection_available: f32,
+    household_affordability: f32,
+    household_stock_stability: f32,
+    unhoused_household_ratio: f32,
+    zero_budget_household_ratio: f32,
+) -> f32 {
+    let base_pull = config.household_action.regional_growth_household_pull;
+    if base_pull <= EPSILON || external_connection_available <= EPSILON {
+        return 0.0;
+    }
+
+    let soft_households = config
+        .household_action
+        .regional_growth_soft_households
+        .max(1.0);
+    let household_gap = clamp01(1.0 - total_household_count as f32 / soft_households);
+    let stability = clamp01(household_affordability.min(household_stock_stability));
+    let failure_damping = 1.0 - unhoused_household_ratio.max(zero_budget_household_ratio);
+
+    clamp01(
+        external_connection_available
+            * base_pull
+            * household_gap
+            * stability
+            * clamp01(failure_damping),
+    )
 }
 
 const BUILDING_SNAPSHOT_CHUNK_SIZE: usize = 1024;

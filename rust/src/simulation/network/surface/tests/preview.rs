@@ -271,7 +271,7 @@ fn preview_conditioning_preserves_snapped_visible_road_height() {
 }
 
 #[test]
-fn preview_reports_too_steep_reason_on_over_limit_standard_grade() {
+fn preview_accepts_over_limit_standard_grade_and_reports_metrics() {
     let terrain = flat_terrain(96, 64);
     let surface = RoadSurfaceSystem::new(16.0);
     let prepared_points = vec![
@@ -288,11 +288,11 @@ fn preview_reports_too_steep_reason_on_over_limit_standard_grade() {
         &terrain,
     );
 
-    assert!(!validation.is_valid);
-    assert_eq!(validation.invalid_reason, "too_steep");
+    assert!(validation.is_valid);
+    assert_eq!(validation.invalid_reason, "");
     assert!(
         validation.max_grade > validation.allowed_grade,
-        "over-limit preview should report grade metrics: max={:.3} allowed={:.3}",
+        "over-limit preview should still report grade metrics: max={:.3} allowed={:.3}",
         validation.max_grade,
         validation.allowed_grade
     );
@@ -416,7 +416,7 @@ fn preview_accepts_connected_bend_when_surface_geometry_compiles() {
 }
 
 #[test]
-fn fast_candidate_validation_rejects_endpoint_branch_overlap() {
+fn fast_candidate_validation_allows_endpoint_branch_overlap_for_full_validator() {
     let terrain = flat_terrain(96, 96);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -467,10 +467,9 @@ fn fast_candidate_validation_rejects_endpoint_branch_overlap() {
         &terrain,
         &graph,
     );
-    assert!(!overlap_validation.is_valid);
-    assert_eq!(
-        overlap_validation.invalid_reason,
-        "surface_geometry_invalid"
+    assert!(
+        overlap_validation.is_valid,
+        "fast validation must not reject tight endpoint branch angles: {overlap_validation:?}"
     );
 }
 
@@ -562,8 +561,8 @@ fn preview_validation_uses_endpoint_snap_before_reporting_valid() {
         &existing_surface,
     );
 
-    assert!(!preview.is_valid);
-    assert_eq!(preview.validation.invalid_reason, "too_steep");
+    assert!(preview.is_valid);
+    assert_eq!(preview.validation.invalid_reason, "");
     assert!(
         (preview.prepared_points[0].y - 1.5).abs() <= 0.001,
         "preview must validate the endpoint height that commit will snap to"
@@ -571,6 +570,39 @@ fn preview_validation_uses_endpoint_snap_before_reporting_valid() {
     assert_eq!(preview.validation.start_endpoint_snapped_node_id, 0);
     assert_eq!(preview.validation.end_endpoint_snapped_node_id, -1);
     assert!((preview.validation.start_endpoint_support_delta_m - 1.5).abs() <= 0.001);
+}
+
+#[test]
+fn preview_can_disable_existing_road_endpoint_snap() {
+    let terrain = flat_terrain(96, 64);
+    let mut graph = RegionGraph::new();
+    graph.add_node(Vector3::new(0.0, 1.5, 0.0), NodeType::Junction);
+    let existing_surface = RoadSurfaceSystem::new(16.0);
+    let preview_surface = RoadSurfaceSystem::new(16.0);
+    let raw_points = vec![Vector3::new(1.0, 0.0, 0.0), Vector3::new(8.0, 0.0, 0.0)];
+
+    let preview = preview_surface.compile_preview_surface_mesh_only_with_existing_surface_snap(
+        &raw_points,
+        1,
+        1,
+        &terrain,
+        &graph,
+        &existing_surface,
+        false,
+    );
+
+    assert!(preview.is_valid);
+    assert_eq!(preview.validation.invalid_reason, "");
+    assert!(
+        (preview.prepared_points[0].x - raw_points[0].x).abs() <= 0.001,
+        "no-snap preview must preserve the authored endpoint XZ"
+    );
+    assert!(
+        preview.prepared_points[0].y.abs() <= 0.001,
+        "no-snap preview must not lift the endpoint to the nearby road node"
+    );
+    assert_eq!(preview.validation.start_endpoint_snapped_node_id, -1);
+    assert_eq!(preview.validation.end_endpoint_snapped_node_id, -1);
 }
 
 #[test]

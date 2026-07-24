@@ -336,6 +336,7 @@ fn road_preview_rejects_a_mismatched_surface_generation() {
             points: vec![Vector3::new(-5.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0)],
             fwd_lanes: 1,
             bkw_lanes: 1,
+            snap_to_existing_roads: true,
         },
     );
 

@@ -158,8 +158,14 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn terrain_cdt_stats_have_constraint_conflicts(
         stats: TerrainCdtStats,
     ) -> bool {
+        let hard_road_constraint_edges = stats
+            .road_constraint_edges
+            .saturating_sub(stats.building_site_constraint_edges);
+        let preserved_hard_road_constraint_edges = stats
+            .preserved_road_constraint_edges
+            .saturating_sub(stats.preserved_building_site_constraint_edges);
         stats.invalid_constraint_edges > 0
-            || stats.preserved_road_constraint_edges < stats.road_constraint_edges
+            || preserved_hard_road_constraint_edges < hard_road_constraint_edges
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_output_is_pathological(
@@ -218,6 +224,10 @@ impl SimulationNode {
             i64::try_from(stats.road_constraint_edges).unwrap_or(0),
         );
         dict.set(
+            "terrain_cdt_building_site_constraint_edges",
+            i64::try_from(stats.building_site_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
             "terrain_cdt_accepted_faces",
             i64::try_from(stats.accepted_faces).unwrap_or(0),
         );
@@ -228,6 +238,10 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_preserved_road_constraint_edges",
             i64::try_from(stats.preserved_road_constraint_edges).unwrap_or(0),
+        );
+        dict.set(
+            "terrain_cdt_preserved_building_site_constraint_edges",
+            i64::try_from(stats.preserved_building_site_constraint_edges).unwrap_or(0),
         );
         dict.set(
             "terrain_cdt_spade_missing_road_constraint_edges",
@@ -326,9 +340,11 @@ impl SimulationNode {
             input_vertices: 0,
             constraint_edges: 0,
             road_constraint_edges: 0,
+            building_site_constraint_edges: 0,
             accepted_faces: 0,
             rejected_road_faces: 0,
             preserved_road_constraint_edges: 0,
+            preserved_building_site_constraint_edges: 0,
             spade_missing_road_constraint_edges: 0,
             rejected_road_constraint_edges: 0,
             internal_road_constraint_edges: 0,
@@ -356,9 +372,12 @@ impl SimulationNode {
             aggregate.input_vertices += stats.input_vertices;
             aggregate.constraint_edges += stats.constraint_edges;
             aggregate.road_constraint_edges += stats.road_constraint_edges;
+            aggregate.building_site_constraint_edges += stats.building_site_constraint_edges;
             aggregate.accepted_faces += stats.accepted_faces;
             aggregate.rejected_road_faces += stats.rejected_road_faces;
             aggregate.preserved_road_constraint_edges += stats.preserved_road_constraint_edges;
+            aggregate.preserved_building_site_constraint_edges +=
+                stats.preserved_building_site_constraint_edges;
             aggregate.spade_missing_road_constraint_edges +=
                 stats.spade_missing_road_constraint_edges;
             aggregate.rejected_road_constraint_edges += stats.rejected_road_constraint_edges;

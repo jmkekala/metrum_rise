@@ -21,6 +21,9 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::terrain::cdt::{
+    TerrainCdtInput, TerrainCdtPatch, TerrainCdtVertex, build_road_touched_terrain_patch,
+};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
 
@@ -107,6 +110,32 @@ fn square_site_with_surface() -> BuildingSiteClient {
                 Vector2::new(1.0, -1.0),
             ],
         }],
+    }
+}
+
+fn flat_site_from_bounds(
+    min_x: f32,
+    min_z: f32,
+    max_x: f32,
+    max_z: f32,
+    support_height_m: f32,
+) -> BuildingSiteClient {
+    let footprint_world = vec![
+        Vector2::new(min_x, min_z),
+        Vector2::new(min_x, max_z),
+        Vector2::new(max_x, max_z),
+        Vector2::new(max_x, min_z),
+    ];
+    BuildingSiteClient {
+        footprint_world: footprint_world.clone(),
+        lot_footprint_world: [
+            Vector2::new(min_x, min_z),
+            Vector2::new(min_x, max_z),
+            Vector2::new(max_x, max_z),
+            Vector2::new(max_x, min_z),
+        ],
+        support_height_m,
+        surfaces: Vec::new(),
     }
 }
 
@@ -253,6 +282,36 @@ fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
     let detached = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
 
     assert_eq!(detached, direct);
+}
+
+#[test]
+fn adjacent_different_height_site_loops_do_not_conflict_in_cdt() {
+    let mut allocator = BuildingAllocator::new();
+    allocator
+        .building_sites
+        .push(flat_site_from_bounds(-5.0, -5.0, 0.0, 5.0, 0.0));
+    allocator
+        .building_sites
+        .push(flat_site_from_bounds(0.0, -5.0, 5.0, 5.0, 1.0));
+    let loops = allocator.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
+    let source_samples = vec![
+        TerrainCdtVertex::new(-8.0, 0.0, -8.0),
+        TerrainCdtVertex::new(-8.0, 0.0, 8.0),
+        TerrainCdtVertex::new(8.0, 0.0, 8.0),
+        TerrainCdtVertex::new(8.0, 0.0, -8.0),
+    ];
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-8.0, -8.0, 8.0, 8.0, [0.0; 4]),
+        loops,
+        source_samples,
+    ))
+    .expect("adjacent yards at different road-derived heights must not emit duplicate X/Z CDT boundary vertices");
+
+    assert_eq!(
+        mesh.stats.building_site_constraint_edges, mesh.stats.road_constraint_edges,
+        "site CDT ownership loops must be tracked separately from hard road seams"
+    );
 }
 
 #[test]

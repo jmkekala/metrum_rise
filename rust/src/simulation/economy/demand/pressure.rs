@@ -96,6 +96,7 @@ impl DemandSystem {
             housing_availability: snapshot.housing_availability,
             incoming_household_need: snapshot.incoming_household_need,
             open_job_household_pull: snapshot.open_job_household_pull,
+            regional_growth_household_pull: snapshot.regional_growth_household_pull,
             household_affordability: snapshot.household_affordability,
             move_in_acceptance: clamp01(move_in.acceptance),
             construction_move_in_acceptance: clamp01(construction_move_in.acceptance),

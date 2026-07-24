@@ -1,5 +1,6 @@
 //! Network replan construction for agents already outside a building.
 
+use super::super::super::MODE_CAR;
 use super::super::super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID,
     ACCESS_ZERO_HOP_NODE_PATH,
@@ -9,7 +10,10 @@ use super::super::access::{
     projected_lane_distance_for_entrance,
 };
 use super::super::lane_nav::lane_origin_node;
-use super::candidate::{NODE_RANKS, candidate_lane_id, transit_flags_for_mode};
+use super::candidate::{
+    NODE_RANKS, candidate_lane_id, pedestrian_lane_connector_path_from_edge,
+    pedestrian_path_has_lane_connectors_from_edge, transit_flags_for_mode,
+};
 use super::types::BuiltNetworkReplan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -84,10 +88,23 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             graph,
         )?;
         let (network_time_s, current_path) = if start_node == planned_detach_node {
-            (0.0, Vec::new())
+            if mode == MODE_CAR
+                || pedestrian_path_has_lane_connectors_from_edge(
+                    &[start_node],
+                    start_node,
+                    incoming_edge,
+                    planned_detach_lane_id,
+                    transit_network,
+                    graph,
+                )
+            {
+                (0.0, Vec::new())
+            } else {
+                continue;
+            }
         } else {
             pathfind_count.fetch_add(1, Ordering::Relaxed);
-            let (travel_seconds, _, path) = transit_network.cch_graph.find_path(
+            let (mut travel_seconds, _, mut path) = transit_network.cch_graph.find_path(
                 start_node,
                 planned_detach_node,
                 incoming_edge,
@@ -96,6 +113,27 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             )?;
             if path.len() < 2 {
                 continue;
+            }
+            if mode != MODE_CAR
+                && !pedestrian_path_has_lane_connectors_from_edge(
+                    &path,
+                    start_node,
+                    incoming_edge,
+                    planned_detach_lane_id,
+                    transit_network,
+                    graph,
+                )
+            {
+                let fallback = pedestrian_lane_connector_path_from_edge(
+                    start_node,
+                    planned_detach_node,
+                    incoming_edge,
+                    planned_detach_lane_id,
+                    transit_network,
+                    graph,
+                )?;
+                travel_seconds = fallback.0;
+                path = fallback.1;
             }
             (travel_seconds, path)
         };

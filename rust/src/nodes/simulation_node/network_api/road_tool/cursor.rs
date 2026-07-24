@@ -97,13 +97,17 @@ impl SimulationNode {
             }
         }
 
-        if Self::road_tool_should_keep_sticky_network_snap(
-            &query.region_graph,
-            pos,
-            sticky_network_snap_active,
-            sticky_network_snap_pos,
-            sticky_network_snap_release_dist_m,
-        ) {
+        let snap_to_existing_roads = !shift_pressed;
+
+        if snap_to_existing_roads
+            && Self::road_tool_should_keep_sticky_network_snap(
+                &query.region_graph,
+                pos,
+                sticky_network_snap_active,
+                sticky_network_snap_pos,
+                sticky_network_snap_release_dist_m,
+            )
+        {
             let mut sticky_pos = sticky_network_snap_pos;
             sticky_pos.y = Self::road_tool_cursor_height_at_xz(
                 &query,
@@ -114,21 +118,25 @@ impl SimulationNode {
             return sticky_pos.to_variant();
         }
 
-        if let Some(mut snapped_pos) = crate::simulation::network::interaction::get_closest_point_xz(
-            &query.region_graph,
-            pos,
-            5.0,
-        ) {
-            snapped_pos.y = Self::road_tool_cursor_height_at_xz(
-                &query,
-                snapped_pos.x,
-                snapped_pos.z,
-                altitude_offset_m,
-            );
-            return snapped_pos.to_variant();
+        if snap_to_existing_roads {
+            if let Some(mut snapped_pos) =
+                crate::simulation::network::interaction::get_closest_point_xz(
+                    &query.region_graph,
+                    pos,
+                    5.0,
+                )
+            {
+                snapped_pos.y = Self::road_tool_cursor_height_at_xz(
+                    &query,
+                    snapped_pos.x,
+                    snapped_pos.z,
+                    altitude_offset_m,
+                );
+                return snapped_pos.to_variant();
+            }
         }
 
-        if ghost_enabled && !shift_pressed {
+        if ghost_enabled && snap_to_existing_roads {
             use crate::nodes::sim::bridge::network::get_road_ghost_snap_from_parts;
             if let Some(ghost_snap) = get_road_ghost_snap_from_parts(
                 &query.region_graph,

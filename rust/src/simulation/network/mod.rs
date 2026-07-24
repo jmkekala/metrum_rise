@@ -345,6 +345,8 @@ impl TransitNetwork {
         if !self.road_surface.published_generation_matches_source() {
             return None;
         }
+        self.lane_system
+            .sync_heights_to_visible_surface(graph, terrain, &self.road_surface);
         let renderer = RoadRenderer;
         Some(renderer.generate_mesh_data_with_surface(
             graph,

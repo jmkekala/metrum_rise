@@ -27,9 +27,11 @@ impl SimulationNode {
         dict.set("terrain_cdt_input_vertices", 0i64);
         dict.set("terrain_cdt_constraint_edges", 0i64);
         dict.set("terrain_cdt_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_building_site_constraint_edges", 0i64);
         dict.set("terrain_cdt_accepted_faces", 0i64);
         dict.set("terrain_cdt_rejected_road_faces", 0i64);
         dict.set("terrain_cdt_preserved_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_preserved_building_site_constraint_edges", 0i64);
         dict.set("terrain_cdt_spade_missing_road_constraint_edges", 0i64);
         dict.set("terrain_cdt_rejected_road_constraint_edges", 0i64);
         dict.set("terrain_cdt_internal_road_constraint_edges", 0i64);
