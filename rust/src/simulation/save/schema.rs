@@ -232,6 +232,35 @@ CREATE TABLE city_treasury(
     pending_business_profit_tax REAL NOT NULL,
     pending_property_tax REAL NOT NULL
 );
+CREATE TABLE city_service_policy(
+    electricity_funding REAL NOT NULL
+);
+CREATE TABLE city_budget_history(
+    sequence INTEGER PRIMARY KEY,
+    day_index INTEGER NOT NULL,
+    income REAL NOT NULL,
+    expenses REAL NOT NULL,
+    net REAL NOT NULL,
+    treasury REAL NOT NULL,
+    tax_income REAL NOT NULL,
+    utility_service_revenue REAL NOT NULL,
+    benefits REAL NOT NULL,
+    city_wages REAL NOT NULL,
+    fuel_input_purchases REAL NOT NULL,
+    imports_owa REAL NOT NULL,
+    construction_service_costs REAL NOT NULL,
+    power_produced REAL NOT NULL,
+    power_consumed REAL NOT NULL,
+    power_unmet REAL NOT NULL,
+    power_coverage REAL NOT NULL,
+    coal_inventory REAL NOT NULL,
+    coal_bought REAL NOT NULL,
+    coal_consumed REAL NOT NULL,
+    electricity_fuel_cost REAL NOT NULL,
+    electricity_wage_cost REAL NOT NULL,
+    electricity_revenue REAL NOT NULL,
+    electricity_net REAL NOT NULL
+);
 CREATE TABLE shipments(
     shipment_id INTEGER PRIMARY KEY,
     resource_runtime_id INTEGER NOT NULL,

@@ -179,12 +179,45 @@ impl BuildingAllocator {
         graph: &RegionGraph,
     ) -> Option<f32> {
         if destination_idx >= self.buildings.len() || destination_idx >= self.entrances.len() {
+            crate::debug_log!(
+                "spawn",
+                "border admission route rejected: border_node={} home_building={} reason=destination_out_of_range buildings={} entrances={}",
+                border_node,
+                destination_idx,
+                self.buildings.len(),
+                self.entrances.len()
+            );
             return None;
         }
 
         let destination_entrance = &self.entrances[destination_idx];
-        let destination_edge = graph.get_edge(destination_entrance.edge_idx)?;
+        let Some(destination_edge) = graph.get_edge(destination_entrance.edge_idx) else {
+            crate::debug_log!(
+                "spawn",
+                "border admission route rejected: border_node={} home_building={} dest_edge={} reason=destination_edge_missing edge_count={}",
+                border_node,
+                destination_idx,
+                destination_entrance.edge_idx,
+                graph.edge_count()
+            );
+            return None;
+        };
         if destination_edge.deleted || !entrance_has_car_access(destination_entrance) {
+            crate::debug_log!(
+                "spawn",
+                "border admission route rejected: border_node={} home_building={} dest_edge={} reason={} car_fwd={} car_bkw={} edge_deleted={}",
+                border_node,
+                destination_idx,
+                destination_entrance.edge_idx,
+                if destination_edge.deleted {
+                    "destination_edge_deleted"
+                } else {
+                    "destination_has_no_car_access"
+                },
+                destination_entrance.car_lane_fwd,
+                destination_entrance.car_lane_bkw,
+                destination_edge.deleted
+            );
             return None;
         }
 
@@ -780,10 +813,25 @@ fn freight_candidate_from_border(
     graph: &RegionGraph,
 ) -> Option<FreightBorderCandidate> {
     if destination_entrance.edge_idx >= graph.edge_count() {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} reason=dest_edge_out_of_range edge_count={}",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            graph.edge_count()
+        );
         return None;
     }
     let destination_edge = graph.edge(destination_entrance.edge_idx);
     if destination_edge.deleted {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} reason=dest_edge_deleted",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank
+        );
         return None;
     }
 
@@ -795,45 +843,120 @@ fn freight_candidate_from_border(
     let planned_detach_lane_id =
         freight_candidate_lane_id(destination_entrance, destination_rank == 0, false);
     if planned_detach_lane_id == INVALID_LANE_ID {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_node={} reason=missing_detach_lane car_fwd={} car_bkw={}",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_node,
+            destination_entrance.car_lane_fwd,
+            destination_entrance.car_lane_bkw
+        );
         return None;
     }
-    if lane_origin_node(planned_detach_lane_id, transit_network, graph)? != planned_detach_node {
+    let Some(detach_lane_origin) = lane_origin_node(planned_detach_lane_id, transit_network, graph)
+    else {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_lane={} reason=detach_lane_origin_missing",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_lane_id
+        );
+        return None;
+    };
+    if detach_lane_origin != planned_detach_node {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_lane={} reason=detach_lane_origin_mismatch expected={} actual={}",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_lane_id,
+            planned_detach_node,
+            detach_lane_origin
+        );
         return None;
     }
 
-    let planned_detach_lane_d = projected_lane_distance_for_entrance(
+    let Some(planned_detach_lane_d) = projected_lane_distance_for_entrance(
         destination_entrance,
         planned_detach_lane_id,
         transit_network,
         graph,
-    )?;
-    let ingress_local_time_s = local_access_time_s(local_access_distance_car(
+    ) else {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_lane={} reason=project_detach_distance_failed",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_lane_id
+        );
+        return None;
+    };
+    let Some(ingress_local_distance_m) = local_access_distance_car(
         destination_entrance,
         planned_detach_lane_id,
         planned_detach_lane_d,
         transit_network,
         graph,
-    )?);
-    let destination_frontage_time_s = frontage_time_s(
+    ) else {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_lane={} detach_d={:.2} reason=local_access_failed frontage_access={:?}",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_lane_id,
+            planned_detach_lane_d,
+            destination_entrance.vehicle_frontage_access
+        );
+        return None;
+    };
+    let ingress_local_time_s = local_access_time_s(ingress_local_distance_m);
+    let Some(destination_frontage_time_s) = frontage_time_s(
         planned_detach_lane_id,
         planned_detach_lane_d,
         false,
         transit_network,
         graph,
-    )?;
+    ) else {
+        crate::debug_log!(
+            "spawn",
+            "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_lane={} detach_d={:.2} reason=frontage_time_failed",
+            border_node,
+            destination_entrance.edge_idx,
+            destination_rank,
+            planned_detach_lane_id,
+            planned_detach_lane_d
+        );
+        return None;
+    };
     let network_path_time_s = if border_node == planned_detach_node {
         0.0
     } else {
-        transit_network
-            .cch_graph
-            .find_path(
+        let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
+            border_node,
+            planned_detach_node,
+            usize::MAX,
+            graph,
+            TransitFlags::CAR,
+        ) else {
+            crate::debug_log!(
+                "spawn",
+                "border admission candidate rejected: border_node={} dest_edge={} rank={} detach_node={} detach_lane={} reason=cch_path_failed",
                 border_node,
+                destination_entrance.edge_idx,
+                destination_rank,
                 planned_detach_node,
-                usize::MAX,
-                graph,
-                TransitFlags::CAR,
-            )
-            .map(|(travel_seconds, _, _)| travel_seconds)?
+                planned_detach_lane_id
+            );
+            return None;
+        };
+        travel_seconds
     };
 
     let total_time_s = network_path_time_s + destination_frontage_time_s + ingress_local_time_s;

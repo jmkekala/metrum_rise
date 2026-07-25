@@ -1726,6 +1726,56 @@ fn service_funding_limits_open_jobs_in_demand_snapshot() {
 }
 
 #[test]
+fn load_pressure_refresh_does_not_advance_action_state() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "load_refresh_home", ZoneType::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "load_refresh_jobs", ZoneType::Commercial);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        0,
+        0,
+        residential_asset,
+    ));
+    allocator.buildings.push(building(
+        ZoneType::Commercial,
+        100.0,
+        0,
+        0,
+        commercial_asset,
+    ));
+
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let mut demand = DemandSystem::new();
+    demand.residential = 0.5;
+    demand.admission_action_credit = 2.25;
+    demand.households_to_admit_today = 3;
+    demand.spawn_action_credit.residential = 1.75;
+
+    demand.refresh_pressure_channels_with_service_funding(
+        &allocator,
+        &households,
+        &graph,
+        100_000.0,
+        &[1.0, 1.0],
+    );
+
+    assert!(
+        demand.net_residential_pressure() > 0.0,
+        "load refresh should rebuild visible demand pressure from authoritative runtime state"
+    );
+    assert_eq!(demand.admission_action_credit, 2.25);
+    assert_eq!(demand.households_to_admit_today, 3);
+    assert_eq!(demand.spawn_action_credit.residential, 1.75);
+    assert!(demand.building_actions.residential.spawns.is_empty());
+    assert!(demand.building_actions.commercial.spawns.is_empty());
+    assert!(demand.building_actions.industrial.spawns.is_empty());
+}
+
+#[test]
 fn snapshot_computes_owa_dependency_from_input_accumulators() {
     // Commercial building (grocery_basic profile) with 75 currency from OWA and 25 from local.
     // With no residents, the shop carries only its one-worker bootstrap input need:

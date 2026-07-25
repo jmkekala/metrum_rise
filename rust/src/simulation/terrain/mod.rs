@@ -732,7 +732,15 @@ impl TerrainSystem {
         (self.width, self.height)
     }
 
-    /// Clears the terrain render-patch dirtiness set.
+    /// Marks every terrain render patch dirty after a whole-world replacement.
+    pub(crate) fn mark_all_render_patches_dirty(&mut self) {
+        for patch_z in 0..self.render_patch_rows() {
+            for patch_x in 0..self.render_patch_cols() {
+                self.dirty_render_patches.insert((patch_x, patch_z));
+            }
+        }
+    }
+
     /// Returns one visual-terrain render patch with a one-sample border ring.
     pub(crate) fn visual_patch_snapshot(
         &self,
@@ -846,14 +854,6 @@ impl TerrainSystem {
     fn raycast_search_limit(&self, ray_origin: Vector3, half_w: f32, half_h: f32) -> f32 {
         let world_diag = (half_w * 2.0).hypot(half_h * 2.0);
         ray_origin.length() + world_diag + 10_000.0
-    }
-
-    fn mark_all_render_patches_dirty(&mut self) {
-        for patch_z in 0..self.render_patch_rows() {
-            for patch_x in 0..self.render_patch_cols() {
-                self.dirty_render_patches.insert((patch_x, patch_z));
-            }
-        }
     }
 
     fn mark_render_patches_for_grid_rect(

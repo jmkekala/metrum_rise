@@ -382,7 +382,11 @@ pub(super) fn validate_loaded_agents(
             clear = true;
         }
         if agents.current_path_index[i] > agents.current_path[i].len() {
-            clear = true;
+            if loaded_empty_network_path_has_replan_context(agents, i, graph) {
+                agents.current_path_index[i] = 0;
+            } else {
+                clear = true;
+            }
         }
         if agents.current_path[i]
             .iter()
@@ -439,8 +443,86 @@ pub(super) fn validate_loaded_agents(
         if clear {
             clear_agent_travel_state(agents, i);
         }
+        repair_orphaned_loaded_network_agent(agents, i, graph, allocator);
     }
     Ok(())
+}
+
+fn loaded_empty_network_path_has_replan_context(
+    agents: &AgentSystem,
+    i: usize,
+    graph: &RegionGraph,
+) -> bool {
+    matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+        && agents.current_lane_id[i] == usize::MAX
+        && agents.current_path[i].is_empty()
+        && agents.current_node[i] < graph.node_count() as u32
+        && agents.current_edge[i] < graph.edge_count()
+        && !graph.edge(agents.current_edge[i]).deleted
+}
+
+fn repair_orphaned_loaded_network_agent(
+    agents: &mut AgentSystem,
+    i: usize,
+    graph: &RegionGraph,
+    allocator: &BuildingAllocator,
+) {
+    if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION) {
+        return;
+    }
+    if agents.current_lane_id[i] != usize::MAX
+        || !agents.current_path[i].is_empty()
+        || agents.access_flags[i] & ACCESS_PLAN_VALID != 0
+    {
+        return;
+    }
+
+    let fallback = if agents.home_building[i] < allocator.buildings.len() {
+        agents.home_building[i]
+    } else if agents.work_building[i] < allocator.buildings.len() {
+        agents.work_building[i]
+    } else {
+        usize::MAX
+    };
+    let target = if agents.target_building[i] < allocator.buildings.len() {
+        agents.target_building[i]
+    } else if fallback != usize::MAX {
+        fallback
+    } else {
+        return;
+    };
+
+    clear_agent_access_plan(agents, i);
+    agents.current_path[i].clear();
+    agents.current_path_index[i] = 0;
+    agents.target_building[i] = target;
+    agents.planned_target_building[i] = usize::MAX;
+    agents.next_replan_time[i] = 0.0;
+    agents.speed[i] = 0.0;
+    agents.lane_change_from_lane_id[i] = u32::MAX;
+    agents.lane_change_start_d[i] = 0.0;
+    agents.lane_change_length_m[i] = 0.0;
+    agents.overtake_blocked_time_s[i] = 0.0;
+    agents.overtake_cooldown_s[i] = 0.0;
+    let has_replan_node = agents.current_node[i] < graph.node_count() as u32;
+    let has_replan_edge =
+        agents.current_edge[i] < graph.edge_count() && !graph.edge(agents.current_edge[i]).deleted;
+    if has_replan_node && (agents.transit_mode[i] == MODE_CAR || has_replan_edge) {
+        agents.current_building[i] = usize::MAX;
+        agents.transit[i] = TRANSIT_NETWORK;
+    } else {
+        agents.current_building[i] = target;
+        agents.target_building[i] = usize::MAX;
+        if let Some(entrance) = allocator.entrances.get(target) {
+            agents.pos_x[i] = entrance.door_pos.x;
+            agents.pos_y[i] = entrance.door_pos.y;
+        }
+        agents.current_node[i] = u32::MAX;
+        agents.current_edge[i] = usize::MAX;
+        agents.current_lane_id[i] = usize::MAX;
+        agents.lane_distance[i] = 0.0;
+        agents.transit[i] = TRANSIT_IN_BUILDING;
+    }
 }
 
 fn clear_agent_travel_state(agents: &mut AgentSystem, i: usize) {

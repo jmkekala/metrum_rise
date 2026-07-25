@@ -290,28 +290,34 @@ impl BuildingAllocator {
         if households_to_spawn == 0 {
             return 0;
         }
-        debug_log!(
-            "economy",
-            "demand-owned household admission planning: households_to_spawn={}",
-            households_to_spawn,
-        );
+        for category in ["economy", "spawn"] {
+            debug_log!(
+                category,
+                "demand-owned household admission planning: households_to_spawn={}",
+                households_to_spawn,
+            );
+        }
         let mut launched = 0;
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) = self.claim_home_for_household() else {
-                debug_log!(
-                    "economy",
-                    "demand-owned household admission stopped early: could not claim a home from vacancy index"
-                );
+                for category in ["economy", "spawn"] {
+                    debug_log!(
+                        category,
+                        "demand-owned household admission stopped early: could not claim a home from vacancy index"
+                    );
+                }
                 break;
             };
             let Some(border_node) =
                 self.household_arrival_border_node(home_idx, transit_network, graph)
             else {
-                debug_log!(
-                    "economy",
-                    "demand-owned household admission waiting: no legal border-to-home car route for home_building={}",
-                    home_idx
-                );
+                for category in ["economy", "spawn"] {
+                    debug_log!(
+                        category,
+                        "demand-owned household admission waiting: no legal border-to-home car route for home_building={}",
+                        home_idx
+                    );
+                }
                 break;
             };
             // One household consumes 1 slot of household_capacity regardless of size.
@@ -325,14 +331,16 @@ impl BuildingAllocator {
                 border_pos.z,
             );
             launched += 1;
-            debug_log!(
-                "economy",
-                "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",
-                carrier_idx,
-                household_size,
-                home_idx,
-                border_node,
-            );
+            for category in ["economy", "spawn"] {
+                debug_log!(
+                    category,
+                    "demand-owned household admission launched carrier_agent={} size={} home_building={} border_node={}",
+                    carrier_idx,
+                    household_size,
+                    home_idx,
+                    border_node,
+                );
+            }
         }
         launched
     }

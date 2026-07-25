@@ -191,6 +191,56 @@ impl DemandSystem {
         );
     }
 
+    /// Rebuilds derived pressure telemetry from runtime state without advancing action budgets.
+    pub(crate) fn refresh_pressure_channels_with_service_funding(
+        &mut self,
+        allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        graph: &RegionGraph,
+        treasury_balance: f64,
+        service_funding_by_building: &[f32],
+    ) {
+        self.building_actions = DemandBuildingActionPlan::default();
+        let catalog = Arc::clone(&self.runtime_catalog);
+        let economy_tuning = Arc::clone(&self.runtime_tuning);
+        let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
+            allocator,
+            households,
+            graph,
+            &self.config,
+            catalog.as_ref(),
+            economy_tuning.as_ref(),
+            treasury_balance,
+            service_funding_by_building,
+        );
+        let pressures = self.update_pressure_channels_from_snapshot(&snapshot);
+        self.apply_cheat_max_demands_if_enabled();
+
+        let admission_threshold = self.config.household_action.admission_threshold;
+        let mut admission_diagnostics = pressures.admission_diagnostics;
+        admission_diagnostics.threshold = admission_threshold;
+        admission_diagnostics.normalized_action_pressure =
+            normalized_positive_pressure(pressures.admission_pressure, admission_threshold);
+        admission_diagnostics.credit_before = self.admission_action_credit;
+        admission_diagnostics.credit_after = self.admission_action_credit;
+        admission_diagnostics.max_actionable_households = snapshot.vacant_household_slots;
+        admission_diagnostics.planned_households = self.households_to_admit_today;
+        self.last_admission_diagnostics = admission_diagnostics;
+
+        let removal_threshold = self.config.household_action.removal_threshold;
+        let mut removal_diagnostics = pressures.removal_diagnostics;
+        removal_diagnostics.threshold = removal_threshold;
+        removal_diagnostics.normalized_action_pressure =
+            normalized_positive_pressure(pressures.removal_pressure, removal_threshold);
+        removal_diagnostics.credit_before = self.removal_action_credit;
+        removal_diagnostics.credit_after = self.removal_action_credit;
+        removal_diagnostics.persistent_exit_credit_before = self.persistent_exit_action_credit;
+        removal_diagnostics.persistent_exit_credit_after = self.persistent_exit_action_credit;
+        removal_diagnostics.max_actionable_households = snapshot.total_household_count;
+        removal_diagnostics.planned_households = self.households_to_remove_today;
+        self.last_removal_diagnostics = removal_diagnostics;
+    }
+
     pub(crate) fn with_persisted_state(
         residential: f32,
         commercial: f32,

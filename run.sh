@@ -4,7 +4,7 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border, terrain, buildings, visuals, perf
+#                        Common categories: isect, economy, demand, spawn, road, border, terrain, buildings, visuals, perf
 #   --debug road         Road placement timings, committed-road geometry dumps,
 #                        terrain/water patch diagnostics, and road-surface overlay
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
@@ -282,6 +282,11 @@ esac
 if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
     echo "Error: --debug road-geometry was removed. Use --debug road." >&2
     exit 2
+fi
+
+if [ $DEBUG -eq 0 ] && [ -n "${METRUM_DEBUG_FILTER:-}" ]; then
+    DEBUG=1
+    DEBUG_CATEGORY="$METRUM_DEBUG_FILTER"
 fi
 
 if [ $DEBUG -eq 1 ]; then

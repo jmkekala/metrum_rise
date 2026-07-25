@@ -13,6 +13,7 @@ mod terrain_payloads;
 mod thread;
 mod water_preview;
 
+pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
@@ -43,7 +44,10 @@ pub(crate) use water_preview::{
 };
 
 #[cfg(test)]
-use snapshot::{pedestrian_lane_surface_height, pedestrian_needs_access_surface};
+use snapshot::{
+    pedestrian_access_surface_height_from_samples, pedestrian_lane_surface_height,
+    pedestrian_needs_access_surface,
+};
 #[cfg(test)]
 use state::{
     absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,

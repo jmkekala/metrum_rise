@@ -32,16 +32,16 @@ const FAR_FADE_MIN_WIDTH_M := 1500.0
 const FAR_FADE_CURVE := 1.35
 const SUN_ENERGY := 1.65
 const SUN_INDIRECT_ENERGY := 0.35
-const SUN_ANGULAR_DISTANCE_DEG := 0.50
+const SUN_ANGULAR_DISTANCE_DEG := 1.15
 const AMBIENT_STRENGTH := 0.44
-const SHADOW_MAX_DISTANCE_M := 520.0
+const SHADOW_MAX_DISTANCE_M := 420.0
 const SHADOW_SPLIT_1 := 0.10
 const SHADOW_SPLIT_2 := 0.28
 const SHADOW_SPLIT_3 := 0.58
-const SHADOW_FADE_START := 0.84
-const SHADOW_BIAS := 0.035
-const SHADOW_NORMAL_BIAS := 0.70
-const SHADOW_BLUR := 0.85
+const SHADOW_FADE_START := 0.78
+const SHADOW_BIAS := 0.060
+const SHADOW_NORMAL_BIAS := 1.25
+const SHADOW_BLUR := 1.80
 const GROUND_SHADOW_AMBIENT := 0.50
 const GROUND_SHADOW_SUN_STRENGTH := 0.50
 const GROUND_SHADOW_MIN_VISIBILITY := 0.02
@@ -53,6 +53,7 @@ const SHADOW_STATIC_CASTER := "static_caster"
 const SHADOW_DYNAMIC_CASTER := "dynamic_caster"
 const SHADOW_TINY_DYNAMIC := "tiny_dynamic"
 const SHADOW_RECEIVER_ONLY := "receiver_only"
+const SHADOW_NON_RECEIVER := "non_receiver"
 const SHADOW_DEBUG_OVERLAY := "debug_overlay"
 
 static var _cloud_panorama_cache: Texture2D
@@ -105,7 +106,7 @@ static func apply_shadow_policy(
 	match role:
 		SHADOW_STATIC_CASTER, SHADOW_DYNAMIC_CASTER:
 			instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-		SHADOW_TINY_DYNAMIC, SHADOW_RECEIVER_ONLY, SHADOW_DEBUG_OVERLAY:
+		SHADOW_TINY_DYNAMIC, SHADOW_RECEIVER_ONLY, SHADOW_NON_RECEIVER, SHADOW_DEBUG_OVERLAY:
 			instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_:
 			instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -138,7 +139,7 @@ static func _role_casts_shadows(role: String) -> bool:
 	return role == SHADOW_STATIC_CASTER or role == SHADOW_DYNAMIC_CASTER
 
 static func _role_receives_shadows(role: String) -> bool:
-	return role != SHADOW_DEBUG_OVERLAY
+	return role != SHADOW_DEBUG_OVERLAY and role != SHADOW_NON_RECEIVER
 
 static func _role_extra_cull_margin(role: String) -> float:
 	match role:

@@ -108,9 +108,13 @@ func _debug_camera_can_go_under_terrain() -> bool:
 	return not debug_value.is_empty() and debug_value != "0"
 
 func _process(delta):
+	if _ui_captures_keyboard_input():
+		return
 	_handle_camera_controls(delta)
 
 func _input(event):
+	if _ui_has_modal_popup():
+		return
 	if event is InputEventMouseButton:
 		_handle_zoom_wheel(event)
 
@@ -135,6 +139,8 @@ func _handle_camera_controls(delta):
 			camera.orbit(mouse_vel * delta)
 
 func _unhandled_input(event):
+	if _ui_captures_keyboard_input():
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
@@ -202,6 +208,26 @@ func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 	var camera = get_viewport().get_camera_3d()
 	if camera and camera.has_method("zoom"):
 		camera.zoom(zoom_delta)
+
+func _ui_has_modal_popup() -> bool:
+	var viewport := get_viewport()
+	var window := viewport as Window
+	return (
+		window != null
+		and window.has_method("has_visible_popup")
+		and window.has_visible_popup()
+	)
+
+func _ui_captures_keyboard_input() -> bool:
+	var viewport := get_viewport()
+	var focus_owner := viewport.gui_get_focus_owner()
+	var editing_focus := (
+		focus_owner is SpinBox
+		or focus_owner is LineEdit
+		or focus_owner is TextEdit
+		or focus_owner is CodeEdit
+	)
+	return _ui_has_modal_popup() or editing_focus
 
 func _handle_escape():
 	if current_tool != Tool.NONE:
@@ -327,6 +353,7 @@ func _handle_save_game():
 	var dialog := FileDialog.new()
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog.exclusive = true
 	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
 	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
 	dialog.current_file = _default_save_name()
@@ -340,6 +367,7 @@ func _handle_load_game():
 	var dialog := FileDialog.new()
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.exclusive = true
 	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
 	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
 	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))

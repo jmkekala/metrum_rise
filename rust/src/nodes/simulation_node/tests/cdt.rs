@@ -305,18 +305,28 @@ fn terrain_cdt_output_status_marks_pathological_meshes() {
 }
 
 #[test]
-fn terrain_cdt_constraint_conflicts_include_unpreserved_road_edges() {
+fn terrain_cdt_constraint_conflicts_ignore_rejected_road_owned_edges() {
     let mut stats = empty_cdt_stats();
     stats.road_constraint_edges = 10;
     stats.preserved_road_constraint_edges = 9;
     stats.invalid_constraint_edges = 0;
 
+    assert!(!SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats));
+}
+
+#[test]
+fn terrain_cdt_constraint_conflicts_include_invalid_or_missing_edges() {
+    let mut stats = empty_cdt_stats();
+    stats.invalid_constraint_edges = 1;
     assert!(SimulationNode::terrain_cdt_stats_have_constraint_conflicts(
         stats
     ));
 
-    stats.preserved_road_constraint_edges = 10;
-    assert!(!SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats));
+    stats.invalid_constraint_edges = 0;
+    stats.spade_missing_road_constraint_edges = 1;
+    assert!(SimulationNode::terrain_cdt_stats_have_constraint_conflicts(
+        stats
+    ));
 }
 
 #[test]
@@ -333,10 +343,10 @@ fn terrain_cdt_constraint_conflicts_ignore_unpreserved_site_only_edges() {
         "site meshes own their top surface; unpreserved site boundary edges must not force old terrain fallback"
     );
 
-    stats.road_constraint_edges = 11;
+    stats.spade_missing_road_constraint_edges = 1;
     assert!(
         SimulationNode::terrain_cdt_stats_have_constraint_conflicts(stats),
-        "a missing hard road seam must still force fallback"
+        "a road seam missing from the CDT must still force fallback"
     );
 }
 

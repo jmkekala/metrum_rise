@@ -147,6 +147,21 @@ pub(super) struct BuildingActionDiagnostics {
 }
 
 impl DemandSystem {
+    /// Returns the compact admission diagnostics needed to explain load-time recomputation.
+    pub(crate) fn last_admission_debug_summary(&self) -> (u32, u32, f32, f32, f32, f32, f32, f32) {
+        let diagnostics = self.last_admission_diagnostics;
+        (
+            diagnostics.vacant_household_slots,
+            diagnostics.open_job_slots,
+            diagnostics.regional_growth_household_pull,
+            diagnostics.open_job_household_pull,
+            diagnostics.incoming_household_need,
+            diagnostics.move_in_acceptance,
+            diagnostics.construction_move_in_acceptance,
+            diagnostics.failure_factor,
+        )
+    }
+
     /// Emits the most recent household-admission pressure and credit breakdown.
     pub(crate) fn log_hourly_household_action_diagnostics(
         &self,

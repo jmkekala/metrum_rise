@@ -302,6 +302,27 @@ impl SimCore {
     }
 
     /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
+    pub(crate) fn refresh_all_engineered_terrain_patch_state(
+        &mut self,
+        render_step_m: f32,
+    ) -> usize {
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::TerrainEarthwork,
+        );
+        let patch_cols = self.heightmap.render_patch_cols();
+        let patch_rows = self.heightmap.render_patch_rows();
+        let mut patch_keys = Vec::with_capacity(patch_cols.saturating_mul(patch_rows));
+        for patch_z in 0..patch_rows {
+            for patch_x in 0..patch_cols {
+                patch_keys.push((patch_x, patch_z));
+            }
+        }
+        self.refresh_engineered_terrain_patch_ownership_for_keys(render_step_m, &patch_keys)
+    }
+
+    /// Refreshes engineered terrain ownership and invalidates stale refined terrain cache.
     pub(crate) fn refresh_road_locked_terrain_patch_state(&mut self, render_step_m: f32) -> usize {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);

@@ -9,6 +9,9 @@ const TrendGraph = preload("res://scripts/ui/economy_trend_graph.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 const SERVICE_ELECTRICITY := "electricity"
+const INCOME_COLOR := Color(0.22, 0.74, 0.48)
+const EXPENSE_COLOR := Color(0.92, 0.42, 0.32)
+const NET_COLOR := Color(0.36, 0.68, 0.92)
 
 var simulation_node: Node
 
@@ -263,30 +266,32 @@ func _refresh_budget_tab() -> void:
 		top_label.text = "Treasury %s" % _money(float(_overview.get("treasury", latest.get("treasury", 0.0))))
 
 	_clear(_budget_summary)
-	_add_metric(_budget_summary, "Income", _money(_sum(entries, "income")))
-	_add_metric(_budget_summary, "Expenses", _money(_sum(entries, "expenses")))
-	_add_metric(_budget_summary, "Net", _signed_money(_sum(entries, "net")))
+	_add_metric(_budget_summary, "Income", _money(_sum(entries, "income")), UIStyle.TEXT_DIM, INCOME_COLOR)
+	_add_metric(_budget_summary, "Expenses", _expense_money(_sum(entries, "expenses")), UIStyle.TEXT_DIM, EXPENSE_COLOR)
+	_add_metric(_budget_summary, "Net", _signed_money(_sum(entries, "net")), UIStyle.TEXT_DIM, NET_COLOR)
 	_add_metric(_budget_summary, "Treasury", _money(float(latest.get("treasury", _overview.get("treasury", 0.0)))))
 
 	_clear(_budget_categories)
-	_add_metric(_budget_categories, "Tax Income", _money(_sum(entries, "tax_income")))
-	_add_metric(_budget_categories, "Utility/Service Revenue", _money(_sum(entries, "utility_service_revenue")))
-	_add_metric(_budget_categories, "Benefits", _money(_sum(entries, "benefits")))
-	_add_metric(_budget_categories, "City Wages", _money(_sum(entries, "city_wages")))
-	_add_metric(_budget_categories, "Fuel/Input Purchases", _money(_sum(entries, "fuel_input_purchases")))
-	_add_metric(_budget_categories, "Imports/OWA", _money(_sum(entries, "imports_owa")))
-	_add_metric(_budget_categories, "Construction/Service Costs", _money(_sum(entries, "construction_service_costs")))
+	_add_category_header(_budget_categories, "Income", _money(_sum(entries, "income")), INCOME_COLOR)
+	_add_metric(_budget_categories, "Tax Income", _money(_sum(entries, "tax_income")), UIStyle.TEXT_DIM, INCOME_COLOR, 10.0)
+	_add_metric(_budget_categories, "Utility/Service Revenue", _money(_sum(entries, "utility_service_revenue")), UIStyle.TEXT_DIM, INCOME_COLOR, 10.0)
+	_add_category_header(_budget_categories, "Expenses", _expense_money(_sum(entries, "expenses")), EXPENSE_COLOR)
+	_add_metric(_budget_categories, "Benefits", _expense_money(_sum(entries, "benefits")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "City Wages", _expense_money(_sum(entries, "city_wages")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Fuel/Input Purchases", _expense_money(_sum(entries, "fuel_input_purchases")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Imports/OWA", _expense_money(_sum(entries, "imports_owa")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Construction/Service Costs", _expense_money(_sum(entries, "construction_service_costs")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 
 	_income_graph.set_series(
 		[_series(entries, "income"), _series(entries, "expenses")],
-		[Color(0.22, 0.74, 0.48), Color(0.92, 0.42, 0.32)],
+		[INCOME_COLOR, EXPENSE_COLOR],
 		["Income", "Expenses"],
 		day_labels,
 		"$"
 	)
 	_net_graph.set_series(
 		[_series(entries, "net")],
-		[Color(0.36, 0.68, 0.92)],
+		[NET_COLOR],
 		["Net"],
 		day_labels,
 		"$"
@@ -481,7 +486,7 @@ func _clear(container: Node) -> void:
 		container.remove_child(child)
 		child.queue_free()
 
-func _add_metric(parent: VBoxContainer, label_text: String, value_text: String) -> void:
+func _add_category_header(parent: VBoxContainer, label_text: String, value_text: String, color: Color) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	parent.add_child(row)
@@ -489,14 +494,45 @@ func _add_metric(parent: VBoxContainer, label_text: String, value_text: String) 
 	var label := Label.new()
 	label.text = label_text
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	label.add_theme_color_override("font_color", color)
 	label.add_theme_font_size_override("font_size", 12)
 	row.add_child(label)
 
 	var value := Label.new()
 	value.text = value_text
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	value.add_theme_color_override("font_color", color)
+	value.add_theme_font_size_override("font_size", 12)
+	row.add_child(value)
+
+func _add_metric(
+	parent: VBoxContainer,
+	label_text: String,
+	value_text: String,
+	label_color: Color = UIStyle.TEXT_DIM,
+	value_color: Color = UIStyle.TEXT_PRIMARY,
+	indent: float = 0.0
+) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	parent.add_child(row)
+
+	if indent > 0.0:
+		var spacer := Control.new()
+		spacer.custom_minimum_size.x = indent
+		row.add_child(spacer)
+
+	var label := Label.new()
+	label.text = label_text
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.add_theme_color_override("font_color", label_color)
+	label.add_theme_font_size_override("font_size", 12)
+	row.add_child(label)
+
+	var value := Label.new()
+	value.text = value_text
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	value.add_theme_color_override("font_color", value_color)
 	value.add_theme_font_size_override("font_size", 12)
 	row.add_child(value)
 
@@ -512,6 +548,12 @@ func _money(value: float) -> String:
 func _signed_money(value: float) -> String:
 	var prefix := "+" if value > 0.0 else ""
 	return prefix + _money(value)
+
+func _expense_money(value: float) -> String:
+	var amount := absf(value)
+	if amount < 0.5:
+		return _money(0.0)
+	return "-%s" % _money(amount)
 
 func _percent(value: float) -> String:
 	return "%.0f%%" % (clampf(value, 0.0, 1.0) * 100.0)

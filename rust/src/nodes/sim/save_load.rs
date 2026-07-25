@@ -1,5 +1,6 @@
 //! SQLite save/load bridge methods for the Godot simulation node.
 
+use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::save::{LoadedSimulation, SaveGameView, load_from_sqlite, save_to_sqlite};
 use std::path::PathBuf;
@@ -27,6 +28,8 @@ impl SimCore {
                 agents: &self.agents,
                 network: &self.transit_network,
                 treasury: &self.treasury,
+                service_policy: &self.service_policy,
+                budget_history: &self.budget_history,
             },
         )
         .map_err(|err| err.to_string())
@@ -36,11 +39,11 @@ impl SimCore {
     pub(crate) fn load_game_internal(&mut self, path: &str) -> Result<(), String> {
         let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
-        self.apply_loaded_simulation(loaded);
+        self.apply_loaded_simulation(loaded)?;
         Ok(())
     }
 
-    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) {
+    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) -> Result<(), String> {
         self.config = loaded.config;
         self.time = loaded.time;
         self.heightmap = loaded.terrain;
@@ -57,13 +60,19 @@ impl SimCore {
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
         self.allocator
+            .recompute_derived_transforms(&self.region_graph, &self.zoning)?;
+        self.allocator
+            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        self.allocator
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
-        self.service_policy = Default::default();
-        self.budget_history.clear();
+        self.service_policy = loaded.service_policy;
+        self.apply_service_funding_staffing_policy();
+        self.refresh_loaded_demand_state_and_log();
+        self.budget_history = loaded.budget_history;
         self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
         self.time.speed_multiplier = 0.0;
@@ -81,7 +90,9 @@ impl SimCore {
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
-        self.refresh_road_locked_terrain_patch_state(
+        self.heightmap.mark_all_render_patches_dirty();
+        self.bump_global_terrain_payload_generation();
+        self.refresh_all_engineered_terrain_patch_state(
             crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
         );
         self.terrain_dirty = true;
@@ -92,5 +103,69 @@ impl SimCore {
         // surface was rebuilt. Stamp a matching mesh generation before water and
         // refined-terrain payload workers consume the refreshed snapshot.
         self.precompute_road_mesh_data();
+        Ok(())
+    }
+
+    fn refresh_loaded_demand_state_and_log(&mut self) {
+        let persisted_residential = self.demand.net_residential_pressure();
+        let persisted_commercial = self.demand.net_commercial_pressure();
+        let persisted_industrial = self.demand.net_industrial_pressure();
+        let persisted_households_to_admit = self.demand.households_to_admit_today;
+        if !crate::debug::category_enabled("spawn") {
+            let service_funding_by_building = self.electricity_funding_by_building();
+            self.demand.refresh_pressure_channels_with_service_funding(
+                &self.allocator,
+                &self.households,
+                &self.region_graph,
+                self.treasury.balance,
+                &service_funding_by_building,
+            );
+            return;
+        }
+        let service_funding_by_building = self.electricity_funding_by_building();
+        self.demand.refresh_pressure_channels_with_service_funding(
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            self.treasury.balance,
+            &service_funding_by_building,
+        );
+        let (
+            vacant_household_slots,
+            open_job_slots,
+            regional_growth_household_pull,
+            open_job_household_pull,
+            incoming_household_need,
+            move_in_acceptance,
+            construction_move_in_acceptance,
+            failure_factor,
+        ) = self.demand.last_admission_debug_summary();
+        debug_log!(
+            "spawn",
+            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} regional_pull={:.2} job_pull={:.2} incoming_need={:.2} move_in={:.2} construction_move_in={:.2} failure={:.2}",
+            persisted_residential * 100.0,
+            persisted_commercial * 100.0,
+            persisted_industrial * 100.0,
+            persisted_households_to_admit,
+            self.demand.net_residential_pressure() * 100.0,
+            self.demand.net_commercial_pressure() * 100.0,
+            self.demand.net_industrial_pressure() * 100.0,
+            self.demand.households_to_admit_today,
+            self.service_policy.electricity_funding,
+            self.allocator.buildings.len(),
+            self.households
+                .households
+                .iter()
+                .filter(|household| household.member_count > 0)
+                .count(),
+            vacant_household_slots,
+            open_job_slots,
+            regional_growth_household_pull,
+            open_job_household_pull,
+            incoming_household_need,
+            move_in_acceptance,
+            construction_move_in_acceptance,
+            failure_factor,
+        );
     }
 }

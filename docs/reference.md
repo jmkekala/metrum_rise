@@ -113,7 +113,8 @@ variables before building Rust, deploying `libmetrum_rise.so`, and launching God
 | Flag | Main environment | Output / effect |
 |------|------------------|-----------------|
 | `--debug` | `METRUM_DEBUG=1` | General debug logging to stdout. |
-| `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `road`, `border`, `terrain`, `buildings`, `visuals`, `perf`, and `world-editor`. |
+| `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `spawn`, `road`, `border`, `terrain`, `buildings`, `visuals`, `perf`, and `world-editor`. |
+| `METRUM_DEBUG_FILTER=<category> ./run.sh ...` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Environment shorthand for category-filtered logging. |
 | `--debug road` | `METRUM_DEBUG_FILTER=road`, `METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1`, `METRUM_DEBUG_SURFACE=1` | Road placement timings, geometry dump, terrain/water patch diagnostics, and road-surface overlay. |
 | `--debug terrain` | `METRUM_DEBUG_TERRAIN=1` | Terrain and water patch residency/perf summaries. |
 | `--debug terrain-verbose` | `METRUM_DEBUG_TERRAIN=1`, `METRUM_DEBUG_TERRAIN_VERBOSE=1` | Terrain summaries plus residency-change logs. |

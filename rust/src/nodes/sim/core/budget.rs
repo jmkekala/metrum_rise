@@ -329,7 +329,7 @@ impl SimCore {
         funding
     }
 
-    fn apply_service_funding_staffing_policy(&mut self) {
+    pub(crate) fn apply_service_funding_staffing_policy(&mut self) {
         let funding = self.electricity_funding_by_building();
         self.households.enforce_service_funding_staffing(
             &mut self.agents,

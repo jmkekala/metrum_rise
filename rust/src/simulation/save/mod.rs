@@ -1,6 +1,8 @@
 //! SQLite save/load infrastructure for simulation snapshots.
 
-use crate::nodes::sim::core::{CityTreasury, PendingDemandSpawnAction};
+use crate::nodes::sim::core::{
+    CityServicePolicy, CityTreasury, DailyBudgetLedgerEntry, PendingDemandSpawnAction,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -51,6 +53,8 @@ pub(crate) struct SaveGameView<'a> {
     pub agents: &'a AgentSystem,
     pub network: &'a TransitNetwork,
     pub treasury: &'a CityTreasury,
+    pub service_policy: &'a CityServicePolicy,
+    pub budget_history: &'a VecDeque<DailyBudgetLedgerEntry>,
 }
 
 /// Fully hydrated simulation state after loading from disk.
@@ -72,6 +76,8 @@ pub(crate) struct LoadedSimulation {
     pub logistics: ShipmentSystem,
     pub agents: AgentSystem,
     pub treasury: CityTreasury,
+    pub service_policy: CityServicePolicy,
+    pub budget_history: VecDeque<DailyBudgetLedgerEntry>,
 }
 
 struct DemandStateRow {
@@ -101,6 +107,144 @@ fn demand_bool_triplet(row: &rusqlite::Row<'_>, start: usize) -> rusqlite::Resul
         row.get::<_, i64>(start + 1)? != 0,
         row.get::<_, i64>(start + 2)? != 0,
     ])
+}
+
+fn sqlite_table_exists(conn: &Connection, table_name: &str) -> SaveLoadResult<bool> {
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        params![table_name],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
+}
+
+fn save_budget_history(
+    tx: &rusqlite::Transaction<'_>,
+    budget_history: &VecDeque<DailyBudgetLedgerEntry>,
+) -> SaveLoadResult<()> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, utility_service_revenue, benefits, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+    )?;
+    for (sequence, entry) in budget_history.iter().enumerate() {
+        stmt.execute(params![
+            sequence as i64,
+            i64::from(entry.day_index),
+            entry.income,
+            entry.expenses,
+            entry.net,
+            entry.treasury,
+            entry.tax_income,
+            entry.utility_service_revenue,
+            entry.benefits,
+            entry.city_wages,
+            entry.fuel_input_purchases,
+            entry.imports_owa,
+            entry.construction_service_costs,
+            entry.power_produced,
+            entry.power_consumed,
+            entry.power_unmet,
+            entry.power_coverage,
+            entry.coal_inventory,
+            entry.coal_bought,
+            entry.coal_consumed,
+            entry.electricity_fuel_cost,
+            entry.electricity_wage_cost,
+            entry.electricity_revenue,
+            entry.electricity_net,
+        ])?;
+    }
+    Ok(())
+}
+
+fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudgetLedgerEntry>> {
+    let mut history = VecDeque::new();
+    if !sqlite_table_exists(conn, "city_budget_history")? {
+        return Ok(history);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT day_index, income, expenses, net, treasury, tax_income, utility_service_revenue, benefits, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net FROM city_budget_history ORDER BY sequence",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, f64>(6)?,
+            row.get::<_, f64>(7)?,
+            row.get::<_, f64>(8)?,
+            row.get::<_, f64>(9)?,
+            row.get::<_, f64>(10)?,
+            row.get::<_, f64>(11)?,
+            row.get::<_, f64>(12)?,
+            row.get::<_, f64>(13)?,
+            row.get::<_, f64>(14)?,
+            row.get::<_, f64>(15)?,
+            row.get::<_, f64>(16)?,
+            row.get::<_, f64>(17)?,
+            row.get::<_, f64>(18)?,
+            row.get::<_, f64>(19)?,
+            row.get::<_, f64>(20)?,
+            row.get::<_, f64>(21)?,
+            row.get::<_, f64>(22)?,
+        ))
+    })?;
+    for row in rows {
+        let (
+            day_index,
+            income,
+            expenses,
+            net,
+            treasury,
+            tax_income,
+            utility_service_revenue,
+            benefits,
+            city_wages,
+            fuel_input_purchases,
+            imports_owa,
+            construction_service_costs,
+            power_produced,
+            power_consumed,
+            power_unmet,
+            power_coverage,
+            coal_inventory,
+            coal_bought,
+            coal_consumed,
+            electricity_fuel_cost,
+            electricity_wage_cost,
+            electricity_revenue,
+            electricity_net,
+        ) = row?;
+        history.push_back(DailyBudgetLedgerEntry {
+            day_index: i64_to_u32(day_index)?,
+            income,
+            expenses,
+            net,
+            treasury,
+            tax_income,
+            utility_service_revenue,
+            benefits,
+            city_wages,
+            fuel_input_purchases,
+            imports_owa,
+            construction_service_costs,
+            power_produced,
+            power_consumed,
+            power_unmet,
+            power_coverage,
+            coal_inventory,
+            coal_bought,
+            coal_consumed,
+            electricity_fuel_cost,
+            electricity_wage_cost,
+            electricity_revenue,
+            electricity_net,
+        });
+    }
+    Ok(history)
 }
 
 #[derive(Debug)]
@@ -195,6 +339,11 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             view.treasury.pending_property_tax,
         ],
     )?;
+    tx.execute(
+        "INSERT INTO city_service_policy(electricity_funding) VALUES (?1)",
+        params![view.service_policy.electricity_funding.clamp(0.0, 1.0)],
+    )?;
+    save_budget_history(&tx, view.budget_history)?;
 
     world::save_world(
         &tx,
@@ -325,7 +474,6 @@ pub(crate) fn load_from_sqlite(
     agents::validate_loaded_planned_lane_ids(&mut agents, transit_network.lane_system.lanes.len());
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
-    allocator.rebuild_entrance_cache(&graph, &transit_network.lane_system);
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;
@@ -373,6 +521,24 @@ pub(crate) fn load_from_sqlite(
         pending_business_profit_tax: treasury_row.12,
         pending_property_tax: treasury_row.13,
     };
+    let service_policy = if sqlite_table_exists(&conn, "city_service_policy")? {
+        match conn.query_row(
+            "SELECT electricity_funding FROM city_service_policy LIMIT 1",
+            [],
+            |r| {
+                Ok(CityServicePolicy {
+                    electricity_funding: r.get::<_, f32>(0)?.clamp(0.0, 1.0),
+                })
+            },
+        ) {
+            Ok(policy) => policy,
+            Err(rusqlite::Error::QueryReturnedNoRows) => CityServicePolicy::default(),
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        CityServicePolicy::default()
+    };
+    let budget_history = load_budget_history(&conn)?;
 
     Ok(LoadedSimulation {
         config,
@@ -392,6 +558,8 @@ pub(crate) fn load_from_sqlite(
         logistics,
         agents,
         treasury,
+        service_policy,
+        budget_history,
     })
 }
 

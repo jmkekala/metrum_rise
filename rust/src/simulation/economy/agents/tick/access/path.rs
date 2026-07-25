@@ -111,6 +111,42 @@ pub(in crate::simulation::economy::agents::tick) fn local_access_target_segment(
     None
 }
 
+fn local_access_remaining_distance(current: Vector2, path: &LocalAccessPath) -> Option<f32> {
+    let target_idx = local_access_target_segment(current, path)?;
+    let mut distance = segment_distance(current, path.points[target_idx]);
+    for idx in (target_idx + 1)..path.count {
+        distance += segment_distance(path.points[idx - 1], path.points[idx]);
+    }
+    Some(distance)
+}
+
+/// Returns true when a traffic-debug local-access step carries new useful information.
+pub(in crate::simulation::economy::agents::tick) fn local_access_should_log_step(
+    current: Vector2,
+    next: Vector2,
+    path: &LocalAccessPath,
+    reached_end: bool,
+) -> bool {
+    if reached_end {
+        return true;
+    }
+
+    let seg_before = local_access_target_segment(current, path);
+    let seg_after = local_access_target_segment(next, path);
+    if seg_before != seg_after {
+        return true;
+    }
+
+    let Some(before_remaining) = local_access_remaining_distance(current, path) else {
+        return true;
+    };
+    let Some(after_remaining) = local_access_remaining_distance(next, path) else {
+        return true;
+    };
+
+    before_remaining.floor() != after_remaining.floor()
+}
+
 /// Advances along a local access path by `step` meters.
 pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_path(
     current: Vector2,

@@ -98,17 +98,29 @@ pub(super) fn pedestrian_needs_access_surface(transit: u8) -> bool {
     transit == TRANSIT_ACCESS_EGRESS || transit == TRANSIT_ACCESS_INGRESS
 }
 
+/// Chooses the topmost authored surface used while a pedestrian is entering or leaving a building.
+pub(super) fn pedestrian_access_surface_height_from_samples(
+    terrain_y: f32,
+    road_y: Option<f32>,
+    building_site_y: Option<f32>,
+) -> f32 {
+    road_y
+        .into_iter()
+        .chain(building_site_y)
+        .fold(terrain_y, f32::max)
+}
+
 fn pedestrian_access_surface_height(core: &SimCore, world_x: f32, world_z: f32) -> f32 {
-    core.transit_network
+    let terrain_y = core.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE;
+    let road_y = core
+        .transit_network
         .road_surface
-        .sample_visible_surface_height(&core.region_graph, &core.heightmap, world_x, world_z)
-        .or_else(|| {
-            core.allocator
-                .sample_building_site_height(Vector2::new(world_x, world_z))
-        })
-        .unwrap_or_else(|| {
-            core.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE
-        })
+        .sample_visible_surface_height(&core.region_graph, &core.heightmap, world_x, world_z);
+    let building_site_y = core
+        .allocator
+        .sample_building_site_height(Vector2::new(world_x, world_z));
+
+    pedestrian_access_surface_height_from_samples(terrain_y, road_y, building_site_y)
 }
 
 /// Full water runtime snapshot for undo history.

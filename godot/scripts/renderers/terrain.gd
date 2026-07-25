@@ -752,7 +752,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var initial_lod_step := _mesh_lod_step_for_patch(key, patch_center_x, patch_center_z)
 	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
 	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
-	var height_is_baked: bool = _patch_has_baked_terrain_mesh(patch_data)
+	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
 	patch_mesh = _terrain_patch_mesh_from_data(patch_data, initial_lod_step, initial_subdivision_factor)
 
 	var patch_node: MeshInstance3D = patch_resources["node"] as MeshInstance3D
@@ -1004,7 +1004,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		float(patch_data["world_size_x"]),
 		float(patch_data["world_size_z"])
 	))
-	var height_is_baked: bool = _patch_has_baked_terrain_mesh(patch_data)
+	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
 	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
 
@@ -1987,9 +1987,34 @@ func _last_renderable_engineered_patch_data(patch: Dictionary) -> Dictionary:
 func _engineered_patch_data_is_renderable(patch_data: Dictionary) -> bool:
 	if patch_data.is_empty():
 		return false
-	if _patch_has_unusable_refined_cdt(patch_data):
-		return false
-	return _patch_uses_cdt_terrain_mesh(patch_data)
+	return _patch_uses_cdt_terrain_mesh(patch_data) or _patch_has_heightmap_render_fallback(
+		patch_data
+	)
+
+func _patch_has_heightmap_render_fallback(patch_data: Dictionary) -> bool:
+	var texture_width := int(patch_data.get("texture_width", 0))
+	var texture_height := int(patch_data.get("texture_height", 0))
+	var sample_width := int(patch_data.get("sample_width", 0))
+	var sample_height := int(patch_data.get("sample_height", 0))
+	var height_bytes: PackedByteArray = (
+		patch_data.get("height_bytes", PackedByteArray())
+		as PackedByteArray
+	)
+	return (
+		texture_width > 0
+		and texture_height > 0
+		and sample_width >= 2
+		and sample_height >= 2
+		and float(patch_data.get("world_size_x", 0.0)) > 0.0
+		and float(patch_data.get("world_size_z", 0.0)) > 0.0
+		and height_bytes.size() >= texture_width * texture_height * 4
+	)
+
+func _terrain_patch_mesh_is_baked(patch_data: Dictionary) -> bool:
+	return (
+		_patch_uses_cdt_terrain_mesh(patch_data)
+		or (not patch_data.has("terrain_cdt_status") and _patch_has_baked_terrain_mesh(patch_data))
+	)
 
 func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
 	if not patch_data.has("terrain_mesh_vertices"):
@@ -2812,7 +2837,7 @@ func _ensure_border_visuals() -> void:
 		border_skirt_instance.name = "TerrainBorderSkirt"
 		SceneLightingConfig.apply_shadow_policy(
 			border_skirt_instance,
-			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			SceneLightingConfig.SHADOW_NON_RECEIVER,
 			"terrain"
 		)
 		border_skirt_instance.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
@@ -2822,7 +2847,7 @@ func _ensure_border_visuals() -> void:
 		border_bottom_cap_instance.name = "TerrainBorderBottomCap"
 		SceneLightingConfig.apply_shadow_policy(
 			border_bottom_cap_instance,
-			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+			SceneLightingConfig.SHADOW_NON_RECEIVER,
 			"terrain"
 		)
 		border_bottom_cap_instance.extra_cull_margin = PATCH_EXTRA_CULL_MARGIN_M
@@ -2851,6 +2876,7 @@ func _ensure_border_visuals() -> void:
 	if border_bottom_cap_material == null:
 		border_bottom_cap_material = StandardMaterial3D.new()
 		border_bottom_cap_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		border_bottom_cap_material.disable_receive_shadows = true
 		border_bottom_cap_material.albedo_color = TERRAIN_BORDER_BOTTOM_COLOR
 		border_bottom_cap_material.cull_mode = BaseMaterial3D.CULL_FRONT
 	border_skirt_instance.material_override = border_skirt_material

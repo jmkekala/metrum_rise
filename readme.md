@@ -7,7 +7,7 @@ License: [GNU General Public License, version 2](https://www.gnu.org/licenses/ol
 ## Requirements
 - Godot (4.x)
 - Rust  (made with 1.97)
-- Linux
+- Linux. Probably works with WSL2 just fine. As for a proper port, I personally do not care, one should not use Windows anymore anyways.
 
 ## How-to
 
@@ -25,8 +25,7 @@ There are also economy and world editor. But these are not update in awhile so t
 
 
 ## Bugs
-Loads of bugs. At leas this is "game breaking":
-- Walking agents might get stuck to the junctions
+Loads of bugs
 
 ## Credits
 
@@ -48,3 +47,4 @@ https://kenney.itch.io/
 They are at the "screenshots" folder.
 [Main view](/screenshots/town_01.png)
 [Asset Editor](/screenshots/asset_editor_01.png)
+[First attempt to make a t-junction](/screenshots/t-junction.png)

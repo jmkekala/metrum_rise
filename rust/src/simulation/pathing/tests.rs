@@ -266,6 +266,63 @@ fn test_car_uturn_allowed() {
 }
 
 #[test]
+fn test_border_spur_routes_to_connected_residential_branch() {
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(-108.36, 0.0, 36.65), NodeType::Junction);
+    let border = graph.add_node(Vector3::new(259.75, 0.0, 120.91), NodeType::Border);
+    let n2 = graph.add_node(Vector3::new(125.72, 0.0, 189.58), NodeType::Junction);
+    let home_end = graph.add_node(Vector3::new(128.51, 0.0, -128.40), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(126.59, 0.0, 90.43), NodeType::Junction);
+
+    let node_positions = [
+        graph.node(n0).pos,
+        graph.node(border).pos,
+        graph.node(n2).pos,
+        graph.node(home_end).pos,
+        graph.node(center).pos,
+    ];
+    let edge = |start_node: u32, end_node: u32, length, start_clip, end_clip| {
+        let start_pos = node_positions[start_node as usize];
+        let end_pos = node_positions[end_node as usize];
+        Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 13.888889,
+            base_cost: length / 13.888889,
+            physical_length: length,
+            current_congestion: 0.0,
+            start_clip,
+            end_clip,
+            geometry: vec![start_pos, end_pos],
+            physical_geometry: vec![start_pos, end_pos],
+            class: EdgeClass::Standard,
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        }
+    };
+    graph.add_edge(edge(n0, center, 241.03, 0.0, 9.35));
+    graph.add_edge(edge(n2, center, 99.15, 0.0, 9.80));
+    graph.add_edge(edge(center, border, 136.60, 9.35, 0.0));
+    graph.add_edge(edge(center, home_end, 218.84, 9.80, 0.0));
+    graph.rebuild_adjacency_list();
+
+    let cch = CchGraph::build(&graph);
+    let path_to_home_branch = cch.find_path(border, center, usize::MAX, &graph, TransitFlags::CAR);
+
+    assert!(
+        path_to_home_branch.is_some(),
+        "border spur must route to the connected junction node"
+    );
+}
+
+#[test]
 fn test_car_avoids_walkway_shortcut() {
     let mut graph = RegionGraph::new();
     // n0 --- (Road) --- n1 --- (Road) --- n2

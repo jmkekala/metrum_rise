@@ -199,6 +199,14 @@ pub struct AgentSystem {
     pub(crate) next_render_id: u64,
     /// Last allocator building-reference revision that was scrubbed against this agent store.
     pub(crate) last_building_ref_scrub_revision: u64,
+    /// Traffic-debug scratch: last observed visible pedestrian X position.
+    pub(crate) traffic_debug_last_pos_x: Vec<f32>,
+    /// Traffic-debug scratch: last observed visible pedestrian Z position.
+    pub(crate) traffic_debug_last_pos_y: Vec<f32>,
+    /// Traffic-debug scratch: accumulated no-progress time for visible pedestrians.
+    pub(crate) traffic_debug_stationary_s: Vec<f32>,
+    /// Traffic-debug scratch: next simulation time at which a stationary line may be emitted.
+    pub(crate) traffic_debug_next_log_time: Vec<f32>,
 }
 
 impl Clone for AgentSystem {
@@ -227,6 +235,10 @@ impl Clone for AgentSystem {
             lane_vehicle_cnt: Vec::new(),
             next_render_id: self.next_render_id,
             last_building_ref_scrub_revision: self.last_building_ref_scrub_revision,
+            traffic_debug_last_pos_x: Vec::new(),
+            traffic_debug_last_pos_y: Vec::new(),
+            traffic_debug_stationary_s: Vec::new(),
+            traffic_debug_next_log_time: Vec::new(),
         }
     }
 }
@@ -272,6 +284,10 @@ impl AgentSystem {
             lane_vehicle_cnt: Vec::new(),
             next_render_id: 0,
             last_building_ref_scrub_revision: u64::MAX,
+            traffic_debug_last_pos_x: Vec::new(),
+            traffic_debug_last_pos_y: Vec::new(),
+            traffic_debug_stationary_s: Vec::new(),
+            traffic_debug_next_log_time: Vec::new(),
         }
     }
 

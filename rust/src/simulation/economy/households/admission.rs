@@ -131,14 +131,16 @@ impl HouseholdSystem {
                 agents.assign_household_id(resident_idx, household_id);
             }
 
-            debug_log!(
-                "economy",
-                "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",
-                household_id,
-                pending_size,
-                home,
-                i,
-            );
+            for category in ["economy", "spawn"] {
+                debug_log!(
+                    category,
+                    "household arrival carrier materialized household_id={} size={} home_building={} carrier_agent={}",
+                    household_id,
+                    pending_size,
+                    home,
+                    i,
+                );
+            }
             materialized.households += 1;
             materialized.residents += usize::from(pending_size);
             i += 1;

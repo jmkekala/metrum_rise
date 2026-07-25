@@ -158,14 +158,7 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn terrain_cdt_stats_have_constraint_conflicts(
         stats: TerrainCdtStats,
     ) -> bool {
-        let hard_road_constraint_edges = stats
-            .road_constraint_edges
-            .saturating_sub(stats.building_site_constraint_edges);
-        let preserved_hard_road_constraint_edges = stats
-            .preserved_road_constraint_edges
-            .saturating_sub(stats.preserved_building_site_constraint_edges);
-        stats.invalid_constraint_edges > 0
-            || preserved_hard_road_constraint_edges < hard_road_constraint_edges
+        stats.invalid_constraint_edges > 0 || stats.spade_missing_road_constraint_edges > 0
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_output_is_pathological(

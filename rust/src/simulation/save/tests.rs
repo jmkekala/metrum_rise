@@ -2,7 +2,9 @@ use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
-use crate::nodes::sim::core::PendingDemandSpawnAction;
+use crate::nodes::sim::core::{
+    CityServicePolicy, DailyBudgetLedgerEntry, PendingDemandSpawnAction,
+};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -360,7 +362,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             freight_shipment_id: u64::MAX,
             work_building: usize::MAX,
             current_building: usize::MAX,
-            target_building: 0,
+            target_building: usize::MAX,
             freight_target_border_node: u32::MAX,
             current_node: n1,
             planned_attach_node: u32::MAX,
@@ -370,8 +372,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             planned_attach_lane_d: 0.0,
             planned_detach_lane_d: 0.0,
             access_flags: 0,
-            next_replan_time: 0.0,
-            current_edge: usize::MAX,
+            next_replan_time: 9.5,
+            current_edge: edge_id,
             current_lane_id: -1,
             lane_distance: 0.0,
             pos_x: 5.0,
@@ -394,7 +396,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             cached_work_profile_index: u16::MAX,
             has_car: false,
             vehicle_type: 0,
-            current_path_index: 0,
+            current_path_index: 1,
             current_path: Vec::new(),
             pedestrian_type: 0,
             walk_phase: 0.0,
@@ -404,6 +406,35 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     treasury.lifetime_tax_revenue = 250.0;
     treasury.last_daily_business_profit_tax = 12.5;
     treasury.pending_business_profit_tax = 3.25;
+    let service_policy = CityServicePolicy {
+        electricity_funding: 0.35,
+    };
+    let mut budget_history = VecDeque::new();
+    budget_history.push_back(DailyBudgetLedgerEntry {
+        day_index: 3,
+        income: 120.0,
+        expenses: 80.0,
+        net: 40.0,
+        treasury: 1_040.0,
+        tax_income: 95.0,
+        utility_service_revenue: 25.0,
+        benefits: 10.0,
+        city_wages: 20.0,
+        fuel_input_purchases: 15.0,
+        imports_owa: 5.0,
+        construction_service_costs: 30.0,
+        power_produced: 70.0,
+        power_consumed: 60.0,
+        power_unmet: 2.0,
+        power_coverage: 0.95,
+        coal_inventory: 300.0,
+        coal_bought: 40.0,
+        coal_consumed: 35.0,
+        electricity_fuel_cost: 12.0,
+        electricity_wage_cost: 8.0,
+        electricity_revenue: 30.0,
+        electricity_net: 10.0,
+    });
     let mut pending_demand_spawns = VecDeque::new();
     pending_demand_spawns.push_back(PendingDemandSpawnAction {
         due_minute: 1234,
@@ -436,6 +467,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             agents: &agents_sys,
             network: &network_sys,
             treasury: &treasury,
+            service_policy: &service_policy,
+            budget_history: &budget_history,
         },
     )
     .expect("save");
@@ -540,6 +573,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.age_group[0], AGE_ADULT);
     assert_eq!(loaded.agents.age_group[1], AGE_ADULT);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
+    assert_eq!(loaded.agents.transit[1], TRANSIT_NETWORK);
+    assert_eq!(loaded.agents.current_lane_id[1], usize::MAX);
+    assert_eq!(loaded.agents.current_path[1], Vec::<u32>::new());
+    assert_eq!(loaded.agents.current_path_index[1], 0);
+    assert_eq!(loaded.agents.current_edge[1], 0);
+    assert_eq!(loaded.agents.target_building[1], 0);
+    assert_eq!(loaded.agents.next_replan_time[1], 0.0);
     assert_eq!(loaded.agents.planned_attach_node[0], 0);
     assert_eq!(loaded.agents.planned_detach_node[0], 1);
     assert_eq!(loaded.agents.planned_attach_lane_id[0], planned_lane_id);
@@ -586,6 +626,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         loaded.treasury.pending_business_profit_tax,
         treasury.pending_business_profit_tax
     );
+    assert!(
+        (loaded.service_policy.electricity_funding - service_policy.electricity_funding).abs()
+            < 0.001
+    );
+    assert_eq!(loaded.budget_history.len(), 1);
+    let loaded_budget = loaded.budget_history[0];
+    assert_eq!(loaded_budget.day_index, 3);
+    assert_eq!(loaded_budget.income, 120.0);
+    assert_eq!(loaded_budget.expenses, 80.0);
+    assert_eq!(loaded_budget.net, 40.0);
+    assert_eq!(loaded_budget.treasury, 1_040.0);
+    assert_eq!(loaded_budget.power_coverage, 0.95);
+    assert_eq!(loaded_budget.electricity_net, 10.0);
     let staple_food = catalog
         .resource_runtime_id_for_id("staple_food")
         .expect("staple food resource");

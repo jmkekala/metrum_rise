@@ -1,19 +1,21 @@
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 use super::{
-    CityTreasury, RenderSnapshot, RoadPreviewRequest, SimCore, absolute_operational_minute,
-    demand_plan_has_non_spawn_actions, demand_plan_without_spawns, pedestrian_lane_surface_height,
+    CityTreasury, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, SimCore,
+    absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,
+    pedestrian_access_surface_height_from_samples, pedestrian_lane_surface_height,
     pedestrian_needs_access_surface, road_tool_snapshots_from_core,
 };
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
     AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
     TRANSIT_NETWORK,
 };
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
 };
@@ -34,6 +36,17 @@ use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 use std::collections::{HashMap, VecDeque};
+
+fn temp_save_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "metrum_rise_{name}_{}_{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos()
+    ))
+}
 
 fn test_core() -> SimCore {
     let config = WorldConfig::default();
@@ -166,6 +179,29 @@ fn full_patch_invalidation_dominates_local_road_scope() {
 
     assert_eq!(ledger.full_dirty_at, Some(current_generation));
     assert_eq!(ledger.road_query_chunk_dirty_at.len(), 1);
+}
+
+#[test]
+fn full_engineered_terrain_refresh_does_not_depend_on_dirty_patches() {
+    let mut core = test_core();
+    for (patch_x, patch_z, generation) in core.terrain_dirty_patch_states() {
+        core.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
+    }
+    core.engineered_terrain_patch_keys.push((0, 0));
+    core.engineered_terrain_patch_margins.insert((0, 0), 8.0);
+
+    core.refresh_all_engineered_terrain_patch_state(
+        crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+    );
+
+    assert!(
+        core.engineered_terrain_patch_keys.is_empty(),
+        "a full refresh must rescan all render patches even when no patch was already dirty"
+    );
+    assert!(
+        core.heightmap.dirty_render_patches().contains(&(0, 0)),
+        "ownership transitions must dirty the affected terrain patch"
+    );
 }
 
 #[test]
@@ -539,6 +575,115 @@ fn add_test_border_road(core: &mut SimCore) {
         .rebuild(&mut core.region_graph);
 }
 
+fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: ZoneType) {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let zone_profile_runtime_id = core
+        .zoning
+        .profiles
+        .default_runtime_id_for_zone_type(zone_type)
+        .expect("test zone profile");
+    core.allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        support_height_m: 0.0,
+        width_cells: 2,
+        depth_cells: 2,
+        zone_profile_runtime_id,
+        parcel_id: 0,
+        zone_type,
+        facing_dir: godot::prelude::Vector2::ZERO,
+        frontage_t: 0.5,
+        side_offset: 0.0,
+        budget_distress: false,
+        is_deserted: false,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 3,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        service_funding_override: -1.0,
+        asset_id,
+        level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
+        broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
+        resource_inventory: vec![0.0; catalog.resource_count()],
+        revenue: 0.0,
+        operating_budget: 0.0,
+        profit_tax_budget_baseline: 0.0,
+        last_day_profit: 0.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
+        daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    core.allocator
+        .recompute_derived_transforms(&core.region_graph, &core.zoning)
+        .expect("test building transforms");
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+}
+
+#[test]
+fn load_game_rebuilds_entrances_after_registry_restore() {
+    let mut source = test_core();
+    add_test_border_road(&mut source);
+    let asset_id = register_test_asset(
+        &mut source.allocator,
+        "load_registry_residential",
+        ZoneType::Residential,
+    );
+    add_test_complete_building(&mut source, asset_id, ZoneType::Residential);
+    source.budget_history.push_back(DailyBudgetLedgerEntry {
+        day_index: 7,
+        income: 300.0,
+        expenses: 125.0,
+        net: 175.0,
+        treasury: 1_175.0,
+        power_coverage: 0.8,
+        ..DailyBudgetLedgerEntry::default()
+    });
+
+    let save_path = temp_save_path("load_registry_entrances");
+    source
+        .save_game_internal(save_path.to_str().expect("utf-8 temp path"))
+        .expect("save test world");
+
+    let mut loaded = test_core();
+    register_test_asset(
+        &mut loaded.allocator,
+        "load_registry_residential",
+        ZoneType::Residential,
+    );
+    loaded
+        .load_game_internal(save_path.to_str().expect("utf-8 temp path"))
+        .expect("load test world");
+    let _ = std::fs::remove_file(save_path);
+
+    assert_eq!(loaded.allocator.entrances.len(), 1);
+    let entrance = &loaded.allocator.entrances[0];
+    assert_ne!(entrance.foot_lane_fwd, usize::MAX);
+    assert_ne!(entrance.foot_lane_bkw, usize::MAX);
+    assert_ne!(entrance.car_lane_fwd, usize::MAX);
+    assert_ne!(entrance.car_lane_bkw, usize::MAX);
+    assert_eq!(loaded.allocator.building_sites.len(), 1);
+    assert_eq!(loaded.budget_history.len(), 1);
+    assert_eq!(loaded.budget_history[0].day_index, 7);
+    assert_eq!(loaded.budget_history[0].net, 175.0);
+}
+
 fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edge {
     let physical_length = geometry
         .windows(2)
@@ -779,4 +924,20 @@ fn pedestrian_access_surface_is_limited_to_door_transitions() {
     assert!(pedestrian_needs_access_surface(TRANSIT_ACCESS_INGRESS));
     assert!(!pedestrian_needs_access_surface(TRANSIT_NETWORK));
     assert!(!pedestrian_needs_access_surface(TRANSIT_IN_BUILDING));
+}
+
+#[test]
+fn pedestrian_access_surface_uses_highest_authoritative_surface() {
+    assert_eq!(
+        pedestrian_access_surface_height_from_samples(1.0, Some(1.2), Some(1.7)),
+        1.7
+    );
+    assert_eq!(
+        pedestrian_access_surface_height_from_samples(1.6, Some(1.2), None),
+        1.6
+    );
+    assert_eq!(
+        pedestrian_access_surface_height_from_samples(1.0, None, Some(1.4)),
+        1.4
+    );
 }

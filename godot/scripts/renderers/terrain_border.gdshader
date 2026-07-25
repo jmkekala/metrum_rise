@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_front;
+render_mode cull_front, shadows_disabled;
 
 uniform float skirt_depth_m = 120.0;
 uniform vec3 top_color : source_color = vec3(0.42, 0.40, 0.34);
