@@ -1,16 +1,16 @@
 ## Mod pack manager popup.
 ##
 ## Scans user://mods/ for installed packs, reads/writes user://active_packs.cfg
-## to persist which packs are enabled. Buildings.gd reads the same config at
-## startup to decide which packs to load into the asset registry.
+## to persist which packs are enabled. Missing config defaults to the bundled
+## starter pack; an explicitly saved empty list disables all packs.
 ##
 ## No Rust methods called directly — pack loading happens in buildings.gd via
 ## load_asset_packs(). This script only manages the config file and the UI.
 extends Window
 
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 
-const CFG_PATH := "user://active_packs.cfg"
 const MODS_DIR := "user://mods/"
 
 signal packs_changed
@@ -163,10 +163,7 @@ func _read_pack_meta(path: String) -> Dictionary:
 	return meta
 
 func _load_enabled_packs() -> Array:
-	var cfg := ConfigFile.new()
-	if cfg.load(CFG_PATH) != OK:
-		return []
-	return cfg.get_value("packs", "enabled", [])
+	return ModPackConfig.load_enabled_pack_ids()
 
 func _on_apply_pressed() -> void:
 	var enabled: Array = []
@@ -174,9 +171,9 @@ func _on_apply_pressed() -> void:
 		if (_checks[pack_id] as CheckBox).button_pressed:
 			enabled.append(pack_id)
 	enabled.sort()
-	var cfg := ConfigFile.new()
-	cfg.set_value("packs", "enabled", enabled)
-	cfg.save(CFG_PATH)
+	var err := ModPackConfig.save_enabled_pack_ids(enabled)
+	if err != OK:
+		push_warning("Could not save active pack selection (error %d)." % err)
 	emit_signal("packs_changed")
 	# Inform the user a restart is needed for changes to take effect.
 	var dialog := AcceptDialog.new()

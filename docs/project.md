@@ -547,8 +547,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Gameplay and `WorldEditor` now share one terrain-aware world-camera core in `CameraNode`, including a common terrain-clearance rule that keeps the camera above the terrain surface while preserving separate scene-level zoom and clip policy. See [`ui.md`](ui.md).
 - Added release startup user-data bootstrap: the router creates `user://worlds/`, `user://mods/`,
   and `user://saves/`, then copies missing bundled starter entries from `res://bootstrap/worlds/`
-  and `res://bootstrap/mods/` without overwriting user-owned files. See [`ui.md`](ui.md),
-  [`terrain.md`](terrain.md), and [`asset_editor.md`](asset_editor.md).
+  and `res://bootstrap/mods/` without overwriting user-owned files. Fresh profiles also seed
+  `user://active_packs.cfg` with the bundled `kenney` pack enabled; later saved pack selections,
+  including an empty list, remain player-owned. See [`ui.md`](ui.md), [`terrain.md`](terrain.md),
+  and [`asset_editor.md`](asset_editor.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).
 - Gameplay `File -> New Game` now opens a `user://worlds/` picker and loads the selected `WorldDefinition` into the live gameplay scene, pausing immediately after the refresh. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
 - Gameplay `Save` and `Load` now open file pickers rooted at `user://saves/` instead of using one fixed `savegame.sqlite` path. See [`ui.md`](ui.md).

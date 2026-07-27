@@ -8,14 +8,15 @@
 ##   try_get_building_render_frame(asset_ids, part_indices, zone_ids, site_revision) -> Dictionary
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
-## passes each enabled pack's native path to Rust for manifest scanning. Packs not
-## listed in the config are ignored. Rust parses the manifests; GDScript loads the
-## corresponding mesh files and maintains one MultiMeshInstance3D per asset_id/part.
+## passes each enabled pack's native path to Rust for manifest scanning. Missing config
+## enables the bundled starter pack; packs not listed in saved config are ignored.
+## Rust parses the manifests; GDScript loads the corresponding mesh files and maintains
+## one MultiMeshInstance3D per asset_id/part.
 ## Building transforms are polled every 30 frames.
 ## A parallel deserted_multimeshes dict renders economically dead buildings in gray.
 extends Node3D
 
-const CFG_PATH := "user://active_packs.cfg"
+const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 const PART_KEY_SEP := "|part:"
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
@@ -59,13 +60,9 @@ func reload_asset_packs() -> void:
 	_update_building_render_frame(true)
 
 func _load_enabled_packs() -> void:
-	var cfg := ConfigFile.new()
-	if cfg.load(CFG_PATH) != OK:
-		push_warning("Buildings: no active_packs.cfg found — no packs loaded. Use Mods menu to enable packs.")
-		return
-	var enabled: Array = cfg.get_value("packs", "enabled", [])
+	var enabled: Array = ModPackConfig.load_enabled_pack_ids()
 	if enabled.is_empty():
-		push_warning("Buildings: no packs enabled in active_packs.cfg.")
+		push_warning("Buildings: no asset packs enabled.")
 		return
 	var mods_native := ProjectSettings.globalize_path("user://mods/")
 	var filter := ",".join(enabled)

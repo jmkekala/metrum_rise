@@ -3,6 +3,8 @@
 ## content from res://bootstrap/ without overwriting user-owned files.
 extends RefCounted
 
+const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
+
 const USER_WORLDS_DIR := "user://worlds"
 const USER_MODS_DIR := "user://mods"
 const USER_SAVES_DIR := "user://saves"
@@ -16,6 +18,7 @@ static func run() -> void:
 	_ensure_user_dir(USER_SAVES_DIR)
 	_seed_top_level_entries(BOOTSTRAP_WORLDS_DIR, USER_WORLDS_DIR)
 	_seed_top_level_entries(BOOTSTRAP_MODS_DIR, USER_MODS_DIR)
+	ModPackConfig.seed_default_config_if_missing()
 
 static func _ensure_user_dir(path: String) -> bool:
 	var err := DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path))
