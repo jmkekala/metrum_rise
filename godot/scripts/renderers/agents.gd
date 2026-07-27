@@ -161,7 +161,7 @@ func _ready():
 	for v_type in car_models:
 		var loaded_model = false
 		var offsets = [0.0, 0.0, 0.0, 0.0, 0.0] if v_type == 4 else color_offsets
-		if car_texture_cache_ready or v_type == 4:
+		if car_texture_cache_ready:
 			loaded_model = _add_car_model_variants(v_type, car_models[v_type], offsets)
 		if not loaded_model:
 			_add_procedural_car_variants(v_type, car_colors)

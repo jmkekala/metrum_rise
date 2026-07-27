@@ -2552,7 +2552,7 @@ func _ensure_grass_textures() -> void:
 
 func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
 	var texture: Texture2D = null
-	if ResourceLoader.exists(path):
+	if ResourceLoader.exists(path) and _import_dest_files_exist(path):
 		texture = load(path) as Texture2D
 	if texture != null:
 		return texture
@@ -2565,6 +2565,23 @@ func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
 	var fallback_image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
 	fallback_image.fill(fallback_color)
 	return ImageTexture.create_from_image(fallback_image)
+
+func _import_dest_files_exist(path: String) -> bool:
+	var import_path := path + ".import"
+	if not FileAccess.file_exists(ProjectSettings.globalize_path(import_path)):
+		return true
+
+	var cfg := ConfigFile.new()
+	if cfg.load(import_path) != OK:
+		return true
+
+	var dest_files = cfg.get_value("deps", "dest_files", [])
+	if dest_files.is_empty():
+		return true
+	for dest_file in dest_files:
+		if not FileAccess.file_exists(ProjectSettings.globalize_path(str(dest_file))):
+			return false
+	return true
 
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
 	if patch.get("water_texture", null) != empty_water_texture:

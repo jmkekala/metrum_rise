@@ -423,7 +423,11 @@ fi
 
 echo "Deploying library..."
 mkdir -p ../godot/bin
-cp $LIB ../godot/bin/libmetrum_rise.so
+cp "$LIB" ../godot/bin/libmetrum_rise.so
+
+echo "Registering GDExtension..."
+mkdir -p ../godot/.godot
+printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cfg
 
 echo "Launching Metrum Rise..."
 cd ../godot && godot "${GODOT_ENGINE_ARGS[@]}" -- "${GODOT_ARGS[@]}"

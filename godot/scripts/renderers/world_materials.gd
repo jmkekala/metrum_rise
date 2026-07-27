@@ -231,9 +231,9 @@ static func _load_texture(path: String) -> Texture2D:
 		return _texture_cache[path]
 
 	var tex: Texture2D = null
-	if ResourceLoader.exists(path):
+	if ResourceLoader.exists(path) and _import_dest_files_exist(path):
 		tex = load(path)
-	else:
+	if tex == null:
 		var abs_path := ProjectSettings.globalize_path(path)
 		var image := Image.load_from_file(abs_path)
 		if image:
@@ -242,3 +242,20 @@ static func _load_texture(path: String) -> Texture2D:
 
 	_texture_cache[path] = tex
 	return tex
+
+static func _import_dest_files_exist(path: String) -> bool:
+	var import_path := path + ".import"
+	if not FileAccess.file_exists(ProjectSettings.globalize_path(import_path)):
+		return true
+
+	var cfg := ConfigFile.new()
+	if cfg.load(import_path) != OK:
+		return true
+
+	var dest_files = cfg.get_value("deps", "dest_files", [])
+	if dest_files.is_empty():
+		return true
+	for dest_file in dest_files:
+		if not FileAccess.file_exists(ProjectSettings.globalize_path(str(dest_file))):
+			return false
+	return true
