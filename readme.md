@@ -33,18 +33,18 @@ Loads of bugs
 Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 19.04.2026)
 
 ### 3rd party assets used
-https://ambientcg.com/view?id=DaySkyHDRI059B
-https://www.cgbookcase.com/textures/grass-01
-https://polyhaven.com/a/concrete_layers_02
-https://polyhaven.com/a/asphalt_04
-https://polyhaven.com/a/clean_asphalt
-https://quaternius.com/
-https://kenney.itch.io/
+- https://ambientcg.com/view?id=DaySkyHDRI059B
+- https://www.cgbookcase.com/textures/grass-01
+- https://polyhaven.com/a/concrete_layers_02
+- https://polyhaven.com/a/asphalt_04
+- https://polyhaven.com/a/clean_asphalt
+- https://quaternius.com/
+- https://kenney.itch.io/
 
 
 ## Screenshots
 
 They are at the "screenshots" folder.
-[Main view](/screenshots/town_01.png)
-[Asset Editor](/screenshots/asset_editor_01.png)
-[First attempt to make a t-junction](/screenshots/t-junction.png)
+- [Main view](/screenshots/town_01.png)
+- [Asset Editor](/screenshots/asset_editor_01.png)
+- [First attempt to make a t-junction](/screenshots/t-junction.png)
