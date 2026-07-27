@@ -1,5 +1,6 @@
 //! Background simulation command processing and fixed-rate thread loop.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -9,6 +10,7 @@ use super::road_preview::{
 use super::snapshot::RenderSnapshot;
 use super::state::{BulkRoadGeometryFinalize, SimCore};
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
+use crate::debug::{CrashCommand, CrashSimSnapshot};
 use crate::debug_log;
 use crate::nodes::sim::editing::BulldozeTarget;
 use godot::prelude::godot_error;
@@ -23,6 +25,7 @@ fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("(non-string payload)");
             godot_error!("[sim] {} panicked: {}", phase, message);
+            crate::debug::flush_crash_diagnostics(phase);
             std::panic::resume_unwind(payload);
         }
     }
@@ -79,6 +82,39 @@ fn publish_road_tool_snapshots(
         .expect("road query snapshot lock poisoned") = query_snapshot;
 }
 
+fn crash_summary_from_core(core: &SimCore) -> CrashSimSnapshot {
+    CrashSimSnapshot {
+        day_index: core.time.day_index,
+        minute_of_day: core.time.minute_of_day,
+        speed_multiplier: core.time.speed_multiplier,
+        agent_count: core.agents.len(),
+        pathfind_count: core.agents.pathfind_count.load(Ordering::Relaxed),
+        building_count: core.allocator.buildings.len(),
+        household_count: core.households.households.len(),
+        road_node_count: core.region_graph.node_count(),
+        road_edge_count: core.region_graph.edge_count(),
+        road_generation: core.road_tool_surface_generation,
+        pending_demand_spawns: core.pending_demand_spawns.len(),
+        last_agent_tick_us: core.last_agent_tick_us,
+        last_tick_duration_ms: core.last_tick_duration,
+        terrain_dirty: core.terrain_dirty,
+        water_dirty: core.water_dirty,
+        network_dirty: core.network_dirty,
+    }
+}
+
+fn record_crash_phase_for_core(core: &SimCore, phase: &'static str) {
+    if crate::debug::is_crash_diagnostics_enabled() {
+        crate::debug::record_crash_phase(phase, crash_summary_from_core(core));
+    }
+}
+
+fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
+    if crate::debug::is_crash_diagnostics_enabled() {
+        crate::debug::record_crash_command(command, crash_summary_from_core(core));
+    }
+}
+
 /// Background simulation thread loop.
 ///
 /// Runs at ~60 Hz, decoupled from Godot's render frame. Movement ticks and queued
@@ -127,10 +163,13 @@ pub(crate) fn run_sim_thread(
                     undo_commands += 1;
                     let road_snapshots = {
                         let mut core = core.lock().expect("simulation core lock poisoned");
+                        record_crash_command_for_core(&core, CrashCommand::Undo);
+                        record_crash_phase_for_core(&core, "undo command");
                         let generation_before = core.road_tool_surface_generation;
                         if !core.undo_action_internal() {
                             None
                         } else if core.road_tool_surface_generation != generation_before {
+                            record_crash_phase_for_core(&core, "undo network finalize");
                             finalize_network_render_products(&mut core)
                         } else {
                             None
@@ -150,10 +189,13 @@ pub(crate) fn run_sim_thread(
                     bulldoze_commands += 1;
                     let road_snapshots = {
                         let mut core = core.lock().expect("simulation core lock poisoned");
+                        record_crash_command_for_core(&core, CrashCommand::Bulldoze);
+                        record_crash_phase_for_core(&core, "bulldoze command");
                         let road_deleted = core
                             .bulldoze_prepared_target_internal(target)
                             .unwrap_or(false);
                         if road_deleted {
+                            record_crash_phase_for_core(&core, "bulldoze network finalize");
                             finalize_network_render_products(&mut core)
                         } else {
                             None
@@ -191,9 +233,19 @@ pub(crate) fn run_sim_thread(
                     ) = {
                         let mut c = core.lock().expect("simulation core lock poisoned");
                         let road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
+                        record_crash_command_for_core(
+                            &c,
+                            CrashCommand::AddRoad {
+                                point_count: points.len(),
+                                fwd_lanes,
+                                bkw_lanes,
+                                snap_to_existing_roads,
+                            },
+                        );
                         // Bulk-load defers per-edge rebuilds until finalization.
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
+                        record_crash_phase_for_core(&c, "add road internal");
                         let road_add = c.add_road_internal_with_snap(
                             points,
                             fwd_lanes,
@@ -205,6 +257,7 @@ pub(crate) fn run_sim_thread(
                         if road_add.committed {
                             let c = &mut *c;
                             c.transit_network.bulk_load = false;
+                            record_crash_phase_for_core(c, "add road geometry finalize");
 
                             let BulkRoadGeometryFinalize {
                                 dirty_edges: dirty,
@@ -226,6 +279,7 @@ pub(crate) fn run_sim_thread(
 
                             let t_inv = Instant::now();
                             // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
+                            record_crash_phase_for_core(c, "add road lane invalidation");
                             c.agents.invalidate_lane_ids_for_edges(
                                 &dirty,
                                 &c.transit_network.lane_system,
@@ -234,6 +288,7 @@ pub(crate) fn run_sim_thread(
                             let dt_inv_us = t_inv.elapsed().as_micros();
 
                             let t_lanes = Instant::now();
+                            record_crash_phase_for_core(c, "add road lane rebuild");
                             c.transit_network
                                 .lane_system
                                 .rebuild_edges_incremental(&mut c.region_graph, &dirty);
@@ -243,11 +298,13 @@ pub(crate) fn run_sim_thread(
                                 &c.region_graph,
                             );
                             let dt_lanes_us = t_lanes.elapsed().as_micros();
+                            record_crash_phase_for_core(c, "add road entrance rebuild");
                             c.rebuild_building_entrances_internal();
 
                             // Rebuild CCH and run the connectivity check. This is the only
                             // place the CCH is actually rebuilt for road placements — the
                             // sim-tick path is gated on speed > 0.0 and would miss paused edits.
+                            record_crash_phase_for_core(c, "add road cch rebuild");
                             c.transit_network.rebuild_cch_and_check(&c.region_graph);
                             c.transit_network.cch_dirty_chunks.clear();
 
@@ -274,6 +331,7 @@ pub(crate) fn run_sim_thread(
                         let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
                         let surface_start = Instant::now();
                         if road_add.committed {
+                            record_crash_phase_for_core(&c, "add road surface rebuild");
                             c.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
                             if !c
                                 .transit_network
@@ -287,12 +345,15 @@ pub(crate) fn run_sim_thread(
                         }
                         let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
                         let mesh_start = Instant::now();
+                        record_crash_phase_for_core(&c, "add road mesh precompute");
                         c.precompute_road_mesh_data();
                         let mesh_ms = mesh_start.elapsed().as_secs_f64() * 1000.0;
                         let snapshot_start = Instant::now();
+                        record_crash_phase_for_core(&c, "add road tool snapshot");
                         let road_snapshots = road_tool_snapshots_from_core(&c);
                         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
                         let collect_refined_start = Instant::now();
+                        record_crash_phase_for_core(&c, "add road terrain patch state");
                         let invalidated_refined_cache_entries = c
                             .refresh_road_locked_terrain_patch_state(
                                 ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
@@ -373,6 +434,7 @@ pub(crate) fn run_sim_thread(
         let mut daily_ticks = 0_usize;
         let agent_count: i32;
         let pathfind_count: u32;
+        let crash_frame_summary: Option<CrashSimSnapshot>;
 
         // Tick and build snapshot inside one lock acquisition.
         let new_snapshot = {
@@ -382,16 +444,28 @@ pub(crate) fn run_sim_thread(
             let lock_held_start = Instant::now();
             if let Some(speed) = pending_speed {
                 core.time.speed_multiplier = speed;
+                record_crash_command_for_core(&core, CrashCommand::SetSpeed { speed });
             }
             if let Some(camera_aabb) = pending_camera_aabb {
                 core.camera_aabb = camera_aabb;
+                record_crash_command_for_core(
+                    &core,
+                    CrashCommand::SetCameraAabb {
+                        x_min: camera_aabb.0,
+                        x_max: camera_aabb.1,
+                        z_min: camera_aabb.2,
+                        z_max: camera_aabb.3,
+                    },
+                );
             }
+            record_crash_phase_for_core(&core, "sim frame");
             let speed = core.time.speed_multiplier;
 
             if speed > 0.0 {
                 // Rebuild CCH if dirty, then rebuild any dirty flow fields.
                 let pathing_start = Instant::now();
                 let c = &mut *core;
+                record_crash_phase_for_core(c, "pathing rebuild");
                 c.transit_network
                     .rebuild_pathing_if_dirty(&mut c.region_graph);
                 {
@@ -408,6 +482,7 @@ pub(crate) fn run_sim_thread(
                 let dt = (TARGET_DT * speed as f64) as f32;
                 let t_agent = Instant::now();
 
+                record_crash_phase_for_core(&core, "agent tick");
                 run_sim_phase("agent tick", || {
                     let c = &mut *core;
                     c.agents.tick(
@@ -424,12 +499,14 @@ pub(crate) fn run_sim_thread(
                 agent_ms = core.last_agent_tick_us as f64 / 1000.0;
 
                 let minute_start = Instant::now();
+                record_crash_phase_for_core(&core, "time advance");
                 let time_advance = core.time.process_delta(TARGET_DT);
                 elapsed_minutes = time_advance.elapsed_minutes;
                 if time_advance.has_elapsed_minutes() {
                     for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes()
                     {
                         let pending_spawn_start = Instant::now();
+                        record_crash_phase_for_core(&core, "demand spawn tick");
                         pending_spawns_executed += run_sim_phase("demand spawn tick", || {
                             core.execute_pending_demand_spawns_for_minute(
                                 step_day_index,
@@ -439,6 +516,7 @@ pub(crate) fn run_sim_thread(
                         pending_spawn_ms += pending_spawn_start.elapsed().as_secs_f64() * 1000.0;
                         if step_minute_of_day % 60 == 0 {
                             let hourly_start = Instant::now();
+                            record_crash_phase_for_core(&core, "operational hour tick");
                             run_sim_phase("operational hour tick", || {
                                 core.simulate_operational_hour_internal(
                                     step_day_index,
@@ -453,6 +531,7 @@ pub(crate) fn run_sim_thread(
                         }
                         if step_minute_of_day == 0 {
                             let daily_start = Instant::now();
+                            record_crash_phase_for_core(&core, "daily tick");
                             run_sim_phase("daily tick", || {
                                 core.simulate_tick_internal(step_day_index)
                             });
@@ -470,6 +549,7 @@ pub(crate) fn run_sim_thread(
 
             let snapshot_start = Instant::now();
             let available_snapshot = std::mem::take(&mut recycled_snapshot);
+            record_crash_phase_for_core(&core, "snapshot build");
             let snapshot = run_sim_phase("snapshot build", || {
                 core.build_snapshot_reusing(available_snapshot)
             });
@@ -477,6 +557,8 @@ pub(crate) fn run_sim_thread(
             lock_held_ms = lock_held_start.elapsed().as_secs_f64() * 1000.0;
             agent_count = snapshot.agent_count;
             pathfind_count = snapshot.pathfind_count;
+            crash_frame_summary = crate::debug::is_crash_diagnostics_enabled()
+                .then(|| crash_summary_from_core(&core));
             snapshot
         };
 
@@ -489,6 +571,22 @@ pub(crate) fn run_sim_thread(
         recycled_snapshot = previous_snapshot;
         let snapshot_write_ms = snapshot_write_start.elapsed().as_secs_f64() * 1000.0;
         let active_ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        if let Some(summary) = crash_frame_summary {
+            crate::debug::record_crash_frame(
+                summary,
+                active_ms,
+                command_ms,
+                lock_wait_ms,
+                lock_held_ms,
+                snapshot_ms,
+                snapshot_write_ms,
+                elapsed_minutes,
+                pending_spawns_executed,
+                hourly_ticks,
+                daily_ticks,
+                commands_processed,
+            );
+        }
         let unaccounted_ms =
             (active_ms - command_ms - lock_wait_ms - lock_held_ms - snapshot_write_ms).max(0.0);
         if perf_enabled && (active_ms >= 8.0 || command_ms >= 8.0 || elapsed_minutes > 0) {

@@ -8,13 +8,22 @@
 //! - `METRUM_DEBUG_SIM=1` — hourly simulation summaries (`./run.sh --debug-sim`)
 //! - `METRUM_DEBUG_PERF=1` — renderer and simulation frame timing summaries
 //! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs
+//! - `METRUM_CRASH_DIAGNOSTICS=1` — release-safe panic dump and flight-recorder capture
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
 //! Use [`debug_log!`] and [`traffic_log!`] throughout the codebase — both are
 //! no-ops when the respective flag is off, with only an atomic bool check overhead.
 
+mod crash;
+
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+pub use crash::{CRASH_DIAGNOSTICS_ENABLED, is_crash_diagnostics_enabled};
+pub(crate) use crash::{
+    CrashCommand, CrashSimSnapshot, flush_crash_diagnostics, record_crash_command,
+    record_crash_frame, record_crash_phase,
+};
 
 /// General debug flag — set once at startup by [`init`], read by [`debug_log!`].
 pub static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -82,6 +91,8 @@ pub fn init() {
     if perf_on {
         println!("[DEBUG] Performance debug logging enabled (METRUM_DEBUG_PERF=1)");
     }
+
+    crash::init();
 }
 
 /// Returns `true` if general debug logging is currently enabled.

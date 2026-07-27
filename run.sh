@@ -50,7 +50,12 @@
 #                        raw, macro, mid, micro, fades, material, height, mask,
 #                        luminance, footprint
 #   --visuals [mode]     Alias for --debug visuals [mode]
+#
+# Release crash diagnostics:
+#   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic dumps to logs/
+#   METRUM_CRASH_DIAGNOSTICS=0 ./run.sh --release disables the background recorder
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
@@ -284,6 +289,19 @@ if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
     exit 2
 fi
 
+if [ -z "${METRUM_CRASH_LOG_DIR:-}" ]; then
+    export METRUM_CRASH_LOG_DIR="$PROJECT_ROOT/logs"
+fi
+
+if [ $RELEASE -eq 1 ] && [ -z "${METRUM_CRASH_DIAGNOSTICS+x}" ]; then
+    export METRUM_CRASH_DIAGNOSTICS=1
+fi
+
+if [ -n "${METRUM_CRASH_DIAGNOSTICS:-}" ] && [ "${METRUM_CRASH_DIAGNOSTICS}" != "0" ]; then
+    mkdir -p "$METRUM_CRASH_LOG_DIR"
+    echo "Crash diagnostics enabled (panic dumps go to $METRUM_CRASH_LOG_DIR)"
+fi
+
 if [ $DEBUG -eq 0 ] && [ -n "${METRUM_DEBUG_FILTER:-}" ]; then
     DEBUG=1
     DEBUG_CATEGORY="$METRUM_DEBUG_FILTER"
@@ -406,7 +424,7 @@ if [ $TERRAIN_VISUAL_DEBUG -eq 1 ]; then
 fi
 
 echo "Building Rust library..."
-cd rust
+cd "$PROJECT_ROOT/rust"
 if [ $RELEASE -eq 1 ]; then
     if ! cargo build --release; then
         echo "Rust build failed!"

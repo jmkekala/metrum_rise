@@ -77,6 +77,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Release launches now default to a low-overhead crash-diagnostics recorder: `run.sh --release`
+  sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook, and the sim thread records a
+  fixed-size flight recorder of command, phase, and frame summaries that dumps to `logs/` on panic.
+  Foreground debug modes such as `--debug road`, `--debug perf`, and `--debug traffic` remain
+  opt-in. See [`reference.md`](reference.md).
 - The Rust runtime bridge now keeps `simulation_node.rs` as the `SimulationNode` lifecycle and
   routing shell, with Godot APIs, async job state, and Variant export split into focused
   `nodes/simulation_node/` modules. Authoritative state, thread orchestration, snapshots, budgets,
