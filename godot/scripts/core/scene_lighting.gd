@@ -25,6 +25,8 @@ const SKY_CLOUD_SHADOW_COLOR := Color(0.52, 0.58, 0.64, 1.0)
 const SKY_CLOUD_LIGHT_COLOR := Color(0.88, 0.91, 0.94, 1.0)
 const SKY_SUN_ANGLE_MAX_DEG := 7.5
 const SKY_SUN_CURVE := 0.12
+const SKY_SUN_HORIZON_FADE_START := 0.015
+const SKY_SUN_HORIZON_FADE_END := 0.09
 const AMBIENT_COLOR := Color(0.54, 0.64, 0.70, 1.0)
 const FAR_FADE_START_RATIO := 0.80
 const FAR_FADE_END_GUARD_PATCHES := 0.50
@@ -277,6 +279,8 @@ func _create_hemisphere_sky() -> Sky:
 	material.set_shader_parameter("cloud_light_color", SKY_CLOUD_LIGHT_COLOR)
 	material.set_shader_parameter("sun_angle_max", SKY_SUN_ANGLE_MAX_DEG)
 	material.set_shader_parameter("sun_curve", SKY_SUN_CURVE)
+	material.set_shader_parameter("sun_horizon_fade_start", SKY_SUN_HORIZON_FADE_START)
+	material.set_shader_parameter("sun_horizon_fade_end", SKY_SUN_HORIZON_FADE_END)
 
 	var sky := Sky.new()
 	sky.process_mode = Sky.PROCESS_MODE_QUALITY

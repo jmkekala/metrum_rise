@@ -891,7 +891,7 @@ impl SimCore {
         );
         let fixed_points = prepared_input.points.clone();
 
-        let validation = self
+        let fast_validation = self
             .transit_network
             .road_surface
             .validate_prepared_road_candidate_fast(
@@ -901,15 +901,16 @@ impl SimCore {
                 &self.heightmap,
                 &self.region_graph,
             );
-        let validation = validate_road_candidate_against_water(
+        let fast_validation = validate_road_candidate_against_water(
             prepared_input.class,
             &prepared_input.points,
             fwd_lanes_u8,
             bkw_lanes_u8,
             &self.watermap,
-            validation,
+            fast_validation,
         );
-        if Self::road_commit_full_validation_debug_enabled() {
+        let mut validation = fast_validation.clone();
+        if validation.is_valid {
             let full_validation_start = Instant::now();
             let new_edge_validation = self
                 .transit_network
@@ -942,8 +943,8 @@ impl SimCore {
                 full_validation,
             );
             let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
-            if full_validation.is_valid != validation.is_valid
-                || full_validation.invalid_reason != validation.invalid_reason
+            if full_validation.is_valid != fast_validation.is_valid
+                || full_validation.invalid_reason != fast_validation.invalid_reason
             {
                 debug_log!(
                     "road",
@@ -951,17 +952,17 @@ impl SimCore {
                     fixed_points.len(),
                     fwd_lanes_u8,
                     bkw_lanes_u8,
-                    validation.is_valid,
-                    validation.invalid_reason,
+                    fast_validation.is_valid,
+                    fast_validation.invalid_reason,
                     full_validation.is_valid,
                     full_validation.invalid_reason,
-                    validation.start_endpoint_snapped_node_id,
-                    validation.end_endpoint_snapped_node_id,
+                    fast_validation.start_endpoint_snapped_node_id,
+                    fast_validation.end_endpoint_snapped_node_id,
                     full_validation.start_endpoint_snapped_node_id,
                     full_validation.end_endpoint_snapped_node_id,
                     full_validation_ms
                 );
-            } else {
+            } else if Self::road_commit_full_validation_debug_enabled() {
                 debug_log!(
                     "road",
                     "road_commit_full_validation_debug prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} full_validation_ms={:.3}",
@@ -973,6 +974,7 @@ impl SimCore {
                     full_validation_ms
                 );
             }
+            validation = full_validation;
         }
         if !validation.is_valid {
             debug_log!(

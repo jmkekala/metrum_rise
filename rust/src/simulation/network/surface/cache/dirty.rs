@@ -29,6 +29,8 @@ impl RoadSurfaceSystem {
         self.compile_invalidation_generation = self.compile_invalidation_generation.wrapping_add(1);
         self.failed_compile_generation = None;
         self.last_compile_failure_label = None;
+        self.last_failed_span_ids.clear();
+        self.last_failed_node_ids.clear();
     }
 
     pub(in crate::simulation::network::surface) fn latch_compile_failure(

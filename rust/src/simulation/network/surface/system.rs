@@ -29,6 +29,8 @@ pub struct RoadSurfaceSystem {
     pub(crate) compile_invalidation_generation: u64,
     pub(crate) failed_compile_generation: Option<u64>,
     pub(in crate::simulation::network::surface) last_compile_failure_label: Option<String>,
+    pub(in crate::simulation::network::surface) last_failed_span_ids: Vec<usize>,
+    pub(in crate::simulation::network::surface) last_failed_node_ids: Vec<u32>,
     pub(crate) dirty_edges: HashSet<usize>,
     pub(crate) dirty_nodes: HashSet<u32>,
     pub(crate) dirty_surface_chunks: HashSet<SurfaceChunkKey>,
@@ -103,6 +105,8 @@ impl RoadSurfaceSystem {
             compile_invalidation_generation: 0,
             failed_compile_generation: None,
             last_compile_failure_label: None,
+            last_failed_span_ids: Vec::new(),
+            last_failed_node_ids: Vec::new(),
             dirty_edges: HashSet::new(),
             dirty_nodes: HashSet::new(),
             dirty_surface_chunks: HashSet::new(),
@@ -353,6 +357,8 @@ impl RoadSurfaceSystem {
                 sorted_span_edges.len()
             );
             self.latch_compile_failure(failure_label.clone());
+            self.last_failed_span_ids = failed_span_ids.clone();
+            self.last_failed_node_ids.clear();
             if road_debug {
                 crate::debug_log!(
                     "road",
@@ -491,6 +497,8 @@ impl RoadSurfaceSystem {
                 node_candidates.len()
             );
             self.latch_compile_failure(failure_label.clone());
+            self.last_failed_span_ids.clear();
+            self.last_failed_node_ids = failed_node_ids.clone();
             if road_debug {
                 crate::debug_log!(
                     "road",
@@ -562,6 +570,8 @@ impl RoadSurfaceSystem {
         self.compiled_once = true;
         self.failed_compile_generation = None;
         self.last_compile_failure_label = None;
+        self.last_failed_span_ids.clear();
+        self.last_failed_node_ids.clear();
         self.clear_dirty_tracking();
 
         if road_debug {
@@ -734,6 +744,8 @@ impl RoadSurfaceSystem {
                 edge_ids.len()
             );
             self.latch_compile_failure(failure_label.clone());
+            self.last_failed_span_ids = failed_span_ids.clone();
+            self.last_failed_node_ids.clear();
             if road_debug {
                 crate::debug_log!(
                     "road",
@@ -801,6 +813,8 @@ impl RoadSurfaceSystem {
                 node_candidates.len()
             );
             self.latch_compile_failure(failure_label.clone());
+            self.last_failed_span_ids.clear();
+            self.last_failed_node_ids = failed_node_ids.clone();
             if road_debug {
                 crate::debug_log!(
                     "road",
@@ -854,6 +868,8 @@ impl RoadSurfaceSystem {
         staging.compile_invalidation_generation = self.compile_invalidation_generation;
         staging.failed_compile_generation = None;
         staging.last_compile_failure_label = None;
+        staging.last_failed_span_ids.clear();
+        staging.last_failed_node_ids.clear();
         staging.clear_dirty_tracking();
         *self = staging;
 

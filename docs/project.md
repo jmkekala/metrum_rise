@@ -179,8 +179,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   solved dense profile that section compilation and earthworks consume. Degree-1 terminal road
   extensions re-solve the previous terminal edge plus the new edge as one corridor, so building in
   pieces and one-stroke placement share the same vertical validity. Placement preview and commit
-  now also dry-run the local surface compile so degenerate tight bends are rejected with a visible
-  reason instead of landing as missing roadbed. Grounded `Standard` roadbeds that touch authored
+  now also dry-run the local post-split surface compile, including interior crossings against nearby
+  road edges, so degenerate tight bends are rejected with a visible reason instead of landing as
+  missing roadbed. Grounded `Standard` roadbeds that touch authored
   water are now rejected in hover preview, exact preview, live commit, and edge-class editing;
   explicit `Bridge` spans remain legal. Road-locked terrain payload queries now preserve the same
   safety pad as grading-envelope patch selection, preventing source-less terrain holes where a

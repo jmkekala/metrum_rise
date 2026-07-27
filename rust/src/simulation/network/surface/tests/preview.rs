@@ -573,6 +573,84 @@ fn preview_validation_uses_endpoint_snap_before_reporting_valid() {
 }
 
 #[test]
+fn commit_validation_graph_splits_interior_crossings_before_surface_compile() {
+    let terrain = flat_terrain(128, 128);
+    let mut graph = RegionGraph::new();
+    let west_pos = Vector3::new(-32.0, 0.0, 0.0);
+    let east_pos = Vector3::new(32.0, 0.0, 0.0);
+    let west = graph.add_node(west_pos, NodeType::Junction);
+    let east = graph.add_node(east_pos, NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        east,
+        vec![west_pos, east_pos],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let surface = RoadSurfaceSystem::new(16.0);
+    let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+        &[Vector3::new(0.0, 0.0, -32.0), Vector3::new(0.0, 0.0, 32.0)],
+        &terrain,
+        &graph,
+        &surface,
+        true,
+    );
+
+    let (validation_graph, new_edge_idx, _, _) = surface
+        .build_surface_validation_graph_for_test(
+            &prepared_input.points,
+            prepared_input.class,
+            1,
+            1,
+            &graph,
+        )
+        .expect("crossing candidate should produce a local validation graph");
+    assert!(
+        !validation_graph.edge(new_edge_idx).deleted,
+        "candidate edge must survive local topology processing"
+    );
+    let crossing_node = (0..validation_graph.node_count())
+        .map(|node_id| node_id as u32)
+        .find(|&node_id| {
+            let pos = validation_graph.node(node_id).pos;
+            let active_degree = validation_graph
+                .node_adjacency(node_id)
+                .iter()
+                .filter(|&&edge_idx| !validation_graph.edge(edge_idx).deleted)
+                .count();
+            pos.distance_to(Vector3::ZERO) <= 0.001 && active_degree == 4
+        });
+    assert!(
+        crossing_node.is_some(),
+        "commit validation graph must include the same four-arm split node as a real commit"
+    );
+
+    let new_edge_validation = surface.validate_prepared_road_surface(
+        &prepared_input.points,
+        prepared_input.class,
+        1,
+        1,
+        &terrain,
+    );
+    let validation = surface.validate_prepared_road_input_against_graph_with_compile_reason(
+        &prepared_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+        new_edge_validation,
+        RoadSurfaceCompileReason::CommitValidator,
+    );
+    assert!(
+        validation.is_valid,
+        "ordinary interior crossing should remain valid after local split topology: {validation:?}"
+    );
+}
+
+#[test]
 fn preview_can_disable_existing_road_endpoint_snap() {
     let terrain = flat_terrain(96, 64);
     let mut graph = RegionGraph::new();

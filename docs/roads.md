@@ -380,10 +380,14 @@ profile remains `Bridge` and forms a structural ramp across the full approach. I
 ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
 and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
 
-Placement validity also includes local road-surface compileability. A preview or commit that would
-fail to compile the new span or its required endpoint `Terminal` / `Bend` / `JunctionN` pieces is
-rejected before it reaches the live graph; tight switchbacks are allowed only when the compiled
-surface topology can actually represent them.
+Placement validity also includes local road-surface compileability. A preview or commit replays the
+candidate's local post-split topology before acceptance, including interior crossings against nearby
+road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /
+`Bend` / `JunctionN` pieces is rejected before it reaches the live graph; tight switchbacks are
+allowed only when the compiled surface topology can actually represent them.
+`surface_geometry_invalid` is a roadbed-footprint failure, not a centerline-only curve failure; road
+debug logs must include the failed required split spans or nodes with their lengths, clips, lane
+counts, and endpoints.
 
 Authored water is part of the same placement contract. A `Standard` candidate is rejected with the
 stable `water_requires_bridge` reason when its complete roadbed footprint overlaps visible baseline

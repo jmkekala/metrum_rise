@@ -3,8 +3,8 @@
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,
 ## angle snapping (Shift, 15° steps, no road snap), distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
-## Commits via NetworkTool.add_road() on left-click after cheap Rust placement validation;
-## expensive async road-surface previews are visual feedback only.
+## Commits via NetworkTool.add_road() on left-click after Rust graph-aware commit validation;
+## cheap validation remains hover feedback and async road-surface previews remain visual feedback.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
 
@@ -366,14 +366,18 @@ func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
 			"invalid_reason": "surface_geometry_invalid"
 		}
 
-	var preview := _cached_preview_surface_for_points(points)
-	if preview.is_empty():
-		preview = _get_compiled_preview_surface("commit")
-	if _preview_surface_generation_is_current(preview):
-		_remember_candidate_validation(points, preview)
-		return preview
-
-	return _candidate_validation_for_points(points)
+	var validation_variant = simulation_node.validate_road_candidate_for_commit_with_snap(
+		points,
+		fwd_lanes,
+		bkw_lanes,
+		_snap_to_roads_enabled()
+	)
+	var validation: Dictionary = validation_variant if validation_variant is Dictionary else {
+		"is_valid": false,
+		"invalid_reason": "validation_unavailable"
+	}
+	_remember_candidate_validation(points, validation)
+	return validation
 
 func _remember_candidate_validation(points: PackedVector3Array, validation: Dictionary) -> void:
 	_candidate_cache_points = points
@@ -588,7 +592,7 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 		"water_requires_bridge":
 			return "Water crossing requires a bridge"
 		"surface_geometry_invalid":
-			return "Curve too tight"
+			return "Roadbed footprint too tight"
 		"too_short":
 			return "Road too short"
 		"validation_unavailable":

@@ -14,6 +14,8 @@ uniform vec4 cloud_shadow_color : source_color = vec4(0.52, 0.58, 0.64, 1.0);
 uniform vec4 cloud_light_color : source_color = vec4(0.88, 0.91, 0.94, 1.0);
 uniform float sun_angle_max = 7.5;
 uniform float sun_curve = 0.12;
+uniform float sun_horizon_fade_start = 0.015;
+uniform float sun_horizon_fade_end = 0.09;
 
 vec3 hemisphere_gradient(vec3 direction) {
 	float elevation = pow(abs(direction.y), 1.0 / max(hemisphere_curve, 0.001));
@@ -58,8 +60,9 @@ vec3 add_directional_sun(vec3 color, vec3 direction) {
 	float halo_range = radians(max(sun_angle_max, 0.01));
 	float halo_base = clamp(1.0 - sun_angle / halo_range, 0.0, 1.0);
 	float halo = pow(halo_base, 1.0 / max(sun_curve, 0.02));
+	float horizon_mask = smoothstep(sun_horizon_fade_start, sun_horizon_fade_end, direction.y);
 	vec3 sun_color = LIGHT0_COLOR * LIGHT0_ENERGY;
-	return color + sun_color * (sun_disk * 1.25 + halo * 0.22);
+	return color + sun_color * (sun_disk * 1.25 + halo * 0.22) * horizon_mask;
 }
 
 void sky() {
