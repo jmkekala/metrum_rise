@@ -477,18 +477,45 @@ impl SimulationNode {
             let Some(entry) = entries_by_key.get(&cache_key) else {
                 continue;
             };
-            if Self::cached_refined_cdt_failure_label(entry).is_some() {
-                continue;
-            }
+            let data = if let Some(error_label) = Self::cached_refined_cdt_failure_label(entry) {
+                TerrainPatchPayloadData::RefinedFailure {
+                    patch: Arc::clone(entry),
+                    error_label,
+                }
+            } else {
+                TerrainPatchPayloadData::Refined {
+                    patch: Arc::clone(entry),
+                }
+            };
             built.push(TerrainPatchPayload {
                 key: request.key,
                 request_id: request.request_id,
                 surface_generation: request.surface_generation,
-                data: TerrainPatchPayloadData::Refined {
-                    patch: Arc::clone(entry),
-                },
+                data,
             });
         }
+    }
+
+    /// Returns refined requests whose worker produced no current entry at all.
+    pub(in crate::nodes::simulation_node) fn refined_requests_without_entries(
+        refined_requests: &[TerrainPatchPayloadRequest],
+        refined_entries: &[Arc<CachedRefinedTerrainPatch>],
+    ) -> Vec<TerrainPatchPayloadRequest> {
+        let produced_refined_keys = refined_entries
+            .iter()
+            .map(|entry| entry.key)
+            .collect::<HashSet<_>>();
+        refined_requests
+            .iter()
+            .copied()
+            .filter(|request| {
+                !produced_refined_keys.contains(&RefinedTerrainPatchCacheKey {
+                    patch_x: request.key.patch_x,
+                    patch_z: request.key.patch_z,
+                    render_step_mm: request.key.render_step_mm,
+                })
+            })
+            .collect()
     }
 
     pub(in crate::nodes::simulation_node) fn water_patch_payload_for_request(

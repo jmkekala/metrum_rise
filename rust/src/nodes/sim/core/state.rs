@@ -322,6 +322,19 @@ impl SimCore {
         true
     }
 
+    /// Acknowledges a terrain render batch and reports whether it fully cleared current dirtiness.
+    pub(crate) fn acknowledge_terrain_render_patches(
+        &mut self,
+        acknowledged: &[(usize, usize, u64)],
+    ) -> bool {
+        let mut all_accepted = true;
+        for &(patch_x, patch_z, generation) in acknowledged {
+            all_accepted &= self.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
+        }
+        self.terrain_dirty = !self.heightmap.dirty_render_patches().is_empty();
+        all_accepted && !self.terrain_dirty
+    }
+
     fn mark_network_visuals_dirty(&mut self) {
         self.bump_road_tool_query_generation();
         self.network_dirty = true;

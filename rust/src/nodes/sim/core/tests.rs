@@ -131,6 +131,23 @@ fn stale_terrain_acknowledgement_preserves_newer_patch_dirtiness() {
 }
 
 #[test]
+fn stale_terrain_batch_acknowledgement_reports_remaining_dirtiness() {
+    let mut core = test_core();
+    core.heightmap.mark_render_patch_dirty(0, 0);
+    let stale_generation = core.terrain_payload_generation_for_patch(0, 0);
+    core.bump_terrain_payload_patch_generations(&[(0, 0)]);
+
+    assert!(!core.acknowledge_terrain_render_patches(&[(0, 0, stale_generation)]));
+    assert!(core.terrain_dirty);
+    assert!(core.heightmap.dirty_render_patches().contains(&(0, 0)));
+
+    let current_generation = core.terrain_payload_generation_for_patch(0, 0);
+    assert!(core.acknowledge_terrain_render_patches(&[(0, 0, current_generation)]));
+    assert!(!core.terrain_dirty);
+    assert!(!core.heightmap.dirty_render_patches().contains(&(0, 0)));
+}
+
+#[test]
 fn local_road_terrain_scopes_accumulate_until_exact_acknowledgement() {
     let mut core = test_core();
     let initial_generation = core.terrain_payload_generation_for_patch(0, 0);

@@ -374,6 +374,26 @@ fn cached_refined_patch_rejects_partial_window_success() {
 }
 
 #[test]
+fn cached_refined_patch_rejects_constraint_conflicts() {
+    let mut mesh = empty_test_cdt_mesh();
+    mesh.stats.road_constraint_edges = 1;
+    mesh.stats.spade_missing_road_constraint_edges = 1;
+
+    let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    cached.requires_road_clipping = true;
+    cached.clip_source_count = 1;
+    cached.road_clip_source_count = 1;
+    cached.road_clip_loop_count = 1;
+    cached.input_road_loops = 1;
+    cached.windows = vec![Arc::new(test_cached_cdt_window(0, Ok(mesh)))];
+
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        Some("terrain_cdt_constraint_conflicts")
+    );
+}
+
+#[test]
 fn refined_patch_build_reuses_successful_window_by_arc_identity() {
     let mut previous_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
     let previous_buffers = Arc::new(

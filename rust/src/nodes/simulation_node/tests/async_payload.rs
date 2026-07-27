@@ -775,3 +775,40 @@ fn refined_async_payloads_follow_request_keys_after_cache_sort() {
     };
     assert!(Arc::ptr_eq(patch, &entry_low));
 }
+
+#[test]
+fn refined_async_payloads_publish_current_cdt_failures_without_retry() {
+    let request_key = TerrainPatchPayloadKey {
+        patch_x: 4,
+        patch_z: 2,
+        render_step_mm: 2000,
+    };
+    let requests = vec![TerrainPatchPayloadRequest {
+        key: request_key,
+        request_id: 21,
+        surface_generation: 8,
+    }];
+    let mut failed_entry = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 8);
+    failed_entry.key.patch_x = request_key.patch_x;
+    failed_entry.key.patch_z = request_key.patch_z;
+    failed_entry.requires_engineered_refinement = true;
+    failed_entry.requires_road_clipping = true;
+    failed_entry.clip_source_count = 1;
+    let failed_entry = Arc::new(failed_entry);
+    let entries = vec![Arc::clone(&failed_entry)];
+
+    assert!(SimulationNode::refined_requests_without_entries(&requests, &entries).is_empty());
+
+    let mut built = Vec::new();
+    SimulationNode::append_refined_terrain_patch_payloads_for_requests(
+        &mut built, &requests, &entries,
+    );
+
+    assert_eq!(built.len(), 1);
+    assert_eq!(built[0].key, request_key);
+    let TerrainPatchPayloadData::RefinedFailure { patch, error_label } = &built[0].data else {
+        panic!("expected failed refined payload");
+    };
+    assert!(Arc::ptr_eq(patch, &failed_entry));
+    assert_eq!(*error_label, "missing_road_clip_sources");
+}

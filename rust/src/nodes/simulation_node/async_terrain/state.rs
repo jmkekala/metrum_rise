@@ -115,6 +115,11 @@ pub(in crate::nodes::simulation_node) enum TerrainPatchPayloadData {
     Refined {
         patch: Arc<CachedRefinedTerrainPatch>,
     },
+    /// Diagnostic-only refined payload for a current generation that must not render raw terrain.
+    RefinedFailure {
+        patch: Arc<CachedRefinedTerrainPatch>,
+        error_label: &'static str,
+    },
 }
 
 pub(in crate::nodes::simulation_node) struct TerrainPatchPayload {

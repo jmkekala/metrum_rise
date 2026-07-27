@@ -175,10 +175,7 @@ impl SimulationNode {
         let Some(mut core) = self.try_lock_core() else {
             return false;
         };
-        for (patch_x, patch_z, generation) in acknowledged {
-            core.acknowledge_terrain_render_patch(patch_x, patch_z, generation);
-        }
-        core.terrain_dirty = !core.heightmap.dirty_render_patches().is_empty();
+        let accepted = core.acknowledge_terrain_render_patches(&acknowledged);
         let terrain_dirty = core.terrain_dirty;
         let states = core.terrain_dirty_patch_states();
         let global_generation = core.terrain_payload_global_generation;
@@ -190,7 +187,7 @@ impl SimulationNode {
         snapshot.terrain_dirty_patch_states = Arc::new(states);
         snapshot.terrain_payload_global_generation = global_generation;
         snapshot.terrain_payload_patch_generations = Arc::new(patch_generations);
-        true
+        accepted
     }
 
     /// Returns true if the road/rail network was mutated and the visual mesh needs a rebuild.
@@ -468,20 +465,10 @@ impl SimulationNode {
                         SimulationNode::cached_refined_cdt_failure_label(entry.as_ref())
                     })
                     .unwrap_or("none");
-                let valid_refined_keys = refined_entries
-                    .iter()
-                    .filter(|entry| {
-                        SimulationNode::cached_refined_cdt_failure_label(entry).is_none()
-                    })
-                    .map(|entry| entry.key)
-                    .collect::<HashSet<_>>();
-                failed_requests.extend(refined_requests.iter().copied().filter(|request| {
-                    !valid_refined_keys.contains(&RefinedTerrainPatchCacheKey {
-                        patch_x: request.key.patch_x,
-                        patch_z: request.key.patch_z,
-                        render_step_mm: request.key.render_step_mm,
-                    })
-                }));
+                failed_requests.extend(Self::refined_requests_without_entries(
+                    &refined_requests,
+                    &refined_entries,
+                ));
                 Self::append_refined_terrain_patch_payloads_for_requests(
                     &mut built,
                     &refined_requests,

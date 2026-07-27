@@ -105,6 +105,17 @@ impl SimulationNode {
             .iter()
             .find_map(|window| window.mesh_result.as_ref().err())
             .map(Self::terrain_cdt_error_label)
+            .or_else(|| {
+                cached
+                    .windows
+                    .iter()
+                    .any(|window| {
+                        window.mesh_result.as_ref().is_ok_and(|mesh| {
+                            Self::terrain_cdt_stats_have_constraint_conflicts(mesh.stats)
+                        })
+                    })
+                    .then_some("terrain_cdt_constraint_conflicts")
+            })
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_clip_input_failure_label(

@@ -95,12 +95,38 @@ impl SimulationNode {
         dict
     }
 
+    /// Exports a non-renderable refined terrain payload without raw heightmap fallback bytes.
+    pub(in crate::nodes::simulation_node) fn failed_refined_terrain_patch_dict(
+        cached: &CachedRefinedTerrainPatch,
+        error_label: &'static str,
+    ) -> VarDictionary {
+        let mut dict = Self::terrain_patch_metadata_dict(&cached.patch);
+        let road_clip_query = RoadClipLoopQuery {
+            cdt_road_loops: Vec::new(),
+            source_count: cached.clip_source_count,
+            road_source_count: cached.road_clip_source_count,
+            road_loop_count: cached.road_clip_loop_count,
+            site_loop_count: cached.site_clip_loop_count,
+            clip_error_label: cached.clip_error_label,
+        };
+        Self::append_road_clip_status(&mut dict, &road_clip_query);
+        dict.set(
+            "terrain_requires_road_clipping",
+            cached.requires_road_clipping,
+        );
+        Self::append_empty_cdt_failure(&mut dict, error_label, false);
+        dict
+    }
+
     pub(in crate::nodes::simulation_node) fn terrain_patch_payload_dict(
         payload: &TerrainPatchPayload,
     ) -> VarDictionary {
         let requires_engineered_refinement = match &payload.data {
             TerrainPatchPayloadData::Regular { .. } => false,
             TerrainPatchPayloadData::Refined { patch } => patch.requires_engineered_refinement,
+            TerrainPatchPayloadData::RefinedFailure { patch, .. } => {
+                patch.requires_engineered_refinement
+            }
         };
         let mut dict = match &payload.data {
             TerrainPatchPayloadData::Regular {
@@ -116,6 +142,9 @@ impl SimulationNode {
             }
             TerrainPatchPayloadData::Refined { patch } => {
                 Self::cached_refined_terrain_patch_dict(patch, false)
+            }
+            TerrainPatchPayloadData::RefinedFailure { patch, error_label } => {
+                Self::failed_refined_terrain_patch_dict(patch, error_label)
             }
         };
         dict.set("render_step_mm", i64::from(payload.key.render_step_mm));
