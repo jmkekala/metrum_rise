@@ -202,7 +202,6 @@ pub(crate) enum NodeBoundaryExportError {
     MissingNodeTopSurfaceGradeAuthority,
 }
 
-#[cfg(test)]
 pub(super) fn remove_subbudget_unsupported_numeric_boundary_vertices<F>(
     points: &mut Vec<NodeFootprintBoundaryPoint>,
     mut should_keep_vertex: F,

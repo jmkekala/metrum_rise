@@ -316,6 +316,7 @@ impl RoadSurfaceSystem {
         let footprint_boundary_point_loops =
             Self::footprint_boundary_point_loops_from_footprint_shapes(
                 &final_footprint_shapes,
+                &owned_regions,
                 &mut boundary_export_sources,
             )?;
         profile.footprint_boundary_ms = elapsed_profile_ms(footprint_boundary_start);

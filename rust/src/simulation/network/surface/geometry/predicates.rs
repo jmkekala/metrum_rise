@@ -145,14 +145,13 @@ impl RoadSurfaceSystem {
         ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs()
     }
 
-    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn triangle_barycentric_weights_xz(
         triangle: [RoadVec3; 3],
         point: RoadVec2,
     ) -> Option<(f32, f32, f32)> {
         let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
             - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-        if area.abs() <= f64::from(SAMPLE_EPSILON_M) {
+        if area.abs() <= f64::from(NODE_OVERLAY_MIN_AREA_M2) {
             return None;
         }
 

@@ -1,29 +1,42 @@
 //! Footprint boundary loop export from the final boolean road-owned footprint.
 
 use super::super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayShapes,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayShapes, NodeOwnedRegion, SAMPLE_EPSILON_M,
     arrangement::NodeArrangementKey,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     boundary::{
         ArrangementBoundaryPointKey, NodeBoundaryExportError, NodeFootprintBoundaryExportSources,
-        NodeFootprintBoundaryPoint, same_winding_boundary_point_loops_from_loop,
+        NodeFootprintBoundaryPoint, remove_subbudget_unsupported_numeric_boundary_vertices,
+        same_winding_boundary_point_loops_from_loop,
     },
 };
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use std::collections::BTreeSet;
 
+#[derive(Clone, Copy)]
+struct FootprintTopTriangleSupport {
+    triangle: [RoadVec3; 3],
+    min_x: f64,
+    max_x: f64,
+    min_z: f64,
+    max_z: f64,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn footprint_boundary_point_loops_from_footprint_shapes(
         footprint_shapes: &NodeOverlayShapes,
+        top_regions: &[NodeOwnedRegion],
         boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
     ) -> Result<Vec<Vec<NodeFootprintBoundaryPoint>>, NodeBoundaryExportError> {
         let mut loops = Vec::new();
         let mut emitted_loop_identities = BTreeSet::<Vec<ArrangementBoundaryPointKey>>::new();
+        let top_supports = footprint_top_triangle_supports_from_regions(top_regions);
         for shape in footprint_shapes {
             for contour in shape {
                 let points = footprint_boundary_xz_point_loop_from_contour(contour);
                 push_valid_footprint_boundary_point_loops(
                     points,
+                    &top_supports,
                     boundary_export_sources,
                     &mut emitted_loop_identities,
                     &mut loops,
@@ -38,6 +51,7 @@ impl RoadSurfaceSystem {
 
 fn push_valid_footprint_boundary_point_loops(
     points: Vec<NodeFootprintBoundaryPoint>,
+    top_supports: &[FootprintTopTriangleSupport],
     boundary_export_sources: &mut NodeFootprintBoundaryExportSources,
     emitted_loop_identities: &mut BTreeSet<Vec<ArrangementBoundaryPointKey>>,
     loops: &mut Vec<Vec<NodeFootprintBoundaryPoint>>,
@@ -59,7 +73,9 @@ fn push_valid_footprint_boundary_point_loops(
         }
         let heighted_points =
             resolve_footprint_boundary_point_heights(split_points, boundary_export_sources)?;
-        for split_points in post_height_footprint_boundary_point_loops(heighted_points) {
+        for split_points in
+            post_height_footprint_boundary_point_loops(heighted_points, top_supports)
+        {
             if !emitted_loop_identities
                 .insert(footprint_boundary_point_loop_identity(&split_points))
             {
@@ -151,17 +167,18 @@ fn resolve_footprint_boundary_point_heights(
 
 fn post_height_footprint_boundary_point_loops(
     points: Vec<NodeFootprintBoundaryPoint>,
+    top_supports: &[FootprintTopTriangleSupport],
 ) -> Vec<Vec<NodeFootprintBoundaryPoint>> {
     same_winding_boundary_point_loops_from_loop(&points)
         .into_iter()
         .flat_map(|points| {
             let mut points = canonicalize_footprint_boundary_point_loop(points);
-            remove_subbudget_same_xz_footprint_boundary_vertices(&mut points);
+            remove_subbudget_numeric_footprint_boundary_vertices(&mut points, top_supports);
             points = canonicalize_footprint_boundary_point_loop(points);
             same_winding_boundary_point_loops_from_loop(&points)
         })
         .filter_map(|mut points| {
-            remove_subbudget_same_xz_footprint_boundary_vertices(&mut points);
+            remove_subbudget_numeric_footprint_boundary_vertices(&mut points, top_supports);
             let points = canonicalize_footprint_boundary_point_loop(points);
             if points.len() < 3 {
                 return None;
@@ -174,6 +191,19 @@ fn post_height_footprint_boundary_point_loops(
             Some(points)
         })
         .collect()
+}
+
+fn remove_subbudget_numeric_footprint_boundary_vertices(
+    points: &mut Vec<NodeFootprintBoundaryPoint>,
+    top_supports: &[FootprintTopTriangleSupport],
+) {
+    remove_subbudget_same_xz_footprint_boundary_vertices(points);
+    remove_subbudget_unsupported_numeric_boundary_vertices(points, |point_key, local_points| {
+        footprint_boundary_point_has_visible_top_support(point_key, top_supports)
+            || RoadSurfaceSystem::signed_polygon_area_xz(&local_points).abs()
+                > footprint_boundary_points_numeric_area_budget_m2(&local_points)
+    });
+    remove_subbudget_same_xz_footprint_boundary_vertices(points);
 }
 
 fn remove_subbudget_same_xz_footprint_boundary_vertices(
@@ -245,6 +275,80 @@ fn footprint_boundary_point_loop_identity(
     reversed.reverse();
     let reversed = canonical_footprint_boundary_loop_rotation(&reversed);
     forward.min(reversed)
+}
+
+fn footprint_boundary_point_has_visible_top_support(
+    point_key: ArrangementBoundaryPointKey,
+    top_supports: &[FootprintTopTriangleSupport],
+) -> bool {
+    let point = footprint_boundary_point_world(NodeFootprintBoundaryPoint::new(point_key));
+    top_supports
+        .iter()
+        .copied()
+        .any(|support| support.supports_boundary_point(point))
+}
+
+fn footprint_top_triangle_supports_from_regions(
+    top_regions: &[NodeOwnedRegion],
+) -> Vec<FootprintTopTriangleSupport> {
+    top_regions
+        .iter()
+        .flat_map(|region| region.polygon.triangles_world.iter().copied())
+        .map(FootprintTopTriangleSupport::new)
+        .collect()
+}
+
+impl FootprintTopTriangleSupport {
+    fn new(triangle: [RoadVec3; 3]) -> Self {
+        let min_x = triangle
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min);
+        let max_x = triangle
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let min_z = triangle
+            .iter()
+            .map(|point| point.z)
+            .fold(f64::INFINITY, f64::min);
+        let max_z = triangle
+            .iter()
+            .map(|point| point.z)
+            .fold(f64::NEG_INFINITY, f64::max);
+        Self {
+            triangle,
+            min_x,
+            max_x,
+            min_z,
+            max_z,
+        }
+    }
+
+    fn supports_boundary_point(self, point: RoadVec3) -> bool {
+        let tolerance = visible_top_match_tolerance_m();
+        if point.x < self.min_x - tolerance
+            || point.x > self.max_x + tolerance
+            || point.z < self.min_z - tolerance
+            || point.z > self.max_z + tolerance
+        {
+            return false;
+        }
+        let Some((wa, wb, wc)) = RoadSurfaceSystem::triangle_barycentric_weights_xz(
+            self.triangle,
+            RoadVec2::new(point.x, point.z),
+        ) else {
+            return false;
+        };
+        let height = self.triangle[0].y * f64::from(wa)
+            + self.triangle[1].y * f64::from(wb)
+            + self.triangle[2].y * f64::from(wc);
+        (height - point.y).abs() <= tolerance
+    }
+}
+
+fn visible_top_match_tolerance_m() -> f64 {
+    f64::from(SAMPLE_EPSILON_M) * 2.0
 }
 
 fn canonical_footprint_boundary_loop_rotation(
