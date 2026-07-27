@@ -28,10 +28,15 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn note_compile_invalidation(&mut self) {
         self.compile_invalidation_generation = self.compile_invalidation_generation.wrapping_add(1);
         self.failed_compile_generation = None;
+        self.last_compile_failure_label = None;
     }
 
-    pub(in crate::simulation::network::surface) fn latch_compile_failure(&mut self) {
+    pub(in crate::simulation::network::surface) fn latch_compile_failure(
+        &mut self,
+        failure_label: String,
+    ) {
         self.failed_compile_generation = Some(self.compile_invalidation_generation);
+        self.last_compile_failure_label = Some(failure_label);
     }
 
     pub(in crate::simulation::network::surface) fn compile_generation_is_latched(&self) -> bool {

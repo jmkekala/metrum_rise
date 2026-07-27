@@ -2,11 +2,14 @@
 
 use super::super::backend::RoadVec3;
 use super::super::{
-    NodeOverlayPoint, RoadSurfaceEarthworkFaceSource, RoadSurfaceSystem, keys::SurfaceXzKey,
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayPoint, RoadSurfaceEarthworkFaceSource,
+    RoadSurfaceSystem, keys::SurfaceXzKey,
 };
-use super::geometry::interpolate_height_f64;
+use super::geometry::{interpolate_height_f64, overlay_segment_length_m};
 use super::model::*;
 use std::collections::{BTreeMap, BTreeSet};
+
+const TERRAIN_CLIP_SOURCE_CHAIN_MAX_DETOUR_RATIO: f64 = 1.75;
 
 pub(super) enum TerrainClipSourceChainRecovery {
     Missing,
@@ -262,6 +265,42 @@ impl RoadSurfaceSystem {
         start_anchor: TerrainClipSourceLoopAnchor,
         end_anchor: TerrainClipSourceLoopAnchor,
     ) -> Option<Vec<RoadVec3>> {
+        Self::terrain_clip_ordered_source_loop_point_path_in_direction(
+            source_edges,
+            start_anchor,
+            end_anchor,
+            1,
+        )
+        .filter(|points| {
+            Self::terrain_clip_source_chain_path_is_local_to_segment(
+                start_anchor.point,
+                end_anchor.point,
+                points,
+            )
+        })
+        .or_else(|| {
+            Self::terrain_clip_ordered_source_loop_point_path_in_direction(
+                source_edges,
+                start_anchor,
+                end_anchor,
+                -1,
+            )
+            .filter(|points| {
+                Self::terrain_clip_source_chain_path_is_local_to_segment(
+                    start_anchor.point,
+                    end_anchor.point,
+                    points,
+                )
+            })
+        })
+    }
+
+    fn terrain_clip_ordered_source_loop_point_path_in_direction(
+        source_edges: &[TerrainClipSourceEdge],
+        start_anchor: TerrainClipSourceLoopAnchor,
+        end_anchor: TerrainClipSourceLoopAnchor,
+        direction: i8,
+    ) -> Option<Vec<RoadVec3>> {
         if source_edges.is_empty() || start_anchor.edge_position >= source_edges.len() {
             return None;
         }
@@ -270,7 +309,12 @@ impl RoadSurfaceSystem {
         let mut first_edge = true;
         for _ in 0..=source_edges.len() {
             if cursor == end_anchor.edge_position {
-                if !first_edge || end_anchor.t > start_anchor.t {
+                let same_edge_progresses_toward_end = if direction >= 0 {
+                    end_anchor.t > start_anchor.t
+                } else {
+                    end_anchor.t < start_anchor.t
+                };
+                if !first_edge || same_edge_progresses_toward_end {
                     path.push(end_anchor.point);
                     return (path.len() >= 2).then_some(path);
                 }
@@ -279,14 +323,44 @@ impl RoadSurfaceSystem {
                 }
             }
             let edge = source_edges[cursor % source_edges.len()];
-            path.push(edge.end);
-            if !Self::terrain_clip_source_loop_edge_connects_to_next(source_edges, cursor) {
-                return None;
+            if direction >= 0 {
+                path.push(edge.end);
+                if !Self::terrain_clip_source_loop_edge_connects_to_next(source_edges, cursor) {
+                    return None;
+                }
+                cursor = (cursor + 1) % source_edges.len();
+            } else {
+                path.push(edge.start);
+                if !Self::terrain_clip_source_loop_edge_connects_to_previous(source_edges, cursor) {
+                    return None;
+                }
+                cursor = (cursor + source_edges.len() - 1) % source_edges.len();
             }
-            cursor = (cursor + 1) % source_edges.len();
             first_edge = false;
         }
         None
+    }
+
+    fn terrain_clip_source_chain_path_is_local_to_segment(
+        start: RoadVec3,
+        end: RoadVec3,
+        path: &[RoadVec3],
+    ) -> bool {
+        let chord_length_m = overlay_segment_length_m([start.x, start.z], [end.x, end.z]);
+        if chord_length_m <= f64::EPSILON {
+            return false;
+        }
+        let path_length_m = path
+            .windows(2)
+            .map(|segment| {
+                let dx = segment[1].x - segment[0].x;
+                let dz = segment[1].z - segment[0].z;
+                (dx * dx + dz * dz).sqrt()
+            })
+            .sum::<f64>();
+        path_length_m
+            <= chord_length_m * TERRAIN_CLIP_SOURCE_CHAIN_MAX_DETOUR_RATIO
+                + f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
     }
 
     fn terrain_clip_source_loop_vertex_key(
@@ -310,6 +384,20 @@ impl RoadSurfaceSystem {
             return false;
         };
         Self::terrain_clip_world_key(edge.end) == next_vertex_key
+    }
+
+    fn terrain_clip_source_loop_edge_connects_to_previous(
+        source_edges: &[TerrainClipSourceEdge],
+        position: usize,
+    ) -> bool {
+        let Some(edge) = source_edges.get(position % source_edges.len()) else {
+            return false;
+        };
+        let previous_position = (position + source_edges.len() - 1) % source_edges.len();
+        let Some(previous_edge) = source_edges.get(previous_position) else {
+            return false;
+        };
+        Self::terrain_clip_world_key(edge.start) == Self::terrain_clip_world_key(previous_edge.end)
     }
 
     fn apply_terrain_clip_source_chain_top_envelope_heights(
@@ -347,5 +435,65 @@ impl RoadSurfaceSystem {
             }
         }
         top_height
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind,
+    };
+
+    #[test]
+    fn source_chain_recovery_walks_reverse_when_forward_chain_is_open() {
+        let y = 7.0;
+        let p0 = RoadVec3::new(0.0, y, 0.0);
+        let p1 = RoadVec3::new(0.35, y, 0.0);
+        let p2 = RoadVec3::new(0.55, y, 0.18);
+        let p3 = RoadVec3::new(1.0, y, 0.0);
+        let source_edges = [p0, p1, p2]
+            .into_iter()
+            .zip([p1, p2, p3])
+            .enumerate()
+            .map(|(edge_index, (start, end))| source_edge(start, end, edge_index))
+            .collect::<Vec<_>>();
+
+        let recovered = RoadSurfaceSystem::terrain_clip_source_chain_points_from_source_edges(
+            [p3.x, p3.z],
+            [p0.x, p0.z],
+            &source_edges,
+        );
+
+        let TerrainClipSourceChainRecovery::Covered(points) = recovered else {
+            panic!("reverse source chain should recover through connected source edges");
+        };
+        assert_eq!(
+            points
+                .iter()
+                .map(|point| RoadSurfaceSystem::terrain_clip_world_key(*point))
+                .collect::<Vec<_>>(),
+            [p3, p2, p1, p0]
+                .into_iter()
+                .map(RoadSurfaceSystem::terrain_clip_world_key)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn source_edge(start: RoadVec3, end: RoadVec3, edge_index: usize) -> TerrainClipSourceEdge {
+        TerrainClipSourceEdge {
+            start,
+            end,
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: 0,
+                kind: RoadSurfaceVisualNodePieceKind::Terminal,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 0,
+                boundary_source: None,
+            },
+            source_index: 0,
+            edge_index,
+        }
     }
 }

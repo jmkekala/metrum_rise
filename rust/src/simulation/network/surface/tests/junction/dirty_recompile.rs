@@ -417,6 +417,15 @@ fn failed_dirty_junction_compile_preserves_published_generation_and_pending_eart
         "earthworks must not consume the previous generation after staged node failure"
     );
     assert!(surface.compile_generation_is_latched());
+    let failure_label = surface
+        .last_compile_failure_label()
+        .expect("latched failed dirty compile must keep a diagnostic label");
+    assert!(
+        failure_label.contains("stage=dirty_nodes")
+            && failure_label.contains("compile_reason=terrain_earthwork")
+            && failure_label.contains(&format!("failed_nodes=[{center}]")),
+        "dirty compile failure label must identify stage, reason, and failed node: {failure_label}"
+    );
     assert!(!surface.published_generation_matches_source());
     assert_eq!(surface.dirty_edges, pending_edges);
     assert_eq!(surface.dirty_nodes, pending_nodes);
@@ -497,6 +506,7 @@ fn failed_dirty_junction_compile_preserves_published_generation_and_pending_eart
     surface.compile_dirty(&graph, &terrain);
     assert!(surface.published_generation_matches_source());
     assert!(surface.failed_compile_generation.is_none());
+    assert!(surface.last_compile_failure_label().is_none());
 }
 
 #[test]
@@ -517,6 +527,15 @@ fn failed_initial_node_compile_publishes_nothing_until_newer_invalidation() {
 
     assert!(!surface.compiled_once);
     assert!(surface.compile_generation_is_latched());
+    let failure_label = surface
+        .last_compile_failure_label()
+        .expect("latched failed initial compile must keep a diagnostic label");
+    assert!(
+        failure_label.contains("stage=all_nodes")
+            && failure_label.contains("compile_reason=unspecified")
+            && failure_label.contains(&format!("failed_nodes=[{center}]")),
+        "initial compile failure label must identify stage, reason, and failed node: {failure_label}"
+    );
     assert!(!surface.published_generation_matches_source());
     assert!(surface.compiled_sections.is_empty());
     assert!(surface.compiled_visual_span_pieces.is_empty());
@@ -534,6 +553,7 @@ fn failed_initial_node_compile_publishes_nothing_until_newer_invalidation() {
     surface.mark_node_dirty(&graph, center);
     surface.compile_dirty(&graph, &terrain);
     assert!(surface.published_generation_matches_source());
+    assert!(surface.last_compile_failure_label().is_none());
     assert_eq!(surface.compiled_visual_span_pieces.len(), edge_ids.len());
     assert_eq!(
         surface

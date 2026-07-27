@@ -28,6 +28,7 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_once: bool,
     pub(crate) compile_invalidation_generation: u64,
     pub(crate) failed_compile_generation: Option<u64>,
+    pub(in crate::simulation::network::surface) last_compile_failure_label: Option<String>,
     pub(crate) dirty_edges: HashSet<usize>,
     pub(crate) dirty_nodes: HashSet<u32>,
     pub(crate) dirty_surface_chunks: HashSet<SurfaceChunkKey>,
@@ -101,6 +102,7 @@ impl RoadSurfaceSystem {
             compiled_once: false,
             compile_invalidation_generation: 0,
             failed_compile_generation: None,
+            last_compile_failure_label: None,
             dirty_edges: HashSet::new(),
             dirty_nodes: HashSet::new(),
             dirty_surface_chunks: HashSet::new(),
@@ -185,6 +187,11 @@ impl RoadSurfaceSystem {
     /// Returns whether compiled owners and chunk indexes match the current invalidation generation.
     pub(crate) fn published_generation_matches_source(&self) -> bool {
         self.compiled_once && !self.has_pending_rebuild_work()
+    }
+
+    /// Returns the last compiler failure summary for the currently latched generation.
+    pub(crate) fn last_compile_failure_label(&self) -> Option<&str> {
+        self.last_compile_failure_label.as_deref()
     }
 
     /// Returns the currently cached compiled sections by edge id.
@@ -337,16 +344,20 @@ impl RoadSurfaceSystem {
         }
         let spans_ms = elapsed_ms(spans_start);
         if !failed_span_ids.is_empty() {
-            self.latch_compile_failure();
+            let failure_label = format!(
+                "stage=dirty_spans compile_reason={} failed_spans={:?} dirty_edges={} dirty_nodes={} span_edges={}",
+                reason.as_str(),
+                failed_span_ids,
+                dirty_edge_count,
+                dirty_node_count,
+                sorted_span_edges.len()
+            );
+            self.latch_compile_failure(failure_label.clone());
             if road_debug {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_dirty_incomplete compile_reason={} failed_spans={:?} dirty_edges={} dirty_nodes={} span_edges={} total_ms={:.3}",
-                    reason.as_str(),
-                    failed_span_ids,
-                    dirty_edge_count,
-                    dirty_node_count,
-                    sorted_span_edges.len(),
+                    "surface_compile_dirty_incomplete {} total_ms={:.3}",
+                    failure_label,
                     elapsed_ms(total_start)
                 );
             }
@@ -470,17 +481,21 @@ impl RoadSurfaceSystem {
         failed_node_ids.dedup();
         let nodes_ms = elapsed_ms(nodes_start);
         if !failed_node_ids.is_empty() {
-            self.latch_compile_failure();
+            let failure_label = format!(
+                "stage=dirty_nodes compile_reason={} failed_nodes={:?} dirty_edges={} dirty_nodes={} span_edges={} node_candidates={}",
+                reason.as_str(),
+                failed_node_ids,
+                dirty_edge_count,
+                dirty_node_count,
+                sorted_span_edges.len(),
+                node_candidates.len()
+            );
+            self.latch_compile_failure(failure_label.clone());
             if road_debug {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_dirty_incomplete compile_reason={} failed_nodes={:?} dirty_edges={} dirty_nodes={} span_edges={} node_candidates={} total_ms={:.3}",
-                    reason.as_str(),
-                    failed_node_ids,
-                    dirty_edge_count,
-                    dirty_node_count,
-                    sorted_span_edges.len(),
-                    node_candidates.len(),
+                    "surface_compile_dirty_incomplete {} total_ms={:.3}",
+                    failure_label,
                     elapsed_ms(total_start)
                 );
             }
@@ -546,6 +561,7 @@ impl RoadSurfaceSystem {
         self.last_rebuilt_query_chunks = dirty_query_chunks;
         self.compiled_once = true;
         self.failed_compile_generation = None;
+        self.last_compile_failure_label = None;
         self.clear_dirty_tracking();
 
         if road_debug {
@@ -711,14 +727,18 @@ impl RoadSurfaceSystem {
         }
         let spans_ms = elapsed_ms(spans_start);
         if !failed_span_ids.is_empty() {
-            self.latch_compile_failure();
+            let failure_label = format!(
+                "stage=all_spans compile_reason={} failed_spans={:?} edges={}",
+                reason.as_str(),
+                failed_span_ids,
+                edge_ids.len()
+            );
+            self.latch_compile_failure(failure_label.clone());
             if road_debug {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_all_incomplete compile_reason={} failed_spans={:?} edges={} total_ms={:.3}",
-                    reason.as_str(),
-                    failed_span_ids,
-                    edge_ids.len(),
+                    "surface_compile_all_incomplete {} total_ms={:.3}",
+                    failure_label,
                     elapsed_ms(total_start)
                 );
             }
@@ -772,16 +792,20 @@ impl RoadSurfaceSystem {
         failed_node_ids.dedup();
         let nodes_ms = elapsed_ms(nodes_start);
         if !failed_node_ids.is_empty() {
-            self.latch_compile_failure();
+            let failure_label = format!(
+                "stage=all_nodes compile_reason={} failed_nodes={:?} edges={} nodes={} node_candidates={}",
+                reason.as_str(),
+                failed_node_ids,
+                edge_ids.len(),
+                node_ids.len(),
+                node_candidates.len()
+            );
+            self.latch_compile_failure(failure_label.clone());
             if road_debug {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_all_incomplete compile_reason={} failed_nodes={:?} edges={} nodes={} node_candidates={} total_ms={:.3}",
-                    reason.as_str(),
-                    failed_node_ids,
-                    edge_ids.len(),
-                    node_ids.len(),
-                    node_candidates.len(),
+                    "surface_compile_all_incomplete {} total_ms={:.3}",
+                    failure_label,
                     elapsed_ms(total_start)
                 );
             }
@@ -829,6 +853,7 @@ impl RoadSurfaceSystem {
         staging.compiled_once = true;
         staging.compile_invalidation_generation = self.compile_invalidation_generation;
         staging.failed_compile_generation = None;
+        staging.last_compile_failure_label = None;
         staging.clear_dirty_tracking();
         *self = staging;
 

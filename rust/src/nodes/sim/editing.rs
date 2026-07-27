@@ -55,14 +55,22 @@ impl SimCore {
             return false;
         }
 
+        let failure_suffix = self
+            .transit_network
+            .road_surface
+            .last_compile_failure_label()
+            .map(|label| format!(" surface_failure={label}"))
+            .unwrap_or_default();
         let rolled_back = !self.benchmark_mode && self.undo_action_internal();
         debug_log!(
             "road",
-            "road_commit_rejected reason=surface_geometry_invalid_after_commit rollback={} graph_edges={}",
+            "road_commit_rejected reason=surface_geometry_invalid_after_commit rollback={} graph_edges={}{}",
             rolled_back,
-            self.region_graph.edge_count()
+            self.region_graph.edge_count(),
+            failure_suffix
         );
-        self.last_road_timing = "rejected=surface_geometry_invalid_after_commit".to_string();
+        self.last_road_timing =
+            format!("rejected=surface_geometry_invalid_after_commit{failure_suffix}");
         if rolled_back {
             self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
         }
