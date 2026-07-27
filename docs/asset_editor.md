@@ -141,7 +141,9 @@ For a moddable shipped game, custom assets do not require import into the Godot 
 Current repository state:
 
 - Buildings are still loaded from hardcoded `res://assets/...` paths and use Godot project-imported assets.
-- Cars and VAT pedestrians already use runtime GLTF loading APIs, but still from project-bundled paths.
+- Cars load their bundled `.glb` mesh and texture sources at runtime so fresh project-cache
+  launches do not depend on `godot/.godot/imported` files; VAT pedestrians already use runtime
+  VAT assets, still from project-bundled paths.
 
 Shipped design:
 

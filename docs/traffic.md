@@ -126,12 +126,25 @@ connection lane with:
 - cubic Bezier geometry from the inbound lane neck to the outbound lane neck
 - at most `1 m` chord sampling, clamped to `8..64` steps
 
+At true junctions (`degree >= 3`) and user-authored vehicle connection nodes, connector control
+distance and sampling use the junction footprint span: the larger of the lane-mouth chord, the two
+mouth distances through the node center, and the widest incident roadbed span. This prevents
+two-lane to four-lane T-junctions and explicit connection nodes from degenerating into tiny lateral
+connector shims that cars traverse almost instantly.
+
 Allowed turns are derived from `Node::lane_connections`:
 
 - if the node has no user vehicle connections, all non-U-turn outbound lanes are open
 - if the node has any user vehicle connection, the node is in whitelist mode and unspecified turns
   are blocked
 - terminal nodes may connect back to the same edge
+
+Strict degree-two corridor splits may skip materializing a vehicle connector and directly link the
+aligned incoming physical lane to the outgoing physical lane. This direct pass-through is allowed
+only when the node has exactly two incident edges, no user-authored vehicle lane connections, the
+lane mouths are coincident, and their XZ tangents are near-collinear. True junctions and all
+user-authored vehicle connection nodes must keep explicit connector lanes so junction speed,
+spacing, and whitelist semantics still apply.
 
 Cars enter connector lanes through `TRANSIT_INTERSECTION`. Connector lanes are lane-bucketed like
 road lanes, so multiple cars may occupy the same connector when they respect separation. Connector
@@ -295,6 +308,7 @@ stderr as well if you want `traffic.log`.
 Important log markers:
 
 - `[JUNCTION_ENTER]`
+- `[JUNCTION_BYPASS]`
 - `[JUNCTION_EXIT]`
 - `[JUNCTION_WAIT]`
 - `[JUNCTION_MISSING_CONN]`
@@ -329,6 +343,8 @@ Current known bounded scans:
 - adjacent lane lookup scans the current edge's lane list, whose count is tiny for supported road
   presets
 - connector selection scans `next_lanes` from the current lane, bounded by junction fan-out
+- direct pass-through detection scans only the candidate `next_lanes` of the current lane, bounded
+  by degree-two split fan-out
 - lane bucket gap checks use sorted vectors and `partition_point`
 
 ## Known Limits
@@ -341,4 +357,3 @@ Current known bounded scans:
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild
   must keep connector lanes and `next_lanes` in sync
-

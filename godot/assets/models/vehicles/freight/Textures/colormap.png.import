@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dft7gfsor1kua"
-path="res://.godot/imported/colormap.png-63afdd884cac4deea032d4e2a0512a6a.ctex"
+uid="uid://e1062cc2ac8cd"
+path="res://.godot/imported/colormap.png-e1062cc2ac8cd86dc9d2060caa342e55.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/models/vehicles/civilian/Textures/colormap.png"
-dest_files=["res://.godot/imported/colormap.png-63afdd884cac4deea032d4e2a0512a6a.ctex"]
+source_file="res://assets/models/vehicles/freight/Textures/colormap.png"
+dest_files=["res://.godot/imported/colormap.png-e1062cc2ac8cd86dc9d2060caa342e55.ctex"]
 
 [params]
 

@@ -101,6 +101,9 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
     }
 
     let original_edges = road_constraint_edges.clone();
+    let original_sources = road_constraint_sources.clone();
+    let mut constraint_vertex_site_owned_only =
+        terrain_cdt_constraint_vertex_site_ownership(&original_edges, &original_sources);
     let mut invalid_constraint_edges = 0usize;
     let mut split_points = original_edges
         .iter()
@@ -149,16 +152,30 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
                     interpolated_segment_height(first_start, first_end, clamp_unit(first_t));
                 let second_height =
                     interpolated_segment_height(second_start, second_end, clamp_unit(second_t));
-                let Some(intersection_height) =
-                    shared_road_constraint_height(first_height, second_height)
-                else {
+                let first_source = original_sources
+                    .get(&first_edge)
+                    .map(|source| source.boundary_source);
+                let second_source = original_sources
+                    .get(&second_edge)
+                    .map(|source| source.boundary_source);
+                let Some(intersection_height) = shared_road_constraint_height_for_sources(
+                    first_height,
+                    second_height,
+                    first_source,
+                    second_source,
+                ) else {
                     invalid_constraint_edges += 1;
                     continue;
                 };
+                let site_owned_only = first_source
+                    .is_some_and(terrain_cdt_boundary_source_is_building_site)
+                    && second_source.is_some_and(terrain_cdt_boundary_source_is_building_site);
                 let Some(vertex_index) = insert_road_constraint_vertex(
                     TerrainCdtVertex::new(intersection.x, intersection_height, intersection.z),
+                    site_owned_only,
                     vertices,
                     vertex_lookup,
+                    &mut constraint_vertex_site_owned_only,
                 ) else {
                     invalid_constraint_edges += 1;
                     continue;
@@ -182,7 +199,6 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
         &mut split_points,
     );
 
-    let original_sources = road_constraint_sources.clone();
     let mut noded_edges = BTreeSet::new();
     road_constraint_sources.clear();
 
@@ -216,6 +232,26 @@ pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
 
     *road_constraint_edges = noded_edges.into_iter().collect();
     invalid_constraint_edges
+}
+
+fn terrain_cdt_constraint_vertex_site_ownership(
+    edges: &[[usize; 2]],
+    sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) -> BTreeMap<usize, bool> {
+    let mut site_owned_only_by_vertex = BTreeMap::new();
+    for edge in edges {
+        let site_owned_edge = sources
+            .get(edge)
+            .map(|source| source.boundary_source)
+            .is_some_and(terrain_cdt_boundary_source_is_building_site);
+        for vertex_index in edge {
+            site_owned_only_by_vertex
+                .entry(*vertex_index)
+                .and_modify(|site_owned_only| *site_owned_only &= site_owned_edge)
+                .or_insert(site_owned_edge);
+        }
+    }
+    site_owned_only_by_vertex
 }
 
 pub(in crate::simulation::terrain::cdt) fn retain_exposed_road_constraint_edges(
@@ -342,19 +378,64 @@ pub(in crate::simulation::terrain::cdt) fn point_bounds_overlap_segment(
 
 fn insert_road_constraint_vertex(
     vertex: TerrainCdtVertex,
+    site_owned_only: bool,
     vertices: &mut Vec<TerrainCdtVertex>,
     vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    constraint_vertex_site_owned_only: &mut BTreeMap<usize, bool>,
 ) -> Option<usize> {
     let key = terrain_cdt_vertex_xz_key(vertex);
     if let Some(index) = vertex_lookup.get(&key) {
-        let height_m = shared_road_constraint_height(vertices[*index].height_m, vertex.height_m)?;
-        vertices[*index].height_m = height_m;
+        let existing_site_owned_only = constraint_vertex_site_owned_only.get(index).copied();
+        let Some(existing_site_owned_only) = existing_site_owned_only else {
+            vertices[*index].height_m = vertex.height_m;
+            constraint_vertex_site_owned_only.insert(*index, site_owned_only);
+            return Some(*index);
+        };
+        let merged = merge_road_vertex_height(
+            TerrainCdtRoadVertexHeight {
+                height_m: vertices[*index].height_m,
+                site_owned_only: existing_site_owned_only,
+            },
+            TerrainCdtRoadVertexHeight {
+                height_m: vertex.height_m,
+                site_owned_only,
+            },
+        )?;
+        vertices[*index].height_m = merged.height_m;
+        constraint_vertex_site_owned_only.insert(*index, merged.site_owned_only);
         return Some(*index);
     }
     let index = vertices.len();
     vertices.push(vertex);
     vertex_lookup.insert(key, index);
+    constraint_vertex_site_owned_only.insert(index, site_owned_only);
     Some(index)
+}
+
+fn shared_road_constraint_height_for_sources(
+    first_height_m: f32,
+    second_height_m: f32,
+    first_source: Option<TerrainCdtRoadBoundarySource>,
+    second_source: Option<TerrainCdtRoadBoundarySource>,
+) -> Option<f32> {
+    if let Some(height_m) = shared_road_constraint_height(first_height_m, second_height_m) {
+        return Some(height_m);
+    }
+    match (
+        first_source.is_some_and(terrain_cdt_boundary_source_is_building_site),
+        second_source.is_some_and(terrain_cdt_boundary_source_is_building_site),
+    ) {
+        (true, false) => Some(second_height_m),
+        (false, true) => Some(first_height_m),
+        _ => None,
+    }
+}
+
+fn terrain_cdt_boundary_source_is_building_site(source: TerrainCdtRoadBoundarySource) -> bool {
+    matches!(
+        source,
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. }
+    )
 }
 
 fn sort_dedup_constraint_splits(splits: &mut Vec<TerrainCdtRoadConstraintSplit>) {

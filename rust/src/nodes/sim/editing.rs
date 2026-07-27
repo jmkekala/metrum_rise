@@ -563,6 +563,11 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild(&mut self.region_graph);
+        self.agents.reattach_invalidated_lanes_for_edges(
+            &affected_edges,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.rebuild_building_entrances_internal();
         self.transit_network
             .rebuild_cch_and_check(&self.region_graph);
@@ -1124,6 +1129,11 @@ impl SimCore {
             self.transit_network
                 .lane_system
                 .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
+            self.agents.reattach_invalidated_lanes_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
         }
 
         debug_log!(
@@ -1225,6 +1235,11 @@ impl SimCore {
             self.transit_network
                 .lane_system
                 .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
+            self.agents.reattach_invalidated_lanes_for_edges(
+                &affected_edges,
+                &self.transit_network.lane_system,
+                &self.region_graph,
+            );
             self.rebuild_building_entrances_internal();
             self.transit_network
                 .rebuild_cch_and_check(&self.region_graph);
@@ -1286,6 +1301,11 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents.reattach_invalidated_lanes_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.rebuild_building_entrances_internal();
         if crate::debug::is_traffic_enabled() {
             if (node_id as usize) < self.region_graph.node_count() {
@@ -1339,6 +1359,11 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents.reattach_invalidated_lanes_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.rebuild_building_entrances_internal();
         self.transit_network
             .rebuild_cch_and_check(&self.region_graph);
@@ -1373,6 +1398,11 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents.reattach_invalidated_lanes_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.rebuild_building_entrances_internal();
         self.transit_network
             .rebuild_cch_and_check(&self.region_graph);
@@ -1409,6 +1439,11 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents.reattach_invalidated_lanes_for_edges(
+            &affected,
+            &self.transit_network.lane_system,
+            &self.region_graph,
+        );
         self.rebuild_building_entrances_internal();
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;

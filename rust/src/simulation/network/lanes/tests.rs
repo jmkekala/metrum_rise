@@ -760,6 +760,291 @@ fn vehicle_conns_for_turn(
     result
 }
 
+fn vehicle_routes_for_turn(
+    lanes: &LaneSystem,
+    graph: &RegionGraph,
+    junction_node: u32,
+    inbound_edge: usize,
+    outbound_edge: usize,
+) -> Vec<usize> {
+    let Some(edge_lane_ids) = lanes.edge_lanes.get(&inbound_edge) else {
+        return vec![];
+    };
+    let edge = graph.edge(inbound_edge);
+    let is_fwd_arriving = edge.end_node == junction_node;
+
+    let mut result = Vec::new();
+    for &lid in edge_lane_ids {
+        let lane = &lanes.lanes[lid];
+        if lane.lane_type != LaneType::Vehicle || lane.is_fwd != is_fwd_arriving {
+            continue;
+        }
+        for &next_lane_id in &lane.next_lanes {
+            let Some(next_lane) = lanes.lanes.get(next_lane_id) else {
+                continue;
+            };
+            if next_lane.lane_type != LaneType::Vehicle {
+                continue;
+            }
+            if next_lane.edge_id == outbound_edge {
+                result.push(next_lane_id);
+                continue;
+            }
+            if next_lane.edge_id == usize::MAX
+                && next_lane.next_lanes.first().is_some_and(|&target_lane_id| {
+                    lanes
+                        .lanes
+                        .get(target_lane_id)
+                        .is_some_and(|target_lane| target_lane.edge_id == outbound_edge)
+                })
+            {
+                result.push(next_lane_id);
+            }
+        }
+    }
+    result
+}
+
+fn vehicle_lane_on_edge(lanes: &LaneSystem, edge_id: usize, is_fwd: bool) -> usize {
+    lanes.edge_lanes[&edge_id]
+        .iter()
+        .copied()
+        .find(|&lane_id| {
+            let lane = &lanes.lanes[lane_id];
+            lane.lane_type == LaneType::Vehicle && lane.is_fwd == is_fwd
+        })
+        .expect("vehicle lane")
+}
+
+fn max_polyline_segment_m(points: &[Vector3]) -> f32 {
+    points
+        .windows(2)
+        .map(|window| window[0].distance_to(window[1]))
+        .fold(0.0_f32, f32::max)
+}
+
+#[test]
+fn test_vehicle_pass_through_split_uses_direct_lane_link() {
+    let mut graph = RegionGraph::new();
+    let n_west = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+
+    let mk = |s: u32, e: u32, graph: &mut RegionGraph| -> usize {
+        let p0 = graph.nodes[s as usize].pos;
+        let p1 = graph.nodes[e as usize].pos;
+        graph.add_edge(Edge {
+            start_node: s,
+            end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 1.0,
+            physical_length: p0.distance_to(p1),
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![p0, p1],
+            physical_geometry: vec![p0, p1],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        })
+    };
+
+    let west_edge = mk(n_west, n_center, &mut graph);
+    let east_edge = mk(n_center, n_east, &mut graph);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    let inbound_lane = vehicle_lane_on_edge(&lanes, west_edge, true);
+    let outbound_lane = vehicle_lane_on_edge(&lanes, east_edge, true);
+    assert!(
+        lanes.lanes[inbound_lane]
+            .next_lanes
+            .contains(&outbound_lane),
+        "pass-through split should link directly to the next road lane"
+    );
+    assert!(
+        lanes
+            .node_lanes
+            .get(&(n_center as usize))
+            .is_none_or(|node_lanes| {
+                node_lanes
+                    .iter()
+                    .all(|&lane_id| lanes.lanes[lane_id].lane_type != LaneType::Vehicle)
+            }),
+        "pass-through split should not create zero-length vehicle connector lanes"
+    );
+}
+
+#[test]
+fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
+    let mut graph = RegionGraph::new();
+    let n_west = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+
+    let mk = |s: u32, e: u32, graph: &mut RegionGraph| -> usize {
+        let p0 = graph.nodes[s as usize].pos;
+        let p1 = graph.nodes[e as usize].pos;
+        graph.add_edge(Edge {
+            start_node: s,
+            end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 1.0,
+            physical_length: p0.distance_to(p1),
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![p0, p1],
+            physical_geometry: vec![p0, p1],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        })
+    };
+
+    let west_edge = mk(n_west, n_center, &mut graph);
+    let east_edge = mk(n_center, n_east, &mut graph);
+    graph.add_lane_connection(n_center, west_edge, 0, east_edge, 0);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    let inbound_lane = vehicle_lane_on_edge(&lanes, west_edge, true);
+    let outbound_lane = vehicle_lane_on_edge(&lanes, east_edge, true);
+    assert!(
+        !lanes.lanes[inbound_lane]
+            .next_lanes
+            .contains(&outbound_lane),
+        "user-authored vehicle connections must keep connector semantics"
+    );
+
+    let conns = vehicle_conns_for_turn(&lanes, &graph, n_center, west_edge, east_edge);
+    assert_eq!(conns.len(), 1);
+    let conn = &lanes.lanes[conns[0]];
+    assert!(
+        conn.length >= crate::config::LANE_WIDTH,
+        "explicit degree-two connector should not collapse to a tiny handoff: {:.2} m",
+        conn.length
+    );
+    assert!(
+        max_polyline_segment_m(&conn.geometry) <= 1.0 + 1.0e-4,
+        "explicit degree-two connector segment too long"
+    );
+}
+
+#[test]
+fn test_vehicle_direct_pass_through_skips_true_junctions() {
+    let (mut graph, n_jct, e_w, e_e, _e_n) = build_t_junction();
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    let inbound_lane = vehicle_lane_on_edge(&lanes, e_w, true);
+    let outbound_lane = vehicle_lane_on_edge(&lanes, e_e, true);
+    assert!(
+        !lanes.lanes[inbound_lane]
+            .next_lanes
+            .contains(&outbound_lane),
+        "true junctions must not bypass vehicle connector semantics"
+    );
+
+    let conns = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_w, e_e);
+    assert_eq!(
+        conns.len(),
+        1,
+        "open true junctions should still create an explicit vehicle connector"
+    );
+}
+
+#[test]
+fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
+    let mut graph = RegionGraph::new();
+    let n_west = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+    let n_jct = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let n_north = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
+    let n_south = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
+
+    let add_edge =
+        |graph: &mut RegionGraph, start_node: u32, end_node: u32, fwd_lanes: u8, bkw_lanes: u8| {
+            let p0 = graph.nodes[start_node as usize].pos;
+            let p1 = graph.nodes[end_node as usize].pos;
+            graph.add_edge(Edge {
+                start_node,
+                end_node,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                class: EdgeClass::Standard,
+                width: ((fwd_lanes + bkw_lanes) as f32 * crate::config::LANE_WIDTH).max(2.0),
+                fwd_lanes,
+                bkw_lanes,
+                speed_limit: 50.0,
+                base_cost: 1.0,
+                physical_length: p0.distance_to(p1),
+                current_congestion: 0.0,
+                start_clip: 0.0,
+                end_clip: 0.0,
+                geometry: vec![p0, p1],
+                physical_geometry: vec![p0, p1],
+                deleted: false,
+                no_building_spawn: false,
+                vehicle_frontage_access:
+                    crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            })
+        };
+
+    let branch_edge = add_edge(&mut graph, n_west, n_jct, 1, 1);
+    let _north_edge = add_edge(&mut graph, n_jct, n_north, 2, 2);
+    let south_edge = add_edge(&mut graph, n_jct, n_south, 2, 2);
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut lanes = LaneSystem::new();
+    lanes.rebuild(&mut graph);
+
+    let conns = vehicle_conns_for_turn(&lanes, &graph, n_jct, branch_edge, south_edge);
+    assert!(
+        !conns.is_empty(),
+        "branch-to-arterial turn should create vehicle connector lanes"
+    );
+
+    let min_len = conns
+        .iter()
+        .map(|&conn_id| lanes.lanes[conn_id].length)
+        .fold(f32::INFINITY, f32::min);
+    assert!(
+        min_len >= 12.0,
+        "asymmetric true-junction connector is too short: {min_len:.2} m"
+    );
+
+    let max_segment = conns
+        .iter()
+        .map(|&conn_id| max_polyline_segment_m(&lanes.lanes[conn_id].geometry))
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_segment <= 1.0 + 1.0e-4,
+        "asymmetric true-junction connector segment too long: {max_segment:.2} m"
+    );
+}
+
 #[test]
 fn test_vehicle_turn_connection_uses_dense_curve_geometry() {
     let (mut graph, n_jct, e_w, _e_e, e_n) = build_t_junction();
@@ -779,13 +1064,9 @@ fn test_vehicle_turn_connection_uses_dense_curve_geometry() {
         conn.geometry.len()
     );
 
-    let max_segment = conn
-        .geometry
-        .windows(2)
-        .map(|window| window[0].distance_to(window[1]))
-        .fold(0.0_f32, f32::max);
+    let max_segment = max_polyline_segment_m(&conn.geometry);
     assert!(
-        max_segment <= 1.5,
+        max_segment <= 1.0 + 1.0e-4,
         "vehicle turn connector segment too long: {max_segment:.2} m"
     );
 }
@@ -808,7 +1089,7 @@ fn test_open_junction_allows_all_turns() {
         (e_n, e_e),
     ];
     for (from, to) in pairs {
-        let conns = vehicle_conns_for_turn(&lanes, &graph, n_jct, from, to);
+        let conns = vehicle_routes_for_turn(&lanes, &graph, n_jct, from, to);
         assert!(
             !conns.is_empty(),
             "Open junction: expected connection from edge {} to edge {}",
@@ -832,27 +1113,27 @@ fn test_whitelist_blocks_unset_turns() {
     lanes.rebuild(&mut graph);
 
     // The explicitly-connected turn must exist.
-    let w_to_e = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_w, e_e);
+    let w_to_e = vehicle_routes_for_turn(&lanes, &graph, n_jct, e_w, e_e);
     assert!(
         !w_to_e.is_empty(),
         "west→east must be routable (explicit connection)"
     );
 
     // Right turn (west→north) must be blocked.
-    let w_to_n = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_w, e_n);
+    let w_to_n = vehicle_routes_for_turn(&lanes, &graph, n_jct, e_w, e_n);
     assert!(
         w_to_n.is_empty(),
         "west→north must be blocked (no connection set)"
     );
 
     // Global whitelist: any connection on the node blocks all unspecified turns.
-    let e_to_n = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_e, e_n);
+    let e_to_n = vehicle_routes_for_turn(&lanes, &graph, n_jct, e_e, e_n);
     assert!(
         e_to_n.is_empty(),
         "east→north must be blocked (global whitelist active)"
     );
 
-    let n_to_e = vehicle_conns_for_turn(&lanes, &graph, n_jct, e_n, e_e);
+    let n_to_e = vehicle_routes_for_turn(&lanes, &graph, n_jct, e_n, e_e);
     assert!(
         n_to_e.is_empty(),
         "north→east must be blocked (global whitelist active)"
@@ -868,8 +1149,8 @@ fn test_incremental_whitelist_matches_full_rebuild() {
     // Full rebuild reference.
     let mut lanes_full = LaneSystem::new();
     lanes_full.rebuild(&mut graph);
-    let full_w_e = vehicle_conns_for_turn(&lanes_full, &graph, n_jct, e_w, e_e).len();
-    let full_w_n = vehicle_conns_for_turn(&lanes_full, &graph, n_jct, e_w, e_n).len();
+    let full_w_e = vehicle_routes_for_turn(&lanes_full, &graph, n_jct, e_w, e_e).len();
+    let full_w_n = vehicle_routes_for_turn(&lanes_full, &graph, n_jct, e_w, e_n).len();
 
     // Incremental rebuild on all edges touching the junction.
     let mut lanes_inc = LaneSystem::new();
@@ -877,8 +1158,8 @@ fn test_incremental_whitelist_matches_full_rebuild() {
     let affected: HashSet<usize> = graph.node_adjacency(n_jct).iter().copied().collect();
     lanes_inc.rebuild_edges_incremental(&mut graph, &affected);
 
-    let inc_w_e = vehicle_conns_for_turn(&lanes_inc, &graph, n_jct, e_w, e_e).len();
-    let inc_w_n = vehicle_conns_for_turn(&lanes_inc, &graph, n_jct, e_w, e_n).len();
+    let inc_w_e = vehicle_routes_for_turn(&lanes_inc, &graph, n_jct, e_w, e_e).len();
+    let inc_w_n = vehicle_routes_for_turn(&lanes_inc, &graph, n_jct, e_w, e_n).len();
 
     assert_eq!(
         inc_w_e, full_w_e,

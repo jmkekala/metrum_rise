@@ -1,12 +1,18 @@
 use super::super::graph::RegionGraph;
+use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
 use super::{Lane, LaneType};
+use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
 
 const VEHICLE_CONNECTION_MAX_STEP_M: f32 = 1.0;
 const VEHICLE_CONNECTION_MIN_STEPS: usize = 8;
 const VEHICLE_CONNECTION_MAX_STEPS: usize = 64;
+const VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR: f32 = 0.35;
+const VEHICLE_TRUE_JUNCTION_CONTROL_DISTANCE_FACTOR: f32 = 0.55;
+const VEHICLE_DIRECT_PASS_THROUGH_EPS_M: f32 = 0.05;
+const VEHICLE_DIRECT_PASS_THROUGH_DOT: f32 = 0.98;
 
 /// Builds vehicle intersection connection lanes at a single node.
 pub fn build_vehicle_connections_at_node(
@@ -54,6 +60,11 @@ pub fn build_vehicle_connections_at_node(
 
     let lane_conns = &graph.node(node_id as u32).lane_connections;
     let node_deg = graph.node_adjacency_count_at(node_id as u32);
+    let node_has_any_vehicle_conn = lane_conns
+        .keys()
+        .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
+    let node_allows_direct_pass_through = node_deg == 2 && !node_has_any_vehicle_conn;
+    let node_uses_junction_span = node_deg >= 3 || node_has_any_vehicle_conn;
 
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
         let mut allowed: Option<Vec<(usize, i8)>> =
@@ -63,10 +74,7 @@ pub fn build_vehicle_connections_at_node(
         // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
         // Nodes with no user connections remain fully open (allow all non-U-turns).
         if allowed.is_none() {
-            let node_has_any_conn = lane_conns
-                .keys()
-                .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
-            if !node_has_any_conn {
+            if !node_has_any_vehicle_conn {
                 // Open node: allow all non-U-turn outbound lanes.
                 let mut defaults = Vec::new();
                 for &(out_edge_id, out_lane_idx, _) in &outbound {
@@ -78,7 +86,7 @@ pub fn build_vehicle_connections_at_node(
                     allowed = Some(defaults);
                 }
             }
-            // If node_has_any_conn but this arm has no explicit connection, allowed stays
+            // If node_has_any_vehicle_conn but this arm has no explicit connection, allowed stays
             // None → no junction connection lanes created → turn is blocked.
         }
 
@@ -122,23 +130,46 @@ pub fn build_vehicle_connections_at_node(
             };
 
             let dist = p0.distance_to(p3);
-            let cd = dist * 0.35;
+            if node_allows_direct_pass_through
+                && dist <= VEHICLE_DIRECT_PASS_THROUGH_EPS_M
+                && flat_direction_dot(p1_base, p2_base) >= VEHICLE_DIRECT_PASS_THROUGH_DOT
+            {
+                lanes[in_lane_id].next_lanes.push(out_lid);
+                continue;
+            }
+
+            let distance_basis = vehicle_connection_distance_basis_m(
+                graph,
+                node_id,
+                node_uses_junction_span,
+                dist,
+                p0,
+                p3,
+            );
+            let control_factor = if node_uses_junction_span {
+                VEHICLE_TRUE_JUNCTION_CONTROL_DISTANCE_FACTOR
+            } else {
+                VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR
+            };
+            let cd = distance_basis * control_factor;
             let p1 = p0 + p1_base * cd;
             let p2 = p3 - p2_base * cd;
 
-            let steps = vehicle_connection_steps(dist);
+            let steps = vehicle_connection_steps_for_curve(
+                p0,
+                p1,
+                p2,
+                p3,
+                distance_basis.max(dist + cd * 2.0),
+            );
             let mut conn_geom = Vec::with_capacity(steps + 1);
             let mut conn_len = 0.0;
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
-                let mut p = (1.0 - t).powi(3) * p0
-                    + 3.0 * (1.0 - t).powi(2) * t * p1
-                    + 3.0 * (1.0 - t) * t.powi(2) * p2
-                    + t.powi(3) * p3;
-                p.y = p0.y + (p3.y - p0.y) * t;
-                conn_geom.push(p);
+                let point = vehicle_connection_point(p0, p1, p2, p3, t);
+                conn_geom.push(point);
                 if k > 0 {
-                    conn_len += conn_geom[k - 1].distance_to(p);
+                    conn_len += conn_geom[k - 1].distance_to(point);
                 }
             }
 
@@ -164,7 +195,100 @@ pub fn build_vehicle_connections_at_node(
     }
 }
 
+fn vehicle_connection_distance_basis_m(
+    graph: &RegionGraph,
+    node_id: usize,
+    use_junction_span: bool,
+    chord_distance_m: f32,
+    start: Vector3,
+    end: Vector3,
+) -> f32 {
+    if !use_junction_span {
+        return chord_distance_m;
+    }
+
+    let node_pos = graph.node(node_id as u32).pos;
+    let center_span_m = start.distance_to(node_pos) + end.distance_to(node_pos);
+    chord_distance_m
+        .max(center_span_m)
+        .max(node_vehicle_junction_span_m(graph, node_id))
+}
+
+fn node_vehicle_junction_span_m(graph: &RegionGraph, node_id: usize) -> f32 {
+    let mut max_half_width_m = config::LANE_WIDTH;
+    for &edge_id in graph.node_adjacency(node_id as u32) {
+        let edge = graph.edge(edge_id);
+        if edge.deleted {
+            continue;
+        }
+        let sidewalk_width_m = if (edge.allowed_types & TransitFlags::FOOT) != 0 {
+            config::SIDEWALK_WIDTH
+        } else {
+            0.0
+        };
+        let half_width_m = edge.width.max(config::LANE_WIDTH) * 0.5 + sidewalk_width_m;
+        max_half_width_m = max_half_width_m.max(half_width_m);
+    }
+
+    (max_half_width_m * 2.0).max(config::LANE_WIDTH * 3.0)
+}
+
 fn vehicle_connection_steps(chord_distance_m: f32) -> usize {
     ((chord_distance_m / VEHICLE_CONNECTION_MAX_STEP_M).ceil() as usize)
         .clamp(VEHICLE_CONNECTION_MIN_STEPS, VEHICLE_CONNECTION_MAX_STEPS)
+}
+
+fn vehicle_connection_steps_for_curve(
+    p0: Vector3,
+    p1: Vector3,
+    p2: Vector3,
+    p3: Vector3,
+    distance_basis_m: f32,
+) -> usize {
+    let mut steps = vehicle_connection_steps(distance_basis_m);
+    loop {
+        if steps >= VEHICLE_CONNECTION_MAX_STEPS
+            || vehicle_connection_max_sample_chord_m(p0, p1, p2, p3, steps)
+                <= VEHICLE_CONNECTION_MAX_STEP_M + 1.0e-4
+        {
+            return steps;
+        }
+        steps = (steps * 2).min(VEHICLE_CONNECTION_MAX_STEPS);
+    }
+}
+
+fn vehicle_connection_max_sample_chord_m(
+    p0: Vector3,
+    p1: Vector3,
+    p2: Vector3,
+    p3: Vector3,
+    steps: usize,
+) -> f32 {
+    let mut max_chord = 0.0_f32;
+    let mut prev = vehicle_connection_point(p0, p1, p2, p3, 0.0);
+    for k in 1..=steps {
+        let t = k as f32 / steps as f32;
+        let point = vehicle_connection_point(p0, p1, p2, p3, t);
+        max_chord = max_chord.max(prev.distance_to(point));
+        prev = point;
+    }
+    max_chord
+}
+
+fn vehicle_connection_point(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: f32) -> Vector3 {
+    let mut point = (1.0 - t).powi(3) * p0
+        + 3.0 * (1.0 - t).powi(2) * t * p1
+        + 3.0 * (1.0 - t) * t.powi(2) * p2
+        + t.powi(3) * p3;
+    point.y = p0.y + (p3.y - p0.y) * t;
+    point
+}
+
+fn flat_direction_dot(a: Vector3, b: Vector3) -> f32 {
+    let a = Vector2::new(a.x, a.z);
+    let b = Vector2::new(b.x, b.z);
+    if a.length_squared() <= 1.0e-8 || b.length_squared() <= 1.0e-8 {
+        return -1.0;
+    }
+    a.normalized().dot(b.normalized()).clamp(-1.0, 1.0)
 }

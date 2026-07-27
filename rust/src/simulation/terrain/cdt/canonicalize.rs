@@ -98,11 +98,13 @@ pub(super) fn canonicalize_input(
             if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
                 continue;
             }
+            let site_owned_loop = road_loop_edge_sources_are_building_site_only(&edge_sources);
             let loop_indices = points
                 .iter()
                 .map(|&vertex| {
                     insert_road_vertex(
                         vertex,
+                        site_owned_loop,
                         &mut vertices,
                         &mut vertex_lookup,
                         &mut road_vertex_heights,
@@ -250,6 +252,12 @@ fn tie_in_guide_vertex_is_valid(
         && widening_tie_in_sample_against_any_road_loop(vertex, road_loops).is_none()
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TerrainCdtRoadVertexHeight {
+    pub(super) height_m: f32,
+    pub(super) site_owned_only: bool,
+}
+
 pub(super) fn insert_vertex(
     vertex: TerrainCdtVertex,
     vertices: &mut Vec<TerrainCdtVertex>,
@@ -267,19 +275,26 @@ pub(super) fn insert_vertex(
 
 fn insert_road_vertex(
     vertex: TerrainCdtVertex,
+    site_owned_only: bool,
     vertices: &mut Vec<TerrainCdtVertex>,
     vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
-    road_vertex_heights: &mut BTreeMap<(i64, i64), f32>,
+    road_vertex_heights: &mut BTreeMap<(i64, i64), TerrainCdtRoadVertexHeight>,
 ) -> Result<usize, TerrainCdtError> {
     let key = terrain_cdt_vertex_xz_key(vertex);
-    if let Some(existing_height_m) = road_vertex_heights.get(&key) {
-        if !same_height(*existing_height_m, vertex.height_m) {
-            return Err(TerrainCdtError::ConflictingRoadBoundaryHeight);
-        }
-        return vertex_lookup
+    let candidate = TerrainCdtRoadVertexHeight {
+        height_m: vertex.height_m,
+        site_owned_only,
+    };
+    if let Some(existing) = road_vertex_heights.get(&key).copied() {
+        let merged = merge_road_vertex_height(existing, candidate)
+            .ok_or(TerrainCdtError::ConflictingRoadBoundaryHeight)?;
+        let index = vertex_lookup
             .get(&key)
             .copied()
-            .ok_or(TerrainCdtError::ConflictingRoadBoundaryHeight);
+            .ok_or(TerrainCdtError::ConflictingRoadBoundaryHeight)?;
+        vertices[index].height_m = merged.height_m;
+        road_vertex_heights.insert(key, merged);
+        return Ok(index);
     }
 
     let index = if let Some(index) = vertex_lookup.get(&key).copied() {
@@ -292,6 +307,35 @@ fn insert_road_vertex(
         vertex_lookup.insert(key, index);
         index
     };
-    road_vertex_heights.insert(key, vertex.height_m);
+    road_vertex_heights.insert(key, candidate);
     Ok(index)
+}
+
+pub(super) fn merge_road_vertex_height(
+    existing: TerrainCdtRoadVertexHeight,
+    candidate: TerrainCdtRoadVertexHeight,
+) -> Option<TerrainCdtRoadVertexHeight> {
+    if same_height(existing.height_m, candidate.height_m) {
+        return Some(TerrainCdtRoadVertexHeight {
+            height_m: existing.height_m,
+            site_owned_only: existing.site_owned_only && candidate.site_owned_only,
+        });
+    }
+    match (existing.site_owned_only, candidate.site_owned_only) {
+        (true, false) => Some(candidate),
+        (false, true) => Some(existing),
+        _ => None,
+    }
+}
+
+pub(super) fn road_loop_edge_sources_are_building_site_only(
+    edge_sources: &[Option<TerrainCdtRoadBoundarySource>],
+) -> bool {
+    !edge_sources.is_empty()
+        && edge_sources.iter().all(|source| {
+            matches!(
+                source,
+                Some(TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. })
+            )
+        })
 }

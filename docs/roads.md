@@ -138,7 +138,10 @@ selection queries, or agent movement.
 Incremental physical-lane rebuilds include every road arm incident to the original dirty
 endpoints. All connector lanes at both ends of every rebuilt arm are replaced in the same update,
 and active agents on that complete rebuild closure are invalidated before the old lane IDs become
-orphans. A connector must never survive while targeting an orphaned physical lane.
+orphans. After the lane rebuild, invalidated on-road agents may reattach only to rebuilt physical
+lanes in the same closure near their preserved world position; the stored `lane_distance` is
+derived from the same 3D lane arc-length metric used by lane geometry. A connector must never
+survive while targeting an orphaned physical lane.
 
 ## Visual Pieces
 
@@ -328,6 +331,9 @@ Road-touched terrain patches obey this contract:
 - accepted terrain faces stay outside the unioned road-owned footprint
 - rejected road-footprint faces are not emitted
 - emitted terrain seam vertices reuse road-owned outer-edge coordinates and heights
+- when a building-site footprint boundary shares an exact XZ vertex with a road-owned terrain
+  constraint, the road-owned height is authoritative for that shared CDT vertex; site-owned yard
+  grading must not emit a conflicting over/under terrain face at the road seam
 - ordinary `Standard` span and node seam sources stay in the terrain bucket even when the authored
   terrain is steep; retaining-wall output is reserved for explicit structural bridge / tunnel /
   future retaining sources

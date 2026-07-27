@@ -237,6 +237,11 @@ pub(crate) fn run_sim_thread(
                             c.transit_network
                                 .lane_system
                                 .rebuild_edges_incremental(&mut c.region_graph, &dirty);
+                            c.agents.reattach_invalidated_lanes_for_edges(
+                                &dirty,
+                                &c.transit_network.lane_system,
+                                &c.region_graph,
+                            );
                             let dt_lanes_us = t_lanes.elapsed().as_micros();
                             c.rebuild_building_entrances_internal();
 

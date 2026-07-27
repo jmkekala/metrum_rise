@@ -478,6 +478,30 @@ pub(super) fn pedestrian_path_has_lane_connectors_from_edge(
     )
 }
 
+pub(super) fn pedestrian_path_has_lane_connectors_from_node(
+    path: &[u32],
+    start_node: u32,
+    detach_lane_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> bool {
+    if path.first().copied() != Some(start_node) {
+        return false;
+    }
+    if path.len() < 2 {
+        return lane_origin_node(detach_lane_id, transit_network, graph) == Some(start_node);
+    }
+    let start_lanes =
+        pedestrian_start_lanes_from_node_path(path, start_node, transit_network, graph);
+    pedestrian_path_has_lane_connectors_from_start_lanes(
+        &path[1..],
+        start_lanes,
+        detach_lane_id,
+        transit_network,
+        graph,
+    )
+}
+
 fn pedestrian_path_has_lane_connectors_from_start_lanes(
     path: &[u32],
     mut possible_lanes: Vec<usize>,
@@ -618,6 +642,55 @@ pub(super) fn pedestrian_lane_connector_path_from_edge(
     )
 }
 
+pub(super) fn pedestrian_lane_connector_path_from_node(
+    start_node: u32,
+    end_node: u32,
+    detach_lane_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<(f32, Vec<u32>)> {
+    if start_node == end_node {
+        return (lane_origin_node(detach_lane_id, transit_network, graph) == Some(start_node))
+            .then_some((0.0, vec![start_node]));
+    }
+
+    let mut heap = BinaryHeap::new();
+    let mut best: HashMap<(u32, usize), f32> = HashMap::new();
+    let mut previous: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
+    for start_lane_id in pedestrian_outgoing_lanes_at_node(start_node, transit_network, graph) {
+        let Some(next_node) = lane_terminal_node(start_lane_id, transit_network, graph) else {
+            continue;
+        };
+        let lane = &transit_network.lane_system.lanes[start_lane_id];
+        let travel_cost = graph
+            .edges()
+            .get(lane.edge_id)
+            .map(|edge| edge.base_cost)
+            .unwrap_or(lane.length / WALK_CONNECTOR_COST_SPEED_MS);
+        let key = (next_node, start_lane_id);
+        let cost = travel_cost.max(0.001);
+        if cost < *best.get(&key).unwrap_or(&f32::INFINITY) {
+            best.insert(key, cost);
+            previous.insert(key, (start_node, usize::MAX));
+            heap.push(PedestrianSearchState {
+                cost,
+                node: next_node,
+                incoming_lane: start_lane_id,
+            });
+        }
+    }
+
+    search_pedestrian_lane_connector_path(
+        &mut heap,
+        &mut best,
+        &mut previous,
+        end_node,
+        detach_lane_id,
+        transit_network,
+        graph,
+    )
+}
+
 fn pedestrian_lane_connector_path_from_start_lanes(
     start_node: u32,
     end_node: u32,
@@ -649,6 +722,26 @@ fn pedestrian_lane_connector_path_from_start_lanes(
         });
     }
 
+    search_pedestrian_lane_connector_path(
+        &mut heap,
+        &mut best,
+        &mut previous,
+        end_node,
+        detach_lane_id,
+        transit_network,
+        graph,
+    )
+}
+
+fn search_pedestrian_lane_connector_path(
+    heap: &mut BinaryHeap<PedestrianSearchState>,
+    best: &mut HashMap<(u32, usize), f32>,
+    previous: &mut HashMap<(u32, usize), (u32, usize)>,
+    end_node: u32,
+    detach_lane_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<(f32, Vec<u32>)> {
     while let Some(state) = heap.pop() {
         let state_key = (state.node, state.incoming_lane);
         if state.cost > *best.get(&state_key).unwrap_or(&f32::INFINITY) {
@@ -708,6 +801,64 @@ fn pedestrian_lane_connector_path_from_start_lanes(
     }
 
     None
+}
+
+fn pedestrian_start_lanes_from_node_path(
+    path: &[u32],
+    start_node: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Vec<usize> {
+    let Some(&next_node) = path.get(1) else {
+        return Vec::new();
+    };
+    let Some(first_edge) = graph.get_edge_between_nodes(start_node, next_node) else {
+        return Vec::new();
+    };
+    pedestrian_outgoing_lanes_on_edge(start_node, first_edge, transit_network, graph)
+}
+
+fn pedestrian_outgoing_lanes_at_node(
+    node_id: u32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Vec<usize> {
+    if node_id as usize >= graph.node_adjacency_count() {
+        return Vec::new();
+    }
+    let mut lanes = Vec::new();
+    for &edge_id in graph.node_adjacency(node_id) {
+        lanes.extend(pedestrian_outgoing_lanes_on_edge(
+            node_id,
+            edge_id,
+            transit_network,
+            graph,
+        ));
+    }
+    lanes
+}
+
+fn pedestrian_outgoing_lanes_on_edge(
+    node_id: u32,
+    edge_id: usize,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Vec<usize> {
+    transit_network
+        .lane_system
+        .edge_lanes
+        .get(&edge_id)
+        .into_iter()
+        .flat_map(|lane_ids| lane_ids.iter().copied())
+        .filter(|&lane_id| {
+            transit_network
+                .lane_system
+                .lanes
+                .get(lane_id)
+                .is_some_and(|lane| lane.lane_type == LaneType::Foot)
+                && lane_origin_node(lane_id, transit_network, graph) == Some(node_id)
+        })
+        .collect()
 }
 
 fn pedestrian_incoming_lanes_at_node(

@@ -12,7 +12,8 @@ use super::super::access::{
 use super::super::lane_nav::lane_origin_node;
 use super::candidate::{
     NODE_RANKS, candidate_lane_id, pedestrian_lane_connector_path_from_edge,
-    pedestrian_path_has_lane_connectors_from_edge, transit_flags_for_mode,
+    pedestrian_lane_connector_path_from_node, pedestrian_path_has_lane_connectors_from_edge,
+    pedestrian_path_has_lane_connectors_from_node, transit_flags_for_mode,
 };
 use super::types::BuiltNetworkReplan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -45,6 +46,12 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     if destination_edge.deleted {
         return None;
     }
+    let incoming_edge_valid = incoming_edge_is_incident_to_node(incoming_edge, start_node, graph);
+    let search_incoming_edge = if incoming_edge_valid {
+        incoming_edge
+    } else {
+        usize::MAX
+    };
 
     let mut best: Option<(f32, u8, usize, f32, u32, Vec<u32>)> = None;
     for destination_rank in NODE_RANKS {
@@ -88,16 +95,28 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             graph,
         )?;
         let (network_time_s, current_path) = if start_node == planned_detach_node {
-            if mode == MODE_CAR
-                || pedestrian_path_has_lane_connectors_from_edge(
+            if mode == MODE_CAR {
+                (0.0, Vec::new())
+            } else if incoming_edge_valid {
+                if pedestrian_path_has_lane_connectors_from_edge(
                     &[start_node],
                     start_node,
                     incoming_edge,
                     planned_detach_lane_id,
                     transit_network,
                     graph,
-                )
-            {
+                ) {
+                    (0.0, Vec::new())
+                } else {
+                    continue;
+                }
+            } else if pedestrian_path_has_lane_connectors_from_node(
+                &[start_node],
+                start_node,
+                planned_detach_lane_id,
+                transit_network,
+                graph,
+            ) {
                 (0.0, Vec::new())
             } else {
                 continue;
@@ -107,31 +126,51 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
             let (mut travel_seconds, _, mut path) = transit_network.cch_graph.find_path(
                 start_node,
                 planned_detach_node,
-                incoming_edge,
+                search_incoming_edge,
                 graph,
                 transit_flags_for_mode(mode),
             )?;
             if path.len() < 2 {
                 continue;
             }
-            if mode != MODE_CAR
-                && !pedestrian_path_has_lane_connectors_from_edge(
-                    &path,
-                    start_node,
-                    incoming_edge,
-                    planned_detach_lane_id,
-                    transit_network,
-                    graph,
-                )
-            {
-                let fallback = pedestrian_lane_connector_path_from_edge(
-                    start_node,
-                    planned_detach_node,
-                    incoming_edge,
-                    planned_detach_lane_id,
-                    transit_network,
-                    graph,
-                )?;
+            let pedestrian_path_valid = mode == MODE_CAR
+                || if incoming_edge_valid {
+                    pedestrian_path_has_lane_connectors_from_edge(
+                        &path,
+                        start_node,
+                        incoming_edge,
+                        planned_detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                } else {
+                    pedestrian_path_has_lane_connectors_from_node(
+                        &path,
+                        start_node,
+                        planned_detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                };
+            if !pedestrian_path_valid {
+                let fallback = if incoming_edge_valid {
+                    pedestrian_lane_connector_path_from_edge(
+                        start_node,
+                        planned_detach_node,
+                        incoming_edge,
+                        planned_detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                } else {
+                    pedestrian_lane_connector_path_from_node(
+                        start_node,
+                        planned_detach_node,
+                        planned_detach_lane_id,
+                        transit_network,
+                        graph,
+                    )
+                }?;
                 travel_seconds = fallback.0;
                 path = fallback.1;
             }
@@ -184,6 +223,16 @@ pub(in crate::simulation::economy::agents::tick) fn plan_network_replan(
     })
 }
 
+fn incoming_edge_is_incident_to_node(
+    incoming_edge: usize,
+    start_node: u32,
+    graph: &RegionGraph,
+) -> bool {
+    graph.get_edge(incoming_edge).is_some_and(|edge| {
+        !edge.deleted && (edge.start_node == start_node || edge.end_node == start_node)
+    })
+}
+
 /// Rebuilds a network-only plan for a freight carrier already travelling to an OWA border.
 pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
     start_node: u32,
@@ -200,11 +249,17 @@ pub(in crate::simulation::economy::agents::tick) fn plan_border_network_replan(
     let current_path = if start_node == border_node {
         Vec::new()
     } else {
+        let search_incoming_edge =
+            if incoming_edge_is_incident_to_node(incoming_edge, start_node, graph) {
+                incoming_edge
+            } else {
+                usize::MAX
+            };
         pathfind_count.fetch_add(1, Ordering::Relaxed);
         let (_, _, path) = transit_network.cch_graph.find_path(
             start_node,
             border_node,
-            incoming_edge,
+            search_incoming_edge,
             graph,
             TransitFlags::CAR,
         )?;

@@ -378,7 +378,7 @@ func _setup_construction_scaffold(zone_id: int) -> void:
 	mmi.multimesh = mm
 	SceneLightingConfig.apply_shadow_policy(
 		mmi,
-		SceneLightingConfig.SHADOW_DEBUG_OVERLAY,
+		SceneLightingConfig.SHADOW_DYNAMIC_CASTER,
 		"buildings"
 	)
 	add_child(mmi)

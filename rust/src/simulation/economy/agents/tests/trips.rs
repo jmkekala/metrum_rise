@@ -944,6 +944,58 @@ fn test_border_freight_replans_after_empty_path_freeze() {
 }
 
 #[test]
+fn test_walking_agent_recovers_from_stale_edge_after_road_split() {
+    let (mut network, mut graph, _) = build_two_edge_road(1, 1);
+    let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_asset(
+        &mut allocator,
+        "test",
+        "stale_edge_work",
+        ZoneClass::Commercial,
+    );
+    let mut work = create_test_building(0, 1);
+    work.asset_id = asset_id;
+    work.zone_type = ZoneType::Commercial;
+    allocator.buildings.push(work);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let start_node = 2_u32;
+    let start_pos = graph.node(start_node).pos;
+    let agent_idx = agents.spawn_border_arrival_agent(
+        usize::MAX,
+        0,
+        0.0,
+        0.0,
+        start_node,
+        start_pos.x,
+        start_pos.z,
+    );
+    agents.current_building[agent_idx] = usize::MAX;
+    agents.target_building[agent_idx] = 0;
+    agents.current_node[agent_idx] = start_node;
+    agents.current_edge[agent_idx] = 0;
+    agents.current_lane_id[agent_idx] = usize::MAX;
+    agents.current_path[agent_idx].clear();
+    agents.current_path_index[agent_idx] = 0;
+    agents.access_flags[agent_idx] = ACCESS_PLAN_VALID;
+    agents.transit[agent_idx] = TRANSIT_NETWORK;
+    agents.transit_mode[agent_idx] = MODE_WALK;
+    agents.speed[agent_idx] = 0.0;
+    agents.has_car[agent_idx] = false;
+
+    agents.tick(&mut allocator, &mut network, &mut graph, 1.0, 0, 0);
+
+    assert_ne!(
+        agents.current_lane_id[agent_idx],
+        usize::MAX,
+        "walking agent stayed off-lane after replanning from a stale edge"
+    );
+    assert_eq!(agents.current_edge[agent_idx], 1);
+    assert!(agents.speed[agent_idx] > 0.0);
+}
+
+#[test]
 fn test_pedestrian_crosses_junction() {
     let mut network = TransitNetwork::new();
     let mut graph = RegionGraph::new();

@@ -179,6 +179,92 @@ fn conflicting_height_road_constraints_are_not_welded_by_height_max() {
 }
 
 #[test]
+fn building_site_boundary_crossing_road_uses_road_height_without_cdt_conflict() {
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]);
+    let road = vec![
+        TerrainCdtVertex::new(4.0, 0.0, 8.0),
+        TerrainCdtVertex::new(20.0, 0.0, 8.0),
+        TerrainCdtVertex::new(20.0, 0.0, 12.0),
+        TerrainCdtVertex::new(4.0, 0.0, 12.0),
+    ];
+    let site = vec![
+        TerrainCdtVertex::new(8.0, 2.0, 10.0),
+        TerrainCdtVertex::new(16.0, 2.0, 10.0),
+        TerrainCdtVertex::new(16.0, 2.0, 22.0),
+        TerrainCdtVertex::new(8.0, 2.0, 22.0),
+    ];
+    let site_source = TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+        building_idx: 7,
+        local_loop_index: 0,
+        local_edge_index: 0,
+    };
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        patch,
+        vec![
+            TerrainCdtRoadLoop::new(31, 0, road),
+            sourced_road_loop(88, 0, site, site_source),
+        ],
+        piece_source_samples(),
+    ))
+    .expect("a yard seam crossing road-owned terrain must not reject the whole terrain patch");
+
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    assert!(mesh.vertices.iter().any(|vertex| {
+        same_coord(vertex.x, 8.0) && same_coord(vertex.z, 12.0) && same_height(vertex.height_m, 0.0)
+    }));
+    assert!(mesh.vertices.iter().any(|vertex| {
+        same_coord(vertex.x, 16.0)
+            && same_coord(vertex.z, 12.0)
+            && same_height(vertex.height_m, 0.0)
+    }));
+}
+
+#[test]
+fn building_site_boundary_abutting_road_corner_uses_road_height_without_input_error() {
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]);
+    let road = vec![
+        TerrainCdtVertex::new(4.0, 0.0, 8.0),
+        TerrainCdtVertex::new(20.0, 0.0, 8.0),
+        TerrainCdtVertex::new(20.0, 0.0, 12.0),
+        TerrainCdtVertex::new(4.0, 0.0, 12.0),
+    ];
+    let site = vec![
+        TerrainCdtVertex::new(4.0, 2.0, 12.0),
+        TerrainCdtVertex::new(16.0, 2.0, 12.0),
+        TerrainCdtVertex::new(16.0, 2.0, 22.0),
+        TerrainCdtVertex::new(4.0, 2.0, 22.0),
+    ];
+    let site_source = TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+        building_idx: 8,
+        local_loop_index: 0,
+        local_edge_index: 0,
+    };
+
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        patch,
+        vec![
+            TerrainCdtRoadLoop::new(31, 0, road),
+            sourced_road_loop(88, 0, site, site_source),
+        ],
+        piece_source_samples(),
+    ))
+    .expect("a yard seam abutting a road edge must not fail on a shared X/Z boundary vertex");
+
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    assert!(mesh.vertices.iter().any(|vertex| {
+        same_coord(vertex.x, 4.0) && same_coord(vertex.z, 12.0) && same_height(vertex.height_m, 0.0)
+    }));
+    assert!(mesh.vertices.iter().any(|vertex| {
+        same_coord(vertex.x, 16.0)
+            && same_coord(vertex.z, 12.0)
+            && same_height(vertex.height_m, 0.0)
+    }));
+}
+
+#[test]
 fn road_loop_endpoint_on_another_loop_edge_splits_the_roadbed_constraint() {
     let patch = TerrainCdtPatch::new(-96.0, -32.0, 64.0, 64.0, [0.0; 4]);
     let horizontal = vec![

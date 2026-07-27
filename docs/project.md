@@ -110,6 +110,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Incremental lane updates rebuild connectors at both ends of every incident arm and invalidate
   active agents across that same closure, so no current route can target an orphaned lane ID. See
   [`roads.md`](roads.md).
+- Road-edit traffic hardening now reattaches invalidated on-road agents to rebuilt physical lanes
+  from their preserved world positions using authoritative lane arc length, while strict
+  degree-two road splits may use direct vehicle lane continuity instead of zero-length junction
+  connectors. True junctions keep connector lanes so speed and spacing semantics still apply, and
+  building-site CDT seams now prefer road-owned heights at shared XZ vertices. See
+  [`roads.md`](roads.md) and [`traffic.md`](traffic.md).
 - Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
   and adult female archetypes. The bake path selects the explicit walk action from the source
   `.blend`, normalizes the rest mesh to `1.8 m`, preserves outfit color through vertex colors, and

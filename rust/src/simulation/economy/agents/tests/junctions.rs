@@ -54,6 +54,48 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
 }
 
 #[test]
+fn test_vehicle_pass_through_split_continues_on_road_lane() {
+    let (mut network, mut graph, fwd_lanes) = build_two_edge_road(1, 1);
+    let west_node = 0_u32;
+    let center_node = 1_u32;
+    let east_node = 2_u32;
+    let west_edge = 0_usize;
+    let east_edge = 1_usize;
+    let west_lane = fwd_lanes[0];
+    let east_lane = fwd_vehicle_lanes(&network, east_edge)[0];
+    assert!(
+        network.lane_system.lanes[west_lane]
+            .next_lanes
+            .contains(&east_lane),
+        "test setup should expose a direct pass-through lane link"
+    );
+
+    let allocator = BuildingAllocator::new();
+    let mut agents = AgentSystem::new();
+    let idx =
+        agents.spawn_border_arrival_agent(usize::MAX, east_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    agents.transit[idx] = TRANSIT_NETWORK;
+    agents.transit_mode[idx] = MODE_CAR;
+    agents.current_node[idx] = west_node;
+    agents.current_edge[idx] = west_edge;
+    agents.current_lane_id[idx] = west_lane;
+    agents.lane_distance[idx] = network.lane_system.lanes[west_lane].length - 0.2;
+    agents.speed[idx] = 14.0;
+    agents.current_path[idx] = vec![west_node, center_node, east_node];
+    agents.current_path_index[idx] = 1;
+
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 0);
+
+    assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
+    assert_eq!(agents.current_edge[idx], east_edge);
+    assert_eq!(agents.current_lane_id[idx], east_lane);
+    assert!(
+        agents.lane_distance[idx] > 0.0,
+        "remaining movement should continue onto the next physical lane"
+    );
+}
+
+#[test]
 fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
     graph.rebuild_intersection_clips();
