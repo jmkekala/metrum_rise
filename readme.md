@@ -48,3 +48,8 @@ They are at the "screenshots" folder.
 - [Main view](/screenshots/town_01.png)
 - [Asset Editor](/screenshots/asset_editor_01.png)
 - [First attempt to make a t-junction](/screenshots/t-junction.png)
+
+
+## Video
+45 min video about this buggy game on how it looks on release
+- [Metrum Rise - Open Source City Building Game](https://youtu.be/QtjniXLWW9M)
