@@ -6,12 +6,17 @@ use crate::simulation::economy::agents::{
     AGE_ADULT, AGE_CHILD, AGE_ELDER, TRANSIT_IN_BUILDING, age_group_can_work,
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{EconomyProfileRuntime, EconomyProfileRuntimeKind};
 use crate::simulation::economy::fiscal::FiscalRevenue;
+use crate::simulation::economy::households::{
+    active_worker_capacity_for_profile_with_floor_scale, commercial_activity_signal_for_city,
+    service_funded_worker_capacity,
+};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 /// Currency cost per meter of new road laid, deducted from the city treasury at placement.
-pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
+pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 50.0;
 /// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
 pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
@@ -31,6 +36,10 @@ fn effective_service_funding(building_override: f32, city_funding: f32) -> f32 {
     } else {
         city_funding
     }
+}
+
+fn percent_for_log(rate: f32) -> f32 {
+    rate * 100.0
 }
 
 /// Player-controlled city service funding policies.
@@ -63,10 +72,32 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) treasury: f64,
     /// Combined tax income bucket.
     pub(crate) tax_income: f64,
+    /// Wage income tax collected from household gross wages.
+    pub(crate) income_tax: f64,
+    /// Household purchase VAT collected from store shopping.
+    pub(crate) household_vat: f64,
+    /// Business purchase tax collected from input freight.
+    pub(crate) business_purchase_tax: f64,
+    /// Business profit tax collected from positive private operating-budget growth.
+    pub(crate) business_profit_tax: f64,
+    /// One-time private construction property tax collected during the day.
+    pub(crate) property_tax: f64,
+    /// Residential construction property tax collected during the day.
+    pub(crate) residential_property_tax: f64,
+    /// Commercial construction property tax collected during the day.
+    pub(crate) commercial_property_tax: f64,
+    /// Industrial construction property tax collected during the day.
+    pub(crate) industrial_property_tax: f64,
     /// Local utility and service revenue collected by city-owned providers.
     pub(crate) utility_service_revenue: f64,
-    /// Unemployment benefit expense paid from the treasury.
+    /// Total household transfer expense paid from the treasury.
     pub(crate) benefits: f64,
+    /// Unemployment benefit expense paid from the treasury.
+    pub(crate) unemployment_benefits: f64,
+    /// Pension expense paid from the treasury.
+    pub(crate) pensions: f64,
+    /// Child-support expense paid from the treasury.
+    pub(crate) child_support: f64,
     /// City-owned service payroll expense.
     pub(crate) city_wages: f64,
     /// Treasury-funded service input and fuel purchase expense.
@@ -121,6 +152,12 @@ pub struct CityTreasury {
     pub last_daily_business_profit_tax: f64,
     /// Property tax collected in the most recently finalized fiscal day.
     pub last_daily_property_tax: f64,
+    /// Residential property tax collected in the most recently finalized fiscal day.
+    pub last_daily_residential_property_tax: f64,
+    /// Commercial property tax collected in the most recently finalized fiscal day.
+    pub last_daily_commercial_property_tax: f64,
+    /// Industrial property tax collected in the most recently finalized fiscal day.
+    pub last_daily_industrial_property_tax: f64,
     /// Income tax collected since the last daily fiscal finalization.
     pub pending_income_tax: f64,
     /// Household VAT collected since the last daily fiscal finalization.
@@ -131,6 +168,12 @@ pub struct CityTreasury {
     pub pending_business_profit_tax: f64,
     /// Property tax collected since the last daily fiscal finalization.
     pub pending_property_tax: f64,
+    /// Residential property tax collected since the last daily fiscal finalization.
+    pub pending_residential_property_tax: f64,
+    /// Commercial property tax collected since the last daily fiscal finalization.
+    pub pending_commercial_property_tax: f64,
+    /// Industrial property tax collected since the last daily fiscal finalization.
+    pub pending_industrial_property_tax: f64,
 }
 
 impl CityTreasury {
@@ -146,11 +189,17 @@ impl CityTreasury {
             last_daily_business_purchase_tax: 0.0,
             last_daily_business_profit_tax: 0.0,
             last_daily_property_tax: 0.0,
+            last_daily_residential_property_tax: 0.0,
+            last_daily_commercial_property_tax: 0.0,
+            last_daily_industrial_property_tax: 0.0,
             pending_income_tax: 0.0,
             pending_household_vat: 0.0,
             pending_business_purchase_tax: 0.0,
             pending_business_profit_tax: 0.0,
             pending_property_tax: 0.0,
+            pending_residential_property_tax: 0.0,
+            pending_commercial_property_tax: 0.0,
+            pending_industrial_property_tax: 0.0,
         }
     }
 
@@ -191,6 +240,20 @@ impl CityTreasury {
         self.record_tax(amount, TaxBucket::Property);
     }
 
+    /// Records one-time property tax from new private construction by zone.
+    pub(crate) fn collect_property_tax_for_zone(&mut self, zone_type: ZoneType, amount: f64) {
+        if amount <= 0.0 {
+            return;
+        }
+        self.record_tax(amount, TaxBucket::Property);
+        match zone_type {
+            ZoneType::Residential => self.pending_residential_property_tax += amount,
+            ZoneType::Commercial => self.pending_commercial_property_tax += amount,
+            ZoneType::Industrial => self.pending_industrial_property_tax += amount,
+            _ => {}
+        }
+    }
+
     /// Rolls the current pending fiscal window into daily reporting buckets.
     pub(crate) fn finalize_daily_tax_window(&mut self) {
         self.last_daily_income_tax = self.pending_income_tax;
@@ -198,11 +261,17 @@ impl CityTreasury {
         self.last_daily_business_purchase_tax = self.pending_business_purchase_tax;
         self.last_daily_business_profit_tax = self.pending_business_profit_tax;
         self.last_daily_property_tax = self.pending_property_tax;
+        self.last_daily_residential_property_tax = self.pending_residential_property_tax;
+        self.last_daily_commercial_property_tax = self.pending_commercial_property_tax;
+        self.last_daily_industrial_property_tax = self.pending_industrial_property_tax;
         self.pending_income_tax = 0.0;
         self.pending_household_vat = 0.0;
         self.pending_business_purchase_tax = 0.0;
         self.pending_business_profit_tax = 0.0;
         self.pending_property_tax = 0.0;
+        self.pending_residential_property_tax = 0.0;
+        self.pending_commercial_property_tax = 0.0;
+        self.pending_industrial_property_tax = 0.0;
     }
 
     fn record_tax(&mut self, amount: f64, bucket: TaxBucket) {
@@ -249,8 +318,46 @@ struct DailyCityFlowDiagnostics {
     unemployed_agents: u32,
     commercial_job_capacity: u32,
     commercial_filled_jobs: u32,
+    commercial_active_job_capacity: u32,
+    commercial_active_filled_jobs: u32,
     industrial_job_capacity: u32,
     industrial_filled_jobs: u32,
+    industrial_active_job_capacity: u32,
+    industrial_active_filled_jobs: u32,
+    service_active_job_capacity: u32,
+    service_active_filled_jobs: u32,
+}
+
+fn profile_offers_daily_city_flow_work(
+    building_zone: ZoneType,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    matches!(building_zone, ZoneType::Commercial | ZoneType::Industrial)
+        || matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::UtilityProducer
+                | EconomyProfileRuntimeKind::UtilityProcessor
+        )
+}
+
+fn active_budget_backed_worker_capacity(
+    allocator_city_funded: bool,
+    building_operating_budget: f32,
+    active_worker_capacity: u32,
+    profile: &EconomyProfileRuntime,
+) -> u32 {
+    if active_worker_capacity == 0 {
+        return 0;
+    }
+    let average_daily_wage = profile.average_daily_wage();
+    let budget_capacity = if allocator_city_funded {
+        active_worker_capacity
+    } else if average_daily_wage > 0.1 {
+        (building_operating_budget.max(0.0) / average_daily_wage).floor() as u32
+    } else {
+        active_worker_capacity
+    };
+    active_worker_capacity.min(budget_capacity)
 }
 
 impl SimCore {
@@ -268,9 +375,48 @@ impl SimCore {
         if !is_electricity_service(service_id) {
             return false;
         }
+        let previous = self.service_policy.electricity_funding;
+        let requested = funding;
         let funding = funding.clamp(0.0, 1.0);
         self.service_policy.electricity_funding = funding;
         self.apply_service_funding_staffing_policy();
+        debug_log!(
+            "economy",
+            "service policy change: id={} requested={:.3} old={:.3} new={:.3} day={} minute={} treasury={:.1}",
+            SERVICE_POLICY_ELECTRICITY,
+            requested,
+            previous,
+            self.service_policy.electricity_funding,
+            self.time.day_index,
+            self.time.minute_of_day,
+            self.treasury.balance,
+        );
+        true
+    }
+
+    /// Applies a live fiscal policy change from the UI.
+    pub(crate) fn set_fiscal_policy_value(&mut self, policy_id: &str, value: f32) -> bool {
+        let previous_policy = self.fiscal_policy;
+        let Some(previous_control) = previous_policy.control(policy_id) else {
+            return false;
+        };
+        if !self.fiscal_policy.set_value(policy_id, value) {
+            return false;
+        }
+        let new_control = self
+            .fiscal_policy
+            .control(policy_id)
+            .unwrap_or(previous_control);
+        let service_funding_by_building = self.electricity_funding_by_building();
+        self.demand.refresh_pressure_channels_with_service_funding(
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            self.treasury.balance,
+            &service_funding_by_building,
+            &self.fiscal_policy,
+        );
+        self.log_fiscal_policy_change(policy_id, previous_control.value, value, new_control.value);
         true
     }
 
@@ -338,6 +484,48 @@ impl SimCore {
         );
     }
 
+    fn log_fiscal_policy_change(
+        &self,
+        policy_id: &str,
+        previous_value: f32,
+        requested_value: f32,
+        new_value: f32,
+    ) {
+        let policy = self.fiscal_policy;
+        let label = policy
+            .control(policy_id)
+            .map(|control| control.label)
+            .unwrap_or(policy_id);
+        debug_log!(
+            "economy",
+            "fiscal policy change: id={} label=\"{}\" requested={:.4} old={:.4} new={:.4} \
+             day={} minute={} treasury={:.1} policy=(unemployment={:.1}/day \
+             unemployment_days={} pension={:.1}/day child_support={:.1}/day income_tax={:.1}% \
+             household_vat={:.1}% business_purchase={:.1}% business_profit={:.1}% \
+             property_tax=res:{:.0},com:{:.0},ind:{:.0},level_mult:{:.2})",
+            policy_id,
+            label,
+            requested_value,
+            previous_value,
+            new_value,
+            self.time.day_index,
+            self.time.minute_of_day,
+            self.treasury.balance,
+            policy.unemployment_benefit_per_adult_per_day,
+            policy.unemployment_max_days,
+            policy.pension_per_elder_per_day,
+            policy.child_support_per_child_per_day,
+            percent_for_log(policy.income_tax_rate),
+            percent_for_log(policy.household_vat_rate),
+            percent_for_log(policy.business_purchase_tax_rate),
+            percent_for_log(policy.business_profit_tax_rate),
+            policy.residential_property_tax_base,
+            policy.commercial_property_tax_base,
+            policy.industrial_property_tax_base,
+            policy.property_tax_level_multiplier,
+        );
+    }
+
     fn nearest_building_idx_at(&self, world_x: f32, world_z: f32, radius_m: f32) -> Option<usize> {
         let mut candidates = Vec::with_capacity(1);
         self.allocator
@@ -401,7 +589,25 @@ impl SimCore {
             .households
             .daily_ledgers()
             .iter()
+            .map(|ledger| f64::from(ledger.transfer_income().max(0.0)))
+            .sum::<f64>();
+        let unemployment_benefits = self
+            .households
+            .daily_ledgers()
+            .iter()
             .map(|ledger| f64::from(ledger.unemployment_benefit_income.max(0.0)))
+            .sum::<f64>();
+        let pensions = self
+            .households
+            .daily_ledgers()
+            .iter()
+            .map(|ledger| f64::from(ledger.pension_income.max(0.0)))
+            .sum::<f64>();
+        let child_support = self
+            .households
+            .daily_ledgers()
+            .iter()
+            .map(|ledger| f64::from(ledger.child_support_income.max(0.0)))
             .sum::<f64>();
         let city_wages = f64::from(self.households.last_city_service_wage_cost().max(0.0));
         let power = self.households.last_power_settlement();
@@ -438,8 +644,19 @@ impl SimCore {
             net,
             treasury: self.treasury.balance,
             tax_income,
+            income_tax: self.treasury.last_daily_income_tax,
+            household_vat: self.treasury.last_daily_household_vat,
+            business_purchase_tax: self.treasury.last_daily_business_purchase_tax,
+            business_profit_tax: self.treasury.last_daily_business_profit_tax,
+            property_tax: self.treasury.last_daily_property_tax,
+            residential_property_tax: self.treasury.last_daily_residential_property_tax,
+            commercial_property_tax: self.treasury.last_daily_commercial_property_tax,
+            industrial_property_tax: self.treasury.last_daily_industrial_property_tax,
             utility_service_revenue,
             benefits,
+            unemployment_benefits,
+            pensions,
+            child_support,
             city_wages,
             fuel_input_purchases: electricity_fuel_cost,
             imports_owa,
@@ -570,6 +787,38 @@ impl SimCore {
 
         let mut diagnostics = DailyCityFlowDiagnostics::default();
         let catalog = load_runtime_economy_catalog().ok();
+        let commercial_activity_floor_scale = catalog
+            .as_ref()
+            .map(|catalog| {
+                commercial_activity_signal_for_city(
+                    catalog.as_ref(),
+                    &self.households.households,
+                    &self.allocator,
+                )
+                .activity_floor_scale
+            })
+            .unwrap_or(0.0);
+        let mut service_funding_by_building = vec![1.0; self.allocator.buildings.len()];
+        if let Some(catalog) = catalog.as_ref() {
+            let city_funding = self.service_policy.electricity_funding;
+            service_funding_by_building
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(idx, value)| {
+                    let building = &self.allocator.buildings[idx];
+                    let Some(profile) =
+                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                    else {
+                        return;
+                    };
+                    if profile.utility_service.as_deref() == Some("power") {
+                        *value = effective_service_funding(
+                            building.service_funding_override,
+                            city_funding,
+                        );
+                    }
+                });
+        }
 
         for (building_idx, building) in self.allocator.buildings.iter().enumerate() {
             if matches!(building.zone_type, ZoneType::Residential) {
@@ -603,6 +852,69 @@ impl SimCore {
                         .saturating_add(worker_capacity);
                 }
                 _ => {}
+            }
+
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+            {
+                continue;
+            }
+            let Some((catalog, profile)) = catalog.as_ref().and_then(|catalog| {
+                catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .map(|profile| (catalog.as_ref(), profile))
+            }) else {
+                continue;
+            };
+            if !profile_offers_daily_city_flow_work(building.zone_type, profile) {
+                continue;
+            }
+            let active_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
+                catalog,
+                building,
+                profile,
+                commercial_activity_floor_scale,
+            );
+            let active_worker_capacity = service_funded_worker_capacity(
+                active_worker_capacity,
+                profile,
+                building_idx,
+                &service_funding_by_building,
+            );
+            let active_worker_capacity = active_budget_backed_worker_capacity(
+                self.allocator.is_city_service_building(building),
+                building.operating_budget,
+                active_worker_capacity,
+                profile,
+            );
+            let active_filled_jobs = building.worker_count.min(active_worker_capacity);
+            match building.zone_type {
+                ZoneType::Commercial => {
+                    diagnostics.commercial_active_job_capacity = diagnostics
+                        .commercial_active_job_capacity
+                        .saturating_add(active_worker_capacity);
+                    diagnostics.commercial_active_filled_jobs = diagnostics
+                        .commercial_active_filled_jobs
+                        .saturating_add(active_filled_jobs);
+                }
+                ZoneType::Industrial => {
+                    diagnostics.industrial_active_job_capacity = diagnostics
+                        .industrial_active_job_capacity
+                        .saturating_add(active_worker_capacity);
+                    diagnostics.industrial_active_filled_jobs = diagnostics
+                        .industrial_active_filled_jobs
+                        .saturating_add(active_filled_jobs);
+                }
+                _ => {
+                    diagnostics.service_active_job_capacity = diagnostics
+                        .service_active_job_capacity
+                        .saturating_add(active_worker_capacity);
+                    diagnostics.service_active_filled_jobs = diagnostics
+                        .service_active_filled_jobs
+                        .saturating_add(active_filled_jobs);
+                }
             }
         }
 
@@ -721,6 +1033,24 @@ impl SimCore {
         let industrial_open_jobs = diagnostics
             .industrial_job_capacity
             .saturating_sub(diagnostics.industrial_filled_jobs);
+        let active_job_capacity = diagnostics
+            .commercial_active_job_capacity
+            .saturating_add(diagnostics.industrial_active_job_capacity)
+            .saturating_add(diagnostics.service_active_job_capacity);
+        let active_filled_jobs = diagnostics
+            .commercial_active_filled_jobs
+            .saturating_add(diagnostics.industrial_active_filled_jobs)
+            .saturating_add(diagnostics.service_active_filled_jobs);
+        let active_open_jobs = active_job_capacity.saturating_sub(active_filled_jobs);
+        let commercial_active_open_jobs = diagnostics
+            .commercial_active_job_capacity
+            .saturating_sub(diagnostics.commercial_active_filled_jobs);
+        let industrial_active_open_jobs = diagnostics
+            .industrial_active_job_capacity
+            .saturating_sub(diagnostics.industrial_active_filled_jobs);
+        let service_active_open_jobs = diagnostics
+            .service_active_job_capacity
+            .saturating_sub(diagnostics.service_active_filled_jobs);
         let occupied_household_slots = diagnostics
             .total_household_slots
             .saturating_sub(diagnostics.vacant_household_slots);
@@ -732,8 +1062,11 @@ impl SimCore {
             "city flow diagnostics: day={} net_households={:+} admitted_since_daily={} \
              removed_today={} households={} housed={} unhoused={} zero_budget={} \
              stock_empty={} stock_low={} resident_agents={} pending_carriers={} \
-             children={} adults={} elders={} employed={} unemployed={} jobs={}/{} open_jobs={} \
-             commercial_jobs={}/{} commercial_open={} industrial_jobs={}/{} industrial_open={} \
+             children={} adults={} elders={} employed={} unemployed={} jobs={}/{} theoretical_open_jobs={} \
+             active_jobs={}/{} active_open_jobs={} commercial_jobs={}/{} commercial_theoretical_open={} \
+             commercial_active_jobs={}/{} commercial_active_open={} industrial_jobs={}/{} \
+             industrial_theoretical_open={} industrial_active_jobs={}/{} industrial_active_open={} \
+             service_active_jobs={}/{} service_active_open={} \
              homes={}/{} vacant_homes={} treasury={:.0} taxes=(income={:.1} household_vat={:.1} \
              business_purchase={:.1} business_profit={:.1} property={:.1} lifetime={:.1})",
             day_index,
@@ -756,12 +1089,24 @@ impl SimCore {
             filled_jobs,
             total_job_capacity,
             open_jobs,
+            active_filled_jobs,
+            active_job_capacity,
+            active_open_jobs,
             diagnostics.commercial_filled_jobs,
             diagnostics.commercial_job_capacity,
             commercial_open_jobs,
+            diagnostics.commercial_active_filled_jobs,
+            diagnostics.commercial_active_job_capacity,
+            commercial_active_open_jobs,
             diagnostics.industrial_filled_jobs,
             diagnostics.industrial_job_capacity,
             industrial_open_jobs,
+            diagnostics.industrial_active_filled_jobs,
+            diagnostics.industrial_active_job_capacity,
+            industrial_active_open_jobs,
+            diagnostics.service_active_filled_jobs,
+            diagnostics.service_active_job_capacity,
+            service_active_open_jobs,
             occupied_household_slots,
             diagnostics.total_household_slots,
             diagnostics.vacant_household_slots,
@@ -894,6 +1239,9 @@ impl SimCore {
         let mut total_wages_paid = 0.0f32;
         let mut total_household_shopping_spend = 0.0f32;
         let mut total_benefits_paid = 0.0f32;
+        let mut total_unemployment_benefits_paid = 0.0f32;
+        let mut total_pensions_paid = 0.0f32;
+        let mut total_child_support_paid = 0.0f32;
         let mut total_utility_stock_cost = 0.0f32;
         let mut total_household_supply_use_cost = 0.0f32;
         let mut total_household_utility_cost = 0.0f32;
@@ -922,7 +1270,10 @@ impl SimCore {
             }
             total_wages_paid += ledger.wage_income;
             total_household_shopping_spend += ledger.shopping_spend;
-            total_benefits_paid += ledger.unemployment_benefit_income;
+            total_benefits_paid += ledger.transfer_income();
+            total_unemployment_benefits_paid += ledger.unemployment_benefit_income;
+            total_pensions_paid += ledger.pension_income;
+            total_child_support_paid += ledger.child_support_income;
             total_utility_stock_cost += ledger.utility_stock_consumption_cost;
             total_household_supply_use_cost += ledger.household_supply_consumption_cost;
             let household_utility_cost = ledger.power_consumption_cost
@@ -954,7 +1305,7 @@ impl SimCore {
                 String::new()
             };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} benefit={:.1} shopping={:.1} power={:.1} water={:.1} sewage={:.1} utility={:.1} stock_use={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} transfer={:.1} unemployment={:.1} pension={:.1} child_support={:.1} shopping={:.1} power={:.1} water={:.1} sewage={:.1} utility={:.1} stock_use={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
                 day_index,
                 idx,
                 h.home_building_id,
@@ -969,7 +1320,10 @@ impl SimCore {
                 ub_str,
                 ledger.budget_before,
                 ledger.wage_income,
+                ledger.transfer_income(),
                 ledger.unemployment_benefit_income,
+                ledger.pension_income,
+                ledger.child_support_income,
                 ledger.shopping_spend,
                 ledger.power_consumption_cost,
                 ledger.water_consumption_cost,
@@ -984,7 +1338,7 @@ impl SimCore {
             );
         }
         println!(
-            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} benefits_paid={:.1} utility_cost={:.1} stock_use_cost={:.1} utility_stock_cost={:.1}",
+            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} transfers_paid={:.1} unemployment_paid={:.1} pensions_paid={:.1} child_support_paid={:.1} utility_cost={:.1} stock_use_cost={:.1} utility_stock_cost={:.1}",
             day_index,
             households_at_budget_floor,
             households_below_1d_stock,
@@ -993,18 +1347,24 @@ impl SimCore {
             total_wages_paid,
             total_household_shopping_spend,
             total_benefits_paid,
+            total_unemployment_benefits_paid,
+            total_pensions_paid,
+            total_child_support_paid,
             total_household_utility_cost,
             total_household_supply_use_cost,
             total_utility_stock_cost,
         );
         println!(
-            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} business_profit_tax={:.1} property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
+            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} business_profit_tax={:.1} property_tax={:.1} residential_property_tax={:.1} commercial_property_tax={:.1} industrial_property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
             day_index,
             self.treasury.last_daily_income_tax,
             self.treasury.last_daily_household_vat,
             self.treasury.last_daily_business_purchase_tax,
             self.treasury.last_daily_business_profit_tax,
             self.treasury.last_daily_property_tax,
+            self.treasury.last_daily_residential_property_tax,
+            self.treasury.last_daily_commercial_property_tax,
+            self.treasury.last_daily_industrial_property_tax,
             self.treasury.last_daily_income_tax
                 + self.treasury.last_daily_household_vat
                 + self.treasury.last_daily_business_purchase_tax

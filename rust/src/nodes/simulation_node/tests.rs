@@ -177,6 +177,7 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         config,
         treasury: CityTreasury::new(0.0),
         service_policy: Default::default(),
+        fiscal_policy: Default::default(),
         budget_history: std::collections::VecDeque::new(),
         budget_last_lifetime_build_cost: 0.0,
         debug_household_admissions_since_daily: 0,

@@ -75,6 +75,8 @@ industrial_owa_utility_cost_per_day = 12.0
 startup_treasury_balance = 100000.0
 unemployment_daily_benefit_per_member = 30.0
 unemployment_max_days = 30
+pension_daily_benefit_per_elder = 30.0
+child_support_daily_benefit_per_child = 10.0
 
 [runtime_tuning.logistics]
 truck_load_units = 40.0

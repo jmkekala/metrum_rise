@@ -72,6 +72,60 @@ fn household_replenishment_uses_one_visible_shopper_trip() {
 }
 
 #[test]
+fn household_replenishment_reservation_uses_live_policy_vat() {
+    let household = Household {
+        home_building_id: 0,
+        budget: 1_000.0,
+        stock: 0.0,
+        member_count: 2,
+        child_count: 0,
+        adult_count: 2,
+        elder_count: 0,
+        consumption_rate: 1.0,
+        stock_days: 0.0,
+        replenishment_state: REPLENISHMENT_NEEDS,
+        cooldown_hours: 0,
+        replenishment_failure_count: 0,
+        reserved_store_building_id: usize::MAX,
+        reserved_amount: 0.0,
+        reserved_total_cost: 0.0,
+        shopping_agent_id: usize::MAX,
+        shopping_agent_schedule_seed: 0,
+        shopping_timeout_hours_remaining: 0,
+        replenishment_search_cursor: 0,
+        stay_failure_days: 0,
+        unhoused_days_elapsed: 0,
+        replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
+    };
+    let (mut households, mut allocator, mut agents, network, graph) =
+        setup_replenishment_world(household, "live_vat_res", "live_vat_store", 50.0, 20.0);
+
+    let live_household_vat_rate = 0.20;
+    households.run_household_operational_hour(
+        &mut agents,
+        &mut allocator,
+        &network,
+        &graph,
+        0,
+        live_household_vat_rate,
+    );
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let unit_price = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile")
+        .unit_price_currency;
+    let reserved_amount = households.households[0].reserved_amount;
+    let expected_reserved_total = reserved_amount * unit_price * (1.0 + live_household_vat_rate);
+    assert!((reserved_amount - 10.0).abs() < 0.001);
+    assert!(
+        (households.households[0].reserved_total_cost - expected_reserved_total).abs() < 0.001,
+        "reserved_total_cost should be priced with live VAT"
+    );
+}
+
+#[test]
 fn child_at_home_does_not_carry_household_shopping_trip() {
     let household = Household {
         home_building_id: 0,

@@ -331,9 +331,11 @@ impl BuildingAllocator {
         zoning: &mut ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        business_purchase_tax_rate: f32,
     ) -> usize {
         let parcel_id = placement.parcel_id;
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx =
+            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
         zoning.occupy_parcel(parcel_id, building_idx);
         self.bump_building_ref_revision();
         self.dirty = true;
@@ -368,6 +370,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        business_purchase_tax_rate: f32,
     ) -> Result<usize, DemandSpawnPlacementRejection> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
             return Err(DemandSpawnPlacementRejection::AssetUnavailable);
@@ -383,7 +386,13 @@ impl BuildingAllocator {
         resolved.support_height_m =
             self.resolve_site_support_height(&resolved, graph, road_surface, terrain)?;
         self.validate_site_support_tie_in(&resolved, graph, road_surface, terrain)?;
-        Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
+        Ok(self.commit_resolved_slot(
+            resolved,
+            zoning,
+            catalog,
+            tuning,
+            business_purchase_tax_rate,
+        ))
     }
 
     pub(crate) fn preview_explicit_service_placement(
@@ -455,6 +464,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        business_purchase_tax_rate: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
         let mut placement =
@@ -467,7 +477,8 @@ impl BuildingAllocator {
         self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
+        let building_idx =
+            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
@@ -1191,6 +1202,7 @@ impl BuildingAllocator {
         placement: ResolvedPlacement,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        business_purchase_tax_rate: f32,
     ) -> usize {
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
@@ -1264,10 +1276,7 @@ impl BuildingAllocator {
                         })
                         .sum::<f32>();
                     let first_import_cost = first_import_base_cost
-                        + tax_amount(
-                            first_import_base_cost,
-                            tuning.fiscal.business_purchase_tax_rate,
-                        );
+                        + tax_amount(first_import_base_cost, business_purchase_tax_rate);
 
                     (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
                 }

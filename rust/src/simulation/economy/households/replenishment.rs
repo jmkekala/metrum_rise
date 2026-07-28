@@ -453,6 +453,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         absolute_hour: u32,
+        household_vat_rate: f32,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -490,7 +491,7 @@ impl HouseholdSystem {
             retry_cooldown_hours,
             terminal_failure_count,
             shopping_leg_timeout_hours,
-            tuning.fiscal.household_vat_rate,
+            household_vat_rate,
         );
 
         self.plan_and_apply_household_replenishment(
@@ -502,6 +503,7 @@ impl HouseholdSystem {
             &catalog,
             &tuning,
             household_supply_resource,
+            household_vat_rate,
             progress.restock_candidate_exists,
             progress.urgent_restock_candidate_exists,
         );
@@ -749,6 +751,7 @@ impl HouseholdSystem {
             &catalog,
             &tuning,
             household_supply_resource,
+            tuning.fiscal.household_vat_rate,
             restock_candidate_exists,
             urgent_restock_candidate_exists,
         );
@@ -764,6 +767,7 @@ impl HouseholdSystem {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
         household_supply_resource: u16,
+        household_vat_rate: f32,
         restock_candidate_exists: bool,
         urgent_restock_candidate_exists: bool,
     ) {
@@ -860,7 +864,7 @@ impl HouseholdSystem {
                     .operational_clock
                     .household_shopping_leg_timeout_hours,
                 catalog,
-                tuning.fiscal.household_vat_rate,
+                household_vat_rate,
                 &mut diagnostics,
             );
         }

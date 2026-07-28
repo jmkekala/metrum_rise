@@ -17,8 +17,10 @@ var simulation_node: Node
 
 var _overview: Dictionary = {}
 var _selected_service_id := SERVICE_ELECTRICITY
+var _selected_policy_id := ""
 var _refresh_elapsed := 0.0
 var _syncing_service_sliders := false
+var _syncing_policy_sliders := false
 
 var _budget_timeframe: OptionButton
 var _budget_summary: VBoxContainer
@@ -31,6 +33,11 @@ var _services_timeframe: OptionButton
 var _service_rows: VBoxContainer
 var _service_details: VBoxContainer
 var _service_graph: Control
+
+var _policy_timeframe: OptionButton
+var _policy_rows: VBoxContainer
+var _policy_details: VBoxContainer
+var _policy_graph: Control
 
 func _ready() -> void:
 	title = "Economy Overview"
@@ -59,6 +66,7 @@ func refresh() -> void:
 	_overview = simulation_node.get_economy_overview()
 	_refresh_budget_tab()
 	_refresh_services_tab()
+	_refresh_policy_tab()
 
 func _on_visibility_changed() -> void:
 	if visible:
@@ -91,6 +99,10 @@ func _build_ui() -> void:
 	var services_tab := _build_services_tab()
 	services_tab.name = "Services"
 	tabs.add_child(services_tab)
+
+	var policy_tab := _build_policy_tab()
+	policy_tab.name = "Policy"
+	tabs.add_child(policy_tab)
 
 func _build_budget_tab() -> Control:
 	var root := VBoxContainer.new()
@@ -163,6 +175,65 @@ func _build_budget_tab() -> Control:
 	var treasury_panel := _section_panel("Treasury", _treasury_graph)
 	treasury_panel.custom_minimum_size.y = 120.0
 	lower_graphs.add_child(treasury_panel)
+
+	return root
+
+func _build_policy_tab() -> Control:
+	var root := HSplitContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.split_offset = 520
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size.x = 360.0
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	_policy_rows = VBoxContainer.new()
+	_policy_rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_policy_rows.add_theme_constant_override("separation", 10)
+	scroll.add_child(_policy_rows)
+	root.add_child(_section_panel("Controls", scroll))
+
+	var right := VBoxContainer.new()
+	right.custom_minimum_size.x = 360.0
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_theme_constant_override("separation", 8)
+	root.add_child(right)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	right.add_child(header)
+
+	var details_title := Label.new()
+	details_title.name = "PolicyDetailsTitle"
+	details_title.text = "Policy Impact"
+	details_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	details_title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	details_title.add_theme_font_size_override("font_size", 14)
+	header.add_child(details_title)
+
+	_policy_timeframe = _make_timeframe_selector()
+	_policy_timeframe.item_selected.connect(_on_policy_timeframe_changed)
+	header.add_child(_policy_timeframe)
+
+	var policy_split := VSplitContainer.new()
+	policy_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	policy_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	policy_split.split_offset = 250
+	right.add_child(policy_split)
+
+	_policy_details = VBoxContainer.new()
+	_policy_details.add_theme_constant_override("separation", 4)
+	var details_panel := _section_panel("Details", _policy_details)
+	details_panel.custom_minimum_size.y = 170.0
+	policy_split.add_child(details_panel)
+
+	_policy_graph = TrendGraph.new()
+	var graph_panel := _section_panel("Selected Policy Trend", _policy_graph)
+	graph_panel.custom_minimum_size.y = 150.0
+	policy_split.add_child(graph_panel)
 
 	return root
 
@@ -277,6 +348,9 @@ func _refresh_budget_tab() -> void:
 	_add_metric(_budget_categories, "Utility/Service Revenue", _money(_sum(entries, "utility_service_revenue")), UIStyle.TEXT_DIM, INCOME_COLOR, 10.0)
 	_add_category_header(_budget_categories, "Expenses", _expense_money(_sum(entries, "expenses")), EXPENSE_COLOR)
 	_add_metric(_budget_categories, "Benefits", _expense_money(_sum(entries, "benefits")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Unemployment", _expense_money(_sum(entries, "unemployment_benefits")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
+	_add_metric(_budget_categories, "Pensions", _expense_money(_sum(entries, "pensions")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
+	_add_metric(_budget_categories, "Child Support", _expense_money(_sum(entries, "child_support")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "City Wages", _expense_money(_sum(entries, "city_wages")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Fuel/Input Purchases", _expense_money(_sum(entries, "fuel_input_purchases")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Imports/OWA", _expense_money(_sum(entries, "imports_owa")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
@@ -307,6 +381,78 @@ func _refresh_budget_tab() -> void:
 func _refresh_services_tab() -> void:
 	_refresh_service_rows()
 	_refresh_service_details()
+
+func _refresh_policy_tab() -> void:
+	if _policy_rows == null:
+		return
+	_clear(_policy_rows)
+	var controls: Array = _overview.get("fiscal_policy_controls", [])
+	if controls.is_empty():
+		_add_metric(_policy_rows, "Policy", "No live data")
+		_refresh_policy_details()
+		return
+
+	_ensure_selected_policy_id(controls)
+	_syncing_policy_sliders = true
+	var current_group := ""
+	for control in controls:
+		var group := str(control.get("group", "Policy"))
+		if group != current_group:
+			current_group = group
+			var header := Label.new()
+			header.text = group
+			header.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
+			header.add_theme_font_size_override("font_size", 12)
+			_policy_rows.add_child(header)
+
+		var policy_id := str(control.get("id", ""))
+		var row := PanelContainer.new()
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_theme_stylebox_override("panel", _policy_row_style(policy_id == _selected_policy_id))
+		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		row.gui_input.connect(_on_policy_row_input.bind(policy_id))
+		_policy_rows.add_child(row)
+
+		var margin := MarginContainer.new()
+		margin.add_theme_constant_override("margin_left", 8)
+		margin.add_theme_constant_override("margin_right", 8)
+		margin.add_theme_constant_override("margin_top", 7)
+		margin.add_theme_constant_override("margin_bottom", 7)
+		row.add_child(margin)
+
+		var box := VBoxContainer.new()
+		box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_theme_constant_override("separation", 3)
+		margin.add_child(box)
+
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 8)
+		box.add_child(line)
+
+		var label := Label.new()
+		label.text = str(control.get("label", control.get("id", "")))
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+		line.add_child(label)
+
+		var unit := str(control.get("unit", ""))
+		var value_label := Label.new()
+		value_label.text = _policy_value_text(float(control.get("value", 0.0)), unit)
+		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		value_label.custom_minimum_size.x = 84.0
+		value_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+		line.add_child(value_label)
+
+		var slider := HSlider.new()
+		slider.min_value = float(control.get("min", 0.0))
+		slider.max_value = float(control.get("max", 1.0))
+		slider.step = float(control.get("step", 0.01))
+		slider.value = float(control.get("value", 0.0))
+		slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slider.value_changed.connect(_on_policy_slider_changed.bind(policy_id, value_label, unit))
+		box.add_child(slider)
+	_syncing_policy_sliders = false
+	_refresh_policy_details()
 
 func _refresh_service_rows() -> void:
 	_clear(_service_rows)
@@ -409,11 +555,75 @@ func _refresh_service_details() -> void:
 		""
 	)
 
+func _refresh_policy_details() -> void:
+	if _policy_details == null or _policy_graph == null or _policy_timeframe == null:
+		return
+	var controls: Array = _overview.get("fiscal_policy_controls", [])
+	_ensure_selected_policy_id(controls)
+	var control := _selected_policy_control(controls)
+	var title_label := find_child("PolicyDetailsTitle", true, false) as Label
+
+	_clear(_policy_details)
+	if control.is_empty():
+		if title_label:
+			title_label.text = "Policy Impact"
+		_add_metric(_policy_details, "Status", "No live data")
+		_policy_graph.set_series([], [])
+		return
+
+	var entries := _entries_for_days(_policy_timeframe.get_selected_id())
+	var day_labels := _day_labels(entries)
+	var selected_label := str(control.get("label", control.get("id", "Policy")))
+	var impact_label := str(control.get("impact_label", selected_label))
+	var impact_field := str(control.get("impact_field", ""))
+	var impact_kind := str(control.get("impact_kind", "revenue"))
+	var unit := str(control.get("unit", ""))
+	var total := _sum(entries, impact_field)
+	var latest := _latest_entry(entries)
+	var latest_value := float(latest.get(impact_field, 0.0))
+	var value_color := INCOME_COLOR
+	var graph_label := "Revenue"
+	if impact_kind == "expense":
+		value_color = EXPENSE_COLOR
+		graph_label = "Cost"
+
+	var total_text := _money(total)
+	var latest_text := _money(latest_value)
+	if impact_kind == "expense":
+		total_text = _expense_money(total)
+		latest_text = _expense_money(latest_value)
+
+	if title_label:
+		title_label.text = selected_label
+
+	_add_category_header(_policy_details, impact_label, total_text, value_color)
+	_add_metric(_policy_details, "Current Value", _policy_value_text(float(control.get("value", 0.0)), unit))
+	_add_metric(_policy_details, "Latest Day", latest_text, UIStyle.TEXT_DIM, value_color)
+	_add_metric(_policy_details, "Period Total", total_text, UIStyle.TEXT_DIM, value_color)
+	_add_metric(_policy_details, "Days", "%d" % entries.size())
+
+	_policy_graph.set_series(
+		[
+			_series(entries, impact_field),
+		],
+		[value_color],
+		[graph_label],
+		day_labels,
+		"$"
+	)
+
 func _on_budget_timeframe_changed(_idx: int) -> void:
 	_refresh_budget_tab()
 
 func _on_services_timeframe_changed(_idx: int) -> void:
 	_refresh_service_details()
+
+func _on_policy_timeframe_changed(_idx: int) -> void:
+	_refresh_policy_details()
+
+func _on_policy_row_input(event: InputEvent, policy_id: String) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_select_policy(policy_id)
 
 func _on_service_row_input(event: InputEvent, service_id: String) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -428,7 +638,27 @@ func _on_service_funding_changed(value: float, service_id: String) -> void:
 	_refresh_elapsed = 0.0
 	if simulation_node != null and simulation_node.has_method("get_economy_overview"):
 		_overview = simulation_node.get_economy_overview()
-	_refresh_service_details()
+		_refresh_service_details()
+
+func _on_policy_slider_changed(value: float, policy_id: String, value_label: Label, unit: String) -> void:
+	if _syncing_policy_sliders:
+		return
+	var changed_selection := false
+	if not policy_id.is_empty() and policy_id != _selected_policy_id:
+		_selected_policy_id = policy_id
+		changed_selection = true
+	if value_label != null:
+		value_label.text = _policy_value_text(value, unit)
+	if simulation_node and simulation_node.has_method("set_economy_policy_value"):
+		simulation_node.set_economy_policy_value(policy_id, value)
+	_refresh_elapsed = 0.0
+	if simulation_node != null and simulation_node.has_method("get_economy_overview"):
+		_overview = simulation_node.get_economy_overview()
+		_refresh_budget_tab()
+		if changed_selection:
+			_refresh_policy_tab()
+		else:
+			_refresh_policy_details()
 
 func _select_service(service_id: String) -> void:
 	if service_id.is_empty() or service_id == _selected_service_id:
@@ -436,7 +666,18 @@ func _select_service(service_id: String) -> void:
 	_selected_service_id = service_id
 	_refresh_services_tab()
 
+func _select_policy(policy_id: String) -> void:
+	if policy_id.is_empty() or policy_id == _selected_policy_id:
+		return
+	_selected_policy_id = policy_id
+	_refresh_policy_tab()
+
 func _service_row_style(selected: bool) -> StyleBoxFlat:
+	if selected:
+		return UIStyle.panel_style(Color(0.16, 0.22, 0.27, 0.92), 6, Color(0.28, 0.70, 0.80, 0.75), 1)
+	return UIStyle.panel_style(Color(0.09, 0.09, 0.12, 0.70), 6, Color(0.30, 0.30, 0.45, 0.35), 1)
+
+func _policy_row_style(selected: bool) -> StyleBoxFlat:
 	if selected:
 		return UIStyle.panel_style(Color(0.16, 0.22, 0.27, 0.92), 6, Color(0.28, 0.70, 0.80, 0.75), 1)
 	return UIStyle.panel_style(Color(0.09, 0.09, 0.12, 0.70), 6, Color(0.30, 0.30, 0.45, 0.35), 1)
@@ -458,6 +699,25 @@ func _latest_entry(entries: Array) -> Dictionary:
 	if not entries.is_empty():
 		return entries[entries.size() - 1]
 	return _overview.get("latest", {})
+
+func _ensure_selected_policy_id(controls: Array) -> void:
+	var first_id := ""
+	var selected_exists := false
+	for control in controls:
+		var policy_id := str(control.get("id", ""))
+		if first_id.is_empty() and not policy_id.is_empty():
+			first_id = policy_id
+		if policy_id == _selected_policy_id:
+			selected_exists = true
+	if not selected_exists:
+		_selected_policy_id = first_id
+
+func _selected_policy_control(controls: Array) -> Dictionary:
+	for control in controls:
+		var dict: Dictionary = control
+		if str(dict.get("id", "")) == _selected_policy_id:
+			return dict
+	return {}
 
 func _sum(entries: Array, field: String) -> float:
 	var total := 0.0
@@ -557,6 +817,21 @@ func _expense_money(value: float) -> String:
 
 func _percent(value: float) -> String:
 	return "%.0f%%" % (clampf(value, 0.0, 1.0) * 100.0)
+
+func _policy_value_text(value: float, unit: String) -> String:
+	match unit:
+		"percent":
+			return _percent(value)
+		"currency_per_day":
+			return "%s/day" % _money(value)
+		"currency":
+			return _money(value)
+		"days":
+			return "%dd" % int(round(value))
+		"multiplier":
+			return "x%.2f" % value
+		_:
+			return "%.2f" % value
 
 func _service_name(service_id: String) -> String:
 	match service_id:

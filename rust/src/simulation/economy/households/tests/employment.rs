@@ -561,6 +561,7 @@ fn operational_hour_tick_rebuilds_household_and_worker_counts_together() {
         0,
         &mut treasury_balance,
         &[],
+        &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
     );
 
     assert_eq!(households.households[0].member_count, 1);

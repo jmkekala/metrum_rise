@@ -19,6 +19,7 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
 };
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoningSystem;
@@ -113,6 +114,7 @@ impl DemandSystem {
         zoning: &ZoningSystem,
         treasury_balance: f64,
     ) {
+        let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
         self.run_hourly_pass_with_service_funding(
             allocator,
             households,
@@ -120,6 +122,7 @@ impl DemandSystem {
             zoning,
             treasury_balance,
             &[],
+            &fiscal_policy,
         );
     }
 
@@ -132,6 +135,7 @@ impl DemandSystem {
         zoning: &ZoningSystem,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
+        fiscal_policy: &CityFiscalPolicy,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -143,6 +147,7 @@ impl DemandSystem {
             &self.config,
             catalog.as_ref(),
             economy_tuning.as_ref(),
+            fiscal_policy,
             treasury_balance,
             service_funding_by_building,
         );
@@ -199,6 +204,7 @@ impl DemandSystem {
         graph: &RegionGraph,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
+        fiscal_policy: &CityFiscalPolicy,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -210,6 +216,7 @@ impl DemandSystem {
             &self.config,
             catalog.as_ref(),
             economy_tuning.as_ref(),
+            fiscal_policy,
             treasury_balance,
             service_funding_by_building,
         );
@@ -365,6 +372,7 @@ impl DemandSystem {
         _zoning: &ZoningSystem,
         treasury_balance: f64,
     ) {
+        let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
         self.run_daily_pass_with_service_funding(
             allocator,
             households,
@@ -372,6 +380,7 @@ impl DemandSystem {
             _zoning,
             treasury_balance,
             &[],
+            &fiscal_policy,
         );
     }
 
@@ -384,6 +393,7 @@ impl DemandSystem {
         _zoning: &ZoningSystem,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
+        fiscal_policy: &CityFiscalPolicy,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -395,6 +405,7 @@ impl DemandSystem {
             &self.config,
             catalog.as_ref(),
             economy_tuning.as_ref(),
+            fiscal_policy,
             treasury_balance,
             service_funding_by_building,
         );

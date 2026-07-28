@@ -6,7 +6,6 @@ use super::diagnostics::{HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnost
 use super::snapshot::DailyDemandSnapshot;
 use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
-use crate::simulation::economy::households::expected_adult_members_for_household_size;
 use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Copy, Debug)]
@@ -20,16 +19,22 @@ pub(super) struct DemandPressureInputs {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct MoveInAcceptance {
     candidate_household_size: f32,
+    candidate_child_count: u16,
+    candidate_adult_count: u16,
+    candidate_elder_count: u16,
     candidate_effective_workers: f32,
     expected_employed_members: f32,
     expected_unemployed_members: f32,
     expected_entry_wage_per_day: f32,
     expected_wage_income_per_day: f32,
-    existing_benefit_claim_per_day: f32,
-    candidate_benefit_claim_per_day: f32,
-    total_benefit_claim_per_day: f32,
-    benefit_reliability: f32,
-    expected_benefit_income_per_day: f32,
+    existing_transfer_claim_per_day: f32,
+    candidate_unemployment_claim_per_day: f32,
+    candidate_pension_claim_per_day: f32,
+    candidate_child_support_claim_per_day: f32,
+    candidate_transfer_claim_per_day: f32,
+    total_transfer_claim_per_day: f32,
+    transfer_reliability: f32,
+    expected_transfer_income_per_day: f32,
     starter_savings: f32,
     daily_essential_cost: f32,
     daily_deficit: f32,
@@ -96,6 +101,7 @@ impl DemandSystem {
             housing_availability: snapshot.housing_availability,
             incoming_household_need: snapshot.incoming_household_need,
             open_job_household_pull: snapshot.open_job_household_pull,
+            marginal_commercial_job_household_pull: snapshot.marginal_commercial_job_household_pull,
             regional_growth_household_pull: snapshot.regional_growth_household_pull,
             household_affordability: snapshot.household_affordability,
             move_in_acceptance: clamp01(move_in.acceptance),
@@ -106,8 +112,16 @@ impl DemandSystem {
             move_in_search_runway_days: move_in.search_runway_days,
             move_in_runway_factor: clamp01(move_in.runway_factor),
             candidate_household_size: move_in.candidate_household_size,
+            candidate_child_count: move_in.candidate_child_count,
+            candidate_adult_count: move_in.candidate_adult_count,
+            candidate_elder_count: move_in.candidate_elder_count,
             candidate_effective_workers: move_in.candidate_effective_workers,
             open_job_slots: snapshot.open_job_slots,
+            marginal_commercial_job_slots: snapshot.marginal_commercial_job_slots,
+            marginal_commercial_job_equivalent_slots: snapshot
+                .marginal_commercial_job_equivalent_slots,
+            move_in_job_slots: snapshot.move_in_job_slots,
+            move_in_job_equivalent_slots: snapshot.move_in_job_equivalent_slots,
             physical_worker_capacity: snapshot.physical_worker_capacity,
             funded_worker_capacity: snapshot.funded_worker_capacity,
             open_jobs_unfunded: snapshot.open_jobs_unfunded,
@@ -116,11 +130,14 @@ impl DemandSystem {
             expected_unemployed_members: move_in.expected_unemployed_members,
             expected_entry_wage_per_day: move_in.expected_entry_wage_per_day,
             expected_wage_income_per_day: move_in.expected_wage_income_per_day,
-            benefit_reliability: move_in.benefit_reliability,
-            existing_benefit_claim_per_day: move_in.existing_benefit_claim_per_day,
-            candidate_benefit_claim_per_day: move_in.candidate_benefit_claim_per_day,
-            total_benefit_claim_per_day: move_in.total_benefit_claim_per_day,
-            expected_benefit_income_per_day: move_in.expected_benefit_income_per_day,
+            transfer_reliability: move_in.transfer_reliability,
+            existing_transfer_claim_per_day: move_in.existing_transfer_claim_per_day,
+            candidate_unemployment_claim_per_day: move_in.candidate_unemployment_claim_per_day,
+            candidate_pension_claim_per_day: move_in.candidate_pension_claim_per_day,
+            candidate_child_support_claim_per_day: move_in.candidate_child_support_claim_per_day,
+            candidate_transfer_claim_per_day: move_in.candidate_transfer_claim_per_day,
+            total_transfer_claim_per_day: move_in.total_transfer_claim_per_day,
+            expected_transfer_income_per_day: move_in.expected_transfer_income_per_day,
             starter_savings: move_in.starter_savings,
             daily_essential_cost: move_in.daily_essential_cost,
             daily_deficit: move_in.daily_deficit,
@@ -269,33 +286,50 @@ pub(super) fn compute_move_in_acceptance_for(
     }
 
     let candidate_household_size = snapshot.candidate_household_size.max(1.0);
-    let candidate_effective_workers =
-        expected_adult_members_for_household_size(candidate_household_size).max(EPSILON);
-    let expected_employed_members = candidate_effective_workers.min(snapshot.open_job_slots as f32);
+    let candidate_child_count = snapshot.candidate_child_count;
+    let candidate_adult_count = snapshot.candidate_adult_count;
+    let candidate_elder_count = snapshot.candidate_elder_count;
+    let candidate_effective_workers = f32::from(candidate_adult_count);
+    let move_in_job_equivalent_slots = snapshot
+        .move_in_job_equivalent_slots
+        .max(snapshot.move_in_job_slots as f32)
+        .max(0.0);
+    let expected_employed_members = candidate_effective_workers.min(move_in_job_equivalent_slots);
     let expected_unemployed_members =
         (candidate_effective_workers - expected_employed_members).max(0.0);
-    let expected_entry_wage_per_day = snapshot.average_open_job_wage_per_day.max(0.0);
+    let expected_entry_wage_per_day = snapshot.average_move_in_job_wage_per_day.max(0.0);
     let expected_wage_income_per_day = expected_employed_members * expected_entry_wage_per_day;
 
-    let benefit_per_member = snapshot.unemployment_daily_benefit_per_member.max(0.0);
-    let existing_benefit_claim_per_day =
-        snapshot.existing_unemployed_member_count as f32 * benefit_per_member;
-    let candidate_benefit_claim_per_day = expected_unemployed_members * benefit_per_member;
-    let total_benefit_claim_per_day =
-        existing_benefit_claim_per_day + candidate_benefit_claim_per_day;
+    let unemployment_per_adult = snapshot.unemployment_daily_benefit_per_adult.max(0.0);
+    let pension_per_elder = snapshot.pension_daily_benefit_per_elder.max(0.0);
+    let child_support_per_child = snapshot.child_support_daily_benefit_per_child.max(0.0);
+    let existing_transfer_claim_per_day = snapshot.existing_unemployed_member_count as f32
+        * unemployment_per_adult
+        + snapshot.existing_elder_count as f32 * pension_per_elder
+        + snapshot.existing_child_count as f32 * child_support_per_child;
+    let candidate_unemployment_claim_per_day = expected_unemployed_members * unemployment_per_adult;
+    let candidate_pension_claim_per_day = f32::from(candidate_elder_count) * pension_per_elder;
+    let candidate_child_support_claim_per_day =
+        f32::from(candidate_child_count) * child_support_per_child;
+    let candidate_transfer_claim_per_day = candidate_unemployment_claim_per_day
+        + candidate_pension_claim_per_day
+        + candidate_child_support_claim_per_day;
+    let total_transfer_claim_per_day =
+        existing_transfer_claim_per_day + candidate_transfer_claim_per_day;
     let coverage_days = config
         .household_action
         .move_in_benefit_treasury_coverage_days
         .max(EPSILON);
-    let benefit_reliability = if total_benefit_claim_per_day <= EPSILON {
+    let transfer_reliability = if total_transfer_claim_per_day <= EPSILON {
         1.0
     } else {
         clamp01(
-            snapshot.city_treasury_balance.max(0.0) / (total_benefit_claim_per_day * coverage_days),
+            snapshot.city_treasury_balance.max(0.0)
+                / (total_transfer_claim_per_day * coverage_days),
         )
     };
-    let expected_benefit_income_per_day = candidate_benefit_claim_per_day * benefit_reliability;
-    let expected_daily_income = expected_wage_income_per_day + expected_benefit_income_per_day;
+    let expected_transfer_income_per_day = candidate_transfer_claim_per_day * transfer_reliability;
+    let expected_daily_income = expected_wage_income_per_day + expected_transfer_income_per_day;
 
     let starter_savings = snapshot.immigrant_starter_savings_per_household.max(0.0);
     let daily_essential_cost = snapshot.candidate_daily_essential_cost.max(0.0);
@@ -318,16 +352,22 @@ pub(super) fn compute_move_in_acceptance_for(
 
     MoveInAcceptance {
         candidate_household_size,
+        candidate_child_count,
+        candidate_adult_count,
+        candidate_elder_count,
         candidate_effective_workers,
         expected_employed_members,
         expected_unemployed_members,
         expected_entry_wage_per_day,
         expected_wage_income_per_day,
-        existing_benefit_claim_per_day,
-        candidate_benefit_claim_per_day,
-        total_benefit_claim_per_day,
-        benefit_reliability,
-        expected_benefit_income_per_day,
+        existing_transfer_claim_per_day,
+        candidate_unemployment_claim_per_day,
+        candidate_pension_claim_per_day,
+        candidate_child_support_claim_per_day,
+        candidate_transfer_claim_per_day,
+        total_transfer_claim_per_day,
+        transfer_reliability,
+        expected_transfer_income_per_day,
         starter_savings,
         daily_essential_cost,
         daily_deficit,

@@ -13,6 +13,8 @@ use rayon::prelude::*;
 const HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
 const HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
 const MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 6;
+const STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS: [u16; 16] =
+    [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 4, 5, 6];
 const HOUSEHOLD_BASE_AREA_M2: f32 = 25.0;
 const HOUSEHOLD_ADULT_AREA_M2: f32 = 22.0;
 const HOUSEHOLD_CHILD_AREA_M2: f32 = 12.0;
@@ -287,6 +289,24 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
     scaled_capacity.clamp(1, worker_capacity)
 }
 
+/// Returns demand-responsive worker capacity before integer staffing slots are rounded.
+pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    floor_scale: f32,
+) -> f32 {
+    let worker_capacity = profile.worker_capacity;
+    if worker_capacity == 0 {
+        return 0.0;
+    }
+    if !is_sales_scaled_commercial_store(building, profile) {
+        return worker_capacity as f32;
+    }
+    worker_capacity as f32
+        * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale)
+}
+
 fn scaled_service_worker_capacity(capacity: u32, funding_factor: f32) -> u32 {
     if capacity == 0 {
         return 0;
@@ -514,17 +534,6 @@ pub(super) fn household_has_independent_member(household: &Household) -> bool {
     household.adult_count > 0 || household.elder_count > 0
 }
 
-/// Returns the deterministic expected adult worker count for a candidate immigrant household size.
-pub(crate) fn expected_adult_members_for_household_size(household_size: f32) -> f32 {
-    if household_size <= 1.0 {
-        0.8
-    } else {
-        (1.0 + (household_size - 1.0).clamp(0.0, 1.0) * 0.55)
-            .min(MAX_ADULTS_PER_HOUSEHOLD as f32)
-            .min(household_size)
-    }
-}
-
 /// Returns the deterministic starter immigrant household size that fits one residential flat.
 ///
 /// Residential capacity is a household slot count, not a requirement that a new household fills
@@ -545,6 +554,26 @@ pub(crate) fn candidate_immigrant_household_size_from_flat_size(flat_size_m2: f3
     Some(candidate_size)
 }
 
+/// Returns the deterministic starter immigrant household size for one claimable residential slot.
+///
+/// Flat size is treated as a maximum fit. The requested household comes from a small deterministic
+/// starter mix so residential admission can create singles and couples instead of always filling a
+/// home to its largest possible family size.
+pub(crate) fn candidate_immigrant_household_size_for_vacancy(
+    flat_size_m2: f32,
+    home_building_id: usize,
+    occupied_household_slots: u32,
+) -> Option<u16> {
+    let max_size = candidate_immigrant_household_size_from_flat_size(flat_size_m2)?;
+    let seed = 0xD1B5_4A32_D192_ED03_u64
+        .wrapping_add((home_building_id as u64).wrapping_mul(0xA24B_AED4_963E_E407))
+        .wrapping_add(u64::from(occupied_household_slots).wrapping_mul(0x1656_67B1_9E37_79F9));
+    let requested_size = STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS
+        [stable_index(seed, STARTER_IMMIGRANT_HOUSEHOLD_SIZE_BUCKETS.len())];
+
+    Some(requested_size.min(max_size).max(1))
+}
+
 fn starter_household_required_area_m2(household_size: u16) -> f32 {
     let size = household_size.max(1);
     let adult_equivalent_members = if size <= 2 {
@@ -556,6 +585,22 @@ fn starter_household_required_area_m2(household_size: u16) -> f32 {
     HOUSEHOLD_BASE_AREA_M2
         + adult_equivalent_members * HOUSEHOLD_ADULT_AREA_M2
         + child_equivalent_members * HOUSEHOLD_CHILD_AREA_M2
+}
+
+#[inline(always)]
+fn stable_hash64(seed: u64) -> u64 {
+    let mut x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+#[inline(always)]
+fn stable_index(seed: u64, len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    (stable_hash64(seed) as usize) % len
 }
 
 pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
@@ -685,5 +730,30 @@ mod tests {
     fn flat_size_capacity_rejects_missing_area() {
         assert_eq!(candidate_immigrant_household_size_from_flat_size(0.0), None);
         assert_eq!(candidate_immigrant_household_size_from_flat_size(1.0), None);
+    }
+
+    #[test]
+    fn vacancy_candidate_uses_starter_mix_capped_by_flat_capacity() {
+        assert_eq!(
+            candidate_immigrant_household_size_for_vacancy(65.5, 0, 0),
+            Some(1)
+        );
+
+        let mut saw_single = false;
+        let mut saw_two_person = false;
+        for home_building_id in 0..64 {
+            let size = candidate_immigrant_household_size_for_vacancy(65.5, home_building_id, 0)
+                .expect("starter flat admits a household");
+            assert!(size <= 2);
+            saw_single |= size == 1;
+            saw_two_person |= size == 2;
+        }
+
+        assert!(saw_single);
+        assert!(saw_two_person);
+        assert_eq!(
+            candidate_immigrant_household_size_for_vacancy(200.0, 14, 0),
+            Some(MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE)
+        );
     }
 }

@@ -24,6 +24,10 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) wage_income: f32,
     /// Unemployment benefit received during daily settlement.
     pub(crate) unemployment_benefit_income: f32,
+    /// Pension transfer received during daily settlement.
+    pub(crate) pension_income: f32,
+    /// Child-support transfer received during daily settlement.
+    pub(crate) child_support_income: f32,
     /// Net household budget reserved or spent on shopping during the ledger window.
     pub(crate) shopping_spend: f32,
     /// Value of household stock consumed from the home buffer.
@@ -42,6 +46,13 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) shopper_trips_completed: u16,
     /// Shopper tasks failed during the ledger window.
     pub(crate) shopper_trips_failed: u16,
+}
+
+impl DailyHouseholdLedger {
+    /// Total city transfer income received during the current ledger window.
+    pub(crate) fn transfer_income(self) -> f32 {
+        self.unemployment_benefit_income + self.pension_income + self.child_support_income
+    }
 }
 
 /// Completed daily electricity settlement summary kept for city budget reporting.

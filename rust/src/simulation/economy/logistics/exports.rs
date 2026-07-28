@@ -49,6 +49,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         planning: &mut FreightPlanningContext,
+        business_purchase_tax_rate: f32,
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
@@ -65,6 +66,7 @@ impl ShipmentSystem {
             graph,
             planning,
             minute_of_day,
+            business_purchase_tax_rate,
         );
         let mut eligible_sources: Vec<usize> = allocator
             .buildings
@@ -233,6 +235,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         planning: &mut FreightPlanningContext,
         minute_of_day: u16,
+        business_purchase_tax_rate: f32,
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
@@ -306,6 +309,7 @@ impl ShipmentSystem {
                     catalog.as_ref(),
                     minute_of_day,
                     tuning.logistics.truck_load_units,
+                    business_purchase_tax_rate,
                 ) else {
                     continue;
                 };
@@ -393,6 +397,7 @@ fn find_reachable_local_input_hold(
     catalog: &RuntimeEconomyCatalog,
     minute_of_day: u16,
     truck_load_units: f32,
+    business_purchase_tax_rate: f32,
 ) -> Option<LocalInputHoldChoice> {
     if dest_idx >= allocator.entrances.len() {
         return None;
@@ -436,7 +441,7 @@ fn find_reachable_local_input_hold(
                     minute_of_day,
                     catalog,
                     truck_load_units,
-                    tuning.fiscal.business_purchase_tax_rate,
+                    business_purchase_tax_rate,
                 );
                 true
             }
