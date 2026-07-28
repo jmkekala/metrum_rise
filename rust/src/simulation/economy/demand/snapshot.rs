@@ -9,6 +9,7 @@ use super::types::EPSILON;
 use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::agents::{HouseholdAgeComposition, household_age_composition};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning,
@@ -17,12 +18,12 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::fiscal::tax_amount;
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::households::{
-    Household, HouseholdSystem, active_worker_capacity_for_profile_with_floor_scale,
+    Household, HouseholdSystem, active_worker_capacity_equivalent_for_profile_with_floor_scale,
+    active_worker_capacity_for_profile_with_floor_scale,
     candidate_immigrant_household_size_from_flat_size, commercial_activity_signal_for_city,
-    expected_adult_members_for_household_size, household_reserve_days,
-    service_funded_worker_capacity,
+    household_reserve_days, service_funded_worker_capacity,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
@@ -171,6 +172,7 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) housing_availability: f32,
     pub(super) incoming_household_need: f32,
     pub(super) open_job_household_pull: f32,
+    pub(super) marginal_commercial_job_household_pull: f32,
     pub(super) regional_growth_household_pull: f32,
     pub(super) household_affordability: f32,
     pub(super) household_stock_stability: f32,
@@ -191,12 +193,23 @@ pub(super) struct DailyDemandSnapshot {
     pub(super) connected_border_count: u32,
     pub(super) city_treasury_balance: f32,
     pub(super) candidate_household_size: f32,
+    pub(super) candidate_child_count: u16,
+    pub(super) candidate_adult_count: u16,
+    pub(super) candidate_elder_count: u16,
     pub(super) immigrant_starter_savings_per_household: f32,
     pub(super) candidate_daily_essential_cost: f32,
-    pub(super) unemployment_daily_benefit_per_member: f32,
+    pub(super) unemployment_daily_benefit_per_adult: f32,
+    pub(super) pension_daily_benefit_per_elder: f32,
+    pub(super) child_support_daily_benefit_per_child: f32,
     pub(super) existing_unemployed_member_count: u32,
+    pub(super) existing_child_count: u32,
+    pub(super) existing_elder_count: u32,
     pub(super) open_job_slots: u32,
-    pub(super) average_open_job_wage_per_day: f32,
+    pub(super) marginal_commercial_job_slots: u32,
+    pub(super) marginal_commercial_job_equivalent_slots: f32,
+    pub(super) move_in_job_slots: u32,
+    pub(super) move_in_job_equivalent_slots: f32,
+    pub(super) average_move_in_job_wage_per_day: f32,
     pub(super) physical_worker_capacity: u32,
     pub(super) funded_worker_capacity: u32,
     pub(super) open_jobs_unfunded: u32,
@@ -220,6 +233,7 @@ impl DailyDemandSnapshot {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
         Self::from_runtime_with_catalog(
             allocator,
             households,
@@ -227,6 +241,7 @@ impl DailyDemandSnapshot {
             config,
             catalog.as_ref(),
             tuning.as_ref(),
+            &fiscal_policy,
             treasury_balance,
             &[],
         )
@@ -239,6 +254,7 @@ impl DailyDemandSnapshot {
         config: &DemandConfig,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
     ) -> Self {
@@ -298,8 +314,9 @@ impl DailyDemandSnapshot {
         let building_accumulator = collect_building_snapshot_accumulator(
             allocator,
             catalog,
-            tuning.fiscal.income_tax_rate,
+            fiscal_policy.income_tax_rate,
             &demand_sink_rates_by_resource,
+            commercial_activity_signal.household_supply_resource_runtime_id,
             commercial_activity_signal.activity_floor_scale,
             service_funding_by_building,
         );
@@ -309,8 +326,6 @@ impl DailyDemandSnapshot {
         let total_commercial_owa_input = building_accumulator.total_commercial_owa_input;
         let total_commercial_local_input = building_accumulator.total_commercial_local_input;
         let total_commercial_expected_input = building_accumulator.total_commercial_expected_input;
-        let candidate_household_size_sum = building_accumulator.candidate_household_size_sum;
-        let candidate_household_slot_count = building_accumulator.candidate_household_slot_count;
         let under_construction_household_slots =
             building_accumulator.under_construction_household_slots;
         let filled_job_count = building_accumulator.filled_job_count;
@@ -331,27 +346,48 @@ impl DailyDemandSnapshot {
             building_accumulator.committed_local_industrial_output_capacity_by_resource;
         let committed_output_capacity_by_resource =
             building_accumulator.committed_output_capacity_by_resource;
+        let sales_scaled_household_supply_output_units_per_day =
+            building_accumulator.sales_scaled_household_supply_output_units_per_day;
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
-        let candidate_household_size = if candidate_household_slot_count == 0 {
-            construction_candidate_household_size_from_registry(allocator)
-        } else {
-            candidate_household_size_sum / candidate_household_slot_count as f32
-        };
+        let candidate = candidate_household_preview(allocator, households);
+        let candidate_household_size = candidate.household_size as f32;
         let immigrant_starter_savings_per_household =
             candidate_household_size * tuning.households.immigrant_starting_budget_per_member;
         let candidate_daily_essential_cost =
             candidate_household_size * daily_essential_cost_per_resident;
-        let average_open_job_wage_per_day = if open_job_slots == 0 {
+        let candidate_household_supply_demand_units = candidate_household_size
+            * resource_amount(
+                &demand_sink_rates_by_resource,
+                commercial_activity_signal.household_supply_resource_runtime_id,
+            );
+        let marginal_commercial_jobs = marginal_commercial_job_forecast_for_candidate_household(
+            allocator,
+            catalog,
+            fiscal_policy.income_tax_rate,
+            commercial_activity_signal.household_supply_resource_runtime_id,
+            commercial_activity_signal.demand_units_per_day,
+            commercial_activity_signal.activity_floor_scale,
+            sales_scaled_household_supply_output_units_per_day,
+            candidate_household_supply_demand_units,
+            service_funding_by_building,
+        );
+        let move_in_job_slots = open_job_slots.saturating_add(marginal_commercial_jobs.open_slots);
+        let move_in_job_equivalent_slots =
+            open_job_slots as f32 + marginal_commercial_jobs.job_equivalent_slots;
+        let average_move_in_job_wage_per_day = if move_in_job_equivalent_slots <= EPSILON {
             0.0
         } else {
-            open_job_wage_sum / open_job_slots as f32
+            (open_job_wage_sum + marginal_commercial_jobs.job_equivalent_net_wage_sum)
+                / move_in_job_equivalent_slots
         };
 
         let household_accumulator =
             collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
         let housed_resident_count = household_accumulator.housed_resident_count;
         let housed_adult_count = household_accumulator.housed_adult_count;
+        let live_child_count = household_accumulator.live_child_count;
+        let live_elder_count = household_accumulator.live_elder_count;
         let housed_household_count = household_accumulator.housed_household_count;
         let unhoused_household_count = household_accumulator.unhoused_household_count;
         let zero_budget_household_count = household_accumulator.zero_budget_household_count;
@@ -478,9 +514,11 @@ impl DailyDemandSnapshot {
             clamp01(zero_budget_household_count as f32 / total_household_count as f32)
         };
         let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
-        let candidate_effective_workers =
-            expected_adult_members_for_household_size(candidate_household_size).max(EPSILON);
-        let open_job_household_pull = open_job_slots as f32 / candidate_effective_workers;
+        let candidate_effective_workers = f32::from(candidate.composition.adult_count);
+        let candidate_worker_denominator = candidate_effective_workers.max(1.0);
+        let open_job_household_pull = open_job_slots as f32 / candidate_worker_denominator;
+        let marginal_commercial_job_household_pull =
+            (marginal_commercial_jobs.job_equivalent_slots / candidate_worker_denominator).min(1.0);
         let bootstrap_household_pull = if total_household_count == 0 { 1.0 } else { 0.0 };
         let regional_growth_household_pull = regional_growth_household_pull(
             config,
@@ -491,7 +529,9 @@ impl DailyDemandSnapshot {
             unhoused_household_ratio,
             zero_budget_household_ratio,
         );
-        let incoming_household_need = (open_job_household_pull + regional_growth_household_pull)
+        let incoming_household_need = (open_job_household_pull
+            + marginal_commercial_job_household_pull
+            + regional_growth_household_pull)
             .max(bootstrap_household_pull);
 
         // Fraction of commercial input value sourced from OWA vs local industrial.
@@ -513,12 +553,12 @@ impl DailyDemandSnapshot {
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
              unhoused_ratio={:.2} zero_budget_ratio={:.2} stock_stab={:.2} afford={:.2} \
-             incoming_need={:.2} job_pull={:.2} regional_pull={:.2} \
+             incoming_need={:.2} job_pull={:.2} marginal_com_pull={:.2} regional_pull={:.2} \
              com_cap_def={:.2} unmet_com_units={:.1} \
              ind_cap_def={:.2} com_input_need={:.1} local_ind_capacity={:.1} \
              ind_missing={:.1} pending_home_slots={} owa_dep={:.2} owa_input_value={:.1} \
-             treasury={:.0} cand_size={:.1} \
-             open_jobs={} existing_unemployed={} physical_worker_capacity={} \
+             treasury={:.0} cand_size={:.1} cand=(children:{} adults:{} elders:{}) \
+             open_jobs={} marginal_com_jobs={} marginal_com_job_equiv={:.2} move_in_jobs={} move_in_job_equiv={:.2} existing_unemployed={} physical_worker_capacity={} \
              funded_worker_capacity={} open_jobs_unfunded={} \
              private_buildings={}",
             connected_border_count,
@@ -530,6 +570,7 @@ impl DailyDemandSnapshot {
             household_affordability,
             incoming_household_need,
             open_job_household_pull,
+            marginal_commercial_job_household_pull,
             regional_growth_household_pull,
             commercial_capacity_deficit,
             unmet_commercial_consumer_demand,
@@ -542,7 +583,14 @@ impl DailyDemandSnapshot {
             total_commercial_owa_input,
             treasury_balance,
             candidate_household_size,
+            candidate.composition.child_count,
+            candidate.composition.adult_count,
+            candidate.composition.elder_count,
             open_job_slots,
+            marginal_commercial_jobs.open_slots,
+            marginal_commercial_jobs.job_equivalent_slots,
+            move_in_job_slots,
+            move_in_job_equivalent_slots,
             existing_unemployed_member_count,
             physical_worker_capacity,
             funded_worker_capacity,
@@ -562,6 +610,7 @@ impl DailyDemandSnapshot {
             housing_availability,
             incoming_household_need,
             open_job_household_pull,
+            marginal_commercial_job_household_pull,
             regional_growth_household_pull,
             household_affordability,
             household_stock_stability,
@@ -582,12 +631,24 @@ impl DailyDemandSnapshot {
             connected_border_count,
             city_treasury_balance: treasury_balance as f32,
             candidate_household_size,
+            candidate_child_count: candidate.composition.child_count,
+            candidate_adult_count: candidate.composition.adult_count,
+            candidate_elder_count: candidate.composition.elder_count,
             immigrant_starter_savings_per_household,
             candidate_daily_essential_cost,
-            unemployment_daily_benefit_per_member: tuning.unemployment_daily_benefit_per_member,
+            unemployment_daily_benefit_per_adult: fiscal_policy
+                .unemployment_benefit_per_adult_per_day,
+            pension_daily_benefit_per_elder: fiscal_policy.pension_per_elder_per_day,
+            child_support_daily_benefit_per_child: fiscal_policy.child_support_per_child_per_day,
             existing_unemployed_member_count,
+            existing_child_count: live_child_count,
+            existing_elder_count: live_elder_count,
             open_job_slots,
-            average_open_job_wage_per_day,
+            marginal_commercial_job_slots: marginal_commercial_jobs.open_slots,
+            marginal_commercial_job_equivalent_slots: marginal_commercial_jobs.job_equivalent_slots,
+            move_in_job_slots,
+            move_in_job_equivalent_slots,
+            average_move_in_job_wage_per_day,
             physical_worker_capacity,
             funded_worker_capacity,
             open_jobs_unfunded,
@@ -632,6 +693,40 @@ fn regional_growth_household_pull(
 
 const BUILDING_SNAPSHOT_CHUNK_SIZE: usize = 1024;
 const HOUSEHOLD_SNAPSHOT_CHUNK_SIZE: usize = 2048;
+const BASELINE_STARTER_CONSTRUCTION_HOUSEHOLD_SIZE: u16 = 2;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CandidateHouseholdPreview {
+    household_size: u16,
+    composition: HouseholdAgeComposition,
+}
+
+fn candidate_household_preview(
+    allocator: &BuildingAllocator,
+    households: &HouseholdSystem,
+) -> CandidateHouseholdPreview {
+    let next_household_id = households.households.len();
+    if let Some((home_building_id, household_size)) = allocator.next_household_admission_candidate()
+    {
+        return CandidateHouseholdPreview {
+            household_size,
+            composition: household_age_composition(
+                home_building_id,
+                next_household_id,
+                household_size,
+            ),
+        };
+    }
+
+    let household_size = construction_candidate_household_size_from_registry(allocator) as u16;
+    if household_size == 0 {
+        return CandidateHouseholdPreview::default();
+    }
+    CandidateHouseholdPreview {
+        household_size,
+        composition: household_age_composition(usize::MAX, next_household_id, household_size),
+    }
+}
 
 #[derive(Default)]
 struct BuildingSnapshotAccumulator {
@@ -641,8 +736,6 @@ struct BuildingSnapshotAccumulator {
     total_commercial_owa_input: f32,
     total_commercial_local_input: f32,
     total_commercial_expected_input: f32,
-    candidate_household_size_sum: f32,
-    candidate_household_slot_count: u32,
     under_construction_household_slots: u32,
     filled_job_count: u32,
     open_job_slots: u32,
@@ -650,6 +743,7 @@ struct BuildingSnapshotAccumulator {
     physical_worker_capacity: u32,
     funded_worker_capacity: u32,
     open_jobs_unfunded: u32,
+    sales_scaled_household_supply_output_units_per_day: f32,
     committed_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     live_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
     committed_commercial_output_capacity_by_resource: Vec<(ResourceRuntimeId, f32)>,
@@ -664,7 +758,8 @@ impl BuildingSnapshotAccumulator {
         allocator: &BuildingAllocator,
         catalog: &RuntimeEconomyCatalog,
         income_tax_rate: f32,
-        demand_sink_rates_by_resource: &[(u16, f32)],
+        demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
+        household_supply_resource_runtime_id: ResourceRuntimeId,
         commercial_activity_floor_scale: f32,
         service_funding_by_building: &[f32],
         idx: usize,
@@ -738,17 +833,6 @@ impl BuildingSnapshotAccumulator {
                 .saturating_add(household_capacity);
             let occupied = building.occupancy.min(household_capacity);
             self.occupied_household_slots = self.occupied_household_slots.saturating_add(occupied);
-            let free_slots = household_capacity.saturating_sub(occupied);
-            if free_slots > 0 {
-                if let Some(candidate_size) =
-                    candidate_immigrant_household_size_from_flat_size(allocator.flat_size_m2(idx))
-                {
-                    self.candidate_household_size_sum += candidate_size as f32 * free_slots as f32;
-                    self.candidate_household_slot_count = self
-                        .candidate_household_slot_count
-                        .saturating_add(free_slots);
-                }
-            }
         }
 
         if let Some(profile) =
@@ -819,6 +903,16 @@ impl BuildingSnapshotAccumulator {
             self.total_commercial_owa_input += building.daily_owa_input_value;
             self.total_commercial_local_input += building.daily_local_input_value;
             if let Some(profile) = active_profile {
+                if matches!(profile.kind, EconomyProfileRuntimeKind::Store) {
+                    self.sales_scaled_household_supply_output_units_per_day += profile
+                        .outputs
+                        .iter()
+                        .filter(|port| {
+                            port.resource_runtime_id == household_supply_resource_runtime_id
+                        })
+                        .map(|port| port.units_per_day.max(0.0))
+                        .sum::<f32>();
+                }
                 let commercial_capacity_scale = profile_output_capacity_scale(
                     catalog,
                     building,
@@ -899,10 +993,6 @@ impl BuildingSnapshotAccumulator {
         self.total_commercial_owa_input += other.total_commercial_owa_input;
         self.total_commercial_local_input += other.total_commercial_local_input;
         self.total_commercial_expected_input += other.total_commercial_expected_input;
-        self.candidate_household_size_sum += other.candidate_household_size_sum;
-        self.candidate_household_slot_count = self
-            .candidate_household_slot_count
-            .saturating_add(other.candidate_household_slot_count);
         self.under_construction_household_slots = self
             .under_construction_household_slots
             .saturating_add(other.under_construction_household_slots);
@@ -918,6 +1008,8 @@ impl BuildingSnapshotAccumulator {
         self.open_jobs_unfunded = self
             .open_jobs_unfunded
             .saturating_add(other.open_jobs_unfunded);
+        self.sales_scaled_household_supply_output_units_per_day +=
+            other.sales_scaled_household_supply_output_units_per_day;
         merge_resource_amounts(
             &mut self.committed_output_capacity_by_resource,
             other.committed_output_capacity_by_resource,
@@ -960,6 +1052,7 @@ fn collect_building_snapshot_accumulator(
     catalog: &RuntimeEconomyCatalog,
     income_tax_rate: f32,
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
+    household_supply_resource_runtime_id: ResourceRuntimeId,
     commercial_activity_floor_scale: f32,
     service_funding_by_building: &[f32],
 ) -> BuildingSnapshotAccumulator {
@@ -976,6 +1069,7 @@ fn collect_building_snapshot_accumulator(
                     catalog,
                     income_tax_rate,
                     demand_sink_rates_by_resource,
+                    household_supply_resource_runtime_id,
                     commercial_activity_floor_scale,
                     service_funding_by_building,
                     start_idx + local_idx,
@@ -992,6 +1086,148 @@ fn collect_building_snapshot_accumulator(
         merged.merge(accumulator);
     }
     merged
+}
+
+#[derive(Default)]
+struct MarginalCommercialJobForecast {
+    open_slots: u32,
+    job_equivalent_slots: f32,
+    job_equivalent_net_wage_sum: f32,
+}
+
+fn marginal_commercial_job_forecast_for_candidate_household(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    income_tax_rate: f32,
+    household_supply_resource_runtime_id: ResourceRuntimeId,
+    current_household_supply_demand_units_per_day: f32,
+    current_commercial_activity_floor_scale: f32,
+    full_household_supply_output_units_per_day: f32,
+    candidate_household_supply_demand_units: f32,
+    service_funding_by_building: &[f32],
+) -> MarginalCommercialJobForecast {
+    if candidate_household_supply_demand_units <= EPSILON
+        || full_household_supply_output_units_per_day <= EPSILON
+    {
+        return MarginalCommercialJobForecast::default();
+    }
+    let marginal_floor_scale = ((current_household_supply_demand_units_per_day
+        + candidate_household_supply_demand_units)
+        / full_household_supply_output_units_per_day)
+        .clamp(0.0, 1.0);
+    if marginal_floor_scale <= current_commercial_activity_floor_scale + EPSILON {
+        return MarginalCommercialJobForecast::default();
+    }
+
+    allocator
+        .buildings
+        .par_iter()
+        .enumerate()
+        .filter_map(|(idx, building)| {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || !matches!(building.zone_type, ZoneType::Commercial)
+            {
+                return None;
+            }
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
+            let household_supply_output = profile
+                .output_port(household_supply_resource_runtime_id)
+                .map(|port| port.units_per_day.max(0.0))
+                .unwrap_or(0.0);
+            if !matches!(profile.kind, EconomyProfileRuntimeKind::Store)
+                || household_supply_output <= EPSILON
+                || !profile_offers_work(building, profile)
+            {
+                return None;
+            }
+            let average_daily_wage = profile.average_daily_wage();
+            if average_daily_wage <= 0.1 {
+                return None;
+            }
+
+            let current_physical_capacity = active_worker_capacity_for_profile_with_floor_scale(
+                catalog,
+                building,
+                profile,
+                current_commercial_activity_floor_scale,
+            );
+            let current_funded_capacity = service_funded_worker_capacity(
+                current_physical_capacity,
+                profile,
+                idx,
+                service_funding_by_building,
+            );
+            let marginal_physical_capacity = active_worker_capacity_for_profile_with_floor_scale(
+                catalog,
+                building,
+                profile,
+                marginal_floor_scale,
+            );
+            let marginal_funded_capacity = service_funded_worker_capacity(
+                marginal_physical_capacity,
+                profile,
+                idx,
+                service_funding_by_building,
+            );
+
+            let budget_capacity =
+                (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
+            let filled_workers = building.worker_count;
+            let current_open_slots = current_funded_capacity
+                .min(budget_capacity)
+                .saturating_sub(filled_workers.min(current_funded_capacity));
+            let marginal_open_slots = marginal_funded_capacity
+                .min(budget_capacity)
+                .saturating_sub(filled_workers.min(marginal_funded_capacity));
+            let added_open_slots = marginal_open_slots.saturating_sub(current_open_slots);
+            let current_worker_equivalent =
+                active_worker_capacity_equivalent_for_profile_with_floor_scale(
+                    catalog,
+                    building,
+                    profile,
+                    current_commercial_activity_floor_scale,
+                );
+            let marginal_worker_equivalent =
+                active_worker_capacity_equivalent_for_profile_with_floor_scale(
+                    catalog,
+                    building,
+                    profile,
+                    marginal_floor_scale,
+                );
+            let worker_equivalent_ceiling = budget_capacity.min(service_funded_worker_capacity(
+                profile.worker_capacity,
+                profile,
+                idx,
+                service_funding_by_building,
+            )) as f32;
+            let added_worker_equivalent = (marginal_worker_equivalent
+                .min(worker_equivalent_ceiling)
+                - current_worker_equivalent.min(worker_equivalent_ceiling))
+            .max(0.0);
+            if added_open_slots == 0 && added_worker_equivalent <= EPSILON {
+                return None;
+            }
+
+            let net_daily_wage =
+                (average_daily_wage - tax_amount(average_daily_wage, income_tax_rate)).max(0.0);
+            let job_equivalent_slots = (added_open_slots as f32).max(added_worker_equivalent);
+            Some(MarginalCommercialJobForecast {
+                open_slots: added_open_slots,
+                job_equivalent_slots,
+                job_equivalent_net_wage_sum: job_equivalent_slots * net_daily_wage,
+            })
+        })
+        .reduce(MarginalCommercialJobForecast::default, |left, right| {
+            MarginalCommercialJobForecast {
+                open_slots: left.open_slots.saturating_add(right.open_slots),
+                job_equivalent_slots: left.job_equivalent_slots + right.job_equivalent_slots,
+                job_equivalent_net_wage_sum: left.job_equivalent_net_wage_sum
+                    + right.job_equivalent_net_wage_sum,
+            }
+        })
 }
 
 fn profile_output_capacity_scale(
@@ -1025,6 +1261,10 @@ fn merge_resource_amounts(
 struct HouseholdSnapshotAccumulator {
     housed_resident_count: u32,
     housed_adult_count: u32,
+    housed_child_count: u32,
+    housed_elder_count: u32,
+    live_child_count: u32,
+    live_elder_count: u32,
     housed_household_count: u32,
     unhoused_household_count: u32,
     zero_budget_household_count: u32,
@@ -1048,6 +1288,12 @@ impl HouseholdSnapshotAccumulator {
         if household.budget <= EPSILON {
             self.zero_budget_household_count = self.zero_budget_household_count.saturating_add(1);
         }
+        self.live_child_count = self
+            .live_child_count
+            .saturating_add(household.child_count as u32);
+        self.live_elder_count = self
+            .live_elder_count
+            .saturating_add(household.elder_count as u32);
         let is_housed = household.adult_count.saturating_add(household.elder_count) > 0
             && household.home_building_id < allocator.buildings.len()
             && !allocator.buildings[household.home_building_id].broken
@@ -1062,6 +1308,12 @@ impl HouseholdSnapshotAccumulator {
             self.housed_adult_count = self
                 .housed_adult_count
                 .saturating_add(household.adult_count as u32);
+            self.housed_child_count = self
+                .housed_child_count
+                .saturating_add(household.child_count as u32);
+            self.housed_elder_count = self
+                .housed_elder_count
+                .saturating_add(household.elder_count as u32);
             self.household_affordability_sum += clamp01(
                 household_reserve_days(catalog, tuning, household)
                     / config
@@ -1101,6 +1353,14 @@ impl HouseholdSnapshotAccumulator {
         self.housed_adult_count = self
             .housed_adult_count
             .saturating_add(other.housed_adult_count);
+        self.housed_child_count = self
+            .housed_child_count
+            .saturating_add(other.housed_child_count);
+        self.housed_elder_count = self
+            .housed_elder_count
+            .saturating_add(other.housed_elder_count);
+        self.live_child_count = self.live_child_count.saturating_add(other.live_child_count);
+        self.live_elder_count = self.live_elder_count.saturating_add(other.live_elder_count);
         self.housed_household_count = self
             .housed_household_count
             .saturating_add(other.housed_household_count);
@@ -1147,8 +1407,7 @@ fn collect_household_snapshot_accumulator(
 }
 
 fn construction_candidate_household_size_from_registry(allocator: &BuildingAllocator) -> f32 {
-    let mut candidate_size_sum = 0.0_f32;
-    let mut candidate_count = 0_u32;
+    let mut smallest_candidate_size = u16::MAX;
     for asset_id in allocator
         .registry
         .buildings_for_zone(ZoneClass::Residential)
@@ -1168,13 +1427,16 @@ fn construction_candidate_household_size_from_registry(allocator: &BuildingAlloc
         if let Some(candidate_size) = candidate_immigrant_household_size_from_flat_size(
             allocator.registry.flat_size_m2(asset_id),
         ) {
-            candidate_size_sum += candidate_size as f32;
-            candidate_count = candidate_count.saturating_add(1);
+            smallest_candidate_size = smallest_candidate_size.min(
+                candidate_size
+                    .min(BASELINE_STARTER_CONSTRUCTION_HOUSEHOLD_SIZE)
+                    .max(1),
+            );
         }
     }
-    if candidate_count == 0 {
+    if smallest_candidate_size == u16::MAX {
         0.0
     } else {
-        candidate_size_sum / candidate_count as f32
+        smallest_candidate_size as f32
     }
 }

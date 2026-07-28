@@ -78,6 +78,11 @@ impl SimulationNode {
         dict.set("history", history);
         dict.set("latest", budget_ledger_entry_dict(&latest));
         dict.set("policy", policy);
+        dict.set("fiscal_policy", fiscal_policy_dict(core.fiscal_policy));
+        dict.set(
+            "fiscal_policy_controls",
+            fiscal_policy_controls_array(core.fiscal_policy),
+        );
         dict.set("services", services);
         dict
     }
@@ -87,6 +92,13 @@ impl SimulationNode {
     pub fn set_economy_service_funding(&mut self, service_id: GString, funding: f32) -> bool {
         let mut core = self.lock_core();
         core.set_service_funding(&service_id.to_string(), funding)
+    }
+
+    /// Applies a live fiscal policy value. Returns `false` for unknown policy ids.
+    #[func]
+    pub fn set_economy_policy_value(&mut self, policy_id: GString, value: f32) -> bool {
+        let mut core = self.lock_core();
+        core.set_fiscal_policy_value(&policy_id.to_string(), value)
     }
 
     /// Applies a live service funding override to the service building nearest the world point.
@@ -164,5 +176,78 @@ impl SimulationNode {
                 GString::from(payload.to_string().as_str())
             }
         }
+    }
+}
+
+fn fiscal_policy_dict(
+    policy: crate::simulation::economy::fiscal::CityFiscalPolicy,
+) -> VarDictionary {
+    let mut dict = VarDictionary::new();
+    for control in policy.controls() {
+        dict.set(control.id, control.value as f64);
+    }
+    dict
+}
+
+fn fiscal_policy_controls_array(
+    policy: crate::simulation::economy::fiscal::CityFiscalPolicy,
+) -> VarArray {
+    let mut controls = VarArray::new();
+    for control in policy.controls() {
+        let mut dict = VarDictionary::new();
+        dict.set("id", GString::from(control.id));
+        dict.set("label", GString::from(control.label));
+        dict.set("group", GString::from(control.group));
+        dict.set("unit", GString::from(control.unit.as_str()));
+        dict.set("value", control.value as f64);
+        dict.set("min", control.min as f64);
+        dict.set("max", control.max as f64);
+        dict.set("step", control.step as f64);
+        let impact = fiscal_policy_control_impact(control.id);
+        dict.set("impact_field", GString::from(impact.0));
+        dict.set("impact_label", GString::from(impact.1));
+        dict.set("impact_kind", GString::from(impact.2));
+        controls.push(&dict.to_variant());
+    }
+    controls
+}
+
+fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str, &'static str) {
+    use crate::simulation::economy::fiscal::{
+        POLICY_BUSINESS_PROFIT_TAX, POLICY_BUSINESS_PURCHASE_TAX, POLICY_CHILD_SUPPORT,
+        POLICY_COMMERCIAL_PROPERTY_TAX, POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX,
+        POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION, POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
+        POLICY_RESIDENTIAL_PROPERTY_TAX, POLICY_UNEMPLOYMENT_BENEFIT, POLICY_UNEMPLOYMENT_MAX_DAYS,
+    };
+
+    match policy_id {
+        POLICY_UNEMPLOYMENT_BENEFIT | POLICY_UNEMPLOYMENT_MAX_DAYS => {
+            ("unemployment_benefits", "Unemployment", "expense")
+        }
+        POLICY_PENSION => ("pensions", "Pensions", "expense"),
+        POLICY_CHILD_SUPPORT => ("child_support", "Child Support", "expense"),
+        POLICY_INCOME_TAX => ("income_tax", "Income Tax", "revenue"),
+        POLICY_HOUSEHOLD_VAT => ("household_vat", "Household VAT", "revenue"),
+        POLICY_BUSINESS_PURCHASE_TAX => {
+            ("business_purchase_tax", "Business Purchase Tax", "revenue")
+        }
+        POLICY_BUSINESS_PROFIT_TAX => ("business_profit_tax", "Business Profit Tax", "revenue"),
+        POLICY_RESIDENTIAL_PROPERTY_TAX => (
+            "residential_property_tax",
+            "Residential Property Tax",
+            "revenue",
+        ),
+        POLICY_COMMERCIAL_PROPERTY_TAX => (
+            "commercial_property_tax",
+            "Commercial Property Tax",
+            "revenue",
+        ),
+        POLICY_INDUSTRIAL_PROPERTY_TAX => (
+            "industrial_property_tax",
+            "Industrial Property Tax",
+            "revenue",
+        ),
+        POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER => ("property_tax", "Property Tax", "revenue"),
+        _ => ("net", "Policy Impact", "revenue"),
     }
 }

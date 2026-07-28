@@ -127,6 +127,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -453,6 +454,9 @@ impl INode3D for SimulationNode {
                     .unwrap_or(100_000.0),
             ),
             service_policy: Default::default(),
+            fiscal_policy: load_runtime_economy_tuning()
+                .map(|tuning| CityFiscalPolicy::from_runtime_tuning(tuning.as_ref()))
+                .unwrap_or_default(),
             budget_history: VecDeque::new(),
             budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,

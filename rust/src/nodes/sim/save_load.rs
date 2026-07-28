@@ -29,6 +29,7 @@ impl SimCore {
                 network: &self.transit_network,
                 treasury: &self.treasury,
                 service_policy: &self.service_policy,
+                fiscal_policy: &self.fiscal_policy,
                 budget_history: &self.budget_history,
             },
         )
@@ -70,6 +71,7 @@ impl SimCore {
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;
+        self.fiscal_policy = loaded.fiscal_policy;
         self.apply_service_funding_staffing_policy();
         self.refresh_loaded_demand_state_and_log();
         self.budget_history = loaded.budget_history;
@@ -119,6 +121,7 @@ impl SimCore {
                 &self.region_graph,
                 self.treasury.balance,
                 &service_funding_by_building,
+                &self.fiscal_policy,
             );
             return;
         }
@@ -129,12 +132,16 @@ impl SimCore {
             &self.region_graph,
             self.treasury.balance,
             &service_funding_by_building,
+            &self.fiscal_policy,
         );
         let (
             vacant_household_slots,
             open_job_slots,
+            move_in_job_slots,
+            move_in_job_equivalent_slots,
             regional_growth_household_pull,
             open_job_household_pull,
+            marginal_commercial_job_household_pull,
             incoming_household_need,
             move_in_acceptance,
             construction_move_in_acceptance,
@@ -142,7 +149,7 @@ impl SimCore {
         ) = self.demand.last_admission_debug_summary();
         debug_log!(
             "spawn",
-            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} regional_pull={:.2} job_pull={:.2} incoming_need={:.2} move_in={:.2} construction_move_in={:.2} failure={:.2}",
+            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} move_in_jobs={} move_in_job_equiv={:.2} regional_pull={:.2} job_pull={:.2} marginal_com_pull={:.2} incoming_need={:.2} move_in={:.2} construction_move_in={:.2} failure={:.2}",
             persisted_residential * 100.0,
             persisted_commercial * 100.0,
             persisted_industrial * 100.0,
@@ -160,8 +167,11 @@ impl SimCore {
                 .count(),
             vacant_household_slots,
             open_job_slots,
+            move_in_job_slots,
+            move_in_job_equivalent_slots,
             regional_growth_household_pull,
             open_job_household_pull,
+            marginal_commercial_job_household_pull,
             incoming_household_need,
             move_in_acceptance,
             construction_move_in_acceptance,

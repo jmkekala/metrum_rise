@@ -7,7 +7,11 @@ use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
+use crate::simulation::economy::households::{
+    Household, HouseholdSystem, REPLENISHMENT_STABLE,
+    candidate_immigrant_household_size_from_flat_size,
+};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
     EdgeClass, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -368,6 +372,7 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         housing_availability: 1.0,
         incoming_household_need: 1.0,
         open_job_household_pull: 1.0,
+        marginal_commercial_job_household_pull: 0.0,
         regional_growth_household_pull: 0.0,
         household_affordability: 1.0,
         household_stock_stability: 1.0,
@@ -383,12 +388,23 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         connected_border_count: 1,
         city_treasury_balance: 100_000.0,
         candidate_household_size: 2.0,
+        candidate_child_count: 0,
+        candidate_adult_count: 2,
+        candidate_elder_count: 0,
         immigrant_starter_savings_per_household: 30.0,
         candidate_daily_essential_cost: 56.0,
-        unemployment_daily_benefit_per_member: 30.0,
+        unemployment_daily_benefit_per_adult: 30.0,
+        pension_daily_benefit_per_elder: 30.0,
+        child_support_daily_benefit_per_child: 10.0,
         existing_unemployed_member_count: 0,
+        existing_child_count: 0,
+        existing_elder_count: 0,
         open_job_slots: 0,
-        average_open_job_wage_per_day: 0.0,
+        marginal_commercial_job_slots: 0,
+        marginal_commercial_job_equivalent_slots: 0.0,
+        move_in_job_slots: 0,
+        move_in_job_equivalent_slots: 0.0,
+        average_move_in_job_wage_per_day: 0.0,
         physical_worker_capacity: 0,
         funded_worker_capacity: 0,
         open_jobs_unfunded: 0,
@@ -1201,6 +1217,7 @@ fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_borde
         0,
         commercial_asset,
     ));
+    allocator.rebuild_zone_index();
 
     let households = HouseholdSystem::new();
     let graph = graph_with_connected_border();
@@ -1368,7 +1385,7 @@ fn regional_growth_damps_on_failure_and_soft_target() {
 }
 
 #[test]
-fn hourly_pass_sizes_large_vacant_home_as_larger_family_without_jobs() {
+fn hourly_pass_sizes_large_vacant_home_from_starter_mix_not_full_capacity() {
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_family_asset_with_economy_profile_and_flat_size(
         &mut allocator,
@@ -1386,25 +1403,21 @@ fn hourly_pass_sizes_large_vacant_home_as_larger_family_without_jobs() {
         0,
         residential_asset,
     ));
+    allocator.rebuild_zone_index();
 
     let households = HouseholdSystem::new();
     let graph = graph_with_connected_border();
     let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
-    for _ in 0..24 {
-        demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
-        if demand.households_to_admit_today > 0 {
-            break;
-        }
-    }
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 100_000.0);
 
     assert_eq!(
         demand.last_admission_diagnostics.candidate_household_size,
-        6.0
+        1.0
     );
-    assert_eq!(
-        demand.households_to_admit_today, 0,
+    assert!(
+        demand.last_admission_diagnostics.pressure > 0.0,
         "large homes should not force an oversized household into the city without job pull"
     );
 }
@@ -1614,7 +1627,7 @@ fn admission_pressure_counts_zero_budget_households() {
 }
 
 #[test]
-fn move_in_acceptance_accounts_for_benefit_treasury_coverage() {
+fn move_in_acceptance_accounts_for_transfer_treasury_coverage() {
     let mut covered_snapshot = vacant_admission_snapshot();
     covered_snapshot.existing_unemployed_member_count = 100;
     covered_snapshot.city_treasury_balance = 100_000.0;
@@ -1633,10 +1646,10 @@ fn move_in_acceptance_accounts_for_benefit_treasury_coverage() {
 
     assert!(
         covered_inputs.admission_pressure > 0.9,
-        "covered benefit runway should admit into available housing"
+        "covered transfer runway should admit into available housing"
     );
     assert_eq!(
-        depleted_inputs.admission_diagnostics.benefit_reliability,
+        depleted_inputs.admission_diagnostics.transfer_reliability,
         0.0
     );
     assert_eq!(
@@ -1647,23 +1660,421 @@ fn move_in_acceptance_accounts_for_benefit_treasury_coverage() {
 }
 
 #[test]
+fn runtime_snapshot_counts_unhoused_children_and_elders_as_transfer_claimants() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "transfer_claimant_candidate_home",
+        ZoneType::Residential,
+    );
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        0,
+        0,
+        residential_asset,
+    ));
+    let mut households = HouseholdSystem::new();
+    let mut child_household = unhoused_household(1, 60.0, 1.0);
+    child_household.child_count = 1;
+    child_household.adult_count = 0;
+    child_household.elder_count = 0;
+    let mut elder_household = unhoused_household(1, 60.0, 1.0);
+    elder_household.child_count = 0;
+    elder_household.adult_count = 0;
+    elder_household.elder_count = 1;
+    households.households.push(child_household);
+    households.households.push(elder_household);
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
+
+    assert_eq!(snapshot.housed_household_count, 0);
+    assert_eq!(snapshot.unhoused_household_count, 2);
+    assert_eq!(snapshot.existing_child_count, 1);
+    assert_eq!(snapshot.existing_elder_count, 1);
+
+    let mut demand = DemandSystem::new();
+    let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
+    let expected_existing_transfer_claim =
+        snapshot.pension_daily_benefit_per_elder + snapshot.child_support_daily_benefit_per_child;
+    assert!(
+        (inputs.admission_diagnostics.existing_transfer_claim_per_day
+            - expected_existing_transfer_claim)
+            .abs()
+            < 0.001
+    );
+}
+
+#[test]
+fn single_elder_candidate_uses_pension_not_unemployment_for_move_in_viability() {
+    let mut pension_snapshot = vacant_admission_snapshot();
+    pension_snapshot.candidate_household_size = 1.0;
+    pension_snapshot.candidate_child_count = 0;
+    pension_snapshot.candidate_adult_count = 0;
+    pension_snapshot.candidate_elder_count = 1;
+    pension_snapshot.immigrant_starter_savings_per_household = 15.0;
+    pension_snapshot.candidate_daily_essential_cost = 28.0;
+    pension_snapshot.unemployment_daily_benefit_per_adult = 30.0;
+    pension_snapshot.pension_daily_benefit_per_elder = 30.0;
+    pension_snapshot.child_support_daily_benefit_per_child = 0.0;
+    pension_snapshot.city_treasury_balance = 100_000.0;
+
+    let mut pension_demand = DemandSystem::new();
+    let pension_inputs = pension_demand.update_pressure_channels_from_snapshot(&pension_snapshot);
+
+    let mut no_pension_snapshot = pension_snapshot;
+    no_pension_snapshot.pension_daily_benefit_per_elder = 0.0;
+    let mut no_pension_demand = DemandSystem::new();
+    let no_pension_inputs =
+        no_pension_demand.update_pressure_channels_from_snapshot(&no_pension_snapshot);
+
+    assert_eq!(
+        pension_inputs
+            .admission_diagnostics
+            .candidate_unemployment_claim_per_day,
+        0.0
+    );
+    assert_eq!(
+        pension_inputs
+            .admission_diagnostics
+            .candidate_pension_claim_per_day,
+        30.0
+    );
+    assert!(
+        pension_inputs.admission_pressure > 0.9,
+        "single elder should be admitted when pension covers daily essentials"
+    );
+    assert_eq!(
+        no_pension_inputs.admission_diagnostics.move_in_acceptance, 0.0,
+        "single elder must not be accepted via unemployment benefit when no adult exists"
+    );
+}
+
+#[test]
 fn open_jobs_make_move_in_viable_without_benefits() {
     let mut snapshot = vacant_admission_snapshot();
     snapshot.city_treasury_balance = 0.0;
     snapshot.open_job_slots = 2;
-    snapshot.average_open_job_wage_per_day = 100.0;
+    snapshot.move_in_job_slots = 2;
+    snapshot.move_in_job_equivalent_slots = 2.0;
+    snapshot.average_move_in_job_wage_per_day = 100.0;
 
     let mut demand = DemandSystem::new();
     let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
 
     assert!(
-        (inputs.admission_diagnostics.expected_employed_members - 1.55).abs() < 0.001,
-        "expected employed adult workers should respect the household adult cap"
+        (inputs.admission_diagnostics.expected_employed_members - 2.0).abs() < 0.001,
+        "expected employed adult workers should use exact candidate adult count"
     );
     assert_eq!(inputs.admission_diagnostics.daily_deficit, 0.0);
     assert!(
         inputs.admission_pressure > 0.9,
         "budget-backed open jobs should make the candidate household viable without benefit treasury"
+    );
+}
+
+#[test]
+fn fractional_marginal_commercial_job_improves_child_household_move_in_viability() {
+    let mut blocked = vacant_admission_snapshot();
+    blocked.open_job_household_pull = 0.0;
+    blocked.candidate_household_size = 2.0;
+    blocked.candidate_child_count = 1;
+    blocked.candidate_adult_count = 1;
+    blocked.candidate_elder_count = 0;
+    blocked.immigrant_starter_savings_per_household = 30.0;
+    blocked.candidate_daily_essential_cost = 56.0;
+    blocked.unemployment_daily_benefit_per_adult = 30.0;
+    blocked.pension_daily_benefit_per_elder = 30.0;
+    blocked.child_support_daily_benefit_per_child = 10.0;
+    blocked.city_treasury_balance = 100_000.0;
+
+    let mut blocked_demand = DemandSystem::new();
+    let blocked_inputs = blocked_demand.update_pressure_channels_from_snapshot(&blocked);
+
+    assert_eq!(blocked_inputs.admission_diagnostics.move_in_job_slots, 0);
+    assert_eq!(
+        blocked_inputs
+            .admission_diagnostics
+            .move_in_job_equivalent_slots,
+        0.0
+    );
+    assert_eq!(
+        blocked_inputs
+            .admission_diagnostics
+            .expected_employed_members,
+        0.0
+    );
+    assert_eq!(
+        blocked_inputs
+            .admission_diagnostics
+            .candidate_transfer_claim_per_day,
+        40.0
+    );
+    assert_eq!(blocked_inputs.admission_diagnostics.move_in_acceptance, 0.0);
+
+    let mut fractional = blocked;
+    fractional.marginal_commercial_job_household_pull = 0.25;
+    fractional.marginal_commercial_job_equivalent_slots = 0.25;
+    fractional.move_in_job_equivalent_slots = 0.25;
+    fractional.average_move_in_job_wage_per_day = 100.0;
+    let mut fractional_demand = DemandSystem::new();
+    let fractional_inputs = fractional_demand.update_pressure_channels_from_snapshot(&fractional);
+    let diagnostics = fractional_inputs.admission_diagnostics;
+
+    assert_eq!(diagnostics.move_in_job_slots, 0);
+    assert!((diagnostics.move_in_job_equivalent_slots - 0.25).abs() < 0.001);
+    assert!((diagnostics.expected_employed_members - 0.25).abs() < 0.001);
+    assert!((diagnostics.expected_unemployed_members - 0.75).abs() < 0.001);
+    assert!((diagnostics.candidate_unemployment_claim_per_day - 22.5).abs() < 0.001);
+    assert!((diagnostics.expected_wage_income_per_day - 25.0).abs() < 0.001);
+    assert_eq!(diagnostics.daily_deficit, 0.0);
+    assert!(
+        fractional_inputs.admission_pressure > 0.0,
+        "fractional marginal commercial income should unblock the one-adult one-child candidate"
+    );
+}
+
+#[test]
+fn marginal_commercial_growth_is_fractional_below_next_worker_slot() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let grocery = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile");
+    let household_profile = catalog
+        .profile_for_id("basic_household_demand")
+        .expect("household demand profile");
+    let household_supply_resource = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    let household_supply_output = grocery
+        .output_port(household_supply_resource)
+        .expect("grocery household-supply output")
+        .units_per_day;
+    let candidate_household_size =
+        candidate_immigrant_household_size_from_flat_size(80.0).expect("80m2 starter flat");
+    let target_active_workers = 4;
+    let resident_count = 50u16;
+    let current_worker_equivalent = grocery.worker_capacity as f32
+        * resident_count as f32
+        * household_profile.consumption_rate_per_resident
+        / household_supply_output;
+    let marginal_worker_equivalent = grocery.worker_capacity as f32
+        * (resident_count + candidate_household_size) as f32
+        * household_profile.consumption_rate_per_resident
+        / household_supply_output;
+    assert_eq!(
+        current_worker_equivalent.ceil() as u32,
+        target_active_workers
+    );
+    assert_eq!(
+        marginal_worker_equivalent.ceil() as u32,
+        target_active_workers,
+        "candidate demand must stay below the next integer staffing slot for this regression"
+    );
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "fractional_marginal_home",
+        ZoneType::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "fractional_marginal_shop",
+        ZoneType::Commercial,
+    );
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+    let mut shop = building(
+        ZoneType::Commercial,
+        0.0,
+        0,
+        target_active_workers,
+        commercial_asset,
+    );
+    shop.operating_budget = grocery.average_daily_wage() * (target_active_workers + 1) as f32;
+    allocator.buildings.push(shop);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(housed_household(
+        0,
+        resident_count,
+        10_000.0,
+        household_profile.stock_target_days,
+    ));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
+    let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
+        &allocator,
+        &households,
+        &graph,
+        config.as_ref(),
+        catalog.as_ref(),
+        tuning.as_ref(),
+        &fiscal_policy,
+        100_000.0,
+        &[1.0, 1.0],
+    );
+
+    assert_eq!(snapshot.open_job_slots, 0);
+    assert_eq!(snapshot.marginal_commercial_job_slots, 0);
+    assert_eq!(snapshot.move_in_job_slots, 0);
+    assert!(snapshot.marginal_commercial_job_equivalent_slots > 0.0);
+    assert!(snapshot.move_in_job_equivalent_slots > 0.0);
+    assert!(snapshot.average_move_in_job_wage_per_day > 0.0);
+    assert!(snapshot.marginal_commercial_job_household_pull > 0.0);
+    assert!(snapshot.incoming_household_need > snapshot.regional_growth_household_pull);
+
+    let mut demand = DemandSystem::new();
+    let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
+    assert_eq!(
+        inputs.admission_diagnostics.marginal_commercial_job_slots,
+        0
+    );
+    assert!(
+        inputs
+            .admission_diagnostics
+            .marginal_commercial_job_equivalent_slots
+            > 0.0
+    );
+    assert_eq!(inputs.admission_diagnostics.move_in_job_slots, 0);
+    assert!(
+        inputs.admission_diagnostics.move_in_job_equivalent_slots > 0.0,
+        "fractional marginal commercial capacity should feed move-in viability"
+    );
+    assert!(inputs.admission_diagnostics.expected_employed_members > 0.0);
+    assert!(inputs.admission_diagnostics.expected_wage_income_per_day > 0.0);
+}
+
+#[test]
+fn marginal_commercial_jobs_pull_households_when_current_store_cap_is_filled() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let grocery = catalog
+        .profile_for_id("grocery_basic")
+        .expect("grocery starter profile");
+    let household_profile = catalog
+        .profile_for_id("basic_household_demand")
+        .expect("household demand profile");
+    let household_supply_resource = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
+    let household_supply_output = grocery
+        .output_port(household_supply_resource)
+        .expect("grocery household-supply output")
+        .units_per_day;
+    let candidate_household_size =
+        candidate_immigrant_household_size_from_flat_size(80.0).expect("80m2 starter flat");
+    let target_active_workers = (grocery.worker_capacity / 3)
+        .max(1)
+        .min(grocery.worker_capacity.saturating_sub(1));
+    let current_demand_threshold =
+        target_active_workers as f32 * household_supply_output / grocery.worker_capacity as f32;
+    let resident_count = (current_demand_threshold
+        / household_profile
+            .consumption_rate_per_resident
+            .max(f32::EPSILON))
+    .floor()
+    .max(1.0) as u16;
+    let current_demand_units =
+        resident_count as f32 * household_profile.consumption_rate_per_resident.max(0.0);
+    let candidate_demand_units =
+        candidate_household_size as f32 * household_profile.consumption_rate_per_resident.max(0.0);
+    let marginal_active_workers = (grocery.worker_capacity as f32
+        * (current_demand_units + candidate_demand_units)
+        / household_supply_output)
+        .ceil() as u32;
+    assert_eq!(
+        (grocery.worker_capacity as f32 * current_demand_units / household_supply_output).ceil()
+            as u32,
+        target_active_workers
+    );
+    assert!(
+        marginal_active_workers > target_active_workers,
+        "the candidate household should lift the sales-scaled grocery staffing cap"
+    );
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "marginal_job_home", ZoneType::Residential);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "marginal_job_shop", ZoneType::Commercial);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+    let mut shop = building(
+        ZoneType::Commercial,
+        0.0,
+        0,
+        target_active_workers,
+        commercial_asset,
+    );
+    shop.operating_budget = grocery.average_daily_wage() * (target_active_workers + 1) as f32;
+    allocator.buildings.push(shop);
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(housed_household(
+        0,
+        resident_count,
+        10_000.0,
+        household_profile.stock_target_days,
+    ));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
+    let snapshot = DailyDemandSnapshot::from_runtime_with_catalog(
+        &allocator,
+        &households,
+        &graph,
+        config.as_ref(),
+        catalog.as_ref(),
+        tuning.as_ref(),
+        &fiscal_policy,
+        100_000.0,
+        &[1.0, 1.0],
+    );
+
+    assert_eq!(snapshot.open_job_slots, 0);
+    assert_eq!(snapshot.marginal_commercial_job_slots, 1);
+    assert!(snapshot.marginal_commercial_job_equivalent_slots >= 1.0);
+    assert_eq!(snapshot.move_in_job_slots, 1);
+    assert!(snapshot.marginal_commercial_job_household_pull > 0.0);
+    assert!(snapshot.incoming_household_need > snapshot.regional_growth_household_pull);
+
+    let mut demand = DemandSystem::new();
+    let inputs = demand.update_pressure_channels_from_snapshot(&snapshot);
+    assert_eq!(inputs.admission_diagnostics.open_job_slots, 0);
+    assert_eq!(
+        inputs.admission_diagnostics.marginal_commercial_job_slots,
+        1
+    );
+    assert!(
+        inputs
+            .admission_diagnostics
+            .marginal_commercial_job_equivalent_slots
+            >= 1.0
+    );
+    assert_eq!(inputs.admission_diagnostics.move_in_job_slots, 1);
+    assert!(inputs.admission_diagnostics.expected_employed_members > 0.9);
+    assert!(
+        inputs.admission_pressure > 0.0,
+        "forecast-only marginal commercial jobs should make the next household admissible"
     );
 }
 
@@ -1684,6 +2095,7 @@ fn service_funding_limits_open_jobs_in_demand_snapshot() {
     let households = HouseholdSystem::new();
     let graph = graph_with_connected_border();
     let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(tuning.as_ref());
 
     let fully_funded = DailyDemandSnapshot::from_runtime_with_catalog(
         &allocator,
@@ -1692,6 +2104,7 @@ fn service_funding_limits_open_jobs_in_demand_snapshot() {
         &config,
         catalog.as_ref(),
         tuning.as_ref(),
+        &fiscal_policy,
         100_000.0,
         &[1.0],
     );
@@ -1708,6 +2121,7 @@ fn service_funding_limits_open_jobs_in_demand_snapshot() {
         &config,
         catalog.as_ref(),
         tuning.as_ref(),
+        &fiscal_policy,
         100_000.0,
         &[0.1],
     );
@@ -1761,6 +2175,7 @@ fn load_pressure_refresh_does_not_advance_action_state() {
         &graph,
         100_000.0,
         &[1.0, 1.0],
+        &CityFiscalPolicy::default(),
     );
 
     assert!(

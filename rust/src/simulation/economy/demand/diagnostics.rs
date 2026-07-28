@@ -12,6 +12,7 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) housing_availability: f32,
     pub(super) incoming_household_need: f32,
     pub(super) open_job_household_pull: f32,
+    pub(super) marginal_commercial_job_household_pull: f32,
     pub(super) regional_growth_household_pull: f32,
     pub(super) household_affordability: f32,
     pub(super) move_in_acceptance: f32,
@@ -22,8 +23,15 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) move_in_search_runway_days: f32,
     pub(super) move_in_runway_factor: f32,
     pub(super) candidate_household_size: f32,
+    pub(super) candidate_child_count: u16,
+    pub(super) candidate_adult_count: u16,
+    pub(super) candidate_elder_count: u16,
     pub(super) candidate_effective_workers: f32,
     pub(super) open_job_slots: u32,
+    pub(super) marginal_commercial_job_slots: u32,
+    pub(super) marginal_commercial_job_equivalent_slots: f32,
+    pub(super) move_in_job_slots: u32,
+    pub(super) move_in_job_equivalent_slots: f32,
     pub(super) physical_worker_capacity: u32,
     pub(super) funded_worker_capacity: u32,
     pub(super) open_jobs_unfunded: u32,
@@ -32,11 +40,14 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) expected_unemployed_members: f32,
     pub(super) expected_entry_wage_per_day: f32,
     pub(super) expected_wage_income_per_day: f32,
-    pub(super) benefit_reliability: f32,
-    pub(super) existing_benefit_claim_per_day: f32,
-    pub(super) candidate_benefit_claim_per_day: f32,
-    pub(super) total_benefit_claim_per_day: f32,
-    pub(super) expected_benefit_income_per_day: f32,
+    pub(super) transfer_reliability: f32,
+    pub(super) existing_transfer_claim_per_day: f32,
+    pub(super) candidate_unemployment_claim_per_day: f32,
+    pub(super) candidate_pension_claim_per_day: f32,
+    pub(super) candidate_child_support_claim_per_day: f32,
+    pub(super) candidate_transfer_claim_per_day: f32,
+    pub(super) total_transfer_claim_per_day: f32,
+    pub(super) expected_transfer_income_per_day: f32,
     pub(super) starter_savings: f32,
     pub(super) daily_essential_cost: f32,
     pub(super) daily_deficit: f32,
@@ -148,13 +159,18 @@ pub(super) struct BuildingActionDiagnostics {
 
 impl DemandSystem {
     /// Returns the compact admission diagnostics needed to explain load-time recomputation.
-    pub(crate) fn last_admission_debug_summary(&self) -> (u32, u32, f32, f32, f32, f32, f32, f32) {
+    pub(crate) fn last_admission_debug_summary(
+        &self,
+    ) -> (u32, u32, u32, f32, f32, f32, f32, f32, f32, f32, f32) {
         let diagnostics = self.last_admission_diagnostics;
         (
             diagnostics.vacant_household_slots,
             diagnostics.open_job_slots,
+            diagnostics.move_in_job_slots,
+            diagnostics.move_in_job_equivalent_slots,
             diagnostics.regional_growth_household_pull,
             diagnostics.open_job_household_pull,
+            diagnostics.marginal_commercial_job_household_pull,
             diagnostics.incoming_household_need,
             diagnostics.move_in_acceptance,
             diagnostics.construction_move_in_acceptance,
@@ -173,14 +189,15 @@ impl DemandSystem {
             "economy",
             "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
              vacancy={:.2} vacant_slots={} households={} border_nodes={} \
-             incoming_need={:.2} job_pull={:.2} regional_pull={:.2} \
+             incoming_need={:.2} job_pull={:.2} marginal_com_pull={:.2} regional_pull={:.2} \
              afford={:.2} accept={:.2} runway={:.2} runway_factor={:.2} \
              build_accept={:.2} build_runway={:.2} build_runway_factor={:.2} build_viability={:.2} \
-             candidate_size={:.1} workers={:.1} open_jobs={} physical_worker_capacity={} \
+             candidate_size={:.1} candidate=(children:{} adults:{} elders:{}) workers={:.1} open_jobs={} marginal_com_jobs={} marginal_com_job_equiv={:.2} move_in_jobs={} move_in_job_equiv={:.2} physical_worker_capacity={} \
              funded_worker_capacity={} open_jobs_unfunded={} existing_unemployed={} \
              expected_employed={:.1} expected_unemployed={:.1} entry_wage={:.1} wage_income={:.1} \
-             benefit_rel={:.2} existing_benefit_claim={:.1} candidate_benefit_claim={:.1} \
-             total_benefit_claim={:.1} benefit_income={:.1} starter={:.1} daily_cost={:.1} \
+             transfer_rel={:.2} existing_transfer_claim={:.1} candidate_unemployment_claim={:.1} \
+             candidate_pension_claim={:.1} candidate_child_support_claim={:.1} \
+             candidate_transfer_claim={:.1} total_transfer_claim={:.1} transfer_income={:.1} starter={:.1} daily_cost={:.1} \
              daily_deficit={:.1} unhoused_ratio={:.2} unhoused_factor={:.2} \
              zero_budget_ratio={:.2} zero_budget_factor={:.2} failure_factor={:.2} \
              recent_failure={:.2} recent_failure_factor={:.2} \
@@ -195,6 +212,7 @@ impl DemandSystem {
             diagnostics.connected_border_count,
             diagnostics.incoming_household_need,
             diagnostics.open_job_household_pull,
+            diagnostics.marginal_commercial_job_household_pull,
             diagnostics.regional_growth_household_pull,
             diagnostics.household_affordability,
             diagnostics.move_in_acceptance,
@@ -205,8 +223,15 @@ impl DemandSystem {
             diagnostics.construction_move_in_runway_factor,
             diagnostics.residential_construction_viability,
             diagnostics.candidate_household_size,
+            diagnostics.candidate_child_count,
+            diagnostics.candidate_adult_count,
+            diagnostics.candidate_elder_count,
             diagnostics.candidate_effective_workers,
             diagnostics.open_job_slots,
+            diagnostics.marginal_commercial_job_slots,
+            diagnostics.marginal_commercial_job_equivalent_slots,
+            diagnostics.move_in_job_slots,
+            diagnostics.move_in_job_equivalent_slots,
             diagnostics.physical_worker_capacity,
             diagnostics.funded_worker_capacity,
             diagnostics.open_jobs_unfunded,
@@ -215,11 +240,14 @@ impl DemandSystem {
             diagnostics.expected_unemployed_members,
             diagnostics.expected_entry_wage_per_day,
             diagnostics.expected_wage_income_per_day,
-            diagnostics.benefit_reliability,
-            diagnostics.existing_benefit_claim_per_day,
-            diagnostics.candidate_benefit_claim_per_day,
-            diagnostics.total_benefit_claim_per_day,
-            diagnostics.expected_benefit_income_per_day,
+            diagnostics.transfer_reliability,
+            diagnostics.existing_transfer_claim_per_day,
+            diagnostics.candidate_unemployment_claim_per_day,
+            diagnostics.candidate_pension_claim_per_day,
+            diagnostics.candidate_child_support_claim_per_day,
+            diagnostics.candidate_transfer_claim_per_day,
+            diagnostics.total_transfer_claim_per_day,
+            diagnostics.expected_transfer_income_per_day,
             diagnostics.starter_savings,
             diagnostics.daily_essential_cost,
             diagnostics.daily_deficit,

@@ -12,6 +12,7 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -517,6 +518,7 @@ impl SimCore {
 
         self.treasury = CityTreasury::new(startup_treasury_balance());
         self.service_policy = Default::default();
+        self.fiscal_policy = startup_fiscal_policy();
         self.budget_history.clear();
         self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
@@ -600,6 +602,12 @@ fn startup_treasury_balance() -> f64 {
     load_runtime_economy_tuning()
         .map(|tuning| tuning.startup_treasury_balance)
         .unwrap_or(100_000.0)
+}
+
+fn startup_fiscal_policy() -> CityFiscalPolicy {
+    load_runtime_economy_tuning()
+        .map(|tuning| CityFiscalPolicy::from_runtime_tuning(tuning.as_ref()))
+        .unwrap_or_default()
 }
 
 fn validate_positive_f32(value: f32, label: &str) -> Result<(), String> {
@@ -1016,6 +1024,7 @@ mod tests {
             config,
             treasury: CityTreasury::new(0.0),
             service_policy: Default::default(),
+            fiscal_policy: Default::default(),
             budget_history: VecDeque::new(),
             budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,

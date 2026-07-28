@@ -20,6 +20,10 @@ macro_rules! logistics_tick {
     ($shipments:expr, $allocator:expr, $network:expr, $graph:expr, $minute:expr) => {{
         let mut agents = AgentSystem::new();
         let mut treasury_balance = 0.0;
+        let tax_rate = load_runtime_economy_tuning()
+            .expect("runtime economy tuning")
+            .fiscal
+            .business_purchase_tax_rate;
         $shipments.hourly_tick(
             $allocator,
             &mut agents,
@@ -27,6 +31,7 @@ macro_rules! logistics_tick {
             $graph,
             $minute,
             &mut treasury_balance,
+            tax_rate,
         )
     }};
 }
@@ -39,6 +44,10 @@ fn create_profile_input_shipments_for_test(
     minute_of_day: u16,
 ) {
     let mut treasury_balance = 0.0;
+    let tax_rate = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .fiscal
+        .business_purchase_tax_rate;
     let mut planning = super::planning::FreightPlanningContext::build(shipments, allocator, graph);
     shipments.create_profile_input_shipments(
         allocator,
@@ -47,6 +56,7 @@ fn create_profile_input_shipments_for_test(
         minute_of_day,
         &mut planning,
         &mut treasury_balance,
+        tax_rate,
     );
     planning.finish(shipments);
 }
@@ -59,12 +69,17 @@ fn create_profile_output_exports_for_test(
     minute_of_day: u16,
 ) {
     let mut planning = super::planning::FreightPlanningContext::build(shipments, allocator, graph);
+    let tax_rate = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .fiscal
+        .business_purchase_tax_rate;
     shipments.create_profile_output_exports(
         allocator,
         network,
         graph,
         minute_of_day,
         &mut planning,
+        tax_rate,
     );
     planning.finish(shipments);
 }
@@ -535,6 +550,10 @@ fn owa_border_fallback_creates_import_shipment() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury_balance = 0.0;
+    let tax_rate = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .fiscal
+        .business_purchase_tax_rate;
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
@@ -542,6 +561,7 @@ fn owa_border_fallback_creates_import_shipment() {
         &graph,
         480,
         &mut treasury_balance,
+        tax_rate,
     );
 
     assert_eq!(shipments.shipments.len(), 1);
@@ -609,6 +629,10 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury_balance = 1_000.0;
+    let tax_rate = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .fiscal
+        .business_purchase_tax_rate;
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
@@ -616,6 +640,7 @@ fn city_service_owa_fuel_import_debits_treasury_not_building_budget() {
         &graph,
         480,
         &mut treasury_balance,
+        tax_rate,
     );
 
     assert_eq!(shipments.shipments.len(), 1);
@@ -1412,6 +1437,10 @@ fn owa_export_eta_uses_freight_timing_window() {
     let mut shipments = ShipmentSystem::new();
     let mut agents = AgentSystem::new();
     let mut treasury_balance = 0.0;
+    let tax_rate = load_runtime_economy_tuning()
+        .expect("runtime economy tuning")
+        .fiscal
+        .business_purchase_tax_rate;
     shipments.hourly_tick(
         &mut allocator,
         &mut agents,
@@ -1419,6 +1448,7 @@ fn owa_export_eta_uses_freight_timing_window() {
         &graph,
         0,
         &mut treasury_balance,
+        tax_rate,
     );
 
     let export_idx = shipments

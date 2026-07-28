@@ -12,9 +12,9 @@ use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     demand_building_action_key,
 };
-use crate::simulation::economy::fiscal::construction_property_tax;
+use crate::simulation::economy::fiscal::{CityFiscalPolicy, construction_property_tax};
 use crate::simulation::economy::households::{
-    HouseholdSystem, candidate_immigrant_household_size_from_flat_size,
+    HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
@@ -37,6 +37,12 @@ const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
 pub(crate) struct DemandBuildingActionExecution {
     /// Property tax debited from fresh private building budgets during this pass.
     pub(crate) property_tax_paid: f32,
+    /// Residential property tax debited from fresh private building budgets during this pass.
+    pub(crate) residential_property_tax_paid: f32,
+    /// Commercial property tax debited from fresh private building budgets during this pass.
+    pub(crate) commercial_property_tax_paid: f32,
+    /// Industrial property tax debited from fresh private building budgets during this pass.
+    pub(crate) industrial_property_tax_paid: f32,
     /// World-space bounds of building-site terrain patches dirtied by this action pass.
     pub(crate) site_dirty_bounds: Option<(f32, f32, f32, f32)>,
     /// Residential spawn execution and final placement rejection counters.
@@ -80,6 +86,19 @@ pub(crate) struct DemandSpawnPlacementRejectionCounts {
 }
 
 impl DemandBuildingActionExecution {
+    fn record_property_tax(&mut self, zone_type: ZoneType, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        self.property_tax_paid += amount;
+        match zone_type {
+            ZoneType::Residential => self.residential_property_tax_paid += amount,
+            ZoneType::Commercial => self.commercial_property_tax_paid += amount,
+            ZoneType::Industrial => self.industrial_property_tax_paid += amount,
+            _ => {}
+        }
+    }
+
     fn use_mut(&mut self, zone_type: ZoneType) -> &mut DemandUseBuildingActionExecution {
         match zone_type {
             ZoneType::Residential => &mut self.residential,
@@ -397,6 +416,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
     ) -> DemandBuildingActionExecution {
         let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
             .buildings
@@ -407,6 +427,9 @@ impl BuildingAllocator {
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution {
             property_tax_paid: 0.0,
+            residential_property_tax_paid: 0.0,
+            commercial_property_tax_paid: 0.0,
+            industrial_property_tax_paid: 0.0,
             site_dirty_bounds: None,
             residential: DemandUseBuildingActionExecution::default(),
             commercial: DemandUseBuildingActionExecution::default(),
@@ -495,17 +518,21 @@ impl BuildingAllocator {
                     terrain,
                     catalog,
                     tuning,
+                    fiscal_policy.business_purchase_tax_rate,
                 ) {
                     Ok(building_idx) => {
                         execution.use_mut(zone_type).spawn_executed += 1;
                         let property_tax = construction_property_tax(
                             self.buildings[building_idx].zone_type,
                             self.buildings[building_idx].level,
-                            &tuning.fiscal,
+                            fiscal_policy,
                         );
                         if property_tax > 0.0 {
                             self.buildings[building_idx].operating_budget -= property_tax;
-                            execution.property_tax_paid += property_tax;
+                            execution.record_property_tax(
+                                self.buildings[building_idx].zone_type,
+                                property_tax,
+                            );
                         }
                         self.buildings[building_idx].profit_tax_budget_baseline =
                             self.buildings[building_idx].operating_budget;
@@ -543,6 +570,7 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
+        fiscal_policy: &CityFiscalPolicy,
     ) -> DemandBuildingActionExecution {
         let mut execution = DemandBuildingActionExecution::default();
         execution.use_mut(zone_type).spawn_attempted += 1;
@@ -558,17 +586,19 @@ impl BuildingAllocator {
             terrain,
             catalog,
             tuning,
+            fiscal_policy.business_purchase_tax_rate,
         ) {
             Ok(building_idx) => {
                 execution.use_mut(zone_type).spawn_executed += 1;
                 let property_tax = construction_property_tax(
                     self.buildings[building_idx].zone_type,
                     self.buildings[building_idx].level,
-                    &tuning.fiscal,
+                    fiscal_policy,
                 );
                 if property_tax > 0.0 {
                     self.buildings[building_idx].operating_budget -= property_tax;
-                    execution.property_tax_paid += property_tax;
+                    execution
+                        .record_property_tax(self.buildings[building_idx].zone_type, property_tax);
                 }
                 self.buildings[building_idx].profit_tax_budget_baseline =
                     self.buildings[building_idx].operating_budget;
@@ -931,37 +961,49 @@ fn building_frontage_center(
 }
 
 impl BuildingAllocator {
-    fn claim_home_for_household(&mut self) -> Option<(usize, u16)> {
-        let target_zones = [ZoneType::Residential];
+    /// Returns the next demand-owned household admission target without mutating occupancy.
+    ///
+    /// Selection uses the residential vacancy index, prefers the smallest deterministic starter
+    /// household currently claimable, and preserves vacancy-index order as the tie-breaker.
+    pub(crate) fn next_household_admission_candidate(&self) -> Option<(usize, u16)> {
+        let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
+        let mut selected_home_idx = usize::MAX;
+        let mut selected_size = u16::MAX;
+        let mut selected_order = usize::MAX;
 
-        let mut fallback_idx = usize::MAX;
-        let mut fallback_size = 0_u16;
-        'fallback: for &zone in &target_zones {
-            let Some(zone_idx) = baseline_private_zone_slot(zone) else {
+        for (order, &building_idx) in self.vacancy_index[residential_slot].iter().enumerate() {
+            let Some(building) = self.buildings.get(building_idx) else {
                 continue;
             };
-            for &building_idx in &self.vacancy_index[zone_idx] {
-                let free_slots = self
-                    .household_capacity(building_idx)
-                    .saturating_sub(self.buildings[building_idx].occupancy);
-                if free_slots == 0 {
-                    continue;
-                }
+            let free_slots = self
+                .household_capacity(building_idx)
+                .saturating_sub(building.occupancy);
+            if free_slots == 0 {
+                continue;
+            }
 
-                let flat_size = self.flat_size_m2(building_idx);
-                let Some(candidate_size) =
-                    candidate_immigrant_household_size_from_flat_size(flat_size)
-                else {
-                    continue;
-                };
-                fallback_idx = building_idx;
-                fallback_size = candidate_size;
-                break 'fallback;
+            let Some(candidate_size) = candidate_immigrant_household_size_for_vacancy(
+                self.flat_size_m2(building_idx),
+                building_idx,
+                building.occupancy,
+            ) else {
+                continue;
+            };
+
+            if candidate_size < selected_size
+                || (candidate_size == selected_size && order < selected_order)
+            {
+                selected_home_idx = building_idx;
+                selected_size = candidate_size;
+                selected_order = order;
             }
         }
-        if fallback_idx == usize::MAX {
-            return None;
-        }
+
+        (selected_home_idx != usize::MAX).then_some((selected_home_idx, selected_size))
+    }
+
+    fn claim_home_for_household(&mut self) -> Option<(usize, u16)> {
+        let (fallback_idx, fallback_size) = self.next_household_admission_candidate()?;
         // Note: vacancy count for residential is now household-based.
         // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
         Some((fallback_idx, fallback_size))

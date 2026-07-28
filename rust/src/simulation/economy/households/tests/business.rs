@@ -39,6 +39,48 @@ fn unemployment_timer_advances_when_treasury_is_empty_and_requires_valid_home() 
 }
 
 #[test]
+fn single_elder_receives_pension_without_work_or_unemployment() {
+    let mut households = HouseholdSystem::new();
+    let mut elder_household = make_household(0, 1, 0.0, 1.0);
+    elder_household.child_count = 0;
+    elder_household.adult_count = 0;
+    elder_household.elder_count = 1;
+    households.households.push(elder_household);
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "pension_res",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+
+    let agents = AgentSystem::new();
+    let mut treasury = 1_000.0;
+    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    policy.unemployment_benefit_per_adult_per_day = 30.0;
+    policy.pension_per_elder_per_day = 30.0;
+    policy.child_support_per_child_per_day = 0.0;
+
+    households.pay_household_transfers(&agents, &allocator, &mut treasury, &policy);
+
+    assert_eq!(households.households[0].budget, 30.0);
+    assert_eq!(
+        households.daily_ledgers()[0].unemployment_benefit_income,
+        0.0
+    );
+    assert_eq!(households.daily_ledgers()[0].pension_income, 30.0);
+    assert_eq!(households.daily_ledgers()[0].child_support_income, 0.0);
+    assert_eq!(households.households[0].unemployment_days_elapsed, 0);
+}
+
+#[test]
 fn ensure_agent_households_does_not_materialize_missing_household_ids() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();

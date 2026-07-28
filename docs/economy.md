@@ -62,10 +62,11 @@ Developers should use a tool, not raw text files, to balance production chains, 
 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
 
-Player-facing fiscal controls such as tax sliders, tariffs, and subsidies are a separate gameplay
-policy layer. Baseline income tax, purchase tax, business profit tax, and construction property tax
-are authored runtime tuning values; player UI must expose curated bounded controls later rather
-than raw access to the developer economy editor.
+Player-facing fiscal controls such as tax sliders and household transfer levels are a separate
+gameplay policy layer. Baseline income tax, purchase tax, business profit tax, construction
+property tax, unemployment benefit, pension, and child support defaults come from authored runtime
+tuning, then become live `CityFiscalPolicy` state exposed through curated bounded controls rather
+than through the developer economy editor.
 
 ### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
@@ -152,9 +153,10 @@ Deterministic day-boundary rule:
      normalized input signals, such as household-slot capacity and vacancy, housed residents,
      reachable open jobs, stock stability, utility-service satisfaction, and
      external-connection state
-   - candidate move-in inputs such as household starter savings, daily essential cost,
-     unemployment benefit amount, treasury balance, and budget-backed open commercial or
-     industrial jobs; demand owns the admission formula, while economy owns these source values
+   - candidate move-in inputs such as household starter savings, daily essential cost, exact
+     candidate child/adult/elder composition, live transfer-policy amounts, treasury balance, and
+     budget-backed open commercial or industrial jobs; demand owns the admission formula, while
+     economy owns these source values
 4. Freeze that post-settlement city snapshot.
 5. Run the daily demand pass exactly once from that frozen snapshot.
 6. Execute `households_to_remove_today` from the already-frozen settled household snapshot before
@@ -396,7 +398,9 @@ Rules:
 - subsidies and other city-funded support measures withdraw from the city treasury
 - road building, infrastructure placement, and city-owned facility construction withdraw from the city treasury
 
-Baseline fiscal tuning lives in `economy/profiles.toml` under `runtime_tuning.fiscal`:
+Baseline fiscal defaults live in `economy/profiles.toml` under `runtime_tuning.fiscal`. Runtime
+simulation stores the active values in `CityFiscalPolicy`, which is persisted with the save and may
+be changed by the player through the Economy Overview Policy tab.
 
 - `income_tax_rate`: fraction withheld from gross daily wages before households receive income
 - `household_vat_rate`: fraction added to household store purchases
@@ -407,6 +411,43 @@ Baseline fiscal tuning lives in `economy/profiles.toml` under `runtime_tuning.fi
 - `residential_property_tax_base`, `commercial_property_tax_base`,
   `industrial_property_tax_base`: one-time construction-start tax bases for fresh private spawns
 - `property_tax_level_multiplier`: multiplier applied per level above level 1
+- `unemployment_daily_benefit_per_member`: daily transfer per unemployed adult within the
+  unemployment time limit
+- `pension_daily_benefit_per_elder`: daily transfer per elder
+- `child_support_daily_benefit_per_child`: daily transfer per child
+- `unemployment_max_days`: maximum unemployment-benefit runway before the household becomes
+  removal-eligible through demand
+
+### City fiscal policy
+
+`CityFiscalPolicy` is the single live gameplay policy object for first-pass city finances.
+
+Rules:
+
+- every tax and household-transfer call site reads the current `CityFiscalPolicy`, not a fresh
+  runtime-tuning load
+- default values are initialized from `economy/profiles.toml` when a new simulation starts
+- the policy is saved and loaded as authoritative simulation state; there is no compatibility shim
+  for older saves in this slice
+- `get_economy_overview()` exports both current policy values and UI metadata for bounded controls
+- `set_economy_policy_value(policy_id, value)` is the runtime API for slider changes and clamps
+  values to authored control bounds before mutating simulation state
+- each accepted policy slider change emits an `economy` debug log line with the requested value,
+  clamped value, treasury, current day/minute, and full fiscal policy snapshot
+- daily budget history retains separate income-tax, household-`VAT`, business-purchase-tax,
+  business-profit-tax, residential/commercial/industrial property-tax, unemployment, pension, and
+  child-support buckets
+- the Economy Overview Policy tab is a gameplay UI for taxes and social transfers; clicking one
+  bounded control selects it and shows Today/7D/30D revenue or transfer-cost detail for that
+  control's ledger bucket, while the economy editor remains the developer profile-authoring tool
+
+Initial policy controls:
+
+- transfer policy: unemployment benefit per adult per day, unemployment maximum days, pension per
+  elder per day, child support per child per day
+- wage and consumption taxes: income tax, household `VAT`, business purchase tax
+- business and construction taxes: business profit tax, residential/commercial/industrial
+  construction property-tax bases, property-tax level multiplier
 
 ### Logistics and Shipments
 
@@ -472,6 +513,8 @@ Rules:
 - business profit tax updates the city treasury during the daily settlement pass, after business
   budgets have absorbed that day's wages, utility charges, freight settlement, shopping revenue,
   and distress liquidation
+- household transfer payments for unemployment, pensions, and child support post during daily
+  settlement after wage payment and before housing affordability/relocation checks
 - the treasury keeps pending tax buckets during the day and finalizes them into daily reporting
   buckets on the daily fiscal settlement pass
 - the minute-0 operational-hour work and the midnight demand pass are part of the closing
@@ -479,6 +522,8 @@ Rules:
 - recurring road upkeep posts on the daily fiscal settlement pass
 - daily fiscal settlement updates household budgets, building budgets, and daily treasury
   reporting in deterministic phase order
+- daily budget history reports household transfers as both a total benefits bucket and separate
+  unemployment, pension, and child-support buckets
 
 This keeps the first fiscal model understandable and consistent with the rest of the economy cadence.
 
@@ -489,7 +534,7 @@ Income tax is withheld from gross wage payments.
 Rules:
 
 - employers pay the full gross authored wage from their building operating budget
-- households receive net wage after `runtime_tuning.fiscal.income_tax_rate`
+- households receive net wage after `CityFiscalPolicy.income_tax_rate`
 - the withheld amount deposits into the city treasury as income tax revenue
 - if the employer cannot pay the gross wage, no wage or income tax is paid for that worker
 - wage payments apply in stable agent-index order after inactive employers have ejected workers
@@ -547,8 +592,9 @@ Rules:
 
 - the tax applies only to demand-owned fresh private spawns, not to road placement or future
   city-owned facilities
-- the amount is selected from the zone-specific base in `runtime_tuning.fiscal` and multiplied by
-  `property_tax_level_multiplier` for each level above level 1
+- the amount is selected from the matching live `CityFiscalPolicy` zone-specific property-tax base
+  and multiplied by
+  `CityFiscalPolicy.property_tax_level_multiplier` for each level above level 1
 - the tax is paid into the city treasury immediately after the building action creates the
   under-construction building
 - the payer is the private building/developer budget represented by the new building's operating
@@ -702,9 +748,10 @@ For `v0.1`, the economy-side contract is:
 - household admission and household removal happen at whole-household granularity, not one unrelated resident at a time
 - economy creates and owns the admitted `Household` runtime record once demand has already decided the outcome
 - admitted households receive startup state such as shared savings and household stock through the economy rules in this document
-- demand may read economy-owned starter savings, essential cost, unemployment benefit amount,
-  treasury balance, and budget-backed job openings to calculate deterministic move-in acceptance;
-  economy still owns the actual benefit payment and household materialization
+- demand may read economy-owned starter savings, essential cost, exact candidate composition,
+  transfer-policy amounts, treasury balance, and budget-backed job openings to calculate
+  deterministic move-in acceptance; economy still owns the actual transfer payment and household
+  materialization
 - household admission does not require a physically simulated border-entry transport visualization path in `v0.1`
 - whether a later transport layer visualizes household arrival or departure through border spawns or exits is a separate transport-layer decision
 - births and other within-household demographic change are later systems, not part of the `v0.1` economy model
@@ -1538,9 +1585,11 @@ always independent: adult or elder, never child-only. There is no aging or lifec
 The current mix is code-defined starter behavior; if it becomes authored tuning later, this section
 owns that contract.
 
-Starter household size is capped by `flat_size_m2`, not by `household_capacity`. A single-family
-house with `household_capacity = 1` still reserves one family slot, while a larger `flat_size_m2`
-can admit a larger family into that one slot.
+Starter household size is selected from the deterministic admission mix, then capped by
+`flat_size_m2`, not by `household_capacity`. A single-family house with `household_capacity = 1`
+still reserves one family slot; a larger `flat_size_m2` permits a larger family, but it does not
+force every arriving household to fill the maximum possible bedroom count. One-person households
+are valid starter arrivals.
 
 Household records cache child/adult/elder counts from the parallel membership reduction. Hot economy
 passes use those counts instead of scanning household members. A valid housed household must have at
@@ -1886,12 +1935,13 @@ Useful first-pass household replenishment states are:
 - `failed_terminal`
 
 The `economy` debug output should expose one daily per-household ledger line for active households
-with wage income, unemployment-benefit income, shopping spend or refunds, utility plus stock
-consumption cost, budget before and after the daily window, unemployed adult count, and completed /
-failed shopper trips. The same daily output should include a household ledger summary with households
-at the budget floor, households below `1`, `2`, and `3` days of stock, total wages paid, total
-household shopping spend, and total benefits paid. Unemployment-benefit diagnostics should identify
-recipient `household_id`, unemployed adult count, amount paid, and `unemployment_days_elapsed`.
+with wage income, transfer income split into unemployment/pension/child-support buckets, shopping
+spend or refunds, utility plus stock consumption cost, budget before and after the daily window,
+unemployed adult count, and completed / failed shopper trips. The same daily output should include a
+household ledger summary with households at the budget floor, households below `1`, `2`, and `3`
+days of stock, total wages paid, total household shopping spend, total transfers paid, and the
+transfer sub-buckets. Transfer diagnostics should identify recipient `household_id`, composition,
+amounts paid, and `unemployment_days_elapsed` where unemployment support is involved.
 
 The old abstract pickup ETA is no longer part of the baseline. Any timeout must be an explicit
 shopping timeout or failure rule, not hidden fulfillment.
@@ -2155,7 +2205,9 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - household replenishment trigger: below `2.5 days` of stock
 - immigrant starting stock: `3.0 days`
 - immigrant starting budget: `15.0 currency / resident`
-- unemployment benefit: `30.0 currency / unemployed resident / day`
+- unemployment benefit: `30.0 currency / unemployed adult / day`
+- pension: `30.0 currency / elder / day`
+- child support: `10.0 currency / child / day`
 - household utility cost: `3.0 currency / resident / day`
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
@@ -2325,7 +2377,7 @@ Current status:
 - `CityTreasury` lives in `SimCore` and tracks balance, lifetime build cost, lifetime tax revenue,
   daily road upkeep, and pending/finalized daily tax buckets
 - startup balance initialised at `100,000` currency
-- road placement deducts `100 currency/meter` from the treasury; balance may go negative per spec
+- road placement deducts `50 currency/meter` from the treasury; balance may go negative per spec
 - daily road upkeep deducts `0.1 currency/meter/day` on the daily fiscal settlement pass
 - commercial and industrial startup budgets now include a seven-day wage runway plus the expected
   first full `OWA` input import cost, computed from authored profile prices and
@@ -2412,74 +2464,104 @@ Goal: finish with one coherent economy model instead of a mix of prototype and a
 
 ---
 
-## Unemployment Benefit
+## Household Transfer Payments
 
-**Status: implemented.** The unemployment benefit is live in `households.rs`. All tuning parameters
-are in `economy/profiles.toml` under `runtime_tuning`. The pioneer demand floor has been fully
-removed from `demand.rs` — the benefit is the replacement and is active.
+**Status: implemented.** Household transfers are live in `households.rs`. Defaults are authored in
+`economy/profiles.toml`, copied into `CityFiscalPolicy` at runtime, exposed through the Economy
+Overview Policy tab, and persisted with the save.
 
-The unemployment benefit is a **household-level cash disbursement** paid for every unemployed adult
-member of an eligible household each operational day. Children and elders are not work-eligible and
-do not claim unemployment benefit. It replaced the `pioneer_demand` floor as the mechanism that
-keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the
-benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption
-demand, and generates real spawn pressure on commercial and industrial buildings.
+The first transfer set is:
+
+- unemployment benefit paid per unemployed adult within the unemployment time limit
+- pension paid per elder
+- child support paid per child
+
+These transfers replaced the old `pioneer_demand` floor as the mechanism that keeps early-city
+households solvent. Unlike the Pioneer floor, they are real simulation money flows: funds move from
+the city treasury into household budgets, households spend through the normal replenishment loop,
+stores earn real revenue, and that revenue creates real commercial and industrial pressure.
 
 ### Ownership
 
-This section owns the unemployment benefit spec. `demand.md` documents the demand-owned
-move-in acceptance formula that reads the benefit amount and treasury balance as source values.
-`households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the
-`CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
+This section owns the household-transfer spec. `demand.md` documents the demand-owned move-in
+acceptance formula that reads exact candidate composition, policy amounts, and treasury balance as
+source values. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs`
+owns the `CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
 
 ### Design Invariants
 
-- The benefit is a household-level daily transfer, not a per-agent micro-payment.
+- Transfers are household-level daily settlement payments, not per-agent tick-time micro-payments.
 - Money is drawn from the **existing `CityTreasury`** (`SimCore::treasury`). It is not printed from nothing.
-- The benefit is self-terminating: once an adult agent is employed, disbursement stops for that
-  household member. Once all adult household members are employed, the household exits the benefit
-  entirely.
-- The benefit must generate real purchasing activity. A household that receives the benefit must actually attempt replenishment at a grocery store if its stock is below the trigger threshold. The benefit amount must be large enough that this attempt succeeds at prevailing prices.
-- The benefit must not create infinite runway. A household that cannot find work within the configured `unemployment_max_days` should emigrate rather than subsisting on benefit payments indefinitely.
+- Unemployment benefit is self-terminating: once an adult agent is employed, disbursement stops for
+  that household member. Once all adult household members are employed, the household exits
+  unemployment benefit entirely.
+- Pension and child support are age-composition transfers. They do not require work eligibility,
+  and they allow elder-only or child-heavy households to be evaluated by demand from their actual
+  composition instead of from an average worker assumption.
+- Transfers must generate real purchasing activity. A household that receives support must still
+  use the normal household replenishment and utility-payment systems.
+- Unemployment benefit must not create infinite runway. A household that cannot find work within
+  the configured `unemployment_max_days` becomes removal-eligible through demand rather than
+  subsisting on unemployment payments indefinitely. Pension and child support are not capped by
+  unemployment duration.
 
 ### Money Source
 
 `CityTreasury` already exists in `nodes/sim/core.rs` and is fully implemented:
 
 - **Starting balance**: `startup_treasury_balance = 100_000` authored in `economy/profiles.toml` `[runtime_tuning]`.
-- **Current deductions**: road build cost ($100/meter) and daily road upkeep ($0.1/meter/day); unemployment benefit disbursements.
+- **Current deductions**: road build cost ($50/meter) and daily road upkeep ($0.1/meter/day);
+  unemployment, pension, and child-support disbursements.
 - **Persisted**: saved and loaded via the `city_treasury` SQLite table.
 - **Exposed**: `get_treasury_balance()` GDScript bridge already exists.
 
-Unemployment benefit disbursements draw from the same `treasury.balance`. The disbursement
-connection from `HouseholdSystem` to `CityTreasury` is live (`pay_unemployment_benefits` called
-from `daily_settlement_tick`).
+Transfer disbursements draw from the same `treasury.balance`. The disbursement connection from
+`HouseholdSystem` to `CityTreasury` is live (`pay_household_transfers` called from
+`daily_settlement_tick`).
 
-The treasury balance may go negative (existing behavior). Disbursement should be skipped once the balance reaches zero to avoid deepening deficit spending for welfare.
+The treasury balance may go negative for other obligations. Transfer disbursement is intentionally
+cash-limited: it pays only while a positive treasury balance remains and never deepens the deficit.
 
 ### Eligibility Rule
 
-A household is eligible for unemployment benefit on a given day if **all** of the following hold:
+An adult member is eligible for unemployment benefit on a given day if **all** of the following hold:
+
 - `household.member_count > 0`
 - `household.home_building_id` is a valid, non-broken residential building
-- At least one adult member of the household has `work_building == usize::MAX` (is unemployed)
+- the member is an adult
+- the adult member has `work_building == usize::MAX` (is unemployed)
 - `household.unemployment_days_elapsed < unemployment_max_days`
 
 `unemployment_days_elapsed` increments each day any adult household member remains unemployed, and
 resets to zero once all adult members are employed. Child/elder-only households have no unemployed
 adult workers and do not receive this benefit.
 
+An elder member is eligible for pension on a given day if the member belongs to a live household.
+Pension does not require a valid residential home, a work search, or unemployment duration.
+
+A child member is eligible for child support on a given day if the member belongs to a live
+household. Child support does not require a valid residential home.
+
 ### Disbursement Rule
 
-Once per operational day, after `pay_daily_wages` and before `resolve_household_housing`, iterated across all households:
+Once per operational day, after `pay_daily_wages` and before `resolve_household_housing`, iterate
+households in stable household-id order:
 
 ```
 unemployed_adults = count of adult agents in household where work_building == usize::MAX
-benefit_today = unemployed_adults × unemployment_daily_benefit_per_member
+elders = count of elder agents in household
+children = count of child agents in household
 
-if treasury.balance >= benefit_today:
-    household.budget += benefit_today
-    treasury.balance -= benefit_today
+unemployment_today =
+    unemployed_adults × CityFiscalPolicy.unemployment_benefit_per_adult_per_day
+    when unemployment_days_elapsed < CityFiscalPolicy.unemployment_max_days
+pension_today = elders × CityFiscalPolicy.pension_per_elder_per_day
+child_support_today = children × CityFiscalPolicy.child_support_per_child_per_day
+transfer_today = unemployment_today + pension_today + child_support_today
+
+if treasury.balance >= transfer_today:
+    household.budget += transfer_today
+    treasury.balance -= transfer_today
 else if treasury.balance > 0.0:
     household.budget += treasury.balance   // pay what remains
     treasury.balance  = 0.0
@@ -2487,43 +2569,54 @@ else if treasury.balance > 0.0:
 ```
 
 `treasury` here is `SimCore::treasury`, passed into `daily_settlement_tick` by the caller.
+Daily household ledgers retain separate `unemployment_benefits`, `pension_income`, and
+`child_support_income` buckets; daily city budget history reports both total transfer expense and
+those sub-buckets.
 
 ### Termination Conditions
 
 | Condition | Outcome |
 |---|---|
-| All household members find employment | Disbursement stops; `unemployment_days_elapsed` resets to 0 |
+| All adult household members find employment | Unemployment disbursement stops; `unemployment_days_elapsed` resets to 0 |
 | `unemployment_days_elapsed >= unemployment_max_days` | Household becomes emigration-eligible at normal removal priority; benefit stops |
-| `treasury.balance <= 0.0` | Disbursement stops for all households; pioneer phase ends organically |
+| `treasury.balance <= 0.0` | Transfer disbursement stops for all households; support-backed bootstrap ends organically |
 
 ### Authored Tuning Parameters
 
-`unemployment_daily_benefit_per_member`, `unemployment_max_days`, `startup_treasury_balance`,
-household starter values, household utility cost, private construction durations, and OWA utility
-costs all live in the `runtime_tuning` block of `economy/profiles.toml`.
+`unemployment_daily_benefit_per_member`, `unemployment_max_days`,
+`pension_daily_benefit_per_elder`, `child_support_daily_benefit_per_child`,
+`startup_treasury_balance`, household starter values, household utility cost, private construction
+durations, fiscal tax defaults, and OWA utility costs all live in the `runtime_tuning` block of
+`economy/profiles.toml`.
 
 | Parameter | Location | Role |
 |---|---|---|
 | `startup_treasury_balance` | `economy/profiles.toml` runtime_tuning | Total treasury at map start |
-| `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning | Currency paid per unemployed household member per day |
+| `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning | Default currency paid per unemployed adult per day |
 | `unemployment_max_days` | `economy/profiles.toml` runtime_tuning | Days before an unemployed household becomes emigration-eligible |
+| `pension_daily_benefit_per_elder` | `economy/profiles.toml` runtime_tuning | Default currency paid per elder per day |
+| `child_support_daily_benefit_per_child` | `economy/profiles.toml` runtime_tuning | Default currency paid per child per day |
+| `runtime_tuning.fiscal.*` | `economy/profiles.toml` runtime_tuning | Default tax and property-tax policy values |
 | `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter stock, reserve rules, and utility cost |
 | `runtime_tuning.construction.*` | `economy/profiles.toml` runtime_tuning | Private construction durations for fresh demand-owned spawns |
 | `commercial_owa_utility_cost_per_day` / `industrial_owa_utility_cost_per_day` | `economy/profiles.toml` runtime_tuning | OWA utility cost when local utility service is incomplete |
 
 ### Spawn Signal: Replacing the Pioneer Floor
 
-The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because `stock_stab` and `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal. The unemployment benefit restores these signals through real economic activity:
+The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because `stock_stab` and
+`afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal.
+Household transfers restore these signals through real economic activity:
 
-1. Disbursement gives households money → `afford` rises.
+1. Disbursement gives households money based on exact adult/elder/child composition -> `afford` rises.
 2. Households with money attempt grocery replenishment → `stock_stab` rises.
 3. The grocery earns real revenue → absorption gate threshold is met sooner → second grocery spawns.
 4. More groceries need supply → industrial spawn pressure rises.
 5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
 
 The pioneer demand floor has been removed from `demand.rs`. The unemployment benefit is the
-cash-support mechanism that keeps early households solvent, and demand also uses its reliability
-when calculating deterministic move-in acceptance.
+work-search cash-support mechanism for adult workers, while pension and child support cover
+non-working age groups. Demand uses exact candidate composition plus treasury coverage when
+calculating deterministic move-in acceptance.
 
 ### Shipped Tuning
 
@@ -2534,6 +2627,8 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `startup_treasury_balance` | 100,000 | Total treasury at map start |
 | `unemployment_daily_benefit_per_member` | 30.0 | Currency paid per unemployed adult per day |
 | `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
+| `pension_daily_benefit_per_elder` | 30.0 | Currency paid per elder per day |
+| `child_support_daily_benefit_per_child` | 10.0 | Currency paid per child per day |
 | `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Pantry days granted to arriving households |
 | `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |
 | `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum carried budget for materialized arriving households |
@@ -2815,7 +2910,10 @@ Startup capital is now computed as `max(500, worker_capacity * avg_daily_wage * 
 Immigrant households arrive with `runtime_tuning.households.immigrant_starting_budget_per_member = 15.0` (30 for a standard 2-person household).
 - **Utility Drain**: `runtime_tuning.households.utility_cost_per_member_per_day = 3.0`, so a 2-person household pays 6/day. Budget runway on utilities alone is about 5 days.
 - **Starting stock**: `runtime_tuning.households.immigrant_starting_stock_days = 3.0` days of household supplies pre-loaded on spawn.
-- **Benefit floor**: `unemployment_daily_benefit_per_member = 30.0`, slightly above the current `28.0` per-resident daily essentials cost when household supplies are available.
+- **Transfer floor**: `unemployment_daily_benefit_per_member = 30.0` per unemployed adult,
+  `pension_daily_benefit_per_elder = 30.0`, and
+  `child_support_daily_benefit_per_child = 10.0` provide baseline support from exact household
+  composition rather than from total resident count.
 - **Gap**: Starting stock runs out around day 4. If no valid store has sellable stock, households may still be unable to restock even with adequate benefit income.
 
 With the salary bomb resolved, business wages reach workers by day 7. The 2–3 day starvation window (days 4–7) is the remaining residual of this trap and is acceptable for the pioneer phase. The circular deadlock that previously kept households permanently broke is broken.
@@ -2895,15 +2993,15 @@ enters `is_deserted`, which is the correct signal for the demand system to consi
 
 **Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
 
-**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs and actual commercial `OWA` input dependency. Unemployment benefit is the bootstrap income source for households.
+**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs and actual commercial `OWA` input dependency. Household transfers are the bootstrap income source for households.
 
 ## Future Calibration Targets
 
 Remaining open items for the pioneer phase:
 - **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
 - **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
-- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by the unemployment benefit — see [Unemployment Benefit](#unemployment-benefit).
-- **Pioneer Floor Retirement**: ~~Done.~~ Pioneer demand floor removed from `demand.rs`; unemployment benefit is the replacement and is live.
+- **Household bootstrap gap**: The 2-3 day starvation window (days 4-7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by household transfers — see [Household Transfer Payments](#household-transfer-payments).
+- **Pioneer Floor Retirement**: ~~Done.~~ Pioneer demand floor removed from `demand.rs`; household transfers are the replacement and are live.
 
 
 

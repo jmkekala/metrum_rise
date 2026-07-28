@@ -21,6 +21,7 @@ use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
     DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
 };
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -127,6 +128,8 @@ pub struct SimCore {
     pub treasury: CityTreasury,
     /// Player-controlled live service funding policies.
     pub(crate) service_policy: CityServicePolicy,
+    /// Player-controlled live fiscal tax and transfer policies.
+    pub(crate) fiscal_policy: CityFiscalPolicy,
     /// Completed daily budget ledger entries for overview windows and trend graphs.
     pub(crate) budget_history: VecDeque<DailyBudgetLedgerEntry>,
     /// Lifetime build cost observed when the most recent budget ledger entry was recorded.
@@ -447,6 +450,7 @@ impl SimCore {
             minute_of_day,
             &mut self.treasury.balance,
             &service_funding_by_building,
+            &self.fiscal_policy,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         if minute_of_day != 0 {
@@ -558,10 +562,21 @@ impl SimCore {
             &self.heightmap,
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
+            &self.fiscal_policy,
         );
         let execute_ms = execute_start.elapsed().as_secs_f64() * 1000.0;
-        self.treasury
-            .collect_property_tax(execution.property_tax_paid as f64);
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Residential,
+            execution.residential_property_tax_paid as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Commercial,
+            execution.commercial_property_tax_paid as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Industrial,
+            execution.industrial_property_tax_paid as f64,
+        );
         if let Some(bounds) = execution.site_dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -642,6 +657,7 @@ impl SimCore {
             &self.region_graph,
             &mut self.treasury.balance,
             &service_funding_by_building,
+            &self.fiscal_policy,
         );
         self.collect_fiscal_revenue(fiscal_revenue);
         // City treasury: settle daily road upkeep on the fiscal cadence.
@@ -661,6 +677,7 @@ impl SimCore {
             &self.zoning,
             self.treasury.balance,
             &service_funding_by_building,
+            &self.fiscal_policy,
         );
         let removed_households = self.households.execute_demand_household_removal(
             self.demand.households_to_remove_today,
@@ -733,6 +750,7 @@ impl SimCore {
             &self.zoning,
             self.treasury.balance,
             service_funding_by_building,
+            &self.fiscal_policy,
         );
         let launched_households = self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,
@@ -761,12 +779,23 @@ impl SimCore {
                     &self.heightmap,
                     self.demand.runtime_catalog(),
                     self.demand.runtime_tuning(),
+                    &self.fiscal_policy,
                 )
             } else {
                 Default::default()
             };
-        self.treasury
-            .collect_property_tax(building_action_execution.property_tax_paid as f64);
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Residential,
+            building_action_execution.residential_property_tax_paid as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Commercial,
+            building_action_execution.commercial_property_tax_paid as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Industrial,
+            building_action_execution.industrial_property_tax_paid as f64,
+        );
         if let Some(bounds) = building_action_execution.site_dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }

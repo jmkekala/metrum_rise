@@ -171,6 +171,24 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         f32::INFINITY,
         "runtime_tuning.fiscal.property_tax_level_multiplier",
     )?;
+    validate_range(
+        tuning.unemployment_daily_benefit_per_member,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.unemployment_daily_benefit_per_member",
+    )?;
+    validate_range(
+        tuning.pension_daily_benefit_per_elder,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.pension_daily_benefit_per_elder",
+    )?;
+    validate_range(
+        tuning.child_support_daily_benefit_per_child,
+        0.0,
+        f32::INFINITY,
+        "runtime_tuning.child_support_daily_benefit_per_child",
+    )?;
     validate_work_profiles(&tuning.operational_clock)?;
     validate_freight_profiles(&tuning.operational_clock)?;
     validate_range(

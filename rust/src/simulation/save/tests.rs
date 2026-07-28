@@ -14,6 +14,7 @@ use crate::simulation::economy::agents::{
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, REPLENISHMENT_SHOPPING_TO_STORE,
 };
@@ -405,10 +406,22 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut treasury = CityTreasury::new(1_000.0);
     treasury.lifetime_tax_revenue = 250.0;
     treasury.last_daily_business_profit_tax = 12.5;
+    treasury.last_daily_property_tax = 30.0;
+    treasury.last_daily_residential_property_tax = 10.0;
+    treasury.last_daily_commercial_property_tax = 12.0;
+    treasury.last_daily_industrial_property_tax = 8.0;
     treasury.pending_business_profit_tax = 3.25;
+    treasury.pending_property_tax = 15.0;
+    treasury.pending_residential_property_tax = 4.0;
+    treasury.pending_commercial_property_tax = 5.0;
+    treasury.pending_industrial_property_tax = 6.0;
     let service_policy = CityServicePolicy {
         electricity_funding: 0.35,
     };
+    let mut fiscal_policy = CityFiscalPolicy::default();
+    fiscal_policy.pension_per_elder_per_day = 42.0;
+    fiscal_policy.child_support_per_child_per_day = 11.0;
+    fiscal_policy.income_tax_rate = 0.22;
     let mut budget_history = VecDeque::new();
     budget_history.push_back(DailyBudgetLedgerEntry {
         day_index: 3,
@@ -417,8 +430,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         net: 40.0,
         treasury: 1_040.0,
         tax_income: 95.0,
+        income_tax: 30.0,
+        household_vat: 20.0,
+        business_purchase_tax: 15.0,
+        business_profit_tax: 12.0,
+        property_tax: 18.0,
+        residential_property_tax: 7.0,
+        commercial_property_tax: 6.0,
+        industrial_property_tax: 5.0,
         utility_service_revenue: 25.0,
         benefits: 10.0,
+        unemployment_benefits: 4.0,
+        pensions: 5.0,
+        child_support: 1.0,
         city_wages: 20.0,
         fuel_input_purchases: 15.0,
         imports_owa: 5.0,
@@ -468,6 +492,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             network: &network_sys,
             treasury: &treasury,
             service_policy: &service_policy,
+            fiscal_policy: &fiscal_policy,
             budget_history: &budget_history,
         },
     )
@@ -623,13 +648,40 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         treasury.last_daily_business_profit_tax
     );
     assert_eq!(
+        loaded.treasury.last_daily_residential_property_tax,
+        treasury.last_daily_residential_property_tax
+    );
+    assert_eq!(
+        loaded.treasury.last_daily_commercial_property_tax,
+        treasury.last_daily_commercial_property_tax
+    );
+    assert_eq!(
+        loaded.treasury.last_daily_industrial_property_tax,
+        treasury.last_daily_industrial_property_tax
+    );
+    assert_eq!(
         loaded.treasury.pending_business_profit_tax,
         treasury.pending_business_profit_tax
+    );
+    assert_eq!(
+        loaded.treasury.pending_residential_property_tax,
+        treasury.pending_residential_property_tax
+    );
+    assert_eq!(
+        loaded.treasury.pending_commercial_property_tax,
+        treasury.pending_commercial_property_tax
+    );
+    assert_eq!(
+        loaded.treasury.pending_industrial_property_tax,
+        treasury.pending_industrial_property_tax
     );
     assert!(
         (loaded.service_policy.electricity_funding - service_policy.electricity_funding).abs()
             < 0.001
     );
+    assert!((loaded.fiscal_policy.pension_per_elder_per_day - 42.0).abs() < 0.001);
+    assert!((loaded.fiscal_policy.child_support_per_child_per_day - 11.0).abs() < 0.001);
+    assert!((loaded.fiscal_policy.income_tax_rate - 0.22).abs() < 0.001);
     assert_eq!(loaded.budget_history.len(), 1);
     let loaded_budget = loaded.budget_history[0];
     assert_eq!(loaded_budget.day_index, 3);
@@ -637,6 +689,18 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_budget.expenses, 80.0);
     assert_eq!(loaded_budget.net, 40.0);
     assert_eq!(loaded_budget.treasury, 1_040.0);
+    assert_eq!(loaded_budget.tax_income, 95.0);
+    assert_eq!(loaded_budget.income_tax, 30.0);
+    assert_eq!(loaded_budget.household_vat, 20.0);
+    assert_eq!(loaded_budget.business_purchase_tax, 15.0);
+    assert_eq!(loaded_budget.business_profit_tax, 12.0);
+    assert_eq!(loaded_budget.property_tax, 18.0);
+    assert_eq!(loaded_budget.residential_property_tax, 7.0);
+    assert_eq!(loaded_budget.commercial_property_tax, 6.0);
+    assert_eq!(loaded_budget.industrial_property_tax, 5.0);
+    assert_eq!(loaded_budget.unemployment_benefits, 4.0);
+    assert_eq!(loaded_budget.pensions, 5.0);
+    assert_eq!(loaded_budget.child_support, 1.0);
     assert_eq!(loaded_budget.power_coverage, 0.95);
     assert_eq!(loaded_budget.electricity_net, 10.0);
     let staple_food = catalog

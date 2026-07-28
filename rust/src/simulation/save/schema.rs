@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 51;
+pub const SAVE_VERSION: i64 = 54;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -226,14 +226,34 @@ CREATE TABLE city_treasury(
     last_daily_business_purchase_tax REAL NOT NULL,
     last_daily_business_profit_tax REAL NOT NULL,
     last_daily_property_tax REAL NOT NULL,
+    last_daily_residential_property_tax REAL NOT NULL,
+    last_daily_commercial_property_tax REAL NOT NULL,
+    last_daily_industrial_property_tax REAL NOT NULL,
     pending_income_tax REAL NOT NULL,
     pending_household_vat REAL NOT NULL,
     pending_business_purchase_tax REAL NOT NULL,
     pending_business_profit_tax REAL NOT NULL,
-    pending_property_tax REAL NOT NULL
+    pending_property_tax REAL NOT NULL,
+    pending_residential_property_tax REAL NOT NULL,
+    pending_commercial_property_tax REAL NOT NULL,
+    pending_industrial_property_tax REAL NOT NULL
 );
 CREATE TABLE city_service_policy(
     electricity_funding REAL NOT NULL
+);
+CREATE TABLE city_fiscal_policy(
+    unemployment_benefit_per_adult_per_day REAL NOT NULL,
+    unemployment_max_days INTEGER NOT NULL,
+    pension_per_elder_per_day REAL NOT NULL,
+    child_support_per_child_per_day REAL NOT NULL,
+    income_tax_rate REAL NOT NULL,
+    household_vat_rate REAL NOT NULL,
+    business_purchase_tax_rate REAL NOT NULL,
+    business_profit_tax_rate REAL NOT NULL,
+    residential_property_tax_base REAL NOT NULL,
+    commercial_property_tax_base REAL NOT NULL,
+    industrial_property_tax_base REAL NOT NULL,
+    property_tax_level_multiplier REAL NOT NULL
 );
 CREATE TABLE city_budget_history(
     sequence INTEGER PRIMARY KEY,
@@ -243,8 +263,19 @@ CREATE TABLE city_budget_history(
     net REAL NOT NULL,
     treasury REAL NOT NULL,
     tax_income REAL NOT NULL,
+    income_tax REAL NOT NULL,
+    household_vat REAL NOT NULL,
+    business_purchase_tax REAL NOT NULL,
+    business_profit_tax REAL NOT NULL,
+    property_tax REAL NOT NULL,
+    residential_property_tax REAL NOT NULL,
+    commercial_property_tax REAL NOT NULL,
+    industrial_property_tax REAL NOT NULL,
     utility_service_revenue REAL NOT NULL,
     benefits REAL NOT NULL,
+    unemployment_benefits REAL NOT NULL,
+    pensions REAL NOT NULL,
+    child_support REAL NOT NULL,
     city_wages REAL NOT NULL,
     fuel_input_purchases REAL NOT NULL,
     imports_owa REAL NOT NULL,

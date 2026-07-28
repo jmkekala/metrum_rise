@@ -1190,6 +1190,7 @@ impl SimCore {
             &self.heightmap,
             &catalog,
             &tuning,
+            self.fiscal_policy.business_purchase_tax_rate,
         )?;
 
         if !self.benchmark_mode {
@@ -1793,6 +1794,7 @@ mod tests {
             config,
             treasury: CityTreasury::new(0.0),
             service_policy: Default::default(),
+            fiscal_policy: Default::default(),
             budget_history: VecDeque::new(),
             budget_last_lifetime_build_cost: 0.0,
             debug_household_admissions_since_daily: 0,

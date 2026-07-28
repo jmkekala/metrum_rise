@@ -1,4 +1,4 @@
-//! Unemployment benefit payment and treasury interaction.
+//! Household transfer payment and treasury interaction.
 
 use std::sync::atomic::Ordering;
 
@@ -6,22 +6,31 @@ use super::HouseholdSystem;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{AgentSystem, age_group_can_work};
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 impl HouseholdSystem {
+    #[cfg(test)]
     pub(crate) fn pay_unemployment_benefits(
         &mut self,
         agents: &AgentSystem,
         allocator: &BuildingAllocator,
         treasury_balance: &mut f64,
     ) {
-        let tuning = load_runtime_economy_tuning()
-            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
-        let benefit_per_member = tuning.unemployment_daily_benefit_per_member;
-        let max_days = tuning.unemployment_max_days;
+        let mut policy = CityFiscalPolicy::default();
+        policy.pension_per_elder_per_day = 0.0;
+        policy.child_support_per_child_per_day = 0.0;
+        self.pay_household_transfers(agents, allocator, treasury_balance, &policy);
+    }
 
+    pub(crate) fn pay_household_transfers(
+        &mut self,
+        agents: &AgentSystem,
+        allocator: &BuildingAllocator,
+        treasury_balance: &mut f64,
+        policy: &CityFiscalPolicy,
+    ) {
         let household_count = self.households.len();
         self.reset_member_count_scratch();
         {
@@ -40,10 +49,17 @@ impl HouseholdSystem {
         }
 
         let mut total_disbursed = 0.0f32;
+        let mut total_unemployment_disbursed = 0.0f32;
+        let mut total_pension_disbursed = 0.0f32;
+        let mut total_child_support_disbursed = 0.0f32;
         let mut households_paid = 0u32;
         let mut households_exhausted = 0u32;
         self.ensure_daily_ledger_len();
 
+        let benefit_per_adult = policy.unemployment_benefit_per_adult_per_day.max(0.0);
+        let max_days = policy.unemployment_max_days;
+        let pension_per_elder = policy.pension_per_elder_per_day.max(0.0);
+        let child_support_per_child = policy.child_support_per_child_per_day.max(0.0);
         let households = &mut self.households;
         let daily_ledgers = &mut self.daily_ledgers;
         for hid in 0..households.len() {
@@ -55,51 +71,62 @@ impl HouseholdSystem {
                 .load(Ordering::Relaxed)
                 .min(u32::from(u16::MAX)) as u16;
             daily_ledgers[hid].unemployed_adults = unemployed;
-            if !valid_benefit_home(allocator, household.home_building_id) {
+            let unemployment_claim =
+                if !valid_unemployment_benefit_home(allocator, household.home_building_id) {
+                    0.0
+                } else if unemployed == 0 {
+                    household.unemployment_days_elapsed = 0;
+                    0.0
+                } else if household.unemployment_days_elapsed >= max_days {
+                    // Benefit exhausted; household is emigration-eligible via removal pressure.
+                    households_exhausted += 1;
+                    0.0
+                } else {
+                    household.unemployment_days_elapsed =
+                        household.unemployment_days_elapsed.saturating_add(1);
+                    unemployed as f32 * benefit_per_adult
+                };
+
+            let pension_claim = household.elder_count as f32 * pension_per_elder;
+            let child_support_claim = household.child_count as f32 * child_support_per_child;
+            let unemployment_paid = pay_transfer_claim(treasury_balance, unemployment_claim);
+            let pension_paid = pay_transfer_claim(treasury_balance, pension_claim);
+            let child_support_paid = pay_transfer_claim(treasury_balance, child_support_claim);
+            let paid = unemployment_paid + pension_paid + child_support_paid;
+            if paid <= 0.0 {
                 continue;
             }
-            if unemployed == 0 {
-                household.unemployment_days_elapsed = 0;
-                continue;
-            }
-            if household.unemployment_days_elapsed >= max_days {
-                // Benefit exhausted; household is emigration-eligible via removal pressure.
-                households_exhausted += 1;
-                continue;
-            }
-            household.unemployment_days_elapsed =
-                household.unemployment_days_elapsed.saturating_add(1);
-            if *treasury_balance <= 0.0 {
-                continue;
-            }
-            let benefit = unemployed as f32 * benefit_per_member;
-            let paid = if *treasury_balance >= benefit as f64 {
-                household.budget += benefit;
-                *treasury_balance -= benefit as f64;
-                benefit
-            } else {
-                let remainder = *treasury_balance as f32;
-                household.budget += remainder;
-                *treasury_balance = 0.0;
-                remainder
-            };
+            household.budget += paid;
+            daily_ledgers[hid].unemployment_benefit_income += unemployment_paid;
+            daily_ledgers[hid].pension_income += pension_paid;
+            daily_ledgers[hid].child_support_income += child_support_paid;
             total_disbursed += paid;
+            total_unemployment_disbursed += unemployment_paid;
+            total_pension_disbursed += pension_paid;
+            total_child_support_disbursed += child_support_paid;
             households_paid += 1;
-            daily_ledgers[hid].unemployment_benefit_income += paid;
             debug_log!(
                 "economy",
-                "unemployment_benefit_recipient: household_id={} unemployed_adults={} amount_paid={:.1} unemployment_days_elapsed={}",
+                "household_transfer_recipient: household_id={} unemployed_adults={} elders={} children={} paid={:.1} unemployment={:.1} pension={:.1} child_support={:.1} unemployment_days_elapsed={}",
                 hid,
                 unemployed,
+                household.elder_count,
+                household.child_count,
                 paid,
+                unemployment_paid,
+                pension_paid,
+                child_support_paid,
                 household.unemployment_days_elapsed
             );
         }
 
         debug_log!(
             "economy",
-            "unemployment_benefits: paid={:.1} households={} exhausted={} treasury={:.0}",
+            "household_transfers: paid={:.1} unemployment={:.1} pension={:.1} child_support={:.1} households={} unemployment_exhausted={} treasury={:.0}",
             total_disbursed,
+            total_unemployment_disbursed,
+            total_pension_disbursed,
+            total_child_support_disbursed,
             households_paid,
             households_exhausted,
             *treasury_balance,
@@ -107,7 +134,21 @@ impl HouseholdSystem {
     }
 }
 
-fn valid_benefit_home(allocator: &BuildingAllocator, home_building_id: usize) -> bool {
+fn pay_transfer_claim(treasury_balance: &mut f64, claim: f32) -> f32 {
+    if claim <= 0.0 || *treasury_balance <= 0.0 {
+        return 0.0;
+    }
+    if *treasury_balance >= claim as f64 {
+        *treasury_balance -= claim as f64;
+        claim
+    } else {
+        let paid = (*treasury_balance).max(0.0) as f32;
+        *treasury_balance = 0.0;
+        paid
+    }
+}
+
+fn valid_unemployment_benefit_home(allocator: &BuildingAllocator, home_building_id: usize) -> bool {
     allocator
         .buildings
         .get(home_building_id)

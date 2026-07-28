@@ -262,6 +262,10 @@ fn test_immigration_claims_vacant_home() {
         &mut network,
         &mut graph,
     );
+    let expected_household_size = allocator
+        .next_household_admission_candidate()
+        .expect("vacant residential admission candidate")
+        .1;
     allocator.execute_demand_household_admission(1, &mut agents, &network, &graph);
 
     assert_eq!(
@@ -286,7 +290,7 @@ fn test_immigration_claims_vacant_home() {
         agents.transit_mode[0],
         crate::simulation::economy::agents::MODE_CAR
     );
-    assert_eq!(agents.pending_household_size[0], 2);
+    assert_eq!(agents.pending_household_size[0], expected_household_size);
     assert_eq!(agents.current_building[0], usize::MAX);
     assert_eq!(agents.current_node[0], 0);
     assert_eq!(agents.current_lane_id[0], usize::MAX);
@@ -308,11 +312,17 @@ fn test_immigration_claims_vacant_home() {
         0,
         &mut treasury_balance,
         &[],
+        &crate::simulation::economy::fiscal::CityFiscalPolicy::default(),
     );
-    assert_eq!(agents.len(), 2);
+    assert_eq!(agents.len(), expected_household_size as usize);
     assert_eq!(households.households.len(), 1);
-    assert_eq!(households.households[0].member_count, 2);
-    assert_eq!(agents.household_id[0], agents.household_id[1]);
+    assert_eq!(
+        households.households[0].member_count,
+        expected_household_size
+    );
+    for agent_idx in 0..expected_household_size as usize {
+        assert_eq!(agents.household_id[agent_idx], agents.household_id[0]);
+    }
     assert_eq!(agents.pending_household_size[0], 0);
     assert!((agents.pos_x[0] - expected_door.x).abs() < 1e-4);
     assert!((agents.pos_y[0] - expected_door.y).abs() < 1e-4);

@@ -69,6 +69,7 @@ fn test_core() -> SimCore {
         config,
         treasury: CityTreasury::new(0.0),
         service_policy: Default::default(),
+        fiscal_policy: Default::default(),
         budget_history: VecDeque::new(),
         budget_last_lifetime_build_cost: 0.0,
         debug_household_admissions_since_daily: 0,
@@ -104,6 +105,24 @@ fn test_core() -> SimCore {
         road_tool_surface_generation: 1,
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
     }
+}
+
+#[test]
+fn fiscal_policy_api_clamps_values_and_rejects_unknown_ids() {
+    let mut core = test_core();
+
+    assert!(
+        core.set_fiscal_policy_value(crate::simulation::economy::fiscal::POLICY_INCOME_TAX, 3.0,)
+    );
+    assert!((core.fiscal_policy.income_tax_rate - 0.75).abs() < f32::EPSILON);
+
+    assert!(core.set_fiscal_policy_value(
+        crate::simulation::economy::fiscal::POLICY_UNEMPLOYMENT_MAX_DAYS,
+        -10.0,
+    ));
+    assert_eq!(core.fiscal_policy.unemployment_max_days, 0);
+
+    assert!(!core.set_fiscal_policy_value("unknown_policy", 1.0));
 }
 
 #[test]

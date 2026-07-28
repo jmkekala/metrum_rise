@@ -47,6 +47,10 @@ pub(crate) struct RuntimeEconomyTuning {
     /// Prevents infinite treasury drain when no jobs exist in the city.
     #[serde(default, deserialize_with = "deserialize_u32_from_number")]
     pub unemployment_max_days: u32,
+    /// Currency paid per elder resident per day from the city treasury.
+    pub pension_daily_benefit_per_elder: f32,
+    /// Currency paid per child resident per day from the city treasury.
+    pub child_support_daily_benefit_per_child: f32,
 }
 
 /// Shared operational-clock tuning used by labor, replenishment, and freight.
