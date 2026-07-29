@@ -647,6 +647,11 @@ impl TerrainSystem {
         self.render_patch_interval_cells
     }
 
+    /// Returns the world-space margin sampled around each render patch texture.
+    pub(crate) fn render_patch_border_margin_m(&self) -> f32 {
+        TERRAIN_RENDER_PATCH_BORDER_TEXELS as f32 * self.cell_size
+    }
+
     /// Returns the number of render patches across the Z axis.
     pub(crate) fn render_patch_rows(&self) -> usize {
         if self.height <= 1 {
@@ -687,8 +692,10 @@ impl TerrainSystem {
             return Vec::new();
         };
 
-        let (min_patch_x, max_patch_x) = self.patch_range_for_sample_range(min_grid_x, max_grid_x);
-        let (min_patch_z, max_patch_z) = self.patch_range_for_sample_range(min_grid_z, max_grid_z);
+        let (min_patch_x, max_patch_x) =
+            self.patch_range_for_sample_range(min_grid_x, max_grid_x, self.render_patch_cols());
+        let (min_patch_z, max_patch_z) =
+            self.patch_range_for_sample_range(min_grid_z, max_grid_z, self.render_patch_rows());
         let mut keys =
             Vec::with_capacity((max_patch_x - min_patch_x + 1) * (max_patch_z - min_patch_z + 1));
         for patch_z in min_patch_z..=max_patch_z {
@@ -741,7 +748,7 @@ impl TerrainSystem {
         }
     }
 
-    /// Returns one visual-terrain render patch with a one-sample border ring.
+    /// Returns one visual-terrain render patch with a neighboring-sample border ring.
     pub(crate) fn visual_patch_snapshot(
         &self,
         patch_x: usize,
@@ -755,14 +762,18 @@ impl TerrainSystem {
         let mut height_data = vec![0.0_f32; texture_width * texture_height];
 
         for local_z in 0..texture_height {
-            let sample_z =
-                border_clamped_index(start_z, end_z, local_z, TERRAIN_RENDER_PATCH_BORDER_TEXELS);
+            let sample_z = bordered_global_index(
+                start_z,
+                local_z,
+                TERRAIN_RENDER_PATCH_BORDER_TEXELS,
+                self.height,
+            );
             for local_x in 0..texture_width {
-                let sample_x = border_clamped_index(
+                let sample_x = bordered_global_index(
                     start_x,
-                    end_x,
                     local_x,
                     TERRAIN_RENDER_PATCH_BORDER_TEXELS,
+                    self.width,
                 );
                 height_data[local_z * texture_width + local_x] = self.data.get(sample_x, sample_z);
             }
@@ -867,8 +878,10 @@ impl TerrainSystem {
             return;
         }
 
-        let (min_patch_x, max_patch_x) = self.patch_range_for_sample_range(min_x, max_x);
-        let (min_patch_z, max_patch_z) = self.patch_range_for_sample_range(min_z, max_z);
+        let (min_patch_x, max_patch_x) =
+            self.patch_range_for_sample_range(min_x, max_x, self.render_patch_cols());
+        let (min_patch_z, max_patch_z) =
+            self.patch_range_for_sample_range(min_z, max_z, self.render_patch_rows());
         for patch_z in min_patch_z..=max_patch_z {
             for patch_x in min_patch_x..=max_patch_x {
                 self.dirty_render_patches.insert((patch_x, patch_z));
@@ -876,18 +889,23 @@ impl TerrainSystem {
         }
     }
 
-    fn patch_range_for_sample_range(&self, min_sample: usize, max_sample: usize) -> (usize, usize) {
+    fn patch_range_for_sample_range(
+        &self,
+        min_sample: usize,
+        max_sample: usize,
+        patch_count: usize,
+    ) -> (usize, usize) {
         let mut patch_min = min_sample / self.render_patch_interval_cells;
         if min_sample > 0 && min_sample % self.render_patch_interval_cells == 0 {
             patch_min = patch_min.saturating_sub(1);
         }
         let mut patch_max = max_sample / self.render_patch_interval_cells;
         if max_sample > 0 && max_sample % self.render_patch_interval_cells == 0 {
-            patch_max = patch_max.min(self.render_patch_cols().saturating_sub(1));
+            patch_max = patch_max.min(patch_count.saturating_sub(1));
         }
         (
-            patch_min.min(self.render_patch_cols().saturating_sub(1)),
-            patch_max.min(self.render_patch_cols().saturating_sub(1)),
+            patch_min.min(patch_count.saturating_sub(1)),
+            patch_max.min(patch_count.saturating_sub(1)),
         )
     }
 
@@ -945,20 +963,15 @@ fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
     ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
 }
 
-fn border_clamped_index(
+fn bordered_global_index(
     start: usize,
-    end: usize,
     bordered_index: usize,
     border_texels: usize,
+    limit: usize,
 ) -> usize {
-    let sample_count = end.saturating_sub(start) + 1;
-    if bordered_index < border_texels {
-        start
-    } else if bordered_index >= border_texels + sample_count {
-        end
-    } else {
-        start + bordered_index - border_texels
-    }
+    let max_index = limit.saturating_sub(1) as isize;
+    let index = start as isize + bordered_index as isize - border_texels as isize;
+    index.clamp(0, max_index) as usize
 }
 
 fn raycast_xz_interval(
@@ -1074,11 +1087,13 @@ mod tests {
     }
 
     #[test]
-    fn visual_patch_snapshot_uses_chunk_local_window_with_border_ring() {
+    fn visual_patch_snapshot_border_ring_samples_neighboring_terrain() {
         let mut terrain =
             TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0).with_render_chunk_span(30.0);
+        terrain.set_height(2, 3, 22.0);
         terrain.set_height(3, 3, 33.0);
         terrain.set_height(6, 6, 66.0);
+        terrain.set_height(7, 7, 77.0);
 
         let patch = terrain
             .visual_patch_snapshot(1, 1)
@@ -1096,9 +1111,10 @@ mod tests {
         assert!((patch.world_origin_z + 10.0).abs() < 0.0001);
         assert!((patch.world_size_x - 30.0).abs() < 0.0001);
         assert!((patch.world_size_z - 30.0).abs() < 0.0001);
-        assert_eq!(patch.height_data[0], 33.0);
+        assert_eq!(patch.height_data[0], 0.0);
+        assert_eq!(patch.height_data[patch.texture_width * 4 + 3], 22.0);
         assert_eq!(patch.height_data[patch.texture_width * 4 + 4], 33.0);
-        assert_eq!(patch.height_data[patch.height_data.len() - 1], 66.0);
+        assert_eq!(patch.height_data[patch.texture_width * 8 + 8], 77.0);
     }
 
     #[test]
@@ -1127,5 +1143,21 @@ mod tests {
 
         let expected = HashSet::from([(0, 0), (1, 0), (0, 1), (1, 1)]);
         assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn world_bounds_use_axis_specific_patch_counts_on_rectangular_terrain() {
+        let terrain =
+            TerrainSystem::with_chunking(9, 17, 10.0, 4, 0.0).with_render_chunk_span(30.0);
+
+        let (world_x, world_z) = terrain.grid_to_world_coords(4, 14);
+        let keys: HashSet<(usize, usize)> = terrain
+            .render_patch_keys_for_world_bounds(world_x, world_z, world_x, world_z)
+            .into_iter()
+            .collect();
+
+        assert_eq!(terrain.render_patch_cols(), 3);
+        assert_eq!(terrain.render_patch_rows(), 6);
+        assert_eq!(keys, HashSet::from([(1, 4)]));
     }
 }

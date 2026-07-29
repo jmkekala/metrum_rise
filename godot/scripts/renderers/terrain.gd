@@ -2864,7 +2864,11 @@ func _sculpt_at_mouse(delta: float) -> void:
 	var strength := 2.0 * delta
 	if Input.is_key_pressed(KEY_CTRL) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		strength = -2.0 * delta
-	simulation_node.sculpt_terrain(Vector2(intersection.x, intersection.z), 15.0, strength)
+	simulation_node.sculpt_terrain(
+		Vector2(intersection.x, intersection.z),
+		15.0,
+		strength / HEIGHT_SCALE
+	)
 
 	var road_tool = get_node_or_null("../RoadTool")
 	if road_tool:

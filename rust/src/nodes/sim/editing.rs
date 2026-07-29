@@ -161,13 +161,16 @@ impl SimCore {
     }
 
     fn mark_terrain_authoring_payload_bounds(&mut self, pos: Vector2, radius: f32) {
-        let radius = radius.max(0.0);
+        let radius = radius.max(0.0) + self.heightmap.render_patch_border_margin_m();
         let patch_keys = self.heightmap.render_patch_keys_for_world_bounds(
             pos.x - radius,
             pos.y - radius,
             pos.x + radius,
             pos.y + radius,
         );
+        for &(patch_x, patch_z) in &patch_keys {
+            self.heightmap.mark_render_patch_dirty(patch_x, patch_z);
+        }
         self.bump_terrain_payload_patch_generations(&patch_keys);
         self.terrain_dirty = true;
     }
@@ -610,6 +613,7 @@ impl SimCore {
             .sculpt(center_x, center_y, radius_cells, strength);
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -650,6 +654,7 @@ impl SimCore {
         );
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -662,6 +667,7 @@ impl SimCore {
             .smooth(center_x, center_y, radius_cells, strength);
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -699,6 +705,7 @@ impl SimCore {
         );
         self.transit_network
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
+        self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -2205,6 +2212,30 @@ mod tests {
         assert!(core.end_terrain_stroke_internal());
         assert!(!core.terrain_stroke_active);
         assert!(!core.terrain_stroke_has_changes);
+    }
+
+    #[test]
+    fn terrain_authoring_payload_bounds_include_patch_texture_border() {
+        let mut core = test_core();
+        let (_, min_z, max_x, max_z) = core
+            .heightmap
+            .render_patch_world_bounds(0, 0)
+            .expect("default test terrain should have patch (0,0)");
+        let pos = Vector2::new(max_x - 20.0, (min_z + max_z) * 0.5);
+        let neighbor_generation_before = core.terrain_payload_generation_for_patch(1, 0);
+
+        core.start_terrain_stroke_internal();
+        core.sculpt_terrain_stroke_step_internal(pos, 1.0, 0.5);
+
+        assert!(core.heightmap.dirty_render_patches().contains(&(0, 0)));
+        assert!(
+            core.heightmap.dirty_render_patches().contains(&(1, 0)),
+            "neighbor patch border ring must be refreshed when nearby samples change"
+        );
+        assert!(
+            core.terrain_payload_generation_for_patch(1, 0) > neighbor_generation_before,
+            "neighbor patch payload generation must also advance"
+        );
     }
 
     fn finalize_network_render_for_test(core: &mut SimCore) {

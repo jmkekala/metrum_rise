@@ -17,6 +17,7 @@ const FAR_MARGIN_M := 5000.0
 const FOCUS_PADDING_MULT := 3.25
 const TERRAIN_PIVOT_CLEARANCE_M := 0.25
 const TERRAIN_CAMERA_CLEARANCE_M := 1.5
+const WORLD_KEYBOARD_PASSTHROUGH_META := "world_editor_keyboard_passthrough"
 
 var _orbit_active := false
 var _pan_active := false
@@ -141,6 +142,8 @@ func _ui_captures_world_pointer_input() -> bool:
 func _ui_captures_world_keyboard_input() -> bool:
 	var viewport := get_viewport()
 	var focus_owner := viewport.gui_get_focus_owner()
+	if focus_owner != null and _control_allows_world_keyboard_passthrough(focus_owner):
+		return _ui_has_modal_popup()
 	var editing_focus := (
 		focus_owner is SpinBox
 		or
@@ -149,3 +152,11 @@ func _ui_captures_world_keyboard_input() -> bool:
 		or focus_owner is CodeEdit
 	)
 	return _ui_has_modal_popup() or editing_focus
+
+func _control_allows_world_keyboard_passthrough(control: Control) -> bool:
+	var node: Node = control
+	while node != null:
+		if node.has_meta(WORLD_KEYBOARD_PASSTHROUGH_META):
+			return bool(node.get_meta(WORLD_KEYBOARD_PASSTHROUGH_META))
+		node = node.get_parent()
+	return false

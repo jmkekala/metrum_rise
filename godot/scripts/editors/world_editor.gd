@@ -11,8 +11,11 @@ const DEFAULT_HEIGHT_KM := 20.0
 const DEFAULT_TERRAIN_CELL_M := 10.0
 const DEFAULT_TERRAIN_CHUNK_M := 512.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
+const TERRAIN_RENDER_HEIGHT_SCALE := 20.0
 const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
-const DEFAULT_SCULPT_DIAMETER_M := 30.0
+const MIN_SCULPT_DIAMETER_CELLS := 6.0
+const DEFAULT_SCULPT_DIAMETER_CELLS := 8.0
+const DEFAULT_SCULPT_DIAMETER_M := 80.0
 const DEFAULT_SCULPT_STRENGTH_PER_SEC := 2.0
 const MIN_SCULPT_DIAMETER_M := 5.0
 const MAX_SCULPT_DIAMETER_M := 200.0
@@ -22,12 +25,14 @@ const LIVE_SCULPT_REFRESH_INTERVAL_SEC := 1.0 / 12.0
 const SURFACE_NUDGE_STEP_M := 0.5
 const SURFACE_NUDGE_FAST_STEP_M := 5.0
 const WORLDS_DIR := "user://worlds"
+const WORLD_KEYBOARD_PASSTHROUGH_META := "world_editor_keyboard_passthrough"
 const WATER_REMOVE_RADIUS_M := 40.0
 const WATER_MARKER_GROUND_OFFSET_M := 0.8
 const WATER_FILL_STEM_RADIUS_M := 0.24
 const WATER_FILL_DISC_RADIUS_M := 5.0
 const WATER_FILL_DISC_THICKNESS_M := 0.42
 const WATER_FILL_MIN_STEM_M := 2.0
+const WATER_FILL_SEED_RADIUS_M := 0.83
 const WATER_LAKE_MARKER_COLOR := Color(0.34, 0.80, 0.92, 0.88)
 const WATER_OPEN_WATER_MARKER_COLOR := Color(0.18, 0.48, 0.92, 0.88)
 const WATER_PREVIEW_MARKER_COLOR := Color(0.92, 0.97, 1.0, 0.92)
@@ -615,30 +620,32 @@ func _apply_sculpt(delta: float) -> void:
 		return
 
 	var radius := _brush_radius_m()
+	var world_pos := Vector2(intersection.x, intersection.z)
 	var strength := _brush_strength_per_sec() * delta
+	var heightmap_strength := strength / TERRAIN_RENDER_HEIGHT_SCALE
 	match _active_tool:
 		Tool.RAISE:
-			sim.sculpt_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, strength)
+			sim.sculpt_terrain_stroke_step(world_pos, radius, heightmap_strength)
 		Tool.LOWER:
-			sim.sculpt_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, -strength)
+			sim.sculpt_terrain_stroke_step(world_pos, radius, -heightmap_strength)
 		Tool.LEVEL:
 			sim.level_terrain_stroke_step(
-				Vector2(intersection.x, intersection.z),
+				world_pos,
 				radius,
 				_level_target_height_m,
-				strength
+				heightmap_strength
 			)
 		Tool.SMOOTH:
-			sim.smooth_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, strength)
+			sim.smooth_terrain_stroke_step(world_pos, radius, heightmap_strength)
 		Tool.SLOPE:
 			sim.slope_terrain_stroke_step(
-				Vector2(intersection.x, intersection.z),
+				world_pos,
 				radius,
 				Vector2(_slope_start_world_pos.x, _slope_start_world_pos.z),
 				_slope_start_world_pos.y,
 				Vector2(_slope_end_world_pos.x, _slope_end_world_pos.z),
 				_slope_end_world_pos.y,
-				strength
+				heightmap_strength
 			)
 	_live_sculpt_visual_pending = true
 
@@ -678,6 +685,36 @@ func _brush_radius_m() -> float:
 
 func _brush_strength_per_sec() -> float:
 	return float(_brush_strength_spin.value) if _brush_strength_spin else DEFAULT_SCULPT_STRENGTH_PER_SEC
+
+func _sync_brush_diameter_limits() -> void:
+	if not _brush_diameter_spin:
+		return
+	var min_diameter := _minimum_sculpt_diameter_m()
+	var max_diameter := maxf(MAX_SCULPT_DIAMETER_M, min_diameter)
+	_brush_diameter_spin.max_value = max_diameter
+	_brush_diameter_spin.min_value = min_diameter
+	if _brush_diameter_spin.value < min_diameter:
+		_brush_diameter_spin.value = _default_sculpt_diameter_m()
+	elif _brush_diameter_spin.value > max_diameter:
+		_brush_diameter_spin.value = max_diameter
+
+func _minimum_sculpt_diameter_m() -> float:
+	return maxf(MIN_SCULPT_DIAMETER_M, _current_terrain_cell_m() * MIN_SCULPT_DIAMETER_CELLS)
+
+func _default_sculpt_diameter_m() -> float:
+	var min_diameter := _minimum_sculpt_diameter_m()
+	return clampf(
+		_current_terrain_cell_m() * DEFAULT_SCULPT_DIAMETER_CELLS,
+		min_diameter,
+		maxf(MAX_SCULPT_DIAMETER_M, min_diameter)
+	)
+
+func _current_terrain_cell_m() -> float:
+	if terrain:
+		var cell_m := float(terrain.terrain_cell_m)
+		if cell_m > 0.0:
+			return cell_m
+	return DEFAULT_TERRAIN_CELL_M
 
 func _on_brush_control_changed(_value: float) -> void:
 	_release_brush_field_focus()
@@ -751,6 +788,7 @@ func _refresh_after_world_change(focus_camera: bool) -> void:
 	_refresh_water_markers()
 	if focus_camera:
 		_focus_camera_on_world()
+	_sync_brush_diameter_limits()
 	_update_toolbar_summary()
 	var world_size := sim.get_terrain_world_size()
 	var dims := sim.get_heightmap_size()
@@ -1093,8 +1131,8 @@ func _add_water_fill_marker(
 	var seed := MeshInstance3D.new()
 	seed.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var seed_mesh := SphereMesh.new()
-	seed_mesh.radius = WATER_MARKER_TIP_RADIUS_M * 0.45
-	seed_mesh.height = WATER_MARKER_TIP_RADIUS_M * 0.9
+	seed_mesh.radius = WATER_FILL_SEED_RADIUS_M
+	seed_mesh.height = WATER_FILL_SEED_RADIUS_M * 2.0
 	seed.mesh = seed_mesh
 	seed.position = Vector3(0.0, terrain_y, 0.0)
 	seed.material_override = _make_water_marker_material(color.lightened(0.08), 1.0, 3.8)
@@ -1409,6 +1447,10 @@ func _make_hud_spin_box(min_value: float, max_value: float, step: float, value: 
 	var spin := _make_spin_box(min_value, max_value, step, value)
 	spin.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	spin.custom_minimum_size = Vector2(96.0, UIStyle.HUD_BUTTON_HEIGHT)
+	spin.set_meta(WORLD_KEYBOARD_PASSTHROUGH_META, true)
+	var line_edit := spin.get_line_edit()
+	if line_edit:
+		line_edit.set_meta(WORLD_KEYBOARD_PASSTHROUGH_META, true)
 	return spin
 
 func _configure_numeric_spin_box(spin: SpinBox) -> void:
