@@ -22,6 +22,7 @@ use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
 };
+use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
@@ -29,6 +30,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
+use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -85,6 +87,7 @@ fn register_test_asset(
                 worker_capacity,
                 service_class: None,
                 economy_profile: None,
+                extractor: None,
             }),
             prop: None,
             vehicle: None,
@@ -128,6 +131,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     water
         .replace_baseline_depth_from_dense(&baseline_depth)
         .expect("baseline water depth dimensions should match");
+    let mut resource_deposits = ResourceDepositSystem::from_world_config(&config);
+    resource_deposits.set_coal_richness_at(2, 3, 450);
+    resource_deposits.set_coal_richness_at(8, 7, 900);
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
@@ -242,6 +248,18 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         .expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
     allocator.rebuild_zone_index();
+    let resource_extraction = ResourceExtractionSystem::from_sites(vec![ExtractorSite {
+        building_idx: 0,
+        resource_id: COAL_RESOURCE_ID.to_owned(),
+        polygon_world: vec![
+            Vector2::new(-5.0, -5.0),
+            Vector2::new(5.0, -5.0),
+            Vector2::new(5.0, 5.0),
+            Vector2::new(-5.0, 5.0),
+        ],
+        total_reserve_units: 1234.0,
+        extracted_units: 321.0,
+    }]);
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
@@ -479,6 +497,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             time: &time,
             terrain: &terrain,
             water: &water,
+            resource_deposits: &resource_deposits,
             graph: &graph,
             zoning: &zoning,
             pollution: &pollution,
@@ -488,6 +507,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             allocator: &allocator,
             households: &households,
             logistics: &logistics,
+            resource_extraction: &resource_extraction,
             agents: &agents_sys,
             network: &network_sys,
             treasury: &treasury,
@@ -517,6 +537,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(
         loaded.water.clone_baseline_depth_dense(),
         water.clone_baseline_depth_dense()
+    );
+    assert_eq!(
+        loaded.resource_deposits.clone_coal_richness_dense(),
+        resource_deposits.clone_coal_richness_dense()
     );
     assert_eq!(loaded.demand.residential, demand.residential);
     assert_eq!(loaded.demand.commercial, demand.commercial);
@@ -565,6 +589,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         ZoneType::Residential
     );
     assert_eq!(loaded.allocator.buildings.len(), 1);
+    assert_eq!(loaded.resource_extraction.sites().len(), 1);
+    let loaded_extractor = &loaded.resource_extraction.sites()[0];
+    assert_eq!(loaded_extractor.building_idx, 0);
+    assert_eq!(loaded_extractor.resource_id, COAL_RESOURCE_ID);
+    assert_eq!(loaded_extractor.polygon_world.len(), 4);
+    assert!((loaded_extractor.total_reserve_units - 1234.0).abs() < 0.001);
+    assert!((loaded_extractor.extracted_units - 321.0).abs() < 0.001);
     assert_eq!(loaded.households.households.len(), 1);
     assert_eq!(
         loaded.households.households[0].reserved_store_building_id,

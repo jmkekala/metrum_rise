@@ -72,6 +72,9 @@ const UTILITY_PROFILE_BY_SERVICE := {
 	"water": "water_plant_basic",
 	"waste": "wastewater_treatment_basic",
 }
+const DEFAULT_EXTRACTOR_PROFILE_BY_RESOURCE := {
+	"coal": "coal_mine_basic",
+}
 
 const TEMPLATES := [
 	"Flat Studio",
@@ -135,6 +138,8 @@ var _residents_spin: SpinBox
 var _flat_size_spin: SpinBox
 var _workers_spin: SpinBox
 var _service_class_btn: OptionButton
+var _extractor_check: CheckBox
+var _extractor_resource_edit: LineEdit
 var _economy_profile_btn: OptionButton
 var _economy_profile_status_lbl: Label
 var _lod_list: ItemList
@@ -723,6 +728,12 @@ func _build_right_panel(parent: Control) -> void:
 		)
 	_service_class_btn.item_selected.connect(_on_service_class_selected)
 	building_box.add_child(_service_class_btn)
+	_extractor_check = CheckBox.new()
+	_extractor_check.text = "Resource Extractor"
+	_extractor_check.toggled.connect(_on_extractor_toggled)
+	building_box.add_child(_extractor_check)
+	_extractor_resource_edit = _add_line_edit(building_box, "Extractor Resource", "coal")
+	_extractor_resource_edit.text_changed.connect(func(_text): _on_extractor_resource_changed())
 	_add_label(building_box, "Economy Profile", _font_size_label)
 	var economy_row := HBoxContainer.new()
 	economy_row.add_theme_constant_override("separation", PANEL_GAP)
@@ -1551,6 +1562,9 @@ func _start_new_asset() -> void:
 	_tags_edit.text = ""
 	_set_placement_mode_selection("zoned_private")
 	_set_service_class_selection("none")
+	_set_extractor_enabled(false)
+	if _extractor_resource_edit:
+		_extractor_resource_edit.text = "coal"
 	var residential_idx := _zone_types.find("residential")
 	if residential_idx >= 0:
 		_zone_type_btn.select(residential_idx)
@@ -1654,6 +1668,10 @@ func _populate_inspector_from(data: Dictionary) -> void:
 
 	_set_placement_mode_selection(str(data.get("placement_mode", "zoned_private")))
 	_set_service_class_selection(str(data.get("service_class", "none")))
+	var extractor_resource := str(data.get("extractor_resource", "") if data.get("extractor_resource") != null else "")
+	_set_extractor_enabled(not extractor_resource.strip_edges().is_empty())
+	if _extractor_resource_edit:
+		_extractor_resource_edit.text = extractor_resource if not extractor_resource.strip_edges().is_empty() else "coal"
 
 	var zt_value = data.get("zone_type", null)
 	var zt: String = str(zt_value if zt_value != null else "residential")
@@ -1822,6 +1840,51 @@ func _set_service_class_selection(service_class: String) -> void:
 			return
 	_service_class_btn.select(0)
 
+func _extractor_resource_id() -> String:
+	if not _extractor_resource_edit:
+		return "coal"
+	var resource_id := _extractor_resource_edit.text.strip_edges()
+	return resource_id if not resource_id.is_empty() else "coal"
+
+func _is_extractor_enabled() -> bool:
+	return _extractor_check != null and _extractor_check.button_pressed
+
+func _set_extractor_enabled(enabled: bool) -> void:
+	if not _extractor_check:
+		return
+	_extractor_check.set_pressed_no_signal(enabled)
+	if _extractor_resource_edit:
+		_extractor_resource_edit.editable = enabled
+
+func _default_economy_profile_for_extractor(resource_id: String) -> String:
+	return str(DEFAULT_EXTRACTOR_PROFILE_BY_RESOURCE.get(resource_id.strip_edges(), "")).strip_edges()
+
+func _auto_select_profile_for_extractor(resource_id: String) -> void:
+	if not _selected_economy_profile_id().is_empty():
+		return
+	var profile_id := _default_economy_profile_for_extractor(resource_id)
+	if profile_id.is_empty():
+		return
+	if _economy_profiles_cache.has(profile_id):
+		_set_economy_profile_selection(profile_id)
+
+func _extractor_profile_matches_resource(profile_id: String, resource_id: String) -> bool:
+	var selected_id := profile_id.strip_edges()
+	if selected_id.is_empty() or resource_id.strip_edges().is_empty():
+		return false
+	if not _economy_catalog_loaded:
+		return false
+	var profile = _economy_profiles_cache.get(selected_id)
+	if not (profile is Dictionary):
+		return false
+	if str(profile.get("kind", "")).strip_edges() != "extractor":
+		return false
+	var outputs: Array = profile.get("outputs", [])
+	for output in outputs:
+		if output is Dictionary and str(output.get("resource", "")).strip_edges() == resource_id.strip_edges():
+			return true
+	return false
+
 func _expected_utility_service_for_class(service_class: String) -> String:
 	match service_class.strip_edges():
 		"power":
@@ -1898,6 +1961,12 @@ func _on_placement_mode_selected(_idx: int) -> void:
 		_set_service_class_selection("none")
 		if selected_profile == _default_economy_profile_for_service(previous_service):
 			_set_economy_profile_selection("")
+	if _selected_placement_mode() == "zoned_private" and _is_extractor_enabled():
+		var selected_extractor_profile := _selected_economy_profile_id()
+		var resource_id := _extractor_resource_id()
+		_set_extractor_enabled(false)
+		if selected_extractor_profile == _default_economy_profile_for_extractor(resource_id):
+			_set_economy_profile_selection("")
 	_update_building_mode_visibility()
 	_auto_suggest_asset_id()
 	_on_zone_or_lot_changed(0)
@@ -1907,8 +1976,31 @@ func _on_service_class_selected(_idx: int) -> void:
 	if service_class != "none" and _selected_placement_mode() != "explicit":
 		_set_placement_mode_selection("explicit")
 		_update_building_mode_visibility()
+	if service_class != "none" and _is_extractor_enabled():
+		var selected_extractor_profile := _selected_economy_profile_id()
+		var resource_id := _extractor_resource_id()
+		_set_extractor_enabled(false)
+		if selected_extractor_profile == _default_economy_profile_for_extractor(resource_id):
+			_set_economy_profile_selection("")
 	_auto_select_profile_for_service(service_class)
 	_auto_suggest_asset_id()
+	_update_economy_profile_status()
+
+func _on_extractor_toggled(enabled: bool) -> void:
+	if enabled:
+		if _selected_placement_mode() != "explicit":
+			_set_placement_mode_selection("explicit")
+			_update_building_mode_visibility()
+		_set_service_class_selection("none")
+		_auto_select_profile_for_extractor(_extractor_resource_id())
+	if _extractor_resource_edit:
+		_extractor_resource_edit.editable = enabled
+	_auto_suggest_asset_id()
+	_update_economy_profile_status()
+
+func _on_extractor_resource_changed() -> void:
+	if _is_extractor_enabled():
+		_auto_select_profile_for_extractor(_extractor_resource_id())
 	_update_economy_profile_status()
 
 func _sync_min_zone_defaults_with_lot_change() -> void:
@@ -2006,7 +2098,10 @@ func _load_economy_profiles() -> void:
 
 	_economy_catalog_loaded = true
 	if current_id.is_empty():
-		_auto_select_profile_for_service(_selected_service_class())
+		if _is_extractor_enabled():
+			_auto_select_profile_for_extractor(_extractor_resource_id())
+		else:
+			_auto_select_profile_for_service(_selected_service_class())
 		if _selected_economy_profile_id().is_empty():
 			_update_economy_profile_status()
 	else:
@@ -2072,9 +2167,23 @@ func _update_economy_profile_status() -> void:
 	var placement_mode := _selected_placement_mode()
 	var zone_type := _selected_zone_type()
 	var service_class := _selected_service_class()
+	var extractor_enabled := _is_extractor_enabled()
+	var extractor_resource := _extractor_resource_id()
 	if service_class != "none" and placement_mode != "explicit":
 		_set_economy_profile_status(
 			"Service assets must use explicit placement.",
+			Color(1.0, 0.42, 0.36)
+		)
+		return
+	if extractor_enabled and placement_mode != "explicit":
+		_set_economy_profile_status(
+			"Extractor assets must use explicit placement.",
+			Color(1.0, 0.42, 0.36)
+		)
+		return
+	if extractor_enabled and service_class != "none":
+		_set_economy_profile_status(
+			"Extractor assets cannot use a service class.",
 			Color(1.0, 0.42, 0.36)
 		)
 		return
@@ -2090,6 +2199,13 @@ func _update_economy_profile_status() -> void:
 				msg += " Cannot validate utility profile '%s'." % selected_id
 			_set_economy_profile_status(msg, Color(1.0, 0.42, 0.36))
 			return
+		if extractor_enabled:
+			if selected_id.is_empty():
+				msg += " Extractor assets require a resolved extractor profile."
+			else:
+				msg += " Cannot validate extractor profile '%s'." % selected_id
+			_set_economy_profile_status(msg, Color(1.0, 0.42, 0.36))
+			return
 		if not selected_id.is_empty():
 			msg += " Existing selection will be preserved on export."
 		_set_economy_profile_status(msg, Color(0.95, 0.78, 0.38))
@@ -2103,6 +2219,24 @@ func _update_economy_profile_status() -> void:
 		return
 
 	if placement_mode == "explicit":
+		if extractor_enabled:
+			if selected_id.is_empty():
+				_set_economy_profile_status(
+					"Extractor assets require an economy profile.",
+					Color(1.0, 0.42, 0.36)
+				)
+				return
+			if not _extractor_profile_matches_resource(selected_id, extractor_resource):
+				_set_economy_profile_status(
+					"Selected profile must be an extractor that outputs %s." % extractor_resource,
+					Color(1.0, 0.42, 0.36)
+				)
+				return
+			var extractor_msg := "Extractor profile: %s -> %s" % [selected_id, extractor_resource]
+			if _economy_catalog_warning_count > 0:
+				extractor_msg += " (catalog has %d validation warning(s))" % _economy_catalog_warning_count
+			_set_economy_profile_status(extractor_msg, Color(0.72, 0.92, 0.72))
+			return
 		if _is_utility_service_class(service_class):
 			if selected_id.is_empty():
 				_set_economy_profile_status(
@@ -2171,6 +2305,8 @@ func _auto_suggest_asset_id() -> void:
 		var service_class := _selected_service_class()
 		if service_class != "none":
 			prefix = service_class
+		elif _is_extractor_enabled():
+			prefix = "industry"
 	var clean := _asset_id_slug_from_display_name(_display_name_edit.text)
 	# Set text without triggering the manual-edit flag.
 	_asset_id_edit.text_changed.disconnect(_on_asset_id_text_changed)
@@ -3332,9 +3468,27 @@ func _export_asset(move_original_after_export: bool) -> void:
 	var economy_profile_id := _selected_economy_profile_id()
 	var placement_mode := _selected_placement_mode()
 	var service_class := _selected_service_class()
+	var extractor_enabled := _is_extractor_enabled()
+	var extractor_resource := _extractor_resource_id()
 	if service_class != "none" and placement_mode != "explicit":
 		_log("[color=red]Service assets must use explicit placement.[/color]")
 		return
+	if extractor_enabled:
+		if placement_mode != "explicit":
+			_log("[color=red]Extractor assets must use explicit placement.[/color]")
+			return
+		if service_class != "none":
+			_log("[color=red]Extractor assets cannot use a service class.[/color]")
+			return
+		if economy_profile_id.is_empty():
+			_log("[color=red]Extractor assets require an economy profile.[/color]")
+			return
+		if not _economy_catalog_loaded:
+			_log("[color=red]Economy catalog unavailable; extractor assets require a resolved matching profile.[/color]")
+			return
+		if not _extractor_profile_matches_resource(economy_profile_id, extractor_resource):
+			_log("[color=red]Selected economy profile must be an extractor that outputs %s.[/color]" % extractor_resource)
+			return
 	if _is_utility_service_class(service_class):
 		if economy_profile_id.is_empty():
 			_log("[color=red]Utility service assets require an economy profile.[/color]")
@@ -3370,6 +3524,8 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"level":             int(_level_spin.value),
 		"service_class":     service_class if service_class != "none" else null,
 		"economy_profile":   economy_profile_id if not economy_profile_id.is_empty() else null,
+		"extractor_resource": extractor_resource if extractor_enabled else null,
+		"extractor_area_mode": "player_polygon" if extractor_enabled else null,
 		"household_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,
 		"flat_size_m2":      _flat_size_spin.value if _flat_size_spin.value > 0 else null,
 		"worker_capacity":    int(_workers_spin.value)   if _workers_spin.value > 0 else null,

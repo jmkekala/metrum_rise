@@ -161,6 +161,7 @@ impl ShipmentSystem {
                     &mut planning.route_cache,
                     freight_profile,
                     minute_of_day,
+                    &catalog,
                     &tuning.logistics,
                     business_purchase_tax_rate,
                     treasury_balance,

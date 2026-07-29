@@ -7,9 +7,11 @@
 pub mod buildings;
 pub mod core;
 pub mod economy;
+pub(crate) mod extraction;
 pub mod grid;
 pub mod network;
 pub mod pathing;
+pub(crate) mod resources;
 pub(crate) mod save;
 pub mod terrain;
 pub mod water;

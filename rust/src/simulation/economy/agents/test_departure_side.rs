@@ -66,6 +66,7 @@ mod tests {
                     ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
                     _ => None,
                 },
+                extractor: None,
             }),
             prop: None,
             vehicle: None,

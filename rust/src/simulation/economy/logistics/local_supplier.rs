@@ -118,6 +118,11 @@ impl ShipmentSystem {
                 choice.tax_cost,
             );
             let shipment_id = self.allocate_shipment_id();
+            let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
+                choice.travel_seconds,
+                freight_profile,
+                minute_of_day,
+            ));
             self.shipments.push(Shipment {
                 id: shipment_id,
                 resource_runtime_id,
@@ -129,11 +134,7 @@ impl ShipmentSystem {
                 carrier_agent_id: usize::MAX,
                 total_cost: choice.total_cost,
                 tax_cost: choice.tax_cost,
-                eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
-                    choice.travel_seconds,
-                    freight_profile,
-                    minute_of_day,
-                )),
+                eta_hours,
                 queued_hours: 0,
             });
             reservations.record_local_shipment(
@@ -141,6 +142,22 @@ impl ShipmentSystem {
                 dest_idx,
                 resource_runtime_id,
                 choice.amount,
+            );
+            crate::debug_log!(
+                "economy",
+                "freight input initiated shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} eta={}h",
+                shipment_id,
+                choice.supplier_idx,
+                allocator.buildings[choice.supplier_idx].asset_id,
+                dest_idx,
+                allocator.buildings[dest_idx].asset_id,
+                catalog
+                    .resource_id_for_runtime_id(resource_runtime_id)
+                    .unwrap_or("unknown"),
+                choice.amount,
+                choice.total_cost,
+                choice.tax_cost,
+                eta_hours
             );
             return true;
         }

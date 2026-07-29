@@ -165,6 +165,12 @@ pub struct ExportParams {
     /// Reference to an authored economy profile selected from the current economy catalog.
     #[serde(default)]
     pub economy_profile: Option<String>,
+    /// Optional resource id extracted by this explicit industry building.
+    #[serde(default)]
+    pub extractor_resource: Option<String>,
+    /// Optional extraction area mode. Version one supports `"player_polygon"`.
+    #[serde(default)]
+    pub extractor_area_mode: Option<String>,
 
     /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
@@ -315,6 +321,13 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 if !ep.is_empty() {
                     out.push_str(&format!("economy_profile = {}\n", toml_string(ep)));
                 }
+            }
+            if let Some(resource) = non_empty_optional_string(&p.extractor_resource) {
+                let area_mode =
+                    non_empty_optional_string(&p.extractor_area_mode).unwrap_or("player_polygon");
+                out.push_str("\n[building.extractor]\n");
+                out.push_str(&format!("resource = {}\n", toml_string(resource)));
+                out.push_str(&format!("area_mode = {}\n", toml_string(area_mode)));
             }
         }
         other => {
@@ -513,12 +526,66 @@ fn validate_utility_profile_matches_service(
     Ok(())
 }
 
+fn validate_extractor_profile_matches_resource(
+    economy_profile: &str,
+    resource_id: &str,
+) -> Result<(), String> {
+    let resource_id = resource_id.trim();
+    if resource_id.is_empty() {
+        return Err("extractor_resource must not be empty".to_owned());
+    }
+    let catalog = load_runtime_economy_catalog()
+        .map_err(|err| format!("could not load economy catalog for extractor validation: {err}"))?;
+    let profile = catalog
+        .all_profiles()
+        .iter()
+        .find(|profile| profile.id == economy_profile)
+        .ok_or_else(|| {
+            format!(
+                "extractor economy_profile '{economy_profile}' is missing from the runtime catalog"
+            )
+        })?;
+    if profile.kind != EconomyProfileRuntimeKind::Extractor {
+        return Err(format!(
+            "extractor economy_profile '{}' must have kind = \"extractor\"",
+            economy_profile
+        ));
+    }
+    let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
+        return Err(format!(
+            "extractor resource '{}' is missing from the runtime catalog",
+            resource_id
+        ));
+    };
+    if profile.output_port(resource_runtime_id).is_none() {
+        return Err(format!(
+            "extractor economy_profile '{}' must output resource '{}'",
+            economy_profile, resource_id
+        ));
+    }
+    if profile.worker_capacity == 0 {
+        return Err(format!(
+            "extractor economy_profile '{}' must have worker_capacity > 0",
+            economy_profile
+        ));
+    }
+    Ok(())
+}
+
 fn validate_building_export_contract(params: &ExportParams) -> Result<(), String> {
     let placement_mode = parse_placement_mode(&params.placement_mode)?;
     let service_class = non_none_service_class(&params.service_class);
     let economy_profile = non_empty_optional_string(&params.economy_profile);
+    let extractor_resource = non_empty_optional_string(&params.extractor_resource);
+    let extractor_area_mode =
+        non_empty_optional_string(&params.extractor_area_mode).unwrap_or("player_polygon");
     if let Some(service_class) = service_class {
         validate_service_class(service_class)?;
+    }
+    if extractor_resource.is_some() && extractor_area_mode != "player_polygon" {
+        return Err(
+            "extractor_area_mode must be \"player_polygon\" for extractor buildings".to_owned(),
+        );
     }
     if params.lot_width_cells == 0 || params.lot_depth_cells == 0 {
         return Err("lot_width_cells and lot_depth_cells must be > 0".to_owned());
@@ -539,6 +606,12 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
             if service_class.is_some() {
                 return Err(
                     "zoned_private buildings must not export service_class; use explicit placement for service or utility assets"
+                        .to_owned(),
+                );
+            }
+            if extractor_resource.is_some() {
+                return Err(
+                    "zoned_private buildings must not export extractor metadata; use explicit placement for industry assets"
                         .to_owned(),
                 );
             }
@@ -589,6 +662,18 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                     };
                     validate_utility_profile_matches_service(economy_profile, service_class)?;
                 }
+            }
+            if let Some(resource_id) = extractor_resource {
+                if service_class.is_some() {
+                    return Err(
+                        "extractor buildings must not export service_class; use the Industry toolbar"
+                            .to_owned(),
+                    );
+                }
+                let Some(economy_profile) = economy_profile else {
+                    return Err("extractor buildings require economy_profile".to_owned());
+                };
+                validate_extractor_profile_matches_resource(economy_profile, resource_id)?;
             }
         }
     }
@@ -769,6 +854,16 @@ pub fn get_asset_manifest_json_internal(
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
+        obj["extractor_resource"] = serde_json::json!(
+            b.extractor
+                .as_ref()
+                .map(|extractor| extractor.resource.as_str())
+        );
+        obj["extractor_area_mode"] = serde_json::json!(
+            b.extractor
+                .as_ref()
+                .map(|extractor| extractor.area_mode.as_str())
+        );
     }
 
     serde_json::to_string(&obj).unwrap_or_default()

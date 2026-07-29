@@ -50,6 +50,7 @@ pub(super) fn register_test_asset(
                 ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
                 _ => None,
             },
+            extractor: None,
         }),
         prop: None,
         vehicle: None,

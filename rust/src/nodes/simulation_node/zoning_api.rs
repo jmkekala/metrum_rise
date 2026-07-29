@@ -1,5 +1,9 @@
 //! Zoning and service-building Godot API methods.
 
+use crate::simulation::extraction::{
+    EXTRACTOR_POLYGON_LINK_DISTANCE_M, building_footprint_polygon,
+};
+
 use super::*;
 
 #[godot_api(secondary)]
@@ -42,6 +46,59 @@ impl SimulationNode {
     ) -> &'static str {
         match rejection {
             ExplicitServicePlacementRejection::AssetUnavailable => "service asset unavailable",
+            ExplicitServicePlacementRejection::NotServiceBuilding => {
+                "selected asset is not an explicit service building"
+            }
+            ExplicitServicePlacementRejection::NotIndustryBuilding => {
+                "selected asset is not an explicit industry building"
+            }
+            ExplicitServicePlacementRejection::UtilityProfileUnavailable => {
+                "service building has no supported utility profile"
+            }
+            ExplicitServicePlacementRejection::ExtractorProfileUnavailable => {
+                "industry building has no supported extractor profile"
+            }
+            ExplicitServicePlacementRejection::RoadFrontageUnavailable => {
+                "no nearby road frontage can fit this building"
+            }
+            ExplicitServicePlacementRejection::DrivewayRoadSurfaceMissing => {
+                "driveway cannot resolve road surface height"
+            }
+            ExplicitServicePlacementRejection::DrivewayHeightConflict => {
+                "driveway anchors require incompatible site heights"
+            }
+            ExplicitServicePlacementRejection::DrivewayConnectionMissing => {
+                "driveway anchors do not connect to the frontage road"
+            }
+            ExplicitServicePlacementRejection::FrontageRoadSurfaceMissing => {
+                "frontage road surface height is unavailable"
+            }
+            ExplicitServicePlacementRejection::NeighborSiteHeightConflict => {
+                "building site height conflicts with a neighbor"
+            }
+            ExplicitServicePlacementRejection::SiteSupportTieInInvalid => {
+                "building site cannot tie into surrounding terrain"
+            }
+            ExplicitServicePlacementRejection::SiteOverlap => {
+                "building footprint overlaps an existing site"
+            }
+            ExplicitServicePlacementRejection::RoadOverlap => {
+                "building footprint overlaps an existing road"
+            }
+        }
+    }
+
+    fn industry_placement_error_message(
+        rejection: ExplicitServicePlacementRejection,
+    ) -> &'static str {
+        match rejection {
+            ExplicitServicePlacementRejection::AssetUnavailable => "industry asset unavailable",
+            ExplicitServicePlacementRejection::NotIndustryBuilding => {
+                "selected asset is not an explicit industry building"
+            }
+            ExplicitServicePlacementRejection::ExtractorProfileUnavailable => {
+                "industry building has no supported extractor profile"
+            }
             ExplicitServicePlacementRejection::NotServiceBuilding => {
                 "selected asset is not an explicit service building"
             }
@@ -138,6 +195,57 @@ impl SimulationNode {
         arr
     }
 
+    /// Returns explicit resource-extractor building assets for the Industry toolbar.
+    #[func]
+    pub fn get_industry_building_assets(&self) -> VarArray {
+        let core = self.lock_core();
+        let catalog = load_runtime_economy_catalog().ok();
+        let mut ids = core
+            .allocator
+            .registry
+            .qualified_ids()
+            .filter(|asset_id| {
+                core.allocator
+                    .registry
+                    .is_resource_extractor_asset(asset_id)
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+
+        let mut arr = VarArray::new();
+        for asset_id in ids {
+            let Some(entry) = core.allocator.registry.get(asset_id) else {
+                continue;
+            };
+            let Some(building) = entry.manifest.building.as_ref() else {
+                continue;
+            };
+            let Some(resource_id) = core.allocator.registry.extractor_resource(asset_id) else {
+                continue;
+            };
+            let worker_capacity = catalog
+                .as_ref()
+                .and_then(|catalog| {
+                    core.allocator
+                        .worker_capacity_for_asset_with_catalog(asset_id, catalog)
+                })
+                .unwrap_or_else(|| core.allocator.worker_capacity_for_asset(asset_id));
+
+            let mut dict = VarDictionary::new();
+            dict.set("asset_id", GString::from(asset_id));
+            dict.set(
+                "display_name",
+                GString::from(entry.manifest.display_name.as_str()),
+            );
+            dict.set("resource_id", GString::from(resource_id));
+            dict.set("lot_width_cells", i64::from(building.lot_width_cells));
+            dict.set("lot_depth_cells", i64::from(building.lot_depth_cells));
+            dict.set("worker_capacity", i64::from(worker_capacity));
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
     /// Returns a road-frontage snapped footprint preview for one service building asset.
     #[func]
     pub fn get_service_building_placement_preview(
@@ -211,6 +319,176 @@ impl SimulationNode {
             }
             Err(rejection) => GString::from(Self::service_placement_error_message(rejection)),
         }
+    }
+
+    /// Returns a road-frontage snapped footprint preview for one industry building asset.
+    #[func]
+    pub fn get_industry_building_placement_preview(
+        &self,
+        asset_id: GString,
+        world_x: f32,
+        world_z: f32,
+    ) -> VarDictionary {
+        let asset_id = asset_id.to_string();
+        if asset_id.is_empty() {
+            return Self::empty_service_preview_dict("no industry building selected");
+        }
+        let core = self.lock_core();
+        match core.get_industry_building_placement_preview_internal(&asset_id, world_x, world_z) {
+            Ok(preview) => {
+                let part_transforms = core.get_service_building_preview_part_transforms_internal(
+                    &asset_id,
+                    preview.center_2d,
+                    preview.support_height_m,
+                    preview.facing_dir,
+                );
+                let mut corners = PackedVector3Array::new();
+                for corner in preview.corners {
+                    corners.push(Vector3::new(
+                        corner.x,
+                        preview.support_height_m + 0.08,
+                        corner.y,
+                    ));
+                }
+                let mut dict = VarDictionary::new();
+                dict.set("valid", preview.valid);
+                let error = preview
+                    .rejection
+                    .map(Self::industry_placement_error_message)
+                    .unwrap_or("");
+                dict.set("error", GString::from(error));
+                dict.set("corners", corners);
+                dict.set("center_x", f64::from(preview.center_2d.x));
+                dict.set("center_z", f64::from(preview.center_2d.y));
+                dict.set("support_height_m", f64::from(preview.support_height_m));
+                dict.set("facing_dir", preview.facing_dir);
+                dict.set("part_transforms", part_transforms);
+                dict
+            }
+            Err(rejection) => {
+                Self::empty_service_preview_dict(Self::industry_placement_error_message(rejection))
+            }
+        }
+    }
+
+    /// Places one explicit industry building and returns placement metadata on success.
+    #[func]
+    pub fn place_industry_building(
+        &mut self,
+        asset_id: GString,
+        world_x: f32,
+        world_z: f32,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let asset_id = asset_id.to_string();
+        if asset_id.is_empty() {
+            dict.set("ok", false);
+            dict.set("error", GString::from("no industry building selected"));
+            dict.set("building_id", -1_i64);
+            return dict;
+        }
+        let result = {
+            let mut core = self.lock_core();
+            core.place_industry_building_internal(&asset_id, world_x, world_z)
+        };
+        match result {
+            Ok(building_id) => {
+                let footprint_corners = {
+                    let core = self.lock_core();
+                    let mut corners = PackedVector3Array::new();
+                    if let Some(building) = core.allocator.buildings.get(building_id) {
+                        for corner in
+                            building_footprint_polygon(building, core.zoning.config.zone_cell_m)
+                        {
+                            corners.push(Vector3::new(
+                                corner.x,
+                                building.support_height_m + 0.08,
+                                corner.y,
+                            ));
+                        }
+                    }
+                    corners
+                };
+                self.refresh_snapshot_from_core();
+                dict.set("ok", true);
+                dict.set("error", GString::new());
+                dict.set("building_id", building_id as i64);
+                dict.set("footprint_corners", footprint_corners);
+                dict.set(
+                    "polygon_link_distance_m",
+                    f64::from(EXTRACTOR_POLYGON_LINK_DISTANCE_M),
+                );
+            }
+            Err(rejection) => {
+                dict.set("ok", false);
+                dict.set(
+                    "error",
+                    GString::from(Self::industry_placement_error_message(rejection)),
+                );
+                dict.set("building_id", -1_i64);
+            }
+        }
+        dict
+    }
+
+    /// Commits or replaces an extractor polygon for one placed industry building.
+    #[func]
+    pub fn commit_extractor_polygon(
+        &mut self,
+        building_id: i32,
+        polygon_points: PackedVector2Array,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        if building_id < 0 {
+            dict.set("ok", false);
+            dict.set("error", GString::from("invalid extractor building id"));
+            dict.set("total_reserve_units", 0.0f64);
+            dict.set("remaining_reserve_units", 0.0f64);
+            return dict;
+        }
+        let polygon = polygon_points.as_slice().to_vec();
+        let result = {
+            let mut core = self.lock_core();
+            core.commit_extractor_polygon_internal(building_id as usize, polygon)
+        };
+        match result {
+            Ok(summary) => {
+                self.refresh_snapshot_from_core();
+                dict.set("ok", true);
+                dict.set("error", GString::new());
+                dict.set(
+                    "total_reserve_units",
+                    f64::from(summary.total_reserve_units),
+                );
+                dict.set(
+                    "remaining_reserve_units",
+                    f64::from(summary.remaining_reserve_units),
+                );
+            }
+            Err(err) => {
+                dict.set("ok", false);
+                dict.set("error", GString::from(err.as_str()));
+                dict.set("total_reserve_units", 0.0f64);
+                dict.set("remaining_reserve_units", 0.0f64);
+            }
+        }
+        dict
+    }
+
+    /// Removes a pending unfinalized industry placement.
+    #[func]
+    pub fn cancel_pending_industry_building(&mut self, building_id: i32) -> bool {
+        if building_id < 0 {
+            return false;
+        }
+        let removed = {
+            let mut core = self.lock_core();
+            core.cancel_pending_industry_building_internal(building_id as usize)
+        };
+        if removed {
+            self.refresh_snapshot_from_core();
+        }
+        removed
     }
 
     /// Returns the deterministic bulldoze target under one world-space point.

@@ -953,7 +953,9 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
         ZoneType::Commercial | ZoneType::Industrial
     ) || matches!(
         profile.kind,
-        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor
+        EconomyProfileRuntimeKind::Extractor
+            | EconomyProfileRuntimeKind::UtilityProducer
+            | EconomyProfileRuntimeKind::UtilityProcessor
     )
 }
 

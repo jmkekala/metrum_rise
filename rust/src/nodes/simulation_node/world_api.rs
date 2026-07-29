@@ -266,6 +266,57 @@ impl SimulationNode {
         markers
     }
 
+    /// Paints authored coal richness in a circular world-editor brush footprint.
+    #[func]
+    pub fn paint_world_coal_deposit(
+        &mut self,
+        pos: Vector2,
+        radius_m: f32,
+        richness_percent: f32,
+    ) -> bool {
+        let mut core = self.lock_core();
+        core.paint_world_coal_deposit_internal(pos, radius_m, richness_percent)
+    }
+
+    /// Erases authored coal richness in a circular world-editor brush footprint.
+    #[func]
+    pub fn erase_world_coal_deposit(&mut self, pos: Vector2, radius_m: f32) -> bool {
+        let mut core = self.lock_core();
+        core.erase_world_coal_deposit_internal(pos, radius_m)
+    }
+
+    /// Returns authored coal richness as a terrain-sized RGBA8 overlay texture payload.
+    #[func]
+    pub fn get_world_coal_deposit_overlay_data(&self) -> PackedByteArray {
+        self.lock_core()
+            .get_world_coal_deposit_overlay_data_internal()
+    }
+
+    /// Returns committed coal extraction polygons as a high-resolution L8 mask.
+    #[func]
+    pub fn get_coal_pit_overlay_data(&self) -> PackedByteArray {
+        self.lock_core().get_coal_pit_overlay_data_internal()
+    }
+
+    /// Returns the pixel dimensions of the committed coal extraction mask.
+    #[func]
+    pub fn get_coal_pit_overlay_size(&self) -> Vector2 {
+        self.lock_core().get_coal_pit_overlay_size_internal()
+    }
+
+    /// Returns `(min_x, min_z, width, height)` for the committed coal extraction mask.
+    #[func]
+    pub fn get_coal_pit_overlay_world_bounds(&self) -> Vector4 {
+        self.lock_core()
+            .get_coal_pit_overlay_world_bounds_internal()
+    }
+
+    /// Returns a monotonic revision for committed coal extraction polygon visuals.
+    #[func]
+    pub fn get_coal_pit_overlay_revision(&self) -> i64 {
+        self.lock_core().get_coal_pit_overlay_revision_internal() as i64
+    }
+
     /// Commits the active transient lake-fill preview into authored world state.
     #[func]
     pub fn commit_world_lake_fill_preview(&mut self) -> bool {

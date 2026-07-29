@@ -456,6 +456,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
             flat_size_m2: None,
             service_class: None,
             economy_profile: None,
+            extractor: None,
         }),
         prop: None,
         vehicle: None,

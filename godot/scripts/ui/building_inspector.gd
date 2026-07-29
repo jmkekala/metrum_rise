@@ -262,6 +262,8 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				"Production",
 				"%.0f%%" % (float(info.get("business_production_ratio", 0.0)) * 100.0)
 			)
+			if info.has("extractor_resource"):
+				_add_extractor_reserve_section(stats_body, info)
 			if info.has("utility_fuel_name"):
 				var fuel_units := float(info.get("utility_fuel_units", 0.0))
 				var fuel_days := float(info.get("utility_fuel_days", 0.0))
@@ -347,6 +349,14 @@ func _signed_money(amount: float) -> String:
 	var sign := "+" if amount >= 0.0 else "-"
 	return "%s$%.0f" % [sign, absf(amount)]
 
+func _resource_label(resource_id: String) -> String:
+	return resource_id.replace("_", " ").capitalize()
+
+func _resource_units(amount: float) -> String:
+	if absf(amount) >= 1000.0:
+		return "%.1f k units" % (amount / 1000.0)
+	return "%.1f units" % amount
+
 func _add_section(stats_body: VBoxContainer, title: String) -> void:
 	stats_body.add_child(HSeparator.new())
 	var label := Label.new()
@@ -371,6 +381,22 @@ func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String)
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	value.add_theme_font_size_override("font_size", 12)
 	hbox.add_child(value)
+
+func _add_extractor_reserve_section(stats_body: VBoxContainer, info: Dictionary) -> void:
+	_add_section(stats_body, "Extraction Pit")
+	var resource_name: String = _resource_label(str(info.get("extractor_resource", "resource")))
+	if not bool(info.get("extractor_has_site", false)):
+		_add_row(stats_body, "Pit", "No polygon")
+		return
+
+	var available := maxf(float(info.get("extractor_available_reserve_units", 0.0)), 0.0)
+	var consumed := maxf(float(info.get("extractor_consumed_reserve_units", 0.0)), 0.0)
+	var total := maxf(float(info.get("extractor_total_reserve_units", 0.0)), 0.0)
+	var consumed_ratio := clampf(float(info.get("extractor_consumed_reserve_ratio", 0.0)), 0.0, 1.0)
+	_add_row(stats_body, "%s Available" % resource_name, _resource_units(available))
+	_add_row(stats_body, "%s Consumed" % resource_name, _resource_units(consumed))
+	_add_row(stats_body, "%s Reserve" % resource_name, _resource_units(total))
+	_add_reserve_consumption_bar(stats_body, consumed_ratio, consumed, total)
 
 func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) -> void:
 	var hbox := HBoxContainer.new()
@@ -410,6 +436,53 @@ func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) ->
 		)
 	)
 	slider.drag_ended.connect(_on_service_funding_slider_drag_ended)
+
+func _add_reserve_consumption_bar(
+	stats_body: VBoxContainer,
+	consumed_ratio: float,
+	_consumed_units: float,
+	_total_units: float
+) -> void:
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 8)
+	stats_body.add_child(hbox)
+
+	var label := Label.new()
+	label.text = "Pit Used"
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	label.add_theme_font_size_override("font_size", 12)
+	hbox.add_child(label)
+
+	var bar_holder := Control.new()
+	bar_holder.custom_minimum_size = Vector2(0.0, 18.0)
+	bar_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hbox.add_child(bar_holder)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 1.0
+	bar.value = consumed_ratio
+	bar.show_percentage = false
+	bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar.add_theme_stylebox_override(
+		"background",
+		UIStyle.panel_style(Color(0.18, 0.18, 0.20, 0.90), 4, Color.TRANSPARENT, 0)
+	)
+	bar.add_theme_stylebox_override(
+		"fill",
+		UIStyle.panel_style(Color(0.53, 0.42, 0.30, 0.95), 4, Color.TRANSPARENT, 0)
+	)
+	bar_holder.add_child(bar)
+
+	var value := Label.new()
+	value.text = "%.0f%%" % (consumed_ratio * 100.0)
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	value.add_theme_font_size_override("font_size", 11)
+	value.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bar_holder.add_child(value)
 
 func _on_service_funding_slider_changed(
 	new_value: float,

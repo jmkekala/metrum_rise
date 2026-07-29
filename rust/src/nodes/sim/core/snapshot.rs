@@ -10,6 +10,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator, Build
 use crate::simulation::economy::agents::{Agent, MODE_CAR, transit_is_visible};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
+use crate::simulation::extraction::ExtractorSite;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::{Lane, LaneType};
 use crate::simulation::network::render::NetworkMeshData;
@@ -153,6 +154,7 @@ pub(crate) struct BuildingRemovalUndo {
     pub(crate) removed_carriers: Vec<(usize, Agent)>,
     pub(crate) households: HouseholdBuildingUndo,
     pub(crate) logistics: ShipmentBuildingUndo,
+    pub(crate) extractor_sites: Vec<ExtractorSite>,
     pub(crate) dirty_bounds: Option<(f32, f32, f32, f32)>,
 }
 

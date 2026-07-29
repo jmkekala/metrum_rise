@@ -143,6 +143,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             worker_capacity: None,
             service_class: None,
             economy_profile: None,
+            extractor: None,
         }),
         prop: None,
         vehicle: None,

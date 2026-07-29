@@ -497,6 +497,108 @@ impl BuildingAllocator {
         Ok(building_idx)
     }
 
+    pub(crate) fn preview_explicit_industry_placement(
+        &self,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let params = self.explicit_industry_placement_params(asset_id, catalog)?;
+        let mut placement =
+            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
+        placement.support_height_m = self
+            .resolve_site_support_height(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+        if let Err(rejection) = self.validate_explicit_site_overlap(&placement) {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
+                support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
+        if let Err(rejection) = self.validate_explicit_site_road_overlap(&placement, graph) {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
+                support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
+        if let Err(rejection) = self
+            .validate_site_support_tie_in(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)
+        {
+            return Ok(ExplicitServicePlacementPreview {
+                corners: self.placement_site_corners(&placement),
+                center_2d: placement.center_2d,
+                support_height_m: placement.support_height_m,
+                facing_dir: placement.facing_dir,
+                valid: false,
+                rejection: Some(rejection),
+            });
+        }
+        Ok(ExplicitServicePlacementPreview {
+            corners: self.placement_site_corners(&placement),
+            center_2d: placement.center_2d,
+            support_height_m: placement.support_height_m,
+            facing_dir: placement.facing_dir,
+            valid: true,
+            rejection: None,
+        })
+    }
+
+    pub(crate) fn execute_explicit_industry_placement(
+        &mut self,
+        asset_id: &str,
+        point: Vector2,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+        business_purchase_tax_rate: f32,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let params = self.explicit_industry_placement_params(asset_id, catalog)?;
+        let mut placement =
+            self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
+        placement.support_height_m = self
+            .resolve_site_support_height(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+        self.validate_explicit_site_overlap(&placement)?;
+        self.validate_explicit_site_road_overlap(&placement, graph)?;
+        self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
+            .map_err(explicit_rejection_from_site_rejection)?;
+
+        let building_idx =
+            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
+        self.bump_building_ref_revision();
+        self.dirty = true;
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        debug_log!(
+            "economy",
+            "explicit industry placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
+            building_idx,
+            self.buildings[building_idx].asset_id,
+            self.buildings[building_idx].edge_idx,
+            self.buildings[building_idx].center_x,
+            self.buildings[building_idx].center_y,
+            self.buildings[building_idx].support_height_m,
+        );
+        Ok(building_idx)
+    }
+
     fn explicit_service_placement_params(
         &self,
         asset_id: &str,
@@ -540,6 +642,58 @@ impl BuildingAllocator {
             if profile.worker_capacity == 0 {
                 return Err(ExplicitServicePlacementRejection::UtilityProfileUnavailable);
             }
+        }
+
+        Ok(AssetPlacementParams {
+            zone_type: ZoneType::None,
+            density: String::new(),
+            tags: entry.manifest.tags.clone(),
+            width_cells: building.lot_width_cells as usize,
+            depth_cells: building.lot_depth_cells as usize,
+            initial_level: building.level,
+        })
+    }
+
+    fn explicit_industry_placement_params(
+        &self,
+        asset_id: &str,
+        catalog: &RuntimeEconomyCatalog,
+    ) -> Result<AssetPlacementParams, ExplicitServicePlacementRejection> {
+        let entry = self
+            .registry
+            .get(asset_id)
+            .ok_or(ExplicitServicePlacementRejection::AssetUnavailable)?;
+        let building = entry
+            .manifest
+            .building
+            .as_ref()
+            .ok_or(ExplicitServicePlacementRejection::NotIndustryBuilding)?;
+        if !self.registry.is_resource_extractor_asset(asset_id) {
+            return Err(ExplicitServicePlacementRejection::NotIndustryBuilding);
+        }
+        let resource_id = self
+            .registry
+            .extractor_resource(asset_id)
+            .ok_or(ExplicitServicePlacementRejection::NotIndustryBuilding)?;
+        let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
+            return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
+        };
+        let economy_binding = resolve_building_economy_profile_binding_with_catalog(
+            &self.registry,
+            catalog,
+            asset_id,
+        );
+        let profile = catalog
+            .profile_by_runtime_id(economy_binding.runtime_id)
+            .filter(|profile| {
+                !economy_binding.economy_broken
+                    && profile.kind == EconomyProfileRuntimeKind::Extractor
+                    && profile.worker_capacity > 0
+                    && profile.output_port(resource_runtime_id).is_some()
+            })
+            .ok_or(ExplicitServicePlacementRejection::ExtractorProfileUnavailable)?;
+        if profile.outputs.is_empty() {
+            return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
         }
 
         Ok(AssetPlacementParams {
@@ -1236,6 +1390,21 @@ impl BuildingAllocator {
         const STARTUP_RUNWAY_DAYS: f32 = 7.0;
         const STARTUP_MIN_BUDGET: f32 = 500.0;
         let startup_budget = match placement.zone_type {
+            ZoneType::None
+                if !economy_binding.economy_broken
+                    && catalog
+                        .profile_by_runtime_id(economy_binding.runtime_id)
+                        .is_some_and(|profile| {
+                            profile.kind == EconomyProfileRuntimeKind::Extractor
+                        }) =>
+            {
+                let profile = catalog
+                    .profile_by_runtime_id(economy_binding.runtime_id)
+                    .expect("extractor profile checked above");
+                let daily_wage = profile.average_daily_wage();
+                (profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS)
+                    .max(STARTUP_MIN_BUDGET)
+            }
             ZoneType::Commercial | ZoneType::Industrial => {
                 if economy_binding.economy_broken {
                     0.0

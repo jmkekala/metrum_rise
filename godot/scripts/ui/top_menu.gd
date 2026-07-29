@@ -31,6 +31,7 @@ enum ActionId {
 	VIEW_OVERLAY_POLLUTION = 12,
 	VIEW_OVERLAY_NOISE = 13,
 	VIEW_OVERLAY_DESIRABILITY = 14,
+	VIEW_OVERLAY_DEPOSITS = 15,
 	CITY_STATS = 20,
 	CITY_ECONOMY = 21,
 	CITY_DEMAND = 22,
@@ -166,6 +167,7 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	overlays_popup.add_item("Pollution [8]", ActionId.VIEW_OVERLAY_POLLUTION)
 	overlays_popup.add_item("Noise [9]", ActionId.VIEW_OVERLAY_NOISE)
 	overlays_popup.add_item("Desirability [0]", ActionId.VIEW_OVERLAY_DESIRABILITY)
+	overlays_popup.add_item("Deposits [-]", ActionId.VIEW_OVERLAY_DEPOSITS)
 	overlays_popup.id_pressed.connect(_on_view_menu_pressed)
 
 	var city_popup := _add_menu_popup(menu_bar, "City")
@@ -282,6 +284,8 @@ func _on_view_menu_pressed(id: int) -> void:
 			_set_overlay_mode(2)
 		ActionId.VIEW_OVERLAY_DESIRABILITY:
 			_set_overlay_mode(3)
+		ActionId.VIEW_OVERLAY_DEPOSITS:
+			_set_overlay_mode(4)
 
 func _on_city_menu_pressed(id: int) -> void:
 	match id:
@@ -336,11 +340,14 @@ func _on_help_menu_pressed(id: int) -> void:
 						"5  Slope terrain tool",
 						"6  Lake fill tool",
 						"7  Open water tool",
+						"8  Coal deposit brush",
+						"9  Coal deposit erase",
 						"Left Mouse  Sculpt terrain / capture level height / capture slope anchors",
 						"Raise / Lower / Level / Smooth / Slope  Open brush submenu with Diameter m and Strength",
+						"Coal  Open resource submenu with Diameter m and Richness %",
 						"Slope: click first point, click second point, then brush",
 						"Lake / Open Water: click once to preview, press OK to confirm",
-						"Shift+Left Mouse  Remove nearest authored water feature",
+						"Shift+Left Mouse  Remove nearest authored water feature / erase coal while coal brush is active",
 						"Escape  Cancel surface-fill preview / clear active tool",
 						"Middle Mouse  Orbit camera",
 						"Right Mouse  Pan camera",
@@ -364,14 +371,13 @@ func _on_help_menu_pressed(id: int) -> void:
 					"V  Select tool",
 					"C  Cul-de-sac tool",
 					"Y  Terrain sculpt",
-					"K  Water source tool",
 					"Space  Pause / unpause",
 					"Escape  Cancel active tool",
 					"Ctrl+S  Save",
 					"Ctrl+L  Load",
 					"Ctrl+Z  Undo",
 					"F12  +1000000 money and lock R/C/I demand at 100%",
-					"7 / 8 / 9 / 0  Overlay modes"
+					"7 / 8 / 9 / 0 / -  Overlay modes"
 				],
 				Vector2i(380, 340)
 			))

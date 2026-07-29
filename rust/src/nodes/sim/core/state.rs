@@ -18,18 +18,21 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
 };
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::surface::RoadSurfaceCompileReason;
+use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
@@ -142,6 +145,10 @@ pub struct SimCore {
     pub(crate) world_lake_fills: Vec<AuthoredLakeFill>,
     /// Authored-world edge-connected open-water fills when editing or playing from a `WorldDefinition`.
     pub(crate) world_open_water_fills: Vec<AuthoredOpenWaterFill>,
+    /// Authored natural-resource deposit layers when editing or playing from a `WorldDefinition`.
+    pub(crate) resource_deposits: ResourceDepositSystem,
+    /// Live resource-extractor polygons and depletion counters.
+    pub(crate) resource_extraction: ResourceExtractionSystem,
     /// Transient world-editor lake-fill preview. Never saved into `WorldDefinition`.
     pub(crate) world_lake_fill_preview: Option<WorldLakeFillPreview>,
     /// Cached authored-water fill debug summaries keyed by water render patch.
@@ -439,6 +446,10 @@ impl SimCore {
             .saturating_mul(24)
             .saturating_add(u32::from(minute_of_day / 60));
         self.allocator.advance_construction_hour();
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.resource_extraction
+            .produce_hourly(&mut self.allocator, &catalog);
         let service_funding_by_building = self.electricity_funding_by_building();
         let fiscal_revenue = self.households.operational_hour_tick(
             &mut self.agents,

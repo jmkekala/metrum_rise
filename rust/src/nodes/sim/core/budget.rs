@@ -209,6 +209,12 @@ impl CityTreasury {
         self.lifetime_build_cost += amount;
     }
 
+    /// Reverses an infrastructure build cost for a placement cancelled before final commitment.
+    pub(crate) fn refund_build_cost(&mut self, amount: f64) {
+        self.balance += amount;
+        self.lifetime_build_cost = (self.lifetime_build_cost - amount).max(0.0);
+    }
+
     /// Settles one day's infrastructure upkeep cost. Balance may go negative.
     pub(crate) fn settle_daily_upkeep(&mut self, amount: f64) {
         self.balance -= amount;

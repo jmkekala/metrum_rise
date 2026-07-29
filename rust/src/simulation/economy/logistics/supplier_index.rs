@@ -6,7 +6,9 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex, chunk_for_point,
 };
-use crate::simulation::economy::definitions::{ResourceRuntimeId, RuntimeEconomyCatalog};
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
@@ -35,10 +37,6 @@ impl SupplierCandidateIndex {
                     || building.is_deserted
                     || building.is_under_construction()
                     || building.edge_idx == usize::MAX
-                    || !matches!(
-                        building.zone_type,
-                        ZoneType::Industrial | ZoneType::Commercial
-                    )
                 {
                     return None;
                 }
@@ -47,6 +45,13 @@ impl SupplierCandidateIndex {
                 else {
                     return None;
                 };
+                if !matches!(
+                    building.zone_type,
+                    ZoneType::Industrial | ZoneType::Commercial
+                ) && profile.kind != EconomyProfileRuntimeKind::Extractor
+                {
+                    return None;
+                }
                 let components = freight_components.building_components(
                     allocator,
                     graph,

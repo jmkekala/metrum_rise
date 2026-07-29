@@ -11,12 +11,14 @@ use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::cch::CchGraph;
+use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
@@ -42,6 +44,7 @@ pub(crate) struct SaveGameView<'a> {
     pub time: &'a TimeSystem,
     pub terrain: &'a TerrainSystem,
     pub water: &'a WaterSystem,
+    pub resource_deposits: &'a ResourceDepositSystem,
     pub graph: &'a RegionGraph,
     pub zoning: &'a ZoningSystem,
     pub pollution: &'a PollutionSystem,
@@ -51,6 +54,7 @@ pub(crate) struct SaveGameView<'a> {
     pub allocator: &'a BuildingAllocator,
     pub households: &'a HouseholdSystem,
     pub logistics: &'a ShipmentSystem,
+    pub resource_extraction: &'a ResourceExtractionSystem,
     pub agents: &'a AgentSystem,
     pub network: &'a TransitNetwork,
     pub treasury: &'a CityTreasury,
@@ -65,6 +69,7 @@ pub(crate) struct LoadedSimulation {
     pub time: TimeSystem,
     pub terrain: TerrainSystem,
     pub water: WaterSystem,
+    pub resource_deposits: ResourceDepositSystem,
     pub graph: RegionGraph,
     pub transit_network: TransitNetwork,
     pub zoning: ZoningSystem,
@@ -76,6 +81,7 @@ pub(crate) struct LoadedSimulation {
     pub allocator: BuildingAllocator,
     pub households: HouseholdSystem,
     pub logistics: ShipmentSystem,
+    pub resource_extraction: ResourceExtractionSystem,
     pub agents: AgentSystem,
     pub treasury: CityTreasury,
     pub service_policy: CityServicePolicy,
@@ -419,10 +425,12 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         &tx,
         view.terrain,
         view.water,
+        view.resource_deposits,
         view.zoning,
         view.allocator,
         view.households,
         view.logistics,
+        view.resource_extraction,
         view.demand,
         view.pending_demand_spawns,
         view.pollution,
@@ -470,6 +478,7 @@ pub(crate) fn load_from_sqlite(
 
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
+    let resource_deposits = world::load_resource_deposits(&conn, &config)?;
     let demand_row = conn.query_row(
         "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, persistent_exit_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial, spawn_hysteresis_active_residential, spawn_hysteresis_active_commercial, spawn_hysteresis_active_industrial, upgrade_hysteresis_active_residential, upgrade_hysteresis_active_commercial, upgrade_hysteresis_active_industrial, downgrade_hysteresis_active_residential, downgrade_hysteresis_active_commercial, downgrade_hysteresis_active_industrial, despawn_hysteresis_active_residential, despawn_hysteresis_active_commercial, despawn_hysteresis_active_industrial, recent_household_failure_pressure, cheat_max_demands_enabled FROM demand_state LIMIT 1",
         [],
@@ -525,6 +534,7 @@ pub(crate) fn load_from_sqlite(
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
     let households = world::load_households(&conn)?;
     let logistics = world::load_shipments(&conn)?;
+    let resource_extraction = world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agents = agents::load_agents(&conn, time_r.5)?;
 
     let mut transit_network = TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m);
@@ -631,6 +641,7 @@ pub(crate) fn load_from_sqlite(
         time,
         terrain,
         water,
+        resource_deposits,
         graph,
         transit_network,
         zoning,
@@ -642,6 +653,7 @@ pub(crate) fn load_from_sqlite(
         allocator,
         households,
         logistics,
+        resource_extraction,
         agents,
         treasury,
         service_policy,
@@ -793,6 +805,23 @@ pub(super) fn unpack_f32_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<f32>> 
     let mut v = Vec::with_capacity(len);
     for c in b.chunks_exact(4) {
         v.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+    }
+    Ok(v)
+}
+pub(super) fn pack_u16_slice(v: &[u16]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(v.len() * 2);
+    for &x in v {
+        b.extend_from_slice(&x.to_le_bytes());
+    }
+    b
+}
+pub(super) fn unpack_u16_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<u16>> {
+    if b.len() != len * 2 {
+        return Err(SaveLoadError::custom("u16 blob size mismatch"));
+    }
+    let mut v = Vec::with_capacity(len);
+    for c in b.chunks_exact(2) {
+        v.push(u16::from_le_bytes([c[0], c[1]]));
     }
     Ok(v)
 }

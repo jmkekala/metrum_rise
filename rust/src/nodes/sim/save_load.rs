@@ -16,6 +16,7 @@ impl SimCore {
                 time: &self.time,
                 terrain: &self.heightmap,
                 water: &self.watermap,
+                resource_deposits: &self.resource_deposits,
                 graph: &self.region_graph,
                 zoning: &self.zoning,
                 pollution: &self.pollution,
@@ -25,6 +26,7 @@ impl SimCore {
                 allocator: &self.allocator,
                 households: &self.households,
                 logistics: &self.logistics,
+                resource_extraction: &self.resource_extraction,
                 agents: &self.agents,
                 network: &self.transit_network,
                 treasury: &self.treasury,
@@ -49,6 +51,7 @@ impl SimCore {
         self.time = loaded.time;
         self.heightmap = loaded.terrain;
         self.watermap = loaded.water;
+        self.resource_deposits = loaded.resource_deposits;
         self.region_graph = loaded.graph;
         self.transit_network = loaded.transit_network;
         self.zoning = loaded.zoning;
@@ -68,6 +71,7 @@ impl SimCore {
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
         self.households = loaded.households;
         self.logistics = loaded.logistics;
+        self.resource_extraction = loaded.resource_extraction;
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;

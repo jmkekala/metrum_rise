@@ -2,7 +2,7 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
-    FreightTimingProfile, LogisticsRuntimeTuning, ResourceRuntimeId,
+    FreightTimingProfile, LogisticsRuntimeTuning, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::TransitNetwork;
@@ -33,6 +33,7 @@ impl ShipmentSystem {
         route_cache: &mut FreightRouteCache,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
+        catalog: &RuntimeEconomyCatalog,
         logistics_tuning: &LogisticsRuntimeTuning,
         business_purchase_tax_rate: f32,
         treasury_balance: &mut f64,
@@ -95,6 +96,11 @@ impl ShipmentSystem {
 
         reserve_input_payment(allocator, treasury_balance, dest_idx, total_cost, tax_cost);
         let shipment_id = self.allocate_shipment_id();
+        let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
+            best_cost,
+            freight_profile,
+            minute_of_day,
+        ));
         self.shipments.push(Shipment {
             id: shipment_id,
             resource_runtime_id,
@@ -106,14 +112,26 @@ impl ShipmentSystem {
             carrier_agent_id: usize::MAX,
             total_cost,
             tax_cost,
-            eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
-                best_cost,
-                freight_profile,
-                minute_of_day,
-            )),
+            eta_hours,
             queued_hours: 0,
         });
         reservations.record_owa_import(dest_idx, best_border, resource_runtime_id, amount, status);
+        crate::debug_log!(
+            "economy",
+            "freight input initiated shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} status={:?} eta={}h",
+            shipment_id,
+            best_border,
+            dest_idx,
+            allocator.buildings[dest_idx].asset_id,
+            catalog
+                .resource_id_for_runtime_id(resource_runtime_id)
+                .unwrap_or("unknown"),
+            amount,
+            total_cost,
+            tax_cost,
+            status,
+            eta_hours
+        );
         true
     }
 }

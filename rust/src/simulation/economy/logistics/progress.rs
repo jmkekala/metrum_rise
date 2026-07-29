@@ -203,6 +203,22 @@ impl ShipmentSystem {
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
                     business_purchase_tax_collected += shipment.tax_cost;
+                    debug_log!(
+                        "economy",
+                        "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} dest_inventory={:.1}",
+                        shipment.id,
+                        src_idx,
+                        allocator.buildings[src_idx].asset_id,
+                        dest_idx,
+                        allocator.buildings[dest_idx].asset_id,
+                        catalog
+                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                            .unwrap_or("unknown"),
+                        shipment.amount,
+                        shipment.total_cost,
+                        shipment.tax_cost,
+                        allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
+                    );
                     self.start_return_or_finish(
                         idx,
                         &shipment,
@@ -212,7 +228,7 @@ impl ShipmentSystem {
                         graph,
                     );
                 }
-                ShipmentEndpoint::OwaBorder(_) => {
+                ShipmentEndpoint::OwaBorder(border_node) => {
                     if allocator.buildings[dest_idx].broken
                         || allocator.buildings[dest_idx].economy_broken
                         || allocator.buildings[dest_idx].is_deserted
@@ -241,6 +257,21 @@ impl ShipmentSystem {
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
                     business_purchase_tax_collected += shipment.tax_cost;
+                    debug_log!(
+                        "economy",
+                        "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} dest_inventory={:.1}",
+                        shipment.id,
+                        border_node,
+                        dest_idx,
+                        allocator.buildings[dest_idx].asset_id,
+                        catalog
+                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                            .unwrap_or("unknown"),
+                        shipment.amount,
+                        shipment.total_cost,
+                        shipment.tax_cost,
+                        allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
+                    );
                     self.start_return_or_finish(
                         idx,
                         &shipment,

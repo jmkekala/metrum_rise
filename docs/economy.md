@@ -1314,7 +1314,8 @@ Rules:
 - if a valid connected local `water` producer or `sewage` processor exists and has positive current operational throughput, that service is treated as locally available to eligible consumers in `v0.1`
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
-- `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal supplier asset exists, and produces no local `power` when staffed but out of coal
+- `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
+- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -2400,8 +2401,8 @@ Current status:
 - complete
 - `EconomyProfileRuntimeKind::UtilityProducer` and `UtilityProcessor` variants added; `utility_service`
   field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
-- four utility-adjacent profiles landed in `economy/profiles.toml`: `coal_supplier_basic`
-  (`coal` price/source profile), `power_plant_basic` (coal-fueled power, 20 workers, three-shift),
+- four utility-adjacent profiles landed in `economy/profiles.toml`: `coal_mine_basic`
+  (`coal` extractor/price profile), `power_plant_basic` (coal-fueled power, 20 workers, three-shift),
   `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
 - daily utility settlement scans active providers per service, resolves `power` from accumulated
   produced units, charges commercial, office, mixed-use, and industrial consumers independently for
@@ -2638,7 +2639,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.construction.residential_hours_by_level` | [6, 12, 18] | Fresh residential construction hours by target level |
 | `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
 | `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
-| `coal_supplier_basic.unit_price_currency` | 4.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
+| `coal_mine_basic.unit_price_currency` | 4.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
 | `power_plant_basic.base_rate_units_per_day` | 240.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
 | `power_plant_basic.inputs.coal` | 24.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
 | `power_plant_basic.unit_price_currency` | 3.0 | Local power service price per aggregate power unit |

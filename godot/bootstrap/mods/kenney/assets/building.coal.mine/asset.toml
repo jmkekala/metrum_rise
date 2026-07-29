@@ -1,0 +1,106 @@
+asset_id = "building.coal.mine"
+display_name = "Coal Mine"
+
+[building]
+placement_mode = "explicit"
+lot_width_cells = 5
+lot_depth_cells = 4
+frontage_forward = [0, 0, -1]
+level = 1
+worker_capacity = 8
+flat_size_m2 = 360.0
+economy_profile = "coal_mine_basic"
+
+[building.extractor]
+resource = "coal"
+area_mode = "player_polygon"
+
+[[mesh_parts]]
+name = "part_1"
+position = [14.58, 0, -2.02]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-m.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_2"
+position = [-15.41, 0, -0.36]
+rotation_degrees = [0, -180, 0]
+scale = 7
+pivot_offset = [0.452, 0, -0.56]
+
+[[mesh_parts.lods]]
+file = "building-n.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_3"
+position = [-0.56, 0, 10.8]
+rotation_degrees = [0, 0, 0]
+scale = 7
+pivot_offset = [0.01, 0, 0]
+
+[[mesh_parts.lods]]
+file = "building-s.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [15.7, 0, -7.08]
+forward = [0, 0, -1]
+
+[[anchors]]
+type = "driveway"
+position = [0.34, 0, -20]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [4.5, 0, 1.79]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.17, 0, 1.84]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [0.2, 0, 1.92]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-8.58, 0, 1.62]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "loading_bay"
+position = [-9.23, 0, -13.69]
+forward = [0, 0, 1]
+width_m = 3.5
+length_m = 8
+vehicle_class = "freight"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-12.28, -20], [18.25, -20], [18.66, -7.98], [10.3, -8.07], [10.73, 7.81], [-13.18, 7.89]]

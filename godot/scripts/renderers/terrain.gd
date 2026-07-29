@@ -6,7 +6,9 @@
 ##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
 ##   is_terrain_dirty(), acknowledge_terrain_patches(), sculpt_terrain(), intersect_terrain(),
 ##   get_pollution_image_data(), get_noise_image_data(),
-##   get_desirability_image_data()
+##   get_desirability_image_data(), get_coal_pit_overlay_data(),
+##   get_coal_pit_overlay_size(), get_coal_pit_overlay_world_bounds(),
+##   get_coal_pit_overlay_revision()
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
@@ -14,6 +16,7 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
+const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
 const HILLSHADE_AZIMUTH_DEG := 315.0
 const HILLSHADE_ALTITUDE_DEG := 38.0
@@ -134,9 +137,13 @@ var patch_interval_cells: int = 1
 var patch_span_m: float = 1.0
 var overlay_texture: ImageTexture
 var overlay_image: Image
+var coal_pit_texture: ImageTexture
+var coal_pit_image: Image
+var coal_pit_overlay_world_bounds: Vector4 = Vector4.ZERO
 var empty_water_texture: ImageTexture
 var grass_albedo_texture: Texture2D
 var grass_height_texture: Texture2D
+var coal_albedo_texture: Texture2D
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
@@ -156,6 +163,8 @@ var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var engineered_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
+var cached_coal_pit_overlay_revision: int = -1
+var coal_pit_overlay_dirty: bool = true
 var border_loop_positions: PackedVector3Array = PackedVector3Array()
 var border_revision: int = 0
 var border_skirt_instance: MeshInstance3D
@@ -245,6 +254,7 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_regular_terrain_mesh_variants()
 	_resident_patch_bounds_valid = false
 	_ensure_overlay_texture()
+	_ensure_coal_pit_texture()
 	_ensure_empty_water_texture()
 	_ensure_grass_textures()
 	_ensure_border_visuals()
@@ -254,10 +264,16 @@ func rebuild_from_simulation_state() -> void:
 	var overlay_updated := _update_overlay_texture()
 	if overlay_updated:
 		_apply_overlay_mode()
+	var coal_pit_updated := _update_coal_pit_texture()
+	if coal_pit_updated:
+		_apply_coal_pit_texture()
 	_rebuild_border_skirt()
 	_queue_all_water_patch_texture_syncs()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 	cached_overlay_mode = overlay_mode if overlay_updated else -1
+	cached_coal_pit_overlay_revision = (
+		int(simulation_node.get_coal_pit_overlay_revision()) if coal_pit_updated else -1
+	)
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
 		_terrain_debug_log(
@@ -344,6 +360,15 @@ func _process(delta: float) -> void:
 		if _update_overlay_texture():
 			_apply_overlay_mode()
 			cached_overlay_mode = overlay_mode
+	var coal_pit_revision := int(simulation_node.get_coal_pit_overlay_revision())
+	if (
+		coal_pit_texture == null
+		or coal_pit_overlay_dirty
+		or coal_pit_revision != cached_coal_pit_overlay_revision
+	):
+		if _update_coal_pit_texture():
+			_apply_coal_pit_texture()
+			cached_coal_pit_overlay_revision = coal_pit_revision
 
 	if _terrain_frame_headroom_available(frame_start_us, PATCH_LOD_START_HEADROOM_MS):
 		if perf_enabled:
@@ -780,9 +805,12 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.shader = TERRAIN_SHADER
 	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("overlay_texture", overlay_texture)
+	material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
+	material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
 	material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("terrain_grass_albedo", grass_albedo_texture)
 	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
+	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
@@ -2531,6 +2559,38 @@ func _ensure_overlay_texture() -> bool:
 	overlay_texture = texture
 	return true
 
+func _ensure_coal_pit_texture() -> bool:
+	var dims: Vector2 = simulation_node.get_coal_pit_overlay_size()
+	var width := int(dims.x)
+	var height := int(dims.y)
+	if width <= 0 or height <= 0:
+		coal_pit_image = null
+		coal_pit_texture = null
+		return false
+	if (
+		coal_pit_image != null
+		and coal_pit_texture != null
+		and coal_pit_image.get_width() == width
+		and coal_pit_image.get_height() == height
+	):
+		return true
+
+	var image := Image.create(width, height, false, Image.FORMAT_L8)
+	if image == null or image.is_empty():
+		coal_pit_image = null
+		coal_pit_texture = null
+		return false
+	image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	var texture := ImageTexture.create_from_image(image)
+	if texture == null:
+		coal_pit_image = null
+		coal_pit_texture = null
+		return false
+	coal_pit_image = image
+	coal_pit_texture = texture
+	coal_pit_overlay_dirty = true
+	return true
+
 func _update_overlay_texture() -> bool:
 	if not _ensure_overlay_texture():
 		return false
@@ -2543,6 +2603,8 @@ func _update_overlay_texture() -> bool:
 		overlay_bytes = simulation_node.get_noise_image_data()
 	elif overlay_mode == 3:
 		overlay_bytes = simulation_node.get_desirability_image_data()
+	elif overlay_mode == 4:
+		overlay_bytes = simulation_node.get_world_coal_deposit_overlay_data()
 
 	if overlay_bytes.is_empty():
 		overlay_image.fill(Color(0.0, 0.0, 0.0, 0.0))
@@ -2553,11 +2615,44 @@ func _update_overlay_texture() -> bool:
 	overlay_texture.update(overlay_image)
 	return true
 
+func _update_coal_pit_texture() -> bool:
+	if not _ensure_coal_pit_texture():
+		return false
+	var width := coal_pit_image.get_width()
+	var height := coal_pit_image.get_height()
+	coal_pit_overlay_world_bounds = (
+		simulation_node.get_coal_pit_overlay_world_bounds()
+		if simulation_node.has_method("get_coal_pit_overlay_world_bounds")
+		else Vector4.ZERO
+	)
+	var overlay_bytes: PackedByteArray = simulation_node.get_coal_pit_overlay_data()
+	if overlay_bytes.is_empty():
+		coal_pit_image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	else:
+		if overlay_bytes.size() != width * height:
+			return false
+		coal_pit_image.set_data(width, height, false, Image.FORMAT_L8, overlay_bytes)
+	coal_pit_texture.update(coal_pit_image)
+	coal_pit_overlay_dirty = false
+	return true
+
+func mark_overlay_dirty() -> void:
+	cached_overlay_mode = -1
+
+func mark_coal_pit_overlay_dirty() -> void:
+	coal_pit_overlay_dirty = true
+
 func _apply_overlay_mode() -> void:
 	for key in patches.keys():
 		var material: ShaderMaterial = patches[key]["material"]
 		material.set_shader_parameter("overlay_mode", overlay_mode)
 		material.set_shader_parameter("overlay_texture", overlay_texture)
+
+func _apply_coal_pit_texture() -> void:
+	for key in patches.keys():
+		var material: ShaderMaterial = patches[key]["material"]
+		material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
+		material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
 
 func _ensure_empty_water_texture() -> void:
 	if empty_water_texture != null:
@@ -2571,6 +2666,8 @@ func _ensure_grass_textures() -> void:
 		grass_albedo_texture = _load_texture_or_solid(TERRAIN_GRASS_ALBEDO_PATH, Color(0.5, 0.5, 0.5, 1.0))
 	if grass_height_texture == null:
 		grass_height_texture = _load_texture_or_solid(TERRAIN_GRASS_HEIGHT_PATH, Color(0.5, 0.5, 0.5, 1.0))
+	if coal_albedo_texture == null:
+		coal_albedo_texture = _load_texture_or_solid(TERRAIN_COAL_ALBEDO_PATH, Color(0.04, 0.04, 0.04, 1.0))
 
 func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
 	var texture: Texture2D = null

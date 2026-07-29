@@ -3,13 +3,16 @@ render_mode cull_disabled, ambient_light_disabled;
 
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
+uniform sampler2D coal_pit_texture : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D terrain_coal_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform bool height_is_baked = false;
 uniform vec2 world_size = vec2(256.0, 256.0);
+uniform vec4 coal_pit_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
 uniform int terrain_visual_debug_mode = 0;
 uniform vec2 terrain_debug_patch_key = vec2(0.0);
 uniform float terrain_debug_lod_step = 1.0;
@@ -56,6 +59,10 @@ uniform float terrain_grass_detail_strength = 0.58;
 uniform float terrain_grass_height_detail_strength = 0.24;
 uniform float terrain_grass_detail_fade_start = 0.08;
 uniform float terrain_grass_detail_fade_end = 0.90;
+uniform float terrain_coal_detail_scale = 0.22;
+uniform float terrain_coal_pit_strength = 0.72;
+uniform vec3 terrain_coal_lift_color : source_color = vec3(0.18, 0.16, 0.13);
+uniform float terrain_coal_lift_strength = 0.45;
 uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
 uniform float terrain_relief_sample_radius_texels = 3.0;
@@ -803,6 +810,32 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 		color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
+		vec2 world_uv = clamp(
+			vec2(
+				var_world_pos.x / max(world_size.x, 0.001),
+				var_world_pos.z / max(world_size.y, 0.001)
+			) + vec2(0.5),
+			vec2(0.0),
+			vec2(1.0)
+		);
+		float coal_pit_mask = 0.0;
+		if (coal_pit_overlay_world_bounds.z > 0.001 && coal_pit_overlay_world_bounds.w > 0.001) {
+			vec2 coal_pit_uv = (var_world_pos.xz - coal_pit_overlay_world_bounds.xy) / coal_pit_overlay_world_bounds.zw;
+			if (
+				coal_pit_uv.x >= 0.0
+				&& coal_pit_uv.x <= 1.0
+				&& coal_pit_uv.y >= 0.0
+				&& coal_pit_uv.y <= 1.0
+			) {
+				coal_pit_mask = texture(coal_pit_texture, coal_pit_uv).r;
+			}
+		}
+		if (coal_pit_mask > 0.001) {
+			vec3 coal_albedo = texture(terrain_coal_albedo, var_world_pos.xz * terrain_coal_detail_scale).rgb;
+			coal_albedo = mix(coal_albedo, max(coal_albedo, terrain_coal_lift_color), terrain_coal_lift_strength);
+			coal_albedo = mix(coal_albedo, coal_albedo * vec3(0.82, 0.80, 0.76), macro_mask * 0.18);
+			color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
+		}
 		float hillshade = hillshade_mask(normal);
 		color = apply_baked_terrain_readability(
 			color,
@@ -816,19 +849,17 @@ void fragment() {
 		vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
 		color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
 
-		// Overlay Heatmaps (Pollution, Noise, Desirability)
+		// Overlay Heatmaps (Pollution, Noise, Desirability) and authored resource deposits.
 		if (overlay_mode > 0) {
-			vec2 world_uv = clamp(
-				vec2(
-					var_world_pos.x / max(world_size.x, 0.001),
-					var_world_pos.z / max(world_size.y, 0.001)
-				) + vec2(0.5),
-				vec2(0.0),
-				vec2(1.0)
-			);
 			vec4 heatmap_col = texture(overlay_texture, world_uv);
 			if (heatmap_col.a > 0.0) {
-				color = mix(color, heatmap_col.rgb, 0.6);
+				if (overlay_mode == 4) {
+					float richness = clamp(heatmap_col.a, 0.0, 1.0);
+					vec3 coal_color = mix(vec3(0.16, 0.135, 0.105), vec3(0.025, 0.023, 0.021), richness);
+					color = mix(color, coal_color, richness * 0.78);
+				} else {
+					color = mix(color, heatmap_col.rgb, 0.6);
+				}
 			}
 		}
 

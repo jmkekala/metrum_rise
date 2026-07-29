@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 54;
+pub const SAVE_VERSION: i64 = 56;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -41,6 +41,15 @@ CREATE TABLE water_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
     baseline_depth_blob_f32_le BLOB NOT NULL
+);
+CREATE TABLE resource_deposit_chunks(
+    resource_id TEXT NOT NULL,
+    chunk_x INTEGER NOT NULL,
+    chunk_z INTEGER NOT NULL,
+    width_samples INTEGER NOT NULL,
+    height_samples INTEGER NOT NULL,
+    richness_blob_u16_le BLOB NOT NULL,
+    PRIMARY KEY(resource_id, chunk_x, chunk_z)
 );
 CREATE TABLE demand_state(
     residential REAL NOT NULL,
@@ -189,6 +198,20 @@ CREATE TABLE building_inventories(
     resource_runtime_id INTEGER NOT NULL,
     amount REAL NOT NULL,
     PRIMARY KEY(building_id, resource_runtime_id)
+);
+CREATE TABLE resource_extractor_sites(
+    site_id INTEGER PRIMARY KEY,
+    building_id INTEGER NOT NULL,
+    resource_id TEXT NOT NULL,
+    total_reserve_units REAL NOT NULL,
+    extracted_units REAL NOT NULL
+);
+CREATE TABLE resource_extractor_site_points(
+    site_id INTEGER NOT NULL,
+    point_index INTEGER NOT NULL,
+    x REAL NOT NULL,
+    z REAL NOT NULL,
+    PRIMARY KEY(site_id, point_index)
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,

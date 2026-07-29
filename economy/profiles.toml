@@ -72,10 +72,10 @@ resource = "household_supplies"
 units_per_day = 2.0
 
 [[profiles]]
-id = "coal_supplier_basic"
-display_name = "Coal Supplier"
-kind = "producer"
-description = "External-compatible starter coal source used to price and source coal fuel for power plants."
+id = "coal_mine_basic"
+display_name = "Coal Mine"
+kind = "extractor"
+description = "Deposit-backed starter coal mine that extracts local coal into on-site inventory for power plants and OWA export."
 worker_capacity = 8
 base_rate_units_per_day = 120.0
 wage_min_currency_per_day = 80.0

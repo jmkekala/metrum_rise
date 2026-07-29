@@ -197,6 +197,27 @@ impl AssetRegistry {
             })
     }
 
+    /// Returns the authored extractor resource id for an explicit industry building asset.
+    pub fn extractor_resource(&self, qualified_id: &str) -> Option<&str> {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.extractor.as_ref())
+            .map(|extractor| extractor.resource.trim())
+            .filter(|resource| !resource.is_empty())
+    }
+
+    /// Returns whether the asset is an explicitly placed resource extractor.
+    pub fn is_resource_extractor_asset(&self, qualified_id: &str) -> bool {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .is_some_and(|building| {
+                building.placement_mode == PlacementMode::Explicit
+                    && self.extractor_resource(qualified_id).is_some()
+            })
+    }
+
     /// Returns whether the asset is an explicitly placed city-service building.
     pub fn is_city_service_asset(&self, qualified_id: &str) -> bool {
         self.entries
@@ -338,6 +359,7 @@ mod tests {
                 worker_capacity,
                 service_class: None,
                 economy_profile: None,
+                extractor: None,
             }),
             prop: None,
             vehicle: None,

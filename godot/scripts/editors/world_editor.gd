@@ -36,6 +36,11 @@ const WATER_FILL_SEED_RADIUS_M := 0.83
 const WATER_LAKE_MARKER_COLOR := Color(0.34, 0.80, 0.92, 0.88)
 const WATER_OPEN_WATER_MARKER_COLOR := Color(0.18, 0.48, 0.92, 0.88)
 const WATER_PREVIEW_MARKER_COLOR := Color(0.92, 0.97, 1.0, 0.92)
+const COAL_OVERLAY_MODE := 4
+const DEFAULT_RESOURCE_DIAMETER_M := 120.0
+const MIN_RESOURCE_DIAMETER_M := 10.0
+const MAX_RESOURCE_DIAMETER_M := 500.0
+const DEFAULT_COAL_RICHNESS_PERCENT := 70.0
 const SLOPE_GUIDE_START_COLOR := Color(0.98, 0.82, 0.34, 0.96)
 const SLOPE_GUIDE_END_COLOR := Color(0.34, 0.90, 1.0, 0.96)
 const SLOPE_GUIDE_LINE_COLOR := Color(0.90, 0.95, 1.0, 0.82)
@@ -76,6 +81,8 @@ enum Tool {
 	SLOPE,
 	WATER_LAKE_FILL,
 	WATER_OPEN_WATER,
+	RESOURCE_COAL,
+	RESOURCE_ERASE,
 }
 
 @onready var sim: SimulationNode = $SimulationNode
@@ -104,6 +111,12 @@ var _water_open_water_btn: Button
 var _lake_offset_spin: SpinBox
 var _preview_confirm_btn: Button
 var _preview_cancel_btn: Button
+var _resource_group_btn: Button
+var _resource_tool_panel: PanelContainer
+var _resource_coal_btn: Button
+var _resource_erase_btn: Button
+var _resource_diameter_spin: SpinBox
+var _resource_richness_spin: SpinBox
 
 var _new_world_window: Window
 var _new_world_name_edit: LineEdit
@@ -120,6 +133,9 @@ var _slope_guide_root: Node3D
 var _sculpt_stroke_active := false
 var _live_sculpt_refresh_timer := 0.0
 var _live_sculpt_visual_pending := false
+var _resource_stroke_active := false
+var _live_resource_overlay_timer := 0.0
+var _live_resource_overlay_pending := false
 var _level_target_height_m := 0.0
 var _slope_start_world_pos := Vector3.ZERO
 var _slope_end_world_pos := Vector3.ZERO
@@ -151,9 +167,14 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_update_brush_preview()
+	if _resource_stroke_active:
+		_process_resource_stroke(delta)
 	if not _sculpt_stroke_active:
 		_live_sculpt_visual_pending = false
 		_live_sculpt_refresh_timer = 0.0
+		if not _resource_stroke_active:
+			_live_resource_overlay_pending = false
+			_live_resource_overlay_timer = 0.0
 		return
 	_live_sculpt_refresh_timer = max(_live_sculpt_refresh_timer - delta, 0.0)
 	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
@@ -209,6 +230,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_active_tool(Tool.WATER_LAKE_FILL)
 			KEY_7:
 				_set_active_tool(Tool.WATER_OPEN_WATER)
+			KEY_8:
+				_set_active_tool(Tool.RESOURCE_COAL)
+			KEY_9:
+				_set_active_tool(Tool.RESOURCE_ERASE)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
 			KEY_N:
@@ -244,6 +269,16 @@ func _unhandled_input(event: InputEvent) -> void:
 					return
 				_apply_water_tool(event.shift_pressed)
 				get_viewport().set_input_as_handled()
+			if _is_resource_tool(_active_tool):
+				if event.pressed:
+					if _ui_captures_world_pointer_input():
+						return
+					_begin_resource_stroke(event.shift_pressed)
+					if _resource_stroke_active:
+						get_viewport().set_input_as_handled()
+				else:
+					_end_resource_stroke()
+				return
 
 func menu_new_world() -> void:
 	_ensure_new_world_window()
@@ -449,6 +484,59 @@ func _build_ui() -> void:
 	_preview_cancel_btn.pressed.connect(func(): _cancel_lake_fill_preview())
 	water_row.add_child(_preview_cancel_btn)
 
+	_resource_tool_panel = PanelContainer.new()
+	_resource_tool_panel.visible = false
+	_resource_tool_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_resource_tool_panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_resource_tool_panel.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
+	stack.add_child(_resource_tool_panel)
+
+	var resource_margin := MarginContainer.new()
+	resource_margin.add_theme_constant_override("margin_left", int(UIStyle.HUD_SHELL_PAD_X))
+	resource_margin.add_theme_constant_override("margin_right", int(UIStyle.HUD_SHELL_PAD_X))
+	resource_margin.add_theme_constant_override("margin_top", int(UIStyle.HUD_SHELL_PAD_Y))
+	resource_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_SHELL_PAD_Y))
+	_resource_tool_panel.add_child(resource_margin)
+
+	var resource_row := HBoxContainer.new()
+	resource_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	resource_row.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
+	resource_margin.add_child(resource_row)
+
+	_resource_coal_btn = _make_tool_button("Coal", Tool.RESOURCE_COAL)
+	resource_row.add_child(_resource_coal_btn)
+
+	_resource_erase_btn = _make_tool_button("Erase", Tool.RESOURCE_ERASE)
+	resource_row.add_child(_resource_erase_btn)
+
+	var resource_separator := VSeparator.new()
+	resource_row.add_child(resource_separator)
+
+	var resource_diameter_label := Label.new()
+	resource_diameter_label.text = "Diameter m"
+	resource_diameter_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	resource_row.add_child(resource_diameter_label)
+
+	_resource_diameter_spin = _make_hud_spin_box(
+		MIN_RESOURCE_DIAMETER_M,
+		MAX_RESOURCE_DIAMETER_M,
+		1.0,
+		DEFAULT_RESOURCE_DIAMETER_M
+	)
+	_resource_diameter_spin.value_changed.connect(_on_resource_control_changed)
+	_resource_diameter_spin.focus_exited.connect(_release_resource_field_focus)
+	resource_row.add_child(_resource_diameter_spin)
+
+	var richness_label := Label.new()
+	richness_label.text = "Richness %"
+	richness_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	resource_row.add_child(richness_label)
+
+	_resource_richness_spin = _make_hud_spin_box(1.0, 100.0, 1.0, DEFAULT_COAL_RICHNESS_PERCENT)
+	_resource_richness_spin.value_changed.connect(_on_resource_control_changed)
+	_resource_richness_spin.focus_exited.connect(_release_resource_field_focus)
+	resource_row.add_child(_resource_richness_spin)
+
 	var center := CenterContainer.new()
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stack.add_child(center)
@@ -496,6 +584,17 @@ func _build_ui() -> void:
 	_water_group_btn.pressed.connect(_toggle_water_group)
 	row.add_child(_water_group_btn)
 
+	var resource_group_separator := VSeparator.new()
+	row.add_child(resource_group_separator)
+
+	_resource_group_btn = Button.new()
+	_resource_group_btn.text = "Resources"
+	_resource_group_btn.toggle_mode = true
+	_resource_group_btn.focus_mode = Control.FOCUS_NONE
+	_resource_group_btn.custom_minimum_size = Vector2(132.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_resource_group_btn.pressed.connect(_toggle_resource_group)
+	row.add_child(_resource_group_btn)
+
 	var separator := VSeparator.new()
 	row.add_child(separator)
 
@@ -526,15 +625,24 @@ func _toggle_water_group() -> void:
 	else:
 		_set_active_tool(Tool.WATER_LAKE_FILL)
 
+func _toggle_resource_group() -> void:
+	if _is_resource_tool(_active_tool):
+		_set_active_tool(Tool.NONE)
+	else:
+		_set_active_tool(Tool.RESOURCE_COAL)
+
 func _set_active_tool(tool: Tool) -> void:
 	var previous_tool := _active_tool
 	if _is_sculpt_tool(previous_tool) and tool != previous_tool:
 		_end_sculpt_stroke()
+	if _is_resource_tool(previous_tool) and tool != previous_tool:
+		_end_resource_stroke()
 	if previous_tool == Tool.SLOPE and tool != previous_tool:
 		_clear_slope_profile(false)
 	if _is_surface_fill_tool(previous_tool) and tool != previous_tool:
 		_cancel_lake_fill_preview("", false)
 	_active_tool = tool
+	_sync_resource_overlay_for_active_tool()
 	_update_tool_buttons()
 	match _active_tool:
 		Tool.RAISE:
@@ -568,6 +676,10 @@ func _set_active_tool(tool: Tool) -> void:
 				)
 			else:
 				_set_status("Open water tool active. Click to preview, press OK to confirm, Shift+Click removes nearest open water fill.")
+		Tool.RESOURCE_COAL:
+			_set_status("Coal deposit brush active. Paint authored coal richness onto the world.")
+		Tool.RESOURCE_ERASE:
+			_set_status("Coal deposit eraser active. Paint to clear authored coal.")
 		_:
 			_set_status("No active world-authoring tool.")
 	_debug_log("active_tool=%s" % Tool.keys()[_active_tool])
@@ -607,6 +719,16 @@ func _update_tool_buttons() -> void:
 		_water_open_water_btn.button_pressed = _active_tool == Tool.WATER_OPEN_WATER
 	if _water_tool_panel:
 		_water_tool_panel.visible = _is_water_tool(_active_tool)
+	if _resource_group_btn:
+		_resource_group_btn.button_pressed = _is_resource_tool(_active_tool)
+	if _resource_coal_btn:
+		_resource_coal_btn.button_pressed = _active_tool == Tool.RESOURCE_COAL
+	if _resource_erase_btn:
+		_resource_erase_btn.button_pressed = _active_tool == Tool.RESOURCE_ERASE
+	if _resource_tool_panel:
+		_resource_tool_panel.visible = _is_resource_tool(_active_tool)
+	if _resource_richness_spin:
+		_resource_richness_spin.editable = _active_tool != Tool.RESOURCE_ERASE
 	if _slope_guide_root:
 		_slope_guide_root.visible = _active_tool == Tool.SLOPE and (_slope_has_start or _slope_has_end)
 	_update_preview_action_buttons()
@@ -719,6 +841,72 @@ func _current_terrain_cell_m() -> float:
 func _on_brush_control_changed(_value: float) -> void:
 	_release_brush_field_focus()
 
+func _process_resource_stroke(delta: float) -> void:
+	_live_resource_overlay_timer = max(_live_resource_overlay_timer - delta, 0.0)
+	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_end_resource_stroke()
+		return
+	if _ui_captures_world_pointer_input():
+		_flush_resource_overlay(false)
+		return
+	if not _is_resource_tool(_active_tool):
+		_flush_resource_overlay(false)
+		return
+	if _is_pointer_over_ui():
+		_flush_resource_overlay(false)
+		return
+	_apply_resource_tool(Input.is_key_pressed(KEY_SHIFT))
+	_flush_resource_overlay(false)
+
+func _begin_resource_stroke(erase_override: bool) -> void:
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		_end_resource_stroke()
+		return
+	_resource_stroke_active = true
+	_apply_resource_tool(erase_override)
+	_flush_resource_overlay(false)
+
+func _end_resource_stroke() -> void:
+	_flush_resource_overlay(true)
+	_resource_stroke_active = false
+
+func _apply_resource_tool(erase_override: bool) -> void:
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		return
+
+	var world_pos := Vector2(intersection.x, intersection.z)
+	var changed := false
+	if _active_tool == Tool.RESOURCE_ERASE or erase_override:
+		changed = sim.erase_world_coal_deposit(world_pos, _resource_radius_m())
+	else:
+		changed = sim.paint_world_coal_deposit(
+			world_pos,
+			_resource_radius_m(),
+			float(_resource_richness_spin.value)
+		)
+	if changed:
+		_live_resource_overlay_pending = true
+
+func _flush_resource_overlay(force: bool) -> void:
+	if not _live_resource_overlay_pending:
+		return
+	if not force and _live_resource_overlay_timer > 0.0:
+		return
+	_mark_resource_overlay_dirty()
+	_live_resource_overlay_pending = false
+	_live_resource_overlay_timer = LIVE_SCULPT_REFRESH_INTERVAL_SEC
+
+func _resource_diameter_m() -> float:
+	return float(_resource_diameter_spin.value) if _resource_diameter_spin else DEFAULT_RESOURCE_DIAMETER_M
+
+func _resource_radius_m() -> float:
+	return _resource_diameter_m() * 0.5
+
+func _on_resource_control_changed(_value: float) -> void:
+	_release_resource_field_focus()
+
 func _apply_water_tool(remove_mode: bool) -> void:
 	var intersection = _terrain_intersection_under_cursor()
 	if intersection == null:
@@ -778,14 +966,34 @@ func _is_water_tool(tool: Tool) -> bool:
 		or tool == Tool.WATER_OPEN_WATER
 	)
 
+func _is_resource_tool(tool: Tool) -> bool:
+	return tool == Tool.RESOURCE_COAL or tool == Tool.RESOURCE_ERASE
+
 func _is_surface_fill_tool(tool: Tool) -> bool:
 	return tool == Tool.WATER_LAKE_FILL or tool == Tool.WATER_OPEN_WATER
+
+func _sync_resource_overlay_for_active_tool() -> void:
+	if not terrain:
+		return
+	if _is_resource_tool(_active_tool):
+		terrain.overlay_mode = COAL_OVERLAY_MODE
+		_mark_resource_overlay_dirty()
+	elif terrain.overlay_mode == COAL_OVERLAY_MODE:
+		terrain.overlay_mode = 0
+		_mark_resource_overlay_dirty()
+
+func _mark_resource_overlay_dirty() -> void:
+	if not terrain:
+		return
+	if terrain.has_method("mark_overlay_dirty"):
+		terrain.mark_overlay_dirty()
 
 func _refresh_after_world_change(focus_camera: bool) -> void:
 	_clear_slope_profile(false)
 	terrain.rebuild_from_simulation_state()
 	water.rebuild_from_simulation_state()
 	_refresh_water_markers()
+	_sync_resource_overlay_for_active_tool()
 	if focus_camera:
 		_focus_camera_on_world()
 	_sync_brush_diameter_limits()
@@ -866,16 +1074,24 @@ func _release_brush_field_focus() -> void:
 	if _brush_strength_spin and _brush_strength_spin.has_focus():
 		_brush_strength_spin.release_focus()
 
+func _release_resource_field_focus() -> void:
+	if _resource_diameter_spin and _resource_diameter_spin.has_focus():
+		_resource_diameter_spin.release_focus()
+	if _resource_richness_spin and _resource_richness_spin.has_focus():
+		_resource_richness_spin.release_focus()
+
 func _clear_numeric_field_focus() -> void:
 	var focus_owner := get_viewport().gui_get_focus_owner()
 	if focus_owner != null and _control_is_numeric_field(focus_owner):
 		focus_owner.release_focus()
 	_release_brush_field_focus()
+	_release_resource_field_focus()
 	_release_surface_field_focus()
 
 func _clear_editor_focus() -> void:
 	_clear_numeric_field_focus()
 	_release_brush_field_focus()
+	_release_resource_field_focus()
 	_release_surface_field_focus()
 	var focus_owner := get_viewport().gui_get_focus_owner()
 	if focus_owner != null:
@@ -1273,7 +1489,7 @@ func _add_slope_guide_line(start_tip: Vector3, end_tip: Vector3) -> void:
 func _update_brush_preview() -> void:
 	if not _brush_preview:
 		return
-	if not _is_sculpt_tool(_active_tool) or _ui_captures_world_pointer_input():
+	if (not _is_sculpt_tool(_active_tool) and not _is_resource_tool(_active_tool)) or _ui_captures_world_pointer_input():
 		_brush_preview.visible = false
 		return
 	if _active_tool == Tool.SLOPE and not _slope_profile_ready():
@@ -1288,7 +1504,8 @@ func _update_brush_preview() -> void:
 	_brush_preview.position = Vector3(intersection.x, intersection.y + 0.12, intersection.z)
 	var preview_mesh := _brush_preview.mesh as QuadMesh
 	if preview_mesh:
-		preview_mesh.size = Vector2(_brush_diameter_m(), _brush_diameter_m())
+		var diameter := _resource_diameter_m() if _is_resource_tool(_active_tool) else _brush_diameter_m()
+		preview_mesh.size = Vector2(diameter, diameter)
 	_brush_preview.scale = Vector3.ONE
 
 	var fill_color := Color(0.20, 0.62, 0.28, 0.10)
@@ -1306,6 +1523,12 @@ func _update_brush_preview() -> void:
 		Tool.SLOPE:
 			fill_color = Color(0.52, 0.42, 0.18, 0.12)
 			ring_color = Color(1.0, 0.94, 0.70, 0.90)
+		Tool.RESOURCE_COAL:
+			fill_color = Color(0.08, 0.07, 0.06, 0.16)
+			ring_color = Color(0.95, 0.79, 0.46, 0.90)
+		Tool.RESOURCE_ERASE:
+			fill_color = Color(0.42, 0.08, 0.06, 0.12)
+			ring_color = Color(1.0, 0.66, 0.58, 0.88)
 
 	_brush_preview_material.set_shader_parameter("fill_color", fill_color)
 	_brush_preview_material.set_shader_parameter("ring_color", ring_color)

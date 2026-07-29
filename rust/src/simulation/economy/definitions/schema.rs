@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub(super) const PROFILE_KIND_PRODUCER: &str = "producer";
 pub(super) const PROFILE_KIND_STORE: &str = "store";
 pub(super) const PROFILE_KIND_DEMAND_SINK: &str = "demand_sink";
+pub(super) const PROFILE_KIND_EXTRACTOR: &str = "extractor";
 pub(super) const PROFILE_KIND_UTILITY_PRODUCER: &str = "utility_producer";
 pub(super) const PROFILE_KIND_UTILITY_PROCESSOR: &str = "utility_processor";
 pub(super) const NODE_REF_KIND_PROFILE: &str = "profile";
@@ -18,6 +19,7 @@ pub(super) enum AuthoredProfileKind {
     Producer,
     Store,
     DemandSink,
+    Extractor,
     UtilityProducer,
     UtilityProcessor,
     Unsupported,
@@ -29,6 +31,7 @@ impl AuthoredProfileKind {
             PROFILE_KIND_PRODUCER => Self::Producer,
             PROFILE_KIND_STORE => Self::Store,
             PROFILE_KIND_DEMAND_SINK => Self::DemandSink,
+            PROFILE_KIND_EXTRACTOR => Self::Extractor,
             PROFILE_KIND_UTILITY_PRODUCER => Self::UtilityProducer,
             PROFILE_KIND_UTILITY_PROCESSOR => Self::UtilityProcessor,
             _ => Self::Unsupported,

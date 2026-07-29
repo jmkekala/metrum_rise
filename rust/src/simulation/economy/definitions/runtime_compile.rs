@@ -184,6 +184,7 @@ fn compile_runtime_profile(
         AuthoredProfileKind::Producer => EconomyProfileRuntimeKind::Producer,
         AuthoredProfileKind::Store => EconomyProfileRuntimeKind::Store,
         AuthoredProfileKind::DemandSink => EconomyProfileRuntimeKind::DemandSink,
+        AuthoredProfileKind::Extractor => EconomyProfileRuntimeKind::Extractor,
         AuthoredProfileKind::UtilityProducer => EconomyProfileRuntimeKind::UtilityProducer,
         AuthoredProfileKind::UtilityProcessor => EconomyProfileRuntimeKind::UtilityProcessor,
         AuthoredProfileKind::Unsupported => EconomyProfileRuntimeKind::Unsupported,
@@ -223,7 +224,9 @@ fn compile_runtime_profile(
         .collect::<Result<Vec<_>, String>>()?;
 
     let runtime_supported = match kind {
-        EconomyProfileRuntimeKind::Producer => !compiled_outputs.is_empty(),
+        EconomyProfileRuntimeKind::Producer | EconomyProfileRuntimeKind::Extractor => {
+            !compiled_outputs.is_empty()
+        }
         EconomyProfileRuntimeKind::Store => {
             !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
         }

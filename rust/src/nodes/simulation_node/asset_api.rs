@@ -153,7 +153,7 @@ impl SimulationNode {
     /// `worker_capacity`, compact business summary fields, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
     /// `economy_profile`, `center_x`, `center_z`, residential household aggregates,
-    /// and `inventory` (Array of `{name, amount}` Dictionaries).
+    /// extractor reserve fields, and `inventory` (Array of `{name, amount}` Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::{
@@ -251,6 +251,26 @@ impl SimulationNode {
         dict.set("occupancy", b.occupancy as i32);
         dict.set("center_x", b.center_x as f64);
         dict.set("center_z", b.center_y as f64);
+        if let Some(resource_id) = core.allocator.registry.extractor_resource(&b.asset_id) {
+            dict.set("extractor_resource", GString::from(resource_id));
+            if let Some(site) = core.resource_extraction.site_for_building(best_idx) {
+                let total = site.total_reserve_units.max(0.0);
+                let consumed = site.extracted_units.clamp(0.0, total);
+                let available = (total - consumed).max(0.0);
+                let consumed_ratio = if total > 0.0 { consumed / total } else { 0.0 };
+                dict.set("extractor_has_site", true);
+                dict.set("extractor_total_reserve_units", total as f64);
+                dict.set("extractor_available_reserve_units", available as f64);
+                dict.set("extractor_consumed_reserve_units", consumed as f64);
+                dict.set("extractor_consumed_reserve_ratio", consumed_ratio as f64);
+            } else {
+                dict.set("extractor_has_site", false);
+                dict.set("extractor_total_reserve_units", 0.0f64);
+                dict.set("extractor_available_reserve_units", 0.0f64);
+                dict.set("extractor_consumed_reserve_units", 0.0f64);
+                dict.set("extractor_consumed_reserve_ratio", 0.0f64);
+            }
+        }
 
         let mut total_agents = 0i32;
         let mut child_agents = 0i32;

@@ -312,13 +312,17 @@ Current deterministic rules:
 - terrain chunk rows are keyed by zero-based `(chunk_x, chunk_z)` from the world minimum corner
 - each chunk payload is one dense row-major `f32` source-terrain block
 - only chunks containing at least one non-base terrain sample are persisted
+- authored resource deposits are stored as zero or more `world_resource_deposit_chunks` rows
+- resource deposit chunks are terrain-aligned `u16` richness grids keyed by `resource_id`,
+  starting with `coal`
 - loading a `WorldDefinition` resets runtime state to a fresh blank city on that world
-- `WorldDefinition` v1 stores:
+- the current `WorldDefinition` format stores:
   - world metadata
   - terrain config
   - source terrain chunks
   - authored water records
-- `WorldDefinition` v1 does not store:
+  - authored coal deposit chunks
+- the current `WorldDefinition` format does not store:
   - roads
   - zoning paint
   - water runtime state
@@ -572,6 +576,9 @@ Current deterministic rules:
 - world editor water authoring is live through:
   - `Lake Fill`
   - `Open Water`
+- world editor resource authoring is live through:
+  - `Coal`
+  - `Erase`
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
   not the visible engineered surface
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
@@ -594,6 +601,12 @@ Current deterministic rules:
   - `Surface +m` adjusts the previewed surface
   - `OK` confirms
   - `Cancel` / `Esc` dismisses the preview without writing authored state
+- `Coal` paints authored deposit richness into a sparse terrain-aligned resource layer
+- the shared Deposits overlay currently renders richer coal deposits darker through terrain overlay mode `4`
+- `Erase` clears authored coal cells without modifying terrain height, water, zoning, roads, or
+  economy state
+- coal deposit rendering must stay shader-overlay based; it must not introduce terrain-following
+  mesh decals or CDT geometry just to show authored richness
 - world editor save/load is `WorldDefinition` only, not city-save persistence
 
 Current compatibility gap:

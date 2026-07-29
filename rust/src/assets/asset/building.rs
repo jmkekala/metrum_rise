@@ -77,6 +77,18 @@ pub struct BuildingData {
     pub service_class: Option<String>,
     /// Reference to an authored economy profile defined in the exported economy catalog.
     pub economy_profile: Option<String>,
+    /// Resource extraction contract for explicitly placed extractor buildings.
+    pub extractor: Option<BuildingExtractorData>,
+}
+
+/// Authored extraction behavior for one explicit industry building.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildingExtractorData {
+    /// Authored resource id this building extracts, such as `"coal"`.
+    pub resource: String,
+    /// Extraction area ownership mode. Version one supports `"player_polygon"`.
+    pub area_mode: String,
 }
 
 fn default_placement_mode() -> PlacementMode {

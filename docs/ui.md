@@ -83,7 +83,7 @@ MainMenu v1 actions:
 | Menu   | Items |
 |--------|-------|
 | File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Quit |
-| View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`), — , Toggle Zoning Overlay |
+| View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`, Deposits `[-]`), — , Toggle Zoning Overlay |
 | City   | City Statistics *(window)*, Economy Overview *(window)*, Demand Overview *(window)* |
 | Tools  | Open Asset Editor, Open Economy Editor |
 | Help   | Keyboard Shortcuts *(window)*, About |
@@ -144,7 +144,9 @@ The toolbar is the primary tool-selection surface. It is always visible during g
 |---------|-----------|
 | Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac) + draw-mode options (Straight / Spline) |
 | Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
-| Terrain | Terrain sub-menu (Raise/Lower, Lake Fill, Open Water) |
+| Services | Service-building asset palette for explicit civic / utility placement |
+| Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
+| Terrain | Terrain sub-menu for gameplay terrain tools |
 | Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
 | Mods    | Opens the Pack Manager window |
 
@@ -194,6 +196,13 @@ WorldEditor toolbar rules:
 - these water tools are world-editor authoring tools, not gameplay HUD tools
 - water tools must not be exposed as top-menu actions
 - world-editor water authoring must not begin with a freehand water-depth paint brush
+- `Resources` lives on the same toolbar surface as terrain and water authoring
+- the current resource tool set is:
+  - `Coal`
+  - `Erase`
+- selecting `Resources` opens an upward-expanding tool row with `Diameter m` and `Richness %`
+- authored coal is rendered through the terrain overlay texture; it must not use terrain-following
+  meshes or decals that can fight the terrain depth buffer
 - WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, Inspect,
   or Mods
 - WorldEditor does not include gameplay HUD widgets such as the clock, city-status panel, or
@@ -236,8 +245,10 @@ Current WorldEditor shortcuts:
 | 5 | Select `Slope` |
 | 6 | Select `Lake Fill` |
 | 7 | Select `Open Water` |
-| Left Mouse | Sculpt terrain with the active tool; `Level` captures the clicked height for the stroke; `Slope` uses the first two clicks to capture anchors before brushing; surface-fill tools use first click for preview |
-| Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
+| 8 | Select `Coal` |
+| 9 | Select resource `Erase` |
+| Left Mouse | Sculpt terrain with the active tool; `Level` captures the clicked height for the stroke; `Slope` uses the first two clicks to capture anchors before brushing; surface-fill tools use first click for preview; resource tools paint the authored coal layer |
+| Shift+Left Mouse | Remove the nearest authored water feature for the active water tool; erase coal while the coal brush is active |
 | Middle Mouse | Orbit camera |
 | Right Mouse | Pan camera |
 | W / A / S / D | Pan camera |
@@ -263,7 +274,7 @@ Current WorldEditor shortcuts:
 | Escape     | Cancel active tool |
 | Ctrl+Z     | Undo |
 | F12        | Add 1,000,000 money and lock R/C/I demand at 100% |
-| 7 / 8 / 9 / 0 | Overlay modes |
+| 7 / 8 / 9 / 0 / - | Overlay modes |
 
 ---
 
@@ -298,7 +309,7 @@ its close button is used.
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
-| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
+| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |
 | Pack Manager | Toolbar → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Mod pack browser / manager window. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
@@ -316,11 +327,12 @@ snapshot-on-open unless there is a clear need for an explicit low-frequency refr
 ### 5. Overlays
 
 Overlays are rendered as shader-driven mesh layers on the terrain. They are toggled via the
-View menu or keyboard shortcuts 7–0.
+View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-`.
 
-Current implementation detail: `terrain.gd` exposes four overlay modes through
-`overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`. The keyboard
-shortcuts below map directly to those values through `input_manager.gd`.
+Current implementation detail: `terrain.gd` exposes five overlay modes through
+`overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`, `4=Deposits`.
+Gameplay keyboard shortcuts expose all five values through `input_manager.gd`; WorldEditor also
+selects mode `4` while the coal-resource tools are active.
 
 | Key | Overlay |
 |-----|---------|
@@ -328,6 +340,7 @@ shortcuts below map directly to those values through `input_manager.gd`.
 | 8   | Pollution |
 | 9   | Noise |
 | 0   | Desirability |
+| -   | Deposits |
 
 Zoning overlay is a separate mesh toggled with the Zoning tool or `View → Toggle Zoning Overlay`.
 Traffic overlay is not currently implemented in the terrain renderer; do not expose it in the

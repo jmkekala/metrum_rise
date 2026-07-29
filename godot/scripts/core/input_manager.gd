@@ -1,7 +1,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, LaneTool, CulDeSacTool, ServiceBuildingTool, BulldozeTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## MoveTool, LaneTool, CulDeSacTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
 ## The Building Inspector helper is always present in the scene and can be
@@ -17,6 +17,7 @@ extends Node
 @onready var move_tool = $"../MoveTool"
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
+var industry_building_tool: Node3D
 var bulldoze_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
@@ -24,9 +25,10 @@ var bulldoze_tool: Node3D
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
+const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
@@ -36,6 +38,9 @@ const WORLD_CAMERA_CLEARANCE_M := 1.5
 
 var _current_save_path := ""
 var _simulation_speed: float = 0.0
+var _selected_industry_resource_id := ""
+var _industry_deposits_overlay_forced := false
+var _industry_previous_overlay_mode := 0
 
 func _ready():
 	if not has_node("../CulDeSacTool"):
@@ -60,6 +65,15 @@ func _ready():
 		service_building_tool = sbt
 	else:
 		service_building_tool = get_node("../ServiceBuildingTool")
+
+	if not has_node("../IndustryBuildingTool"):
+		var ibt = Node3D.new()
+		ibt.name = "IndustryBuildingTool"
+		ibt.set_script(load("res://scripts/tools/industry_building_tool.gd"))
+		get_parent().call_deferred("add_child", ibt)
+		industry_building_tool = ibt
+	else:
+		industry_building_tool = get_node("../IndustryBuildingTool")
 
 	if not has_node("../BulldozeTool"):
 		var bt = Node3D.new()
@@ -176,7 +190,7 @@ func _unhandled_input(event):
 			KEY_COMMA: _handle_lane_adjust(0, -1)
 			
 			# Overlay Modes
-			KEY_7, KEY_8, KEY_9, KEY_0:
+			KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS:
 				_handle_overlay_mode(event.keycode)
 
 			# Altitude Adjustments
@@ -298,6 +312,14 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.SERVICES:
 			if service_building_tool: service_building_tool.active = enabled
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+		Tool.INDUSTRY:
+			if industry_building_tool: industry_building_tool.active = enabled
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+			if enabled:
+				_sync_industry_deposits_overlay()
+			else:
+				_restore_industry_deposits_overlay()
+				_selected_industry_resource_id = ""
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 		Tool.BULLDOZE:
@@ -431,7 +453,39 @@ func _handle_overlay_mode(keycode):
 		KEY_8: mode = 1
 		KEY_9: mode = 2
 		KEY_0: mode = 3
-	if terrain_node: terrain_node.overlay_mode = mode
+		KEY_MINUS: mode = DEPOSITS_OVERLAY_MODE
+	_set_overlay_mode(mode)
+
+func _set_overlay_mode(mode: int) -> void:
+	var clamped_mode := clampi(mode, 0, DEPOSITS_OVERLAY_MODE)
+	if _industry_deposits_overlay_forced and current_tool == Tool.INDUSTRY:
+		if clamped_mode != DEPOSITS_OVERLAY_MODE:
+			_industry_previous_overlay_mode = clamped_mode
+		if terrain_node:
+			terrain_node.overlay_mode = DEPOSITS_OVERLAY_MODE
+		return
+	if terrain_node:
+		terrain_node.overlay_mode = clamped_mode
+
+func _sync_industry_deposits_overlay() -> void:
+	if current_tool != Tool.INDUSTRY or _selected_industry_resource_id.is_empty():
+		_restore_industry_deposits_overlay()
+		return
+	if _industry_deposits_overlay_forced:
+		if terrain_node:
+			terrain_node.overlay_mode = DEPOSITS_OVERLAY_MODE
+		return
+	_industry_previous_overlay_mode = int(terrain_node.overlay_mode) if terrain_node else 0
+	_industry_deposits_overlay_forced = true
+	if terrain_node:
+		terrain_node.overlay_mode = DEPOSITS_OVERLAY_MODE
+
+func _restore_industry_deposits_overlay() -> void:
+	if not _industry_deposits_overlay_forced:
+		return
+	_industry_deposits_overlay_forced = false
+	if terrain_node:
+		terrain_node.overlay_mode = clampi(_industry_previous_overlay_mode, 0, DEPOSITS_OVERLAY_MODE)
 
 func _handle_zoning_selection(keycode):
 	if current_tool != Tool.ZONING:
@@ -456,6 +510,16 @@ func select_service_asset(asset_id: String) -> void:
 		_activate_tool_logic(current_tool, true)
 	if service_building_tool:
 		service_building_tool.select_asset(asset_id)
+
+func select_industry_asset(asset_id: String, resource_id: String = "") -> void:
+	if current_tool != Tool.INDUSTRY:
+		_cancel_active_tool()
+		current_tool = Tool.INDUSTRY
+		_activate_tool_logic(current_tool, true)
+	if industry_building_tool:
+		industry_building_tool.select_asset(asset_id)
+	_selected_industry_resource_id = resource_id.strip_edges()
+	_sync_industry_deposits_overlay()
 
 func set_zoning_parcel_options(width_cells: int, depth_cells: int, gap_m: float) -> void:
 	if current_tool != Tool.ZONING:
@@ -526,8 +590,7 @@ func menu_load_world_definition(path: String) -> bool:
 	return false
 
 func menu_set_overlay_mode(mode: int) -> void:
-	if terrain_node:
-		terrain_node.overlay_mode = clampi(mode, 0, 3)
+	_set_overlay_mode(mode)
 
 func menu_toggle_zoning_overlay() -> void:
 	_toggle_zoning_overlay()

@@ -21,6 +21,7 @@ use crate::simulation::economy::demand::{
 };
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -30,6 +31,7 @@ use crate::simulation::network::types::{
     EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
 };
 use crate::simulation::network::{TransitNetwork, graph::Edge, graph::RegionGraph};
+use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -76,6 +78,8 @@ fn test_core() -> SimCore {
         undo_stack: VecDeque::new(),
         world_lake_fills: Vec::new(),
         world_open_water_fills: Vec::new(),
+        resource_deposits: ResourceDepositSystem::from_world_config(&config),
+        resource_extraction: ResourceExtractionSystem::new(),
         world_lake_fill_preview: None,
         authored_water_patch_fill_debug_cache: HashMap::new(),
         terrain_stroke_active: false,
@@ -802,6 +806,7 @@ fn register_test_asset(
             worker_capacity,
             service_class: None,
             economy_profile,
+            extractor: None,
         }),
         prop: None,
         vehicle: None,

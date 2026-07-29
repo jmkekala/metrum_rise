@@ -6,7 +6,7 @@ use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
 };
 use crate::simulation::economy::definitions::{
-    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
@@ -79,13 +79,16 @@ impl ShipmentSystem {
                     || building.shipment_cooldown_hours > 0
                     || building.is_deserted
                     || building.is_under_construction()
-                    || !matches!(building.zone_type, ZoneType::Industrial)
                 {
                     return None;
                 }
                 catalog
                     .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .filter(|profile| !profile.outputs.is_empty())
+                    .filter(|profile| {
+                        !profile.outputs.is_empty()
+                            && (matches!(building.zone_type, ZoneType::Industrial)
+                                || profile.kind == EconomyProfileRuntimeKind::Extractor)
+                    })
                     .map(|_| idx)
             })
             .collect();
@@ -99,7 +102,6 @@ impl ShipmentSystem {
                 || building.shipment_cooldown_hours > 0
                 || building.is_deserted
                 || building.is_under_construction()
-                || !matches!(building.zone_type, ZoneType::Industrial)
             {
                 continue;
             }
@@ -107,6 +109,11 @@ impl ShipmentSystem {
             else {
                 continue;
             };
+            if !matches!(building.zone_type, ZoneType::Industrial)
+                && profile.kind != EconomyProfileRuntimeKind::Extractor
+            {
+                continue;
+            }
             if profile.outputs.is_empty() {
                 continue;
             }

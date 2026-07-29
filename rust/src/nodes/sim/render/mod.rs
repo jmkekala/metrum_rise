@@ -11,6 +11,8 @@ pub mod buildings;
 pub mod lane_pose;
 /// Road-network rendering (mesh data, connection helpers).
 pub mod network;
+/// Authored resource overlay rendering.
+pub mod resources;
 /// Water patch mesh generation and cache helpers.
 pub mod water;
 /// Zoning and environment rendering (image overlays).

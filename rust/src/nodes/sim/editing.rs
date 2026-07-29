@@ -465,13 +465,17 @@ impl SimCore {
     }
 
     fn bulldoze_building(&mut self, building_idx: usize) -> bool {
+        self.remove_building_for_edit(building_idx, true)
+    }
+
+    fn remove_building_for_edit(&mut self, building_idx: usize, record_undo: bool) -> bool {
         if building_idx >= self.allocator.buildings.len() {
             return false;
         }
         let dirty_bounds = self.allocator.site_world_bounds(building_idx);
         self.allocator
             .accumulate_pending_site_dirty_bounds(dirty_bounds);
-        if !self.push_building_removal_undo(building_idx) {
+        if record_undo && !self.push_building_removal_undo(building_idx) {
             return false;
         }
         let _ = self.allocator.take_pending_site_dirty_bounds();
@@ -482,6 +486,7 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        let last_building_idx_before_remove = self.allocator.buildings.len().saturating_sub(1);
         let removed = self.allocator.remove_building_for_bulldoze(
             building_idx,
             &mut self.zoning,
@@ -490,14 +495,20 @@ impl SimCore {
             &mut self.logistics,
         );
         if !removed {
-            self.undo_stack.pop_back();
+            if record_undo {
+                self.undo_stack.pop_back();
+            }
             return false;
         }
+        self.resource_extraction
+            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
         self.rebuild_building_entrances_internal();
-        self.seal_building_removal_undo();
+        if record_undo {
+            self.seal_building_removal_undo();
+        }
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
         true
@@ -1214,6 +1225,109 @@ impl SimCore {
         Ok(building_idx)
     }
 
+    /// Returns a road-frontage snapped preview for one explicit industry building asset.
+    pub(crate) fn get_industry_building_placement_preview_internal(
+        &self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.allocator.preview_explicit_industry_placement(
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.zoning.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            &self.heightmap,
+            &catalog,
+        )
+    }
+
+    /// Places one explicit industry building, charging its build cost to the city treasury.
+    pub(crate) fn place_industry_building_internal(
+        &mut self,
+        asset_id: &str,
+        world_x: f32,
+        world_z: f32,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let building_idx = self.allocator.execute_explicit_industry_placement(
+            asset_id,
+            Vector2::new(world_x, world_z),
+            self.zoning.config.zone_cell_m,
+            &self.region_graph,
+            &self.transit_network.road_surface,
+            &self.heightmap,
+            &catalog,
+            &tuning,
+            self.fiscal_policy.business_purchase_tax_rate,
+        )?;
+
+        if !self.benchmark_mode {
+            if let Some(building) = self.allocator.buildings.get(building_idx) {
+                let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
+                self.treasury
+                    .deduct_build_cost(lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL);
+            }
+        }
+        self.rebuild_building_entrances_internal();
+        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+        Ok(building_idx)
+    }
+
+    /// Commits or replaces a resource-extraction polygon for one placed industry building.
+    pub(crate) fn commit_extractor_polygon_internal(
+        &mut self,
+        building_idx: usize,
+        polygon_world: Vec<Vector2>,
+    ) -> Result<crate::simulation::extraction::ExtractorSiteSummary, String> {
+        self.resource_extraction.commit_site(
+            building_idx,
+            polygon_world,
+            &self.resource_deposits,
+            &self.allocator,
+            self.zoning.config.zone_cell_m,
+        )
+    }
+
+    /// Removes an unfinalized industry extractor placement before its polygon is committed.
+    pub(crate) fn cancel_pending_industry_building_internal(
+        &mut self,
+        building_idx: usize,
+    ) -> bool {
+        let Some(building) = self.allocator.buildings.get(building_idx) else {
+            return false;
+        };
+        if self
+            .resource_extraction
+            .site_for_building(building_idx)
+            .is_some()
+            || !self
+                .allocator
+                .registry
+                .is_resource_extractor_asset(&building.asset_id)
+        {
+            return false;
+        }
+
+        let lot_cells = f64::from(building.width_cells) * f64::from(building.depth_cells);
+        let refund = lot_cells * SERVICE_BUILD_COST_PER_LOT_CELL;
+        if !self.remove_building_for_edit(building_idx, false) {
+            return false;
+        }
+        if !self.benchmark_mode {
+            self.treasury.refund_build_cost(refund);
+        }
+        true
+    }
+
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() {
@@ -1763,6 +1877,7 @@ mod tests {
     use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
     use crate::simulation::economy::households::HouseholdSystem;
     use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::extraction::ResourceExtractionSystem;
     use crate::simulation::grid::desirability::DesirabilitySystem;
     use crate::simulation::grid::noise::NoiseSystem;
     use crate::simulation::grid::pollution::PollutionSystem;
@@ -1771,6 +1886,7 @@ mod tests {
     use crate::simulation::network::types::{
         EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
     };
+    use crate::simulation::resources::ResourceDepositSystem;
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
     use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -1808,6 +1924,8 @@ mod tests {
             undo_stack: VecDeque::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&config),
+            resource_extraction: ResourceExtractionSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,

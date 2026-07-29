@@ -31,6 +31,13 @@
 //! | | `get_world_lake_fill_preview` | `world_editor.gd` |
 //! | | `commit_world_lake_fill_preview` | `world_editor.gd` |
 //! | | `cancel_world_lake_fill_preview` | `world_editor.gd` |
+//! | | `paint_world_coal_deposit` | `world_editor.gd` |
+//! | | `erase_world_coal_deposit` | `world_editor.gd` |
+//! | | `get_world_coal_deposit_overlay_data` | `terrain.gd` |
+//! | | `get_coal_pit_overlay_data` | `terrain.gd` |
+//! | | `get_coal_pit_overlay_size` | `terrain.gd` |
+//! | | `get_coal_pit_overlay_world_bounds` | `terrain.gd` |
+//! | | `get_coal_pit_overlay_revision` | `terrain.gd` |
 //! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
@@ -130,6 +137,7 @@ use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -137,6 +145,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::surface::{
     RoadPreviewValidation, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
+use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::cdt::{
     TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
     TerrainCdtRoadBoundarySource, TerrainCdtRoadLoop, TerrainCdtStats, TerrainCdtVertex,
@@ -463,6 +472,8 @@ impl INode3D for SimulationNode {
             undo_stack: VecDeque::new(),
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&config),
+            resource_extraction: ResourceExtractionSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,

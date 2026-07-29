@@ -4,6 +4,7 @@
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data(),
 ##   get_demand_pressures(), get_treasury_balance(), get_agent_count(),
 ##   get_service_building_assets()
+##   get_industry_building_assets()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
@@ -49,6 +50,10 @@ var services_combined_hbox: VBoxContainer
 var service_category_menu: HBoxContainer
 var service_asset_panel: PanelContainer
 var service_asset_menu: HBoxContainer
+var industry_main_btn: Button
+var industry_combined_hbox: VBoxContainer
+var industry_asset_panel: PanelContainer
+var industry_asset_menu: HBoxContainer
 var zoning_options_btn: Button
 var zoning_options_popup: PopupPanel
 var zoning_width_spin: SpinBox
@@ -63,6 +68,8 @@ var _service_assets_by_class: Dictionary = {}
 var _service_class_buttons: Dictionary = {}
 var _service_asset_buttons: Dictionary = {}
 var _active_service_class := ""
+var _industry_assets: Array[Dictionary] = []
+var _industry_asset_buttons: Dictionary = {}
 var select_main_btn: Button
 var bulldoze_btn: Button
 var road_properties_panel: Node
@@ -422,6 +429,31 @@ func _build_ui():
 	service_category_menu.add_theme_constant_override("separation", 10)
 	service_category_padding.add_child(service_category_menu)
 	services_combined_hbox.add_child(service_category_panel)
+
+	# --- Industry Sub-Menu Row ---
+	industry_combined_hbox = VBoxContainer.new()
+	industry_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	industry_combined_hbox.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	industry_combined_hbox.add_theme_constant_override("separation", 8)
+	industry_combined_hbox.visible = false
+	vbox.add_child(industry_combined_hbox)
+
+	industry_asset_panel = PanelContainer.new()
+	industry_asset_panel.add_theme_stylebox_override("panel", service_panel_style.duplicate())
+	industry_asset_panel.visible = true
+
+	var industry_asset_padding = MarginContainer.new()
+	industry_asset_padding.add_theme_constant_override("margin_left", 12)
+	industry_asset_padding.add_theme_constant_override("margin_right", 12)
+	industry_asset_padding.add_theme_constant_override("margin_top", 8)
+	industry_asset_padding.add_theme_constant_override("margin_bottom", 8)
+	industry_asset_panel.add_child(industry_asset_padding)
+
+	industry_asset_menu = HBoxContainer.new()
+	industry_asset_menu.alignment = BoxContainer.ALIGNMENT_CENTER
+	industry_asset_menu.add_theme_constant_override("separation", 10)
+	industry_asset_padding.add_child(industry_asset_menu)
+	industry_combined_hbox.add_child(industry_asset_panel)
 	
 	# 1. Main Toolbar (Bottom stack layer)
 	main_toolbar = HBoxContainer.new()
@@ -458,6 +490,14 @@ func _build_ui():
 	_apply_hud_toolbar_text_style(services_main_btn)
 	services_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(services_main_btn)
+
+	industry_main_btn = Button.new()
+	industry_main_btn.text = "Industry"
+	industry_main_btn.custom_minimum_size = Vector2(110, toolbar_button_height)
+	industry_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(industry_main_btn)
+	industry_main_btn.add_theme_stylebox_override("normal", style.duplicate())
+	main_toolbar.add_child(industry_main_btn)
 
 	terrain_main_btn = Button.new()
 	terrain_main_btn.text = "Terrain"
@@ -640,6 +680,7 @@ func _connect_signals():
 	terrain_main_btn.pressed.connect(_on_terrain_main_pressed)
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
 	services_main_btn.pressed.connect(_on_services_main_pressed)
+	industry_main_btn.pressed.connect(_on_industry_main_pressed)
 	select_main_btn.pressed.connect(_on_select_main_pressed)
 	bulldoze_btn.pressed.connect(_on_bulldoze_pressed)
 	
@@ -656,7 +697,9 @@ func _on_road_main_pressed():
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
 	services_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
 	_deactivate_services_if_active()
+	_deactivate_industry_if_active()
 	road_combined_hbox.visible = !road_combined_hbox.visible
 	if not road_combined_hbox.visible:
 		get_meta("options_panel").visible = false
@@ -667,7 +710,9 @@ func _on_terrain_main_pressed():
 	road_combined_hbox.visible = false
 	zoning_combined_hbox.visible = false
 	services_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
 	_deactivate_services_if_active()
+	_deactivate_industry_if_active()
 	terrain_sub_menu.visible = !terrain_sub_menu.visible
 	if not terrain_sub_menu.visible:
 		input_manager._cancel_active_tool()
@@ -676,7 +721,9 @@ func _on_zoning_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
 	services_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
 	_deactivate_services_if_active()
+	_deactivate_industry_if_active()
 	zoning_combined_hbox.visible = !zoning_combined_hbox.visible
 	if zoning_combined_hbox.visible:
 		_collapse_zoning_profiles()
@@ -688,6 +735,8 @@ func _on_services_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
+	_deactivate_industry_if_active()
 	services_combined_hbox.visible = !services_combined_hbox.visible
 	if services_combined_hbox.visible:
 		_rebuild_service_assets_index()
@@ -699,6 +748,24 @@ func _on_services_main_pressed():
 			_open_service_class(str(service_classes[0]), true)
 	else:
 		_collapse_service_assets()
+		input_manager._cancel_active_tool()
+
+func _on_industry_main_pressed():
+	road_combined_hbox.visible = false
+	terrain_sub_menu.visible = false
+	zoning_combined_hbox.visible = false
+	services_combined_hbox.visible = false
+	_deactivate_services_if_active()
+	industry_combined_hbox.visible = !industry_combined_hbox.visible
+	if industry_combined_hbox.visible:
+		_rebuild_industry_assets()
+		_rebuild_industry_asset_menu()
+		if _industry_assets.is_empty():
+			input_manager._cancel_active_tool()
+		else:
+			var first_asset: Dictionary = _industry_assets[0]
+			_select_industry_asset(str(first_asset.get("asset_id", "")))
+	else:
 		input_manager._cancel_active_tool()
 
 func _select_road_type(fwd: int, bkw: int):
@@ -739,7 +806,9 @@ func _on_select_main_pressed():
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
 	services_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
 	_deactivate_services_if_active()
+	_deactivate_industry_if_active()
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
 
 func _on_bulldoze_pressed():
@@ -747,7 +816,9 @@ func _on_bulldoze_pressed():
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
 	services_combined_hbox.visible = false
+	industry_combined_hbox.visible = false
 	_deactivate_services_if_active()
+	_deactivate_industry_if_active()
 	input_manager._toggle_tool(InputManager.Tool.BULLDOZE)
 
 ## Shows the road properties panel for one or more selected edges.
@@ -1141,6 +1212,81 @@ func _current_service_asset_id() -> String:
 
 func _deactivate_services_if_active() -> void:
 	if input_manager and input_manager.current_tool == InputManager.Tool.SERVICES:
+		input_manager._cancel_active_tool()
+
+func _rebuild_industry_assets() -> void:
+	_industry_assets.clear()
+	var payload = simulation_node.get_industry_building_assets()
+	if not (payload is Array):
+		return
+	for entry in payload:
+		if entry is Dictionary:
+			_industry_assets.append((entry as Dictionary).duplicate(true))
+	_industry_assets.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var a_name := str(a.get("display_name", a.get("asset_id", "")))
+		var b_name := str(b.get("display_name", b.get("asset_id", "")))
+		if a_name == b_name:
+			return str(a.get("asset_id", "")) < str(b.get("asset_id", ""))
+		return a_name < b_name
+	)
+
+func _rebuild_industry_asset_menu() -> void:
+	while industry_asset_menu.get_child_count() > 0:
+		var child := industry_asset_menu.get_child(0)
+		industry_asset_menu.remove_child(child)
+		child.queue_free()
+	_industry_asset_buttons.clear()
+
+	if _industry_assets.is_empty():
+		var empty_btn := Button.new()
+		empty_btn.text = "No Industry"
+		empty_btn.custom_minimum_size = Vector2(145, 50)
+		empty_btn.disabled = true
+		empty_btn.focus_mode = Control.FOCUS_NONE
+		industry_asset_menu.add_child(empty_btn)
+		return
+
+	for asset in _industry_assets:
+		var asset_id := str(asset.get("asset_id", ""))
+		if asset_id.is_empty():
+			continue
+		var button := Button.new()
+		button.text = str(asset.get("display_name", asset_id))
+		button.tooltip_text = "%s / %s" % [asset_id, str(asset.get("resource_id", ""))]
+		button.custom_minimum_size = Vector2(190, 50)
+		button.toggle_mode = true
+		_apply_colored_button_style(button, Color(0.40, 0.39, 0.34, 0.76))
+		button.pressed.connect(func(): _select_industry_asset(asset_id))
+		industry_asset_menu.add_child(button)
+		_industry_asset_buttons[asset_id] = button
+
+func _select_industry_asset(asset_id: String) -> void:
+	if asset_id.is_empty():
+		return
+	if industry_combined_hbox:
+		industry_combined_hbox.visible = true
+	input_manager.select_industry_asset(asset_id, _industry_resource_for_asset(asset_id))
+	_refresh_industry_asset_button_states()
+
+func _industry_resource_for_asset(asset_id: String) -> String:
+	for asset in _industry_assets:
+		if str(asset.get("asset_id", "")) == asset_id:
+			return str(asset.get("resource_id", "")).strip_edges()
+	return ""
+
+func _refresh_industry_asset_button_states() -> void:
+	var current_asset_id := _current_industry_asset_id()
+	for asset_id in _industry_asset_buttons.keys():
+		var button: Button = _industry_asset_buttons[asset_id]
+		button.set_pressed_no_signal(str(asset_id) == current_asset_id)
+
+func _current_industry_asset_id() -> String:
+	if input_manager and input_manager.industry_building_tool:
+		return str(input_manager.industry_building_tool.selected_asset_id)
+	return ""
+
+func _deactivate_industry_if_active() -> void:
+	if input_manager and input_manager.current_tool == InputManager.Tool.INDUSTRY:
 		input_manager._cancel_active_tool()
 
 func _service_class_label(service_class: String) -> String:

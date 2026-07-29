@@ -212,6 +212,12 @@ impl SimCore {
             .iter()
             .filter_map(|&idx| agent_store.get(idx).map(|agent| (idx, agent.to_owned())))
             .collect();
+        let extractor_sites = [building_idx, last_idx]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|idx| self.resource_extraction.site_for_building(idx).cloned())
+            .collect();
 
         Some(BuildingRemovalUndo {
             building_idx,
@@ -231,6 +237,7 @@ impl SimCore {
             removed_carriers,
             households,
             logistics,
+            extractor_sites,
             dirty_bounds: self.allocator.site_world_bounds(building_idx),
         })
     }
@@ -545,6 +552,12 @@ impl SimCore {
             self.logistics.remap_building_indices(&inverse);
             self.zoning.remap_parcel_occupancy(building_idx, last_idx);
         }
+        self.resource_extraction
+            .restore_sites_after_building_removal_undo(
+                building_idx,
+                last_idx,
+                undo.extractor_sites,
+            );
 
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();

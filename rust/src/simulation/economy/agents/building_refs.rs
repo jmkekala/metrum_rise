@@ -703,6 +703,7 @@ mod tests {
                 worker_capacity: None,
                 service_class: None,
                 economy_profile: None,
+                extractor: None,
             }),
             prop: None,
             vehicle: None,

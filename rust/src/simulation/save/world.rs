@@ -11,10 +11,14 @@ use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
 };
+use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::resources::{
+    COAL_RESOURCE_ID, RESOURCE_RICHNESS_MAX, ResourceDepositSystem,
+};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -25,12 +29,14 @@ use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
     db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_u64, i64_to_usize,
-    optional_building_to_db, pack_f32_slice, u32_to_i64, u64_to_i64, unpack_f32_blob, usize_to_i64,
+    optional_building_to_db, pack_f32_slice, pack_u16_slice, u32_to_i64, u64_to_i64,
+    unpack_f32_blob, unpack_u16_blob, usize_to_i64,
 };
 use std::collections::VecDeque;
 
 const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
 const SHIPMENT_ENDPOINT_OWA_BORDER: i64 = 1;
+const RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES: usize = 64;
 
 fn shipment_endpoint_to_db(
     endpoint: ShipmentEndpoint,
@@ -126,10 +132,12 @@ pub(super) fn save_world(
     tx: &Transaction,
     terrain: &TerrainSystem,
     water: &WaterSystem,
+    resource_deposits: &ResourceDepositSystem,
     zoning: &ZoningSystem,
     buildings: &BuildingAllocator,
     households: &HouseholdSystem,
     logistics: &ShipmentSystem,
+    resource_extraction: &ResourceExtractionSystem,
     demand: &DemandSystem,
     pending_demand_spawns: &VecDeque<PendingDemandSpawnAction>,
     pollution: &PollutionSystem,
@@ -155,6 +163,8 @@ pub(super) fn save_world(
             pack_f32_slice(&water.clone_baseline_depth_dense()),
         ],
     )?;
+
+    save_resource_deposits(tx, resource_deposits)?;
 
     // Demand
     let spawn_action_credit = demand.spawn_action_credit.as_array();
@@ -320,6 +330,7 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
+    save_resource_extraction(tx, resource_extraction, maps)?;
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
@@ -409,6 +420,91 @@ pub(super) fn save_world(
     Ok(())
 }
 
+fn save_resource_deposits(
+    tx: &Transaction,
+    resource_deposits: &ResourceDepositSystem,
+) -> SaveLoadResult<()> {
+    let coal_dense = resource_deposits.clone_coal_richness_dense();
+    let (resource_w, resource_h) = resource_deposits.grid_dimensions();
+    let mut resource_stmt = tx.prepare(
+        "INSERT INTO resource_deposit_chunks(resource_id, chunk_x, chunk_z, width_samples, height_samples, richness_blob_u16_le) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
+    let chunk_cols = resource_w.div_ceil(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES);
+    let chunk_rows = resource_h.div_ceil(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES);
+    for chunk_z in 0..chunk_rows {
+        for chunk_x in 0..chunk_cols {
+            let origin_x = chunk_x * RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES;
+            let origin_z = chunk_z * RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES;
+            let width_samples = (resource_w - origin_x).min(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES);
+            let height_samples = (resource_h - origin_z).min(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES);
+            let mut payload = Vec::with_capacity(width_samples * height_samples);
+            let mut touched = false;
+
+            for local_z in 0..height_samples {
+                let row_start = (origin_z + local_z) * resource_w + origin_x;
+                let row_end = row_start + width_samples;
+                let row = &coal_dense[row_start..row_end];
+                if !touched && row.iter().any(|value| *value != 0) {
+                    touched = true;
+                }
+                payload.extend_from_slice(row);
+            }
+
+            if !touched {
+                continue;
+            }
+
+            resource_stmt.execute(params![
+                COAL_RESOURCE_ID,
+                chunk_x as i64,
+                chunk_z as i64,
+                usize_to_i64(width_samples)?,
+                usize_to_i64(height_samples)?,
+                pack_u16_slice(&payload),
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+fn save_resource_extraction(
+    tx: &Transaction,
+    resource_extraction: &ResourceExtractionSystem,
+    maps: &SnapshotMaps,
+) -> SaveLoadResult<()> {
+    let mut site_stmt = tx.prepare(
+        "INSERT INTO resource_extractor_sites(site_id, building_id, resource_id, total_reserve_units, extracted_units) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
+    let mut point_stmt = tx.prepare(
+        "INSERT INTO resource_extractor_site_points(site_id, point_index, x, z) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (site_id, site) in resource_extraction.sites().iter().enumerate() {
+        let saved_building_id = optional_building_to_db(site.building_idx, maps)?;
+        if saved_building_id == NONE_REF {
+            return Err(SaveLoadError::custom(
+                "resource extractor site references missing building",
+            ));
+        }
+        let site_id_db = usize_to_i64(site_id)?;
+        site_stmt.execute(params![
+            site_id_db,
+            saved_building_id,
+            site.resource_id.as_str(),
+            site.total_reserve_units,
+            site.extracted_units,
+        ])?;
+        for (point_index, point) in site.polygon_world.iter().enumerate() {
+            point_stmt.execute(params![
+                site_id_db,
+                usize_to_i64(point_index)?,
+                point.x,
+                point.y,
+            ])?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn load_terrain(
     conn: &Connection,
     config: &WorldConfig,
@@ -450,6 +546,79 @@ pub(super) fn load_water(
         .replace_baseline_depth_from_dense(&unpack_f32_blob(&baseline_db, w * h)?)
         .map_err(SaveLoadError::custom)?;
     Ok(water)
+}
+
+pub(super) fn load_resource_deposits(
+    conn: &Connection,
+    config: &WorldConfig,
+) -> SaveLoadResult<ResourceDepositSystem> {
+    let mut resource_deposits = ResourceDepositSystem::from_world_config(config);
+    let (resource_w, resource_h) = resource_deposits.grid_dimensions();
+    let mut stmt = conn.prepare(
+        "SELECT resource_id, chunk_x, chunk_z, width_samples, height_samples, richness_blob_u16_le FROM resource_deposit_chunks ORDER BY resource_id, chunk_z, chunk_x",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let resource_id: String = row.get(0)?;
+        if resource_id != COAL_RESOURCE_ID {
+            return Err(SaveLoadError::custom(format!(
+                "unsupported resource deposit id '{resource_id}'"
+            )));
+        }
+        let chunk_x = i64_to_usize(row.get(1)?)?;
+        let chunk_z = i64_to_usize(row.get(2)?)?;
+        let width_samples = i64_to_usize(row.get(3)?)?;
+        let height_samples = i64_to_usize(row.get(4)?)?;
+        let blob: Vec<u8> = row.get(5)?;
+
+        if width_samples == 0 || height_samples == 0 {
+            return Err(SaveLoadError::custom(
+                "resource deposit chunk has zero-sized payload",
+            ));
+        }
+        if width_samples > RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES
+            || height_samples > RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES
+        {
+            return Err(SaveLoadError::custom(
+                "resource deposit chunk exceeds canonical chunk sample span",
+            ));
+        }
+
+        let origin_x = chunk_x
+            .checked_mul(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES)
+            .ok_or_else(|| SaveLoadError::custom("resource deposit chunk_x overflow"))?;
+        let origin_z = chunk_z
+            .checked_mul(RESOURCE_DEPOSIT_CHUNK_SIZE_SAMPLES)
+            .ok_or_else(|| SaveLoadError::custom("resource deposit chunk_z overflow"))?;
+        if origin_x + width_samples > resource_w || origin_z + height_samples > resource_h {
+            return Err(SaveLoadError::custom(
+                "resource deposit chunk falls outside world bounds",
+            ));
+        }
+
+        let payload = unpack_u16_blob(&blob, width_samples * height_samples)?;
+        for local_z in 0..height_samples {
+            let row_start = local_z * width_samples;
+            let row_end = row_start + width_samples;
+            let payload_row = &payload[row_start..row_end];
+            for (local_x, value) in payload_row.iter().enumerate() {
+                if *value == 0 {
+                    continue;
+                }
+                if *value > RESOURCE_RICHNESS_MAX {
+                    return Err(SaveLoadError::custom(
+                        "resource deposit richness exceeds canonical range",
+                    ));
+                }
+                resource_deposits.set_coal_richness_at(
+                    origin_x + local_x,
+                    origin_z + local_z,
+                    *value,
+                );
+            }
+        }
+    }
+    Ok(resource_deposits)
 }
 
 pub(super) fn load_pending_demand_spawns(
@@ -613,6 +782,71 @@ pub(super) fn load_buildings(
         building.set_inventory_units(resource_runtime_id, amount);
     }
     Ok(allocator)
+}
+
+pub(super) fn load_resource_extraction(
+    conn: &Connection,
+    building_count: usize,
+) -> SaveLoadResult<ResourceExtractionSystem> {
+    let mut stmt = conn.prepare(
+        "SELECT site_id, building_id, resource_id, total_reserve_units, extracted_units FROM resource_extractor_sites ORDER BY site_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut sites = Vec::new();
+    while let Some(row) = rows.next()? {
+        let site_id = i64_to_usize(row.get(0)?)?;
+        if site_id != sites.len() {
+            return Err(SaveLoadError::custom("non-contiguous extractor site ids"));
+        }
+        let building_idx = i64_to_usize(row.get(1)?)?;
+        if building_idx >= building_count {
+            return Err(SaveLoadError::custom(
+                "extractor site references missing building",
+            ));
+        }
+        let resource_id: String = row.get(2)?;
+        let total_reserve_units: f32 = row.get::<_, f32>(3)?.max(0.0);
+        let extracted_units: f32 = row.get::<_, f32>(4)?.clamp(0.0, total_reserve_units);
+        sites.push(ExtractorSite {
+            building_idx,
+            resource_id,
+            polygon_world: Vec::new(),
+            total_reserve_units,
+            extracted_units,
+        });
+    }
+
+    let mut point_stmt = conn.prepare(
+        "SELECT site_id, point_index, x, z FROM resource_extractor_site_points ORDER BY site_id, point_index",
+    )?;
+    let mut point_rows = point_stmt.query([])?;
+    let mut last_point_index_by_site = vec![0usize; sites.len()];
+    while let Some(row) = point_rows.next()? {
+        let site_id = i64_to_usize(row.get(0)?)?;
+        if site_id >= sites.len() {
+            return Err(SaveLoadError::custom(
+                "extractor polygon point references missing site",
+            ));
+        }
+        let point_index = i64_to_usize(row.get(1)?)?;
+        if point_index != last_point_index_by_site[site_id] {
+            return Err(SaveLoadError::custom(
+                "non-contiguous extractor polygon point ids",
+            ));
+        }
+        last_point_index_by_site[site_id] += 1;
+        sites[site_id]
+            .polygon_world
+            .push(Vector2::new(row.get(2)?, row.get(3)?));
+    }
+    for site in &sites {
+        if site.polygon_world.len() < 3 {
+            return Err(SaveLoadError::custom(
+                "extractor site has fewer than three polygon points",
+            ));
+        }
+    }
+    Ok(ResourceExtractionSystem::from_sites(sites))
 }
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
