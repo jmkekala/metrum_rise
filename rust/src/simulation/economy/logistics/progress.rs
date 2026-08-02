@@ -30,7 +30,7 @@ impl ShipmentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         treasury_balance: &mut f64,
-    ) -> f32 {
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
@@ -55,7 +55,6 @@ impl ShipmentSystem {
             treasury_balance,
         );
 
-        let mut business_purchase_tax_collected = 0.0;
         let mut idx = 0;
         while idx < self.shipments.len() {
             if self.shipments[idx].carrier_agent_id == usize::MAX {
@@ -187,7 +186,6 @@ impl ShipmentSystem {
                             treasury_balance,
                             dest_idx,
                             shipment.total_cost,
-                            shipment.tax_cost,
                         );
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
@@ -202,10 +200,9 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
-                    business_purchase_tax_collected += shipment.tax_cost;
                     debug_log!(
                         "economy",
-                        "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} dest_inventory={:.1}",
+                        "freight input fulfilled shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
                         shipment.id,
                         src_idx,
                         allocator.buildings[src_idx].asset_id,
@@ -216,7 +213,6 @@ impl ShipmentSystem {
                             .unwrap_or("unknown"),
                         shipment.amount,
                         shipment.total_cost,
-                        shipment.tax_cost,
                         allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
                     );
                     self.start_return_or_finish(
@@ -244,7 +240,6 @@ impl ShipmentSystem {
                             treasury_balance,
                             dest_idx,
                             shipment.total_cost,
-                            shipment.tax_cost,
                         );
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
                             retry_cooldown_hours;
@@ -256,10 +251,9 @@ impl ShipmentSystem {
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
-                    business_purchase_tax_collected += shipment.tax_cost;
                     debug_log!(
                         "economy",
-                        "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} dest_inventory={:.1}",
+                        "freight input fulfilled shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} dest_inventory={:.1}",
                         shipment.id,
                         border_node,
                         dest_idx,
@@ -269,7 +263,6 @@ impl ShipmentSystem {
                             .unwrap_or("unknown"),
                         shipment.amount,
                         shipment.total_cost,
-                        shipment.tax_cost,
                         allocator.buildings[dest_idx].inventory_units(shipment.resource_runtime_id)
                     );
                     self.start_return_or_finish(
@@ -284,7 +277,6 @@ impl ShipmentSystem {
             }
             idx += 1;
         }
-        business_purchase_tax_collected
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -501,7 +493,6 @@ fn fail_shipment_before_dispatch(
             treasury_balance,
             destination_idx,
             shipment.total_cost,
-            shipment.tax_cost,
         );
         allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
     }
@@ -605,7 +596,6 @@ fn expire_queued_shipment(
             treasury_balance,
             destination_idx,
             shipment.total_cost,
-            shipment.tax_cost,
         );
         allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
     }

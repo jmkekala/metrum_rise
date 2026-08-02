@@ -15,7 +15,6 @@ use crate::simulation::economy::definitions::{
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
-use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
@@ -331,11 +330,9 @@ impl BuildingAllocator {
         zoning: &mut ZoningSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        business_purchase_tax_rate: f32,
     ) -> usize {
         let parcel_id = placement.parcel_id;
-        let building_idx =
-            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
+        let building_idx = self.place_building_instance(placement, catalog, tuning);
         zoning.occupy_parcel(parcel_id, building_idx);
         self.bump_building_ref_revision();
         self.dirty = true;
@@ -370,7 +367,6 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        business_purchase_tax_rate: f32,
     ) -> Result<usize, DemandSpawnPlacementRejection> {
         let Some(params) = self.asset_placement_params(&action.asset_id, catalog) else {
             return Err(DemandSpawnPlacementRejection::AssetUnavailable);
@@ -386,13 +382,7 @@ impl BuildingAllocator {
         resolved.support_height_m =
             self.resolve_site_support_height(&resolved, graph, road_surface, terrain)?;
         self.validate_site_support_tie_in(&resolved, graph, road_surface, terrain)?;
-        Ok(self.commit_resolved_slot(
-            resolved,
-            zoning,
-            catalog,
-            tuning,
-            business_purchase_tax_rate,
-        ))
+        Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
     pub(crate) fn preview_explicit_service_placement(
@@ -464,7 +454,6 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        business_purchase_tax_rate: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
         let mut placement =
@@ -477,8 +466,7 @@ impl BuildingAllocator {
         self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
-        let building_idx =
-            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
+        let building_idx = self.place_building_instance(placement, catalog, tuning);
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
@@ -566,7 +554,6 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        business_purchase_tax_rate: f32,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_industry_placement_params(asset_id, catalog)?;
         let mut placement =
@@ -579,8 +566,7 @@ impl BuildingAllocator {
         self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
-        let building_idx =
-            self.place_building_instance(placement, catalog, tuning, business_purchase_tax_rate);
+        let building_idx = self.place_building_instance(placement, catalog, tuning);
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
@@ -668,16 +654,9 @@ impl BuildingAllocator {
             .building
             .as_ref()
             .ok_or(ExplicitServicePlacementRejection::NotIndustryBuilding)?;
-        if !self.registry.is_resource_extractor_asset(asset_id) {
+        if !self.registry.is_industry_area_asset(asset_id) {
             return Err(ExplicitServicePlacementRejection::NotIndustryBuilding);
         }
-        let resource_id = self
-            .registry
-            .extractor_resource(asset_id)
-            .ok_or(ExplicitServicePlacementRejection::NotIndustryBuilding)?;
-        let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
-            return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
-        };
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
             catalog,
@@ -685,15 +664,43 @@ impl BuildingAllocator {
         );
         let profile = catalog
             .profile_by_runtime_id(economy_binding.runtime_id)
-            .filter(|profile| {
-                !economy_binding.economy_broken
-                    && profile.kind == EconomyProfileRuntimeKind::Extractor
-                    && profile.worker_capacity > 0
-                    && profile.output_port(resource_runtime_id).is_some()
-            })
-            .ok_or(ExplicitServicePlacementRejection::ExtractorProfileUnavailable)?;
+            .filter(|_| !economy_binding.economy_broken)
+            .ok_or_else(|| {
+                if self.registry.is_field_producer_asset(asset_id) {
+                    ExplicitServicePlacementRejection::FieldProfileUnavailable
+                } else {
+                    ExplicitServicePlacementRejection::ExtractorProfileUnavailable
+                }
+            })?;
+        if let Some(resource_id) = self.registry.extractor_resource(asset_id) {
+            let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
+                return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
+            };
+            if profile.kind != EconomyProfileRuntimeKind::Extractor
+                || profile.worker_capacity == 0
+                || profile.output_port(resource_runtime_id).is_none()
+            {
+                return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
+            }
+        } else if let Some(resource_id) = self.registry.field_resource(asset_id) {
+            let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
+                return Err(ExplicitServicePlacementRejection::FieldProfileUnavailable);
+            };
+            if profile.kind != EconomyProfileRuntimeKind::FieldProducer
+                || profile.worker_capacity == 0
+                || profile.output_port(resource_runtime_id).is_none()
+            {
+                return Err(ExplicitServicePlacementRejection::FieldProfileUnavailable);
+            }
+        } else {
+            return Err(ExplicitServicePlacementRejection::NotIndustryBuilding);
+        }
         if profile.outputs.is_empty() {
-            return Err(ExplicitServicePlacementRejection::ExtractorProfileUnavailable);
+            return Err(if self.registry.is_field_producer_asset(asset_id) {
+                ExplicitServicePlacementRejection::FieldProfileUnavailable
+            } else {
+                ExplicitServicePlacementRejection::ExtractorProfileUnavailable
+            });
         }
 
         Ok(AssetPlacementParams {
@@ -1356,7 +1363,6 @@ impl BuildingAllocator {
         placement: ResolvedPlacement,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        business_purchase_tax_rate: f32,
     ) -> usize {
         let economy_binding = resolve_building_economy_profile_binding_with_catalog(
             &self.registry,
@@ -1395,12 +1401,16 @@ impl BuildingAllocator {
                     && catalog
                         .profile_by_runtime_id(economy_binding.runtime_id)
                         .is_some_and(|profile| {
-                            profile.kind == EconomyProfileRuntimeKind::Extractor
+                            matches!(
+                                profile.kind,
+                                EconomyProfileRuntimeKind::Extractor
+                                    | EconomyProfileRuntimeKind::FieldProducer
+                            )
                         }) =>
             {
                 let profile = catalog
                     .profile_by_runtime_id(economy_binding.runtime_id)
-                    .expect("extractor profile checked above");
+                    .expect("explicit industry area profile checked above");
                 let daily_wage = profile.average_daily_wage();
                 (profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS)
                     .max(STARTUP_MIN_BUDGET)
@@ -1444,10 +1454,7 @@ impl BuildingAllocator {
                                 * owa_import_multiplier
                         })
                         .sum::<f32>();
-                    let first_import_cost = first_import_base_cost
-                        + tax_amount(first_import_base_cost, business_purchase_tax_rate);
-
-                    (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
+                    (wage_runway + first_import_base_cost).max(STARTUP_MIN_BUDGET)
                 }
             }
             _ => 0.0,

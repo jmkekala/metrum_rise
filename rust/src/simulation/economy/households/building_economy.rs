@@ -11,7 +11,9 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::economy::fiscal::tax_amount;
+use crate::simulation::economy::fiscal::{
+    CityFiscalPolicy, FiscalRevenue, daily_property_tax, tax_amount,
+};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -319,6 +321,60 @@ impl HouseholdSystem {
         }
     }
 
+    /// Collects modeled daily property tax from occupied homes and private non-residential sites.
+    pub(super) fn settle_daily_property_tax(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        fiscal_policy: &CityFiscalPolicy,
+    ) -> FiscalRevenue {
+        self.ensure_daily_ledger_len();
+        let mut revenue = FiscalRevenue::default();
+
+        for (household_id, household) in self.households.iter_mut().enumerate() {
+            if household.member_count == 0 {
+                continue;
+            }
+            let Some(home) = allocator.buildings.get(household.home_building_id) else {
+                continue;
+            };
+            if !is_taxable_residential_home(home) {
+                continue;
+            }
+            let tax = daily_property_tax(ZoneType::Residential, home.level, fiscal_policy);
+            let paid = tax.min(household.budget.max(0.0));
+            if paid <= 0.0 {
+                continue;
+            }
+            household.budget -= paid;
+            if let Some(ledger) = self.daily_ledgers.get_mut(household_id) {
+                ledger.property_tax_paid += paid;
+            }
+            revenue.residential_property_tax += paid;
+        }
+
+        for building_idx in 0..allocator.buildings.len() {
+            let is_city_service = allocator
+                .registry
+                .is_city_service_asset(&allocator.buildings[building_idx].asset_id);
+            let building = &mut allocator.buildings[building_idx];
+            if !is_taxable_private_nonresidential_building(building, is_city_service) {
+                continue;
+            }
+            let tax = daily_property_tax(building.zone_type, building.level, fiscal_policy);
+            if tax <= 0.0 {
+                continue;
+            }
+            building.operating_budget -= tax;
+            match building.zone_type {
+                ZoneType::Commercial => revenue.commercial_property_tax += tax,
+                ZoneType::Industrial => revenue.industrial_property_tax += tax,
+                _ => {}
+            }
+        }
+
+        revenue
+    }
+
     /// Collects daily business profit tax from positive commercial/industrial budget growth.
     ///
     /// The baseline is reset after each daily settlement so the tax applies to today's net
@@ -388,6 +444,9 @@ impl HouseholdSystem {
             let Some(profile) = economy_profile_for_building(&catalog, building) else {
                 return;
             };
+            if profile.kind == EconomyProfileRuntimeKind::FieldProducer {
+                return;
+            }
             let factors = building_operation_factors(&catalog, building, profile);
             let throughput_factor = factors.throughput_factor;
             if profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
@@ -472,6 +531,27 @@ fn forced_owa_liquidation(
 
 fn is_active_utility_consumer(building: &Building) -> bool {
     !building.broken
+        && !building.economy_broken
+        && !building.is_deserted
+        && !building.is_under_construction()
+        && building.edge_idx != usize::MAX
+}
+
+fn is_taxable_residential_home(building: &Building) -> bool {
+    matches!(building.zone_type, ZoneType::Residential)
+        && !building.broken
+        && !building.economy_broken
+        && !building.is_deserted
+        && !building.is_under_construction()
+        && building.edge_idx != usize::MAX
+}
+
+fn is_taxable_private_nonresidential_building(building: &Building, is_city_service: bool) -> bool {
+    matches!(
+        building.zone_type,
+        ZoneType::Commercial | ZoneType::Industrial
+    ) && !is_city_service
+        && !building.broken
         && !building.economy_broken
         && !building.is_deserted
         && !building.is_under_construction()

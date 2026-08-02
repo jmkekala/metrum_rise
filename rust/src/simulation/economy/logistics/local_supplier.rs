@@ -7,7 +7,6 @@ use crate::simulation::economy::accessibility::{
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
-use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -15,7 +14,7 @@ use crate::simulation::network::types::TransitFlags;
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::quantization::quantize_requested_amount;
 use super::reservations::ReservationViews;
-use super::resource::{input_purchase_budget, input_purchase_tax_rate, reserve_input_payment};
+use super::resource::{input_purchase_budget, reserve_input_payment};
 use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
@@ -25,7 +24,6 @@ struct LocalSupplierChoice {
     supplier_idx: usize,
     amount: f32,
     total_cost: f32,
-    tax_cost: f32,
     travel_seconds: f32,
 }
 
@@ -50,7 +48,6 @@ impl ShipmentSystem {
         catalog: &RuntimeEconomyCatalog,
         truck_load_units: f32,
         max_freight_speed: f32,
-        business_purchase_tax_rate: f32,
         treasury_balance: &mut f64,
     ) -> bool {
         if dest_idx >= allocator.entrances.len() {
@@ -58,8 +55,6 @@ impl ShipmentSystem {
         }
         let destination = &allocator.buildings[dest_idx];
         let destination_budget = input_purchase_budget(allocator, dest_idx);
-        let purchase_tax_rate =
-            input_purchase_tax_rate(allocator, dest_idx, business_purchase_tax_rate);
         let Some(buckets) = supplier_index.buckets_for_resource(resource_runtime_id) else {
             return false;
         };
@@ -93,7 +88,6 @@ impl ShipmentSystem {
                         minute_of_day,
                         catalog,
                         truck_load_units,
-                        purchase_tax_rate,
                     );
                     true
                 }
@@ -110,13 +104,7 @@ impl ShipmentSystem {
         );
 
         if let Some(choice) = best_choice {
-            reserve_input_payment(
-                allocator,
-                treasury_balance,
-                dest_idx,
-                choice.total_cost,
-                choice.tax_cost,
-            );
+            reserve_input_payment(allocator, treasury_balance, dest_idx, choice.total_cost);
             let shipment_id = self.allocate_shipment_id();
             let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
                 choice.travel_seconds,
@@ -133,7 +121,6 @@ impl ShipmentSystem {
                 status: ShipmentStatus::InTransit,
                 carrier_agent_id: usize::MAX,
                 total_cost: choice.total_cost,
-                tax_cost: choice.tax_cost,
                 eta_hours,
                 queued_hours: 0,
             });
@@ -145,7 +132,7 @@ impl ShipmentSystem {
             );
             crate::debug_log!(
                 "economy",
-                "freight input initiated shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} eta={}h",
+                "freight input initiated shipment_id={} source=local src_idx={} src_asset={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} eta={}h",
                 shipment_id,
                 choice.supplier_idx,
                 allocator.buildings[choice.supplier_idx].asset_id,
@@ -156,7 +143,6 @@ impl ShipmentSystem {
                     .unwrap_or("unknown"),
                 choice.amount,
                 choice.total_cost,
-                choice.tax_cost,
                 eta_hours
             );
             return true;
@@ -185,7 +171,6 @@ fn update_best_local_supplier_choice(
     minute_of_day: u16,
     catalog: &RuntimeEconomyCatalog,
     truck_load_units: f32,
-    business_purchase_tax_rate: f32,
 ) {
     if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
         return;
@@ -216,9 +201,7 @@ fn update_best_local_supplier_choice(
         freight_profile,
         minute_of_day,
     );
-    let taxed_unit_price =
-        effective_unit_price + tax_amount(effective_unit_price, business_purchase_tax_rate);
-    let max_affordable = destination_budget / taxed_unit_price.max(f32::EPSILON);
+    let max_affordable = destination_budget / effective_unit_price.max(f32::EPSILON);
     let Some(amount) = quantize_requested_amount(
         desired_amount,
         available,
@@ -240,7 +223,6 @@ fn update_best_local_supplier_choice(
         supplier_idx: candidate_idx,
         amount,
         total_cost,
-        tax_cost: tax_amount(total_cost, business_purchase_tax_rate),
         travel_seconds,
     };
     if best_choice.is_none_or(|best| local_supplier_choice_precedes(choice, best)) {
@@ -251,9 +233,7 @@ fn update_best_local_supplier_choice(
 fn local_supplier_choice_precedes(left: LocalSupplierChoice, right: LocalSupplierChoice) -> bool {
     left.travel_seconds
         .total_cmp(&right.travel_seconds)
-        .then_with(|| {
-            (left.total_cost + left.tax_cost).total_cmp(&(right.total_cost + right.tax_cost))
-        })
+        .then_with(|| left.total_cost.total_cmp(&right.total_cost))
         .then_with(|| left.supplier_idx.cmp(&right.supplier_idx))
         .is_lt()
 }

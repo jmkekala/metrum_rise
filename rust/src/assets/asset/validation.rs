@@ -74,9 +74,9 @@ impl AssetManifest {
             }
             match b.placement_mode {
                 PlacementMode::ZonedPrivate => {
-                    if b.extractor.is_some() {
+                    if b.extractor.is_some() || b.field.is_some() {
                         return Err(ManifestError::Validation(format!(
-                            "asset_id '{}': extractor metadata requires explicit placement",
+                            "asset_id '{}': extractor and field metadata require explicit placement",
                             self.asset_id
                         )));
                     }
@@ -136,6 +136,12 @@ impl AssetManifest {
                             self.asset_id
                         )));
                     }
+                    if b.extractor.is_some() && b.field.is_some() {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': explicit buildings cannot declare both extractor and field metadata",
+                            self.asset_id
+                        )));
+                    }
                     if let Some(extractor) = &b.extractor {
                         if extractor.resource.trim().is_empty() {
                             return Err(ManifestError::Validation(format!(
@@ -152,6 +158,26 @@ impl AssetManifest {
                         if b.economy_profile.is_none() {
                             return Err(ManifestError::Validation(format!(
                                 "asset_id '{}': extractor buildings require economy_profile",
+                                self.asset_id
+                            )));
+                        }
+                    }
+                    if let Some(field) = &b.field {
+                        if field.resource.trim().is_empty() {
+                            return Err(ManifestError::Validation(format!(
+                                "asset_id '{}': building.field.resource must not be empty",
+                                self.asset_id
+                            )));
+                        }
+                        if field.area_mode.trim() != "player_polygon" {
+                            return Err(ManifestError::Validation(format!(
+                                "asset_id '{}': building.field.area_mode must be \"player_polygon\"",
+                                self.asset_id
+                            )));
+                        }
+                        if b.economy_profile.is_none() {
+                            return Err(ManifestError::Validation(format!(
+                                "asset_id '{}': field buildings require economy_profile",
                                 self.asset_id
                             )));
                         }

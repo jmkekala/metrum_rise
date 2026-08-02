@@ -379,7 +379,7 @@ func _build_profile_inspector() -> void:
 	_add_spin_field("Unit Price", float(profile.get("unit_price_currency", 0.0)), 0, 1000, 0.1, _update_selected_entry.bind("unit_price_currency"))
 	_add_spin_field("Wage Min", float(profile.get("wage_min_currency_per_day", 0.0)), 0, 1000, 1, _update_selected_entry.bind("wage_min_currency_per_day"))
 	_add_spin_field("Wage Max", float(profile.get("wage_max_currency_per_day", 0.0)), 0, 1000, 1, _update_selected_entry.bind("wage_max_currency_per_day"))
-	_add_spin_field("Stock Target (days)", float(profile.get("stock_target_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("stock_target_days"))
+	_add_spin_field("Inventory Target (days)", float(profile.get("stock_target_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("stock_target_days"))
 	_add_spin_field("Reorder Threshold", float(profile.get("reorder_threshold_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("reorder_threshold_days"))
 	_add_spin_field("Critical Threshold", float(profile.get("critical_threshold_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("critical_threshold_days"))
 	_add_spin_field("Min Shipment Units", float(profile.get("min_shipment_units", 0.0)), 0, 10000, 1, _update_selected_entry.bind("min_shipment_units"))
@@ -418,9 +418,9 @@ func _build_scenario_inspector() -> void:
 	_add_spin_field("Duration (days)", float(scenario.get("duration_days", 30)), 1, 365, 1, _update_selected_entry.bind("duration_days"))
 	_add_spin_field("Household Count", float(scenario.get("household_count", 0)), 0, 1000000, 1, _update_selected_entry.bind("household_count"))
 	_add_spin_field("Average Household Size", float(scenario.get("average_household_size", 1.0)), 1, 10, 0.1, _update_selected_entry.bind("average_household_size"))
-	_add_spin_field("Starting Stock (days)", float(scenario.get("starting_household_stock_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("starting_household_stock_days"))
-	_add_spin_field("Target Stock (days)", float(scenario.get("replenishment_target_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_target_days"))
-	_add_spin_field("Trigger Stock (days)", float(scenario.get("replenishment_trigger_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_trigger_days"))
+	_add_spin_field("Starting Supplies (days)", float(scenario.get("starting_household_stock_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("starting_household_stock_days"))
+	_add_spin_field("Target Supplies (days)", float(scenario.get("replenishment_target_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_target_days"))
+	_add_spin_field("Trigger Supplies (days)", float(scenario.get("replenishment_trigger_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_trigger_days"))
 	_add_spin_field("Pickup Cadence (hours)", float(scenario.get("pickup_cadence_hours", 0.0)), 0, 48, 0.5, _update_selected_entry.bind("pickup_cadence_hours"))
 	_add_read_only_block("Graph", "Nodes: %d\nEdges: %d\nController links: %d" % [
 		scenario.get("nodes", []).size(),
@@ -502,15 +502,15 @@ func _refresh_diagnostics() -> void:
 	else:
 		lines.append("- scenario: %s" % str(_sandbox_result.get("display_name", _sandbox_result.get("scenario_id", ""))))
 		lines.append("- daily consumption: %.1f units/day" % float(_sandbox_result.get("daily_household_demand_units", 0.0)))
-		lines.append("- end-of-run stock: %.2f days" % float(_sandbox_result.get("final_household_stock_days", 0.0)))
-		lines.append("- lowest stock reached: %.2f days" % float(_sandbox_result.get("lowest_household_stock_days", 0.0)))
+		lines.append("- end-of-run supplies: %.2f days" % float(_sandbox_result.get("final_household_stock_days", 0.0)))
+		lines.append("- lowest supplies reached: %.2f days" % float(_sandbox_result.get("lowest_household_stock_days", 0.0)))
 		lines.append("- total undelivered: %.0f units" % float(_sandbox_result.get("total_unmet_units", 0.0)))
 		lines.append("- avg cost per household/day: %.2f" % float(_sandbox_result.get("average_household_cost_per_day", 0.0)))
 		for bottleneck in _sandbox_result.get("bottlenecks", []):
 			lines.append("- bottleneck: %s" % str(bottleneck))
 		var daily: Array = _sandbox_result.get("daily", [])
 		if not daily.is_empty():
-			lines.append("- last day: stock %.2f, unmet %.2f" % [
+			lines.append("- last day: supplies %.2f, unmet %.2f" % [
 				float(daily[daily.size() - 1].get("household_stock_days", 0.0)),
 				float(daily[daily.size() - 1].get("unmet_units", 0.0)),
 			])

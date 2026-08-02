@@ -15,16 +15,17 @@ pub(crate) const POLICY_CHILD_SUPPORT: &str = "child_support";
 pub(crate) const POLICY_INCOME_TAX: &str = "income_tax";
 /// Stable policy id for household purchase VAT.
 pub(crate) const POLICY_HOUSEHOLD_VAT: &str = "household_vat";
-/// Stable policy id for business input purchase tax.
-pub(crate) const POLICY_BUSINESS_PURCHASE_TAX: &str = "business_purchase_tax";
 /// Stable policy id for positive business-budget growth tax.
 pub(crate) const POLICY_BUSINESS_PROFIT_TAX: &str = "business_profit_tax";
-/// Stable policy id for residential construction property tax base.
-pub(crate) const POLICY_RESIDENTIAL_PROPERTY_TAX: &str = "residential_property_tax";
-/// Stable policy id for commercial construction property tax base.
-pub(crate) const POLICY_COMMERCIAL_PROPERTY_TAX: &str = "commercial_property_tax";
-/// Stable policy id for industrial construction property tax base.
-pub(crate) const POLICY_INDUSTRIAL_PROPERTY_TAX: &str = "industrial_property_tax";
+/// Stable policy id for daily residential property tax per occupied home.
+pub(crate) const POLICY_RESIDENTIAL_PROPERTY_TAX: &str =
+    "residential_property_tax_per_home_per_day";
+/// Stable policy id for daily commercial property tax per private building.
+pub(crate) const POLICY_COMMERCIAL_PROPERTY_TAX: &str =
+    "commercial_property_tax_per_building_per_day";
+/// Stable policy id for daily industrial property tax per private building.
+pub(crate) const POLICY_INDUSTRIAL_PROPERTY_TAX: &str =
+    "industrial_property_tax_per_building_per_day";
 /// Stable policy id for per-level property-tax multiplier.
 pub(crate) const POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER: &str = "property_tax_level_multiplier";
 
@@ -35,8 +36,8 @@ const UNEMPLOYMENT_DAYS_MAX: f32 = 365.0;
 const INCOME_TAX_MAX: f32 = 0.75;
 const VAT_MAX: f32 = 0.50;
 const BUSINESS_PROFIT_TAX_MAX: f32 = 0.75;
-const PROPERTY_TAX_BASE_MIN: f32 = 0.0;
-const PROPERTY_TAX_BASE_MAX: f32 = 5_000.0;
+const PROPERTY_TAX_PER_DAY_MIN: f32 = 0.0;
+const PROPERTY_TAX_PER_DAY_MAX: f32 = 500.0;
 const PROPERTY_TAX_MULTIPLIER_MIN: f32 = 1.0;
 const PROPERTY_TAX_MULTIPLIER_MAX: f32 = 5.0;
 
@@ -47,12 +48,14 @@ pub(crate) struct FiscalRevenue {
     pub income_tax: f32,
     /// Household purchase VAT collected from store shopping.
     pub household_vat: f32,
-    /// Business purchase tax collected from local and OWA input freight.
-    pub business_purchase_tax: f32,
     /// Daily tax collected from positive commercial and industrial budget growth.
     pub business_profit_tax: f32,
-    /// One-time property tax collected from new private building construction.
-    pub property_tax: f32,
+    /// Daily property tax collected from occupied residential homes.
+    pub residential_property_tax: f32,
+    /// Daily property tax collected from active private commercial buildings.
+    pub commercial_property_tax: f32,
+    /// Daily property tax collected from active private industrial buildings.
+    pub industrial_property_tax: f32,
 }
 
 /// Player-controlled fiscal policy used by live economy systems.
@@ -70,16 +73,14 @@ pub(crate) struct CityFiscalPolicy {
     pub(crate) income_tax_rate: f32,
     /// Fraction added to household store purchases and remitted to the city at pickup.
     pub(crate) household_vat_rate: f32,
-    /// Fraction added to business input purchases and remitted to the city on delivery.
-    pub(crate) business_purchase_tax_rate: f32,
     /// Fraction of positive daily business operating-budget growth remitted to the city.
     pub(crate) business_profit_tax_rate: f32,
-    /// One-time tax charged when residential private construction starts.
-    pub(crate) residential_property_tax_base: f32,
-    /// One-time tax charged when commercial private construction starts.
-    pub(crate) commercial_property_tax_base: f32,
-    /// One-time tax charged when industrial private construction starts.
-    pub(crate) industrial_property_tax_base: f32,
+    /// Currency charged per occupied residential home per day.
+    pub(crate) residential_property_tax_per_home_per_day: f32,
+    /// Currency charged per active private commercial building per day.
+    pub(crate) commercial_property_tax_per_building_per_day: f32,
+    /// Currency charged per active private industrial building per day.
+    pub(crate) industrial_property_tax_per_building_per_day: f32,
     /// Per-level multiplier applied to property tax above level 1.
     pub(crate) property_tax_level_multiplier: f32,
 }
@@ -100,26 +101,22 @@ impl CityFiscalPolicy {
                 .clamp(TRANSFER_MIN, TRANSFER_MAX),
             income_tax_rate: tuning.fiscal.income_tax_rate.clamp(0.0, INCOME_TAX_MAX),
             household_vat_rate: tuning.fiscal.household_vat_rate.clamp(0.0, VAT_MAX),
-            business_purchase_tax_rate: tuning
-                .fiscal
-                .business_purchase_tax_rate
-                .clamp(0.0, VAT_MAX),
             business_profit_tax_rate: tuning
                 .fiscal
                 .business_profit_tax_rate
                 .clamp(0.0, BUSINESS_PROFIT_TAX_MAX),
-            residential_property_tax_base: tuning
+            residential_property_tax_per_home_per_day: tuning
                 .fiscal
-                .residential_property_tax_base
-                .clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX),
-            commercial_property_tax_base: tuning
+                .residential_property_tax_per_home_per_day
+                .clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX),
+            commercial_property_tax_per_building_per_day: tuning
                 .fiscal
-                .commercial_property_tax_base
-                .clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX),
-            industrial_property_tax_base: tuning
+                .commercial_property_tax_per_building_per_day
+                .clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX),
+            industrial_property_tax_per_building_per_day: tuning
                 .fiscal
-                .industrial_property_tax_base
-                .clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX),
+                .industrial_property_tax_per_building_per_day
+                .clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX),
             property_tax_level_multiplier: tuning
                 .fiscal
                 .property_tax_level_multiplier
@@ -152,23 +149,20 @@ impl CityFiscalPolicy {
             POLICY_HOUSEHOLD_VAT => {
                 self.household_vat_rate = value.clamp(0.0, VAT_MAX);
             }
-            POLICY_BUSINESS_PURCHASE_TAX => {
-                self.business_purchase_tax_rate = value.clamp(0.0, VAT_MAX);
-            }
             POLICY_BUSINESS_PROFIT_TAX => {
                 self.business_profit_tax_rate = value.clamp(0.0, BUSINESS_PROFIT_TAX_MAX);
             }
             POLICY_RESIDENTIAL_PROPERTY_TAX => {
-                self.residential_property_tax_base =
-                    value.clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX);
+                self.residential_property_tax_per_home_per_day =
+                    value.clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX);
             }
             POLICY_COMMERCIAL_PROPERTY_TAX => {
-                self.commercial_property_tax_base =
-                    value.clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX);
+                self.commercial_property_tax_per_building_per_day =
+                    value.clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX);
             }
             POLICY_INDUSTRIAL_PROPERTY_TAX => {
-                self.industrial_property_tax_base =
-                    value.clamp(PROPERTY_TAX_BASE_MIN, PROPERTY_TAX_BASE_MAX);
+                self.industrial_property_tax_per_building_per_day =
+                    value.clamp(PROPERTY_TAX_PER_DAY_MIN, PROPERTY_TAX_PER_DAY_MAX);
             }
             POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER => {
                 self.property_tax_level_multiplier =
@@ -187,7 +181,7 @@ impl CityFiscalPolicy {
     }
 
     /// Returns stable UI control metadata for every live fiscal policy field.
-    pub(crate) fn controls(self) -> [FiscalPolicyControl; 12] {
+    pub(crate) fn controls(self) -> [FiscalPolicyControl; 11] {
         [
             FiscalPolicyControl::new(
                 POLICY_UNEMPLOYMENT_BENEFIT,
@@ -250,16 +244,6 @@ impl CityFiscalPolicy {
                 0.01,
             ),
             FiscalPolicyControl::new(
-                POLICY_BUSINESS_PURCHASE_TAX,
-                "Business purchase tax",
-                "Taxes",
-                FiscalPolicyUnit::Percent,
-                self.business_purchase_tax_rate,
-                0.0,
-                VAT_MAX,
-                0.01,
-            ),
-            FiscalPolicyControl::new(
                 POLICY_BUSINESS_PROFIT_TAX,
                 "Business profit tax",
                 "Taxes",
@@ -272,37 +256,37 @@ impl CityFiscalPolicy {
             FiscalPolicyControl::new(
                 POLICY_RESIDENTIAL_PROPERTY_TAX,
                 "Residential property tax",
-                "Construction",
-                FiscalPolicyUnit::Currency,
-                self.residential_property_tax_base,
-                PROPERTY_TAX_BASE_MIN,
-                PROPERTY_TAX_BASE_MAX,
-                25.0,
+                "Taxes",
+                FiscalPolicyUnit::CurrencyPerDay,
+                self.residential_property_tax_per_home_per_day,
+                PROPERTY_TAX_PER_DAY_MIN,
+                PROPERTY_TAX_PER_DAY_MAX,
+                1.0,
             ),
             FiscalPolicyControl::new(
                 POLICY_COMMERCIAL_PROPERTY_TAX,
                 "Commercial property tax",
-                "Construction",
-                FiscalPolicyUnit::Currency,
-                self.commercial_property_tax_base,
-                PROPERTY_TAX_BASE_MIN,
-                PROPERTY_TAX_BASE_MAX,
-                25.0,
+                "Taxes",
+                FiscalPolicyUnit::CurrencyPerDay,
+                self.commercial_property_tax_per_building_per_day,
+                PROPERTY_TAX_PER_DAY_MIN,
+                PROPERTY_TAX_PER_DAY_MAX,
+                1.0,
             ),
             FiscalPolicyControl::new(
                 POLICY_INDUSTRIAL_PROPERTY_TAX,
                 "Industrial property tax",
-                "Construction",
-                FiscalPolicyUnit::Currency,
-                self.industrial_property_tax_base,
-                PROPERTY_TAX_BASE_MIN,
-                PROPERTY_TAX_BASE_MAX,
-                25.0,
+                "Taxes",
+                FiscalPolicyUnit::CurrencyPerDay,
+                self.industrial_property_tax_per_building_per_day,
+                PROPERTY_TAX_PER_DAY_MIN,
+                PROPERTY_TAX_PER_DAY_MAX,
+                1.0,
             ),
             FiscalPolicyControl::new(
                 POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
                 "Property level multiplier",
-                "Construction",
+                "Taxes",
                 FiscalPolicyUnit::Multiplier,
                 self.property_tax_level_multiplier,
                 PROPERTY_TAX_MULTIPLIER_MIN,
@@ -330,11 +314,10 @@ impl CityFiscalPolicy {
             child_support_per_child_per_day: 10.0,
             income_tax_rate: 0.12,
             household_vat_rate: 0.08,
-            business_purchase_tax_rate: 0.03,
             business_profit_tax_rate: 0.10,
-            residential_property_tax_base: 250.0,
-            commercial_property_tax_base: 500.0,
-            industrial_property_tax_base: 750.0,
+            residential_property_tax_per_home_per_day: 2.0,
+            commercial_property_tax_per_building_per_day: 25.0,
+            industrial_property_tax_per_building_per_day: 35.0,
             property_tax_level_multiplier: 1.75,
         }
     }
@@ -349,8 +332,6 @@ pub(crate) enum FiscalPolicyUnit {
     Percent,
     /// Whole operational days.
     Days,
-    /// One-time currency amount.
-    Currency,
     /// Unitless multiplier.
     Multiplier,
 }
@@ -362,7 +343,6 @@ impl FiscalPolicyUnit {
             Self::CurrencyPerDay => "currency_per_day",
             Self::Percent => "percent",
             Self::Days => "days",
-            Self::Currency => "currency",
             Self::Multiplier => "multiplier",
         }
     }
@@ -435,16 +415,12 @@ pub(crate) fn split_gross_tax(gross_amount: f32, rate: f32) -> (f32, f32) {
     (base_amount, gross_amount - base_amount)
 }
 
-/// Computes the one-time property tax charged when private construction starts.
-pub(crate) fn construction_property_tax(
-    zone_type: ZoneType,
-    level: u8,
-    fiscal: &CityFiscalPolicy,
-) -> f32 {
+/// Computes the daily property tax owed by one modeled payer at the given building level.
+pub(crate) fn daily_property_tax(zone_type: ZoneType, level: u8, fiscal: &CityFiscalPolicy) -> f32 {
     let base = match zone_type {
-        ZoneType::Residential => fiscal.residential_property_tax_base,
-        ZoneType::Commercial => fiscal.commercial_property_tax_base,
-        ZoneType::Industrial => fiscal.industrial_property_tax_base,
+        ZoneType::Residential => fiscal.residential_property_tax_per_home_per_day,
+        ZoneType::Commercial => fiscal.commercial_property_tax_per_building_per_day,
+        ZoneType::Industrial => fiscal.industrial_property_tax_per_building_per_day,
         ZoneType::Office | ZoneType::Mixed | ZoneType::None => 0.0,
     };
     if base <= 0.0 {
@@ -469,9 +445,9 @@ mod tests {
 
     fn test_fiscal_policy() -> CityFiscalPolicy {
         CityFiscalPolicy {
-            residential_property_tax_base: 250.0,
-            commercial_property_tax_base: 500.0,
-            industrial_property_tax_base: 750.0,
+            residential_property_tax_per_home_per_day: 2.0,
+            commercial_property_tax_per_building_per_day: 25.0,
+            industrial_property_tax_per_building_per_day: 35.0,
             property_tax_level_multiplier: 1.75,
             ..CityFiscalPolicy::fallback()
         }
@@ -486,16 +462,12 @@ mod tests {
     }
 
     #[test]
-    fn construction_property_tax_uses_zone_base_and_level_multiplier() {
+    fn daily_property_tax_uses_zone_base_and_level_multiplier() {
         let fiscal = test_fiscal_policy();
 
-        assert!(
-            (construction_property_tax(ZoneType::Residential, 1, &fiscal) - 250.0).abs() < 0.001
-        );
-        assert!(
-            (construction_property_tax(ZoneType::Commercial, 2, &fiscal) - 875.0).abs() < 0.001
-        );
-        assert_eq!(construction_property_tax(ZoneType::None, 3, &fiscal), 0.0);
+        assert!((daily_property_tax(ZoneType::Residential, 1, &fiscal) - 2.0).abs() < 0.001);
+        assert!((daily_property_tax(ZoneType::Commercial, 2, &fiscal) - 43.75).abs() < 0.001);
+        assert_eq!(daily_property_tax(ZoneType::None, 3, &fiscal), 0.0);
     }
 
     #[test]

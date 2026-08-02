@@ -5,6 +5,8 @@ use super::serde_helpers::{default_duration_days, default_one, deserialize_u32_f
 use serde::{Deserialize, Serialize};
 
 pub(super) const PROFILE_KIND_PRODUCER: &str = "producer";
+pub(super) const PROFILE_KIND_FIELD_PRODUCER: &str = "field_producer";
+pub(super) const PROFILE_KIND_PROCESSOR: &str = "processor";
 pub(super) const PROFILE_KIND_STORE: &str = "store";
 pub(super) const PROFILE_KIND_DEMAND_SINK: &str = "demand_sink";
 pub(super) const PROFILE_KIND_EXTRACTOR: &str = "extractor";
@@ -17,6 +19,8 @@ pub(super) const CONTROLLER_KIND_HOUSEHOLD_RESTOCK_COST: &str = "household_resto
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AuthoredProfileKind {
     Producer,
+    FieldProducer,
+    Processor,
     Store,
     DemandSink,
     Extractor,
@@ -29,6 +33,8 @@ impl AuthoredProfileKind {
     pub(super) fn from_str(kind: &str) -> Self {
         match kind {
             PROFILE_KIND_PRODUCER => Self::Producer,
+            PROFILE_KIND_FIELD_PRODUCER => Self::FieldProducer,
+            PROFILE_KIND_PROCESSOR => Self::Processor,
             PROFILE_KIND_STORE => Self::Store,
             PROFILE_KIND_DEMAND_SINK => Self::DemandSink,
             PROFILE_KIND_EXTRACTOR => Self::Extractor,

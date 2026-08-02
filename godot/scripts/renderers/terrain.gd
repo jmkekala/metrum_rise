@@ -8,15 +8,20 @@
 ##   get_pollution_image_data(), get_noise_image_data(),
 ##   get_desirability_image_data(), get_coal_pit_overlay_data(),
 ##   get_coal_pit_overlay_size(), get_coal_pit_overlay_world_bounds(),
-##   get_coal_pit_overlay_revision()
+##   get_coal_pit_overlay_revision(), get_agriculture_field_overlay_data(),
+##   get_agriculture_field_overlay_size(),
+##   get_agriculture_field_overlay_world_bounds(),
+##   get_agriculture_field_overlay_revision()
 extends Node3D
 
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
+const TERRAIN_GRAIN_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
 const HEIGHT_SCALE := 20.0
 const HILLSHADE_AZIMUTH_DEG := 315.0
 const HILLSHADE_ALTITUDE_DEG := 38.0
@@ -124,6 +129,13 @@ const TERRAIN_CDT_CONTRACT_REVISION := 4
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
+const FIELD_OVERLAY_TEXTURE_TILE_M := 12.0
+const FIELD_OVERLAY_STRENGTH := 0.84
+const FIELD_OVERLAY_GRAIN_TINT := Color(0.98, 1.02, 0.90, 1.0)
+const FIELD_OVERLAY_GRAIN_BRIGHTNESS := 1.06
+const FIELD_OVERLAY_GRAIN_MIX_STRENGTH := 0.38
+const FIELD_OVERLAY_GRAIN_MACRO_STRENGTH := 0.12
+const FIELD_OVERLAY_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var water_node = $"../Water"
@@ -140,10 +152,14 @@ var overlay_image: Image
 var coal_pit_texture: ImageTexture
 var coal_pit_image: Image
 var coal_pit_overlay_world_bounds: Vector4 = Vector4.ZERO
+var field_overlay_texture: ImageTexture
+var field_overlay_image: Image
+var field_overlay_world_bounds: Vector4 = Vector4.ZERO
 var empty_water_texture: ImageTexture
 var grass_albedo_texture: Texture2D
 var grass_height_texture: Texture2D
 var coal_albedo_texture: Texture2D
+var grain_albedo_texture: Texture2D
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_payload_requested: Dictionary = {}
@@ -164,7 +180,9 @@ var water_texture_sync_lookup: Dictionary = {}
 var engineered_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var cached_coal_pit_overlay_revision: int = -1
+var cached_field_overlay_revision: int = -1
 var coal_pit_overlay_dirty: bool = true
+var field_overlay_dirty: bool = true
 var border_loop_positions: PackedVector3Array = PackedVector3Array()
 var border_revision: int = 0
 var border_skirt_instance: MeshInstance3D
@@ -255,6 +273,7 @@ func rebuild_from_simulation_state() -> void:
 	_resident_patch_bounds_valid = false
 	_ensure_overlay_texture()
 	_ensure_coal_pit_texture()
+	_ensure_field_overlay_texture()
 	_ensure_empty_water_texture()
 	_ensure_grass_textures()
 	_ensure_border_visuals()
@@ -267,12 +286,18 @@ func rebuild_from_simulation_state() -> void:
 	var coal_pit_updated := _update_coal_pit_texture()
 	if coal_pit_updated:
 		_apply_coal_pit_texture()
+	var field_updated := _update_field_overlay_texture()
+	if field_updated:
+		_apply_field_overlay_texture()
 	_rebuild_border_skirt()
 	_queue_all_water_patch_texture_syncs()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 	cached_overlay_mode = overlay_mode if overlay_updated else -1
 	cached_coal_pit_overlay_revision = (
 		int(simulation_node.get_coal_pit_overlay_revision()) if coal_pit_updated else -1
+	)
+	cached_field_overlay_revision = (
+		int(simulation_node.get_agriculture_field_overlay_revision()) if field_updated else -1
 	)
 	_rebuild_patch_prewarm_queue()
 	if _terrain_debug_enabled:
@@ -369,6 +394,15 @@ func _process(delta: float) -> void:
 		if _update_coal_pit_texture():
 			_apply_coal_pit_texture()
 			cached_coal_pit_overlay_revision = coal_pit_revision
+	var field_revision := int(simulation_node.get_agriculture_field_overlay_revision())
+	if (
+		field_overlay_texture == null
+		or field_overlay_dirty
+		or field_revision != cached_field_overlay_revision
+	):
+		if _update_field_overlay_texture():
+			_apply_field_overlay_texture()
+			cached_field_overlay_revision = field_revision
 
 	if _terrain_frame_headroom_available(frame_start_us, PATCH_LOD_START_HEADROOM_MS):
 		if perf_enabled:
@@ -807,10 +841,13 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
 	material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
+	material.set_shader_parameter("field_overlay_texture", field_overlay_texture)
+	material.set_shader_parameter("field_overlay_world_bounds", field_overlay_world_bounds)
 	material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("terrain_grass_albedo", grass_albedo_texture)
 	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
 	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
+	material.set_shader_parameter("terrain_grain_albedo", grain_albedo_texture)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
@@ -868,6 +905,12 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	)
 	material.set_shader_parameter("terrain_grass_detail_fade_start", TERRAIN_GRASS_DETAIL_FADE_START)
 	material.set_shader_parameter("terrain_grass_detail_fade_end", TERRAIN_GRASS_DETAIL_FADE_END)
+	material.set_shader_parameter("terrain_grain_detail_scale", 1.0 / FIELD_OVERLAY_TEXTURE_TILE_M)
+	material.set_shader_parameter("terrain_field_strength", FIELD_OVERLAY_STRENGTH)
+	material.set_shader_parameter("terrain_grain_tint", FIELD_OVERLAY_GRAIN_TINT)
+	material.set_shader_parameter("terrain_grain_brightness", FIELD_OVERLAY_GRAIN_BRIGHTNESS)
+	material.set_shader_parameter("terrain_grain_mix_strength", FIELD_OVERLAY_GRAIN_MIX_STRENGTH)
+	material.set_shader_parameter("terrain_grain_macro_strength", FIELD_OVERLAY_GRAIN_MACRO_STRENGTH)
 	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
 	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
 	material.set_shader_parameter("terrain_relief_sample_radius_texels", TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS)
@@ -2636,11 +2679,67 @@ func _update_coal_pit_texture() -> bool:
 	coal_pit_overlay_dirty = false
 	return true
 
+func _ensure_field_overlay_texture() -> bool:
+	var dims: Vector2 = simulation_node.get_agriculture_field_overlay_size()
+	var width := int(dims.x)
+	var height := int(dims.y)
+	if width <= 0 or height <= 0:
+		field_overlay_image = null
+		field_overlay_texture = null
+		return false
+	if (
+		field_overlay_image != null
+		and field_overlay_texture != null
+		and field_overlay_image.get_width() == width
+		and field_overlay_image.get_height() == height
+	):
+		return true
+
+	var image := Image.create(width, height, false, Image.FORMAT_L8)
+	if image == null or image.is_empty():
+		field_overlay_image = null
+		field_overlay_texture = null
+		return false
+	image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	var texture := ImageTexture.create_from_image(image)
+	if texture == null:
+		field_overlay_image = null
+		field_overlay_texture = null
+		return false
+	field_overlay_image = image
+	field_overlay_texture = texture
+	field_overlay_dirty = true
+	return true
+
+func _update_field_overlay_texture() -> bool:
+	if not _ensure_field_overlay_texture():
+		return false
+	var width := field_overlay_image.get_width()
+	var height := field_overlay_image.get_height()
+	field_overlay_world_bounds = (
+		simulation_node.get_agriculture_field_overlay_world_bounds()
+		if simulation_node.has_method("get_agriculture_field_overlay_world_bounds")
+		else Vector4.ZERO
+	)
+	var overlay_bytes: PackedByteArray = simulation_node.get_agriculture_field_overlay_data()
+	if overlay_bytes.is_empty():
+		field_overlay_image.fill(Color(0.0, 0.0, 0.0, 0.0))
+	else:
+		if overlay_bytes.size() != width * height:
+			return false
+		field_overlay_image.set_data(width, height, false, Image.FORMAT_L8, overlay_bytes)
+	field_overlay_texture.update(field_overlay_image)
+	field_overlay_dirty = false
+	return true
+
 func mark_overlay_dirty() -> void:
 	cached_overlay_mode = -1
 
 func mark_coal_pit_overlay_dirty() -> void:
 	coal_pit_overlay_dirty = true
+
+func mark_field_overlay_dirty() -> void:
+	field_overlay_dirty = true
 
 func _apply_overlay_mode() -> void:
 	for key in patches.keys():
@@ -2654,6 +2753,12 @@ func _apply_coal_pit_texture() -> void:
 		material.set_shader_parameter("coal_pit_texture", coal_pit_texture)
 		material.set_shader_parameter("coal_pit_overlay_world_bounds", coal_pit_overlay_world_bounds)
 
+func _apply_field_overlay_texture() -> void:
+	for key in patches.keys():
+		var material: ShaderMaterial = patches[key]["material"]
+		material.set_shader_parameter("field_overlay_texture", field_overlay_texture)
+		material.set_shader_parameter("field_overlay_world_bounds", field_overlay_world_bounds)
+
 func _ensure_empty_water_texture() -> void:
 	if empty_water_texture != null:
 		return
@@ -2663,44 +2768,13 @@ func _ensure_empty_water_texture() -> void:
 
 func _ensure_grass_textures() -> void:
 	if grass_albedo_texture == null:
-		grass_albedo_texture = _load_texture_or_solid(TERRAIN_GRASS_ALBEDO_PATH, Color(0.5, 0.5, 0.5, 1.0))
+		grass_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRASS_ALBEDO_PATH, Color(0.5, 0.5, 0.5, 1.0))
 	if grass_height_texture == null:
-		grass_height_texture = _load_texture_or_solid(TERRAIN_GRASS_HEIGHT_PATH, Color(0.5, 0.5, 0.5, 1.0))
+		grass_height_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRASS_HEIGHT_PATH, Color(0.5, 0.5, 0.5, 1.0))
 	if coal_albedo_texture == null:
-		coal_albedo_texture = _load_texture_or_solid(TERRAIN_COAL_ALBEDO_PATH, Color(0.04, 0.04, 0.04, 1.0))
-
-func _load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
-	var texture: Texture2D = null
-	if ResourceLoader.exists(path) and _import_dest_files_exist(path):
-		texture = load(path) as Texture2D
-	if texture != null:
-		return texture
-
-	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
-	if image:
-		image.generate_mipmaps()
-		return ImageTexture.create_from_image(image)
-
-	var fallback_image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
-	fallback_image.fill(fallback_color)
-	return ImageTexture.create_from_image(fallback_image)
-
-func _import_dest_files_exist(path: String) -> bool:
-	var import_path := path + ".import"
-	if not FileAccess.file_exists(ProjectSettings.globalize_path(import_path)):
-		return true
-
-	var cfg := ConfigFile.new()
-	if cfg.load(import_path) != OK:
-		return true
-
-	var dest_files = cfg.get_value("deps", "dest_files", [])
-	if dest_files.is_empty():
-		return true
-	for dest_file in dest_files:
-		if not FileAccess.file_exists(ProjectSettings.globalize_path(str(dest_file))):
-			return false
-	return true
+		coal_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_COAL_ALBEDO_PATH, Color(0.04, 0.04, 0.04, 1.0))
+	if grain_albedo_texture == null:
+		grain_albedo_texture = WorldMaterials.load_texture_or_solid(TERRAIN_GRAIN_ALBEDO_PATH, FIELD_OVERLAY_FALLBACK_COLOR)
 
 func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> void:
 	if patch.get("water_texture", null) != empty_water_texture:

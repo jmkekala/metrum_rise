@@ -8,6 +8,7 @@ use super::{
 };
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
+use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -80,6 +81,7 @@ fn test_core() -> SimCore {
         world_open_water_fills: Vec::new(),
         resource_deposits: ResourceDepositSystem::from_world_config(&config),
         resource_extraction: ResourceExtractionSystem::new(),
+        agriculture: AgricultureSystem::new(),
         world_lake_fill_preview: None,
         authored_water_patch_fill_debug_cache: HashMap::new(),
         terrain_stroke_active: false,
@@ -807,6 +809,7 @@ fn register_test_asset(
             service_class: None,
             economy_profile,
             extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,

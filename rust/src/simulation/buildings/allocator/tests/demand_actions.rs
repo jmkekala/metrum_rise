@@ -1,8 +1,7 @@
-//! Demand spawn, upgrade, downgrade, despawn, and tax tests.
+//! Demand spawn, upgrade, and lifecycle action tests.
 
 use super::support::*;
 use super::*;
-use crate::simulation::economy::fiscal::CityFiscalPolicy;
 
 #[test]
 fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
@@ -56,7 +55,6 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     );
 
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
     allocator.execute_demand_building_actions(
         &demand.building_actions,
         &mut zoning,
@@ -69,7 +67,6 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
-        &fiscal_policy,
     );
 
     assert!(
@@ -361,9 +358,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     });
 
     let demand = DemandSystem::new();
-    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    let execution = allocator.execute_demand_building_actions(
+    allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
         &mut agents,
@@ -375,32 +371,19 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
-        &fiscal_policy,
     );
 
-    let expected_property_tax = crate::simulation::economy::fiscal::construction_property_tax(
-        ZoneType::Residential,
-        1,
-        &fiscal_policy,
-    );
     let spawned_exists = allocator
         .buildings
         .iter()
         .any(|building| building.parcel_id == spawn_parcel_id);
     assert!(
-        (execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON,
-        "property tax paid {} should match expected {}; building_count={} spawn_parcel={} spawned_exists={}",
-        execution.property_tax_paid,
-        expected_property_tax,
+        spawned_exists,
+        "building_count={} spawn_parcel={} spawned_exists={}",
         allocator.buildings.len(),
         spawn_parcel_id,
         spawned_exists
     );
-    assert!(
-        (execution.residential_property_tax_paid - expected_property_tax).abs() <= f32::EPSILON
-    );
-    assert_eq!(execution.commercial_property_tax_paid, 0.0);
-    assert_eq!(execution.industrial_property_tax_paid, 0.0);
 
     assert_eq!(allocator.buildings.len(), 3);
     assert!(
@@ -431,11 +414,11 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         .iter()
         .find(|building| building.parcel_id == spawn_parcel_id)
         .expect("spawn action should place a building on the selected parcel");
-    assert!((spawned.operating_budget + expected_property_tax).abs() <= f32::EPSILON);
+    assert!(spawned.operating_budget.abs() <= f32::EPSILON);
 }
 
 #[test]
-fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() {
+fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
     use crate::simulation::economy::demand::{
         DemandBuildingActionPlan, DemandSpawnAction, DemandSystem,
     };
@@ -490,9 +473,8 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
     });
 
     let demand = DemandSystem::new();
-    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    let execution = allocator.execute_demand_building_actions(
+    allocator.execute_demand_building_actions(
         &plan,
         &mut zoning,
         &mut agents,
@@ -504,7 +486,6 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
-        &fiscal_policy,
     );
 
     let building = allocator
@@ -529,26 +510,9 @@ fn test_commercial_demand_spawn_startup_budget_includes_business_purchase_tax() 
         })
         .sum::<f32>();
     assert!(first_import_base_cost > 0.0);
-    let first_import_cost = first_import_base_cost
-        + crate::simulation::economy::fiscal::tax_amount(
-            first_import_base_cost,
-            fiscal_policy.business_purchase_tax_rate,
-        );
     let expected_startup_budget =
-        (profile.worker_capacity as f32 * profile.average_daily_wage() * 7.0 + first_import_cost)
+        (profile.worker_capacity as f32 * profile.average_daily_wage() * 7.0
+            + first_import_base_cost)
             .max(500.0);
-    let expected_property_tax = crate::simulation::economy::fiscal::construction_property_tax(
-        ZoneType::Commercial,
-        1,
-        &fiscal_policy,
-    );
-
-    assert!((execution.property_tax_paid - expected_property_tax).abs() <= f32::EPSILON);
-    assert_eq!(execution.residential_property_tax_paid, 0.0);
-    assert!((execution.commercial_property_tax_paid - expected_property_tax).abs() <= f32::EPSILON);
-    assert_eq!(execution.industrial_property_tax_paid, 0.0);
-    assert!(
-        (building.operating_budget - (expected_startup_budget - expected_property_tax)).abs()
-            <= 0.01
-    );
+    assert!((building.operating_budget - expected_startup_budget).abs() <= 0.01);
 }

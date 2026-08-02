@@ -7,7 +7,6 @@ lot_width_cells = 4
 lot_depth_cells = 3
 frontage_forward = [0, 0, -1]
 level = 1
-worker_capacity = 20
 flat_size_m2 = 60.0
 service_class = "power"
 economy_profile = "power_plant_basic"

@@ -1,8 +1,32 @@
 [[profiles]]
+id = "grain_farm_basic"
+display_name = "Grain Farm"
+kind = "field_producer"
+description = "Starter field-backed farm producing grain from player-drawn fields; authored output is per hectare."
+worker_capacity = 10
+base_rate_units_per_day = 160.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 6.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 40.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+inputs = []
+
+[[profiles.outputs]]
+resource = "grain"
+units_per_day = 160.0
+
+[[profiles]]
 id = "food_processor_basic"
-display_name = "Farm"
-kind = "producer"
-description = "Starter industrial supplier for the first household essentials chain."
+display_name = "Food Processing Plant"
+kind = "processor"
+description = "Starter industrial processor converting grain into packaged food for grocery stores."
 worker_capacity = 10
 base_rate_units_per_day = 160.0
 wage_min_currency_per_day = 80.0
@@ -16,17 +40,20 @@ consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
-inputs = []
+
+[[profiles.inputs]]
+resource = "grain"
+units_per_day = 160.0
 
 [[profiles.outputs]]
-resource = "staple_food"
+resource = "packaged_food"
 units_per_day = 160.0
 
 [[profiles]]
 id = "grocery_basic"
 display_name = "Grocery"
 kind = "store"
-description = "Starter store throughput node converting staple food into household supplies."
+description = "Starter store throughput node converting packaged food into household supplies."
 worker_capacity = 15
 base_rate_units_per_day = 200.0
 wage_min_currency_per_day = 80.0
@@ -42,7 +69,7 @@ work_schedule_profile = "daytime_work"
 freight_timing_profile = "daytime_receive"
 
 [[profiles.inputs]]
-resource = "staple_food"
+resource = "packaged_food"
 units_per_day = 160.0
 
 [[profiles.outputs]]
@@ -53,7 +80,7 @@ units_per_day = 200.0
 id = "basic_household_demand"
 display_name = "Household Demand"
 kind = "demand_sink"
-description = "Aggregated household-side stock sink for the economy loop."
+description = "Aggregated household-side supply reserve sink for the economy loop."
 worker_capacity = 8
 base_rate_units_per_day = 0.0
 wage_min_currency_per_day = 0.0
@@ -76,7 +103,7 @@ id = "coal_mine_basic"
 display_name = "Coal Mine"
 kind = "extractor"
 description = "Deposit-backed starter coal mine that extracts local coal into on-site inventory for power plants and OWA export."
-worker_capacity = 8
+worker_capacity = 16
 base_rate_units_per_day = 120.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
@@ -190,11 +217,10 @@ industrial_hours_by_level = [12, 24, 36]
 [runtime_tuning.fiscal]
 income_tax_rate = 0.12
 household_vat_rate = 0.08
-business_purchase_tax_rate = 0.03
 business_profit_tax_rate = 0.10
-residential_property_tax_base = 250.0
-commercial_property_tax_base = 500.0
-industrial_property_tax_base = 750.0
+residential_property_tax_per_home_per_day = 2.0
+commercial_property_tax_per_building_per_day = 25.0
+industrial_property_tax_per_building_per_day = 35.0
 property_tax_level_multiplier = 1.75
 
 [runtime_tuning.operational_clock]

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const REQUIRED_HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
 const REQUIRED_HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";
-const LEGACY_RESOURCE_ORDER: [&str; 2] = ["household_supplies", "staple_food"];
+const LEGACY_RESOURCE_ORDER: [&str; 3] = ["household_supplies", "packaged_food", "grain"];
 
 pub(super) fn compile_runtime_catalog(
     authored_profiles: &[EconomyProfile],
@@ -182,6 +182,8 @@ fn compile_runtime_profile(
 ) -> Result<EconomyProfileRuntime, String> {
     let kind = match profile.authored_kind() {
         AuthoredProfileKind::Producer => EconomyProfileRuntimeKind::Producer,
+        AuthoredProfileKind::FieldProducer => EconomyProfileRuntimeKind::FieldProducer,
+        AuthoredProfileKind::Processor => EconomyProfileRuntimeKind::Processor,
         AuthoredProfileKind::Store => EconomyProfileRuntimeKind::Store,
         AuthoredProfileKind::DemandSink => EconomyProfileRuntimeKind::DemandSink,
         AuthoredProfileKind::Extractor => EconomyProfileRuntimeKind::Extractor,
@@ -224,10 +226,10 @@ fn compile_runtime_profile(
         .collect::<Result<Vec<_>, String>>()?;
 
     let runtime_supported = match kind {
-        EconomyProfileRuntimeKind::Producer | EconomyProfileRuntimeKind::Extractor => {
-            !compiled_outputs.is_empty()
-        }
-        EconomyProfileRuntimeKind::Store => {
+        EconomyProfileRuntimeKind::Producer
+        | EconomyProfileRuntimeKind::FieldProducer
+        | EconomyProfileRuntimeKind::Extractor => !compiled_outputs.is_empty(),
+        EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Store => {
             !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
         }
         EconomyProfileRuntimeKind::UtilityProducer

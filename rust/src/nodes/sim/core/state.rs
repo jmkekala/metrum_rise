@@ -14,6 +14,7 @@ use super::terrain_payloads::{
 };
 use super::water_preview::{AuthoredWaterPatchFillDebug, WorldLakeFillPreview};
 use crate::debug_log;
+use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -149,6 +150,8 @@ pub struct SimCore {
     pub(crate) resource_deposits: ResourceDepositSystem,
     /// Live resource-extractor polygons and depletion counters.
     pub(crate) resource_extraction: ResourceExtractionSystem,
+    /// Live agricultural field polygons for renewable farm production.
+    pub(crate) agriculture: AgricultureSystem,
     /// Transient world-editor lake-fill preview. Never saved into `WorldDefinition`.
     pub(crate) world_lake_fill_preview: Option<WorldLakeFillPreview>,
     /// Cached authored-water fill debug summaries keyed by water render patch.
@@ -448,6 +451,8 @@ impl SimCore {
         self.allocator.advance_construction_hour();
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        self.agriculture
+            .produce_hourly(&mut self.allocator, &catalog);
         self.resource_extraction
             .produce_hourly(&mut self.allocator, &catalog);
         let service_funding_by_building = self.electricity_funding_by_building();
@@ -573,21 +578,8 @@ impl SimCore {
             &self.heightmap,
             self.demand.runtime_catalog(),
             self.demand.runtime_tuning(),
-            &self.fiscal_policy,
         );
         let execute_ms = execute_start.elapsed().as_secs_f64() * 1000.0;
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Residential,
-            execution.residential_property_tax_paid as f64,
-        );
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Commercial,
-            execution.commercial_property_tax_paid as f64,
-        );
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Industrial,
-            execution.industrial_property_tax_paid as f64,
-        );
         if let Some(bounds) = execution.site_dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -790,23 +782,10 @@ impl SimCore {
                     &self.heightmap,
                     self.demand.runtime_catalog(),
                     self.demand.runtime_tuning(),
-                    &self.fiscal_policy,
                 )
             } else {
                 Default::default()
             };
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Residential,
-            building_action_execution.residential_property_tax_paid as f64,
-        );
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Commercial,
-            building_action_execution.commercial_property_tax_paid as f64,
-        );
-        self.treasury.collect_property_tax_for_zone(
-            ZoneType::Industrial,
-            building_action_execution.industrial_property_tax_paid as f64,
-        );
         if let Some(bounds) = building_action_execution.site_dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }

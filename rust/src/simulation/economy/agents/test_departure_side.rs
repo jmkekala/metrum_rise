@@ -67,6 +67,7 @@ mod tests {
                     _ => None,
                 },
                 extractor: None,
+                field: None,
             }),
             prop: None,
             vehicle: None,

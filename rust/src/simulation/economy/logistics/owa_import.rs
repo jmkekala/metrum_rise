@@ -4,14 +4,13 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, LogisticsRuntimeTuning, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
-use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 use super::quantization::quantize_requested_amount;
 use super::reservations::ReservationViews;
-use super::resource::{input_purchase_budget, input_purchase_tax_rate, reserve_input_payment};
+use super::resource::{input_purchase_budget, reserve_input_payment};
 use super::route_cache::FreightRouteCache;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
@@ -35,7 +34,6 @@ impl ShipmentSystem {
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
         logistics_tuning: &LogisticsRuntimeTuning,
-        business_purchase_tax_rate: f32,
         treasury_balance: &mut f64,
     ) -> bool {
         if border_nodes.is_empty() {
@@ -45,12 +43,8 @@ impl ShipmentSystem {
         // Use the actual charge price (including any outside-window premium) for the
         // affordability check so the building cannot be charged more than it can afford.
         let effective_unit_price = adjusted_unit_price(unit_price, freight_profile, minute_of_day);
-        let purchase_tax_rate =
-            input_purchase_tax_rate(allocator, dest_idx, business_purchase_tax_rate);
-        let taxed_unit_price =
-            effective_unit_price + tax_amount(effective_unit_price, purchase_tax_rate);
         let max_affordable_amount =
-            input_purchase_budget(allocator, dest_idx) / taxed_unit_price.max(f32::EPSILON);
+            input_purchase_budget(allocator, dest_idx) / effective_unit_price.max(f32::EPSILON);
         let Some(amount) = quantize_requested_amount(
             desired_amount,
             f32::MAX,
@@ -62,7 +56,6 @@ impl ShipmentSystem {
             return false;
         };
         let total_cost = amount * effective_unit_price;
-        let tax_cost = tax_amount(total_cost, purchase_tax_rate);
 
         let active_cap = usize::from(logistics_tuning.border_active_jobs_per_node);
         let queued_cap = usize::from(logistics_tuning.border_queued_jobs_per_node);
@@ -94,7 +87,7 @@ impl ShipmentSystem {
                 return false;
             };
 
-        reserve_input_payment(allocator, treasury_balance, dest_idx, total_cost, tax_cost);
+        reserve_input_payment(allocator, treasury_balance, dest_idx, total_cost);
         let shipment_id = self.allocate_shipment_id();
         let eta_hours = eta_hours_from_travel_seconds(adjusted_travel_seconds(
             best_cost,
@@ -111,14 +104,13 @@ impl ShipmentSystem {
             status,
             carrier_agent_id: usize::MAX,
             total_cost,
-            tax_cost,
             eta_hours,
             queued_hours: 0,
         });
         reservations.record_owa_import(dest_idx, best_border, resource_runtime_id, amount, status);
         crate::debug_log!(
             "economy",
-            "freight input initiated shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} tax={:.1} status={:?} eta={}h",
+            "freight input initiated shipment_id={} source=owa border_node={} dest_idx={} dest_asset={} resource={} amount={:.1} cost={:.1} status={:?} eta={}h",
             shipment_id,
             best_border,
             dest_idx,
@@ -128,7 +120,6 @@ impl ShipmentSystem {
                 .unwrap_or("unknown"),
             amount,
             total_cost,
-            tax_cost,
             status,
             eta_hours
         );

@@ -6,13 +6,12 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex, chunk_for_point,
 };
-use crate::simulation::economy::definitions::{
-    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-};
+use crate::simulation::economy::definitions::{ResourceRuntimeId, RuntimeEconomyCatalog};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
+
+use super::resource::building_outputs_can_supply_local_inputs;
 
 /// Resource-compatible supplier candidates grouped by freight-reachable component.
 pub(super) struct SupplierCandidateIndex {
@@ -45,11 +44,7 @@ impl SupplierCandidateIndex {
                 else {
                     return None;
                 };
-                if !matches!(
-                    building.zone_type,
-                    ZoneType::Industrial | ZoneType::Commercial
-                ) && profile.kind != EconomyProfileRuntimeKind::Extractor
-                {
+                if !building_outputs_can_supply_local_inputs(building, profile) {
                     return None;
                 }
                 let components = freight_components.building_components(

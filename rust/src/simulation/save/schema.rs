@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 56;
+pub const SAVE_VERSION: i64 = 57;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -213,6 +213,19 @@ CREATE TABLE resource_extractor_site_points(
     z REAL NOT NULL,
     PRIMARY KEY(site_id, point_index)
 );
+CREATE TABLE agriculture_field_sites(
+    site_id INTEGER PRIMARY KEY,
+    building_id INTEGER NOT NULL,
+    resource_id TEXT NOT NULL,
+    area_m2 REAL NOT NULL
+);
+CREATE TABLE agriculture_field_site_points(
+    site_id INTEGER NOT NULL,
+    point_index INTEGER NOT NULL,
+    x REAL NOT NULL,
+    z REAL NOT NULL,
+    PRIMARY KEY(site_id, point_index)
+);
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,
     home_building INTEGER NOT NULL,
@@ -246,7 +259,6 @@ CREATE TABLE city_treasury(
     last_daily_upkeep REAL NOT NULL,
     last_daily_income_tax REAL NOT NULL,
     last_daily_household_vat REAL NOT NULL,
-    last_daily_business_purchase_tax REAL NOT NULL,
     last_daily_business_profit_tax REAL NOT NULL,
     last_daily_property_tax REAL NOT NULL,
     last_daily_residential_property_tax REAL NOT NULL,
@@ -254,7 +266,6 @@ CREATE TABLE city_treasury(
     last_daily_industrial_property_tax REAL NOT NULL,
     pending_income_tax REAL NOT NULL,
     pending_household_vat REAL NOT NULL,
-    pending_business_purchase_tax REAL NOT NULL,
     pending_business_profit_tax REAL NOT NULL,
     pending_property_tax REAL NOT NULL,
     pending_residential_property_tax REAL NOT NULL,
@@ -271,11 +282,10 @@ CREATE TABLE city_fiscal_policy(
     child_support_per_child_per_day REAL NOT NULL,
     income_tax_rate REAL NOT NULL,
     household_vat_rate REAL NOT NULL,
-    business_purchase_tax_rate REAL NOT NULL,
     business_profit_tax_rate REAL NOT NULL,
-    residential_property_tax_base REAL NOT NULL,
-    commercial_property_tax_base REAL NOT NULL,
-    industrial_property_tax_base REAL NOT NULL,
+    residential_property_tax_per_home_per_day REAL NOT NULL,
+    commercial_property_tax_per_building_per_day REAL NOT NULL,
+    industrial_property_tax_per_building_per_day REAL NOT NULL,
     property_tax_level_multiplier REAL NOT NULL
 );
 CREATE TABLE city_budget_history(
@@ -288,7 +298,6 @@ CREATE TABLE city_budget_history(
     tax_income REAL NOT NULL,
     income_tax REAL NOT NULL,
     household_vat REAL NOT NULL,
-    business_purchase_tax REAL NOT NULL,
     business_profit_tax REAL NOT NULL,
     property_tax REAL NOT NULL,
     residential_property_tax REAL NOT NULL,
@@ -329,7 +338,6 @@ CREATE TABLE shipments(
     status INTEGER NOT NULL,
     carrier_agent_id INTEGER NOT NULL,
     total_cost REAL NOT NULL,
-    tax_cost REAL NOT NULL,
     eta_hours INTEGER NOT NULL,
     queued_hours INTEGER NOT NULL
 );

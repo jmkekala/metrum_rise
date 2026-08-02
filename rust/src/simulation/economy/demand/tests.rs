@@ -87,6 +87,7 @@ fn register_test_utility_asset(
                 service_class: Some("power".to_owned()),
                 economy_profile: Some(profile_id.to_owned()),
                 extractor: None,
+                field: None,
             }),
             prop: None,
             vehicle: None,
@@ -193,6 +194,7 @@ fn register_family_asset_with_economy_profile_and_flat_size(
             service_class: None,
             economy_profile: economy_profile.map(str::to_owned),
             extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,
@@ -789,15 +791,15 @@ fn industrial_absorption_gate_uses_commercial_input_demand() {
         ZoneType::Industrial,
     );
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let staple_food = catalog
-        .resource_runtime_id_for_id("staple_food")
-        .expect("staple_food resource");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged_food resource");
     let absorption = OutputAbsorptionContext::from_resource_amounts(
         catalog.resource_count(),
         &[],
         &[],
         0,
-        &[(staple_food, 160.0)],
+        &[(packaged_food, 160.0)],
     );
 
     assert!(nonresidential_passes_absorption_gate(
@@ -2196,7 +2198,7 @@ fn load_pressure_refresh_does_not_advance_action_state() {
 fn snapshot_computes_owa_dependency_from_input_accumulators() {
     // Commercial building (grocery_basic profile) with 75 currency from OWA and 25 from local.
     // With no residents, the shop carries only its one-worker bootstrap input need:
-    // expected = 160 staple_food * 15.0/unit / 15 workers = 160.
+    // expected = 160 packaged_food * 15.0/unit / 15 workers = 160.
     // denom = max(actual=100, expected=160) = 160.
     // owa_dependency = 75 / 160 = 0.46875.
     let mut allocator = BuildingAllocator::new();
@@ -2572,10 +2574,17 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     let starter_factory = catalog
         .profile_for_id("food_processor_basic")
         .expect("food processor starter profile");
-    assert!(
-        starter_factory.inputs.is_empty(),
-        "shipped starter industrial profile is currently inputless"
+    assert_eq!(
+        starter_factory
+            .inputs
+            .first()
+            .and_then(|port| catalog.resource_id_for_runtime_id(port.resource_runtime_id)),
+        Some("grain"),
+        "shipped starter industrial profile consumes grain"
     );
+    if let Some(input_port) = starter_factory.inputs.first() {
+        allocator.buildings[0].set_inventory_units(input_port.resource_runtime_id, 320.0);
+    }
 
     let starter_headroom = demand.collect_existing_building_candidates(
         &allocator,
@@ -2588,9 +2597,6 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     );
     assert_eq!(starter_headroom.upgrades.len(), 1);
 
-    if let Some(input_port) = starter_factory.inputs.first() {
-        allocator.buildings[0].set_inventory_units(input_port.resource_runtime_id, 320.0);
-    }
     if let Some(output_port) = starter_factory.outputs.first() {
         allocator.buildings[0].set_inventory_units(output_port.resource_runtime_id, 50.0);
     }

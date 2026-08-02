@@ -1087,7 +1087,7 @@ are submitted to final placement. This line is the first place to check when `sp
 positive but no building appears:
 
 - `spawn_attempted` is the selected spawn count submitted to allocator placement
-- `spawn_placed` is the count that committed a building and paid construction property tax
+- `spawn_placed` is the count that committed a building
 - `spawn_failed` is the total final placement rejection count
 - `spawn_failed_geometry` counts geometry/world-surface rejections rather than stale asset or
   parcel references
@@ -1794,7 +1794,7 @@ output_absorption_gate_passes =
 
 The `satisfaction_ratio` for each resource is authored in `RuntimeEconomyTuning` (see
 [`economy.md § Commercial Tiers`](economy.md#commercial-tiers-and-multi-resource-household-consumption)).
-For all current primary resources (`household_supplies`, `staple_food`, etc.) the ratio is
+For all current primary resources (`household_supplies`, `packaged_food`, etc.) the ratio is
 implicitly `1.0` and no change in gate behavior occurs.
 
 #### Gate Interaction

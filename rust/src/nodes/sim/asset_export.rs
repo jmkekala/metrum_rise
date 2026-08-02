@@ -153,7 +153,7 @@ pub struct ExportParams {
     /// Maximum number of households this building can house.
     #[serde(default)]
     pub household_capacity: Option<u32>,
-    /// Maximum number of workers this building can employ.
+    /// Direct worker capacity used only when no economy profile is selected.
     #[serde(default)]
     pub worker_capacity: Option<u32>,
     /// Target floor area per household in square meters.
@@ -171,6 +171,12 @@ pub struct ExportParams {
     /// Optional extraction area mode. Version one supports `"player_polygon"`.
     #[serde(default)]
     pub extractor_area_mode: Option<String>,
+    /// Optional resource id grown by this explicit agricultural building.
+    #[serde(default)]
+    pub field_resource: Option<String>,
+    /// Optional field area mode. Version one supports `"player_polygon"`.
+    #[serde(default)]
+    pub field_area_mode: Option<String>,
 
     /// Building mesh parts. Each part owns its own LOD entries.
     #[serde(default)]
@@ -246,6 +252,7 @@ fn build_pack_toml(p: &ExportParams) -> String {
 
 fn build_asset_toml(p: &ExportParams) -> String {
     let mut out = String::new();
+    let has_economy_profile = non_empty_optional_string(&p.economy_profile).is_some();
 
     out.push_str(&format!("asset_id = {}\n", toml_string(&p.asset_id)));
     out.push_str(&format!(
@@ -302,9 +309,11 @@ fn build_asset_toml(p: &ExportParams) -> String {
                     out.push_str(&format!("household_capacity = {h}\n"));
                 }
             }
-            if let Some(w) = p.worker_capacity {
-                if w > 0 {
-                    out.push_str(&format!("worker_capacity = {w}\n"));
+            if !has_economy_profile {
+                if let Some(w) = p.worker_capacity {
+                    if w > 0 {
+                        out.push_str(&format!("worker_capacity = {w}\n"));
+                    }
                 }
             }
             if let Some(f) = p.flat_size_m2 {
@@ -326,6 +335,13 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 let area_mode =
                     non_empty_optional_string(&p.extractor_area_mode).unwrap_or("player_polygon");
                 out.push_str("\n[building.extractor]\n");
+                out.push_str(&format!("resource = {}\n", toml_string(resource)));
+                out.push_str(&format!("area_mode = {}\n", toml_string(area_mode)));
+            }
+            if let Some(resource) = non_empty_optional_string(&p.field_resource) {
+                let area_mode =
+                    non_empty_optional_string(&p.field_area_mode).unwrap_or("player_polygon");
+                out.push_str("\n[building.field]\n");
                 out.push_str(&format!("resource = {}\n", toml_string(resource)));
                 out.push_str(&format!("area_mode = {}\n", toml_string(area_mode)));
             }
@@ -572,6 +588,50 @@ fn validate_extractor_profile_matches_resource(
     Ok(())
 }
 
+fn validate_field_profile_matches_resource(
+    economy_profile: &str,
+    resource_id: &str,
+) -> Result<(), String> {
+    let resource_id = resource_id.trim();
+    if resource_id.is_empty() {
+        return Err("field_resource must not be empty".to_owned());
+    }
+    let catalog = load_runtime_economy_catalog()
+        .map_err(|err| format!("could not load economy catalog for field validation: {err}"))?;
+    let profile = catalog
+        .all_profiles()
+        .iter()
+        .find(|profile| profile.id == economy_profile)
+        .ok_or_else(|| {
+            format!("field economy_profile '{economy_profile}' is missing from the runtime catalog")
+        })?;
+    if profile.kind != EconomyProfileRuntimeKind::FieldProducer {
+        return Err(format!(
+            "field economy_profile '{}' must have kind = \"field_producer\"",
+            economy_profile
+        ));
+    }
+    let Some(resource_runtime_id) = catalog.resource_runtime_id_for_id(resource_id) else {
+        return Err(format!(
+            "field resource '{}' is missing from the runtime catalog",
+            resource_id
+        ));
+    };
+    if profile.output_port(resource_runtime_id).is_none() {
+        return Err(format!(
+            "field economy_profile '{}' must output resource '{}'",
+            economy_profile, resource_id
+        ));
+    }
+    if profile.worker_capacity == 0 {
+        return Err(format!(
+            "field economy_profile '{}' must have worker_capacity > 0",
+            economy_profile
+        ));
+    }
+    Ok(())
+}
+
 fn validate_building_export_contract(params: &ExportParams) -> Result<(), String> {
     let placement_mode = parse_placement_mode(&params.placement_mode)?;
     let service_class = non_none_service_class(&params.service_class);
@@ -579,6 +639,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
     let extractor_resource = non_empty_optional_string(&params.extractor_resource);
     let extractor_area_mode =
         non_empty_optional_string(&params.extractor_area_mode).unwrap_or("player_polygon");
+    let field_resource = non_empty_optional_string(&params.field_resource);
+    let field_area_mode =
+        non_empty_optional_string(&params.field_area_mode).unwrap_or("player_polygon");
     if let Some(service_class) = service_class {
         validate_service_class(service_class)?;
     }
@@ -586,6 +649,12 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
         return Err(
             "extractor_area_mode must be \"player_polygon\" for extractor buildings".to_owned(),
         );
+    }
+    if field_resource.is_some() && field_area_mode != "player_polygon" {
+        return Err("field_area_mode must be \"player_polygon\" for field buildings".to_owned());
+    }
+    if extractor_resource.is_some() && field_resource.is_some() {
+        return Err("buildings cannot export both extractor and field metadata".to_owned());
     }
     if params.lot_width_cells == 0 || params.lot_depth_cells == 0 {
         return Err("lot_width_cells and lot_depth_cells must be > 0".to_owned());
@@ -609,9 +678,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                         .to_owned(),
                 );
             }
-            if extractor_resource.is_some() {
+            if extractor_resource.is_some() || field_resource.is_some() {
                 return Err(
-                    "zoned_private buildings must not export extractor metadata; use explicit placement for industry assets"
+                    "zoned_private buildings must not export extractor or field metadata; use explicit placement for industry assets"
                         .to_owned(),
                 );
             }
@@ -632,9 +701,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                     }
                 }
                 "commercial" | "industrial" => {
-                    if params.worker_capacity.unwrap_or(0) == 0 {
+                    if params.worker_capacity.unwrap_or(0) == 0 && economy_profile.is_none() {
                         return Err(
-                            "commercial and industrial zoned_private buildings require worker_capacity"
+                            "commercial and industrial zoned_private buildings require worker_capacity or economy_profile"
                                 .to_owned(),
                         );
                     }
@@ -674,6 +743,18 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                     return Err("extractor buildings require economy_profile".to_owned());
                 };
                 validate_extractor_profile_matches_resource(economy_profile, resource_id)?;
+            }
+            if let Some(resource_id) = field_resource {
+                if service_class.is_some() {
+                    return Err(
+                        "field buildings must not export service_class; use the Industry toolbar"
+                            .to_owned(),
+                    );
+                }
+                let Some(economy_profile) = economy_profile else {
+                    return Err("field buildings require economy_profile".to_owned());
+                };
+                validate_field_profile_matches_resource(economy_profile, resource_id)?;
             }
         }
     }
@@ -864,6 +945,10 @@ pub fn get_asset_manifest_json_internal(
                 .as_ref()
                 .map(|extractor| extractor.area_mode.as_str())
         );
+        obj["field_resource"] =
+            serde_json::json!(b.field.as_ref().map(|field| field.resource.as_str()));
+        obj["field_area_mode"] =
+            serde_json::json!(b.field.as_ref().map(|field| field.area_mode.as_str()));
     }
 
     serde_json::to_string(&obj).unwrap_or_default()
@@ -1183,6 +1268,48 @@ mod tests {
         )
         .unwrap();
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
+        assert!(!asset_toml.contains("worker_capacity"));
+    }
+
+    #[test]
+    fn export_accepts_profile_bound_zoned_employment_without_worker_capacity() {
+        let dir = std::env::temp_dir().join("metrum_export_profile_bound_employment");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.industrial.profile_capacity",
+            "display_name": "Profile Capacity",
+            "placement_mode": "zoned_private",
+            "zone_type": "industrial",
+            "density": "low",
+            "lot_width_cells": 2,
+            "lot_depth_cells": 2,
+            "economy_profile": "food_processor_basic",
+            "mesh_parts": one_mesh_part_json(),
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
+        })
+        .to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(result.is_empty(), "expected success, got: {result}");
+
+        let asset_toml = std::fs::read_to_string(
+            dir.join("assets")
+                .join("building.industrial.profile_capacity")
+                .join("asset.toml"),
+        )
+        .unwrap();
+        assert!(asset_toml.contains("economy_profile = \"food_processor_basic\""));
+        assert!(!asset_toml.contains("worker_capacity"));
     }
 
     #[test]

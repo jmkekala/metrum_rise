@@ -129,16 +129,14 @@ pub(crate) struct FiscalRuntimeTuning {
     pub income_tax_rate: f32,
     /// Fraction added to household store purchases and remitted to the city at pickup.
     pub household_vat_rate: f32,
-    /// Fraction added to business input purchases and remitted to the city on delivery.
-    pub business_purchase_tax_rate: f32,
     /// Fraction of positive daily business operating-budget growth remitted to the city.
     pub business_profit_tax_rate: f32,
-    /// One-time tax charged when a residential private building starts construction.
-    pub residential_property_tax_base: f32,
-    /// One-time tax charged when a commercial private building starts construction.
-    pub commercial_property_tax_base: f32,
-    /// One-time tax charged when an industrial private building starts construction.
-    pub industrial_property_tax_base: f32,
+    /// Currency charged per occupied residential home per day.
+    pub residential_property_tax_per_home_per_day: f32,
+    /// Currency charged per active private commercial building per day.
+    pub commercial_property_tax_per_building_per_day: f32,
+    /// Currency charged per active private industrial building per day.
+    pub industrial_property_tax_per_building_per_day: f32,
     /// Per-level multiplier applied to property tax above level 1.
     pub property_tax_level_multiplier: f32,
 }
@@ -246,6 +244,10 @@ pub(crate) struct RuntimeResourcePort {
 pub(crate) enum EconomyProfileRuntimeKind {
     /// Upstream producing building that writes directly into its output stock buffer.
     Producer,
+    /// Renewable producer whose output is scaled by a committed player-drawn field polygon.
+    FieldProducer,
+    /// Industrial converter that consumes input inventory and writes processed output inventory.
+    Processor,
     /// Throughput building that converts one input buffer into one output buffer.
     Store,
     /// Non-building aggregate sink profile used by sandbox and household-side graphs.

@@ -136,34 +136,28 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         "runtime_tuning.fiscal.household_vat_rate",
     )?;
     validate_range(
-        tuning.fiscal.business_purchase_tax_rate,
-        0.0,
-        1.0,
-        "runtime_tuning.fiscal.business_purchase_tax_rate",
-    )?;
-    validate_range(
         tuning.fiscal.business_profit_tax_rate,
         0.0,
         1.0,
         "runtime_tuning.fiscal.business_profit_tax_rate",
     )?;
     validate_range(
-        tuning.fiscal.residential_property_tax_base,
+        tuning.fiscal.residential_property_tax_per_home_per_day,
         0.0,
         f32::INFINITY,
-        "runtime_tuning.fiscal.residential_property_tax_base",
+        "runtime_tuning.fiscal.residential_property_tax_per_home_per_day",
     )?;
     validate_range(
-        tuning.fiscal.commercial_property_tax_base,
+        tuning.fiscal.commercial_property_tax_per_building_per_day,
         0.0,
         f32::INFINITY,
-        "runtime_tuning.fiscal.commercial_property_tax_base",
+        "runtime_tuning.fiscal.commercial_property_tax_per_building_per_day",
     )?;
     validate_range(
-        tuning.fiscal.industrial_property_tax_base,
+        tuning.fiscal.industrial_property_tax_per_building_per_day,
         0.0,
         f32::INFINITY,
-        "runtime_tuning.fiscal.industrial_property_tax_base",
+        "runtime_tuning.fiscal.industrial_property_tax_per_building_per_day",
     )?;
     validate_range(
         tuning.fiscal.property_tax_level_multiplier,

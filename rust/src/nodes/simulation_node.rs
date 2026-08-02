@@ -38,6 +38,10 @@
 //! | | `get_coal_pit_overlay_size` | `terrain.gd` |
 //! | | `get_coal_pit_overlay_world_bounds` | `terrain.gd` |
 //! | | `get_coal_pit_overlay_revision` | `terrain.gd` |
+//! | | `get_agriculture_field_overlay_data` | `terrain.gd` |
+//! | | `get_agriculture_field_overlay_size` | `terrain.gd` |
+//! | | `get_agriculture_field_overlay_world_bounds` | `terrain.gd` |
+//! | | `get_agriculture_field_overlay_revision` | `terrain.gd` |
 //! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
@@ -123,6 +127,7 @@ use crate::nodes::sim::render::water::{
     CachedWaterPatchMesh, WaterPatchMeshBuildInput, WaterPatchMeshCacheKey,
     water_patch_depth_signature,
 };
+use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::{
     BuildingAllocator, BuildingSiteGradingRequest, BuildingSiteTerrainSnapshot,
     ExplicitServicePlacementRejection,
@@ -474,6 +479,7 @@ impl INode3D for SimulationNode {
             world_open_water_fills: Vec::new(),
             resource_deposits: ResourceDepositSystem::from_world_config(&config),
             resource_extraction: ResourceExtractionSystem::new(),
+            agriculture: AgricultureSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,

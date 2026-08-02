@@ -41,14 +41,13 @@ impl HouseholdSystem {
         self.run_building_economy(allocator);
         let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let business_purchase_tax = logistics.hourly_tick(
+        logistics.hourly_tick(
             allocator,
             agents,
             transit_network,
             graph,
             minute_of_day,
             treasury_balance,
-            fiscal_policy.business_purchase_tax_rate,
         );
         let logistics_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -97,7 +96,6 @@ impl HouseholdSystem {
         }
         FiscalRevenue {
             household_vat,
-            business_purchase_tax,
             ..FiscalRevenue::default()
         }
     }
@@ -155,11 +153,15 @@ impl HouseholdSystem {
         self.pay_household_transfers(agents, allocator, treasury_balance, fiscal_policy);
         let benefits_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        // Steps 4 + 5: charge utility, then liquidate if still negative.
+        // Step 4: collect modeled daily property tax from household and building budgets.
+        let property_tax_revenue = self.settle_daily_property_tax(allocator, fiscal_policy);
+        let property_tax_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
+        phase_start = Instant::now();
+        // Steps 5 + 6: charge utility, then liquidate if still negative.
         self.settle_daily_utilities(allocator, logistics, treasury_balance);
         let utilities_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        // Step 6: collect tax on positive daily business operating-budget growth.
+        // Step 7: collect tax on positive daily business operating-budget growth.
         let business_profit_tax =
             self.settle_business_profit_tax(allocator, fiscal_policy.business_profit_tax_rate);
         let profit_tax_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
@@ -182,7 +184,7 @@ impl HouseholdSystem {
         if timing_enabled {
             debug_log!(
                 "economy",
-                "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
+                "daily_settlement_detail materialized_households={} materialized_residents={} agents={} buildings={} households={} materialize_ms={:.3} validate_ms={:.3} counts_ms={:.3} ledger_and_locks_ms={:.3} bankruptcy_ms={:.3} wages_ms={:.3} benefits_ms={:.3} property_tax_ms={:.3} utilities_ms={:.3} profit_tax_ms={:.3} housing_ms={:.3} workplace_ms={:.3} sync_and_finish_ms={:.3} total_ms={:.3}",
                 materialized.households,
                 materialized.residents,
                 agents.len(),
@@ -195,6 +197,7 @@ impl HouseholdSystem {
                 bankruptcy_ms,
                 wages_ms,
                 benefits_ms,
+                property_tax_ms,
                 utilities_ms,
                 profit_tax_ms,
                 housing_ms,
@@ -206,6 +209,9 @@ impl HouseholdSystem {
         FiscalRevenue {
             income_tax,
             business_profit_tax,
+            residential_property_tax: property_tax_revenue.residential_property_tax,
+            commercial_property_tax: property_tax_revenue.commercial_property_tax,
+            industrial_property_tax: property_tax_revenue.industrial_property_tax,
             ..FiscalRevenue::default()
         }
     }

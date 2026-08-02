@@ -160,7 +160,6 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: freight,
         total_cost: 0.0,
-        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });

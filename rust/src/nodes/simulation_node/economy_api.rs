@@ -214,10 +214,10 @@ fn fiscal_policy_controls_array(
 
 fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str, &'static str) {
     use crate::simulation::economy::fiscal::{
-        POLICY_BUSINESS_PROFIT_TAX, POLICY_BUSINESS_PURCHASE_TAX, POLICY_CHILD_SUPPORT,
-        POLICY_COMMERCIAL_PROPERTY_TAX, POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX,
-        POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION, POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
-        POLICY_RESIDENTIAL_PROPERTY_TAX, POLICY_UNEMPLOYMENT_BENEFIT, POLICY_UNEMPLOYMENT_MAX_DAYS,
+        POLICY_BUSINESS_PROFIT_TAX, POLICY_CHILD_SUPPORT, POLICY_COMMERCIAL_PROPERTY_TAX,
+        POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX, POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION,
+        POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER, POLICY_RESIDENTIAL_PROPERTY_TAX,
+        POLICY_UNEMPLOYMENT_BENEFIT, POLICY_UNEMPLOYMENT_MAX_DAYS,
     };
 
     match policy_id {
@@ -228,9 +228,6 @@ fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str,
         POLICY_CHILD_SUPPORT => ("child_support", "Child Support", "expense"),
         POLICY_INCOME_TAX => ("income_tax", "Income Tax", "revenue"),
         POLICY_HOUSEHOLD_VAT => ("household_vat", "Household VAT", "revenue"),
-        POLICY_BUSINESS_PURCHASE_TAX => {
-            ("business_purchase_tax", "Business Purchase Tax", "revenue")
-        }
         POLICY_BUSINESS_PROFIT_TAX => ("business_profit_tax", "Business Profit Tax", "revenue"),
         POLICY_RESIDENTIAL_PROPERTY_TAX => (
             "residential_property_tax",

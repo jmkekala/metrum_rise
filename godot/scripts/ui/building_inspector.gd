@@ -226,18 +226,18 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 		)
 		_add_row(
 			stats_body,
-			"Stock",
+			"Supplies",
 			"%.1f d avg / %.1f d min" % [
 				float(info.get("household_stock_days_avg", 0.0)),
 				float(info.get("household_stock_days_min", 0.0)),
 			]
 		)
-		_add_row(stats_body, "Stock Units", "%.1f" % float(info.get("household_stock_total", 0.0)))
-		_add_row(stats_body, "Restock", str(info.get("household_replenishment_state", "-")))
+		_add_row(stats_body, "Supply Units", "%.1f" % float(info.get("household_stock_total", 0.0)))
+		_add_row(stats_body, "Replenishment", str(info.get("household_replenishment_state", "-")))
 		if int(info.get("household_replenishment_active", 0)) > 0:
 			_add_row(
 				stats_body,
-				"Active Restocks",
+				"Active Replenishment",
 				str(info.get("household_replenishment_active", 0))
 			)
 	else:
@@ -264,12 +264,14 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			)
 			if info.has("extractor_resource"):
 				_add_extractor_reserve_section(stats_body, info)
+			if info.has("field_resource"):
+				_add_field_section(stats_body, info)
 			if info.has("utility_fuel_name"):
 				var fuel_units := float(info.get("utility_fuel_units", 0.0))
 				var fuel_days := float(info.get("utility_fuel_days", 0.0))
 				_add_row(
 					stats_body,
-					"Fuel Stock",
+					"Fuel Reserve",
 					"%.1f %s / %.1f d" % [
 						fuel_units,
 						str(info.get("utility_fuel_name", "fuel")),
@@ -397,6 +399,16 @@ func _add_extractor_reserve_section(stats_body: VBoxContainer, info: Dictionary)
 	_add_row(stats_body, "%s Consumed" % resource_name, _resource_units(consumed))
 	_add_row(stats_body, "%s Reserve" % resource_name, _resource_units(total))
 	_add_reserve_consumption_bar(stats_body, consumed_ratio, consumed, total)
+
+func _add_field_section(stats_body: VBoxContainer, info: Dictionary) -> void:
+	_add_section(stats_body, "Field")
+	var resource_name: String = _resource_label(str(info.get("field_resource", "resource")))
+	if not bool(info.get("field_has_site", false)):
+		_add_row(stats_body, "Field", "No polygon")
+		return
+
+	var area_m2 := maxf(float(info.get("field_area_m2", 0.0)), 0.0)
+	_add_row(stats_body, "%s Area" % resource_name, "%.0f m2" % area_m2)
 
 func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) -> void:
 	var hbox := HBoxContainer.new()

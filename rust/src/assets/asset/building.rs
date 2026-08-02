@@ -69,7 +69,9 @@ pub struct BuildingData {
     pub level: u8,
     /// Maximum number of households this building can house. Required for residential zones.
     pub household_capacity: Option<u32>,
-    /// Maximum number of workers this building can employ. Required for commercial/industrial zones.
+    /// Direct worker capacity for assets without an authored economy profile.
+    ///
+    /// When `economy_profile` is present, the profile's worker capacity is authoritative.
     pub worker_capacity: Option<u32>,
     /// Target floor area per household in square meters.
     pub flat_size_m2: Option<f32>,
@@ -79,6 +81,8 @@ pub struct BuildingData {
     pub economy_profile: Option<String>,
     /// Resource extraction contract for explicitly placed extractor buildings.
     pub extractor: Option<BuildingExtractorData>,
+    /// Renewable field-production contract for explicitly placed agricultural buildings.
+    pub field: Option<BuildingFieldData>,
 }
 
 /// Authored extraction behavior for one explicit industry building.
@@ -88,6 +92,16 @@ pub struct BuildingExtractorData {
     /// Authored resource id this building extracts, such as `"coal"`.
     pub resource: String,
     /// Extraction area ownership mode. Version one supports `"player_polygon"`.
+    pub area_mode: String,
+}
+
+/// Authored field-production behavior for one explicit agricultural building.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildingFieldData {
+    /// Authored resource id this building grows, such as `"grain"`.
+    pub resource: String,
+    /// Field area ownership mode. Version one supports `"player_polygon"`.
     pub area_mode: String,
 }
 

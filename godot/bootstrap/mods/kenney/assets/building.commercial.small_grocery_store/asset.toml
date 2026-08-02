@@ -9,7 +9,6 @@ lot_width_cells = 2
 lot_depth_cells = 2
 frontage_forward = [0, 0, -1]
 level = 1
-worker_capacity = 15
 flat_size_m2 = 60.0
 economy_profile = "grocery_basic"
 

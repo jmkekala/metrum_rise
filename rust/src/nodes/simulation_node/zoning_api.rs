@@ -1,5 +1,7 @@
 //! Zoning and service-building Godot API methods.
 
+use crate::nodes::sim::core::SERVICE_BUILD_COST_PER_LOT_CELL;
+use crate::simulation::agriculture::FIELD_POLYGON_LINK_DISTANCE_M;
 use crate::simulation::extraction::{
     EXTRACTOR_POLYGON_LINK_DISTANCE_M, building_footprint_polygon,
 };
@@ -58,6 +60,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::ExtractorProfileUnavailable => {
                 "industry building has no supported extractor profile"
             }
+            ExplicitServicePlacementRejection::FieldProfileUnavailable => {
+                "industry building has no supported field profile"
+            }
             ExplicitServicePlacementRejection::RoadFrontageUnavailable => {
                 "no nearby road frontage can fit this building"
             }
@@ -98,6 +103,9 @@ impl SimulationNode {
             }
             ExplicitServicePlacementRejection::ExtractorProfileUnavailable => {
                 "industry building has no supported extractor profile"
+            }
+            ExplicitServicePlacementRejection::FieldProfileUnavailable => {
+                "industry building has no supported field profile"
             }
             ExplicitServicePlacementRejection::NotServiceBuilding => {
                 "selected asset is not an explicit service building"
@@ -145,7 +153,21 @@ impl SimulationNode {
         dict.set("support_height_m", 0.0f64);
         dict.set("facing_dir", Vector2::ZERO);
         dict.set("part_transforms", PackedFloat32Array::new());
+        dict.set("build_cost", 0.0f64);
         dict
+    }
+
+    fn explicit_building_build_cost(core: &SimCore, asset_id: &str) -> f64 {
+        core.allocator
+            .registry
+            .get(asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .map(|building| {
+                f64::from(building.lot_width_cells)
+                    * f64::from(building.lot_depth_cells)
+                    * SERVICE_BUILD_COST_PER_LOT_CELL
+            })
+            .unwrap_or(0.0)
     }
 
     /// Returns explicit service-building assets available for the Services toolbar.
@@ -195,7 +217,7 @@ impl SimulationNode {
         arr
     }
 
-    /// Returns explicit resource-extractor building assets for the Industry toolbar.
+    /// Returns explicit industry area building assets for the Industry toolbar.
     #[func]
     pub fn get_industry_building_assets(&self) -> VarArray {
         let core = self.lock_core();
@@ -204,11 +226,7 @@ impl SimulationNode {
             .allocator
             .registry
             .qualified_ids()
-            .filter(|asset_id| {
-                core.allocator
-                    .registry
-                    .is_resource_extractor_asset(asset_id)
-            })
+            .filter(|asset_id| core.allocator.registry.is_industry_area_asset(asset_id))
             .collect::<Vec<_>>();
         ids.sort_unstable();
 
@@ -220,8 +238,18 @@ impl SimulationNode {
             let Some(building) = entry.manifest.building.as_ref() else {
                 continue;
             };
-            let Some(resource_id) = core.allocator.registry.extractor_resource(asset_id) else {
-                continue;
+            let (area_kind, resource_id) =
+                if let Some(resource_id) = core.allocator.registry.extractor_resource(asset_id) {
+                    ("extractor", resource_id)
+                } else if let Some(resource_id) = core.allocator.registry.field_resource(asset_id) {
+                    ("field", resource_id)
+                } else {
+                    continue;
+                };
+            let polygon_link_distance_m = if area_kind == "field" {
+                FIELD_POLYGON_LINK_DISTANCE_M
+            } else {
+                EXTRACTOR_POLYGON_LINK_DISTANCE_M
             };
             let worker_capacity = catalog
                 .as_ref()
@@ -237,7 +265,12 @@ impl SimulationNode {
                 "display_name",
                 GString::from(entry.manifest.display_name.as_str()),
             );
+            dict.set("area_kind", GString::from(area_kind));
             dict.set("resource_id", GString::from(resource_id));
+            dict.set(
+                "polygon_link_distance_m",
+                f64::from(polygon_link_distance_m),
+            );
             dict.set("lot_width_cells", i64::from(building.lot_width_cells));
             dict.set("lot_depth_cells", i64::from(building.lot_depth_cells));
             dict.set("worker_capacity", i64::from(worker_capacity));
@@ -259,6 +292,7 @@ impl SimulationNode {
             return Self::empty_service_preview_dict("no service building selected");
         }
         let core = self.lock_core();
+        let build_cost = Self::explicit_building_build_cost(&core, &asset_id);
         match core.get_service_building_placement_preview_internal(&asset_id, world_x, world_z) {
             Ok(preview) => {
                 let part_transforms = core.get_service_building_preview_part_transforms_internal(
@@ -288,10 +322,15 @@ impl SimulationNode {
                 dict.set("support_height_m", f64::from(preview.support_height_m));
                 dict.set("facing_dir", preview.facing_dir);
                 dict.set("part_transforms", part_transforms);
+                dict.set("build_cost", build_cost);
                 dict
             }
             Err(rejection) => {
-                Self::empty_service_preview_dict(Self::service_placement_error_message(rejection))
+                let mut dict = Self::empty_service_preview_dict(
+                    Self::service_placement_error_message(rejection),
+                );
+                dict.set("build_cost", build_cost);
+                dict
             }
         }
     }
@@ -334,6 +373,7 @@ impl SimulationNode {
             return Self::empty_service_preview_dict("no industry building selected");
         }
         let core = self.lock_core();
+        let build_cost = Self::explicit_building_build_cost(&core, &asset_id);
         match core.get_industry_building_placement_preview_internal(&asset_id, world_x, world_z) {
             Ok(preview) => {
                 let part_transforms = core.get_service_building_preview_part_transforms_internal(
@@ -363,10 +403,15 @@ impl SimulationNode {
                 dict.set("support_height_m", f64::from(preview.support_height_m));
                 dict.set("facing_dir", preview.facing_dir);
                 dict.set("part_transforms", part_transforms);
+                dict.set("build_cost", build_cost);
                 dict
             }
             Err(rejection) => {
-                Self::empty_service_preview_dict(Self::industry_placement_error_message(rejection))
+                let mut dict = Self::empty_service_preview_dict(
+                    Self::industry_placement_error_message(rejection),
+                );
+                dict.set("build_cost", build_cost);
+                dict
             }
         }
     }
@@ -414,9 +459,27 @@ impl SimulationNode {
                 dict.set("error", GString::new());
                 dict.set("building_id", building_id as i64);
                 dict.set("footprint_corners", footprint_corners);
+                let (area_kind, polygon_link_distance_m) = {
+                    let core = self.lock_core();
+                    if let Some(building) = core.allocator.buildings.get(building_id) {
+                        if core
+                            .allocator
+                            .registry
+                            .field_resource(&building.asset_id)
+                            .is_some()
+                        {
+                            ("field", FIELD_POLYGON_LINK_DISTANCE_M)
+                        } else {
+                            ("extractor", EXTRACTOR_POLYGON_LINK_DISTANCE_M)
+                        }
+                    } else {
+                        ("extractor", EXTRACTOR_POLYGON_LINK_DISTANCE_M)
+                    }
+                };
+                dict.set("area_kind", GString::from(area_kind));
                 dict.set(
                     "polygon_link_distance_m",
-                    f64::from(EXTRACTOR_POLYGON_LINK_DISTANCE_M),
+                    f64::from(polygon_link_distance_m),
                 );
             }
             Err(rejection) => {
@@ -470,6 +533,41 @@ impl SimulationNode {
                 dict.set("error", GString::from(err.as_str()));
                 dict.set("total_reserve_units", 0.0f64);
                 dict.set("remaining_reserve_units", 0.0f64);
+            }
+        }
+        dict
+    }
+
+    /// Commits or replaces a field polygon for one placed agricultural building.
+    #[func]
+    pub fn commit_field_polygon(
+        &mut self,
+        building_id: i32,
+        polygon_points: PackedVector2Array,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        if building_id < 0 {
+            dict.set("ok", false);
+            dict.set("error", GString::from("invalid field building id"));
+            dict.set("area_m2", 0.0f64);
+            return dict;
+        }
+        let polygon = polygon_points.as_slice().to_vec();
+        let result = {
+            let mut core = self.lock_core();
+            core.commit_field_polygon_internal(building_id as usize, polygon)
+        };
+        match result {
+            Ok(summary) => {
+                self.refresh_snapshot_from_core();
+                dict.set("ok", true);
+                dict.set("error", GString::new());
+                dict.set("area_m2", f64::from(summary.area_m2));
+            }
+            Err(err) => {
+                dict.set("ok", false);
+                dict.set("error", GString::from(err.as_str()));
+                dict.set("area_m2", 0.0f64);
             }
         }
         dict

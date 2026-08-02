@@ -7,7 +7,6 @@ lot_width_cells = 5
 lot_depth_cells = 4
 frontage_forward = [0, 0, -1]
 level = 1
-worker_capacity = 8
 flat_size_m2 = 360.0
 economy_profile = "coal_mine_basic"
 

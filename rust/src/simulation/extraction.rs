@@ -160,7 +160,13 @@ impl ResourceExtractionSystem {
             .ok_or_else(|| "selected building is not a resource extractor".to_owned())?
             .to_owned();
         validate_extractor_polygon(&polygon_world)?;
-        validate_polygon_near_building(building, &polygon_world, zone_cell_m)?;
+        validate_polygon_near_building(
+            building,
+            &polygon_world,
+            zone_cell_m,
+            "extractor",
+            EXTRACTOR_POLYGON_LINK_DISTANCE_M,
+        )?;
 
         let total_reserve_units =
             reserve_units_for_resource(&resource_id, deposits, &polygon_world)?;
@@ -260,34 +266,46 @@ fn reserve_units_for_resource(
 }
 
 fn validate_extractor_polygon(polygon_world: &[Vector2]) -> Result<(), String> {
+    validate_player_polygon(polygon_world, "extractor", MIN_EXTRACTOR_POLYGON_AREA_M2)
+}
+
+/// Validates a player-authored polygon for one linked building area.
+pub(crate) fn validate_player_polygon(
+    polygon_world: &[Vector2],
+    label: &str,
+    min_area_m2: f32,
+) -> Result<(), String> {
     if polygon_world.len() < 3 {
-        return Err("extractor polygon needs at least three points".to_owned());
+        return Err(format!("{label} polygon needs at least three points"));
     }
     for point in polygon_world {
         if !point.x.is_finite() || !point.y.is_finite() {
-            return Err("extractor polygon contains a non-finite point".to_owned());
+            return Err(format!("{label} polygon contains a non-finite point"));
         }
     }
-    if polygon_area_abs(polygon_world) < MIN_EXTRACTOR_POLYGON_AREA_M2 {
-        return Err("extractor polygon is too small".to_owned());
+    if polygon_area_abs(polygon_world) < min_area_m2 {
+        return Err(format!("{label} polygon is too small"));
     }
     if polygon_has_crossing_edges(polygon_world) {
-        return Err("extractor polygon edges cannot cross".to_owned());
+        return Err(format!("{label} polygon edges cannot cross"));
     }
     Ok(())
 }
 
-fn validate_polygon_near_building(
+/// Validates that a player-authored polygon is linked to a building footprint.
+pub(crate) fn validate_polygon_near_building(
     building: &Building,
     polygon_world: &[Vector2],
     zone_cell_m: f32,
+    label: &str,
+    max_distance_m: f32,
 ) -> Result<(), String> {
     let footprint = building_footprint_polygon(building, zone_cell_m);
     let distance = polygon_distance_m(&footprint, polygon_world);
-    if distance > EXTRACTOR_POLYGON_LINK_DISTANCE_M {
+    if distance > max_distance_m {
         return Err(format!(
-            "extractor polygon must be within {:.0} m of the building",
-            EXTRACTOR_POLYGON_LINK_DISTANCE_M
+            "{label} polygon must be within {:.0} m of the building",
+            max_distance_m
         ));
     }
     Ok(())

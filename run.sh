@@ -54,8 +54,14 @@
 # Release crash diagnostics:
 #   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic dumps to logs/
 #   METRUM_CRASH_DIAGNOSTICS=0 ./run.sh --release disables the background recorder
+#
+# Godot import cache:
+#   Missing/stale imported resources are repaired once per asset-source state.
+#   METRUM_SKIP_GODOT_IMPORT_REPAIR=1 skips the repair pass.
+#   METRUM_FORCE_GODOT_IMPORT_REPAIR=1 retries even after a previous attempt.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GODOT_DIR="$PROJECT_ROOT/godot"
 RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
@@ -72,6 +78,85 @@ DEBUG_CATEGORY=""
 GODOT_ENGINE_ARGS=()
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
+
+godot_import_metadata_has_missing_outputs() {
+    local import_file="$1"
+    local dest
+    while IFS= read -r dest; do
+        local native_path="$GODOT_DIR/${dest#res://}"
+        if [ ! -f "$native_path" ]; then
+            return 0
+        fi
+    done < <(grep -o 'res://\.godot/imported/[^"]*' "$import_file" || true)
+    return 1
+}
+
+godot_import_cache_needs_repair() {
+    local root
+    for root in "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap"; do
+        if [ ! -d "$root" ]; then
+            continue
+        fi
+        while IFS= read -r -d '' source_file; do
+            local import_file="${source_file}.import"
+            local relative_path="${source_file#"$GODOT_DIR"/}"
+            if [ ! -f "$import_file" ]; then
+                echo "Godot import metadata missing for $relative_path"
+                return 0
+            fi
+            if [ "$source_file" -nt "$import_file" ]; then
+                echo "Godot import metadata stale for $relative_path"
+                return 0
+            fi
+            if godot_import_metadata_has_missing_outputs "$import_file"; then
+                echo "Godot imported output missing for $relative_path"
+                return 0
+            fi
+        done < <(
+            find "$root" -type f \
+                \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
+                -o -iname '*.exr' -o -iname '*.hdr' \
+                -o -iname '*.glb' -o -iname '*.gltf' \) \
+                -print0
+        )
+    done
+    return 1
+}
+
+godot_import_repair_signature() {
+    find "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap" -type f \
+        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
+        -o -iname '*.exr' -o -iname '*.hdr' \
+        -o -iname '*.glb' -o -iname '*.gltf' \) \
+        -printf '%P %T@\n' 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+repair_godot_import_cache_if_needed() {
+    if [ "${METRUM_SKIP_GODOT_IMPORT_REPAIR:-0}" = "1" ]; then
+        echo "Skipping Godot import cache repair (METRUM_SKIP_GODOT_IMPORT_REPAIR=1)."
+        return
+    fi
+    if godot_import_cache_needs_repair; then
+        local signature
+        signature="$(godot_import_repair_signature)"
+        local stamp_file="$GODOT_DIR/.godot/import_repair_attempt.sha256"
+        if [ "${METRUM_FORCE_GODOT_IMPORT_REPAIR:-0}" != "1" ] && [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$signature" ]; then
+            echo "Godot import cache still incomplete after previous repair attempt; continuing."
+            return
+        fi
+        echo "Repairing Godot import cache..."
+        if godot --headless --path "$GODOT_DIR" --import; then
+            printf '%s\n' "$signature" > "$stamp_file"
+            if godot_import_cache_needs_repair; then
+                echo "Godot import cache is still incomplete; runtime source loaders will be used where available."
+            fi
+        else
+            printf '%s\n' "$signature" > "$stamp_file"
+            echo "Godot import cache repair failed; continuing with runtime source loaders where available."
+        fi
+    fi
+}
+
 i=1
 while [ $i -le $# ]; do
     arg="${!i}"
@@ -446,6 +531,8 @@ cp "$LIB" ../godot/bin/libmetrum_rise.so
 echo "Registering GDExtension..."
 mkdir -p ../godot/.godot
 printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cfg
+
+repair_godot_import_cache_if_needed
 
 echo "Launching Metrum Rise..."
 cd ../godot && godot "${GODOT_ENGINE_ARGS[@]}" -- "${GODOT_ARGS[@]}"

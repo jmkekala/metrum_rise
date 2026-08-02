@@ -81,6 +81,75 @@ fn single_elder_receives_pension_without_work_or_unemployment() {
 }
 
 #[test]
+fn daily_residential_property_tax_debits_occupied_household_budget() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "daily_property_tax_home",
+        ZoneClass::Residential,
+    );
+    let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
+    home.level = 2;
+    allocator.buildings.push(home);
+
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 2, 0.0, 0.0);
+    household.budget = 10.0;
+    households.households.push(household);
+
+    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    policy.residential_property_tax_per_home_per_day = 2.0;
+    policy.property_tax_level_multiplier = 1.75;
+
+    let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
+
+    assert!((revenue.residential_property_tax - 3.5).abs() < 0.001);
+    assert_eq!(revenue.commercial_property_tax, 0.0);
+    assert_eq!(revenue.industrial_property_tax, 0.0);
+    assert!((households.households[0].budget - 6.5).abs() < 0.001);
+    assert!((households.daily_ledgers()[0].property_tax_paid - 3.5).abs() < 0.001);
+}
+
+#[test]
+fn daily_nonresidential_property_tax_debits_private_building_budgets() {
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "daily_property_tax_store",
+        ZoneClass::Commercial,
+    );
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "daily_property_tax_factory",
+        ZoneClass::Industrial,
+    );
+    let mut commercial = make_building(0.0, ZoneType::Commercial, &commercial_asset, 0.0);
+    commercial.level = 2;
+    commercial.operating_budget = 100.0;
+    allocator.buildings.push(commercial);
+    let mut industrial = make_building(20.0, ZoneType::Industrial, &industrial_asset, 0.0);
+    industrial.operating_budget = 100.0;
+    allocator.buildings.push(industrial);
+
+    let mut households = HouseholdSystem::new();
+    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    policy.commercial_property_tax_per_building_per_day = 25.0;
+    policy.industrial_property_tax_per_building_per_day = 35.0;
+    policy.property_tax_level_multiplier = 2.0;
+
+    let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
+
+    assert_eq!(revenue.residential_property_tax, 0.0);
+    assert!((revenue.commercial_property_tax - 50.0).abs() < 0.001);
+    assert!((revenue.industrial_property_tax - 35.0).abs() < 0.001);
+    assert!((allocator.buildings[0].operating_budget - 50.0).abs() < 0.001);
+    assert!((allocator.buildings[1].operating_budget - 65.0).abs() < 0.001);
+}
+
+#[test]
 fn ensure_agent_households_does_not_materialize_missing_household_ids() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
@@ -127,7 +196,6 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 0.0,
-        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });

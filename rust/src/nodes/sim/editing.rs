@@ -502,6 +502,8 @@ impl SimCore {
         }
         self.resource_extraction
             .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
+        self.agriculture
+            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -1208,7 +1210,6 @@ impl SimCore {
             &self.heightmap,
             &catalog,
             &tuning,
-            self.fiscal_policy.business_purchase_tax_rate,
         )?;
 
         if !self.benchmark_mode {
@@ -1265,7 +1266,6 @@ impl SimCore {
             &self.heightmap,
             &catalog,
             &tuning,
-            self.fiscal_policy.business_purchase_tax_rate,
         )?;
 
         if !self.benchmark_mode {
@@ -1297,7 +1297,21 @@ impl SimCore {
         )
     }
 
-    /// Removes an unfinalized industry extractor placement before its polygon is committed.
+    /// Commits or replaces a field polygon for one placed agricultural building.
+    pub(crate) fn commit_field_polygon_internal(
+        &mut self,
+        building_idx: usize,
+        polygon_world: Vec<Vector2>,
+    ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
+        self.agriculture.commit_site(
+            building_idx,
+            polygon_world,
+            &self.allocator,
+            self.zoning.config.zone_cell_m,
+        )
+    }
+
+    /// Removes an unfinalized industry area placement before its polygon is committed.
     pub(crate) fn cancel_pending_industry_building_internal(
         &mut self,
         building_idx: usize,
@@ -1309,10 +1323,11 @@ impl SimCore {
             .resource_extraction
             .site_for_building(building_idx)
             .is_some()
+            || self.agriculture.site_for_building(building_idx).is_some()
             || !self
                 .allocator
                 .registry
-                .is_resource_extractor_asset(&building.asset_id)
+                .is_industry_area_asset(&building.asset_id)
         {
             return false;
         }
@@ -1870,6 +1885,7 @@ impl SimCore {
 mod tests {
     use super::{BulldozeTargetKind, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SimCore};
     use crate::nodes::sim::core::PendingDemandSpawnAction;
+    use crate::simulation::agriculture::AgricultureSystem;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
@@ -1926,6 +1942,7 @@ mod tests {
             world_open_water_fills: Vec::new(),
             resource_deposits: ResourceDepositSystem::from_world_config(&config),
             resource_extraction: ResourceExtractionSystem::new(),
+            agriculture: AgricultureSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,

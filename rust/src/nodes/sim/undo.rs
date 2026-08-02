@@ -218,6 +218,12 @@ impl SimCore {
             .into_iter()
             .filter_map(|idx| self.resource_extraction.site_for_building(idx).cloned())
             .collect();
+        let field_sites = [building_idx, last_idx]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|idx| self.agriculture.site_for_building(idx).cloned())
+            .collect();
 
         Some(BuildingRemovalUndo {
             building_idx,
@@ -238,6 +244,7 @@ impl SimCore {
             households,
             logistics,
             extractor_sites,
+            field_sites,
             dirty_bounds: self.allocator.site_world_bounds(building_idx),
         })
     }
@@ -558,6 +565,11 @@ impl SimCore {
                 last_idx,
                 undo.extractor_sites,
             );
+        self.agriculture.restore_sites_after_building_removal_undo(
+            building_idx,
+            last_idx,
+            undo.field_sites,
+        );
 
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();

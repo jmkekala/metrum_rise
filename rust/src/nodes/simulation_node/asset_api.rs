@@ -271,6 +271,16 @@ impl SimulationNode {
                 dict.set("extractor_consumed_reserve_ratio", 0.0f64);
             }
         }
+        if let Some(resource_id) = core.allocator.registry.field_resource(&b.asset_id) {
+            dict.set("field_resource", GString::from(resource_id));
+            if let Some(site) = core.agriculture.site_for_building(best_idx) {
+                dict.set("field_has_site", true);
+                dict.set("field_area_m2", f64::from(site.area_m2.max(0.0)));
+            } else {
+                dict.set("field_has_site", false);
+                dict.set("field_area_m2", 0.0f64);
+            }
+        }
 
         let mut total_agents = 0i32;
         let mut child_agents = 0i32;

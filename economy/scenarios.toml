@@ -11,11 +11,20 @@ replenishment_trigger_days = 1.5
 pickup_cadence_hours = 6.0
 
 [[scenarios.nodes]]
+id = "grain_farm"
+ref_kind = "profile"
+ref_id = "grain_farm_basic"
+position = [
+    90.0,
+    188.0,
+]
+
+[[scenarios.nodes]]
 id = "food_processor"
 ref_kind = "profile"
 ref_id = "food_processor_basic"
 position = [
-    110.0,
+    330.0,
     188.0,
 ]
 
@@ -24,7 +33,7 @@ id = "grocery"
 ref_kind = "profile"
 ref_id = "grocery_basic"
 position = [
-    484.0,
+    570.0,
     184.0,
 ]
 
@@ -47,9 +56,14 @@ position = [
 ]
 
 [[scenarios.edges]]
+from = "grain_farm"
+to = "food_processor"
+resource = "grain"
+
+[[scenarios.edges]]
 from = "food_processor"
 to = "grocery"
-resource = "staple_food"
+resource = "packaged_food"
 
 [[scenarios.edges]]
 from = "grocery"

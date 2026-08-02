@@ -8,6 +8,7 @@ use super::async_terrain::{
 use super::variant_export::{TerrainCdtSourceExport, TerrainCdtTriangleBufferExport};
 #[cfg(test)]
 use super::*;
+use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::extraction::ResourceExtractionSystem;
 use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::TerrainPatchSnapshot;
@@ -188,6 +189,7 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         world_open_water_fills: Vec::new(),
         resource_deposits: ResourceDepositSystem::from_world_config(&config),
         resource_extraction: ResourceExtractionSystem::new(),
+        agriculture: AgricultureSystem::new(),
         world_lake_fill_preview: None,
         authored_water_patch_fill_debug_cache: std::collections::HashMap::new(),
         terrain_stroke_active: false,

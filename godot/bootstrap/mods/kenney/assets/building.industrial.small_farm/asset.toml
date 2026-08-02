@@ -1,94 +1,93 @@
 asset_id = "building.industrial.small_farm"
-display_name = "Small Farm"
+display_name = "Small Grain Farm"
 
 [building]
-placement_mode = "zoned_private"
-zone_type = "industrial"
-density = "low"
-lot_width_cells = 2
-lot_depth_cells = 2
+placement_mode = "explicit"
+lot_width_cells = 3
+lot_depth_cells = 3
 frontage_forward = [0, 0, -1]
 level = 1
-worker_capacity = 10
 flat_size_m2 = 60.0
-economy_profile = "food_processor_basic"
+economy_profile = "grain_farm_basic"
+
+[building.field]
+resource = "grain"
+area_mode = "player_polygon"
 
 [[mesh_parts]]
 name = "part_1"
-position = [5.11, 0, 0.41]
+position = [-1.76, 0, 8.31]
 rotation_degrees = [0, 0, 0]
 scale = 7
-pivot_offset = [0.435, 0, -0.274]
+pivot_offset = [0.01, 0, 0]
 
 [[mesh_parts.lods]]
-file = "building-j.glb"
+file = "building-s.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_2"
+position = [-10.7, 0, -6.07]
+rotation_degrees = [0, -90, 0]
+scale = 7
+pivot_offset = [0, 0, 0.007]
+
+[[mesh_parts.lods]]
+file = "building-k.glb"
+distance_min_m = 0
+
+[[mesh_parts]]
+name = "part_3"
+position = [8.45, 0, -6.76]
+rotation_degrees = [0, 90, 0]
+scale = 7
+pivot_offset = [0.007, 0, 0]
+
+[[mesh_parts.lods]]
+file = "building-type-t.glb"
 distance_min_m = 0
 
 [[anchors]]
 type = "entrance"
 name = "main"
-position = [2.49, 0, 3.5]
+position = [4.39, 0, -6.73]
 forward = [-1, 0, 0]
 
 [[anchors]]
 type = "parking"
-position = [-7.22, 0, 3.96]
+position = [-7.23, 0, 6.99]
 forward = [0, 0, 1]
-width_m = 2.5
-length_m = 5
-vehicle_class = "car"
-
-[[anchors]]
-type = "parking"
-position = [-3.79, 0, 3.76]
-forward = [0, 0, 1]
-width_m = 2.5
-length_m = 5
-vehicle_class = "car"
-
-[[anchors]]
-type = "parking"
-position = [-0.17, 0, 3.53]
-forward = [0, 0, 1]
-width_m = 2.5
-length_m = 5
-vehicle_class = "car"
-
-[[anchors]]
-type = "parking"
-position = [-5, 0, -7.24]
-forward = [-1, 0, 0]
-width_m = 2.5
-length_m = 5
-vehicle_class = "car"
-
-[[anchors]]
-type = "parking"
-position = [-5, 0, -1.13]
-forward = [-1, 0, 0]
-width_m = 2.5
-length_m = 5
-vehicle_class = "car"
-
-[[anchors]]
-type = "parking"
-position = [-5, 0, -4.12]
-forward = [-1, 0, 0]
 width_m = 2.5
 length_m = 5
 vehicle_class = "car"
 
 [[anchors]]
 type = "driveway"
-position = [-1.81, 0, -10]
+position = [-1.55, 0, -15]
 forward = [0, 0, 1]
 width_m = 3
 vehicle_class = "car"
 
 [[anchors]]
+type = "parking"
+position = [3.9, 0, -0.47]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [0.37, 0, -0.73]
+forward = [0, 0, 1]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
 type = "loading_bay"
-position = [1.17, 0, -6.62]
-forward = [1, 0, 0]
+position = [-3.89, 0, -8.21]
+forward = [0, 0, 1]
 width_m = 3.5
 length_m = 8
 vehicle_class = "freight"
@@ -96,4 +95,4 @@ vehicle_class = "freight"
 [[site_surfaces]]
 material = "asphalt"
 y_m = 0.01
-vertices = [[-10, -10], [10, -10], [10, -3.43], [2.7, -3.49], [3.11, 10], [-10, 10]]
+vertices = [[-8.37, -15], [5.87, -15], [6.15, 5.49], [-8.47, 5.49]]

@@ -207,6 +207,7 @@ pub(super) fn register_test_asset_with_family_level(
                 _ => None,
             },
             extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,
@@ -257,6 +258,7 @@ pub(super) fn register_test_power_service_asset(
             service_class: Some("power".to_owned()),
             economy_profile: Some("power_plant_basic".to_owned()),
             extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,
@@ -328,10 +330,8 @@ pub(super) fn execute_startup_demand_building_pass(
     graph: &RegionGraph,
 ) {
     use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::economy::fiscal::CityFiscalPolicy;
 
     let mut demand = DemandSystem::new();
-    let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(demand.runtime_tuning());
     let terrain = compiled_flat_test_terrain(network, graph);
     for _ in 0..24 {
         let building_count_before = allocator.buildings.len();
@@ -348,7 +348,6 @@ pub(super) fn execute_startup_demand_building_pass(
             &terrain,
             demand.runtime_catalog(),
             demand.runtime_tuning(),
-            &fiscal_policy,
         );
         if allocator.buildings.len() > building_count_before {
             break;
@@ -434,9 +433,6 @@ pub(super) fn setup_startup_spawn_city_for_rezoning() -> (
         startup_plan.commercial.spawns.push(action.clone());
     }
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    let fiscal_policy = crate::simulation::economy::fiscal::CityFiscalPolicy::from_runtime_tuning(
-        demand.runtime_tuning(),
-    );
     allocator.execute_demand_building_actions(
         &startup_plan,
         &mut zoning,
@@ -449,7 +445,6 @@ pub(super) fn setup_startup_spawn_city_for_rezoning() -> (
         &terrain,
         demand.runtime_catalog(),
         demand.runtime_tuning(),
-        &fiscal_policy,
     );
 
     allocator.execute_demand_household_admission(2, &mut agents, &network, &graph); // Occupy buildings to protect from instant removal

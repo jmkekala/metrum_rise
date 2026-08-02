@@ -85,7 +85,6 @@ fn zoning_projection_overlaps_explicit_service_site_is_blocked() {
             &terrain,
             &catalog,
             &tuning,
-            tuning.fiscal.business_purchase_tax_rate,
         )
         .expect("flat service placement should commit");
     let parcel_geometry = zoning

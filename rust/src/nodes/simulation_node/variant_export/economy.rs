@@ -14,7 +14,6 @@ pub(in crate::nodes::simulation_node) fn budget_ledger_entry_dict(
     dict.set("tax_income", entry.tax_income);
     dict.set("income_tax", entry.income_tax);
     dict.set("household_vat", entry.household_vat);
-    dict.set("business_purchase_tax", entry.business_purchase_tax);
     dict.set("business_profit_tax", entry.business_profit_tax);
     dict.set("property_tax", entry.property_tax);
     dict.set("residential_property_tax", entry.residential_property_tax);

@@ -82,7 +82,7 @@ Kind values:
 
 - **Root cause**: `collect_crossing_splits` in `rust/src/simulation/network/topology.rs` skips any segment pair where `v1.dot(v2).abs() > 0.98`. This guard was intended to avoid false intersections on near-parallel roads, but it also fires for two distinct edges that are drawn in the same direction — including when the player draws a road overlapping or branching off an existing road. No junction node is created, and the two edge objects remain topologically disconnected.
 - **Downstream effect**: `freight_car_eta_between_buildings` calls `cch_graph.find_path` between the two disconnected segments and gets `None`. `try_local_supplier_for_resource` returns `false` for every local candidate. All freight falls back to OWA permanently — local supply chains never form.
-- **Observed in gameplay**: grocery imported 474 staple_food from OWA at 1.75× local price on first order despite operational local farms; farms earned only OWA export revenue (60% of local price), insufficient to cover wages, trending toward bankruptcy by day 26.
+- **Observed in gameplay**: grocery imported 474 packaged_food from OWA at 1.75× local price on first order despite operational local food producers; producers earned only OWA export revenue, insufficient to cover wages, trending toward bankruptcy by day 26.
 - **Fix**: removed the `v1.dot(v2).abs() > 0.98` guard entirely. Truly parallel edges return `None` from `find_intersection_2d` (denom ≈ 0) so the guard was redundant for the intended case and harmful for shallow-angle distinct-edge crossings. See `topology.rs:459`.
 
 ## Large-World Track

@@ -6,9 +6,8 @@ use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
 };
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
-use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -20,7 +19,9 @@ use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, Ship
 use super::planning::FreightPlanningContext;
 use super::quantization::{quantize_export_amount, quantize_requested_amount};
 use super::reservations::ReservationViews;
-use super::resource::{freight_profile_for_building, required_unit_price};
+use super::resource::{
+    building_outputs_can_export_to_owa, freight_profile_for_building, required_unit_price,
+};
 use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
@@ -30,7 +31,6 @@ struct LocalInputHoldChoice {
     supplier_idx: usize,
     amount: f32,
     total_cost: f32,
-    tax_cost: f32,
     travel_seconds: f32,
 }
 
@@ -49,7 +49,6 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         planning: &mut FreightPlanningContext,
-        business_purchase_tax_rate: f32,
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
@@ -66,7 +65,6 @@ impl ShipmentSystem {
             graph,
             planning,
             minute_of_day,
-            business_purchase_tax_rate,
         );
         let mut eligible_sources: Vec<usize> = allocator
             .buildings
@@ -84,11 +82,7 @@ impl ShipmentSystem {
                 }
                 catalog
                     .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .filter(|profile| {
-                        !profile.outputs.is_empty()
-                            && (matches!(building.zone_type, ZoneType::Industrial)
-                                || profile.kind == EconomyProfileRuntimeKind::Extractor)
-                    })
+                    .filter(|profile| building_outputs_can_export_to_owa(building, profile))
                     .map(|_| idx)
             })
             .collect();
@@ -109,12 +103,7 @@ impl ShipmentSystem {
             else {
                 continue;
             };
-            if !matches!(building.zone_type, ZoneType::Industrial)
-                && profile.kind != EconomyProfileRuntimeKind::Extractor
-            {
-                continue;
-            }
-            if profile.outputs.is_empty() {
+            if !building_outputs_can_export_to_owa(building, profile) {
                 continue;
             }
             let Some(freight_profile) =
@@ -202,7 +191,6 @@ impl ShipmentSystem {
                     status,
                     carrier_agent_id: usize::MAX,
                     total_cost: total_revenue,
-                    tax_cost: 0.0,
                     eta_hours: eta_hours_from_travel_seconds(adjusted_eta),
                     queued_hours: 0,
                 });
@@ -242,7 +230,6 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         planning: &mut FreightPlanningContext,
         minute_of_day: u16,
-        business_purchase_tax_rate: f32,
     ) {
         let catalog = planning.catalog.clone();
         let tuning = planning.tuning.clone();
@@ -316,7 +303,6 @@ impl ShipmentSystem {
                     catalog.as_ref(),
                     minute_of_day,
                     tuning.logistics.truck_load_units,
-                    business_purchase_tax_rate,
                 ) else {
                     continue;
                 };
@@ -404,7 +390,6 @@ fn find_reachable_local_input_hold(
     catalog: &RuntimeEconomyCatalog,
     minute_of_day: u16,
     truck_load_units: f32,
-    business_purchase_tax_rate: f32,
 ) -> Option<LocalInputHoldChoice> {
     if dest_idx >= allocator.entrances.len() {
         return None;
@@ -448,7 +433,6 @@ fn find_reachable_local_input_hold(
                     minute_of_day,
                     catalog,
                     truck_load_units,
-                    business_purchase_tax_rate,
                 );
                 true
             }
@@ -485,7 +469,6 @@ fn update_best_local_input_hold_choice(
     minute_of_day: u16,
     catalog: &RuntimeEconomyCatalog,
     truck_load_units: f32,
-    business_purchase_tax_rate: f32,
 ) {
     if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
         return;
@@ -516,9 +499,7 @@ fn update_best_local_input_hold_choice(
         freight_profile,
         minute_of_day,
     );
-    let taxed_unit_price =
-        effective_unit_price + tax_amount(effective_unit_price, business_purchase_tax_rate);
-    let max_affordable = destination_budget.max(0.0) / taxed_unit_price.max(f32::EPSILON);
+    let max_affordable = destination_budget.max(0.0) / effective_unit_price.max(f32::EPSILON);
     let Some(amount) = quantize_requested_amount(
         desired_amount,
         available,
@@ -540,7 +521,6 @@ fn update_best_local_input_hold_choice(
         supplier_idx: candidate_idx,
         amount,
         total_cost,
-        tax_cost: tax_amount(total_cost, business_purchase_tax_rate),
         travel_seconds,
     };
     if best_choice.is_none_or(|best| local_input_hold_choice_precedes(choice, best)) {
@@ -554,9 +534,7 @@ fn local_input_hold_choice_precedes(
 ) -> bool {
     left.travel_seconds
         .total_cmp(&right.travel_seconds)
-        .then_with(|| {
-            (left.total_cost + left.tax_cost).total_cmp(&(right.total_cost + right.tax_cost))
-        })
+        .then_with(|| left.total_cost.total_cmp(&right.total_cost))
         .then_with(|| left.supplier_idx.cmp(&right.supplier_idx))
         .is_lt()
 }

@@ -21,8 +21,7 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
         treasury_balance: &mut f64,
-        business_purchase_tax_rate: f32,
-    ) -> f32 {
+    ) {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
         let mut phase_start = total_start;
@@ -44,7 +43,6 @@ impl ShipmentSystem {
             minute_of_day,
             &mut planning,
             treasury_balance,
-            business_purchase_tax_rate,
         );
         let input_shipments_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -54,15 +52,13 @@ impl ShipmentSystem {
             graph,
             minute_of_day,
             &mut planning,
-            business_purchase_tax_rate,
         );
         let output_exports_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         planning.finish(self);
         let finish_planning_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        let business_purchase_tax_collected =
-            self.progress_shipments(allocator, agents, transit_network, graph, treasury_balance);
+        self.progress_shipments(allocator, agents, transit_network, graph, treasury_balance);
         let progress_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.shipments.retain(|shipment| shipment.status.is_open());
@@ -88,7 +84,6 @@ impl ShipmentSystem {
                 total_start.elapsed().as_secs_f64() * 1000.0,
             );
         }
-        business_purchase_tax_collected
     }
 
     pub(super) fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {

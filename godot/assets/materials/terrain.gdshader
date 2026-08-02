@@ -4,15 +4,18 @@ render_mode cull_disabled, ambient_light_disabled;
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
 uniform sampler2D coal_pit_texture : repeat_disable, filter_linear;
+uniform sampler2D field_overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_coal_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D terrain_grain_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform bool height_is_baked = false;
 uniform vec2 world_size = vec2(256.0, 256.0);
 uniform vec4 coal_pit_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
+uniform vec4 field_overlay_world_bounds = vec4(0.0, 0.0, 0.0, 0.0);
 uniform int terrain_visual_debug_mode = 0;
 uniform vec2 terrain_debug_patch_key = vec2(0.0);
 uniform float terrain_debug_lod_step = 1.0;
@@ -63,6 +66,12 @@ uniform float terrain_coal_detail_scale = 0.22;
 uniform float terrain_coal_pit_strength = 0.72;
 uniform vec3 terrain_coal_lift_color : source_color = vec3(0.18, 0.16, 0.13);
 uniform float terrain_coal_lift_strength = 0.45;
+uniform float terrain_grain_detail_scale = 0.0833333333;
+uniform float terrain_field_strength = 0.88;
+uniform vec3 terrain_grain_tint : source_color = vec3(1.08, 1.01, 0.78);
+uniform float terrain_grain_brightness = 1.10;
+uniform float terrain_grain_mix_strength = 0.38;
+uniform float terrain_grain_macro_strength = 0.12;
 uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
 uniform float terrain_relief_sample_radius_texels = 3.0;
@@ -144,6 +153,34 @@ float warped_noise(vec2 world_xz, float scale, vec2 offset) {
 		noise2d(world_xz * 0.0007 + offset + vec2(37.0, 19.0))
 	) - vec2(0.5);
 	return noise2d((world_xz + warp * 180.0) * scale + offset * 0.37);
+}
+
+vec2 rotate2d(vec2 uv, float angle) {
+	float s = sin(angle);
+	float c = cos(angle);
+	return vec2(c * uv.x - s * uv.y, s * uv.x + c * uv.y);
+}
+
+vec3 terrain_grain_field_color(vec2 world_xz) {
+	vec2 world_uv = world_xz * terrain_grain_detail_scale;
+	vec3 grain_a = texture(terrain_grain_albedo, world_uv).rgb;
+	vec3 grain_b = texture(
+		terrain_grain_albedo,
+		rotate2d(world_uv + vec2(19.17, 7.31), 1.5707963268)
+	).rgb;
+	vec3 grain_c = texture(
+		terrain_grain_albedo,
+		rotate2d(world_uv * 0.87 + vec2(-11.43, 23.61), -0.7853981634)
+	).rgb;
+
+	float mid_mask = smoothstep(0.25, 0.75, noise2d(world_xz * 0.050));
+	float wide_mask = smoothstep(0.18, 0.82, noise2d(world_xz * 0.016 + vec2(7.0, 2.0)));
+	vec3 grain = mix(grain_a, grain_b, mid_mask * terrain_grain_mix_strength);
+	grain = mix(grain, grain_c, wide_mask * terrain_grain_mix_strength * 0.55);
+
+	float macro = noise2d(world_xz * 0.010 + vec2(2.1, 6.4));
+	grain *= mix(1.0 - terrain_grain_macro_strength, 1.0 + terrain_grain_macro_strength, macro);
+	return grain * terrain_grain_tint * terrain_grain_brightness;
 }
 
 vec3 apply_natural_land_variation(
@@ -835,6 +872,22 @@ void fragment() {
 			coal_albedo = mix(coal_albedo, max(coal_albedo, terrain_coal_lift_color), terrain_coal_lift_strength);
 			coal_albedo = mix(coal_albedo, coal_albedo * vec3(0.82, 0.80, 0.76), macro_mask * 0.18);
 			color = mix(color, coal_albedo, coal_pit_mask * terrain_coal_pit_strength);
+		}
+		float field_mask = 0.0;
+		if (field_overlay_world_bounds.z > 0.001 && field_overlay_world_bounds.w > 0.001) {
+			vec2 field_uv = (var_world_pos.xz - field_overlay_world_bounds.xy) / field_overlay_world_bounds.zw;
+			if (
+				field_uv.x >= 0.0
+				&& field_uv.x <= 1.0
+				&& field_uv.y >= 0.0
+				&& field_uv.y <= 1.0
+			) {
+				field_mask = texture(field_overlay_texture, field_uv).r;
+			}
+		}
+		if (field_mask > 0.001) {
+			vec3 grain_albedo = terrain_grain_field_color(var_world_pos.xz);
+			color = mix(color, grain_albedo, field_mask * terrain_field_strength);
 		}
 		float hillshade = hillshade_mask(normal);
 		color = apply_baked_terrain_readability(

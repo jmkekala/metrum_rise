@@ -1,7 +1,7 @@
 ## Explicit service-building placement tool with Rust-authored frontage snapping and validation.
 ##
 ## Rust methods called: get_service_building_placement_preview(),
-##   place_service_building(), intersect_world_surface()
+##   place_service_building(), get_world_surface_height(), intersect_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -23,8 +23,15 @@ var _preview_cache_pos: Vector2 = Vector2.ZERO
 var _preview_cache_mesh: Mesh = null
 var _preview_cache_part_transforms: PackedFloat32Array = PackedFloat32Array()
 var _preview_cache_placeable: bool = false
+var _preview_cache_build_cost: float = 0.0
+var _preview_cache_error: String = ""
+var _preview_cache_label_world_pos: Vector3 = Vector3.ZERO
+var _hud_canvas: CanvasLayer = null
+var _price_label: Label = null
+var _label_world_pos: Vector3 = Vector3.ZERO
 
 const PREVIEW_REFRESH_DISTANCE_M := 1.0
+const PREVIEW_LABEL_Y_OFFSET_M := 2.0
 
 func _ready() -> void:
 	preview_mesh = MeshInstance3D.new()
@@ -46,12 +53,14 @@ func _ready() -> void:
 	add_child(preview_part_root)
 	_preview_valid_material = _make_ghost_material(Color(0.25, 0.95, 0.82, 0.42))
 	_preview_invalid_material = _make_ghost_material(Color(1.0, 0.23, 0.12, 0.48))
+	_create_preview_price_label()
 
 func _process(_delta: float) -> void:
 	if not active:
 		_clear_preview_cache()
 		return
 	_update_preview()
+	_project_preview_price_label()
 
 func _unhandled_input(event) -> void:
 	if not active:
@@ -99,7 +108,10 @@ func _update_preview() -> void:
 		_apply_preview_payload(
 			_preview_cache_mesh,
 			_preview_cache_part_transforms,
-			_preview_cache_placeable
+			_preview_cache_placeable,
+			_preview_cache_build_cost,
+			_preview_cache_error,
+			_preview_cache_label_world_pos
 		)
 		return
 
@@ -110,25 +122,35 @@ func _update_preview() -> void:
 	)
 	var mesh: Mesh = null
 	var is_valid := bool(payload.get("valid", false))
+	var error := str(payload.get("error", ""))
+	var build_cost := float(payload.get("build_cost", 0.0))
 	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
 	var part_transforms: PackedFloat32Array = payload.get("part_transforms", PackedFloat32Array())
 	if corners.size() == 4:
 		mesh = _build_preview_mesh(corners, is_valid)
+	var label_world_pos := _preview_label_world_pos(payload, wp, corners)
 	_preview_cache_valid = true
 	_preview_cache_asset_id = selected_asset_id
 	_preview_cache_pos = wp
 	_preview_cache_mesh = mesh
 	_preview_cache_part_transforms = part_transforms
 	_preview_cache_placeable = is_valid
-	_apply_preview_payload(mesh, part_transforms, is_valid)
+	_preview_cache_build_cost = build_cost
+	_preview_cache_error = error
+	_preview_cache_label_world_pos = label_world_pos
+	_apply_preview_payload(mesh, part_transforms, is_valid, build_cost, error, label_world_pos)
 
 func _apply_preview_payload(
 	support_mesh: Mesh,
 	part_transforms: PackedFloat32Array,
-	is_valid: bool
+	is_valid: bool,
+	build_cost: float,
+	error: String,
+	label_world_pos: Vector3
 ) -> void:
 	_apply_preview_mesh(support_mesh)
 	_apply_part_preview(part_transforms, is_valid)
+	_apply_preview_price_label(build_cost, is_valid, error, label_world_pos)
 
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
@@ -139,6 +161,9 @@ func _clear_preview_cache() -> void:
 	_preview_cache_mesh = null
 	_preview_cache_part_transforms = PackedFloat32Array()
 	_preview_cache_placeable = false
+	_preview_cache_build_cost = 0.0
+	_preview_cache_error = ""
+	_preview_cache_label_world_pos = Vector3.ZERO
 	_hide_preview_visuals()
 
 func _hide_preview_visuals() -> void:
@@ -146,6 +171,73 @@ func _hide_preview_visuals() -> void:
 		preview_mesh.visible = false
 	for instance in _preview_part_instances:
 		instance.visible = false
+	if _price_label:
+		_price_label.visible = false
+
+func _create_preview_price_label() -> void:
+	_hud_canvas = CanvasLayer.new()
+	_hud_canvas.layer = 10
+	add_child(_hud_canvas)
+
+	_price_label = Label.new()
+	_price_label.add_theme_font_size_override("font_size", 18)
+	_price_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_price_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.8))
+	_price_label.add_theme_constant_override("shadow_offset_x", 1)
+	_price_label.add_theme_constant_override("shadow_offset_y", 1)
+	_price_label.visible = false
+	_hud_canvas.add_child(_price_label)
+
+func _apply_preview_price_label(
+	build_cost: float,
+	is_valid: bool,
+	error: String,
+	label_world_pos: Vector3
+) -> void:
+	if not _price_label:
+		return
+	var price_text := "price %s" % _money(build_cost)
+	if not is_valid and not error.is_empty():
+		price_text += "  " + error
+		_price_label.add_theme_color_override("font_color", Color(1.0, 0.28, 0.18, 0.98))
+	else:
+		_price_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_price_label.text = price_text
+	_label_world_pos = label_world_pos
+	_price_label.visible = true
+
+func _project_preview_price_label() -> void:
+	if not _price_label or not _price_label.visible:
+		return
+	var camera := get_viewport().get_camera_3d()
+	if camera:
+		var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
+		_price_label.position = screen_pos + Vector2(8.0, -24.0)
+
+func _preview_label_world_pos(
+	payload: Dictionary,
+	fallback_world_pos: Vector2,
+	corners: PackedVector3Array
+) -> Vector3:
+	if corners.size() == 4:
+		return Vector3(
+			float(payload.get("center_x", fallback_world_pos.x)),
+			float(payload.get("support_height_m", 0.0)) + PREVIEW_LABEL_Y_OFFSET_M,
+			float(payload.get("center_z", fallback_world_pos.y))
+		)
+	var y := 0.0
+	if simulation_node and simulation_node.has_method("get_world_surface_height"):
+		y = float(simulation_node.get_world_surface_height(fallback_world_pos))
+	return Vector3(fallback_world_pos.x, y + PREVIEW_LABEL_Y_OFFSET_M, fallback_world_pos.y)
+
+func _money(value: float) -> String:
+	var sign := "-" if value < 0.0 else ""
+	var amount := absf(value)
+	if amount >= 1000000.0:
+		return "%s$%.1fM" % [sign, amount / 1000000.0]
+	if amount >= 1000.0:
+		return "%s$%.1fk" % [sign, amount / 1000.0]
+	return "%s$%.0f" % [sign, amount]
 
 func _apply_part_preview(part_transforms: PackedFloat32Array, is_valid: bool) -> void:
 	var count := int(part_transforms.size() / 12)

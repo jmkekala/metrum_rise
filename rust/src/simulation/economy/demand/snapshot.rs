@@ -1044,6 +1044,7 @@ fn profile_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> 
     ) || matches!(
         profile.kind,
         EconomyProfileRuntimeKind::Extractor
+            | EconomyProfileRuntimeKind::FieldProducer
             | EconomyProfileRuntimeKind::UtilityProducer
             | EconomyProfileRuntimeKind::UtilityProcessor
     )

@@ -21,10 +21,10 @@ Individual agents are not the main production graph nodes. Buildings, terminals,
 Agents still matter, but mostly in three roles:
 
 - workers that satisfy labor demand
-- households that consume from shared household stock
+- households that consume from shared household supplies
 - optional low-frequency leisure or shopping travelers
 
-This keeps the hot path building-to-building instead of turning every staple good into an individual errand.
+This keeps the hot path building-to-building instead of turning every essential good into an individual errand.
 
 ### 2. Household essentials are replenished periodically, not bought daily by individual agents
 
@@ -35,9 +35,9 @@ The default model is:
 - producers create goods
 - logistics carriers move goods to distribution nodes, warehouses, and shops
 - residential buildings host one or more households
-- each household holds one shared stock buffer for the whole household
-- that household stock is replenished by occasional household-owned shopping in `v0.1`
-- residents consume from household stock while at home
+- each household holds one shared supply reserve for the whole household
+- that household supply reserve is replenished by occasional household-owned shopping in `v0.1`
+- residents consume from household supplies while at home
 
 An agent's everyday need is therefore not "buy bread now" but "does my household have access to supplies at home."
 
@@ -52,8 +52,8 @@ Important exception for `v0.1`:
 
 This creates the intended feedback loop:
 
-- delayed deliveries reduce local stock
-- low stock reduces household satisfaction or business throughput
+- delayed deliveries reduce local inventories
+- low inventory or household supplies reduce household satisfaction or business throughput
 - congestion becomes an economic problem, not just a traffic problem
 
 ### 4. Balancing and validation are visual; persistence is data-driven
@@ -63,10 +63,10 @@ Developers should use a tool, not raw text files, to balance production chains, 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
 
 Player-facing fiscal controls such as tax sliders and household transfer levels are a separate
-gameplay policy layer. Baseline income tax, purchase tax, business profit tax, construction
-property tax, unemployment benefit, pension, and child support defaults come from authored runtime
-tuning, then become live `CityFiscalPolicy` state exposed through curated bounded controls rather
-than through the developer economy editor.
+gameplay policy layer. Baseline income tax, household VAT, business profit tax, daily property
+taxes, unemployment benefit, pension, and child support defaults come from authored runtime tuning,
+then become live `CityFiscalPolicy` state exposed through curated bounded controls rather than
+through the developer economy editor.
 
 ### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
@@ -124,13 +124,13 @@ Baseline `v0.1` cadence:
 
 - movement and deliveries: continuous, on the normal simulation tick
 - labor availability, production, and household consumption: evaluated on coarse sub-daily steps such as once per in-game hour
-- household replenishment checks: every few in-game hours or when stock falls below a threshold
+- household replenishment checks: every few in-game hours or when the supply reserve falls below a threshold
 - wages, building operating costs, and daily summaries: settled once per in-game day
 
 Authoring units should follow this scale:
 
 - production and consumption: `units/day`
-- stock: `days of supply`
+- supply reserve: `days of supply`
 - wages and operating costs: `currency/day` or `currency/workday`
 - prices: `currency/unit`
 
@@ -145,13 +145,13 @@ Deterministic day-boundary rule:
 1. Run the final sub-daily operational-clock economy step for the current day.
 2. Run one daily economy settlement pass for that operational day.
 3. During that settlement pass, finalize the day-level economy state that demand is allowed to read:
-   - household budgets, stock, utility charges, and affordability results
+   - household budgets, supplies, utility charges, and affordability results
    - household relocation, eviction, and `unhoused` outcomes owned by economy
    - building budgets, operating-buffer values, staffing or input shortfall state, and other
      building-side viability summaries
    - settled source values and city-level daily summaries from which demand derives its own
      normalized input signals, such as household-slot capacity and vacancy, housed residents,
-     reachable open jobs, stock stability, utility-service satisfaction, and
+     reachable open jobs, household supply stability, utility-service satisfaction, and
      external-connection state
    - candidate move-in inputs such as household starter savings, daily essential cost, exact
      candidate child/adult/elder composition, live transfer-policy amounts, treasury balance, and
@@ -392,7 +392,7 @@ Rules:
 
 - the city treasury is a separate ledger from household budgets and building budgets
 - startup treasury funds initialize that ledger at game start
-- income tax, construction property tax, household `VAT`, business purchase tax, business profit tax, tariffs, and
+- income tax, daily property tax, household `VAT`, business profit tax, tariffs, and
   similar city-owned fiscal inflows deposit into the city treasury
 - ordinary private utility service payments do not deposit into the city treasury by default; city-owned utility service payments do
 - subsidies and other city-funded support measures withdraw from the city treasury
@@ -404,12 +404,13 @@ be changed by the player through the Economy Overview Policy tab.
 
 - `income_tax_rate`: fraction withheld from gross daily wages before households receive income
 - `household_vat_rate`: fraction added to household store purchases
-- `business_purchase_tax_rate`: fraction added to business input purchases through local freight or
-  `OWA` import freight
 - `business_profit_tax_rate`: fraction charged daily on positive private business operating-budget
   growth after operating costs and settlement
-- `residential_property_tax_base`, `commercial_property_tax_base`,
-  `industrial_property_tax_base`: one-time construction-start tax bases for fresh private spawns
+- `residential_property_tax_per_home_per_day`: daily tax charged to each occupied residential
+  household home
+- `commercial_property_tax_per_building_per_day`,
+  `industrial_property_tax_per_building_per_day`: daily tax charged to active private
+  non-residential buildings in those zones
 - `property_tax_level_multiplier`: multiplier applied per level above level 1
 - `unemployment_daily_benefit_per_member`: daily transfer per unemployed adult within the
   unemployment time limit
@@ -445,9 +446,9 @@ Initial policy controls:
 
 - transfer policy: unemployment benefit per adult per day, unemployment maximum days, pension per
   elder per day, child support per child per day
-- wage and consumption taxes: income tax, household `VAT`, business purchase tax
-- business and construction taxes: business profit tax, residential/commercial/industrial
-  construction property-tax bases, property-tax level multiplier
+- wage and consumption taxes: income tax, household `VAT`
+- business and property taxes: business profit tax, residential/commercial/industrial daily
+  property-tax bases, property-tax level multiplier
 
 ### Logistics and Shipments
 
@@ -470,7 +471,7 @@ The first economy pass should define explicit startup money instead of leaving e
 
 - immigrating households arrive with starter savings
 - the city starts with a modest startup treasury for early construction and city-level obligations
-- newly created businesses begin with a small one-time startup float in their own building budget so they can purchase initial imported stock and cover the first wage cycle before local revenue stabilizes
+- newly created businesses begin with a small one-time startup float in their own building budget so they can purchase initial imported inventory and cover the first wage cycle before local revenue stabilizes
 - this startup float is private startup capital or owner equity, not a city grant and not a withdrawal from the city treasury
 
 These are startup tuning values, not long-term substitutes for a functioning local economy.
@@ -509,7 +510,7 @@ Rules:
 
 - fiscal ledgers settle once per operational day
 - transaction-backed taxes update the city treasury when the underlying deterministic transaction
-  succeeds: wage payment, store pickup, freight delivery, or construction start
+  succeeds: wage payment or store pickup
 - business profit tax updates the city treasury during the daily settlement pass, after business
   budgets have absorbed that day's wages, utility charges, freight settlement, shopping revenue,
   and distress liquidation
@@ -543,19 +544,17 @@ This keeps income tax tied to real employment instead of a background population
 
 ### Value Added Tax (`VAT`)
 
-`VAT` should be modeled as a buyer-paid consumption tax on goods purchases.
+`VAT` should be modeled as a buyer-paid household consumption tax on goods purchases.
 
 Rules:
 
 - the budget-owning buyer pays `VAT` as part of the final purchase price
 - for baseline household essentials in `v0.1`, this effectively means the household budget pays the tax when buying goods
-- for business or operational purchases, the building budget pays the tax unless a later system introduces another explicit budget-owning buyer type
 - seller revenue is the pre-tax sale value; the `VAT` portion is city tax revenue rather than normal seller income
 - household `VAT` is reserved in the gross shopping payment, but it is collected only once the
   shopper reaches the store and pickup succeeds
-- business purchase tax is reserved with the shipment payment, refunded on shipment failure or
-  expiry, and collected only when freight is delivered
-- daily fiscal reporting separates household `VAT` from business purchase tax
+- business-to-business freight purchases are ordinary input trades and do not generate city tax
+- daily fiscal reporting includes household `VAT` as its consumption-tax bucket
 
 This keeps `VAT` tied to actual consumption instead of treating it as a vague background modifier.
 
@@ -579,30 +578,32 @@ Recommended `v0.1` rule:
 - after settlement, the baseline resets to the post-tax operating budget so the same profit is not
   taxed again tomorrow
 - there is no loss carryforward in `v0.1`; a loss day simply resets the next day's baseline lower
-- startup floats and construction property-tax debits are baseline capital, not taxable profit
+- startup floats are baseline capital, not taxable profit
 
 This gives the city recurring revenue from profitable businesses without taxing gross sales or
 making unprofitable starter firms fail faster than their actual cash flow warrants.
 
-### Construction property tax
+### Daily property tax
 
-Fresh private buildings pay a one-time property tax when construction starts.
+Property tax is a daily modeled money flow from private household/building budgets into the city
+treasury.
 
 Rules:
 
-- the tax applies only to demand-owned fresh private spawns, not to road placement or future
-  city-owned facilities
-- the amount is selected from the matching live `CityFiscalPolicy` zone-specific property-tax base
-  and multiplied by
+- residential tax applies once per occupied household home and is debited from that household's
+  budget
+- commercial and industrial tax applies once per active private building and is debited from the
+  building operating budget
+- explicit city-owned or `ZoneType::None` buildings do not pay private property tax
+- the amount is selected from the matching live `CityFiscalPolicy` daily property-tax value and
+  multiplied by
   `CityFiscalPolicy.property_tax_level_multiplier` for each level above level 1
-- the tax is paid into the city treasury immediately after the building action creates the
-  under-construction building
-- the payer is the private building/developer budget represented by the new building's operating
-  budget; property tax must not be minted as treasury revenue without an equal private debit
-- construction completion does not charge a second property tax
+- property tax must not be minted as treasury revenue without an equal household or building debit
+- private construction start and construction completion do not charge a separate property tax
 
-This gives growth an immediate city revenue signal without making private construction treasury
-funded.
+This gives the city recurring revenue tied to actual occupied homes and active private workplaces.
+If a future one-time construction charge is needed, model it separately as a permit or development
+fee rather than property tax.
 
 ### Treasury deficits
 
@@ -624,7 +625,7 @@ Rules for `v0.1`:
 
 - internal goods use fixed base prices authored in economy data
 - workplaces use fixed wage values or fixed wage bands authored by profile or building class
-- shortages should show up primarily through lower stock, delayed replenishment, reduced throughput, and unmet demand rather than through a fully dynamic local market
+- shortages should show up primarily through lower inventory coverage, delayed replenishment, reduced throughput, and unmet demand rather than through a fully dynamic local market
 - bounded modifiers such as subsidies or delivery-cost effects may still change effective paid cost where appropriate
 - free-floating local price response and free-floating wage response are out of scope for `v0.1`
 
@@ -646,9 +647,9 @@ At the beginning of a new city:
 
 This prevents the economy from deadlocking on day one when no households, producers, or internal supply chains exist yet.
 
-This section uses `startup economy` to mean early-city money, stock, freight, and `OWA` support. It does not own any special fresh-map building-placement exception, and it does not own the demand-side decision about whether new households should be admitted.
+This section uses `startup economy` to mean early-city money, inventories, freight, and `OWA` support. It does not own any special fresh-map building-placement exception, and it does not own the demand-side decision about whether new households should be admitted.
 
-[`docs/demand.md`](demand.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, stock, freight, and runtime consequences once those households already exist.
+[`docs/demand.md`](demand.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, inventories, freight, and runtime consequences once those households already exist.
 
 ### Outside World Exchange (`OWA`)
 
@@ -718,7 +719,7 @@ building exports surplus output, the export planner computes affordable, non-ter
 input requests using the same truckload quantization, compatible-supplier index, component
 reachability, and exact freight-route feasibility as inbound freight. Only demand that can be
 served by a valid local supplier creates a source-specific output hold. Active inbound
-reservations already count toward the buyer stock, so this hold protects unmet local demand
+reservations already count toward the buyer's expected inventory coverage, so this hold protects unmet local demand
 without double-counting open freight jobs or blocking exports for disconnected/unreachable
 buyers.
 
@@ -747,7 +748,7 @@ For `v0.1`, the economy-side contract is:
 
 - household admission and household removal happen at whole-household granularity, not one unrelated resident at a time
 - economy creates and owns the admitted `Household` runtime record once demand has already decided the outcome
-- admitted households receive startup state such as shared savings and household stock through the economy rules in this document
+- admitted households receive startup state such as shared savings and household supplies through the economy rules in this document
 - demand may read economy-owned starter savings, essential cost, exact candidate composition,
   transfer-policy amounts, treasury balance, and budget-backed job openings to calculate
   deterministic move-in acceptance; economy still owns the actual transfer payment and household
@@ -829,7 +830,7 @@ Eviction and unhoused rule:
 - `unhoused_days_elapsed` resets to `0` when the household is housed or relocated, and starts at
   `0` on the day a household is first evicted
 - demand owns the authored thresholds that interpret `unhoused_days_elapsed`, current `budget`,
-  and `stock_days` into persistent-exit eligibility
+  and the `stock_days` household supply-days value into persistent-exit eligibility
 
 Deterministic `v0.1` household-removal selection rule:
 
@@ -838,12 +839,12 @@ Deterministic `v0.1` household-removal selection rule:
 2. Add every `unhoused` household first.
 3. Sort that `unhoused` candidate subset by:
    - lower `household_reserve_days` first
-   - then lower `stock_days`
+   - then lower `stock_days` household supply-days value
    - then lower `household_id`
 4. If `N` is larger than the `unhoused` candidate count, append housed households sorted by the
    same rule:
    - lower `household_reserve_days` first
-   - then lower `stock_days`
+   - then lower `stock_days` household supply-days value
    - then lower `household_id`
 5. Remove the first `N` households from that deterministic ordered list.
 
@@ -889,7 +890,7 @@ The decisions system should resolve choices made by agents, households, and buil
 
 - whether an agent goes to work
 - **Insolvency Exit**: If a building is insolvent and fails to pay wages, employees will "fire themselves" after a threshold period (default: 2 consecutive unpaid days). This frees them to seek solvent employment elsewhere.
-- when a household replenishes stock
+- when a household replenishes supplies
 - which household member, if any, carries a `v0.1` shopping replenishment task, with future delivery modes added later if the design expands
 - which supplier or route is selected
 - which schedule window a workplace is currently filling
@@ -898,7 +899,7 @@ In `v0.1`, household replenishment should be represented as a household-side eco
 
 The **Household Economic Model** is data-driven via the `basic_household_demand` profile:
 - `consumption_rate_per_resident`: base units consumed per agent per day.
-- `stock_target_days`: the ideal pantry size, currently `5.0` in `economy/profiles.toml`.
+- `stock_target_days`: the authored supply-reserve target, currently `5.0` in `economy/profiles.toml`.
 - `reorder_threshold_days`: the trigger point for a standard restock, currently `2.5`.
 - `critical_threshold_days`: the emergency restock trigger, currently `1.0`.
 
@@ -1024,7 +1025,7 @@ Deterministic `v0.1` summary by zone type:
   - household poverty triggers relocation, eviction, or unhoused outcomes first
   - downgrade is primarily a vacancy or redevelopment path, not a one-household poverty path
 - `Commercial`
-  - upgrade requires commercial demand plus enough staffing, enough stock coverage, enough
+  - upgrade requires commercial demand plus enough staffing, enough inventory coverage, enough
     operating-buffer days, and no critical utility failure
   - downgrade requires sustained weak demand or weak business viability at the current tier
 - `Industrial`
@@ -1047,7 +1048,7 @@ Baseline `v0.1` modifier rule:
 - those systems may later feed demand-side local modifiers or bounded viability multipliers once
   their source simulations are trustworthy enough to use as upgrade inputs
 - until then, baseline `v0.1` upgrade and downgrade viability should rely on the simpler staffing,
-  stock, utility, occupancy, affordability, and operating-buffer signals described above
+  inventory, utility, occupancy, affordability, and operating-buffer signals described above
 
 Authoring and data rule:
 
@@ -1056,7 +1057,7 @@ Authoring and data rule:
   `residential_min_occupancy_ratio_for_upgrade`, and
   `nonresidential_min_buffer_days_by_level` belong to economy-owned tuning data, not to zoning
   profiles and not to individual building assets
-- any later commercial, industrial, office, or mixed-specific staffing, stock, input, output, or
+- any later commercial, industrial, office, or mixed-specific staffing, inventory, input, output, or
   occupancy thresholds also belong to economy-owned tuning data rather than to zoning profiles or
   building assets
 - `v0.1` may ship one simple shared table per use family or one shared table for all residential
@@ -1073,7 +1074,7 @@ Current live note:
 - commercial and industrial level changes now use staffing, operating-buffer, and
   utility-availability gates in the live runtime
 - the live runtime now uses typed per-resource building inventories and per-resource shipment
-  reservations instead of the old `stock` / `input_stock` split
+  reservations instead of the old untyped `stock` / `input_stock` split
 - industrial viability now reads explicit input coverage and output headroom from that typed
   inventory state
 - the remaining later work is no longer inventory generalization itself; it is broader fiscal,
@@ -1105,7 +1106,7 @@ If a future gameplay policy system introduces player-painted areas, that should 
 
 The runtime game should still expose economy inspection tools:
 
-- stock and shortage overlays
+- inventory and shortage overlays
 - route and shipment debugging
 - player policy summary, when a gameplay policy layer exists
 - building-level throughput, staffing, and utility-service inspectors
@@ -1182,12 +1183,12 @@ This guarantees that both physical volume bottlenecks and financial deficits are
 The runtime consumes exported economy definitions and simulates:
 
 - building inventories
-- household stock buffers and replenishment state
+- household supply reserves and replenishment state
 - staffing and labor demand
 - shipment creation and delivery
 - utility service availability, local utility production or processing, and `OWA` utility-service fallback
 - future policy-scope modifiers, if that layer is later added
-- household satisfaction from shared household stock
+- household satisfaction from shared household supplies
 
 The runtime should evaluate authored rules efficiently, not reinterpret a fully dynamic visual graph every tick.
 
@@ -1220,6 +1221,7 @@ Ownership and placement rule:
 - city-owned buildings are created by explicit player placement in gameplay using valid buildable assets
 - private company buildings may be established by simulation-side spawning or development rules instead
 - both ownership paths still resolve through the same asset metadata plus `economy_profile` contract once the building exists in the world
+- explicit farms are industry-area assets with `[building.field]`; the player places the farm building, then draws a nearby field polygon before the farm can produce its authored field resource such as `grain`; field output scales linearly by polygon area, with 10,000 m2 as the 1x authored-rate baseline
 
 ### Failure handling for missing assets and profiles
 
@@ -1265,7 +1267,7 @@ Examples:
 
 - `grain`
 - `flour`
-- `staple_food`
+- `packaged_food`
 - `household_supplies`
 - `coal`
 - `fuel`
@@ -1316,6 +1318,7 @@ Rules:
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
 - `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
 - authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh
+- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output is interpreted per hectare of committed field area
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -1356,7 +1359,7 @@ Example:
 
 - `bakery_basic`
   - inputs: `flour`, `labor`
-  - outputs: `staple_food`
+  - outputs: `packaged_food`
   - variables: `base_cycle_time`, `input_buffer_cap`, `output_buffer_cap`, `schedule_profile`
 
 Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`). Starter move-in sizing treats this as one household's interior area: 25 m2 baseline space, a two-person household may fit as one adult plus one child-weighted member, and larger households reserve two adult-equivalent members at 22 m2 each plus child-weighted extra members at 12 m2 each.
@@ -1459,16 +1462,16 @@ The household model should be explicit and building-centric from the start.
 
 ### Households inside residential buildings are the consumer units
 
-Residential buildings remain the spatial anchors for logistics, but stock is tracked per household, not per individual agent.
+Residential buildings remain the spatial anchors for logistics, but household supplies are tracked per household, not per individual agent.
 
 Rules:
 
 - `household_supplies` for baseline living stability
-- one stock buffer per household
+- one supply reserve per household
 - single-family homes naturally map to one household
-- multi-unit residential buildings host multiple explicit household records, but never one stock buffer per resident
+- multi-unit residential buildings host multiple explicit household records, but never one supply reserve per resident
 
-Residents draw from their household buffer while at home.
+Residents draw from their household supply reserve while at home.
 
 ### Household runtime representation
 
@@ -1476,15 +1479,15 @@ Households should be explicit lightweight runtime records anchored to residentia
 
 This means:
 
-- each household has its own runtime record rather than being merged into one anonymous building-wide stock pool
-- each household record stores at least `home_building_id`, derived `member_count`, shared budget, household stock, and replenishment state
+- each household has its own runtime record rather than being merged into one anonymous building-wide supply pool
+- each household record stores at least `home_building_id`, derived `member_count`, shared budget, household supplies, and replenishment state
 - agents reference a `household_id` for home-life needs and shared household money
 - immigration, emigration, and move-in or move-out should default to household-level events rather than isolated individual moves; the economy spec does not require a separate border-entry bootstrap choreography for those members in `v0.1`
 - if a later transport layer visualizes admitted or departing households through shared outside
   gateways, economy still owns the household record before arrival and the household-side removal
   reason before departure; transport owns only the trip choreography
 - households may also contribute baseline utility load through the `Utility Service Layer`, but that load is a runtime consequence of occupancy and activity rather than something authored through a household `economy_profile`
-- residential buildings still own the physical location and capacity, but they do not become the source of truth for each household's budget or stock
+- residential buildings still own the physical location and capacity, but they do not become the source of truth for each household's budget or supplies
 
 Source-of-truth rule for `v0.1`:
 
@@ -1503,13 +1506,13 @@ Household consumption rule for `v0.1`:
 
 - `consumption_rate` is expressed in `household_supplies / day / resident`
 - a household's daily baseline consumption is `member_count * consumption_rate`
-- `stock_days` should therefore be computed against that household-level daily consumption rather than against a flat per-household constant
+- the `stock_days` supply-days value should therefore be computed against that household-level daily consumption rather than against a flat per-household constant
 
 For performance:
 
 - household logic should run on coarse economy cadence, not every render frame
 - per-building summaries may be derived from linked households for UI and fast aggregate checks
-- the authoritative source of truth for home stock, household money, and replenishment remains the household record itself
+- the authoritative source of truth for home supplies, household money, and replenishment remains the household record itself
 
 This gives the game a clean unit for budgeting, migration, save/load, and replenishment without falling back to per-agent grocery logic or muddy building-wide averages.
 
@@ -1518,7 +1521,7 @@ This gives the game a clean unit for budgeting, migration, save/load, and replen
 Agents do not need a daily "buy food" trip. Instead:
 
 - being housed in a stocked household satisfies baseline home-life needs
-- lack of household stock reduces happiness, stability, or health-related metrics
+- lack of household supplies reduces happiness, stability, or health-related metrics
 - optional leisure or personal shopping trips remain low-frequency and non-essential
 
 Essential replenishment may create a visible shopping task, but it is household-owned and limited
@@ -1531,8 +1534,9 @@ For the first useful loop, do not start with dozens of goods. Start with one ess
 
 Example:
 
-- `farm` or `food_industry` produces `staple_food`
-- `distribution_center` or `grocery` converts or forwards `staple_food` into `household_supplies`
+- `grain_farm` grows `grain` from a player-drawn field polygon
+- `food_processor` converts `grain` into `packaged_food`
+- `distribution_center` or `grocery` converts or forwards `packaged_food` into `household_supplies`
 - households replenish from `grocery` or `distribution_center` in periodic batches rather than per-person daily errands
 - `household` consumes `household_supplies`
 
@@ -1604,7 +1608,7 @@ Agents decide whether to travel to work based on decision-utility scoring rather
 Early decision-utility inputs can stay simple:
 
 - current money
-- household stock situation at home
+- household supplies at home
 - commute cost
 - job availability
 
@@ -1613,7 +1617,7 @@ Recommended `v0.1` work-decision formula:
 ```text
 work_score =
     w_income  * income_pressure
-  + w_stock   * household_stock_pressure
+  + w_supplies * household_supply_pressure
   + w_job     * job_availability_score
   - w_commute * commute_penalty
 ```
@@ -1622,7 +1626,7 @@ Where:
 
 - all factors are normalized to `0.0..1.0` before weighting
 - `income_pressure` is derived from the current household budget or reserve target
-- `household_stock_pressure` is derived from current `stock_days` at home
+- `household_supply_pressure` is derived from the current `stock_days` supply-days value at home
 - `job_availability_score` is `0.0` when no valid reachable open job exists and otherwise reflects the best currently available work option
 - `commute_penalty` is derived from expected travel cost or time for the candidate job
 
@@ -1669,7 +1673,7 @@ Where:
 - `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
 - commercial store `filled_workers` is capped by the larger of recent household sales and a
   local household-demand floor before this ratio is calculated; the demand floor includes current
-  resident consumption plus household stock recovery spread over the authored pantry target days
+  resident consumption plus household supply recovery spread over the authored pantry target days
 - a zero-sales store still keeps one bootstrap worker slot, but household shortage can open more
   active worker slots before sales recover so essential shops do not deadlock on empty shelves
 - `input_factor` is the limiting required-input coverage for the current production step, clamped
@@ -1751,13 +1755,13 @@ Shipments should not be created for every tiny consumption event.
 
 Rules:
 
-- destinations accumulate demand against a stock buffer rather than spawning a shipment immediately on every shortage
-- a normal shipment request is created only when stock falls below a reorder threshold or when accumulated unmet demand reaches a meaningful batch size
-- a smaller emergency shipment may be allowed below the normal batch threshold only when stock falls below a critical threshold
+- destinations accumulate demand against an inventory buffer rather than spawning a shipment immediately on every shortage
+- a normal shipment request is created only when inventory falls below a reorder threshold or when accumulated unmet demand reaches a meaningful batch size
+- a smaller emergency shipment may be allowed below the normal batch threshold only when inventory falls below a critical threshold
 - shipment creation should run on a coarse economy cadence, not every render frame
 - `reorder_threshold` is authored in `days_of_supply`
 - `critical_threshold` is authored in `days_of_supply`
-- UI may display equivalent percent-of-storage or absolute-unit values as derived information, but `days_of_supply` is the canonical authored format for stock urgency
+- UI may display equivalent percent-of-storage or absolute-unit values as derived information, but `days_of_supply` is the canonical authored format for inventory urgency
 
 This keeps logistics driven by buffer state rather than by micro-events.
 
@@ -1784,7 +1788,7 @@ Rules:
 - an optional second request may exist only as an already assigned inbound shipment or an explicit emergency override
 - suppliers must also cap total pending outbound reservations so one stockpile cannot over-promise itself to unlimited consumers
 
-This keeps request count proportional to active economic nodes rather than to every individual stock tick.
+This keeps request count proportional to active economic nodes rather than to every individual inventory change.
 
 ### Reservation rules
 
@@ -1792,9 +1796,9 @@ Shipments must reserve both supply and demand explicitly.
 
 Rules:
 
-- when a shipment is created, the source reserves the promised stock immediately
+- when a shipment is created, the source reserves the promised inventory immediately
 - the destination reserves the corresponding unmet demand immediately
-- reserved stock may not be sold twice, and reserved demand may not spawn duplicate requests
+- reserved inventory may not be sold twice, and reserved demand may not spawn duplicate requests
 - when a carrier is dispatched from a building source, the source inventory is moved out of the
   building and into the shipment; seller revenue is still credited only on successful delivery
 - if a shipment fails, expires, or is canceled, both reservations must be released deterministically
@@ -1807,7 +1811,7 @@ The authored economy graph chooses who is allowed or preferred to supply whom.
 
 The runtime then resolves:
 
-- which supplier has stock
+- which supplier has inventory
 - which consumer has demand
 - whether a shipment is worth spawning
 - which network path and carrier type to use
@@ -1832,7 +1836,7 @@ Rules:
 - candidate suppliers should then be gathered from nearby spatial chunks around the consumer first, reusing the project's existing bounded spatial-query patterns instead of introducing unbounded global scans
 - nearby or already-preferred suppliers should be checked first inside that candidate list
 - search should stop after a bounded chunk radius, a bounded candidate count, or both
-- candidates that lack stock, fail authored compatibility rules, or fail route feasibility should be rejected before reservation
+- candidates that lack inventory, fail authored compatibility rules, or fail route feasibility should be rejected before reservation
 - a bounded candidate window must not permanently exclude reachable suppliers outside the first window;
   if demand is still unresolved, the next coarse retry should resume or widen the deterministic
   search frontier, or use a component-level allocation pass that can draw from farther reachable
@@ -1862,23 +1866,23 @@ Household replenishment in `v0.1` uses one visible fulfillment mode:
 - a bounded household-shopping carrier task, represented by one selected household member making
   an ordinary `Home -> Store -> Home` trip
 
-The household record owns stock, money, reservations, and replenishment state. The selected agent
+The household record owns supplies, money, reservations, and replenishment state. The selected agent
 is only the visible carrier.
 
 Rules:
 
-- replenishment is driven by the household stock system on coarse economy cadence, not by adding a
+- replenishment is driven by the household supply system on coarse economy cadence, not by adding a
   new baseline `TRANSIT_*` movement state
 - one household may have at most one active shopping task at a time
 - the shopper uses the ordinary building-origin trip planner with `planned_target_building` and
-  `planned_activity`; movement code must not directly mutate household stock, store inventory, or
+  `planned_activity`; movement code must not directly mutate household supplies, store inventory, or
   store revenue
-- when stock falls below the household's replenishment threshold, the household creates a
+- when household supplies fall below the household's replenishment threshold, the household creates a
   replenishment need
-- when stock reaches `0.0 days`, the household may bypass its normal staggered check offset if a
+- when household supplies reach `0.0 days`, the household may bypass its normal staggered check offset if a
   valid commercial store currently has sellable household supply; reservation and cooldown guards
   still apply
-- before reserving store stock or spending household budget, the household must find an eligible
+- before reserving store inventory or spending household budget, the household must find an eligible
   shopper currently at home
 - an eligible starter shopper belongs to the household, is an adult or elder, is
   `TRANSIT_IN_BUILDING`, is currently in `home_building_id`, has home activity, has no existing
@@ -1886,9 +1890,9 @@ Rules:
 - if no eligible shopper is at home because all members are travelling, at work, or otherwise away,
   the household enters `waiting_for_shopper`; it does not reserve inventory, spend budget, or enter
   cooldown
-- when an eligible member later returns home, the next household economy pass may claim store stock
+- when an eligible member later returns home, the next household economy pass may claim store inventory
   and assign that shopper
-- reservation and shopper assignment are one deterministic serial apply step; store stock and
+- reservation and shopper assignment are one deterministic serial apply step; store inventory and
   household budget must not be held without an assigned shopper
 - candidate stores must be reachable by the same ordinary building-origin trip planner the selected
   shopper will use for both `Home -> Store` and `Store -> Home`; unreachable candidates are rejected
@@ -1903,20 +1907,20 @@ Rules:
   household should retry from the next deterministic reachable-supplier window rather than repeatedly
   failing against the same depleted nearest stores
 - if the household cannot afford the full target refill, it may reserve the largest affordable
-  partial basket from the store's available stock rather than failing the request outright
+  partial basket from the store's available inventory rather than failing the request outright
 - once a valid shopper and sale are both claimed, the store inventory is reserved or removed,
   household budget is reserved or spent, the household enters `shopping_to_store`, and the selected
   agent receives a trip to the store
 - when the shopper arrives at the store, the household tick observes the arrival, credits store
   revenue or budget, changes the household to `shopping_returning`, and schedules the same agent
   back home
-- household stock increases only after the shopper returns home
+- household supplies increase only after the shopper returns home
 - if the store becomes invalid before pickup, restore reserved store inventory, refund the
   household budget, clear the shopper assignment, and enter bounded cooldown
 - if the shopper task is lost or invalidated before pickup, restore the reservation and retry from
   `waiting_for_shopper` or cooldown according to tuning
 - each active shopping leg has an explicit operational-hour timeout; timeout before pickup restores
-  the reserved store stock and household budget, while timeout after pickup clears the task and
+  the reserved store inventory and household budget, while timeout after pickup clears the task and
   records a failed fulfillment
 - if fulfillment fails, the request follows the same bounded retry and cooldown rules as other
   economy requests; after the authored terminal-failure count it enters `failed_terminal` /
@@ -1937,10 +1941,10 @@ Useful first-pass household replenishment states are:
 
 The `economy` debug output should expose one daily per-household ledger line for active households
 with wage income, transfer income split into unemployment/pension/child-support buckets, shopping
-spend or refunds, utility plus stock consumption cost, budget before and after the daily window,
+spend or refunds, utility plus supply-consumption cost, budget before and after the daily window,
 unemployed adult count, and completed / failed shopper trips. The same daily output should include a
 household ledger summary with households at the budget floor, households below `1`, `2`, and `3`
-days of stock, total wages paid, total household shopping spend, total transfers paid, and the
+days of supplies, total wages paid, total household shopping spend, total transfers paid, and the
 transfer sub-buckets. Transfer diagnostics should identify recipient `household_id`, composition,
 amounts paid, and `unemployment_days_elapsed` where unemployment support is involved.
 
@@ -1995,11 +1999,12 @@ This is where a node-and-connection UI makes sense.
 
 Example:
 
-- the developer places a `food_processor` node with output `staple_food`
-- the developer places a `grocery` node with input `staple_food` and output `household_supplies`
+- the developer places a `grain_farm` node with output `grain`
+- the developer places a `food_processor` node with input `grain` and output `packaged_food`
+- the developer places a `grocery` node with input `packaged_food` and output `household_supplies`
 - the developer places a `basic_household_demand` node with input `household_supplies`
-- the developer places a household stock or cost controller that affects replenishment pressure
-- the graph then connects `food_processor -> grocery -> basic_household_demand`, with the controller linked to the household demand sink
+- the developer places a household supply or cost controller that affects replenishment pressure
+- the graph then connects `grain_farm -> food_processor -> grocery -> basic_household_demand`, with the controller linked to the household demand sink
 
 At this stage the developer is defining the structure of the economy chain, not yet testing whether the numbers are balanced.
 
@@ -2009,7 +2014,7 @@ A debug view for scenario playback and diagnosis of the authored balance rules.
 
 Use it to inspect:
 
-- stock levels
+- inventory levels
 - blocked supply chains
 - delivery latency
 - unfilled labor demand
@@ -2019,7 +2024,7 @@ Use it to inspect:
 Example:
 
 - the developer runs the `Grocery Bottleneck` test case for 30 simulated days
-- the view shows that household stock drops below 1.0 days after day 12
+- the view shows that household supplies drop below 1.0 days after day 12
 - the diagnostics panel reports that the grocery has enough goods, but shopper-side replenishment demand is arriving in bursts and shop-side queueing is too high
 - the controller panel highlights that household replenishment cadence and grocery throughput are misaligned
 - the developer can immediately see that the problem is not food production, but local shopping balance and store throughput
@@ -2050,8 +2055,8 @@ Example: `Grocery Bottleneck` test case
 
 - Left panel: select the `Grocery Bottleneck` preset from a list of developer test cases.
 - Center graph: show `food_processor -> grocery -> basic_household_demand`, with an optional replenishment-pressure controller connected to the household demand sink.
-- Right inspector: expose values such as household count, household size, shop distance, replenishment cadence, grocery throughput, and stock target.
-- Bottom diagnostics: show stock days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
+- Right inspector: expose values such as household count, household size, shop distance, replenishment cadence, grocery throughput, and supply target.
+- Bottom diagnostics: show supply days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
 
 In this example the graph, inspector, and diagnostics are enough to test whether local shopping and store throughput give the intended balance result.
 
@@ -2126,8 +2131,8 @@ Recommended v0.1 scope:
 
 - one essential household resource chain
 - lightweight explicit household records anchored to residential buildings
-- per-building production buffers and per-household stock buffers
-- household stock consumption
+- per-building production/inventory buffers and per-household supply buffers
+- household supply consumption
 - workplace labor demand
 - fixed internal base prices and fixed wage bands
 - simple city treasury-backed infrastructure build cost and daily maintenance
@@ -2164,11 +2169,15 @@ After the first household supply loop is stable, add:
 
 A good starter chain for both simulation and developer-tool tuning is:
 
-- `food_processor`
+- `grain_farm`
   - inputs: `labor`
-  - outputs: `staple_food`
+  - outputs: `grain`
+  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 of field receives the authored output rate
+- `food_processor`
+  - inputs: `grain`, `labor`
+  - outputs: `packaged_food`
 - `grocery` or `distribution_center`
-  - inputs: `staple_food`, `labor`
+  - inputs: `packaged_food`, `labor`
   - outputs: `household_supplies`
 - `basic_household_demand`
   - inputs: `household_supplies`
@@ -2202,9 +2211,9 @@ The first playable implementation should ship with a small shared seed-balance s
 These are shipped `economy/profiles.toml` values, not Rust defaults:
 
 - household `consumption_rate`: `1.0 household_supplies / day / resident`
-- household replenishment target: `5.0 days` of stock
-- household replenishment trigger: below `2.5 days` of stock
-- immigrant starting stock: `3.0 days`
+- household replenishment target: `5.0 days` of supplies
+- household replenishment trigger: below `2.5 days` of supplies
+- immigrant starting supplies: `3.0 days`
 - immigrant starting budget: `15.0 currency / resident`
 - unemployment benefit: `30.0 currency / unemployed adult / day`
 - pension: `30.0 currency / elder / day`
@@ -2212,21 +2221,25 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - household utility cost: `3.0 currency / resident / day`
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
-- `food_processor` `base_rate`: `160 staple_food / day`
+- `grain_farm` `base_rate`: `160 grain / day / hectare`
+- `grain_farm` worker capacity: `10`
+- `grain_farm` wage band: `80-100 currency / workday`
+- `food_processor` `base_rate`: `160 packaged_food / day`
 - `food_processor` worker capacity: `10`
 - `food_processor` wage band: `80-100 currency / workday`
 - `grocery` or `distribution_center` throughput target: `200 household_supplies / day`
 - `grocery` worker capacity: `15`
 - `grocery` wage band: `80-100 currency / workday`
-- grocery stock target: `3.0 days` of supply
+- grocery inventory target: `3.0 days` of supply
 - grocery reorder threshold: `2.0 days` of supply
 - grocery critical threshold: `0.5 days` of supply
-- grocery minimum shipment size: `40 staple_food`
-- local base price for `staple_food`: `15 currency / unit`
+- grocery minimum shipment size: `40 packaged_food`
+- local base price for `grain`: `6 currency / unit`
+- local base price for `packaged_food`: `15 currency / unit`
 - local base price for `household_supplies`: `25 currency / unit`
-- `OWA import_ask` for `staple_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
+- `OWA import_ask` for `packaged_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
 - `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
-- initial `OWA export_bid` for `staple_food`: `6.75 currency / unit` (local × `owa_export_price_multiplier = 0.45`)
+- initial `OWA export_bid` for `packaged_food`: `6.75 currency / unit` (local × `owa_export_price_multiplier = 0.45`)
 - saturated `OWA export_bid` bottoms at `35%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
 - OWA utility cost when local utility service is incomplete: `8 currency/day` for commercial and `12 currency/day` for industrial
 
@@ -2255,7 +2268,7 @@ Cross-doc sequencing note:
   and demand ownership contracts already exist
 
 The codebase already ships part of the `v0.1` starter loop: explicit household records, simple
-building budgets and stock, bounded freight reservations, `OWA` import fallback, and the first
+building budgets and inventories, bounded freight reservations, `OWA` import fallback, and the first
 developer-side economy data path. The phases below are therefore the recommended continuation order
 from the current partial implementation, not a claim that every earlier phase is still untouched.
 
@@ -2279,14 +2292,14 @@ Recommended continuation order from the current runtime:
 ### Phase 1 - Stabilize the current starter loop
 
 - Treat the explicit-household plus bounded-freight path as the only authoritative `v0.1` baseline.
-- Keep one essential chain authoritative: local producer -> local shop or distribution -> household stock.
+- Keep one essential chain authoritative: local producer -> local shop or distribution -> household supplies.
 - Do not widen scope into dynamic pricing, unbounded per-agent daily shopping, or broad multi-resource simulation yet.
 
 Current status:
 
 - complete
 - explicit household records, bounded freight reservations, `OWA` startup fallback, household
-  stock, building operating budgets, and the starter industrial input/output slice are all live
+  supplies, building operating budgets, and the starter industrial input/output slice are all live
 - this phase should now be treated as the settled baseline to build on rather than as active work
 
 Goal: keep the already-landed economy slice small, testable, and worth building on.
@@ -2335,14 +2348,14 @@ Goal: stop duplicating economy rules between runtime code, packs, and the editor
 
 ### Phase 4 - Generalize inventories and freight one resource at a time
 
-- Move from the old starter stock-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
+- Move from the old starter supply-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
 - Keep shipment creation bounded, batched, and entrance-aware; do not regress into per-order or per-agent freight.
 - Expand to additional resources only after the starter household-supply loop still works cleanly on the generalized runtime.
 
 Current status:
 
 - complete
-- live buildings now carry typed per-resource inventories instead of the old `stock` /
+- live buildings now carry typed per-resource inventories instead of the old untyped `stock` /
   `input_stock` split
 - shipment reservations and in-flight freight are now tracked by `(building, resource)` rather
   than by building only
@@ -2362,15 +2375,15 @@ Goal: support more than one production chain without rewriting the logistics fou
 
 Why this is needed before Phase 6:
 
-- The grocery store (`grocery_basic`) requires `staple_food` input to produce `household_supplies`.
+- The grocery store (`grocery_basic`) requires `packaged_food` input to produce `household_supplies`.
   The bootstrap path therefore needs explicit money and freight support before local industry is
   stable.
-- Once household stock hits zero, `household_stock_stability` collapses to `0.0`, which kills
+- Once household supplies hit zero, the household supply stability signal collapses to `0.0`, which kills
   `city_stability_factor` and drives admission pressure to zero regardless of startup support.
   Population cannot grow past the first wave of immigrants.
 - Phase 5 must close the first household supply loop through authored profile data: startup
   operating float, paid `OWA` imports when local suppliers are absent, and household starting
-  stock. The runtime must not silently seed store inventory from Rust.
+  supplies. The runtime must not silently seed store inventory from Rust.
 
 Current status:
 
@@ -2511,7 +2524,7 @@ owns the `CityTreasury` struct; starting balance is authored in `economy/profile
 `CityTreasury` already exists in `nodes/sim/core.rs` and is fully implemented:
 
 - **Starting balance**: `startup_treasury_balance = 100_000` authored in `economy/profiles.toml` `[runtime_tuning]`.
-- **Current deductions**: road build cost ($50/meter) and daily road upkeep ($0.1/meter/day);
+- **Current deductions**: road build cost ($15/meter) and daily road upkeep ($0.1/meter/day);
   unemployment, pension, and child-support disbursements.
 - **Persisted**: saved and loaded via the `city_treasury` SQLite table.
 - **Exposed**: `get_treasury_balance()` GDScript bridge already exists.
@@ -2598,18 +2611,18 @@ durations, fiscal tax defaults, and OWA utility costs all live in the `runtime_t
 | `pension_daily_benefit_per_elder` | `economy/profiles.toml` runtime_tuning | Default currency paid per elder per day |
 | `child_support_daily_benefit_per_child` | `economy/profiles.toml` runtime_tuning | Default currency paid per child per day |
 | `runtime_tuning.fiscal.*` | `economy/profiles.toml` runtime_tuning | Default tax and property-tax policy values |
-| `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter stock, reserve rules, and utility cost |
+| `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter supplies, reserve rules, and utility cost |
 | `runtime_tuning.construction.*` | `economy/profiles.toml` runtime_tuning | Private construction durations for fresh demand-owned spawns |
 | `commercial_owa_utility_cost_per_day` / `industrial_owa_utility_cost_per_day` | `economy/profiles.toml` runtime_tuning | OWA utility cost when local utility service is incomplete |
 
 ### Spawn Signal: Replacing the Pioneer Floor
 
-The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because `stock_stab` and
+The removed Pioneer demand floor (`pioneer_demand = 0.70`) existed because the `stock_stab` supply-stability metric and
 `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal.
 Household transfers restore these signals through real economic activity:
 
 1. Disbursement gives households money based on exact adult/elder/child composition -> `afford` rises.
-2. Households with money attempt grocery replenishment → `stock_stab` rises.
+2. Households with money attempt grocery replenishment -> the `stock_stab` supply-stability metric rises.
 3. The grocery earns real revenue → absorption gate threshold is met sooner → second grocery spawns.
 4. More groceries need supply → industrial spawn pressure rises.
 5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
@@ -2630,7 +2643,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
 | `pension_daily_benefit_per_elder` | 30.0 | Currency paid per elder per day |
 | `child_support_daily_benefit_per_child` | 10.0 | Currency paid per child per day |
-| `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Pantry days granted to arriving households |
+| `runtime_tuning.households.immigrant_starting_stock_days` | 3.0 | Supply days granted to arriving households |
 | `runtime_tuning.households.immigrant_starting_budget_per_member` | 15.0 | Starting currency per arriving resident |
 | `runtime_tuning.households.household_starting_budget_floor` | 10.0 | Minimum carried budget for materialized arriving households |
 | `runtime_tuning.households.utility_cost_per_member_per_day` | 3.0 | Daily utility cost per resident |
@@ -2910,12 +2923,12 @@ Startup capital is now computed as `max(500, worker_capacity * avg_daily_wage * 
 
 Immigrant households arrive with `runtime_tuning.households.immigrant_starting_budget_per_member = 15.0` (30 for a standard 2-person household).
 - **Utility Drain**: `runtime_tuning.households.utility_cost_per_member_per_day = 3.0`, so a 2-person household pays 6/day. Budget runway on utilities alone is about 5 days.
-- **Starting stock**: `runtime_tuning.households.immigrant_starting_stock_days = 3.0` days of household supplies pre-loaded on spawn.
+- **Starting supplies**: `runtime_tuning.households.immigrant_starting_stock_days = 3.0` days of household supplies pre-loaded on spawn.
 - **Transfer floor**: `unemployment_daily_benefit_per_member = 30.0` per unemployed adult,
   `pension_daily_benefit_per_elder = 30.0`, and
   `child_support_daily_benefit_per_child = 10.0` provide baseline support from exact household
   composition rather than from total resident count.
-- **Gap**: Starting stock runs out around day 4. If no valid store has sellable stock, households may still be unable to restock even with adequate benefit income.
+- **Gap**: Starting supplies run out around day 4. If no valid store has sellable inventory, households may still be unable to restock even with adequate benefit income.
 
 With the salary bomb resolved, business wages reach workers by day 7. The 2–3 day starvation window (days 4–7) is the remaining residual of this trap and is acceptable for the pioneer phase. The circular deadlock that previously kept households permanently broke is broken.
 
@@ -2951,7 +2964,7 @@ Households that find themselves broke and starving are currently "trapped" in th
    in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
 4. No revenue → budget never recovers → permanent freeze with no exit.
 
-**Result**: A single budget dip below the utility threshold permanently locks the building out of the economy. 12 buildings deadlocked in the 594-day run. The grocery had 108 units of staple_food stuck in inventory the entire time.
+**Result**: A single budget dip below the utility threshold permanently locks the building out of the economy. 12 buildings deadlocked in the 594-day run. The grocery had 108 units of packaged_food stuck in inventory the entire time.
 
 **Resolution**: The live `v0.1` model removed the `utility_factor` throughput gate. Utility costs
 settle through the daily utility/bankruptcy sequence, and the explicit deserted-building lifecycle
@@ -3001,7 +3014,7 @@ enters `is_deserted`, which is the correct signal for the demand system to consi
 Remaining open items for the pioneer phase:
 - **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
 - **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
-- **Household bootstrap gap**: The 2-3 day starvation window (days 4-7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by household transfers — see [Household Transfer Payments](#household-transfer-payments).
+- **Household bootstrap gap**: The 2-3 day starvation window (days 4-7, between starting-supply depletion and first wages) is the remaining residual from issue #2. Resolved by household transfers — see [Household Transfer Payments](#household-transfer-payments).
 - **Pioneer Floor Retirement**: ~~Done.~~ Pioneer demand floor removed from `demand.rs`; household transfers are the replacement and are live.
 
 

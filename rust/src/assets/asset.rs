@@ -10,7 +10,9 @@ mod model;
 mod validation;
 mod vehicle;
 
-pub use building::{BuildingData, BuildingExtractorData, PlacementMode, ZoneClass};
+pub use building::{
+    BuildingData, BuildingExtractorData, BuildingFieldData, PlacementMode, ZoneClass,
+};
 pub use character::{ArchetypeFamily, CharacterData, SkinVariant};
 pub use model::{
     Anchor, AnchorType, AssetClass, AssetManifest, LodEntry, MeshPart, PropData, SiteSurface,

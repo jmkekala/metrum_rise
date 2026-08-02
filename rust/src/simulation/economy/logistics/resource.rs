@@ -2,7 +2,8 @@
 
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, FreightTimingProfile, ResourceRuntimeId,
+    RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
 use crate::simulation::zoning::ZoneType;
 
@@ -56,6 +57,32 @@ pub(super) fn building_accepts_input_resource(
         .is_some_and(|profile| profile.input_port(resource_runtime_id).is_some())
 }
 
+pub(super) fn building_outputs_can_supply_local_inputs(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    !profile.outputs.is_empty()
+        && (matches!(
+            building.zone_type,
+            ZoneType::Commercial | ZoneType::Industrial
+        ) || matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::Extractor | EconomyProfileRuntimeKind::FieldProducer
+        ))
+}
+
+pub(super) fn building_outputs_can_export_to_owa(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    !profile.outputs.is_empty()
+        && (matches!(building.zone_type, ZoneType::Industrial)
+            || matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::Extractor | EconomyProfileRuntimeKind::FieldProducer
+            ))
+}
+
 pub(super) fn input_purchase_budget(allocator: &BuildingAllocator, dest_idx: usize) -> f32 {
     let Some(destination) = allocator.buildings.get(dest_idx) else {
         return 0.0;
@@ -67,24 +94,11 @@ pub(super) fn input_purchase_budget(allocator: &BuildingAllocator, dest_idx: usi
     }
 }
 
-pub(super) fn input_purchase_tax_rate(
-    allocator: &BuildingAllocator,
-    dest_idx: usize,
-    business_purchase_tax_rate: f32,
-) -> f32 {
-    allocator
-        .buildings
-        .get(dest_idx)
-        .filter(|building| allocator.is_city_service_building(building))
-        .map_or(business_purchase_tax_rate, |_| 0.0)
-}
-
 pub(super) fn reserve_input_payment(
     allocator: &mut BuildingAllocator,
     treasury_balance: &mut f64,
     dest_idx: usize,
     total_cost: f32,
-    tax_cost: f32,
 ) {
     let city_funded = allocator
         .buildings
@@ -92,11 +106,11 @@ pub(super) fn reserve_input_payment(
         .is_some_and(|building| allocator.is_city_service_building(building));
     if city_funded {
         if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
-            destination.daily_city_funded_input_cost += total_cost + tax_cost;
+            destination.daily_city_funded_input_cost += total_cost;
         }
-        *treasury_balance -= f64::from(total_cost + tax_cost);
+        *treasury_balance -= f64::from(total_cost);
     } else if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
-        destination.operating_budget -= total_cost + tax_cost;
+        destination.operating_budget -= total_cost;
     }
 }
 
@@ -105,7 +119,6 @@ pub(super) fn refund_input_payment(
     treasury_balance: &mut f64,
     dest_idx: usize,
     total_cost: f32,
-    tax_cost: f32,
 ) {
     let city_funded = allocator
         .buildings
@@ -114,10 +127,10 @@ pub(super) fn refund_input_payment(
     if city_funded {
         if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
             destination.daily_city_funded_input_cost =
-                (destination.daily_city_funded_input_cost - total_cost - tax_cost).max(0.0);
+                (destination.daily_city_funded_input_cost - total_cost).max(0.0);
         }
-        *treasury_balance += f64::from(total_cost + tax_cost);
+        *treasury_balance += f64::from(total_cost);
     } else if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
-        destination.operating_budget += total_cost + tax_cost;
+        destination.operating_budget += total_cost;
     }
 }

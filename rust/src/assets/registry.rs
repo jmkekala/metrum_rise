@@ -207,6 +207,16 @@ impl AssetRegistry {
             .filter(|resource| !resource.is_empty())
     }
 
+    /// Returns the authored field resource id for an explicit agricultural building asset.
+    pub fn field_resource(&self, qualified_id: &str) -> Option<&str> {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.field.as_ref())
+            .map(|field| field.resource.trim())
+            .filter(|resource| !resource.is_empty())
+    }
+
     /// Returns whether the asset is an explicitly placed resource extractor.
     pub fn is_resource_extractor_asset(&self, qualified_id: &str) -> bool {
         self.entries
@@ -216,6 +226,22 @@ impl AssetRegistry {
                 building.placement_mode == PlacementMode::Explicit
                     && self.extractor_resource(qualified_id).is_some()
             })
+    }
+
+    /// Returns whether the asset is an explicitly placed field producer.
+    pub fn is_field_producer_asset(&self, qualified_id: &str) -> bool {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .is_some_and(|building| {
+                building.placement_mode == PlacementMode::Explicit
+                    && self.field_resource(qualified_id).is_some()
+            })
+    }
+
+    /// Returns whether the asset is an explicit industry building that owns a player area.
+    pub fn is_industry_area_asset(&self, qualified_id: &str) -> bool {
+        self.is_resource_extractor_asset(qualified_id) || self.is_field_producer_asset(qualified_id)
     }
 
     /// Returns whether the asset is an explicitly placed city-service building.
@@ -360,6 +386,7 @@ mod tests {
                 service_class: None,
                 economy_profile: None,
                 extractor: None,
+                field: None,
             }),
             prop: None,
             vehicle: None,

@@ -36,6 +36,7 @@ const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
 const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
+const FIELD_OVERLAY_SHADER := "res://scripts/shaders/field_overlay.gdshader"
 
 static var _texture_cache = {}
 static var _shader_cache = {}
@@ -125,6 +126,20 @@ static func site_surface_material(material: String) -> ShaderMaterial:
 			return site_concrete_material()
 		_:
 			return site_asphalt_material()
+
+static func field_overlay_material(
+	albedo_path: String,
+	fallback_color: Color,
+	texture_tile_m: float,
+	render_priority: int
+) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.resource_name = "field_overlay_grain"
+	material.shader = _load_shader(FIELD_OVERLAY_SHADER)
+	material.render_priority = render_priority
+	material.set_shader_parameter("albedo_tex", load_texture_or_solid(albedo_path, fallback_color))
+	material.set_shader_parameter("uv_scale", 1.0 / max(texture_tile_m, 0.001))
+	return material
 
 static func site_ground_material() -> ShaderMaterial:
 	if _site_ground_material == null:
@@ -226,7 +241,7 @@ static func _load_shader(path: String) -> Shader:
 	_shader_cache[path] = shader
 	return shader
 
-static func _load_texture(path: String) -> Texture2D:
+static func load_texture(path: String) -> Texture2D:
 	if _texture_cache.has(path):
 		return _texture_cache[path]
 
@@ -242,6 +257,24 @@ static func _load_texture(path: String) -> Texture2D:
 
 	_texture_cache[path] = tex
 	return tex
+
+static func load_texture_or_solid(path: String, fallback_color: Color) -> Texture2D:
+	var tex := load_texture(path)
+	if tex != null:
+		return tex
+
+	var cache_key := "%s|solid:%s" % [path, str(fallback_color)]
+	if _texture_cache.has(cache_key):
+		return _texture_cache[cache_key]
+
+	var fallback_image := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	fallback_image.fill(fallback_color)
+	tex = ImageTexture.create_from_image(fallback_image)
+	_texture_cache[cache_key] = tex
+	return tex
+
+static func _load_texture(path: String) -> Texture2D:
+	return load_texture(path)
 
 static func _import_dest_files_exist(path: String) -> bool:
 	var import_path := path + ".import"

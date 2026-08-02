@@ -1011,6 +1011,7 @@ mod tests {
                     service_class: None,
                     economy_profile: None,
                     extractor: None,
+                    field: None,
                 }),
                 prop: None,
                 vehicle: None,

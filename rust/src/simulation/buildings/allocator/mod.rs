@@ -84,6 +84,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     UtilityProfileUnavailable,
     /// The selected extractor asset references an unsupported or mismatched runtime profile.
     ExtractorProfileUnavailable,
+    /// The selected field asset references an unsupported or mismatched runtime profile.
+    FieldProfileUnavailable,
     /// No road frontage near the requested point can accept the building footprint.
     RoadFrontageUnavailable,
     /// A driveway anchor could not resolve an adjacent road surface height.

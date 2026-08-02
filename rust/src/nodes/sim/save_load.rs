@@ -27,6 +27,7 @@ impl SimCore {
                 households: &self.households,
                 logistics: &self.logistics,
                 resource_extraction: &self.resource_extraction,
+                agriculture: &self.agriculture,
                 agents: &self.agents,
                 network: &self.transit_network,
                 treasury: &self.treasury,
@@ -72,6 +73,7 @@ impl SimCore {
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.resource_extraction = loaded.resource_extraction;
+        self.agriculture = loaded.agriculture;
         self.agents = loaded.agents;
         self.treasury = loaded.treasury;
         self.service_policy = loaded.service_policy;

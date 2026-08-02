@@ -28,6 +28,8 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) pension_income: f32,
     /// Child-support transfer received during daily settlement.
     pub(crate) child_support_income: f32,
+    /// Residential property tax paid during daily settlement.
+    pub(crate) property_tax_paid: f32,
     /// Net household budget reserved or spent on shopping during the ledger window.
     pub(crate) shopping_spend: f32,
     /// Value of household stock consumed from the home buffer.

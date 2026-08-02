@@ -16,7 +16,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Zoning and building allocation**: Rust-owned road-aligned parcels, parcel occupancy, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
-- **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household/business purchase tax, business profit tax, and construction property tax), live `CityFiscalPolicy` controls/save state, and first city-owned service-building placement/funding are all live. See [`economy.md`](economy.md).
+- **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household VAT, business profit tax, and daily property tax), live `CityFiscalPolicy` controls/save state, first city-owned service-building placement/funding, explicit field-backed grain farms, and the starter `grain -> packaged_food -> household_supplies` chain are all live. See [`economy.md`](economy.md).
 - **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs, continuous forecast-only marginal commercial worker-equivalents from one candidate household, and authored regional migration pressure; vacant homes only cap actual move-in execution. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand is driven by commercial input coverage rather than household `goods_shortage`. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
 
@@ -77,6 +77,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Explicit grain farms now follow the coal-mine style placement flow: the player places the farm
+  building, draws a nearby field polygon, and the saved field site gates renewable `grain`
+  production without consuming a map resource deposit.
 - WorldEditor now has authored coal-deposit painting as a sparse terrain-aligned resource layer.
   `WorldDefinition` persists coal richness chunks separately from terrain and water, and the editor
   visualizes richer deposits as darker terrain-shader overlay data instead of mesh decals. See
@@ -263,10 +266,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   [`economy.md`](economy.md) and
   [`demand.md`](demand.md).
 - Baseline city fiscal policy is live: gross wage payments withhold income tax, household store
-  pickup and business freight delivery split buyer-paid purchase tax from seller revenue, positive
-  daily commercial/industrial budget growth pays business profit tax, fresh private construction
-  pays one-time property tax, and households may receive treasury-backed unemployment, pension,
-  and child-support transfers. All tax and transfer call sites route through live
+  pickup splits buyer-paid VAT from seller revenue, positive
+  daily commercial/industrial budget growth pays business profit tax, occupied residential homes
+  and active private commercial/industrial buildings pay daily property tax, and households may
+  receive treasury-backed unemployment, pension, and child-support transfers. All tax and transfer
+  call sites route through live
   `CityFiscalPolicy`; accepted policy changes are logged to the economy debug stream;
   `get_economy_overview()` exposes bounded Policy tab controls plus selected-control
   revenue/transfer detail; save/load persists policy state and separate tax/transfer ledger

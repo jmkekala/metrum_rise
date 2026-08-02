@@ -553,6 +553,7 @@ impl SimCore {
         self.world_open_water_fills.clear();
         self.resource_deposits = ResourceDepositSystem::from_world_config(&self.config);
         self.resource_extraction.clear();
+        self.agriculture.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
         self.refined_terrain_patch_cache.clear();
@@ -1017,6 +1018,7 @@ mod tests {
     use crate::nodes::sim::core::{
         CityTreasury, SimCore, WorldLakeFillPreviewStatus, WorldWaterFillKind,
     };
+    use crate::simulation::agriculture::AgricultureSystem;
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
@@ -1070,6 +1072,7 @@ mod tests {
             world_open_water_fills: Vec::new(),
             resource_deposits: ResourceDepositSystem::from_world_config(&config),
             resource_extraction: ResourceExtractionSystem::new(),
+            agriculture: AgricultureSystem::new(),
             world_lake_fill_preview: None,
             authored_water_patch_fill_debug_cache: HashMap::new(),
             terrain_stroke_active: false,

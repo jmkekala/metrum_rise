@@ -38,6 +38,9 @@ Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Su
 - https://polyhaven.com/a/concrete_layers_02
 - https://polyhaven.com/a/asphalt_04
 - https://polyhaven.com/a/clean_asphalt
+- https://polyhaven.com/a/withered_grass
+- https://polyhaven.com/a/dark_rock
+
 - https://quaternius.com/
 - https://kenney.itch.io/
 

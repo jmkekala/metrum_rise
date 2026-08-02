@@ -1,8 +1,8 @@
 [[controllers]]
 id = "household_restock_cost_basic"
-display_name = "Household Restock Cost"
+display_name = "Household Replenishment Cost"
 kind = "household_restock_cost"
-description = "Starter controller for household restock cost and friction."
+description = "Starter controller for household replenishment cost and friction."
 default_weight = 0.5
 min_multiplier = 0.8999999761581421
 max_multiplier = 1.100000023841858

@@ -1430,7 +1430,7 @@ V1 inspector and viewport contract:
   live 3D preview of the selected GLB/GLTF/FBX file before it is accepted into the asset. The
   preview loader uses the same import path as the final building preview so the picker cannot show
   a materially different model from the exported asset.
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`, extractor resource metadata, field resource metadata), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
 - Building mesh parts can be moved on the X/Z plane by left-dragging the part in the preview
   viewport and rotated freely around Y by right-dragging it horizontally, with a light snap when the
   rotation is close to a 90-degree cardinal angle; the clicked part becomes the selected part and
@@ -1784,6 +1784,8 @@ Optional fields:
 - `mesh_parts.lods.distance_min_m` / `distance_max_m`: ordered distance switch band for that part
 - `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`. Non-`none` service classes are valid only for `placement_mode = "explicit"` in baseline `v1`.
 - `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment).
+- `[building.extractor]`: optional explicit extraction contract with `resource` and `area_mode = "player_polygon"`.
+- `[building.field]`: optional explicit agricultural field contract with `resource` and `area_mode = "player_polygon"`; the economy profile must be a `field_producer` that outputs the same resource, and its authored daily output is interpreted per 10,000 m2 of committed field area.
 - `min_zone_width_cells`: integer, default `lot_width_cells`
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
 - `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential.
@@ -1909,6 +1911,10 @@ Building rules:
 - Explicit utility service classes (`power`, `water`, `waste`) require an `economy_profile` that
   resolves to a utility producer or processor for the corresponding runtime utility service. The
   `waste` asset-side service class corresponds to runtime `utility_service = "sewage"`.
+- `placement_mode = "zoned_private"` must not export `[building.extractor]` or `[building.field]`.
+- `placement_mode = "explicit"` may export either `[building.extractor]` or `[building.field]`, but not both.
+- Explicit extractor assets require an `economy_profile` that resolves to an `extractor` profile outputting the same resource.
+- Explicit field assets require an `economy_profile` that resolves to a `field_producer` profile outputting the same resource.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
 - `[building].frontage_forward` defines the asset-local frontage direction used by building
   placement, rendering, and entrance-cache derivation. Older assets that omit it fall back first to
@@ -2103,6 +2109,8 @@ Hard errors:
 - missing `zone_type` on `placement_mode = "zoned_private"` buildings
 - missing `density` on `placement_mode = "zoned_private"` buildings
 - `zone_type` or `density` present on `placement_mode = "explicit"` buildings
+- `[building.extractor]` or `[building.field]` present on `placement_mode = "zoned_private"` buildings
+- both `[building.extractor]` and `[building.field]` present on the same building
 - one `upgrade_family` spanning multiple `zone_type` values
 - one `upgrade_family` spanning multiple `density` values
 - one `upgrade_family` spanning multiple footprint sizes

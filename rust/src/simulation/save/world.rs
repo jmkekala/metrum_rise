@@ -1,6 +1,7 @@
 //! Serialization for terrain, water, buildings, and zoning systems.
 
 use crate::nodes::sim::core::PendingDemandSpawnAction;
+use crate::simulation::agriculture::{AgricultureSystem, FieldSite, validate_field_polygon_world};
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
@@ -138,6 +139,7 @@ pub(super) fn save_world(
     households: &HouseholdSystem,
     logistics: &ShipmentSystem,
     resource_extraction: &ResourceExtractionSystem,
+    agriculture: &AgricultureSystem,
     demand: &DemandSystem,
     pending_demand_spawns: &VecDeque<PendingDemandSpawnAction>,
     pollution: &PollutionSystem,
@@ -331,6 +333,7 @@ pub(super) fn save_world(
         }
     }
     save_resource_extraction(tx, resource_extraction, maps)?;
+    save_agriculture(tx, agriculture, maps)?;
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
@@ -365,7 +368,7 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, tax_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
     for shipment in &logistics.shipments {
         let (source_kind, source_building_id, source_border_node) =
             shipment_endpoint_to_db(shipment.source, maps)?;
@@ -389,7 +392,6 @@ pub(super) fn save_world(
                 usize_to_i64(shipment.carrier_agent_id)?
             },
             shipment.total_cost,
-            shipment.tax_cost,
             i64::from(shipment.eta_hours),
             i64::from(shipment.queued_hours),
         ])?;
@@ -492,6 +494,43 @@ fn save_resource_extraction(
             site.resource_id.as_str(),
             site.total_reserve_units,
             site.extracted_units,
+        ])?;
+        for (point_index, point) in site.polygon_world.iter().enumerate() {
+            point_stmt.execute(params![
+                site_id_db,
+                usize_to_i64(point_index)?,
+                point.x,
+                point.y,
+            ])?;
+        }
+    }
+    Ok(())
+}
+
+fn save_agriculture(
+    tx: &Transaction,
+    agriculture: &AgricultureSystem,
+    maps: &SnapshotMaps,
+) -> SaveLoadResult<()> {
+    let mut site_stmt = tx.prepare(
+        "INSERT INTO agriculture_field_sites(site_id, building_id, resource_id, area_m2) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    let mut point_stmt = tx.prepare(
+        "INSERT INTO agriculture_field_site_points(site_id, point_index, x, z) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (site_id, site) in agriculture.sites().iter().enumerate() {
+        let saved_building_id = optional_building_to_db(site.building_idx, maps)?;
+        if saved_building_id == NONE_REF {
+            return Err(SaveLoadError::custom(
+                "agriculture field site references missing building",
+            ));
+        }
+        let site_id_db = usize_to_i64(site_id)?;
+        site_stmt.execute(params![
+            site_id_db,
+            saved_building_id,
+            site.resource_id.as_str(),
+            site.area_m2,
         ])?;
         for (point_index, point) in site.polygon_world.iter().enumerate() {
             point_stmt.execute(params![
@@ -849,6 +888,76 @@ pub(super) fn load_resource_extraction(
     Ok(ResourceExtractionSystem::from_sites(sites))
 }
 
+pub(super) fn load_agriculture(
+    conn: &Connection,
+    building_count: usize,
+) -> SaveLoadResult<AgricultureSystem> {
+    let mut stmt = conn.prepare(
+        "SELECT site_id, building_id, resource_id, area_m2 FROM agriculture_field_sites ORDER BY site_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut sites = Vec::new();
+    while let Some(row) = rows.next()? {
+        let site_id = i64_to_usize(row.get(0)?)?;
+        if site_id != sites.len() {
+            return Err(SaveLoadError::custom("non-contiguous field site ids"));
+        }
+        let building_idx = i64_to_usize(row.get(1)?)?;
+        if building_idx >= building_count {
+            return Err(SaveLoadError::custom(
+                "field site references missing building",
+            ));
+        }
+        let area_m2: f32 = row.get(3)?;
+        if !area_m2.is_finite() {
+            return Err(SaveLoadError::custom(
+                "field site has non-finite saved area",
+            ));
+        }
+        sites.push(FieldSite {
+            building_idx,
+            resource_id: row.get(2)?,
+            polygon_world: Vec::new(),
+            area_m2,
+        });
+    }
+
+    let mut point_stmt = conn.prepare(
+        "SELECT site_id, point_index, x, z FROM agriculture_field_site_points ORDER BY site_id, point_index",
+    )?;
+    let mut point_rows = point_stmt.query([])?;
+    let mut last_point_index_by_site = vec![0usize; sites.len()];
+    while let Some(row) = point_rows.next()? {
+        let site_id = i64_to_usize(row.get(0)?)?;
+        if site_id >= sites.len() {
+            return Err(SaveLoadError::custom(
+                "field polygon point references missing site",
+            ));
+        }
+        let point_index = i64_to_usize(row.get(1)?)?;
+        if point_index != last_point_index_by_site[site_id] {
+            return Err(SaveLoadError::custom(
+                "non-contiguous field polygon point ids",
+            ));
+        }
+        last_point_index_by_site[site_id] += 1;
+        sites[site_id]
+            .polygon_world
+            .push(Vector2::new(row.get(2)?, row.get(3)?));
+    }
+    for site in &mut sites {
+        let computed_area_m2 = validate_field_polygon_world(&site.polygon_world)
+            .map_err(|err| SaveLoadError::custom(format!("invalid field site polygon: {err}")))?;
+        if (site.area_m2 - computed_area_m2).abs() > 0.1 {
+            return Err(SaveLoadError::custom(
+                "field site saved area does not match polygon",
+            ));
+        }
+        site.area_m2 = computed_area_m2;
+    }
+    Ok(AgricultureSystem::from_sites(sites))
+}
+
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
     let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
@@ -902,7 +1011,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, tax_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_endpoint_kind, source_building_id, source_border_node, destination_endpoint_kind, destination_building_id, destination_border_node, carrier_class, status, carrier_agent_id, total_cost, eta_hours, queued_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         logistics.shipments.push(Shipment {
@@ -916,9 +1025,8 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             status: shipment_status_from_db(row.get(10)?)?,
             carrier_agent_id: db_to_optional_usize(row.get(11)?)?,
             total_cost: row.get(12)?,
-            tax_cost: row.get(13)?,
-            eta_hours: i64_to_u16(row.get(14)?)?,
-            queued_hours: i64_to_u16(row.get(15)?)?,
+            eta_hours: i64_to_u16(row.get(13)?)?,
+            queued_hours: i64_to_u16(row.get(14)?)?,
         });
     }
     logistics.rebuild_next_shipment_id();

@@ -16,7 +16,7 @@ use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 /// Currency cost per meter of new road laid, deducted from the city treasury at placement.
-pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 50.0;
+pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 15.0;
 /// Starter build cost per service-building lot cell, deducted from the city treasury at placement.
 pub(crate) const SERVICE_BUILD_COST_PER_LOT_CELL: f64 = 2_500.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
@@ -76,17 +76,15 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) income_tax: f64,
     /// Household purchase VAT collected from store shopping.
     pub(crate) household_vat: f64,
-    /// Business purchase tax collected from input freight.
-    pub(crate) business_purchase_tax: f64,
     /// Business profit tax collected from positive private operating-budget growth.
     pub(crate) business_profit_tax: f64,
-    /// One-time private construction property tax collected during the day.
+    /// Daily private property tax collected during the day.
     pub(crate) property_tax: f64,
-    /// Residential construction property tax collected during the day.
+    /// Residential property tax collected during the day.
     pub(crate) residential_property_tax: f64,
-    /// Commercial construction property tax collected during the day.
+    /// Commercial property tax collected during the day.
     pub(crate) commercial_property_tax: f64,
-    /// Industrial construction property tax collected during the day.
+    /// Industrial property tax collected during the day.
     pub(crate) industrial_property_tax: f64,
     /// Local utility and service revenue collected by city-owned providers.
     pub(crate) utility_service_revenue: f64,
@@ -146,8 +144,6 @@ pub struct CityTreasury {
     pub last_daily_income_tax: f64,
     /// Household VAT collected in the most recently finalized fiscal day.
     pub last_daily_household_vat: f64,
-    /// Business purchase tax collected in the most recently finalized fiscal day.
-    pub last_daily_business_purchase_tax: f64,
     /// Business profit tax collected in the most recently finalized fiscal day.
     pub last_daily_business_profit_tax: f64,
     /// Property tax collected in the most recently finalized fiscal day.
@@ -162,8 +158,6 @@ pub struct CityTreasury {
     pub pending_income_tax: f64,
     /// Household VAT collected since the last daily fiscal finalization.
     pub pending_household_vat: f64,
-    /// Business purchase tax collected since the last daily fiscal finalization.
-    pub pending_business_purchase_tax: f64,
     /// Business profit tax collected since the last daily fiscal finalization.
     pub pending_business_profit_tax: f64,
     /// Property tax collected since the last daily fiscal finalization.
@@ -186,7 +180,6 @@ impl CityTreasury {
             last_daily_upkeep: 0.0,
             last_daily_income_tax: 0.0,
             last_daily_household_vat: 0.0,
-            last_daily_business_purchase_tax: 0.0,
             last_daily_business_profit_tax: 0.0,
             last_daily_property_tax: 0.0,
             last_daily_residential_property_tax: 0.0,
@@ -194,7 +187,6 @@ impl CityTreasury {
             last_daily_industrial_property_tax: 0.0,
             pending_income_tax: 0.0,
             pending_household_vat: 0.0,
-            pending_business_purchase_tax: 0.0,
             pending_business_profit_tax: 0.0,
             pending_property_tax: 0.0,
             pending_residential_property_tax: 0.0,
@@ -231,22 +223,12 @@ impl CityTreasury {
         self.record_tax(amount, TaxBucket::HouseholdVat);
     }
 
-    /// Records tax collected from business input purchases.
-    pub(crate) fn collect_business_purchase_tax(&mut self, amount: f64) {
-        self.record_tax(amount, TaxBucket::BusinessPurchase);
-    }
-
     /// Records tax collected from positive daily business profit.
     pub(crate) fn collect_business_profit_tax(&mut self, amount: f64) {
         self.record_tax(amount, TaxBucket::BusinessProfit);
     }
 
-    /// Records one-time property tax from new private construction.
-    pub(crate) fn collect_property_tax(&mut self, amount: f64) {
-        self.record_tax(amount, TaxBucket::Property);
-    }
-
-    /// Records one-time property tax from new private construction by zone.
+    /// Records daily property tax by zone.
     pub(crate) fn collect_property_tax_for_zone(&mut self, zone_type: ZoneType, amount: f64) {
         if amount <= 0.0 {
             return;
@@ -264,7 +246,6 @@ impl CityTreasury {
     pub(crate) fn finalize_daily_tax_window(&mut self) {
         self.last_daily_income_tax = self.pending_income_tax;
         self.last_daily_household_vat = self.pending_household_vat;
-        self.last_daily_business_purchase_tax = self.pending_business_purchase_tax;
         self.last_daily_business_profit_tax = self.pending_business_profit_tax;
         self.last_daily_property_tax = self.pending_property_tax;
         self.last_daily_residential_property_tax = self.pending_residential_property_tax;
@@ -272,7 +253,6 @@ impl CityTreasury {
         self.last_daily_industrial_property_tax = self.pending_industrial_property_tax;
         self.pending_income_tax = 0.0;
         self.pending_household_vat = 0.0;
-        self.pending_business_purchase_tax = 0.0;
         self.pending_business_profit_tax = 0.0;
         self.pending_property_tax = 0.0;
         self.pending_residential_property_tax = 0.0;
@@ -289,7 +269,6 @@ impl CityTreasury {
         match bucket {
             TaxBucket::Income => self.pending_income_tax += amount,
             TaxBucket::HouseholdVat => self.pending_household_vat += amount,
-            TaxBucket::BusinessPurchase => self.pending_business_purchase_tax += amount,
             TaxBucket::BusinessProfit => self.pending_business_profit_tax += amount,
             TaxBucket::Property => self.pending_property_tax += amount,
         }
@@ -300,7 +279,6 @@ impl CityTreasury {
 enum TaxBucket {
     Income,
     HouseholdVat,
-    BusinessPurchase,
     BusinessProfit,
     Property,
 }
@@ -311,8 +289,8 @@ struct DailyCityFlowDiagnostics {
     housed_households: u32,
     unhoused_households: u32,
     zero_budget_households: u32,
-    stock_empty_households: u32,
-    stock_low_households: u32,
+    supplies_empty_households: u32,
+    supplies_low_households: u32,
     total_household_slots: u32,
     vacant_household_slots: u32,
     resident_agents: u32,
@@ -341,7 +319,9 @@ fn profile_offers_daily_city_flow_work(
     matches!(building_zone, ZoneType::Commercial | ZoneType::Industrial)
         || matches!(
             profile.kind,
-            EconomyProfileRuntimeKind::UtilityProducer
+            EconomyProfileRuntimeKind::Extractor
+                | EconomyProfileRuntimeKind::FieldProducer
+                | EconomyProfileRuntimeKind::UtilityProducer
                 | EconomyProfileRuntimeKind::UtilityProcessor
         )
 }
@@ -507,8 +487,8 @@ impl SimCore {
             "fiscal policy change: id={} label=\"{}\" requested={:.4} old={:.4} new={:.4} \
              day={} minute={} treasury={:.1} policy=(unemployment={:.1}/day \
              unemployment_days={} pension={:.1}/day child_support={:.1}/day income_tax={:.1}% \
-             household_vat={:.1}% business_purchase={:.1}% business_profit={:.1}% \
-             property_tax=res:{:.0},com:{:.0},ind:{:.0},level_mult:{:.2})",
+             household_vat={:.1}% business_profit={:.1}% \
+             property_tax_per_day=res:{:.1},com:{:.1},ind:{:.1},level_mult:{:.2})",
             policy_id,
             label,
             requested_value,
@@ -523,11 +503,10 @@ impl SimCore {
             policy.child_support_per_child_per_day,
             percent_for_log(policy.income_tax_rate),
             percent_for_log(policy.household_vat_rate),
-            percent_for_log(policy.business_purchase_tax_rate),
             percent_for_log(policy.business_profit_tax_rate),
-            policy.residential_property_tax_base,
-            policy.commercial_property_tax_base,
-            policy.industrial_property_tax_base,
+            policy.residential_property_tax_per_home_per_day,
+            policy.commercial_property_tax_per_building_per_day,
+            policy.industrial_property_tax_per_building_per_day,
             policy.property_tax_level_multiplier,
         );
     }
@@ -588,7 +567,6 @@ impl SimCore {
     ) -> DailyBudgetLedgerEntry {
         let tax_income = self.treasury.last_daily_income_tax
             + self.treasury.last_daily_household_vat
-            + self.treasury.last_daily_business_purchase_tax
             + self.treasury.last_daily_business_profit_tax
             + self.treasury.last_daily_property_tax;
         let benefits = self
@@ -652,7 +630,6 @@ impl SimCore {
             tax_income,
             income_tax: self.treasury.last_daily_income_tax,
             household_vat: self.treasury.last_daily_household_vat,
-            business_purchase_tax: self.treasury.last_daily_business_purchase_tax,
             business_profit_tax: self.treasury.last_daily_business_profit_tax,
             property_tax: self.treasury.last_daily_property_tax,
             residential_property_tax: self.treasury.last_daily_residential_property_tax,
@@ -949,12 +926,12 @@ impl SimCore {
                     diagnostics.zero_budget_households.saturating_add(1);
             }
             if household.stock_days <= f32::EPSILON {
-                diagnostics.stock_empty_households =
-                    diagnostics.stock_empty_households.saturating_add(1);
+                diagnostics.supplies_empty_households =
+                    diagnostics.supplies_empty_households.saturating_add(1);
             }
             if household.stock_days <= 1.0 {
-                diagnostics.stock_low_households =
-                    diagnostics.stock_low_households.saturating_add(1);
+                diagnostics.supplies_low_households =
+                    diagnostics.supplies_low_households.saturating_add(1);
             }
         }
 
@@ -1067,14 +1044,14 @@ impl SimCore {
             "economy",
             "city flow diagnostics: day={} net_households={:+} admitted_since_daily={} \
              removed_today={} households={} housed={} unhoused={} zero_budget={} \
-             stock_empty={} stock_low={} resident_agents={} pending_carriers={} \
+             supplies_empty={} supplies_low={} resident_agents={} pending_carriers={} \
              children={} adults={} elders={} employed={} unemployed={} jobs={}/{} theoretical_open_jobs={} \
              active_jobs={}/{} active_open_jobs={} commercial_jobs={}/{} commercial_theoretical_open={} \
              commercial_active_jobs={}/{} commercial_active_open={} industrial_jobs={}/{} \
              industrial_theoretical_open={} industrial_active_jobs={}/{} industrial_active_open={} \
              service_active_jobs={}/{} service_active_open={} \
              homes={}/{} vacant_homes={} treasury={:.0} taxes=(income={:.1} household_vat={:.1} \
-             business_purchase={:.1} business_profit={:.1} property={:.1} lifetime={:.1})",
+             business_profit={:.1} property={:.1} lifetime={:.1})",
             day_index,
             net_households,
             self.debug_household_admissions_since_daily,
@@ -1083,8 +1060,8 @@ impl SimCore {
             diagnostics.housed_households,
             diagnostics.unhoused_households,
             diagnostics.zero_budget_households,
-            diagnostics.stock_empty_households,
-            diagnostics.stock_low_households,
+            diagnostics.supplies_empty_households,
+            diagnostics.supplies_low_households,
             diagnostics.resident_agents,
             diagnostics.pending_household_carriers,
             diagnostics.child_agents,
@@ -1119,7 +1096,6 @@ impl SimCore {
             self.treasury.balance,
             self.treasury.last_daily_income_tax,
             self.treasury.last_daily_household_vat,
-            self.treasury.last_daily_business_purchase_tax,
             self.treasury.last_daily_business_profit_tax,
             self.treasury.last_daily_property_tax,
             self.treasury.lifetime_tax_revenue,
@@ -1239,16 +1215,17 @@ impl SimCore {
         }
 
         let mut households_at_budget_floor = 0u32;
-        let mut households_below_1d_stock = 0u32;
-        let mut households_below_2d_stock = 0u32;
-        let mut households_below_3d_stock = 0u32;
+        let mut households_below_1d_supplies = 0u32;
+        let mut households_below_2d_supplies = 0u32;
+        let mut households_below_3d_supplies = 0u32;
         let mut total_wages_paid = 0.0f32;
         let mut total_household_shopping_spend = 0.0f32;
         let mut total_benefits_paid = 0.0f32;
         let mut total_unemployment_benefits_paid = 0.0f32;
         let mut total_pensions_paid = 0.0f32;
         let mut total_child_support_paid = 0.0f32;
-        let mut total_utility_stock_cost = 0.0f32;
+        let mut total_property_tax_paid = 0.0f32;
+        let mut total_utility_supply_cost = 0.0f32;
         let mut total_household_supply_use_cost = 0.0f32;
         let mut total_household_utility_cost = 0.0f32;
 
@@ -1266,13 +1243,13 @@ impl SimCore {
                 households_at_budget_floor += 1;
             }
             if h.stock_days < 1.0 {
-                households_below_1d_stock += 1;
+                households_below_1d_supplies += 1;
             }
             if h.stock_days < 2.0 {
-                households_below_2d_stock += 1;
+                households_below_2d_supplies += 1;
             }
             if h.stock_days < 3.0 {
-                households_below_3d_stock += 1;
+                households_below_3d_supplies += 1;
             }
             total_wages_paid += ledger.wage_income;
             total_household_shopping_spend += ledger.shopping_spend;
@@ -1280,7 +1257,8 @@ impl SimCore {
             total_unemployment_benefits_paid += ledger.unemployment_benefit_income;
             total_pensions_paid += ledger.pension_income;
             total_child_support_paid += ledger.child_support_income;
-            total_utility_stock_cost += ledger.utility_stock_consumption_cost;
+            total_property_tax_paid += ledger.property_tax_paid;
+            total_utility_supply_cost += ledger.utility_stock_consumption_cost;
             total_household_supply_use_cost += ledger.household_supply_consumption_cost;
             let household_utility_cost = ledger.power_consumption_cost
                 + ledger.water_consumption_cost
@@ -1311,7 +1289,7 @@ impl SimCore {
                 String::new()
             };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} stock={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} transfer={:.1} unemployment={:.1} pension={:.1} child_support={:.1} shopping={:.1} power={:.1} water={:.1} sewage={:.1} utility={:.1} stock_use={:.1} utility_stock={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} residents={} children={} adults={} elders={} budget={:<5.1} supplies={:<4.2}days state={}{} ledger=(before={:.1} wage={:.1} transfer={:.1} unemployment={:.1} pension={:.1} child_support={:.1} property_tax={:.1} shopping={:.1} power={:.1} water={:.1} sewage={:.1} utility={:.1} supply_use={:.1} utility_supply={:.1} after={:.1} unemployed_adults={} shopper_trips={}/{})",
                 day_index,
                 idx,
                 h.home_building_id,
@@ -1330,6 +1308,7 @@ impl SimCore {
                 ledger.unemployment_benefit_income,
                 ledger.pension_income,
                 ledger.child_support_income,
+                ledger.property_tax_paid,
                 ledger.shopping_spend,
                 ledger.power_consumption_cost,
                 ledger.water_consumption_cost,
@@ -1344,28 +1323,28 @@ impl SimCore {
             );
         }
         println!(
-            "[ECON] Day {:>4} household ledger summary: budget_floor={} stock_below_1d={} stock_below_2d={} stock_below_3d={} wages_paid={:.1} shopping_spend={:.1} transfers_paid={:.1} unemployment_paid={:.1} pensions_paid={:.1} child_support_paid={:.1} utility_cost={:.1} stock_use_cost={:.1} utility_stock_cost={:.1}",
+            "[ECON] Day {:>4} household ledger summary: budget_floor={} supplies_below_1d={} supplies_below_2d={} supplies_below_3d={} wages_paid={:.1} shopping_spend={:.1} transfers_paid={:.1} unemployment_paid={:.1} pensions_paid={:.1} child_support_paid={:.1} property_tax_paid={:.1} utility_cost={:.1} supply_use_cost={:.1} utility_supply_cost={:.1}",
             day_index,
             households_at_budget_floor,
-            households_below_1d_stock,
-            households_below_2d_stock,
-            households_below_3d_stock,
+            households_below_1d_supplies,
+            households_below_2d_supplies,
+            households_below_3d_supplies,
             total_wages_paid,
             total_household_shopping_spend,
             total_benefits_paid,
             total_unemployment_benefits_paid,
             total_pensions_paid,
             total_child_support_paid,
+            total_property_tax_paid,
             total_household_utility_cost,
             total_household_supply_use_cost,
-            total_utility_stock_cost,
+            total_utility_supply_cost,
         );
         println!(
-            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_purchase_tax={:.1} business_profit_tax={:.1} property_tax={:.1} residential_property_tax={:.1} commercial_property_tax={:.1} industrial_property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
+            "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_profit_tax={:.1} property_tax={:.1} residential_property_tax={:.1} commercial_property_tax={:.1} industrial_property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
             day_index,
             self.treasury.last_daily_income_tax,
             self.treasury.last_daily_household_vat,
-            self.treasury.last_daily_business_purchase_tax,
             self.treasury.last_daily_business_profit_tax,
             self.treasury.last_daily_property_tax,
             self.treasury.last_daily_residential_property_tax,
@@ -1373,7 +1352,6 @@ impl SimCore {
             self.treasury.last_daily_industrial_property_tax,
             self.treasury.last_daily_income_tax
                 + self.treasury.last_daily_household_vat
-                + self.treasury.last_daily_business_purchase_tax
                 + self.treasury.last_daily_business_profit_tax
                 + self.treasury.last_daily_property_tax,
             self.treasury.lifetime_tax_revenue,
@@ -1388,11 +1366,19 @@ impl SimCore {
         self.treasury
             .collect_household_vat(revenue.household_vat as f64);
         self.treasury
-            .collect_business_purchase_tax(revenue.business_purchase_tax as f64);
-        self.treasury
             .collect_business_profit_tax(revenue.business_profit_tax as f64);
-        self.treasury
-            .collect_property_tax(revenue.property_tax as f64);
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Residential,
+            revenue.residential_property_tax as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Commercial,
+            revenue.commercial_property_tax as f64,
+        );
+        self.treasury.collect_property_tax_for_zone(
+            ZoneType::Industrial,
+            revenue.industrial_property_tax as f64,
+        );
     }
 
     /// Called once per in-game day by the tick loop to emit per-building economy lines.

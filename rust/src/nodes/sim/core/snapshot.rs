@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::state::{PendingDemandSpawnAction, SimCore};
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
 use crate::simulation::economy::agents::{Agent, MODE_CAR, transit_is_visible};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
@@ -155,6 +156,7 @@ pub(crate) struct BuildingRemovalUndo {
     pub(crate) households: HouseholdBuildingUndo,
     pub(crate) logistics: ShipmentBuildingUndo,
     pub(crate) extractor_sites: Vec<ExtractorSite>,
+    pub(crate) field_sites: Vec<FieldSite>,
     pub(crate) dirty_bounds: Option<(f32, f32, f32, f32)>,
 }
 

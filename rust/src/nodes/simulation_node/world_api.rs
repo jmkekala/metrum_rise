@@ -298,10 +298,24 @@ impl SimulationNode {
         self.lock_core().get_coal_pit_overlay_data_internal()
     }
 
+    /// Returns committed agricultural fields as a high-resolution L8 mask.
+    #[func]
+    pub fn get_agriculture_field_overlay_data(&self) -> PackedByteArray {
+        self.lock_core()
+            .get_agriculture_field_overlay_data_internal()
+    }
+
     /// Returns the pixel dimensions of the committed coal extraction mask.
     #[func]
     pub fn get_coal_pit_overlay_size(&self) -> Vector2 {
         self.lock_core().get_coal_pit_overlay_size_internal()
+    }
+
+    /// Returns the pixel dimensions of the committed agricultural field mask.
+    #[func]
+    pub fn get_agriculture_field_overlay_size(&self) -> Vector2 {
+        self.lock_core()
+            .get_agriculture_field_overlay_size_internal()
     }
 
     /// Returns `(min_x, min_z, width, height)` for the committed coal extraction mask.
@@ -311,10 +325,47 @@ impl SimulationNode {
             .get_coal_pit_overlay_world_bounds_internal()
     }
 
+    /// Returns `(min_x, min_z, width, height)` for the committed agricultural field mask.
+    #[func]
+    pub fn get_agriculture_field_overlay_world_bounds(&self) -> Vector4 {
+        self.lock_core()
+            .get_agriculture_field_overlay_world_bounds_internal()
+    }
+
     /// Returns a monotonic revision for committed coal extraction polygon visuals.
     #[func]
     pub fn get_coal_pit_overlay_revision(&self) -> i64 {
         self.lock_core().get_coal_pit_overlay_revision_internal() as i64
+    }
+
+    /// Returns committed agricultural field polygons for diagnostics and editor tools.
+    #[func]
+    pub fn get_agriculture_field_polygons(&self) -> VarArray {
+        let core = self.lock_core();
+        let mut arr = VarArray::new();
+        for site in core.agriculture.sites() {
+            if site.polygon_world.len() < 3 {
+                continue;
+            }
+            let mut points = PackedVector2Array::new();
+            for point in &site.polygon_world {
+                points.push(*point);
+            }
+            let mut dict = VarDictionary::new();
+            dict.set("building_id", site.building_idx as i64);
+            dict.set("resource_id", GString::from(site.resource_id.as_str()));
+            dict.set("area_m2", f64::from(site.area_m2.max(0.0)));
+            dict.set("points", points);
+            arr.push(&dict.to_variant());
+        }
+        arr
+    }
+
+    /// Returns a monotonic revision for committed agricultural field visuals.
+    #[func]
+    pub fn get_agriculture_field_overlay_revision(&self) -> i64 {
+        self.lock_core()
+            .get_agriculture_field_overlay_revision_internal() as i64
     }
 
     /// Commits the active transient lake-fill preview into authored world state.

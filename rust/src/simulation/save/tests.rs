@@ -5,6 +5,7 @@ use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::nodes::sim::core::{
     CityServicePolicy, DailyBudgetLedgerEntry, PendingDemandSpawnAction,
 };
+use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -88,6 +89,7 @@ fn register_test_asset(
                 service_class: None,
                 economy_profile: None,
                 extractor: None,
+                field: None,
             }),
             prop: None,
             vehicle: None,
@@ -218,11 +220,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         economy_broken: false,
         resource_inventory: {
             let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-            let staple_food = catalog
-                .resource_runtime_id_for_id("staple_food")
-                .expect("staple food resource");
+            let packaged_food = catalog
+                .resource_runtime_id_for_id("packaged_food")
+                .expect("packaged food resource");
             let mut inventory = vec![0.0; catalog.resource_count()];
-            inventory[staple_food as usize - 1] = 42.0;
+            inventory[packaged_food as usize - 1] = 42.0;
             inventory
         },
         revenue: 0.0,
@@ -259,6 +261,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         ],
         total_reserve_units: 1234.0,
         extracted_units: 321.0,
+    }]);
+    let agriculture = AgricultureSystem::from_sites(vec![FieldSite {
+        building_idx: 0,
+        resource_id: "grain".to_owned(),
+        polygon_world: vec![
+            Vector2::new(-8.0, -4.0),
+            Vector2::new(8.0, -4.0),
+            Vector2::new(8.0, 4.0),
+            Vector2::new(-8.0, 4.0),
+        ],
+        area_m2: 128.0,
     }]);
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
@@ -301,7 +314,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         status: ShipmentStatus::InTransit,
         carrier_agent_id: usize::MAX,
         total_cost: 640.0,
-        tax_cost: 0.0,
         eta_hours: 1,
         queued_hours: 0,
     });
@@ -447,10 +459,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         expenses: 80.0,
         net: 40.0,
         treasury: 1_040.0,
-        tax_income: 95.0,
+        tax_income: 80.0,
         income_tax: 30.0,
         household_vat: 20.0,
-        business_purchase_tax: 15.0,
         business_profit_tax: 12.0,
         property_tax: 18.0,
         residential_property_tax: 7.0,
@@ -508,6 +519,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             households: &households,
             logistics: &logistics,
             resource_extraction: &resource_extraction,
+            agriculture: &agriculture,
             agents: &agents_sys,
             network: &network_sys,
             treasury: &treasury,
@@ -596,6 +608,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_extractor.polygon_world.len(), 4);
     assert!((loaded_extractor.total_reserve_units - 1234.0).abs() < 0.001);
     assert!((loaded_extractor.extracted_units - 321.0).abs() < 0.001);
+    assert_eq!(loaded.agriculture.sites().len(), 1);
+    let loaded_field = &loaded.agriculture.sites()[0];
+    assert_eq!(loaded_field.building_idx, 0);
+    assert_eq!(loaded_field.resource_id, "grain");
+    assert_eq!(loaded_field.polygon_world.len(), 4);
+    assert!((loaded_field.area_m2 - 128.0).abs() < 0.001);
     assert_eq!(loaded.households.households.len(), 1);
     assert_eq!(
         loaded.households.households[0].reserved_store_building_id,
@@ -720,10 +738,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_budget.expenses, 80.0);
     assert_eq!(loaded_budget.net, 40.0);
     assert_eq!(loaded_budget.treasury, 1_040.0);
-    assert_eq!(loaded_budget.tax_income, 95.0);
+    assert_eq!(loaded_budget.tax_income, 80.0);
     assert_eq!(loaded_budget.income_tax, 30.0);
     assert_eq!(loaded_budget.household_vat, 20.0);
-    assert_eq!(loaded_budget.business_purchase_tax, 15.0);
     assert_eq!(loaded_budget.business_profit_tax, 12.0);
     assert_eq!(loaded_budget.property_tax, 18.0);
     assert_eq!(loaded_budget.residential_property_tax, 7.0);
@@ -734,11 +751,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded_budget.child_support, 1.0);
     assert_eq!(loaded_budget.power_coverage, 0.95);
     assert_eq!(loaded_budget.electricity_net, 10.0);
-    let staple_food = catalog
-        .resource_runtime_id_for_id("staple_food")
-        .expect("staple food resource");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
     assert_eq!(
-        loaded.allocator.buildings[0].inventory_units(staple_food),
+        loaded.allocator.buildings[0].inventory_units(packaged_food),
         42.0
     );
     assert_eq!(loaded.logistics.shipments.len(), 1);

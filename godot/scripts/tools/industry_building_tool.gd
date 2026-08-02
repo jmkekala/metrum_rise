@@ -1,9 +1,11 @@
-## Explicit industry extractor placement tool with a player-drawn extraction polygon.
+## Explicit industry area placement tool with a player-drawn production polygon.
 ##
 ## Rust methods called: get_industry_building_placement_preview(),
-##   place_industry_building(), commit_extractor_polygon(), get_world_surface_height(),
-##   intersect_world_surface()
+##   place_industry_building(), commit_extractor_polygon(), commit_field_polygon(),
+##   get_world_surface_height(), intersect_world_surface()
 extends Node3D
+
+const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -24,6 +26,7 @@ var _preview_part_mesh_cache: Dictionary = {}
 var _preview_valid_material: StandardMaterial3D
 var _preview_invalid_material: StandardMaterial3D
 var _polygon_material: StandardMaterial3D
+var _field_polygon_material: ShaderMaterial
 var _first_polygon_marker_material: StandardMaterial3D
 var _polygon_cursor_marker_material: StandardMaterial3D
 var _preview_cache_valid: bool = false
@@ -32,17 +35,25 @@ var _preview_cache_pos: Vector2 = Vector2.ZERO
 var _preview_cache_mesh: Mesh = null
 var _preview_cache_part_transforms: PackedFloat32Array = PackedFloat32Array()
 var _preview_cache_placeable: bool = false
+var _preview_cache_build_cost: float = 0.0
+var _preview_cache_error: String = ""
+var _preview_cache_label_world_pos: Vector3 = Vector3.ZERO
 var _mode: Mode = Mode.PLACE_BUILDING
 var _pending_building_id: int = -1
 var _pending_building_footprint: PackedVector2Array = PackedVector2Array()
+var _pending_area_kind: String = "extractor"
 var _pending_polygon_link_distance_m: float = 10.0
 var _polygon_points: Array[Vector2] = []
 var _notification_layer: CanvasLayer
 var _notification_panel: PanelContainer
 var _notification_label: Label
 var _notification_hide_at_msec: int = 0
+var _hud_canvas: CanvasLayer = null
+var _price_label: Label = null
+var _label_world_pos: Vector3 = Vector3.ZERO
 
 const PREVIEW_REFRESH_DISTANCE_M := 1.0
+const PREVIEW_LABEL_Y_OFFSET_M := 2.0
 const POLYGON_LINK_DISTANCE_M := 10.0
 const POLYGON_POINT_MARKER_SIZE_M := 0.8
 const POLYGON_FIRST_POINT_MARKER_RADIUS_M := 1.65
@@ -50,6 +61,10 @@ const POLYGON_CURSOR_MARKER_RADIUS_M := 0.95
 const POLYGON_CLOSE_RADIUS_M := 3.0
 const POLYGON_SEGMENT_EPS := 0.001
 const TOOL_NOTIFICATION_DURATION_SEC := 2.5
+const FIELD_POLYGON_ALBEDO_PATH := "res://assets/textures/general/grain/withered_grass_diff_2k.jpg"
+const FIELD_POLYGON_TEXTURE_TILE_M := 12.0
+const FIELD_POLYGON_TINT := Color(0.98, 1.02, 0.90, 0.72)
+const FIELD_POLYGON_FALLBACK_COLOR := Color(0.86, 0.70, 0.34, 1.0)
 
 func _ready() -> void:
 	preview_mesh = MeshInstance3D.new()
@@ -77,7 +92,12 @@ func _ready() -> void:
 	_polygon_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_polygon_material.vertex_color_use_as_albedo = true
 	_polygon_material.render_priority = 9
-	polygon_mesh.material_override = _polygon_material
+	_field_polygon_material = WorldMaterials.field_overlay_material(
+		FIELD_POLYGON_ALBEDO_PATH,
+		FIELD_POLYGON_FALLBACK_COLOR,
+		FIELD_POLYGON_TEXTURE_TILE_M,
+		9
+	)
 	add_child(polygon_mesh)
 
 	first_polygon_marker = MeshInstance3D.new()
@@ -126,6 +146,7 @@ func _ready() -> void:
 	add_child(preview_part_root)
 	_preview_valid_material = _make_ghost_material(Color(0.70, 0.76, 0.58, 0.44))
 	_preview_invalid_material = _make_ghost_material(Color(1.0, 0.23, 0.12, 0.48))
+	_create_preview_price_label()
 	_create_tool_notification()
 
 func _process(_delta: float) -> void:
@@ -135,6 +156,7 @@ func _process(_delta: float) -> void:
 	_update_tool_notification()
 	if _mode == Mode.PLACE_BUILDING:
 		_update_preview()
+		_project_preview_price_label()
 	else:
 		_hide_preview_visuals()
 		_update_polygon_mesh()
@@ -181,6 +203,7 @@ func _commit_building_at_mouse() -> void:
 	_pending_building_footprint = _footprint_from_result(
 		result.get("footprint_corners", PackedVector3Array())
 	)
+	_pending_area_kind = str(result.get("area_kind", "extractor"))
 	_pending_polygon_link_distance_m = float(
 		result.get("polygon_link_distance_m", POLYGON_LINK_DISTANCE_M)
 	)
@@ -195,7 +218,7 @@ func _commit_building_at_mouse() -> void:
 	_mode = Mode.DRAW_POLYGON
 	_polygon_points.clear()
 	_clear_preview_cache()
-	print("Draw extraction polygon: left-click points, then click the first point again to commit.")
+	print("Draw production area: left-click points, then click the first point again to commit.")
 
 func _add_polygon_point_at_mouse() -> void:
 	var wp = _mouse_world_pos()
@@ -203,21 +226,21 @@ func _add_polygon_point_at_mouse() -> void:
 		return
 	if _polygon_points.is_empty() and not _first_polygon_point_is_near_building(wp):
 		_show_tool_notification(
-			"Start the extraction polygon within %.0f m of the mine."
+			"Start the production area within %.0f m of the building."
 			% _pending_polygon_link_distance_m
 		)
 		return
 	if not _polygon_points.is_empty() and wp.distance_to(_polygon_points[0]) <= POLYGON_CLOSE_RADIUS_M:
 		if _polygon_points.size() >= 3:
 			if _would_closing_polygon_edge_cross():
-				print("Extractor polygon edges cannot cross.")
+				print("Production area edges cannot cross.")
 				return
 			_commit_polygon()
 		else:
-			print("Extractor polygon needs at least three points before it can be closed.")
+			print("Production area needs at least three points before it can be closed.")
 		return
 	if _would_new_polygon_edge_cross(wp):
-		print("Extractor polygon edges cannot cross.")
+		print("Production area edges cannot cross.")
 		return
 	_polygon_points.append(wp)
 	_update_polygon_mesh()
@@ -226,27 +249,38 @@ func _commit_polygon() -> void:
 	if _pending_building_id < 0:
 		return
 	if _polygon_points.size() < 3:
-		print("Extractor polygon needs at least three points.")
+		print("Production area needs at least three points.")
 		return
 	if _would_closing_polygon_edge_cross():
-		print("Extractor polygon edges cannot cross.")
+		print("Production area edges cannot cross.")
 		return
 	var packed := PackedVector2Array()
 	for point in _polygon_points:
 		packed.append(point)
-	var result: Dictionary = simulation_node.commit_extractor_polygon(_pending_building_id, packed)
-	if not bool(result.get("ok", false)):
-		print("Extractor polygon rejected: " + str(result.get("error", "")))
-		return
-	var reserve := float(result.get("total_reserve_units", 0.0))
-	if reserve <= 0.0:
-		print("Extractor polygon committed with 0 reserve.")
+	var result: Dictionary
+	if _pending_area_kind == "field":
+		result = simulation_node.commit_field_polygon(_pending_building_id, packed)
 	else:
-		print("Extractor polygon committed. Reserve units: %.0f" % reserve)
-	if terrain_node and terrain_node.has_method("mark_coal_pit_overlay_dirty"):
-		terrain_node.mark_coal_pit_overlay_dirty()
+		result = simulation_node.commit_extractor_polygon(_pending_building_id, packed)
+	if not bool(result.get("ok", false)):
+		print("Production area rejected: " + str(result.get("error", "")))
+		return
+	if _pending_area_kind == "field":
+		var area_m2 := float(result.get("area_m2", 0.0))
+		print("Field committed. Area: %.0f m2" % area_m2)
+		if terrain_node and terrain_node.has_method("mark_field_overlay_dirty"):
+			terrain_node.mark_field_overlay_dirty()
+	else:
+		var reserve := float(result.get("total_reserve_units", 0.0))
+		if reserve <= 0.0:
+			print("Extractor polygon committed with 0 reserve.")
+		else:
+			print("Extractor polygon committed. Reserve units: %.0f" % reserve)
+		if terrain_node and terrain_node.has_method("mark_coal_pit_overlay_dirty"):
+			terrain_node.mark_coal_pit_overlay_dirty()
 	_pending_building_id = -1
 	_pending_building_footprint = PackedVector2Array()
+	_pending_area_kind = "extractor"
 	_pending_polygon_link_distance_m = POLYGON_LINK_DISTANCE_M
 	_polygon_points.clear()
 	_mode = Mode.PLACE_BUILDING
@@ -269,7 +303,10 @@ func _update_preview() -> void:
 		_apply_preview_payload(
 			_preview_cache_mesh,
 			_preview_cache_part_transforms,
-			_preview_cache_placeable
+			_preview_cache_placeable,
+			_preview_cache_build_cost,
+			_preview_cache_error,
+			_preview_cache_label_world_pos
 		)
 		return
 
@@ -280,25 +317,35 @@ func _update_preview() -> void:
 	)
 	var mesh: Mesh = null
 	var is_valid := bool(payload.get("valid", false))
+	var error := str(payload.get("error", ""))
+	var build_cost := float(payload.get("build_cost", 0.0))
 	var corners: PackedVector3Array = payload.get("corners", PackedVector3Array())
 	var part_transforms: PackedFloat32Array = payload.get("part_transforms", PackedFloat32Array())
 	if corners.size() == 4:
 		mesh = _build_preview_mesh(corners, is_valid)
+	var label_world_pos := _preview_label_world_pos(payload, wp, corners)
 	_preview_cache_valid = true
 	_preview_cache_asset_id = selected_asset_id
 	_preview_cache_pos = wp
 	_preview_cache_mesh = mesh
 	_preview_cache_part_transforms = part_transforms
 	_preview_cache_placeable = is_valid
-	_apply_preview_payload(mesh, part_transforms, is_valid)
+	_preview_cache_build_cost = build_cost
+	_preview_cache_error = error
+	_preview_cache_label_world_pos = label_world_pos
+	_apply_preview_payload(mesh, part_transforms, is_valid, build_cost, error, label_world_pos)
 
 func _apply_preview_payload(
 	support_mesh: Mesh,
 	part_transforms: PackedFloat32Array,
-	is_valid: bool
+	is_valid: bool,
+	build_cost: float,
+	error: String,
+	label_world_pos: Vector3
 ) -> void:
 	_apply_preview_mesh(support_mesh)
 	_apply_part_preview(part_transforms, is_valid)
+	_apply_preview_price_label(build_cost, is_valid, error, label_world_pos)
 
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
@@ -308,6 +355,7 @@ func _reset_tool_state() -> void:
 	_discard_pending_building()
 	_pending_building_id = -1
 	_pending_building_footprint = PackedVector2Array()
+	_pending_area_kind = "extractor"
 	_pending_polygon_link_distance_m = POLYGON_LINK_DISTANCE_M
 	_polygon_points.clear()
 	_mode = Mode.PLACE_BUILDING
@@ -321,6 +369,9 @@ func _clear_preview_cache() -> void:
 	_preview_cache_mesh = null
 	_preview_cache_part_transforms = PackedFloat32Array()
 	_preview_cache_placeable = false
+	_preview_cache_build_cost = 0.0
+	_preview_cache_error = ""
+	_preview_cache_label_world_pos = Vector3.ZERO
 	_hide_preview_visuals()
 
 func _hide_preview_visuals() -> void:
@@ -328,6 +379,8 @@ func _hide_preview_visuals() -> void:
 		preview_mesh.visible = false
 	for instance in _preview_part_instances:
 		instance.visible = false
+	if _price_label:
+		_price_label.visible = false
 
 func _discard_pending_building() -> void:
 	if _pending_building_id < 0:
@@ -399,6 +452,71 @@ func _make_ghost_material(color: Color) -> StandardMaterial3D:
 	mat.render_priority = 8
 	return mat
 
+func _create_preview_price_label() -> void:
+	_hud_canvas = CanvasLayer.new()
+	_hud_canvas.layer = 10
+	add_child(_hud_canvas)
+
+	_price_label = Label.new()
+	_price_label.add_theme_font_size_override("font_size", 18)
+	_price_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_price_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.8))
+	_price_label.add_theme_constant_override("shadow_offset_x", 1)
+	_price_label.add_theme_constant_override("shadow_offset_y", 1)
+	_price_label.visible = false
+	_hud_canvas.add_child(_price_label)
+
+func _apply_preview_price_label(
+	build_cost: float,
+	is_valid: bool,
+	error: String,
+	label_world_pos: Vector3
+) -> void:
+	if not _price_label:
+		return
+	var price_text := "price %s" % _money(build_cost)
+	if not is_valid and not error.is_empty():
+		price_text += "  " + error
+		_price_label.add_theme_color_override("font_color", Color(1.0, 0.28, 0.18, 0.98))
+	else:
+		_price_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_price_label.text = price_text
+	_label_world_pos = label_world_pos
+	_price_label.visible = true
+
+func _project_preview_price_label() -> void:
+	if not _price_label or not _price_label.visible:
+		return
+	var camera := get_viewport().get_camera_3d()
+	if camera:
+		var screen_pos: Vector2 = camera.unproject_position(_label_world_pos)
+		_price_label.position = screen_pos + Vector2(8.0, -24.0)
+
+func _preview_label_world_pos(
+	payload: Dictionary,
+	fallback_world_pos: Vector2,
+	corners: PackedVector3Array
+) -> Vector3:
+	if corners.size() == 4:
+		return Vector3(
+			float(payload.get("center_x", fallback_world_pos.x)),
+			float(payload.get("support_height_m", 0.0)) + PREVIEW_LABEL_Y_OFFSET_M,
+			float(payload.get("center_z", fallback_world_pos.y))
+		)
+	var y := 0.0
+	if simulation_node and simulation_node.has_method("get_world_surface_height"):
+		y = float(simulation_node.get_world_surface_height(fallback_world_pos))
+	return Vector3(fallback_world_pos.x, y + PREVIEW_LABEL_Y_OFFSET_M, fallback_world_pos.y)
+
+func _money(value: float) -> String:
+	var sign := "-" if value < 0.0 else ""
+	var amount := absf(value)
+	if amount >= 1000000.0:
+		return "%s$%.1fM" % [sign, amount / 1000000.0]
+	if amount >= 1000.0:
+		return "%s$%.1fk" % [sign, amount / 1000.0]
+	return "%s$%.0f" % [sign, amount]
+
 func _build_preview_mesh(corners: PackedVector3Array, is_valid: bool) -> Mesh:
 	if corners.size() != 4:
 		return null
@@ -442,11 +560,16 @@ func _update_polygon_mesh() -> void:
 	var fill_color := Color(0.42, 0.82, 1.0, 0.18)
 	var line_color := Color(0.62, 0.90, 1.0, 0.88)
 	var vertex_marker_color := Color(0.72, 0.92, 1.0, 0.74)
+	var fill_material: Material = _polygon_material
+	var use_field_texture := _pending_area_kind == "field" and not preview_invalid
+	if use_field_texture:
+		fill_color = FIELD_POLYGON_TINT
+		fill_material = _field_polygon_material
 	if preview_invalid:
 		fill_color = Color(1.0, 0.18, 0.12, 0.16)
 		line_color = Color(1.0, 0.26, 0.18, 0.92)
-	_append_polygon_fill(im, preview_points, fill_color)
-	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	_append_polygon_fill(im, preview_points, fill_color, fill_material, use_field_texture)
+	im.surface_begin(Mesh.PRIMITIVE_LINES, _polygon_material)
 	im.surface_set_color(line_color)
 	for i in range(preview_points.size() - 1):
 		im.surface_add_vertex(_polygon_vertex(preview_points[i]))
@@ -491,7 +614,13 @@ func _preview_current_click_invalid() -> bool:
 		return _would_closing_polygon_edge_cross()
 	return _would_new_polygon_edge_cross(wp)
 
-func _append_polygon_fill(im: ImmediateMesh, points: Array[Vector2], color: Color) -> void:
+func _append_polygon_fill(
+	im: ImmediateMesh,
+	points: Array[Vector2],
+	color: Color,
+	material: Material,
+	use_texture_uv: bool
+) -> void:
 	if points.size() < 3:
 		return
 	var polygon := PackedVector2Array()
@@ -500,11 +629,17 @@ func _append_polygon_fill(im: ImmediateMesh, points: Array[Vector2], color: Colo
 	var triangles := Geometry2D.triangulate_polygon(polygon)
 	if triangles.size() < 3:
 		return
-	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, material)
 	im.surface_set_color(color)
 	for index in triangles:
-		im.surface_add_vertex(_polygon_vertex(points[int(index)]))
+		var point := points[int(index)]
+		if use_texture_uv:
+			im.surface_set_uv(_field_polygon_uv(point))
+		im.surface_add_vertex(_polygon_vertex(point))
 	im.surface_end()
+
+func _field_polygon_uv(point: Vector2) -> Vector2:
+	return Vector2(point.x, point.y) / FIELD_POLYGON_TEXTURE_TILE_M
 
 func _update_first_polygon_marker(point_count: int) -> void:
 	if not first_polygon_marker:

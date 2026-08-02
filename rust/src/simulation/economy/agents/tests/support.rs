@@ -51,6 +51,7 @@ pub(super) fn register_test_asset(
                 _ => None,
             },
             extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,

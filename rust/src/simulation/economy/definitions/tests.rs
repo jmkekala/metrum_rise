@@ -14,9 +14,24 @@ fn write_fixture_project(dir: &Path) {
         dir.join(PROFILES_FILE),
         r#"
 [[profiles]]
+id = "grain_farm_basic"
+display_name = "Grain Farm"
+kind = "field_producer"
+description = "Starter farm"
+worker_capacity = 4
+base_rate_units_per_day = 160.0
+wage_min_currency_per_day = 90.0
+wage_max_currency_per_day = 110.0
+unit_price_currency = 2.0
+
+[[profiles.outputs]]
+resource = "grain"
+units_per_day = 160.0
+
+[[profiles]]
 id = "food_processor_basic"
-display_name = "Food Processor"
-kind = "producer"
+display_name = "Food Processing Plant"
+kind = "processor"
 description = "Starter processor"
 worker_capacity = 4
 base_rate_units_per_day = 160.0
@@ -24,8 +39,12 @@ wage_min_currency_per_day = 90.0
 wage_max_currency_per_day = 110.0
 unit_price_currency = 4.0
 
+[[profiles.inputs]]
+resource = "grain"
+units_per_day = 160.0
+
 [[profiles.outputs]]
-resource = "staple_food"
+resource = "packaged_food"
 units_per_day = 160.0
 
 [[profiles]]
@@ -44,7 +63,7 @@ critical_threshold_days = 0.5
 min_shipment_units = 40.0
 
 [[profiles.inputs]]
-resource = "staple_food"
+resource = "packaged_food"
 units_per_day = 160.0
 
 [[profiles.outputs]]
@@ -55,7 +74,7 @@ units_per_day = 200.0
 id = "basic_household_demand"
 display_name = "Household Demand Sink"
 kind = "demand_sink"
-description = "Starter sink"
+description = "Starter household supply reserve sink"
 consumption_rate_per_resident = 1.0
 stock_target_days = 5.0
 reorder_threshold_days = 2.5
@@ -96,11 +115,10 @@ industrial_hours_by_level = [12, 24, 36]
 [runtime_tuning.fiscal]
 income_tax_rate = 0.12
 household_vat_rate = 0.08
-business_purchase_tax_rate = 0.03
 business_profit_tax_rate = 0.10
-residential_property_tax_base = 250.0
-commercial_property_tax_base = 500.0
-industrial_property_tax_base = 750.0
+residential_property_tax_per_home_per_day = 2.0
+commercial_property_tax_per_building_per_day = 25.0
+industrial_property_tax_per_building_per_day = 35.0
 property_tax_level_multiplier = 1.75
 
 [runtime_tuning.operational_clock]
@@ -181,9 +199,9 @@ industrial_max_output_headroom_for_downgrade = 0.10
         r#"
 [[controllers]]
 id = "household_restock_cost_basic"
-display_name = "Household Restock Cost"
+display_name = "Household Replenishment Cost"
 kind = "household_restock_cost"
-description = "Starter household cost controller"
+description = "Starter household replenishment cost controller"
 default_weight = 0.5
 min_multiplier = 0.9
 max_multiplier = 1.1
@@ -207,10 +225,16 @@ replenishment_trigger_days = 1.5
 pickup_cadence_hours = 6.0
 
 [[scenarios.nodes]]
+id = "grain_farm"
+ref_kind = "profile"
+ref_id = "grain_farm_basic"
+position = [90.0, 180.0]
+
+[[scenarios.nodes]]
 id = "food_processor"
 ref_kind = "profile"
 ref_id = "food_processor_basic"
-position = [120.0, 180.0]
+position = [330.0, 180.0]
 
 [[scenarios.nodes]]
 id = "grocery"
@@ -231,9 +255,14 @@ ref_id = "household_restock_cost_basic"
 position = [820.0, 40.0]
 
 [[scenarios.edges]]
+from = "grain_farm"
+to = "food_processor"
+resource = "grain"
+
+[[scenarios.edges]]
 from = "food_processor"
 to = "grocery"
-resource = "staple_food"
+resource = "packaged_food"
 
 [[scenarios.edges]]
 from = "grocery"
@@ -257,7 +286,7 @@ fn load_project_returns_valid_json() {
     let json = load_project_json(&dir).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed["ok"].as_bool().unwrap());
-    assert_eq!(parsed["project"]["profiles"].as_array().unwrap().len(), 3);
+    assert_eq!(parsed["project"]["profiles"].as_array().unwrap().len(), 4);
     assert!(parsed["validation"].as_array().unwrap().is_empty());
 }
 

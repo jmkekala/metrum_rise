@@ -12,7 +12,6 @@ use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
     demand_building_action_key,
 };
-use crate::simulation::economy::fiscal::{CityFiscalPolicy, construction_property_tax};
 use crate::simulation::economy::households::{
     HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
 };
@@ -35,14 +34,6 @@ const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
 /// Summary of building mutations performed by one demand-owned building action pass.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DemandBuildingActionExecution {
-    /// Property tax debited from fresh private building budgets during this pass.
-    pub(crate) property_tax_paid: f32,
-    /// Residential property tax debited from fresh private building budgets during this pass.
-    pub(crate) residential_property_tax_paid: f32,
-    /// Commercial property tax debited from fresh private building budgets during this pass.
-    pub(crate) commercial_property_tax_paid: f32,
-    /// Industrial property tax debited from fresh private building budgets during this pass.
-    pub(crate) industrial_property_tax_paid: f32,
     /// World-space bounds of building-site terrain patches dirtied by this action pass.
     pub(crate) site_dirty_bounds: Option<(f32, f32, f32, f32)>,
     /// Residential spawn execution and final placement rejection counters.
@@ -86,19 +77,6 @@ pub(crate) struct DemandSpawnPlacementRejectionCounts {
 }
 
 impl DemandBuildingActionExecution {
-    fn record_property_tax(&mut self, zone_type: ZoneType, amount: f32) {
-        if amount <= 0.0 {
-            return;
-        }
-        self.property_tax_paid += amount;
-        match zone_type {
-            ZoneType::Residential => self.residential_property_tax_paid += amount,
-            ZoneType::Commercial => self.commercial_property_tax_paid += amount,
-            ZoneType::Industrial => self.industrial_property_tax_paid += amount,
-            _ => {}
-        }
-    }
-
     fn use_mut(&mut self, zone_type: ZoneType) -> &mut DemandUseBuildingActionExecution {
         match zone_type {
             ZoneType::Residential => &mut self.residential,
@@ -416,7 +394,6 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        fiscal_policy: &CityFiscalPolicy,
     ) -> DemandBuildingActionExecution {
         let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
             .buildings
@@ -426,10 +403,6 @@ impl BuildingAllocator {
             .collect();
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution {
-            property_tax_paid: 0.0,
-            residential_property_tax_paid: 0.0,
-            commercial_property_tax_paid: 0.0,
-            industrial_property_tax_paid: 0.0,
             site_dirty_bounds: None,
             residential: DemandUseBuildingActionExecution::default(),
             commercial: DemandUseBuildingActionExecution::default(),
@@ -518,22 +491,9 @@ impl BuildingAllocator {
                     terrain,
                     catalog,
                     tuning,
-                    fiscal_policy.business_purchase_tax_rate,
                 ) {
                     Ok(building_idx) => {
                         execution.use_mut(zone_type).spawn_executed += 1;
-                        let property_tax = construction_property_tax(
-                            self.buildings[building_idx].zone_type,
-                            self.buildings[building_idx].level,
-                            fiscal_policy,
-                        );
-                        if property_tax > 0.0 {
-                            self.buildings[building_idx].operating_budget -= property_tax;
-                            execution.record_property_tax(
-                                self.buildings[building_idx].zone_type,
-                                property_tax,
-                            );
-                        }
                         self.buildings[building_idx].profit_tax_budget_baseline =
                             self.buildings[building_idx].operating_budget;
                         accumulate_site_dirty_bounds(
@@ -570,7 +530,6 @@ impl BuildingAllocator {
         terrain: &TerrainSystem,
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
-        fiscal_policy: &CityFiscalPolicy,
     ) -> DemandBuildingActionExecution {
         let mut execution = DemandBuildingActionExecution::default();
         execution.use_mut(zone_type).spawn_attempted += 1;
@@ -586,20 +545,9 @@ impl BuildingAllocator {
             terrain,
             catalog,
             tuning,
-            fiscal_policy.business_purchase_tax_rate,
         ) {
             Ok(building_idx) => {
                 execution.use_mut(zone_type).spawn_executed += 1;
-                let property_tax = construction_property_tax(
-                    self.buildings[building_idx].zone_type,
-                    self.buildings[building_idx].level,
-                    fiscal_policy,
-                );
-                if property_tax > 0.0 {
-                    self.buildings[building_idx].operating_budget -= property_tax;
-                    execution
-                        .record_property_tax(self.buildings[building_idx].zone_type, property_tax);
-                }
                 self.buildings[building_idx].profit_tax_budget_baseline =
                     self.buildings[building_idx].operating_budget;
                 accumulate_site_dirty_bounds(
