@@ -19,7 +19,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::work_area::initial_work_area_scale;
+use crate::simulation::work_area::{initial_work_area_scale, scaled_work_area_worker_capacity};
 use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
@@ -1396,6 +1396,10 @@ impl BuildingAllocator {
         // Computed from profile data so it scales with the building.
         const STARTUP_RUNWAY_DAYS: f32 = 7.0;
         const STARTUP_MIN_BUDGET: f32 = 500.0;
+        let profile_kind = catalog
+            .profile_by_runtime_id(economy_binding.runtime_id)
+            .map(|profile| profile.kind);
+        let work_area_scale = initial_work_area_scale(placement.zone_type, profile_kind);
         let startup_budget = match placement.zone_type {
             ZoneType::None
                 if !economy_binding.economy_broken
@@ -1413,7 +1417,9 @@ impl BuildingAllocator {
                     .profile_by_runtime_id(economy_binding.runtime_id)
                     .expect("explicit industry area profile checked above");
                 let daily_wage = profile.average_daily_wage();
-                (profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS)
+                let active_worker_capacity =
+                    scaled_work_area_worker_capacity(profile.worker_capacity, work_area_scale);
+                (active_worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS)
                     .max(STARTUP_MIN_BUDGET)
             }
             ZoneType::Commercial | ZoneType::Industrial => {
@@ -1464,10 +1470,6 @@ impl BuildingAllocator {
         let construction_duration_hours =
             construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
         let zone_cell_m = placement.zone_cell_m;
-        let profile_kind = catalog
-            .profile_by_runtime_id(economy_binding.runtime_id)
-            .map(|profile| profile.kind);
-        let work_area_scale = initial_work_area_scale(placement.zone_type, profile_kind);
 
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,

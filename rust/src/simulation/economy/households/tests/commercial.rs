@@ -59,6 +59,9 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     building.economy_profile_runtime_id = profile.runtime_id;
     building.work_area_scale = 0.2731;
     building.worker_count = 3;
+    let output_port = profile.outputs.first().expect("grain output");
+    let output_capacity = profile.output_buffer_capacity_units_for(output_port);
+    building.set_inventory_units(output_port.resource_runtime_id, output_capacity - 2.0);
 
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &building, profile),
@@ -70,6 +73,10 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     assert!(
         (factors.throughput_factor - 1.0).abs() < 0.001,
         "area-scaled full staffing should not divide throughput by the authored one-hectare worker count"
+    );
+    assert!(
+        (factors.output_headroom_factor - 1.0).abs() < 0.001,
+        "area-scaled producers should compare storage headroom to scaled hourly output"
     );
 }
 

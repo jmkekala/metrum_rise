@@ -2712,6 +2712,10 @@ startup_budget = max(
 )
 ```
 
+For explicit field producers and extractors, `worker_capacity` in this formula means the current
+area-scaled active worker capacity. A newly placed uncommitted field or extraction building has
+zero active area-backed workers and therefore receives only `STARTUP_OPERATING_FLOAT`.
+
 `first_owa_input_import_cost` is computed from the building profile's input target units, the
 catalog resource unit price, and `runtime_tuning.owa_import_price_multiplier`. Constants:
 `STARTUP_RUNWAY_DAYS = 7`, `STARTUP_OPERATING_FLOAT = 500.0`.

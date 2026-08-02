@@ -386,9 +386,19 @@ pub(crate) fn building_operation_factors(
     };
     let staffing_factor =
         (effective_workers as f32 / staffing_worker_capacity as f32).clamp(0.0, 1.0);
-    let input_factor = hourly_input_availability_factor(profile, building, staffing_factor);
-    let output_headroom_factor =
-        hourly_output_headroom_factor(profile, building, staffing_factor * input_factor);
+    let production_rate_scale = if profile_kind_uses_explicit_work_area(profile.kind) {
+        sanitize_work_area_scale(building.work_area_scale)
+    } else {
+        1.0
+    };
+    let input_factor =
+        hourly_input_availability_factor(profile, building, staffing_factor, production_rate_scale);
+    let output_headroom_factor = hourly_output_headroom_factor(
+        profile,
+        building,
+        staffing_factor * input_factor,
+        production_rate_scale,
+    );
     let throughput_factor = staffing_factor * input_factor * output_headroom_factor;
     BuildingOperationFactors {
         active_worker_capacity,
@@ -442,16 +452,19 @@ fn hourly_input_availability_factor(
     profile: &EconomyProfileRuntime,
     building: &Building,
     base_throughput_factor: f32,
+    production_rate_scale: f32,
 ) -> f32 {
     if base_throughput_factor <= 0.0 || profile.inputs.is_empty() {
         return 1.0;
     }
+    let production_rate_scale = production_rate_scale.max(0.0);
     profile
         .inputs
         .iter()
         .map(|port| {
-            let hourly_required =
-                port.units_per_day.max(0.0) / OPERATIONAL_HOURS_PER_DAY * base_throughput_factor;
+            let hourly_required = port.units_per_day.max(0.0) * production_rate_scale
+                / OPERATIONAL_HOURS_PER_DAY
+                * base_throughput_factor;
             if hourly_required <= 0.0 {
                 1.0
             } else {
@@ -466,16 +479,19 @@ fn hourly_output_headroom_factor(
     profile: &EconomyProfileRuntime,
     building: &Building,
     base_throughput_factor: f32,
+    production_rate_scale: f32,
 ) -> f32 {
     if base_throughput_factor <= 0.0 || profile.outputs.is_empty() {
         return 1.0;
     }
+    let production_rate_scale = production_rate_scale.max(0.0);
     profile
         .outputs
         .iter()
         .map(|port| {
-            let hourly_output =
-                port.units_per_day.max(0.0) / OPERATIONAL_HOURS_PER_DAY * base_throughput_factor;
+            let hourly_output = port.units_per_day.max(0.0) * production_rate_scale
+                / OPERATIONAL_HOURS_PER_DAY
+                * base_throughput_factor;
             if hourly_output <= 0.0 {
                 return 1.0;
             }
