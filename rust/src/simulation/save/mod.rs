@@ -533,6 +533,8 @@ pub(crate) fn load_from_sqlite(
     let logistics = world::load_shipments(&conn)?;
     let resource_extraction = world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
+    resource_extraction.apply_work_area_scales(&mut allocator);
+    agriculture.apply_work_area_scales(&mut allocator);
     let mut agents = agents::load_agents(&conn, time_r.5)?;
 
     let mut transit_network = TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m);

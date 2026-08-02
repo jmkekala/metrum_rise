@@ -50,6 +50,30 @@ fn household_shortage_floor_opens_commercial_workers_without_sales() {
 }
 
 #[test]
+fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
+    building.economy_profile_runtime_id = profile.runtime_id;
+    building.work_area_scale = 0.2731;
+    building.worker_count = 3;
+
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &building, profile),
+        3
+    );
+    let factors = building_operation_factors(&catalog, &building, profile);
+    assert_eq!(factors.active_worker_capacity, 3);
+    assert_eq!(factors.effective_workers, 3);
+    assert!(
+        (factors.throughput_factor - 1.0).abs() < 0.001,
+        "area-scaled full staffing should not divide throughput by the authored one-hectare worker count"
+    );
+}
+
+#[test]
 fn one_worker_commercial_production_uses_hourly_input_need() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supply_resource = household_supply_resource_runtime_id(&catalog);

@@ -244,6 +244,11 @@ pub struct Building {
     /// This is rebuilt by the household economy before production, hiring, and demand accounting;
     /// it is not persisted because it is a deterministic aggregate of live city state.
     pub commercial_activity_floor_scale: f32,
+    /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
+    ///
+    /// `1.0` means the authored profile worker/output rates apply as written. Explicit farms and
+    /// extractors start at `0.0` until their nearby field or extraction polygon is committed.
+    pub work_area_scale: f32,
     /// True when the current painted zoning profile is incompatible and the building is waiting
     /// for the rezoning grace timer to expire.
     pub pending_redevelopment: bool,
@@ -346,6 +351,11 @@ impl Building {
     /// Returns true when the building can participate in household, labor, and economy flows.
     pub(crate) fn is_operational(&self) -> bool {
         !self.is_under_construction()
+    }
+
+    /// Updates the cached explicit production-area scale used by economy hot paths.
+    pub(crate) fn set_work_area_scale(&mut self, scale: f32) {
+        self.work_area_scale = crate::simulation::work_area::sanitize_work_area_scale(scale);
     }
 
     /// Returns deterministic `0.0..=1.0` construction progress for rendering and diagnostics.

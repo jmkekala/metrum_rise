@@ -1317,8 +1317,8 @@ Rules:
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
 - `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
-- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh
-- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output is interpreted per hectare of committed field area
+- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales hourly output and active worker demand against a 10,000 m2 authored baseline
+- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and active worker demand are interpreted per hectare of committed field area
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -1671,6 +1671,9 @@ Where:
 
 - `base_rate` is the authored full-capacity output rate for the building or recipe
 - `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
+- explicit field producers and extractors replace `worker_capacity` in this ratio with the
+  area-scaled active worker capacity; an uncommitted area has zero active worker capacity, and
+  10,000 m2 receives exactly the authored worker count
 - commercial store `filled_workers` is capped by the larger of recent household sales and a
   local household-demand floor before this ratio is calculated; the demand floor includes current
   resident consumption plus household supply recovery spread over the authored pantry target days
@@ -2172,7 +2175,7 @@ A good starter chain for both simulation and developer-tool tuning is:
 - `grain_farm`
   - inputs: `labor`
   - outputs: `grain`
-  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 of field receives the authored output rate
+  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 of field receives the authored output rate and authored worker count
 - `food_processor`
   - inputs: `grain`, `labor`
   - outputs: `packaged_food`
@@ -2222,7 +2225,7 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
 - `grain_farm` `base_rate`: `160 grain / day / hectare`
-- `grain_farm` worker capacity: `10`
+- `grain_farm` worker capacity: `10 / hectare`
 - `grain_farm` wage band: `80-100 currency / workday`
 - `food_processor` `base_rate`: `160 packaged_food / day`
 - `food_processor` worker capacity: `10`
@@ -2652,6 +2655,8 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.construction.residential_hours_by_level` | [6, 12, 18] | Fresh residential construction hours by target level |
 | `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
 | `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
+| `coal_mine_basic.base_rate_units_per_day` | 120.0 units/day/hectare | Full-staffed starter coal output before reserve, staffing, and buffer limits |
+| `coal_mine_basic.worker_capacity` | 16 / hectare | Full-staffed starter coal-mine worker demand for a 10,000 m2 extraction area |
 | `coal_mine_basic.unit_price_currency` | 4.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
 | `power_plant_basic.base_rate_units_per_day` | 240.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
 | `power_plant_basic.inputs.coal` | 24.0 units/day | Coal fuel consumed by a fully staffed starter power plant |

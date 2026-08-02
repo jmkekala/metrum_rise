@@ -271,11 +271,12 @@ func _commit_polygon() -> void:
 		if terrain_node and terrain_node.has_method("mark_field_overlay_dirty"):
 			terrain_node.mark_field_overlay_dirty()
 	else:
+		var area_m2 := float(result.get("area_m2", 0.0))
 		var reserve := float(result.get("total_reserve_units", 0.0))
 		if reserve <= 0.0:
-			print("Extractor polygon committed with 0 reserve.")
+			print("Extractor polygon committed. Area: %.0f m2, reserve: 0" % area_m2)
 		else:
-			print("Extractor polygon committed. Reserve units: %.0f" % reserve)
+			print("Extractor polygon committed. Area: %.0f m2, reserve units: %.0f" % [area_m2, reserve])
 		if terrain_node and terrain_node.has_method("mark_coal_pit_overlay_dirty"):
 			terrain_node.mark_coal_pit_overlay_dirty()
 	_pending_building_id = -1

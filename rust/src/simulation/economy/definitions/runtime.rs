@@ -252,7 +252,7 @@ pub(crate) enum EconomyProfileRuntimeKind {
     Store,
     /// Non-building aggregate sink profile used by sandbox and household-side graphs.
     DemandSink,
-    /// Deposit-backed producing building that writes extracted resources into output stock.
+    /// Deposit-backed producer scaled by a committed player-drawn extraction polygon.
     Extractor,
     /// City utility building that generates a service signal (power, water).
     UtilityProducer,

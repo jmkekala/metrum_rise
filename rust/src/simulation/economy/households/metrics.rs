@@ -7,6 +7,10 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
     RuntimeEconomyTuning, RuntimeResourcePort,
 };
+use crate::simulation::work_area::{
+    profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
+    scaled_work_area_worker_capacity,
+};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
@@ -280,6 +284,9 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
     if worker_capacity == 0 {
         return 0;
     }
+    if profile_kind_uses_explicit_work_area(profile.kind) {
+        return scaled_work_area_worker_capacity(worker_capacity, building.work_area_scale);
+    }
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity;
     }
@@ -299,6 +306,9 @@ pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
     let worker_capacity = profile.worker_capacity;
     if worker_capacity == 0 {
         return 0.0;
+    }
+    if profile_kind_uses_explicit_work_area(profile.kind) {
+        return worker_capacity as f32 * sanitize_work_area_scale(building.work_area_scale);
     }
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity as f32;
@@ -367,11 +377,15 @@ pub(crate) fn building_operation_factors(
     building: &Building,
     profile: &EconomyProfileRuntime,
 ) -> BuildingOperationFactors {
-    let authored_worker_capacity = profile.worker_capacity.max(1);
     let active_worker_capacity = active_worker_capacity_for_profile(catalog, building, profile);
     let effective_workers = building.worker_count.min(active_worker_capacity);
+    let staffing_worker_capacity = if profile_kind_uses_explicit_work_area(profile.kind) {
+        active_worker_capacity.max(1)
+    } else {
+        profile.worker_capacity.max(1)
+    };
     let staffing_factor =
-        (effective_workers as f32 / authored_worker_capacity as f32).clamp(0.0, 1.0);
+        (effective_workers as f32 / staffing_worker_capacity as f32).clamp(0.0, 1.0);
     let input_factor = hourly_input_availability_factor(profile, building, staffing_factor);
     let output_headroom_factor =
         hourly_output_headroom_factor(profile, building, staffing_factor * input_factor);
@@ -641,7 +655,11 @@ pub(crate) fn building_staffing_ratio(catalog: &RuntimeEconomyCatalog, building:
     let Some(profile) = economy_profile_for_building(catalog, building) else {
         return 0.0;
     };
-    let worker_capacity = profile.worker_capacity;
+    let worker_capacity = if profile_kind_uses_explicit_work_area(profile.kind) {
+        active_worker_capacity_for_profile(catalog, building, profile)
+    } else {
+        profile.worker_capacity
+    };
     if worker_capacity == 0 {
         0.0
     } else {

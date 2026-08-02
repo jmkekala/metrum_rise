@@ -95,6 +95,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -248,6 +249,7 @@ fn test_immigration_claims_vacant_home() {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -414,6 +416,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -462,6 +465,7 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });

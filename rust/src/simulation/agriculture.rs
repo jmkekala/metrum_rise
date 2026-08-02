@@ -9,12 +9,13 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog};
 use crate::simulation::economy::households::building_operation_factors;
 use crate::simulation::extraction::{validate_player_polygon, validate_polygon_near_building};
+use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the farm footprint to its field polygon.
 pub(crate) const FIELD_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
 /// Field area that receives exactly the authored daily output rate.
-pub(crate) const FIELD_YIELD_BASE_AREA_M2: f32 = 10_000.0;
+pub(crate) const FIELD_YIELD_BASE_AREA_M2: f32 = EXPLICIT_WORK_AREA_BASE_M2;
 
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 const MIN_FIELD_POLYGON_AREA_M2: f32 = 100.0;
@@ -136,7 +137,7 @@ impl AgricultureSystem {
         &mut self,
         building_idx: usize,
         polygon_world: Vec<Vector2>,
-        allocator: &BuildingAllocator,
+        allocator: &mut BuildingAllocator,
         zone_cell_m: f32,
     ) -> Result<FieldSiteSummary, String> {
         let building = allocator
@@ -167,8 +168,20 @@ impl AgricultureSystem {
         self.sites.push(site);
         self.sites.sort_unstable_by_key(|site| site.building_idx);
         self.bump_visual_revision();
+        if let Some(building) = allocator.buildings.get_mut(building_idx) {
+            building.set_work_area_scale(field_area_yield_factor(area_m2));
+        }
 
         Ok(FieldSiteSummary { area_m2 })
+    }
+
+    /// Rebuilds cached building work-area scales from committed field sites.
+    pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
+        for site in &self.sites {
+            if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
+                building.set_work_area_scale(field_area_yield_factor(site.area_m2));
+            }
+        }
     }
 
     /// Produces renewable field output from active farm sites for one operational hour.

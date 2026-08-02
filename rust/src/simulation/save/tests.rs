@@ -242,6 +242,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         recent_power_served_units: 76.0,
         recent_household_sales_value: 456.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -259,6 +260,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             Vector2::new(5.0, 5.0),
             Vector2::new(-5.0, 5.0),
         ],
+        area_m2: 100.0,
         total_reserve_units: 1234.0,
         extracted_units: 321.0,
     }]);

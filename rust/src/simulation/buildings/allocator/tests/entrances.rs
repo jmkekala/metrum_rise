@@ -79,6 +79,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -213,6 +214,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });

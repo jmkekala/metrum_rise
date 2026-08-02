@@ -19,6 +19,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::work_area::initial_work_area_scale;
 use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
@@ -1463,6 +1464,10 @@ impl BuildingAllocator {
         let construction_duration_hours =
             construction_duration_hours(placement.zone_type, placement.initial_level, tuning);
         let zone_cell_m = placement.zone_cell_m;
+        let profile_kind = catalog
+            .profile_by_runtime_id(economy_binding.runtime_id)
+            .map(|profile| profile.kind);
+        let work_area_scale = initial_work_area_scale(placement.zone_type, profile_kind);
 
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
@@ -1506,6 +1511,7 @@ impl BuildingAllocator {
             recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            work_area_scale,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
             is_deserted: false,

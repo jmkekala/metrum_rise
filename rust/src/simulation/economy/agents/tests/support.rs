@@ -133,6 +133,7 @@ pub(super) fn create_test_building(edge_idx: usize, side: i8) -> Building {
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     }

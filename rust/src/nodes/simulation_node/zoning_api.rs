@@ -505,6 +505,7 @@ impl SimulationNode {
         if building_id < 0 {
             dict.set("ok", false);
             dict.set("error", GString::from("invalid extractor building id"));
+            dict.set("area_m2", 0.0f64);
             dict.set("total_reserve_units", 0.0f64);
             dict.set("remaining_reserve_units", 0.0f64);
             return dict;
@@ -519,6 +520,7 @@ impl SimulationNode {
                 self.refresh_snapshot_from_core();
                 dict.set("ok", true);
                 dict.set("error", GString::new());
+                dict.set("area_m2", f64::from(summary.area_m2));
                 dict.set(
                     "total_reserve_units",
                     f64::from(summary.total_reserve_units),
@@ -531,6 +533,7 @@ impl SimulationNode {
             Err(err) => {
                 dict.set("ok", false);
                 dict.set("error", GString::from(err.as_str()));
+                dict.set("area_m2", 0.0f64);
                 dict.set("total_reserve_units", 0.0f64);
                 dict.set("remaining_reserve_units", 0.0f64);
             }

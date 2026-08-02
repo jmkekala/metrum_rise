@@ -79,15 +79,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 - Explicit grain farms now follow the coal-mine style placement flow: the player places the farm
   building, draws a nearby field polygon, and the saved field site gates renewable `grain`
-  production without consuming a map resource deposit.
+  production without consuming a map resource deposit. The committed field area scales both output
+  and active worker demand against a 10,000 m2 authored baseline.
 - WorldEditor now has authored coal-deposit painting as a sparse terrain-aligned resource layer.
   `WorldDefinition` persists coal richness chunks separately from terrain and water, and the editor
   visualizes richer deposits as darker terrain-shader overlay data instead of mesh decals. See
   [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
 - Explicit industry extractors can now bind to authored deposits: coal-mine assets use the
   `coal_mine_basic` extractor profile, place through the Industry toolbar, and attach a player-drawn
-  extraction polygon within 10 m of the building footprint. See [`economy.md`](economy.md) and
-  [`ui.md`](ui.md).
+  extraction polygon within 10 m of the building footprint. The committed extraction area scales
+  hourly output and active worker demand against the same 10,000 m2 baseline. See
+  [`economy.md`](economy.md) and [`ui.md`](ui.md).
 - Release launches now default to a low-overhead crash-diagnostics recorder: `run.sh --release`
   sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook, and the sim thread records a
   fixed-size flight recorder of command, phase, and frame summaries that dumps to `logs/` on panic.

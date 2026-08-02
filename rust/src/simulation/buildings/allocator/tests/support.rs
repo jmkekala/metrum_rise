@@ -55,6 +55,7 @@ pub(super) fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: 
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     }
@@ -513,6 +514,7 @@ pub(super) fn setup_startup_spawn_city_for_rezoning() -> (
             recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            work_area_scale: 1.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         });

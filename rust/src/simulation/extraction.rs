@@ -8,6 +8,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog};
 use crate::simulation::economy::households::building_operation_factors;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
+use crate::simulation::work_area::explicit_work_area_scale;
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the mine footprint to its extraction polygon.
@@ -27,6 +28,8 @@ pub(crate) struct ExtractorSite {
     pub(crate) resource_id: String,
     /// Player-authored world-space polygon in metres, using `(x, z)`.
     pub(crate) polygon_world: Vec<Vector2>,
+    /// Cached unsigned extraction polygon area in square metres.
+    pub(crate) area_m2: f32,
     /// Reserve snapshot captured when the polygon was committed.
     pub(crate) total_reserve_units: f32,
     /// Units already extracted from this reserve snapshot.
@@ -43,6 +46,8 @@ impl ExtractorSite {
 /// Result returned after creating or replacing an extractor polygon.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ExtractorSiteSummary {
+    /// Accepted extraction area in square metres.
+    pub(crate) area_m2: f32,
     /// Reserve units sampled from authored deposits when the polygon was committed.
     pub(crate) total_reserve_units: f32,
     /// Reserve units remaining after any previous depletion.
@@ -147,7 +152,7 @@ impl ResourceExtractionSystem {
         building_idx: usize,
         polygon_world: Vec<Vector2>,
         deposits: &ResourceDepositSystem,
-        allocator: &BuildingAllocator,
+        allocator: &mut BuildingAllocator,
         zone_cell_m: f32,
     ) -> Result<ExtractorSiteSummary, String> {
         let building = allocator
@@ -159,7 +164,7 @@ impl ResourceExtractionSystem {
             .extractor_resource(&building.asset_id)
             .ok_or_else(|| "selected building is not a resource extractor".to_owned())?
             .to_owned();
-        validate_extractor_polygon(&polygon_world)?;
+        let area_m2 = validate_extractor_polygon_world(&polygon_world)?;
         validate_polygon_near_building(
             building,
             &polygon_world,
@@ -174,6 +179,7 @@ impl ResourceExtractionSystem {
             building_idx,
             resource_id,
             polygon_world,
+            area_m2,
             total_reserve_units,
             extracted_units: 0.0,
         };
@@ -181,11 +187,24 @@ impl ResourceExtractionSystem {
         self.sites.push(site);
         self.sites.sort_unstable_by_key(|site| site.building_idx);
         self.bump_visual_revision();
+        if let Some(building) = allocator.buildings.get_mut(building_idx) {
+            building.set_work_area_scale(extractor_area_yield_factor(area_m2));
+        }
 
         Ok(ExtractorSiteSummary {
+            area_m2,
             total_reserve_units,
             remaining_reserve_units: total_reserve_units,
         })
+    }
+
+    /// Rebuilds cached building work-area scales from committed extraction sites.
+    pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
+        for site in &self.sites {
+            if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
+                building.set_work_area_scale(extractor_area_yield_factor(site.area_m2));
+            }
+        }
     }
 
     /// Produces resource output from active extractor sites for one operational hour.
@@ -227,8 +246,12 @@ impl ResourceExtractionSystem {
             if factors.throughput_factor <= 0.0 {
                 continue;
             }
-            let hourly_units =
-                output_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * factors.throughput_factor;
+            let area_factor = extractor_area_yield_factor(site.area_m2);
+            if area_factor <= 0.0 {
+                continue;
+            }
+            let hourly_units = output_port.units_per_day * area_factor / OPERATIONAL_HOURS_PER_DAY
+                * factors.throughput_factor;
             if hourly_units <= 0.0 {
                 continue;
             }
@@ -265,8 +288,14 @@ fn reserve_units_for_resource(
     }
 }
 
-fn validate_extractor_polygon(polygon_world: &[Vector2]) -> Result<(), String> {
-    validate_player_polygon(polygon_world, "extractor", MIN_EXTRACTOR_POLYGON_AREA_M2)
+/// Validates extractor geometry and returns its unsigned world-space area.
+pub(crate) fn validate_extractor_polygon_world(polygon_world: &[Vector2]) -> Result<f32, String> {
+    validate_player_polygon(polygon_world, "extractor", MIN_EXTRACTOR_POLYGON_AREA_M2)?;
+    Ok(polygon_area_abs(polygon_world))
+}
+
+fn extractor_area_yield_factor(area_m2: f32) -> f32 {
+    explicit_work_area_scale(area_m2)
 }
 
 /// Validates a player-authored polygon for one linked building area.
@@ -495,7 +524,7 @@ mod tests {
             Vector2::new(0.0, 10.0),
         ];
 
-        let err = validate_extractor_polygon(&polygon).expect_err("self-crossing polygon");
+        let err = validate_extractor_polygon_world(&polygon).expect_err("self-crossing polygon");
 
         assert!(err.contains("edges cannot cross"));
     }

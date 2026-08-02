@@ -12,7 +12,9 @@ use crate::simulation::economy::logistics::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
 };
-use crate::simulation::extraction::{ExtractorSite, ResourceExtractionSystem};
+use crate::simulation::extraction::{
+    ExtractorSite, ResourceExtractionSystem, validate_extractor_polygon_world,
+};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -22,6 +24,7 @@ use crate::simulation::resources::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::simulation::work_area::initial_work_area_scale;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector2;
 use rusqlite::{Connection, Transaction, params};
@@ -733,9 +736,8 @@ pub(super) fn load_buildings(
     profiles: &crate::simulation::zoning::profiles::ZoningProfileRegistry,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let resource_count = load_runtime_economy_catalog()
-        .map_err(SaveLoadError::custom)?
-        .resource_count();
+    let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
+    let resource_count = catalog.resource_count();
     // col: 0=building_id 1=parcel_id 2=edge_id 3=frontage_t 4=side 5=cell_x 6=cell_y
     //      7=profile_runtime_id 8=occupancy 9=worker_count 10=service_funding_override
     //      11=revenue 12=operating_budget 13=profit_tax_budget_baseline 14=last_day_profit
@@ -756,6 +758,10 @@ pub(super) fn load_buildings(
         let broken = (row.get::<_, i64>(22)? != 0) || registry.get(&asset_id).is_none();
         let economy_binding = resolve_building_economy_profile_binding(registry, &asset_id);
         let profile_runtime_id = i64_to_u16(row.get(7)?)?;
+        let zone_type = profiles.zone_type_for_runtime_id(profile_runtime_id);
+        let profile_kind = catalog
+            .profile_by_runtime_id(economy_binding.runtime_id)
+            .map(|profile| profile.kind);
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
@@ -764,7 +770,7 @@ pub(super) fn load_buildings(
             depth_cells: i64_to_usize(row.get(17)?)? as u16,
             zone_profile_runtime_id: profile_runtime_id,
             parcel_id: i64_to_usize(row.get(1)?)? as u64,
-            zone_type: profiles.zone_type_for_runtime_id(profile_runtime_id),
+            zone_type,
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(3)?,
             side_offset: 0.0,
@@ -801,6 +807,7 @@ pub(super) fn load_buildings(
             recent_power_served_units: row.get(31)?,
             recent_household_sales_value: row.get(32)?,
             commercial_activity_floor_scale: 0.0,
+            work_area_scale: initial_work_area_scale(zone_type, profile_kind),
             pending_redevelopment: row.get::<_, i64>(23)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(24)?)?,
         });
@@ -850,6 +857,7 @@ pub(super) fn load_resource_extraction(
             building_idx,
             resource_id,
             polygon_world: Vec::new(),
+            area_m2: 0.0,
             total_reserve_units,
             extracted_units,
         });
@@ -878,12 +886,10 @@ pub(super) fn load_resource_extraction(
             .polygon_world
             .push(Vector2::new(row.get(2)?, row.get(3)?));
     }
-    for site in &sites {
-        if site.polygon_world.len() < 3 {
-            return Err(SaveLoadError::custom(
-                "extractor site has fewer than three polygon points",
-            ));
-        }
+    for site in &mut sites {
+        site.area_m2 = validate_extractor_polygon_world(&site.polygon_world).map_err(|err| {
+            SaveLoadError::custom(format!("invalid extractor site polygon: {err}"))
+        })?;
     }
     Ok(ResourceExtractionSystem::from_sites(sites))
 }

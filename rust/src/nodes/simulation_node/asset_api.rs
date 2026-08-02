@@ -162,11 +162,10 @@ impl SimulationNode {
         use crate::simulation::economy::households::{
             REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
             REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
-            REPLENISHMENT_STABLE, REPLENISHMENT_WAITING_FOR_SHOPPER,
+            REPLENISHMENT_STABLE, REPLENISHMENT_WAITING_FOR_SHOPPER, building_inventory_fill_ratio,
+            building_operation_factors,
         };
-        use crate::simulation::economy::households::{
-            building_inventory_fill_ratio, building_operation_factors,
-        };
+        use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
         use crate::simulation::zoning::ZoneType;
 
         let core = self.lock_core();
@@ -259,12 +258,14 @@ impl SimulationNode {
                 let available = (total - consumed).max(0.0);
                 let consumed_ratio = if total > 0.0 { consumed / total } else { 0.0 };
                 dict.set("extractor_has_site", true);
+                dict.set("extractor_area_m2", f64::from(site.area_m2.max(0.0)));
                 dict.set("extractor_total_reserve_units", total as f64);
                 dict.set("extractor_available_reserve_units", available as f64);
                 dict.set("extractor_consumed_reserve_units", consumed as f64);
                 dict.set("extractor_consumed_reserve_ratio", consumed_ratio as f64);
             } else {
                 dict.set("extractor_has_site", false);
+                dict.set("extractor_area_m2", 0.0f64);
                 dict.set("extractor_total_reserve_units", 0.0f64);
                 dict.set("extractor_available_reserve_units", 0.0f64);
                 dict.set("extractor_consumed_reserve_units", 0.0f64);
@@ -399,7 +400,9 @@ impl SimulationNode {
                     "Needs inputs"
                 } else if factors.output_headroom_factor < 0.5 {
                     "Storage full"
-                } else if factors.active_worker_capacity < profile.worker_capacity {
+                } else if factors.active_worker_capacity < profile.worker_capacity
+                    && !profile_kind_uses_explicit_work_area(profile.kind)
+                {
                     "Demand-limited"
                 } else if factors.throughput_factor >= 0.8 {
                     "Running"

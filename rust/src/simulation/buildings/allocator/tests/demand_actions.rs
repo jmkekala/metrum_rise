@@ -192,6 +192,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -240,6 +241,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -288,6 +290,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         recent_power_served_units: 0.0,
         recent_household_sales_value: 0.0,
         commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });

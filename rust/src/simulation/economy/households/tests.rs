@@ -12,8 +12,9 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::households::metrics::{
-    active_worker_capacity_for_profile, household_is_housed, household_supply_resource_runtime_id,
-    household_supply_unit_price, refresh_commercial_activity_floor,
+    active_worker_capacity_for_profile, building_operation_factors, household_is_housed,
+    household_supply_resource_runtime_id, household_supply_unit_price,
+    refresh_commercial_activity_floor,
 };
 use crate::simulation::economy::logistics::{
     CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem,

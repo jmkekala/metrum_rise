@@ -1292,7 +1292,7 @@ impl SimCore {
             building_idx,
             polygon_world,
             &self.resource_deposits,
-            &self.allocator,
+            &mut self.allocator,
             self.zoning.config.zone_cell_m,
         )
     }
@@ -1306,7 +1306,7 @@ impl SimCore {
         self.agriculture.commit_site(
             building_idx,
             polygon_world,
-            &self.allocator,
+            &mut self.allocator,
             self.zoning.config.zone_cell_m,
         )
     }
@@ -2045,6 +2045,7 @@ mod tests {
             recent_power_served_units: 0.0,
             recent_household_sales_value: 0.0,
             commercial_activity_floor_scale: 0.0,
+            work_area_scale: 1.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
