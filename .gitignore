@@ -1,3 +1,4 @@
 godot/bin/libmetrum_rise.so
 godot/.godot
+godot/**/*.blend
 logs/
