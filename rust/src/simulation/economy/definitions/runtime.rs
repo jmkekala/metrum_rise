@@ -19,10 +19,6 @@ pub(crate) struct RuntimeEconomyTuning {
     pub construction: ConstructionRuntimeTuning,
     /// City revenue policy applied to wages, consumption, freight purchases, and new buildings.
     pub fiscal: FiscalRuntimeTuning,
-    /// Daily OWA utility charge for one commercial building when local utilities are incomplete.
-    pub commercial_owa_utility_cost_per_day: f32,
-    /// Daily OWA utility charge for one industrial building when local utilities are incomplete.
-    pub industrial_owa_utility_cost_per_day: f32,
     /// Multiplier applied to the local resource price when the OWA supplies an import.
     /// Values above 1.0 make OWA imports more expensive than local sourcing, giving local
     /// producers a cost advantage once they are operational. Must be >= 1.0; values below
@@ -250,6 +246,8 @@ pub(crate) enum EconomyProfileRuntimeKind {
     Processor,
     /// Throughput building that converts one input buffer into one output buffer.
     Store,
+    /// Commercial service-capacity building whose outputs are aggregate visits, not inventory.
+    ServiceStore,
     /// Non-building aggregate sink profile used by sandbox and household-side graphs.
     DemandSink,
     /// Deposit-backed producer scaled by a committed player-drawn extraction polygon.

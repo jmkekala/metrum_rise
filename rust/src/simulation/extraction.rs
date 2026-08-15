@@ -5,10 +5,16 @@
 //! reserve snapshot derived from the deposit grid, and a depletion counter.
 
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::economy::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog};
-use crate::simulation::economy::households::building_operation_factors;
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
+};
+use crate::simulation::economy::households::{
+    building_operation_factors, scaled_output_buffer_capacity_units_for_building,
+};
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
-use crate::simulation::work_area::explicit_work_area_scale;
+use crate::simulation::work_area::{
+    explicit_work_area_scale, top_up_explicit_work_area_startup_budget,
+};
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the mine footprint to its extraction polygon.
@@ -175,6 +181,10 @@ impl ResourceExtractionSystem {
 
         let total_reserve_units =
             reserve_units_for_resource(&resource_id, deposits, &polygon_world)?;
+        let had_site = self
+            .sites
+            .iter()
+            .any(|site| site.building_idx == building_idx);
         let site = ExtractorSite {
             building_idx,
             resource_id,
@@ -188,7 +198,11 @@ impl ResourceExtractionSystem {
         self.sites.sort_unstable_by_key(|site| site.building_idx);
         self.bump_visual_revision();
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            building.set_work_area_scale(extractor_area_yield_factor(area_m2));
+            let area_scale = extractor_area_yield_factor(area_m2);
+            building.set_work_area_scale(area_scale);
+            if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
+                top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
+            }
         }
 
         Ok(ExtractorSiteSummary {
@@ -256,7 +270,8 @@ impl ResourceExtractionSystem {
                 continue;
             }
             let current = building.inventory_units(output_port.resource_runtime_id);
-            let capacity = profile.output_buffer_capacity_units_for(output_port);
+            let capacity =
+                scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
             let output_headroom = (capacity - current).max(0.0);
             let produced = hourly_units.min(remaining_reserve).min(output_headroom);
             if produced <= 0.0 {

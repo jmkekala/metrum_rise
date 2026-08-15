@@ -58,9 +58,16 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
     building.economy_profile_runtime_id = profile.runtime_id;
     building.work_area_scale = 0.2731;
+    building.commercial_activity_floor_scale = 1.0;
     building.worker_count = 3;
     let output_port = profile.outputs.first().expect("grain output");
-    let output_capacity = profile.output_buffer_capacity_units_for(output_port);
+    let output_capacity =
+        scaled_output_buffer_capacity_units_for_building(&building, profile, output_port);
+    assert!(
+        (output_capacity - profile.output_buffer_capacity_units_for(output_port) * 0.2731).abs()
+            < 0.001,
+        "explicit work-area output storage should scale with committed area"
+    );
     building.set_inventory_units(output_port.resource_runtime_id, output_capacity - 2.0);
 
     assert_eq!(
@@ -77,6 +84,81 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     assert!(
         (factors.output_headroom_factor - 1.0).abs() < 0.001,
         "area-scaled producers should compare storage headroom to scaled hourly output"
+    );
+}
+
+#[test]
+fn explicit_work_area_market_scale_limits_jobs_and_output() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
+    building.economy_profile_runtime_id = profile.runtime_id;
+    building.work_area_scale = 2.0;
+    building.commercial_activity_floor_scale = 0.25;
+    building.worker_count = 4;
+
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &building, profile),
+        4
+    );
+    let factors = building_operation_factors(&catalog, &building, profile);
+    assert_eq!(factors.active_worker_capacity, 4);
+    assert_eq!(factors.effective_workers, 4);
+    assert!(
+        (factors.throughput_factor - 0.25).abs() < 0.001,
+        "market-capped explicit work areas should produce against physical area capacity"
+    );
+}
+
+#[test]
+fn explicit_work_area_activity_uses_local_input_demand_plus_owa_allowance() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let processor_profile = catalog
+        .profile_for_id("food_processor_basic")
+        .expect("food processor runtime profile");
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "market_scaled_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 2.0;
+    farm.operating_budget = 10_000.0;
+    allocator.buildings.push(farm);
+    let processor_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "market_scaled_processor",
+        ZoneClass::Industrial,
+    );
+    let mut processor = make_building(10.0, ZoneType::Industrial, &processor_asset, 0.0);
+    processor.economy_profile_runtime_id = processor_profile.runtime_id;
+    processor.operating_budget = 10_000.0;
+    allocator.buildings.push(processor);
+
+    let households = HouseholdSystem::new();
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+
+    let expected_activity_scale = (processor_profile.inputs[0].units_per_day
+        + tuning.logistics.truck_load_units)
+        / (farm_profile.outputs[0].units_per_day * 2.0);
+    assert!(
+        (allocator.buildings[0].commercial_activity_floor_scale - expected_activity_scale).abs()
+            < 0.001,
+        "farm activity should track operational local processing demand plus one weak OWA load"
+    );
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
+        10
     );
 }
 

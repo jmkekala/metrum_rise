@@ -211,7 +211,21 @@ fn forced_liquidation_sells_only_unreserved_inventory() {
     let household_supply_unit_price = catalog
         .unit_price_for_resource(household_supplies)
         .expect("household supplies unit price");
-    let expected_budget = -10.0 - tuning.commercial_owa_utility_cost_per_day
+    let no_provider_utility_cost = [
+        "power_plant_basic",
+        "water_plant_basic",
+        "wastewater_treatment_basic",
+    ]
+    .iter()
+    .map(|profile_id| {
+        catalog
+            .profile_for_id(profile_id)
+            .expect("utility profile")
+            .unit_price_currency
+    })
+    .sum::<f32>()
+        * tuning.owa_import_price_multiplier;
+    let expected_budget = -10.0 - no_provider_utility_cost
         + 30.0 * household_supply_unit_price * tuning.owa_distress_liquidation_multiplier;
     assert!(
         (allocator.buildings[0].operating_budget - expected_budget).abs() < 0.001,
@@ -286,6 +300,35 @@ fn business_profit_tax_charges_only_positive_active_business_growth() {
 }
 
 #[test]
+fn business_profit_tax_tracks_explicit_work_area_profiles_outside_zones() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let coal_profile = catalog
+        .profile_for_id("coal_mine_basic")
+        .expect("coal mine profile");
+    let mut allocator = BuildingAllocator::new();
+    let explicit_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "profit_coal_pit",
+        ZoneClass::Industrial,
+    );
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::None, &explicit_asset, 0.0));
+    allocator.buildings[0].economy_profile_runtime_id = coal_profile.runtime_id;
+    allocator.buildings[0].profit_tax_budget_baseline = 100.0;
+    allocator.buildings[0].operating_budget = 180.0;
+
+    let mut households = HouseholdSystem::new();
+    let tax = households.settle_business_profit_tax(&mut allocator, 0.10);
+
+    assert!((tax - 8.0).abs() < 0.001);
+    assert!((allocator.buildings[0].operating_budget - 172.0).abs() < 0.001);
+    assert!((allocator.buildings[0].profit_tax_budget_baseline - 172.0).abs() < 0.001);
+    assert!((allocator.buildings[0].last_day_profit - 80.0).abs() < 0.001);
+}
+
+#[test]
 fn business_profit_tax_does_not_push_recovering_business_negative() {
     let mut allocator = BuildingAllocator::new();
     let commercial_asset = register_test_asset(
@@ -311,6 +354,315 @@ fn business_profit_tax_does_not_push_recovering_business_negative() {
     assert_eq!(allocator.buildings[0].profit_tax_budget_baseline, 0.0);
     assert_eq!(allocator.buildings[0].last_day_profit, 105.0);
     assert!(!allocator.buildings[0].budget_distress);
+}
+
+#[test]
+fn service_store_sales_use_staffed_aggregate_household_demand() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_service_profile = catalog
+        .profile_for_id("personal_service_small")
+        .expect("personal service profile");
+    let personal_services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .expect("personal service resource");
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "service_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let service_asset = register_test_commercial_asset_with_profile(
+        &mut allocator,
+        "test",
+        "half_staffed_barber",
+        "personal_service_small",
+    );
+    let mut service_building = make_building(10.0, ZoneType::Commercial, &service_asset, 0.0);
+    service_building.economy_profile_runtime_id = personal_service_profile.runtime_id;
+    service_building.worker_count = 2;
+    service_building.operating_budget = 0.0;
+    service_building.profit_tax_budget_baseline = 0.0;
+    allocator.buildings.push(service_building);
+
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 100, 0.0, 0.0);
+    household.budget = 10.0;
+    households.households.push(household);
+
+    households.run_building_economy(&mut allocator);
+
+    let expected_revenue = 100.0 * 0.03 / 24.0 * 12.0;
+    assert!(
+        (allocator.buildings[1].revenue - expected_revenue).abs() < 0.001,
+        "service revenue should be demand-capped and capacity-share credited"
+    );
+    assert!(
+        (allocator.buildings[1].operating_budget - expected_revenue).abs() < 0.001,
+        "service revenue should fund the commercial building budget"
+    );
+    assert!(
+        (households.households[0].budget - (10.0 - expected_revenue)).abs() < 0.001,
+        "aggregate service sales should debit household budget"
+    );
+    assert_eq!(
+        allocator.buildings[1].inventory_units(personal_services),
+        0.0,
+        "service capacity must not accumulate as physical inventory"
+    );
+}
+
+#[test]
+fn service_store_active_worker_slots_scale_from_aggregate_demand() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_service_profile = catalog
+        .profile_for_id("personal_service_small")
+        .expect("personal service profile");
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "service_activity_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let service_asset = register_test_commercial_asset_with_profile(
+        &mut allocator,
+        "test",
+        "activity_barber",
+        "personal_service_small",
+    );
+    let mut service_building = make_building(10.0, ZoneType::Commercial, &service_asset, 0.0);
+    service_building.economy_profile_runtime_id = personal_service_profile.runtime_id;
+    allocator.buildings.push(service_building);
+
+    let empty_households = HouseholdSystem::new();
+    refresh_commercial_activity_floor(&catalog, &empty_households.households, &mut allocator);
+    assert_eq!(
+        active_worker_capacity_for_profile(
+            &catalog,
+            &allocator.buildings[1],
+            personal_service_profile
+        ),
+        0,
+        "service stores should offer no active worker slots without resident demand"
+    );
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 70, 0.0, 0.0));
+
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+
+    assert_eq!(
+        active_worker_capacity_for_profile(
+            &catalog,
+            &allocator.buildings[1],
+            personal_service_profile
+        ),
+        1,
+        "70 residents should create only one active barber slot, not the full four-worker profile"
+    );
+    allocator.buildings[1].worker_count = 1;
+    let factors =
+        building_operation_factors(&catalog, &allocator.buildings[1], personal_service_profile);
+    assert!(
+        (factors.throughput_factor - 0.25).abs() < 0.001,
+        "service output should still scale against authored worker capacity"
+    );
+}
+
+#[test]
+fn service_store_wage_pass_sheds_workers_above_active_demand_capacity() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_service_profile = catalog
+        .profile_for_id("personal_service_small")
+        .expect("personal service profile");
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 70, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "service_shed_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let service_asset = register_test_commercial_asset_with_profile(
+        &mut allocator,
+        "test",
+        "overstaffed_barber",
+        "personal_service_small",
+    );
+    let mut service_building = make_building(10.0, ZoneType::Commercial, &service_asset, 0.0);
+    service_building.economy_profile_runtime_id = personal_service_profile.runtime_id;
+    service_building.worker_count = 4;
+    service_building.operating_budget = 1_000.0;
+    allocator.buildings.push(service_building);
+
+    let mut agents = AgentSystem::new();
+    let workers = [
+        agents.spawn_housed_agent(0, 0.0, 0.0),
+        agents.spawn_housed_agent(0, 0.0, 0.0),
+        agents.spawn_housed_agent(0, 0.0, 0.0),
+        agents.spawn_housed_agent(0, 0.0, 0.0),
+    ];
+    for agent in workers {
+        agents.household_id[agent] = 0;
+        agents.transit[agent] = TRANSIT_IN_BUILDING;
+        agents.current_building[agent] = 0;
+        agents.assign_work_building(agent, 1, 0);
+    }
+
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+
+    assert_eq!(allocator.buildings[1].worker_count, 1);
+    assert_eq!(agents.work_building[workers[0]], 1);
+    assert_eq!(agents.work_building[workers[1]], usize::MAX);
+    assert_eq!(agents.work_building[workers[2]], usize::MAX);
+    assert_eq!(agents.work_building[workers[3]], usize::MAX);
+}
+
+#[test]
+fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_service_profile = catalog
+        .profile_for_id("personal_service_small")
+        .expect("personal service profile");
+    let personal_services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .expect("personal_services resource");
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "service_liquidation_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let service_asset = register_test_commercial_asset_with_profile(
+        &mut allocator,
+        "test",
+        "fake_inventory_barber",
+        "personal_service_small",
+    );
+    let mut service_building = make_building(10.0, ZoneType::Commercial, &service_asset, 0.0);
+    service_building.economy_profile_runtime_id = personal_service_profile.runtime_id;
+    service_building.worker_count = 1;
+    service_building.operating_budget = 0.0;
+    service_building.set_inventory_units(personal_services, 100.0);
+    allocator.buildings.push(service_building);
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+
+    assert_eq!(agents.work_building[agent], 1);
+    assert_eq!(agents.consecutive_unpaid_days[agent], 1);
+    assert_eq!(households.households[0].budget, 0.0);
+    assert_eq!(
+        allocator.buildings[1].inventory_units(personal_services),
+        100.0
+    );
+    assert_eq!(allocator.buildings[1].operating_budget, 0.0);
+}
+
+#[test]
+fn explicit_work_area_wage_pass_sheds_workers_above_market_capacity() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm profile");
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 8, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "farm_shed_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "overstaffed_area_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(10.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 1.0;
+    farm.commercial_activity_floor_scale = 1.0;
+    farm.worker_count = 8;
+    farm.operating_budget = 10_000.0;
+    allocator.buildings.push(farm);
+
+    let mut agents = AgentSystem::new();
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+        agents.household_id[agent] = 0;
+        agents.transit[agent] = TRANSIT_IN_BUILDING;
+        agents.current_building[agent] = 0;
+        agents.assign_work_building(agent, 1, 0);
+        workers.push(agent);
+    }
+
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+
+    assert_eq!(
+        allocator.buildings[1].worker_count, 2,
+        "one OWA export load should keep only two full-area farm slots active"
+    );
+    assert_eq!(agents.work_building[workers[0]], 1);
+    assert_eq!(agents.work_building[workers[1]], 1);
+    for &agent in &workers[2..] {
+        assert_eq!(agents.work_building[agent], usize::MAX);
+        assert_eq!(agents.consecutive_unpaid_days[agent], 0);
+    }
 }
 
 #[test]
@@ -476,8 +828,117 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
 }
 
 #[test]
+fn private_nonresidential_utility_bill_uses_unified_service_prices() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "unified_utility_store",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Commercial,
+        &commercial_asset,
+        0.0,
+    ));
+    allocator.buildings[0].operating_budget = 100.0;
+
+    let logistics = ShipmentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    let expected_owa_utility_cost = [
+        "power_plant_basic",
+        "water_plant_basic",
+        "wastewater_treatment_basic",
+    ]
+    .iter()
+    .map(|profile_id| {
+        catalog
+            .profile_for_id(profile_id)
+            .expect("utility profile")
+            .unit_price_currency
+    })
+    .sum::<f32>()
+        * tuning.owa_import_price_multiplier;
+    assert!(
+        (allocator.buildings[0].operating_budget - (100.0 - expected_owa_utility_cost)).abs()
+            < 0.001
+    );
+    assert_eq!(treasury_balance, 0.0);
+    assert_eq!(
+        households.last_power_settlement().private_local_revenue,
+        0.0
+    );
+}
+
+#[test]
+fn household_utility_owa_surcharge_uses_unified_multiplier() {
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "unified_utility_home",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(0, 1, 0.0, 0.0);
+    household.budget = 100.0;
+    households.households.push(household);
+    households.ensure_daily_ledger_len();
+    households.daily_ledgers[0].power_consumption_cost = 3.0;
+    households.daily_ledgers[0].water_consumption_cost = 2.0;
+    households.daily_ledgers[0].sewage_consumption_cost = 1.5;
+    households.daily_ledgers[0].utility_stock_consumption_cost = 6.5;
+
+    let logistics = ShipmentSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    let expected_power_bill = 3.0 * tuning.owa_import_price_multiplier;
+    let expected_water_bill = 2.0 * tuning.owa_import_price_multiplier;
+    let expected_sewage_bill = 1.5 * tuning.owa_import_price_multiplier;
+    let expected_total_bill = expected_power_bill + expected_water_bill + expected_sewage_bill;
+    assert!(
+        (households.daily_ledgers()[0].power_consumption_cost - expected_power_bill).abs() < 0.001
+    );
+    assert!(
+        (households.daily_ledgers()[0].water_consumption_cost - expected_water_bill).abs() < 0.001
+    );
+    assert!(
+        (households.daily_ledgers()[0].sewage_consumption_cost - expected_sewage_bill).abs()
+            < 0.001
+    );
+    assert!(
+        (households.households[0].budget - (100.0 - (expected_total_bill - 6.5))).abs() < 0.001
+    );
+    assert!(
+        (households.daily_ledgers()[0].utility_stock_consumption_cost - expected_total_bill).abs()
+            < 0.001
+    );
+    assert_eq!(treasury_balance, 0.0);
+    assert_eq!(
+        households.last_power_settlement().household_local_revenue,
+        0.0
+    );
+}
+
+#[test]
 fn household_utility_payment_flows_to_fueled_power_provider() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let mut allocator = BuildingAllocator::new();
     let residential_asset = register_test_asset(
         &mut allocator,
@@ -518,7 +979,21 @@ fn household_utility_payment_flows_to_fueled_power_provider() {
 
     assert!((allocator.buildings[1].revenue - 63.0).abs() < 0.001);
     assert!((allocator.buildings[1].daily_power_served_units - 21.0).abs() < 0.001);
-    assert!((treasury_balance - 60.0).abs() < 0.001);
+    let missing_city_utility_owa = ["water_plant_basic", "wastewater_treatment_basic"]
+        .iter()
+        .map(|profile_id| {
+            catalog
+                .profile_for_id(profile_id)
+                .expect("utility profile")
+                .unit_price_currency
+        })
+        .sum::<f32>()
+        * tuning.owa_import_price_multiplier;
+    assert!((treasury_balance - (60.0 - missing_city_utility_owa as f64)).abs() < 0.001);
+    let summary = households.last_power_settlement();
+    assert!((summary.utility_local_revenue - 63.0).abs() < 0.001);
+    assert!((summary.city_service_utility_local_cost - 3.0).abs() < 0.001);
+    assert!((summary.city_service_utility_owa_cost - missing_city_utility_owa).abs() < 0.001);
 }
 
 #[test]

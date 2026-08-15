@@ -387,6 +387,66 @@ fn insolvent_self_fire_decrements_worker_count() {
 }
 
 #[test]
+fn wage_payment_liquidates_output_inventory_before_unpaid() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let processor = catalog
+        .profile_for_id("food_processor_basic")
+        .expect("processor starter profile");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let daily_wage = processor.average_daily_wage();
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(make_household(0, 1, 0.0, 0.0));
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "inventory_wage_res",
+        ZoneClass::Residential,
+    );
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "inventory_wage_ind",
+        ZoneClass::Industrial,
+    );
+    allocator.buildings.push(make_building(
+        0.0,
+        ZoneType::Residential,
+        &residential_asset,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        20.0,
+        ZoneType::Industrial,
+        &industrial_asset,
+        0.0,
+    ));
+    allocator.buildings[1].operating_budget = 0.0;
+    allocator.buildings[1].worker_count = 1;
+    allocator.buildings[1].set_inventory_units(packaged_food, 100.0);
+
+    let mut agents = AgentSystem::new();
+    let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[agent] = 0;
+    agents.transit[agent] = TRANSIT_IN_BUILDING;
+    agents.current_building[agent] = 0;
+    agents.assign_work_building(agent, 1, 0);
+
+    let mut treasury_balance = 0.0;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+
+    assert_eq!(agents.work_building[agent], 1);
+    assert_eq!(agents.consecutive_unpaid_days[agent], 0);
+    assert!((households.households[0].budget - daily_wage).abs() <= 0.001);
+    assert!(allocator.buildings[1].inventory_units(packaged_food) < 100.0);
+    assert!(allocator.buildings[1].operating_budget.abs() <= 0.001);
+}
+
+#[test]
 fn full_current_workplace_is_scored_before_switching() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let grocery = catalog

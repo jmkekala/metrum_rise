@@ -66,18 +66,6 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
         );
     }
     validate_range(
-        tuning.commercial_owa_utility_cost_per_day,
-        0.0,
-        f32::INFINITY,
-        "runtime_tuning.commercial_owa_utility_cost_per_day",
-    )?;
-    validate_range(
-        tuning.industrial_owa_utility_cost_per_day,
-        0.0,
-        f32::INFINITY,
-        "runtime_tuning.industrial_owa_utility_cost_per_day",
-    )?;
-    validate_range(
         tuning.logistics.truck_load_units,
         f32::EPSILON,
         f32::INFINITY,

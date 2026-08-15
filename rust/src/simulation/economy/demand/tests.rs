@@ -384,6 +384,7 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         commercial_capacity_deficit: 0.0,
         unmet_commercial_consumer_demand: 0.0,
         committed_unmet_commercial_consumer_demand: 0.0,
+        committed_unmet_commercial_consumer_demand_by_resource: Vec::new(),
         industrial_input_capacity_deficit: 0.0,
         commercial_input_need_value: 0.0,
         local_industrial_input_capacity_value: 0.0,
@@ -705,6 +706,122 @@ fn commercial_spawn_need_rounds_unmet_output_to_missing_buildings() {
 }
 
 #[test]
+fn commercial_spawn_candidate_prefers_asset_for_unmet_consumer_resource() {
+    let mut allocator = BuildingAllocator::new();
+    register_family_asset_with_economy_profile(
+        &mut allocator,
+        "commercial_grocery",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("grocery_basic"),
+    );
+    let barber = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "commercial_barber",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("personal_service_small"),
+    );
+    register_family_asset_with_economy_profile(
+        &mut allocator,
+        "commercial_pharmacy",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("health_essentials_small"),
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .expect("personal_services resource");
+    let graph = graph_with_connected_border();
+    let zoning = commercial_zoning_run(&graph);
+
+    let candidates = allocator.collect_demand_spawn_candidates_by_use(
+        &zoning,
+        &graph,
+        catalog.as_ref(),
+        &[(personal_services, 1.0)],
+    );
+
+    assert!(!candidates.commercial.is_empty());
+    assert!(
+        candidates
+            .commercial
+            .iter()
+            .all(|candidate| candidate.action.asset_id == barber),
+        "unmet personal-service demand should expose barber candidates before generic commercial variants"
+    );
+}
+
+#[test]
+fn commercial_spawn_need_averages_output_only_across_matching_resource_candidates() {
+    let mut allocator = BuildingAllocator::new();
+    let grocery = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "need_grocery",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("grocery_basic"),
+    );
+    let barber = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "need_barber",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("personal_service_small"),
+    );
+    let pharmacy = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "need_pharmacy",
+        ZoneType::Commercial,
+        None,
+        1,
+        Some("health_essentials_small"),
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let personal_services = catalog
+        .resource_runtime_id_for_id("personal_services")
+        .expect("personal_services resource");
+    let candidates = [
+        DemandSpawnCandidate {
+            action: DemandSpawnAction {
+                parcel_id: 1,
+                asset_id: grocery,
+            },
+            density: "low".to_owned(),
+        },
+        DemandSpawnCandidate {
+            action: DemandSpawnAction {
+                parcel_id: 2,
+                asset_id: barber,
+            },
+            density: "low".to_owned(),
+        },
+        DemandSpawnCandidate {
+            action: DemandSpawnAction {
+                parcel_id: 3,
+                asset_id: pharmacy,
+            },
+            density: "low".to_owned(),
+        },
+    ];
+    let mut snapshot = vacant_admission_snapshot();
+    snapshot.committed_unmet_commercial_consumer_demand = 160.0;
+    snapshot.committed_unmet_commercial_consumer_demand_by_resource =
+        vec![(personal_services, 160.0)];
+
+    assert_eq!(
+        commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        2.0
+    );
+}
+
+#[test]
 fn industrial_spawn_need_rounds_missing_input_capacity_to_missing_buildings() {
     let mut allocator = BuildingAllocator::new();
     let industrial_asset = register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
@@ -902,7 +1019,13 @@ fn pending_commercial_construction_is_committed_but_not_live_capacity() {
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(snapshot.unmet_commercial_consumer_demand > 0.0);
-    assert_eq!(snapshot.committed_unmet_commercial_consumer_demand, 0.0);
+    let expected_uncommitted_service_demand = 5.0 * 0.03 + 5.0 * 0.05;
+    assert!(
+        (snapshot.committed_unmet_commercial_consumer_demand - expected_uncommitted_service_demand)
+            .abs()
+            < 0.001,
+        "pending grocery construction should not satisfy unrelated service-store demand"
+    );
     assert!(snapshot.commercial_capacity_deficit > 0.0);
 
     let candidates = [DemandSpawnCandidate {
@@ -1232,6 +1355,46 @@ fn hourly_pass_produces_startup_household_admission_when_capacity_jobs_and_borde
     demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
 
     assert!(demand.households_to_admit_today > 0);
+}
+
+#[test]
+fn runtime_snapshot_uses_existing_unemployed_before_new_household_job_pull() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "net_job_home", ZoneType::Residential);
+    let industrial_asset =
+        register_test_asset(&mut allocator, "net_job_factory", ZoneType::Industrial);
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+    let mut factory = building(ZoneType::Industrial, 0.0, 0, 1, industrial_asset);
+    factory.operating_budget = 10_000.0;
+    allocator.buildings.push(factory);
+    allocator.rebuild_zone_index();
+
+    let mut households = HouseholdSystem::new();
+    households
+        .households
+        .push(housed_household(0, 20, 10_000.0, 3.0));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+
+    assert!(snapshot.open_job_slots > 0);
+    assert!(snapshot.existing_unemployed_member_count >= snapshot.open_job_slots);
+    assert_eq!(snapshot.open_job_household_pull, 0.0);
+    assert_eq!(snapshot.move_in_job_slots, 0);
+    assert!(snapshot.move_in_job_equivalent_slots <= 0.001);
+    assert!(
+        snapshot.incoming_household_need <= snapshot.regional_growth_household_pull + 0.001,
+        "raw open jobs should not pull immigrants while existing unemployed adults can fill them"
+    );
 }
 
 #[test]
@@ -1910,12 +2073,15 @@ fn marginal_commercial_growth_is_fractional_below_next_worker_slot() {
     allocator.buildings.push(shop);
 
     let mut households = HouseholdSystem::new();
-    households.households.push(housed_household(
+    let mut demand_household = housed_household(
         0,
         resident_count,
         10_000.0,
         household_profile.stock_target_days,
-    ));
+    );
+    demand_household.adult_count = target_active_workers as u16;
+    demand_household.child_count = resident_count.saturating_sub(demand_household.adult_count);
+    households.households.push(demand_household);
 
     let graph = graph_with_connected_border();
     let config = load_builtin_demand_config().expect("built-in demand config must load");
@@ -2033,12 +2199,15 @@ fn marginal_commercial_jobs_pull_households_when_current_store_cap_is_filled() {
     allocator.buildings.push(shop);
 
     let mut households = HouseholdSystem::new();
-    households.households.push(housed_household(
+    let mut demand_household = housed_household(
         0,
         resident_count,
         10_000.0,
         household_profile.stock_target_days,
-    ));
+    );
+    demand_household.adult_count = target_active_workers as u16;
+    demand_household.child_count = resident_count.saturating_sub(demand_household.adult_count);
+    households.households.push(demand_household);
 
     let graph = graph_with_connected_border();
     let config = load_builtin_demand_config().expect("built-in demand config must load");

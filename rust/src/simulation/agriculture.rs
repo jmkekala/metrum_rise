@@ -6,10 +6,16 @@
 //! deposit.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::definitions::{EconomyProfileRuntimeKind, RuntimeEconomyCatalog};
-use crate::simulation::economy::households::building_operation_factors;
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
+};
+use crate::simulation::economy::households::{
+    building_operation_factors, scaled_output_buffer_capacity_units_for_building,
+};
 use crate::simulation::extraction::{validate_player_polygon, validate_polygon_near_building};
-use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
+use crate::simulation::work_area::{
+    EXPLICIT_WORK_AREA_BASE_M2, top_up_explicit_work_area_startup_budget,
+};
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the farm footprint to its field polygon.
@@ -158,6 +164,10 @@ impl AgricultureSystem {
             FIELD_POLYGON_LINK_DISTANCE_M,
         )?;
 
+        let had_site = self
+            .sites
+            .iter()
+            .any(|site| site.building_idx == building_idx);
         let site = FieldSite {
             building_idx,
             resource_id,
@@ -169,7 +179,11 @@ impl AgricultureSystem {
         self.sites.sort_unstable_by_key(|site| site.building_idx);
         self.bump_visual_revision();
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            building.set_work_area_scale(field_area_yield_factor(area_m2));
+            let area_scale = field_area_yield_factor(area_m2);
+            building.set_work_area_scale(area_scale);
+            if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
+                top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
+            }
         }
 
         Ok(FieldSiteSummary { area_m2 })
@@ -229,7 +243,8 @@ impl AgricultureSystem {
                 continue;
             }
             let current = building.inventory_units(output_port.resource_runtime_id);
-            let capacity = profile.output_buffer_capacity_units_for(output_port);
+            let capacity =
+                scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
             let produced = hourly_units.min((capacity - current).max(0.0));
             if produced <= 0.0 {
                 continue;

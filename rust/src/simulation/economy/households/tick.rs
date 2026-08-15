@@ -146,6 +146,7 @@ impl HouseholdSystem {
             fiscal_policy.income_tax_rate,
             treasury_balance,
             service_funding_by_building,
+            logistics,
         );
         let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

@@ -524,6 +524,68 @@ fn local_supplier_creates_and_delivers_shipment() {
 }
 
 #[test]
+fn dispatched_local_shipment_no_longer_reserves_source_inventory() {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "dispatched_reservation_industrial",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "dispatched_reservation_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        industrial_edge,
+        &industrial_asset,
+        300.0,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        100.0,
+        2_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let mut shipments = ShipmentSystem::new();
+    create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    let queued_source_reservation = shipments
+        .build_reservation_views(catalog.resource_count())
+        .reserved_outbound_amount(0, packaged_food);
+    assert!(queued_source_reservation > 0.0);
+
+    let mut agents = AgentSystem::new();
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
+
+    let reservations = shipments.build_reservation_views(catalog.resource_count());
+    assert_eq!(reservations.reserved_outbound_amount(0, packaged_food), 0.0);
+    assert!(reservations.has_open_inbound(1, packaged_food));
+}
+
+#[test]
 fn local_supplier_can_serve_far_reachable_destination() {
     let (graph, network, industrial_edge, commercial_edge, _) = graph_with_border_to(6_500.0);
     let mut allocator = BuildingAllocator::new();
@@ -836,6 +898,36 @@ fn explicit_field_producer_supplies_processor_input() {
         shipments.shipments[0].destination,
         ShipmentEndpoint::Building(1)
     );
+}
+
+#[test]
+fn owa_export_buffer_scales_for_explicit_work_area() {
+    let (graph, network, industrial_edge, _commercial_edge, border_node) =
+        simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let field_asset = register_test_field_asset(&mut allocator, "test", "scaled_export_field");
+    allocator.buildings.push(make_building(
+        &allocator,
+        -70.0,
+        ZoneType::None,
+        industrial_edge,
+        &field_asset,
+        120.0,
+        0.0,
+    ));
+    allocator.buildings[0].work_area_scale = 0.25;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let mut shipments = ShipmentSystem::new();
+    create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(
+        shipments.shipments[0].destination,
+        ShipmentEndpoint::OwaBorder(border_node)
+    );
+    assert_eq!(shipments.shipments[0].amount, 40.0);
 }
 
 #[test]
@@ -1272,6 +1364,219 @@ fn queued_owa_import_expires_and_refunds_destination() {
 }
 
 #[test]
+fn stuck_in_transit_local_delivery_expires_and_restores_source_stock() {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "stuck_delivery_industrial",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "stuck_delivery_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        industrial_edge,
+        &industrial_asset,
+        300.0,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        100.0,
+        2_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let mut shipments = ShipmentSystem::new();
+    let mut agents = AgentSystem::new();
+    create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    assert_eq!(shipments.shipments.len(), 1);
+    let total_cost = shipments.shipments[0].total_cost;
+
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
+    assert_eq!(agents.len(), 1);
+    assert!(allocator.buildings[0].inventory_units(packaged_food) < 300.0);
+    assert!((allocator.buildings[1].operating_budget - (2_000.0 - total_cost)).abs() < 0.01);
+
+    for _ in 0..6 {
+        progress_shipments_for_test(
+            &mut shipments,
+            &mut allocator,
+            &mut agents,
+            &network,
+            &graph,
+        );
+    }
+
+    assert_eq!(shipments.shipments[0].status, ShipmentStatus::Expired);
+    assert_eq!(agents.len(), 0);
+    assert!((allocator.buildings[0].inventory_units(packaged_food) - 300.0).abs() < 0.01);
+    assert!((allocator.buildings[1].operating_budget - 2_000.0).abs() < 0.01);
+}
+
+#[test]
+fn destination_removal_restores_dispatched_local_source_stock() {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removed_destination_source",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removed_destination_target",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        industrial_edge,
+        &industrial_asset,
+        300.0,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        100.0,
+        2_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let mut shipments = ShipmentSystem::new();
+    let mut agents = AgentSystem::new();
+    create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
+    assert_eq!(agents.len(), 1);
+    assert!(allocator.buildings[0].inventory_units(packaged_food) < 300.0);
+
+    shipments.invalidate_building(1, &mut allocator, &mut agents);
+
+    assert!(shipments.shipments.is_empty());
+    assert_eq!(agents.len(), 0);
+    assert!((allocator.buildings[0].inventory_units(packaged_food) - 300.0).abs() < 0.01);
+    assert_eq!(
+        allocator.buildings[0].shipment_cooldown_hours,
+        tuning.operational_clock.shipment_retry_cooldown_hours
+    );
+}
+
+#[test]
+fn destination_removal_does_not_restore_already_settled_returning_cargo() {
+    let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removed_returning_source",
+        ZoneClass::Industrial,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "removed_returning_target",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        -50.0,
+        ZoneType::Industrial,
+        industrial_edge,
+        &industrial_asset,
+        300.0,
+        0.0,
+    ));
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        100.0,
+        2_000.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let mut shipments = ShipmentSystem::new();
+    let mut agents = AgentSystem::new();
+    create_profile_input_shipments_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
+    mark_carrier_arrived(&shipments, &mut agents, 0);
+    progress_shipments_for_test(
+        &mut shipments,
+        &mut allocator,
+        &mut agents,
+        &network,
+        &graph,
+    );
+    assert_eq!(shipments.shipments[0].status, ShipmentStatus::Returning);
+    let source_inventory_after_sale = allocator.buildings[0].inventory_units(packaged_food);
+    assert!(source_inventory_after_sale < 300.0);
+
+    shipments.invalidate_building(1, &mut allocator, &mut agents);
+
+    assert!(shipments.shipments.is_empty());
+    assert_eq!(agents.len(), 0);
+    assert!(
+        (allocator.buildings[0].inventory_units(packaged_food) - source_inventory_after_sale).abs()
+            < 0.01
+    );
+}
+
+#[test]
 fn unresolved_input_request_escalates_to_terminal_failure() {
     let (graph, network, _industrial_edge, commercial_edge, _) = simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -1320,6 +1625,63 @@ fn unresolved_input_request_escalates_to_terminal_failure() {
     assert!(failure.terminal);
     assert_eq!(failure.failures, tuning.logistics.terminal_failure_attempts);
     assert!(shipments.shipments.is_empty());
+}
+
+#[test]
+fn terminal_input_request_retries_after_budget_recovers() {
+    let (graph, network, _industrial_edge, commercial_edge, _) = simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "terminal_retry_commercial",
+        ZoneClass::Commercial,
+    );
+    allocator.buildings.push(make_building(
+        &allocator,
+        50.0,
+        ZoneType::Commercial,
+        commercial_edge,
+        &commercial_asset,
+        0.0,
+        0.0,
+    ));
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let packaged_food = catalog
+        .resource_runtime_id_for_id("packaged_food")
+        .expect("packaged food resource");
+    let request_key = FreightRequestKey {
+        destination_building_id: 0,
+        resource_runtime_id: packaged_food,
+    };
+    let mut shipments = ShipmentSystem::new();
+    let ticks = usize::from(tuning.logistics.terminal_failure_attempts)
+        * (usize::from(
+            tuning
+                .operational_clock
+                .shipment_retry_cooldown_hours
+                .max(1),
+        ) + 1);
+    for _ in 0..ticks {
+        logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
+    }
+    assert!(
+        shipments
+            .request_failures
+            .get(&request_key)
+            .is_some_and(|failure| failure.terminal)
+    );
+
+    allocator.buildings[0].operating_budget = 5_000.0;
+    allocator.buildings[0].shipment_cooldown_hours = 0;
+    logistics_tick!(&mut shipments, &mut allocator, &network, &graph, 480);
+
+    assert!(!shipments.shipments.is_empty());
+    assert!(!shipments.request_failures.contains_key(&request_key));
 }
 
 #[test]
@@ -1391,7 +1753,7 @@ fn owa_exports_respect_border_cap_within_pass() {
             ZoneType::Industrial,
             industrial_edge,
             &industrial_asset,
-            300.0,
+            400.0,
             0.0,
         ));
     }

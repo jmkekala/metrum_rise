@@ -8,7 +8,9 @@ use crate::simulation::economy::accessibility::{
 use crate::simulation::economy::definitions::{
     ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
-use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
+use crate::simulation::economy::households::{
+    scaled_input_inventory_targets_for_building, scaled_output_units_per_day_for_building,
+};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -120,8 +122,12 @@ impl ShipmentSystem {
                     allocator.buildings[src_idx].inventory_units(output_port.resource_runtime_id);
                 let unreserved = (current_inventory - reserved).max(0.0);
 
-                // Keep one day of production as a local buffer; export the rest.
-                let buffer = output_port.units_per_day;
+                // Keep one current day of production as a local buffer; export the rest.
+                let buffer = scaled_output_units_per_day_for_building(
+                    &allocator.buildings[src_idx],
+                    profile,
+                    output_port,
+                );
                 let surplus = unreserved - buffer;
                 if surplus <= 0.0 {
                     continue;
@@ -248,11 +254,9 @@ impl ShipmentSystem {
                 continue;
             };
             for input_port in &profile.inputs {
-                let request_key = Self::request_key(dest_idx, input_port.resource_runtime_id);
-                if self.request_is_terminal(request_key)
-                    || planning
-                        .reservations
-                        .has_open_inbound(dest_idx, input_port.resource_runtime_id)
+                if planning
+                    .reservations
+                    .has_open_inbound(dest_idx, input_port.resource_runtime_id)
                 {
                     continue;
                 }

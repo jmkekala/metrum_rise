@@ -185,6 +185,7 @@ fn compile_runtime_profile(
         AuthoredProfileKind::FieldProducer => EconomyProfileRuntimeKind::FieldProducer,
         AuthoredProfileKind::Processor => EconomyProfileRuntimeKind::Processor,
         AuthoredProfileKind::Store => EconomyProfileRuntimeKind::Store,
+        AuthoredProfileKind::ServiceStore => EconomyProfileRuntimeKind::ServiceStore,
         AuthoredProfileKind::DemandSink => EconomyProfileRuntimeKind::DemandSink,
         AuthoredProfileKind::Extractor => EconomyProfileRuntimeKind::Extractor,
         AuthoredProfileKind::UtilityProducer => EconomyProfileRuntimeKind::UtilityProducer,
@@ -232,6 +233,7 @@ fn compile_runtime_profile(
         EconomyProfileRuntimeKind::Processor | EconomyProfileRuntimeKind::Store => {
             !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
         }
+        EconomyProfileRuntimeKind::ServiceStore => !compiled_outputs.is_empty(),
         EconomyProfileRuntimeKind::UtilityProducer
         | EconomyProfileRuntimeKind::UtilityProcessor => true,
         EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,

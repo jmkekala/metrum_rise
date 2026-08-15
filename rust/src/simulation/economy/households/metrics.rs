@@ -5,7 +5,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::MAX_ADULTS_PER_HOUSEHOLD;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-    RuntimeEconomyTuning, RuntimeResourcePort,
+    RuntimeEconomyTuning, RuntimeResourcePort, load_runtime_economy_tuning,
 };
 use crate::simulation::work_area::{
     profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
@@ -23,7 +23,15 @@ const HOUSEHOLD_BASE_AREA_M2: f32 = 25.0;
 const HOUSEHOLD_ADULT_AREA_M2: f32 = 22.0;
 const HOUSEHOLD_CHILD_AREA_M2: f32 = 12.0;
 const MIN_POSITIVE_VALUE: f32 = 0.000_1;
+const EXPLICIT_WORK_AREA_OWA_MARKET_LOADS_PER_DAY: f32 = 1.0;
 pub(crate) const UTILITY_SERVICE_POWER: &str = "power";
+const UTILITY_SERVICE_WATER: &str = "water";
+const UTILITY_SERVICE_SEWAGE: &str = "sewage";
+const UTILITY_SERVICES: [&str; 3] = [
+    UTILITY_SERVICE_POWER,
+    UTILITY_SERVICE_WATER,
+    UTILITY_SERVICE_SEWAGE,
+];
 
 pub(super) const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
@@ -89,6 +97,36 @@ pub(super) fn household_supply_unit_price(catalog: &RuntimeEconomyCatalog) -> f3
         })
 }
 
+pub(super) fn demand_sink_cash_cost_per_resident_excluding_resource(
+    catalog: &RuntimeEconomyCatalog,
+    excluded_resource_runtime_id: ResourceRuntimeId,
+) -> f32 {
+    catalog
+        .all_profiles()
+        .iter()
+        .filter(|profile| profile.kind == EconomyProfileRuntimeKind::DemandSink)
+        .flat_map(|profile| {
+            profile.inputs.iter().filter_map(move |input| {
+                if input.resource_runtime_id == excluded_resource_runtime_id {
+                    return None;
+                }
+                let resource_price = catalog
+                    .unit_price_for_resource(input.resource_runtime_id)
+                    .unwrap_or_else(|| {
+                        let resource_id = catalog
+                            .resource_id_for_runtime_id(input.resource_runtime_id)
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "resource '{resource_id}' used by profile '{}' has no catalog price",
+                            profile.id
+                        )
+                    });
+                Some(profile.consumption_rate_per_resident.max(0.0) * resource_price.max(0.0))
+            })
+        })
+        .sum()
+}
+
 pub(crate) fn building_total_output_inventory(
     catalog: &RuntimeEconomyCatalog,
     building: &Building,
@@ -130,6 +168,14 @@ pub(crate) fn profile_output_value_per_day(
 fn is_sales_scaled_commercial_store(building: &Building, profile: &EconomyProfileRuntime) -> bool {
     matches!(building.zone_type, ZoneType::Commercial)
         && matches!(profile.kind, EconomyProfileRuntimeKind::Store)
+}
+
+fn is_service_scaled_commercial_store(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> bool {
+    matches!(building.zone_type, ZoneType::Commercial)
+        && matches!(profile.kind, EconomyProfileRuntimeKind::ServiceStore)
 }
 
 fn commercial_household_supply_output_units_per_day(
@@ -202,12 +248,327 @@ pub(crate) fn commercial_activity_signal_for_city(
     }
 }
 
+fn add_resource_amount(
+    amounts_by_resource: &mut Vec<(ResourceRuntimeId, f32)>,
+    resource_runtime_id: ResourceRuntimeId,
+    amount: f32,
+) {
+    if amount <= 0.0 {
+        return;
+    }
+    if let Some((_, total)) = amounts_by_resource
+        .iter_mut()
+        .find(|(existing_resource, _)| *existing_resource == resource_runtime_id)
+    {
+        *total += amount;
+    } else {
+        amounts_by_resource.push((resource_runtime_id, amount));
+    }
+}
+
+fn resource_amount(
+    amounts_by_resource: &[(ResourceRuntimeId, f32)],
+    resource_runtime_id: ResourceRuntimeId,
+) -> f32 {
+    amounts_by_resource
+        .iter()
+        .find(|(existing_resource, _)| *existing_resource == resource_runtime_id)
+        .map(|(_, amount)| *amount)
+        .unwrap_or(0.0)
+}
+
+fn service_store_demand_rates_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let mut demand_rates = Vec::new();
+    let mut service_resources = Vec::new();
+    for profile in catalog.all_profiles() {
+        if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
+            continue;
+        }
+        for output in &profile.outputs {
+            add_resource_amount(&mut service_resources, output.resource_runtime_id, 1.0);
+        }
+    }
+
+    for profile in catalog.all_profiles() {
+        if profile.kind != EconomyProfileRuntimeKind::DemandSink {
+            continue;
+        }
+        for input in &profile.inputs {
+            if resource_amount(&service_resources, input.resource_runtime_id) <= 0.0 {
+                continue;
+            }
+            add_resource_amount(
+                &mut demand_rates,
+                input.resource_runtime_id,
+                profile.consumption_rate_per_resident.max(0.0),
+            );
+        }
+    }
+    demand_rates
+}
+
+fn service_store_live_output_units_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    allocator
+        .buildings
+        .par_iter()
+        .filter_map(|building| {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || building.edge_idx == usize::MAX
+            {
+                return None;
+            }
+            let profile = economy_profile_for_building(catalog, building)?;
+            if !is_service_scaled_commercial_store(building, profile) {
+                return None;
+            }
+            Some(profile.outputs.as_slice())
+        })
+        .fold(Vec::new, |mut local, outputs| {
+            for output in outputs {
+                add_resource_amount(
+                    &mut local,
+                    output.resource_runtime_id,
+                    output.units_per_day.max(0.0),
+                );
+            }
+            local
+        })
+        .reduce(Vec::new, |mut left, right| {
+            for (resource_runtime_id, amount) in right {
+                add_resource_amount(&mut left, resource_runtime_id, amount);
+            }
+            left
+        })
+}
+
+fn housed_resident_count(households: &[Household], allocator: &BuildingAllocator) -> u32 {
+    households
+        .par_iter()
+        .filter(|household| household_is_housed(household, allocator))
+        .map(|household| u32::from(household.member_count))
+        .sum()
+}
+
+fn service_store_activity_scale_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    households: &[Household],
+    allocator: &BuildingAllocator,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let housed_residents = housed_resident_count(households, allocator) as f32;
+    if housed_residents <= 0.0 {
+        return Vec::new();
+    }
+
+    let demand_rates = service_store_demand_rates_by_resource(catalog);
+    if demand_rates.is_empty() {
+        return Vec::new();
+    }
+
+    let live_output_units = service_store_live_output_units_by_resource(catalog, allocator);
+    let mut scales = Vec::with_capacity(demand_rates.len());
+    for (resource_runtime_id, demand_rate_per_resident) in demand_rates {
+        let output_units_per_day = resource_amount(&live_output_units, resource_runtime_id);
+        if output_units_per_day <= MIN_POSITIVE_VALUE {
+            continue;
+        }
+        let demand_units_per_day = housed_residents * demand_rate_per_resident.max(0.0);
+        add_resource_amount(
+            &mut scales,
+            resource_runtime_id,
+            (demand_units_per_day / output_units_per_day).clamp(0.0, 1.0),
+        );
+    }
+    scales
+}
+
+fn service_store_profile_activity_scale(
+    profile: &EconomyProfileRuntime,
+    activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
+) -> f32 {
+    profile
+        .outputs
+        .iter()
+        .map(|output| resource_amount(activity_scale_by_resource, output.resource_runtime_id))
+        .fold(0.0, f32::max)
+        .clamp(0.0, 1.0)
+}
+
+fn physical_worker_capacity_for_profile(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> u32 {
+    if profile_kind_uses_explicit_work_area(profile.kind) {
+        scaled_work_area_worker_capacity(profile.worker_capacity, building.work_area_scale)
+    } else {
+        profile.worker_capacity
+    }
+}
+
+fn buyer_input_activity_scale(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+) -> f32 {
+    let physical_capacity = physical_worker_capacity_for_profile(building, profile);
+    if physical_capacity == 0 {
+        return 0.0;
+    }
+    let active_capacity = if profile_kind_uses_explicit_work_area(profile.kind) {
+        physical_capacity
+    } else {
+        active_worker_capacity_for_profile(catalog, building, profile)
+    };
+    if active_capacity == 0 {
+        return 0.0;
+    }
+    let average_daily_wage = profile.average_daily_wage();
+    let city_funded = allocator.is_city_service_building(building);
+    let budget_capacity = if city_funded {
+        active_capacity
+    } else if average_daily_wage > 0.1 {
+        (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
+    } else {
+        active_capacity
+    };
+    let budget_backed_capacity = active_capacity.min(budget_capacity);
+    (budget_backed_capacity as f32 / physical_capacity.max(1) as f32).clamp(0.0, 1.0)
+}
+
+fn local_input_demand_units_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let mut demand_units = Vec::new();
+    for building in &allocator.buildings {
+        if building.broken
+            || building.economy_broken
+            || building.is_deserted
+            || building.is_under_construction()
+            || building.edge_idx == usize::MAX
+        {
+            continue;
+        }
+        let Some(profile) = economy_profile_for_building(catalog, building) else {
+            continue;
+        };
+        if profile.inputs.is_empty() {
+            continue;
+        }
+        let activity_scale = buyer_input_activity_scale(catalog, allocator, building, profile);
+        if activity_scale <= MIN_POSITIVE_VALUE {
+            continue;
+        }
+        for input in &profile.inputs {
+            add_resource_amount(
+                &mut demand_units,
+                input.resource_runtime_id,
+                input.units_per_day.max(0.0) * activity_scale,
+            );
+        }
+    }
+    demand_units
+}
+
+fn explicit_work_area_full_output_units_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    allocator
+        .buildings
+        .par_iter()
+        .filter_map(|building| {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || building.edge_idx == usize::MAX
+            {
+                return None;
+            }
+            let profile = economy_profile_for_building(catalog, building)?;
+            if !profile_kind_uses_explicit_work_area(profile.kind) || profile.outputs.is_empty() {
+                return None;
+            }
+            Some((building, profile))
+        })
+        .fold(Vec::new, |mut local, (building, profile)| {
+            for output in &profile.outputs {
+                add_resource_amount(
+                    &mut local,
+                    output.resource_runtime_id,
+                    scaled_output_units_per_day_for_building(building, profile, output),
+                );
+            }
+            local
+        })
+        .reduce(Vec::new, |mut left, right| {
+            for (resource_runtime_id, amount) in right {
+                add_resource_amount(&mut left, resource_runtime_id, amount);
+            }
+            left
+        })
+}
+
+fn explicit_work_area_activity_scale_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+    tuning: &RuntimeEconomyTuning,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let full_output_units = explicit_work_area_full_output_units_by_resource(catalog, allocator);
+    if full_output_units.is_empty() {
+        return Vec::new();
+    }
+    let local_input_demand = local_input_demand_units_by_resource(catalog, allocator);
+    let owa_market_units =
+        tuning.logistics.truck_load_units.max(0.0) * EXPLICIT_WORK_AREA_OWA_MARKET_LOADS_PER_DAY;
+    let mut scales = Vec::with_capacity(full_output_units.len());
+    for (resource_runtime_id, output_units_per_day) in full_output_units {
+        if output_units_per_day <= MIN_POSITIVE_VALUE {
+            continue;
+        }
+        let market_units =
+            resource_amount(&local_input_demand, resource_runtime_id) + owa_market_units;
+        scales.push((
+            resource_runtime_id,
+            (market_units / output_units_per_day).clamp(0.0, 1.0),
+        ));
+    }
+    scales
+}
+
+fn explicit_work_area_profile_activity_scale(
+    profile: &EconomyProfileRuntime,
+    activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
+) -> f32 {
+    profile
+        .outputs
+        .iter()
+        .map(|output| resource_amount(activity_scale_by_resource, output.resource_runtime_id))
+        .fold(0.0, f32::max)
+        .clamp(0.0, 1.0)
+}
+
 pub(crate) fn refresh_commercial_activity_floor(
     catalog: &RuntimeEconomyCatalog,
     households: &[Household],
     allocator: &mut BuildingAllocator,
 ) -> CommercialActivitySignal {
+    let tuning = load_runtime_economy_tuning()
+        .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
     let signal = commercial_activity_signal_for_city(catalog, households, allocator);
+    let service_activity_scale_by_resource =
+        service_store_activity_scale_by_resource(catalog, households, allocator);
+    let explicit_activity_scale_by_resource =
+        explicit_work_area_activity_scale_by_resource(catalog, allocator, tuning.as_ref());
     allocator.buildings.par_iter_mut().for_each(|building| {
         building.commercial_activity_floor_scale = 0.0;
         if building.broken
@@ -222,6 +583,14 @@ pub(crate) fn refresh_commercial_activity_floor(
         };
         if is_sales_scaled_commercial_store(building, profile) {
             building.commercial_activity_floor_scale = signal.activity_floor_scale;
+        } else if is_service_scaled_commercial_store(building, profile) {
+            building.commercial_activity_floor_scale =
+                service_store_profile_activity_scale(profile, &service_activity_scale_by_resource);
+        } else if profile_kind_uses_explicit_work_area(profile.kind) {
+            building.commercial_activity_floor_scale = explicit_work_area_profile_activity_scale(
+                profile,
+                &explicit_activity_scale_by_resource,
+            );
         }
     });
     signal
@@ -285,7 +654,24 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
         return 0;
     }
     if profile_kind_uses_explicit_work_area(profile.kind) {
-        return scaled_work_area_worker_capacity(worker_capacity, building.work_area_scale);
+        let physical_capacity =
+            scaled_work_area_worker_capacity(worker_capacity, building.work_area_scale);
+        let activity_scale = floor_scale.clamp(0.0, 1.0);
+        if physical_capacity == 0 || activity_scale <= MIN_POSITIVE_VALUE {
+            return 0;
+        }
+        return ((physical_capacity as f32) * activity_scale)
+            .ceil()
+            .clamp(1.0, physical_capacity as f32) as u32;
+    }
+    if is_service_scaled_commercial_store(building, profile) {
+        let activity_scale = floor_scale.clamp(0.0, 1.0);
+        if activity_scale <= MIN_POSITIVE_VALUE {
+            return 0;
+        }
+        return ((worker_capacity as f32) * activity_scale)
+            .ceil()
+            .clamp(1.0, worker_capacity as f32) as u32;
     }
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity;
@@ -308,13 +694,49 @@ pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
         return 0.0;
     }
     if profile_kind_uses_explicit_work_area(profile.kind) {
-        return worker_capacity as f32 * sanitize_work_area_scale(building.work_area_scale);
+        return worker_capacity as f32
+            * sanitize_work_area_scale(building.work_area_scale)
+            * floor_scale.clamp(0.0, 1.0);
+    }
+    if is_service_scaled_commercial_store(building, profile) {
+        return worker_capacity as f32 * floor_scale.clamp(0.0, 1.0);
     }
     if !is_sales_scaled_commercial_store(building, profile) {
         return worker_capacity as f32;
     }
     worker_capacity as f32
         * commercial_activity_scale_with_floor(catalog, building, profile, floor_scale)
+}
+
+/// Returns one output port's daily rate after explicit work-area scaling.
+pub(crate) fn scaled_output_units_per_day_for_building(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    output_port: &RuntimeResourcePort,
+) -> f32 {
+    output_port.units_per_day.max(0.0) * output_area_scale_for_building(building, profile)
+}
+
+/// Returns one output port's storage capacity after explicit work-area scaling.
+pub(crate) fn scaled_output_buffer_capacity_units_for_building(
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    output_port: &RuntimeResourcePort,
+) -> f32 {
+    let capacity = profile.output_buffer_capacity_units_for(output_port);
+    if capacity.is_finite() {
+        capacity * output_area_scale_for_building(building, profile)
+    } else {
+        capacity
+    }
+}
+
+fn output_area_scale_for_building(building: &Building, profile: &EconomyProfileRuntime) -> f32 {
+    if profile_kind_uses_explicit_work_area(profile.kind) {
+        sanitize_work_area_scale(building.work_area_scale)
+    } else {
+        1.0
+    }
 }
 
 fn scaled_service_worker_capacity(capacity: u32, funding_factor: f32) -> u32 {
@@ -377,13 +799,29 @@ pub(crate) fn building_operation_factors(
     building: &Building,
     profile: &EconomyProfileRuntime,
 ) -> BuildingOperationFactors {
-    let active_worker_capacity = active_worker_capacity_for_profile(catalog, building, profile);
+    building_operation_factors_with_floor_scale(
+        catalog,
+        building,
+        profile,
+        building.commercial_activity_floor_scale,
+    )
+}
+
+/// Returns production factors using an explicit demand-responsive activity floor.
+pub(crate) fn building_operation_factors_with_floor_scale(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    floor_scale: f32,
+) -> BuildingOperationFactors {
+    let active_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
+        catalog,
+        building,
+        profile,
+        floor_scale,
+    );
     let effective_workers = building.worker_count.min(active_worker_capacity);
-    let staffing_worker_capacity = if profile_kind_uses_explicit_work_area(profile.kind) {
-        active_worker_capacity.max(1)
-    } else {
-        profile.worker_capacity.max(1)
-    };
+    let staffing_worker_capacity = physical_worker_capacity_for_profile(building, profile).max(1);
     let staffing_factor =
         (effective_workers as f32 / staffing_worker_capacity as f32).clamp(0.0, 1.0);
     let production_rate_scale = if profile_kind_uses_explicit_work_area(profile.kind) {
@@ -431,7 +869,8 @@ pub(crate) fn building_inventory_fill_ratio(
     }
 
     for output_port in &profile.outputs {
-        let capacity = profile.output_buffer_capacity_units_for(output_port);
+        let capacity =
+            scaled_output_buffer_capacity_units_for_building(building, profile, output_port);
         if !capacity.is_finite() || capacity <= MIN_POSITIVE_VALUE {
             continue;
         }
@@ -495,7 +934,8 @@ fn hourly_output_headroom_factor(
             if hourly_output <= 0.0 {
                 return 1.0;
             }
-            let output_capacity_units = profile.output_buffer_capacity_units_for(port);
+            let output_capacity_units =
+                scaled_output_buffer_capacity_units_for_building(building, profile, port);
             if !output_capacity_units.is_finite() || output_capacity_units <= 0.0 {
                 return 1.0;
             }
@@ -540,10 +980,13 @@ pub(crate) fn household_reserve_days(
     household: &Household,
 ) -> f32 {
     let members = household.member_count.max(1) as f32;
+    let household_supply_resource = household_supply_resource_runtime_id(catalog);
     let daily_supply_cost =
         members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
+    let daily_cash_demand_sink_cost = members
+        * demand_sink_cash_cost_per_resident_excluding_resource(catalog, household_supply_resource);
     let daily_utility_cost = members * tuning.households.utility_cost_per_member_per_day;
-    let daily_essential_cost = daily_supply_cost + daily_utility_cost;
+    let daily_essential_cost = daily_supply_cost + daily_cash_demand_sink_cost + daily_utility_cost;
     if daily_essential_cost <= 0.0 {
         0.0
     } else {
@@ -642,12 +1085,37 @@ pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn owa_utility_cost_for_zone(tuning: &RuntimeEconomyTuning, zone_type: ZoneType) -> f32 {
-    match zone_type {
-        ZoneType::Commercial => tuning.commercial_owa_utility_cost_per_day,
-        ZoneType::Industrial => tuning.industrial_owa_utility_cost_per_day,
-        _ => 0.0,
+fn owa_utility_cost_for_zone(
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &RuntimeEconomyTuning,
+    zone_type: ZoneType,
+) -> f32 {
+    if !matches!(
+        zone_type,
+        ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed | ZoneType::Industrial
+    ) {
+        return 0.0;
     }
+    local_utility_daily_unit_cost(catalog) * tuning.owa_import_price_multiplier.max(0.0)
+}
+
+fn local_utility_daily_unit_cost(catalog: &RuntimeEconomyCatalog) -> f32 {
+    let mut costs = [0.0f32; 3];
+    for profile in catalog.all_profiles() {
+        if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref())
+            && costs[service_idx] == 0.0
+        {
+            costs[service_idx] = profile.unit_price_currency.max(0.0);
+        }
+    }
+    costs.iter().sum()
+}
+
+fn utility_service_index(service: Option<&str>) -> Option<usize> {
+    let service = service?;
+    UTILITY_SERVICES
+        .iter()
+        .position(|candidate| *candidate == service)
 }
 
 pub(crate) fn building_operating_buffer_days(
@@ -659,7 +1127,7 @@ pub(crate) fn building_operating_buffer_days(
         return 0.0;
     };
     let daily_operating_cost = building.worker_count as f32 * profile.average_daily_wage()
-        + owa_utility_cost_for_zone(tuning, building.zone_type);
+        + owa_utility_cost_for_zone(catalog, tuning, building.zone_type);
     if daily_operating_cost <= 0.0 {
         0.0
     } else {
@@ -722,7 +1190,8 @@ pub(crate) fn industrial_output_headroom_factor(
             .outputs
             .iter()
             .map(|port| {
-                let output_capacity_units = profile.output_buffer_capacity_units_for(port);
+                let output_capacity_units =
+                    scaled_output_buffer_capacity_units_for_building(building, profile, port);
                 if !output_capacity_units.is_finite() || output_capacity_units <= 0.0 {
                     1.0
                 } else {
@@ -789,5 +1258,51 @@ mod tests {
             candidate_immigrant_household_size_for_vacancy(200.0, 14, 0),
             Some(MAX_STARTER_IMMIGRANT_HOUSEHOLD_SIZE)
         );
+    }
+
+    #[test]
+    fn household_reserve_days_include_aggregate_service_cash_costs() {
+        let catalog = crate::simulation::economy::definitions::load_runtime_economy_catalog()
+            .expect("runtime economy catalog");
+        let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+        let household_supply_resource = household_supply_resource_runtime_id(catalog.as_ref());
+        let service_cost_per_resident = demand_sink_cash_cost_per_resident_excluding_resource(
+            catalog.as_ref(),
+            household_supply_resource,
+        );
+        assert!(service_cost_per_resident > 0.0);
+
+        let household = Household {
+            home_building_id: 0,
+            budget: 1_000.0,
+            stock: 0.0,
+            member_count: 2,
+            child_count: 0,
+            adult_count: 2,
+            elder_count: 0,
+            consumption_rate: 1.0,
+            stock_days: 0.0,
+            replenishment_state: 0,
+            cooldown_hours: 0,
+            replenishment_failure_count: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            shopping_agent_id: usize::MAX,
+            shopping_agent_schedule_seed: 0,
+            shopping_timeout_hours_remaining: 0,
+            replenishment_search_cursor: 0,
+            stay_failure_days: 0,
+            unhoused_days_elapsed: 0,
+            replenishment_offset_hours: 0,
+            unemployment_days_elapsed: 0,
+        };
+
+        let expected_daily_cost = household.member_count as f32
+            * (household_supply_unit_price(catalog.as_ref())
+                + service_cost_per_resident
+                + tuning.households.utility_cost_per_member_per_day);
+        let reserve_days = household_reserve_days(catalog.as_ref(), tuning.as_ref(), &household);
+        assert!((reserve_days - household.budget / expected_daily_cost).abs() < 0.001);
     }
 }

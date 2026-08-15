@@ -62,6 +62,7 @@ pub(super) fn building_outputs_can_supply_local_inputs(
     profile: &EconomyProfileRuntime,
 ) -> bool {
     !profile.outputs.is_empty()
+        && profile.kind != EconomyProfileRuntimeKind::ServiceStore
         && (matches!(
             building.zone_type,
             ZoneType::Commercial | ZoneType::Industrial
@@ -76,6 +77,7 @@ pub(super) fn building_outputs_can_export_to_owa(
     profile: &EconomyProfileRuntime,
 ) -> bool {
     !profile.outputs.is_empty()
+        && profile.kind != EconomyProfileRuntimeKind::ServiceStore
         && (matches!(building.zone_type, ZoneType::Industrial)
             || matches!(
                 profile.kind,

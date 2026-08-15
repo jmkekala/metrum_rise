@@ -8,6 +8,7 @@ pub(super) const PROFILE_KIND_PRODUCER: &str = "producer";
 pub(super) const PROFILE_KIND_FIELD_PRODUCER: &str = "field_producer";
 pub(super) const PROFILE_KIND_PROCESSOR: &str = "processor";
 pub(super) const PROFILE_KIND_STORE: &str = "store";
+pub(super) const PROFILE_KIND_SERVICE_STORE: &str = "service_store";
 pub(super) const PROFILE_KIND_DEMAND_SINK: &str = "demand_sink";
 pub(super) const PROFILE_KIND_EXTRACTOR: &str = "extractor";
 pub(super) const PROFILE_KIND_UTILITY_PRODUCER: &str = "utility_producer";
@@ -22,6 +23,7 @@ pub(super) enum AuthoredProfileKind {
     FieldProducer,
     Processor,
     Store,
+    ServiceStore,
     DemandSink,
     Extractor,
     UtilityProducer,
@@ -36,6 +38,7 @@ impl AuthoredProfileKind {
             PROFILE_KIND_FIELD_PRODUCER => Self::FieldProducer,
             PROFILE_KIND_PROCESSOR => Self::Processor,
             PROFILE_KIND_STORE => Self::Store,
+            PROFILE_KIND_SERVICE_STORE => Self::ServiceStore,
             PROFILE_KIND_DEMAND_SINK => Self::DemandSink,
             PROFILE_KIND_EXTRACTOR => Self::Extractor,
             PROFILE_KIND_UTILITY_PRODUCER => Self::UtilityProducer,

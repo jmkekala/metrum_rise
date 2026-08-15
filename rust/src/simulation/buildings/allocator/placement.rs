@@ -10,7 +10,7 @@ use crate::simulation::buildings::allocator::{
     zone_class_to_zone_type, zone_type_to_zone_class,
 };
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
 };
 use crate::simulation::economy::demand::{
     DemandSpawnAction, DemandSpawnCandidate, DemandSpawnCandidatesByUse,
@@ -19,7 +19,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::work_area::{initial_work_area_scale, scaled_work_area_worker_capacity};
+use crate::simulation::work_area::{explicit_work_area_startup_budget, initial_work_area_scale};
 use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
@@ -38,6 +38,7 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
+        commercial_spawn_resource_priorities: &[(ResourceRuntimeId, f32)],
     ) -> DemandSpawnCandidatesByUse {
         let asset_candidates_by_profile =
             self.collect_spawn_asset_candidates_by_profile(zoning, catalog);
@@ -74,13 +75,26 @@ impl BuildingAllocator {
                         return candidates;
                     };
 
-                    let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
-                        profile_candidates,
-                        profile_runtime_id,
-                        parcel,
-                        zoning,
-                        graph,
-                    ) else {
+                    let resolved = if zone_type == ZoneType::Commercial {
+                        self.select_deterministic_fresh_commercial_spawn_asset(
+                            profile_candidates,
+                            profile_runtime_id,
+                            parcel,
+                            zoning,
+                            graph,
+                            catalog,
+                            commercial_spawn_resource_priorities,
+                        )
+                    } else {
+                        self.select_deterministic_fresh_spawn_asset(
+                            profile_candidates,
+                            profile_runtime_id,
+                            parcel,
+                            zoning,
+                            graph,
+                        )
+                    };
+                    let Some(resolved) = resolved else {
                         return candidates;
                     };
 
@@ -223,6 +237,108 @@ impl BuildingAllocator {
         }
 
         best.map(|(_, resolved)| resolved)
+    }
+
+    fn select_deterministic_fresh_commercial_spawn_asset(
+        &self,
+        profile_candidates: &SpawnProfileAssetCandidates,
+        profile_runtime_id: u16,
+        parcel: &ZoningParcel,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        resource_priorities: &[(ResourceRuntimeId, f32)],
+    ) -> Option<ResolvedPlacement> {
+        for &(resource_runtime_id, unmet_units) in resource_priorities {
+            if unmet_units <= 0.0 {
+                continue;
+            }
+            if let Some(resolved) = self.select_deterministic_fresh_spawn_asset_with_output(
+                profile_candidates,
+                profile_runtime_id,
+                parcel,
+                zoning,
+                graph,
+                catalog,
+                resource_runtime_id,
+            ) {
+                return Some(resolved);
+            }
+        }
+
+        self.select_deterministic_fresh_spawn_asset(
+            profile_candidates,
+            profile_runtime_id,
+            parcel,
+            zoning,
+            graph,
+        )
+    }
+
+    fn select_deterministic_fresh_spawn_asset_with_output(
+        &self,
+        profile_candidates: &SpawnProfileAssetCandidates,
+        profile_runtime_id: u16,
+        parcel: &ZoningParcel,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+        catalog: &RuntimeEconomyCatalog,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> Option<ResolvedPlacement> {
+        let mut best = None;
+        for candidate in &profile_candidates.candidates {
+            if !self.asset_outputs_resource(catalog, &candidate.qualified_id, resource_runtime_id) {
+                continue;
+            }
+            if let Some(resolved) = self.resolve_slot(
+                &candidate.qualified_id,
+                &candidate.params,
+                parcel,
+                zoning,
+                graph,
+            ) {
+                let selection_key = (
+                    stable_strip_family_hash(
+                        profile_runtime_id,
+                        parcel.id().raw(),
+                        &candidate.family_key,
+                    ),
+                    candidate.family_key.as_str(),
+                    stable_site_variant_hash(
+                        profile_runtime_id,
+                        parcel.id().raw(),
+                        &candidate.qualified_id,
+                    ),
+                    candidate.qualified_id.as_str(),
+                );
+                if best
+                    .as_ref()
+                    .map(|(best_key, _)| selection_key < *best_key)
+                    .unwrap_or(true)
+                {
+                    best = Some((selection_key, resolved));
+                }
+            }
+        }
+
+        best.map(|(_, resolved)| resolved)
+    }
+
+    fn asset_outputs_resource(
+        &self,
+        catalog: &RuntimeEconomyCatalog,
+        asset_id: &str,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> bool {
+        let Some(profile_id) = self.registry.economy_profile(asset_id) else {
+            return false;
+        };
+        let Some(profile) = catalog.profile_for_id(profile_id) else {
+            return false;
+        };
+        profile.outputs.iter().any(|output| {
+            output.resource_runtime_id == resource_runtime_id && output.units_per_day > 0.0
+        })
     }
 
     fn asset_placement_params(
@@ -1394,7 +1510,6 @@ impl BuildingAllocator {
         // workers for STARTUP_RUNWAY_DAYS before first revenue arrives, AND cover the cost
         // of the first OWA input import (which fires immediately when local supply is absent).
         // Computed from profile data so it scales with the building.
-        const STARTUP_RUNWAY_DAYS: f32 = 7.0;
         const STARTUP_MIN_BUDGET: f32 = 500.0;
         let profile_kind = catalog
             .profile_by_runtime_id(economy_binding.runtime_id)
@@ -1416,11 +1531,11 @@ impl BuildingAllocator {
                 let profile = catalog
                     .profile_by_runtime_id(economy_binding.runtime_id)
                     .expect("explicit industry area profile checked above");
-                let daily_wage = profile.average_daily_wage();
-                let active_worker_capacity =
-                    scaled_work_area_worker_capacity(profile.worker_capacity, work_area_scale);
-                (active_worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS)
-                    .max(STARTUP_MIN_BUDGET)
+                explicit_work_area_startup_budget(
+                    profile.worker_capacity,
+                    profile.average_daily_wage(),
+                    work_area_scale,
+                )
             }
             ZoneType::Commercial | ZoneType::Industrial => {
                 if economy_binding.economy_broken {
@@ -1435,6 +1550,7 @@ impl BuildingAllocator {
                             )
                         });
                     let daily_wage = profile.average_daily_wage();
+                    const STARTUP_RUNWAY_DAYS: f32 = 7.0;
                     let wage_runway =
                         profile.worker_capacity as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
 

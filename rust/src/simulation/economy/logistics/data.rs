@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::ResourceRuntimeId;
+use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
 
 use super::route_cache::FreightRouteCache;
 
@@ -143,7 +143,7 @@ pub struct Shipment {
     pub total_cost: f32,
     /// Remaining operational-hour steps before the shipment arrives once dispatched.
     pub eta_hours: u16,
-    /// Operational hours spent queued at a border terminal.
+    /// Operational hours spent in the current active logistics state.
     pub queued_hours: u16,
 }
 
@@ -229,6 +229,14 @@ impl ShipmentSystem {
                 && destination_id != removed_building
             {
                 mutated_building_ids.push(destination_id);
+            }
+            if shipment.destination.touches_building(removed_building)
+                && shipment.status == ShipmentStatus::InTransit
+                && shipment.carrier_agent_id != usize::MAX
+                && let Some(source_id) = shipment.source.building_id()
+                && source_id != removed_building
+            {
+                mutated_building_ids.push(source_id);
             }
         }
         carrier_agent_ids.sort_unstable();
@@ -356,6 +364,10 @@ impl ShipmentSystem {
         agents: &mut AgentSystem,
     ) {
         let mut carriers_to_remove = Vec::new();
+        let retry_cooldown_hours = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
+            .operational_clock
+            .shipment_retry_cooldown_hours;
         self.shipments.retain(|shipment| {
             let touches_removed = shipment.source.touches_building(removed_building)
                 || shipment.destination.touches_building(removed_building);
@@ -370,6 +382,18 @@ impl ShipmentSystem {
                 && destination_id != removed_building
             {
                 allocator.buildings[destination_id].operating_budget += shipment.total_cost;
+                allocator.buildings[destination_id].shipment_cooldown_hours = retry_cooldown_hours;
+            }
+            if shipment.destination.touches_building(removed_building)
+                && shipment.status == ShipmentStatus::InTransit
+                && shipment.carrier_agent_id != usize::MAX
+                && let ShipmentEndpoint::Building(source_id) = shipment.source
+                && source_id < allocator.buildings.len()
+                && source_id != removed_building
+            {
+                allocator.buildings[source_id]
+                    .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                allocator.buildings[source_id].shipment_cooldown_hours = retry_cooldown_hours;
             }
 
             if shipment.carrier_agent_id != usize::MAX {
@@ -401,12 +425,6 @@ impl ShipmentSystem {
         }
     }
 
-    pub(super) fn request_is_terminal(&self, key: FreightRequestKey) -> bool {
-        self.request_failures
-            .get(&key)
-            .is_some_and(|failure| failure.terminal)
-    }
-
     pub(super) fn clear_request_failure(&mut self, key: FreightRequestKey) {
         self.request_failures.remove(&key);
     }
@@ -423,6 +441,9 @@ impl ShipmentSystem {
                 failures: 0,
                 terminal: false,
             });
+        if failure.terminal {
+            return false;
+        }
         failure.failures = failure.failures.saturating_add(1);
         failure.terminal = failure.failures >= terminal_failure_attempts;
         failure.terminal

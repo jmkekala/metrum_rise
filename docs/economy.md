@@ -458,7 +458,7 @@ The movement of goods and money is represented through explicit shipments:
 - **Cooldowns**: Buildings enter a mandatory settlement period after starting a shipment to prevent overwhelming the road network with micro-deliveries.
 - **Batching**: Both local trades and OWA exports prioritize efficient loads by waiting for a `min_shipment_units` volume before dispatching a vehicle.
 - **Capital Lockdown**: While a shipment is open, the associated budget or inventory is locked and cannot be double-spent. Source inventory is removed from the building only when the physical carrier is successfully dispatched.
-- **Fulfilment**: The transaction is credited only when the physical freight vehicle reaches its destination endpoint. Failures (e.g. building removal or missing carrier) return locked buyer capital when a buyer exists and put involved buildings into cooldown.
+- **Fulfilment**: The transaction is credited only when the physical freight vehicle reaches its destination endpoint. Failures (e.g. building removal, missing carrier, or in-transit timeout) return locked buyer capital when a buyer exists, restore dispatched local source inventory when the source still exists, and put involved buildings into cooldown.
 - roads and city-owned facilities also create recurring maintenance or operating costs that withdraw from the city treasury
 - `v0.1` should treat these as simple treasury costs rather than as a full construction-material or contractor simulation
 - future city systems such as deeper services simulation, public works, debt, or borrowing may also use this ledger, but those richer layers are outside the first economy pass
@@ -565,7 +565,7 @@ Commercial and industrial buildings pay a daily tax on positive net operating-bu
 Recommended `v0.1` rule:
 
 - `business_profit_tax_rate = 0.10`
-- only active private commercial and industrial buildings are taxable
+- only active private commercial, industrial, and explicit field/extractor businesses are taxable
 - broken, economy-broken, deserted, detached, or under-construction buildings are not taxable
 - each building stores a daily profit-tax baseline equal to its operating budget after the most
   recent profit-tax settlement
@@ -728,10 +728,10 @@ industrial growth. That pressure is diagnostic of actual outside-input use; indu
 quantity remains guarded by the demand-side committed local input-capacity accounting in
 [`demand.md`](demand.md).
 
-Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** after local input holds, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal.
+Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** after local input holds, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. For explicit field producers and extractors, both the output inventory cap and the export buffer use the current area-scaled daily output rather than the authored one-hectare output. Explicit field producers and extractors also cap active worker slots by aggregate market demand: operational local input demand plus a small OWA allowance of one baseline truckload per day. Their throughput still divides staffed workers by the full physical area-scaled worker capacity, so market-capped crews produce proportionally less instead of running oversized sites at full output.
 
 **Export Constraints**:
-- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.45x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.60x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
 - **Saturation**: repeated fulfilled exports of the same resource reduce the effective export bid.
   Authored logistics tuning controls the truckloads needed to reach the floor, the floor factor,
   and the recovery hours. Queued, failed, expired, or still-in-transit export offers do not
@@ -1269,6 +1269,8 @@ Examples:
 - `flour`
 - `packaged_food`
 - `household_supplies`
+- `personal_services`
+- `health_essentials`
 - `coal`
 - `fuel`
 - `power`
@@ -1283,6 +1285,8 @@ Rules:
 - split a resource only when the distinction creates meaningful logistics or policy gameplay
 - not every resource type must use the same transport model
 - ordinary goods such as food, fuel, and materials use the normal shipment and logistics rules
+- abstract commercial service resources such as `personal_services` and `health_essentials`
+  represent staffed service capacity, not freight inventory
 - `coal` is an ordinary shipped fuel resource in the starter utility loop
 - utility resources such as `power`, `water`, and `sewage` use the separate `Utility Service Layer` rather than the normal freight-delivery rules in `v0.1`
 
@@ -1310,6 +1314,11 @@ Rules:
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
 - `v0.1` utility service is not a detailed line-by-line grid simulation; `power` now uses aggregate daily produced units while `water` and `sewage` still use the starter provider-present fallback model
 - utility availability resolves independently per service; a local `power` provider does not satisfy `water` or `sewage`
+- each utility service settles through the same bill formula:
+  `local_charge = demand_units * local_unit_price * local_coverage` and
+  `owa_charge = demand_units * local_unit_price * owa_import_price_multiplier * missing_coverage`
+- commercial, office, mixed, and industrial buildings consume one aggregate unit per day of each modeled utility service in `v0.1`; this is intentionally broad and profile-independent until utility demand becomes content-authored
+- households keep their authored base utility cost split across power, water, and sewage ledger buckets; the daily utility settlement routes the locally covered share to local utility revenue and applies only the missing-service `OWA` surcharge to household budgets
 - a valid connected local `power` producer contributes the service units actually accumulated during hourly operation from `base_rate_units_per_day * current throughput`, capped by fuel/input availability at those hours; end-of-day settlement must not credit unproduced capacity
 - city service funding policies are runtime simulation state owned by Rust; the live electricity funding policy sets the default funded worker slots for city-owned power plants, and production follows the resulting staffed workers plus fuel/input availability
 - individual city-owned power plants may carry a per-building funding override; citywide electricity funding changes do not clear those plant overrides
@@ -1317,8 +1326,8 @@ Rules:
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
 - `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
-- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales hourly output and active worker demand against a 10,000 m2 authored baseline
-- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and active worker demand are interpreted per hectare of committed field area
+- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales physical hourly output and physical worker capacity against a 10,000 m2 authored baseline, market-backed demand caps active worker slots, and the first committed extraction area tops up startup operating budget to the area-scaled payroll runway
+- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and physical worker capacity are interpreted per hectare of committed field area, market-backed demand caps active worker slots, and the first committed field tops up startup operating budget to the area-scaled payroll runway
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -1361,6 +1370,13 @@ Example:
   - inputs: `flour`, `labor`
   - outputs: `packaged_food`
   - variables: `base_cycle_time`, `input_buffer_cap`, `output_buffer_cap`, `schedule_profile`
+
+Standalone neighborhood service businesses use `kind = "service_store"` profiles. A service store
+is a labor-and-utility commercial profile whose outputs are aggregate service capacity rather than
+stored goods. For example, `personal_service_small` can back a barber, salon, tailor, or laundromat
+asset, while `health_essentials_small` can back a pharmacy asset. These profiles may have no freight
+inputs in the first pass; small supplies are treated as ordinary operating cost until a future
+`commercial_consumables` resource becomes worthwhile.
 
 Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`). Starter move-in sizing treats this as one household's interior area: 25 m2 baseline space, a two-person household may fit as one adult plus one child-weighted member, and larger households reserve two adult-equivalent members at 22 m2 each plus child-weighted extra members at 12 m2 each.
 
@@ -1523,6 +1539,8 @@ Agents do not need a daily "buy food" trip. Instead:
 - being housed in a stocked household satisfies baseline home-life needs
 - lack of household supplies reduces happiness, stability, or health-related metrics
 - optional leisure or personal shopping trips remain low-frequency and non-essential
+- standalone commercial services such as barbers and pharmacies are satisfied through aggregate
+  per-resident demand; they do not create individual service errands in `v0.1`
 
 Essential replenishment may create a visible shopping task, but it is household-owned and limited
 to one selected carrier. This keeps daily essentials in the household/logistics layer rather than
@@ -1541,6 +1559,30 @@ Example:
 - `household` consumes `household_supplies`
 
 If that chain works, the broader economy architecture is sound enough to extend.
+
+### Standalone Service Commercial
+
+The first standalone service-commercial extension is intentionally shallow:
+
+- `service_store` profiles output demand-facing service capacity, not inventory
+- `personal_service_small` outputs `80 personal_services/day` with `4` full-staff worker slots
+- `health_essentials_small` outputs `120 health_essentials/day` with `6` full-staff worker slots
+- `personal_service_demand` creates `0.03 personal_services/day/resident`
+- `health_essentials_demand` creates `0.05 health_essentials/day/resident`
+- hourly service sales are aggregate: no individual route search, no shopping carrier, and no
+  per-agent service chore
+- active service worker slots scale from aggregate resident demand divided by total live authored
+  capacity for the service resource, rounded up to one slot when demand exists and to zero when it
+  does not
+- effective service capacity then scales from live staffed workers through the normal building
+  operation factors
+- served units are capped by resident demand and staffed capacity; household budgets are debited
+  proportionally, and revenue is distributed to matching service buildings by capacity share
+- service outputs must not accumulate in building inventory and must not be sold through freight or
+  distress liquidation
+
+Barber and pharmacy variety is therefore asset-level variety: different meshes, signs, tags, and
+profile references, not different bespoke economy systems.
 
 ## Labor Model
 
@@ -1736,9 +1778,9 @@ Rules:
   empty carrier; the return leg must not keep source inventory or destination demand reserved
 - `eta_hours` is an estimate for timing/debug/capacity decisions, not the authority that completes a
   shipment
-- active carrier removal, building removal, or invalid endpoint state must resolve the shipment
-  deterministically as fulfilled, failed, or expired; no carrier may remain orphaned after its
-  shipment is closed
+- active carrier removal, building removal, invalid endpoint state, or a trip that exceeds its
+  bounded in-transit timeout must resolve the shipment deterministically as fulfilled, failed, or
+  expired; no carrier may remain orphaned after its shipment is closed
 
 This keeps goods visible in traffic without adding a second movement stack.
 
@@ -1857,7 +1899,9 @@ Rules:
 
 - a failed request enters cooldown before it may search again
 - retries should happen on coarse economy cadence or with explicit backoff, not every simulation tick
-- after repeated failures, the request should escalate to a visible shortage or unresolved-demand state rather than spamming the same search forever
+- after repeated failures, the request should escalate to a visible shortage or unresolved-demand
+  diagnostic state rather than spamming logs; this state must not permanently suppress future
+  retries after cooldown, budget recovery, supplier recovery, or route-topology edits
 - every request should end in an explicit state such as `queued`, `reserved`, `in_transit`, `fulfilled`, `cooldown`, `expired`, or `failed_terminal`
 
 This prevents retry storms and makes debugging easier.
@@ -2224,8 +2268,8 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - household utility cost: `3.0 currency / resident / day`
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
-- `grain_farm` `base_rate`: `160 grain / day / hectare`
-- `grain_farm` worker capacity: `10 / hectare`
+- `grain_farm` `base_rate`: `280 grain / day / hectare`
+- `grain_farm` worker capacity: `8 / hectare`
 - `grain_farm` wage band: `80-100 currency / workday`
 - `food_processor` `base_rate`: `160 packaged_food / day`
 - `food_processor` worker capacity: `10`
@@ -2242,13 +2286,13 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - local base price for `household_supplies`: `25 currency / unit`
 - `OWA import_ask` for `packaged_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
 - `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
-- initial `OWA export_bid` for `packaged_food`: `6.75 currency / unit` (local × `owa_export_price_multiplier = 0.45`)
+- initial `OWA export_bid` for `packaged_food`: `9.00 currency / unit` (local × `owa_export_price_multiplier = 0.60`)
 - saturated `OWA export_bid` bottoms at `35%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
-- OWA utility cost when local utility service is incomplete: `8 currency/day` for commercial and `12 currency/day` for industrial
+- OWA utility fallback uses the same per-service unit prices as local utility billing; with no local power, water, or sewage provider, a private non-residential building pays `(3.0 + 2.0 + 1.5) × 1.75 = 11.375 currency/day`
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
-**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local commercial input holds, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.45` means the OWA initially pays 45% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
+**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local commercial input holds, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.60` means the OWA initially pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
 
 **Commercial store scaling implementation:** commercial store active worker capacity and input
 inventory targets scale from the larger of recent household sales and local essential demand.
@@ -2423,8 +2467,9 @@ Current status:
 - daily utility settlement scans active providers per service, resolves `power` from accumulated
   produced units, charges commercial, office, mixed-use, and industrial consumers independently for
   `power`, `water`, and `sewage`, routes split household utility ledger payments into matching local
-  utility revenue when covered, falls back to OWA service spend for uncovered private demand, and
-  records city-owned local utility fees in the city treasury
+  utility revenue when covered, applies missing-service `OWA` surcharges to household budgets,
+  falls back to OWA service spend for uncovered private and city-service demand, and records
+  city-owned local utility fees and city-paid OWA fallback in the city budget ledger
 - active utility providers must be non-broken, non-deserted, and connected to the network; starter
   `water` and `sewage` providers also require current workers with positive operational throughput,
   while `power` settlement uses the day's already accumulated produced units
@@ -2603,7 +2648,7 @@ those sub-buckets.
 `unemployment_daily_benefit_per_member`, `unemployment_max_days`,
 `pension_daily_benefit_per_elder`, `child_support_daily_benefit_per_child`,
 `startup_treasury_balance`, household starter values, household utility cost, private construction
-durations, fiscal tax defaults, and OWA utility costs all live in the `runtime_tuning` block of
+durations, fiscal tax defaults, and OWA import/export multipliers all live in the `runtime_tuning` block of
 `economy/profiles.toml`.
 
 | Parameter | Location | Role |
@@ -2616,7 +2661,7 @@ durations, fiscal tax defaults, and OWA utility costs all live in the `runtime_t
 | `runtime_tuning.fiscal.*` | `economy/profiles.toml` runtime_tuning | Default tax and property-tax policy values |
 | `runtime_tuning.households.*` | `economy/profiles.toml` runtime_tuning | Household starter budget, starter supplies, reserve rules, and utility cost |
 | `runtime_tuning.construction.*` | `economy/profiles.toml` runtime_tuning | Private construction durations for fresh demand-owned spawns |
-| `commercial_owa_utility_cost_per_day` / `industrial_owa_utility_cost_per_day` | `economy/profiles.toml` runtime_tuning | OWA utility cost when local utility service is incomplete |
+| `owa_import_price_multiplier` | `economy/profiles.toml` runtime_tuning | Price multiplier for OWA imports and missing local utility service fallback |
 
 ### Spawn Signal: Replacing the Pioneer Floor
 
@@ -2656,15 +2701,18 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `runtime_tuning.construction.commercial_hours_by_level` | [8, 16, 24] | Fresh commercial construction hours by target level |
 | `runtime_tuning.construction.industrial_hours_by_level` | [12, 24, 36] | Fresh industrial construction hours by target level |
 | `coal_mine_basic.base_rate_units_per_day` | 120.0 units/day/hectare | Full-staffed starter coal output before reserve, staffing, and buffer limits |
-| `coal_mine_basic.worker_capacity` | 16 / hectare | Full-staffed starter coal-mine worker demand for a 10,000 m2 extraction area |
-| `coal_mine_basic.unit_price_currency` | 4.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
-| `power_plant_basic.base_rate_units_per_day` | 240.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
-| `power_plant_basic.inputs.coal` | 24.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
+| `coal_mine_basic.worker_capacity` | 5 / hectare | Full-staffed starter coal-mine worker demand for a 10,000 m2 extraction area |
+| `coal_mine_basic.unit_price_currency` | 8.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
+| `grain_farm_basic.base_rate_units_per_day` | 280.0 units/day/hectare | Full-staffed starter farm output before staffing and buffer limits |
+| `grain_farm_basic.worker_capacity` | 8 / hectare | Full-staffed starter farm worker demand for a 10,000 m2 field area |
+| `power_plant_basic.base_rate_units_per_day` | 1200.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
+| `power_plant_basic.inputs.coal` | 96.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
 | `power_plant_basic.unit_price_currency` | 3.0 | Local power service price per aggregate power unit |
-| `owa_export_price_multiplier` | 0.45 | Scheduled OWA surplus export price multiplier |
+| `water_plant_basic.unit_price_currency` | 2.0 | Local water service price per aggregate water unit |
+| `wastewater_treatment_basic.unit_price_currency` | 1.5 | Local sewage service price per aggregate sewage unit |
+| `owa_import_price_multiplier` | 1.75 | OWA import and missing local utility fallback price multiplier |
+| `owa_export_price_multiplier` | 0.60 | Scheduled OWA surplus export price multiplier |
 | `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
-| `commercial_owa_utility_cost_per_day` | 8.0 | OWA utility charge per commercial building |
-| `industrial_owa_utility_cost_per_day` | 12.0 | OWA utility charge per industrial building |
 
 ## Building Bankruptcy
 
@@ -2748,7 +2796,10 @@ the OWA sale attempt) before bankruptcy is declared.
 For each employed worker, deduct `daily_wage` from the employer budget and credit the worker's
 household. Private employers pay from `operating_budget`; city-owned service buildings pay gross
 wages from the city treasury. If a private employer's `operating_budget < daily_wage` for a given
-worker, that worker goes unpaid for the day (`consecutive_unpaid_days` increments). Workers
+worker, the payroll step first sells enough unreserved output inventory through the emergency
+`OWA` liquidation path to cover that wage, using
+`local_unit_price × owa_distress_liquidation_multiplier`. If cash is still insufficient after
+that sale, the worker goes unpaid for the day (`consecutive_unpaid_days` increments). Workers
 self-terminate after `JOB_UNPAID_ABANDON_DAYS` (currently 2) consecutive unpaid days. Private
 building budget does not go negative from wage payments — a building that cannot pay a worker
 simply fails to pay, not force-debits. The city treasury may go negative as a fiscal state.
@@ -2792,14 +2843,15 @@ will not declare bankruptcy. If the sale could not recover the budget (empty inv
 revenue insufficient), Step 1 tomorrow sees both `budget_distress = true` and
 `operating_budget < 0` — bankruptcy is declared.
 
-`forced_owa_liquidation` iterates every output resource slot and sells the full unreserved
-inventory at `local_unit_price × owa_distress_liquidation_multiplier`, crediting
-`operating_budget` immediately. The distress multiplier must be no higher than the scheduled
-`owa_export_price_multiplier` and is lower in the shipped tuning (`0.25` vs `0.45`) so liquidation
-is a fire-sale rescue path rather than a profitable operating model. It bypasses the normal
-`min_shipment_units` buffer check — the sale is a distress action, not a scheduled shipment. If
-inventory is empty (e.g. a ghost farm with no workers and no production), the liquidation yields
-nothing and `budget_distress` is still set to `true`.
+`forced_owa_liquidation` iterates every output resource slot and sells unreserved inventory at
+`local_unit_price × owa_distress_liquidation_multiplier`, crediting `operating_budget`
+immediately. Payroll liquidation sells only enough inventory to cover the next wage; end-of-day
+distress liquidation sells all available unreserved output inventory. The distress multiplier must
+be no higher than the scheduled `owa_export_price_multiplier` and is lower in the shipped tuning
+(`0.25` vs `0.60`) so liquidation is a fire-sale rescue path rather than a profitable operating
+model. It bypasses the normal `min_shipment_units` buffer check — the sale is a distress action,
+not a scheduled shipment. If inventory is empty (e.g. a ghost farm with no workers and no
+production), the liquidation yields nothing and `budget_distress` is still set to `true`.
 
 ### Throughput Factor
 
@@ -2857,6 +2909,11 @@ a misleading `worker_count` reading on the dead building.
 
 `assign_agent_workplaces` skips any candidate building where `is_deserted == true`, regardless of
 whether the agent is already assigned there.
+
+Before daily payroll, the wage pass also sheds stale workers above current active capacity for
+profiles whose active slots are demand-limited rather than purely physical: `service_store`
+commercial profiles and explicit field/extractor profiles. This keeps logged `worker_count` aligned
+with the current market-backed slots instead of waiting two unpaid days for surplus workers to quit.
 
 ### Replacement Targets
 

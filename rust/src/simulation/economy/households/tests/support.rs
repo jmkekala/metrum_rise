@@ -226,6 +226,59 @@ pub(super) fn register_test_asset(
     format!("{pack_id}:{asset_id}")
 }
 
+pub(super) fn register_test_commercial_asset_with_profile(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    profile_id: &str,
+) -> String {
+    allocator.registry.register(
+        pack_id,
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test Commercial".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
+            }],
+            site_surfaces: vec![],
+            building: Some(BuildingData {
+                flat_size_m2: None,
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(ZoneClass::Commercial),
+                density: Some("low".to_owned()),
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                frontage_forward: None,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity: None,
+                worker_capacity: Some(4),
+                service_class: None,
+                economy_profile: Some(profile_id.to_owned()),
+                extractor: None,
+                field: None,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        },
+        String::new(),
+    );
+    format!("{pack_id}:{asset_id}")
+}
+
 pub(super) fn register_test_residential_asset_with_capacity(
     allocator: &mut BuildingAllocator,
     pack_id: &str,
@@ -409,11 +462,17 @@ pub(super) fn make_household(
     let tuning = load_runtime_economy_tuning()
         .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
     let consumption_rate = 1.0;
+    let household_supply_resource = household_supply_resource_runtime_id(&catalog);
     let daily_supply_cost =
         member_count.max(1) as f32 * consumption_rate * household_supply_unit_price(&catalog);
+    let daily_service_cost = member_count.max(1) as f32
+        * demand_sink_cash_cost_per_resident_excluding_resource(
+            &catalog,
+            household_supply_resource,
+        );
     let daily_utility_cost =
         member_count.max(1) as f32 * tuning.households.utility_cost_per_member_per_day;
-    let daily_essential_cost = daily_supply_cost + daily_utility_cost;
+    let daily_essential_cost = daily_supply_cost + daily_service_cost + daily_utility_cost;
     Household {
         home_building_id,
         budget: reserve_days * daily_essential_cost,

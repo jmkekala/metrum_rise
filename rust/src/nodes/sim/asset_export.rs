@@ -282,9 +282,10 @@ fn build_asset_toml(p: &ExportParams) -> String {
         "building" => {
             out.push_str("[building]\n");
             let placement_mode = normalized_placement_mode_key(&p.placement_mode);
+            let zone = p.zone_type.as_deref().unwrap_or("residential");
+            let is_zoned_residential = placement_mode == "zoned_private" && zone == "residential";
             out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
             if placement_mode == "zoned_private" {
-                let zone = p.zone_type.as_deref().unwrap_or("residential");
                 out.push_str(&format!("zone_type = {}\n", toml_string(zone)));
                 let density = p.density.as_deref().unwrap_or("low");
                 out.push_str(&format!("density = {}\n", toml_string(density)));
@@ -304,21 +305,25 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 }
             }
             out.push_str(&format!("level = {}\n", p.level));
-            if let Some(h) = p.household_capacity {
-                if h > 0 {
-                    out.push_str(&format!("household_capacity = {h}\n"));
+            if is_zoned_residential {
+                if let Some(h) = p.household_capacity {
+                    if h > 0 {
+                        out.push_str(&format!("household_capacity = {h}\n"));
+                    }
                 }
             }
-            if !has_economy_profile {
+            if !is_zoned_residential && !has_economy_profile {
                 if let Some(w) = p.worker_capacity {
                     if w > 0 {
                         out.push_str(&format!("worker_capacity = {w}\n"));
                     }
                 }
             }
-            if let Some(f) = p.flat_size_m2 {
-                if f > 0.0 {
-                    out.push_str(&format!("flat_size_m2 = {f:.1}\n"));
+            if is_zoned_residential {
+                if let Some(f) = p.flat_size_m2 {
+                    if f > 0.0 {
+                        out.push_str(&format!("flat_size_m2 = {f:.1}\n"));
+                    }
                 }
             }
             if let Some(sc) = &p.service_class {
@@ -1246,6 +1251,8 @@ mod tests {
             "density": "low",
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
+            "household_capacity": 3,
+            "flat_size_m2": 60.0,
             "worker_capacity": 8,
             "economy_profile": "grocery_basic",
             "mesh_parts": one_mesh_part_json(),
@@ -1269,6 +1276,8 @@ mod tests {
         .unwrap();
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
         assert!(!asset_toml.contains("worker_capacity"));
+        assert!(!asset_toml.contains("household_capacity"));
+        assert!(!asset_toml.contains("flat_size_m2"));
     }
 
     #[test]

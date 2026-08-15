@@ -250,11 +250,14 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			var workers := int(info.get("worker_count", 0))
 			var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
 			var max_capacity := int(info.get("worker_capacity", 0))
+			var has_explicit_work_area := info.has("extractor_resource") or info.has("field_resource")
 			var is_power_utility := str(info.get("utility_service", "")) == "power"
 			var worker_text := str(workers)
 			if not is_power_utility:
 				worker_text = "%d / %d" % [workers, max_capacity]
-				if active_capacity != max_capacity:
+				if has_explicit_work_area and active_capacity != max_capacity:
+					worker_text = "%d / %d active (%d/ha)" % [workers, active_capacity, max_capacity]
+				elif active_capacity != max_capacity:
 					worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
 			_add_row(stats_body, "Workers", worker_text)
 			_add_row(

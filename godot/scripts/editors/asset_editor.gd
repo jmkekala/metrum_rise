@@ -1996,6 +1996,19 @@ func _update_building_mode_visibility() -> void:
 	var is_zoned_private := _selected_placement_mode() == "zoned_private"
 	if _zoned_only_box:
 		_zoned_only_box.visible = is_zoned_private
+	_sync_capacity_field_state()
+
+func _sync_capacity_field_state() -> void:
+	var residential := _selected_placement_mode() == "zoned_private" and _selected_zone_type() == "residential"
+	if _residents_spin:
+		_residents_spin.editable = residential
+		if not residential:
+			_residents_spin.value = 0
+	if _flat_size_spin:
+		_flat_size_spin.editable = residential
+		if not residential:
+			_flat_size_spin.value = 0
+	_sync_workers_to_profile()
 
 func _refresh_density_options(preferred_density: String = "") -> void:
 	if not _density_btn:
@@ -2123,6 +2136,7 @@ func _sync_min_zone_defaults_with_lot_change() -> void:
 
 func _on_zone_or_lot_changed(_idx) -> void:
 	_sync_min_zone_defaults_with_lot_change()
+	_sync_capacity_field_state()
 	_sync_preview_lot_size_from_fields()
 	if _main_entrance_auto:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
@@ -2487,6 +2501,10 @@ func _asset_id_slug_from_display_name(display_name: String) -> String:
 
 func _sync_workers_to_profile() -> void:
 	if not _workers_spin:
+		return
+	if _selected_placement_mode() == "zoned_private" and _selected_zone_type() == "residential":
+		_workers_spin.value = 0
+		_workers_spin.editable = false
 		return
 	var selected_id := _selected_economy_profile_id()
 	if selected_id.is_empty():
@@ -3622,6 +3640,8 @@ func _export_asset(move_original_after_export: bool) -> void:
 	var asset_set_val = _asset_set_edit.text.strip_edges()
 	var economy_profile_id := _selected_economy_profile_id()
 	var placement_mode := _selected_placement_mode()
+	var selected_zone_type := _selected_zone_type() if placement_mode == "zoned_private" else ""
+	var is_zoned_residential := placement_mode == "zoned_private" and selected_zone_type == "residential"
 	var service_class := _selected_service_class()
 	var extractor_enabled := _is_extractor_enabled()
 	var extractor_resource := _extractor_resource_id()
@@ -3690,7 +3710,7 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"asset_set":        asset_set_val if not asset_set_val.is_empty() else null,
 		"tags":             tags,
 		"placement_mode":   placement_mode,
-		"zone_type":        _selected_zone_type() if placement_mode == "zoned_private" else null,
+		"zone_type":        selected_zone_type if placement_mode == "zoned_private" else null,
 		"density":          _selected_density() if placement_mode == "zoned_private" else null,
 		"lot_width_cells":   lot_width,
 		"lot_depth_cells":   lot_depth,
@@ -3704,9 +3724,9 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"extractor_area_mode": "player_polygon" if extractor_enabled else null,
 		"field_resource": field_resource if field_enabled else null,
 		"field_area_mode": "player_polygon" if field_enabled else null,
-		"household_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,
-		"flat_size_m2":      _flat_size_spin.value if _flat_size_spin.value > 0 else null,
-		"worker_capacity":    int(_workers_spin.value) if economy_profile_id.is_empty() and _workers_spin.value > 0 else null,
+		"household_capacity": int(_residents_spin.value) if is_zoned_residential and _residents_spin.value > 0 else null,
+		"flat_size_m2":      _flat_size_spin.value if is_zoned_residential and _flat_size_spin.value > 0 else null,
+		"worker_capacity":    int(_workers_spin.value) if not is_zoned_residential and economy_profile_id.is_empty() and _workers_spin.value > 0 else null,
 		"mesh_parts": mesh_parts,
 		"anchors": anchors,
 		"site_surfaces": site_surfaces,
@@ -3755,12 +3775,12 @@ func _export_asset(move_original_after_export: bool) -> void:
 					copy_errors += 1
 				else:
 					copied += 1
-			# Copy external texture/material files referenced by the GLB.
+			# Copy external texture/material files referenced by the mesh.
 			var src_dir: String = src.get_base_dir()
 			if src_dir in copied_dirs:
 				continue
 			copied_dirs.append(src_dir)
-			var ext_refs := _glb_external_refs(src)
+			var ext_refs := _mesh_external_refs(src)
 			for rel_path in ext_refs:
 				var ref_src := src_dir + "/" + rel_path
 				var ref_dst := asset_dir + rel_path
@@ -3837,14 +3857,48 @@ func _move_original_asset_after_export(
 		target_asset_id,
 	])
 
+# Returns external file references that should be copied beside the imported mesh.
+func _mesh_external_refs(mesh_path: String) -> Array[String]:
+	if mesh_path.get_extension().to_lower() == "fbx":
+		return _fbx_external_refs(mesh_path)
+	return _glb_external_refs(mesh_path)
+
+# FBX files in source packs commonly refer to sibling texture folders. Godot's
+# preview importer resolves those paths, but it does not expose them back to us,
+# so keep the whole small texture folder with the copied FBX.
+func _fbx_external_refs(fbx_path: String) -> Array[String]:
+	var refs: Array[String] = []
+	var source_dir := fbx_path.get_base_dir()
+	for texture_folder in ["Textures", "textures"]:
+		var texture_dir := source_dir.path_join(texture_folder)
+		if DirAccess.dir_exists_absolute(texture_dir):
+			_collect_relative_file_refs(texture_dir, texture_folder, refs)
+	return refs
+
+func _collect_relative_file_refs(abs_dir: String, rel_dir: String, refs: Array[String]) -> void:
+	var da := DirAccess.open(abs_dir)
+	if not da:
+		return
+	da.list_dir_begin()
+	var entry := da.get_next()
+	while entry != "":
+		if entry.begins_with("."):
+			entry = da.get_next()
+			continue
+		var abs_path := abs_dir.path_join(entry)
+		var rel_path := rel_dir.path_join(entry)
+		if da.current_is_dir():
+			_collect_relative_file_refs(abs_path, rel_path, refs)
+		elif rel_path not in refs:
+			refs.append(rel_path)
+		entry = da.get_next()
+	da.list_dir_end()
+
 # Parses a GLB file's embedded JSON chunk and returns a list of external file
 # URI references (images with a relative `uri`, not embedded buffer views or
 # data: URIs). These are paths relative to the GLB's own directory.
 func _glb_external_refs(glb_path: String) -> Array[String]:
 	var result: Array[String] = []
-	# FBX embeds or uses absolute texture paths — no relative URI refs to parse.
-	if glb_path.get_extension().to_lower() == "fbx":
-		return result
 	var f := FileAccess.open(glb_path, FileAccess.READ)
 	if not f:
 		return result

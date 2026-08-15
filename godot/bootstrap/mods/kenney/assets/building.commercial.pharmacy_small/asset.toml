@@ -1,0 +1,57 @@
+asset_id = "building.commercial.pharmacy_small"
+display_name = "Small Pharmacy"
+tags = ["pharmacy", "health_essentials"]
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "commercial"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+level = 1
+economy_profile = "health_essentials_small"
+
+[[mesh_parts]]
+name = "main"
+position = [2.07, 0, 0.14]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-type-b.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [4.03, 0, -2.71]
+forward = [0, 0, -1]
+
+[[anchors]]
+type = "parking"
+position = [-3.71, 0, -7.89]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-3.78, 0, -4.53]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "driveway"
+position = [0.68, 0, -10]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [5.39, -10], [5.53, -2.69], [-10, -2.77]]

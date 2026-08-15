@@ -87,15 +87,35 @@ impl ShipmentSystem {
             match shipment_carrier_progress_to_endpoint(&shipment, agents, shipment.destination) {
                 CarrierProgress::Arrived => {}
                 CarrierProgress::Traveling => {
+                    self.shipments[idx].queued_hours =
+                        self.shipments[idx].queued_hours.saturating_add(1);
+                    if self.shipments[idx].queued_hours
+                        >= in_transit_timeout_hours(&self.shipments[idx])
+                    {
+                        self.fail_in_transit_shipment(
+                            idx,
+                            allocator,
+                            agents,
+                            treasury_balance,
+                            retry_cooldown_hours,
+                            &catalog,
+                            ShipmentStatus::Expired,
+                            "carrier_timeout",
+                        );
+                    }
                     idx += 1;
                     continue;
                 }
                 CarrierProgress::Missing => {
-                    fail_shipment_before_dispatch(
-                        &mut self.shipments[idx],
+                    self.fail_in_transit_shipment(
+                        idx,
                         allocator,
+                        agents,
                         treasury_balance,
                         retry_cooldown_hours,
+                        &catalog,
+                        ShipmentStatus::Failed,
+                        "carrier_missing",
                     );
                     idx += 1;
                     continue;
@@ -106,8 +126,16 @@ impl ShipmentSystem {
             // destination building receives them. Credit revenue to the source on arrival.
             if let ShipmentEndpoint::OwaBorder(_) = shipment.destination {
                 let ShipmentEndpoint::Building(src_idx) = shipment.source else {
-                    self.shipments[idx].status = ShipmentStatus::Failed;
-                    self.remove_carrier_agent(agents, shipment.carrier_agent_id);
+                    self.fail_in_transit_shipment(
+                        idx,
+                        allocator,
+                        agents,
+                        treasury_balance,
+                        retry_cooldown_hours,
+                        &catalog,
+                        ShipmentStatus::Failed,
+                        "bad_export_source",
+                    );
                     idx += 1;
                     continue;
                 };
@@ -144,22 +172,46 @@ impl ShipmentSystem {
                         graph,
                     );
                 } else {
-                    self.shipments[idx].status = ShipmentStatus::Failed;
-                    self.remove_carrier_agent(agents, shipment.carrier_agent_id);
+                    self.fail_in_transit_shipment(
+                        idx,
+                        allocator,
+                        agents,
+                        treasury_balance,
+                        retry_cooldown_hours,
+                        &catalog,
+                        ShipmentStatus::Failed,
+                        "source_unavailable",
+                    );
                 }
                 idx += 1;
                 continue;
             }
 
             let ShipmentEndpoint::Building(dest_idx) = shipment.destination else {
-                self.shipments[idx].status = ShipmentStatus::Failed;
-                self.remove_carrier_agent(agents, shipment.carrier_agent_id);
+                self.fail_in_transit_shipment(
+                    idx,
+                    allocator,
+                    agents,
+                    treasury_balance,
+                    retry_cooldown_hours,
+                    &catalog,
+                    ShipmentStatus::Failed,
+                    "bad_destination",
+                );
                 idx += 1;
                 continue;
             };
             if dest_idx >= allocator.buildings.len() {
-                self.shipments[idx].status = ShipmentStatus::Failed;
-                self.remove_carrier_agent(agents, shipment.carrier_agent_id);
+                self.fail_in_transit_shipment(
+                    idx,
+                    allocator,
+                    agents,
+                    treasury_balance,
+                    retry_cooldown_hours,
+                    &catalog,
+                    ShipmentStatus::Failed,
+                    "destination_missing",
+                );
                 idx += 1;
                 continue;
             }
@@ -181,16 +233,16 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        refund_input_payment(
+                        self.fail_in_transit_shipment(
+                            idx,
                             allocator,
+                            agents,
                             treasury_balance,
-                            dest_idx,
-                            shipment.total_cost,
+                            retry_cooldown_hours,
+                            &catalog,
+                            ShipmentStatus::Failed,
+                            "endpoint_unavailable",
                         );
-                        allocator.buildings[dest_idx].shipment_cooldown_hours =
-                            retry_cooldown_hours;
-                        self.shipments[idx].status = ShipmentStatus::Failed;
-                        self.remove_carrier_agent(agents, shipment.carrier_agent_id);
                         idx += 1;
                         continue;
                     }
@@ -235,16 +287,16 @@ impl ShipmentSystem {
                             shipment.resource_runtime_id,
                         )
                     {
-                        refund_input_payment(
+                        self.fail_in_transit_shipment(
+                            idx,
                             allocator,
+                            agents,
                             treasury_balance,
-                            dest_idx,
-                            shipment.total_cost,
+                            retry_cooldown_hours,
+                            &catalog,
+                            ShipmentStatus::Failed,
+                            "destination_unavailable",
                         );
-                        allocator.buildings[dest_idx].shipment_cooldown_hours =
-                            retry_cooldown_hours;
-                        self.shipments[idx].status = ShipmentStatus::Failed;
-                        self.remove_carrier_agent(agents, shipment.carrier_agent_id);
                         idx += 1;
                         continue;
                     }
@@ -358,6 +410,7 @@ impl ShipmentSystem {
                     .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
             }
             self.shipments[idx].carrier_agent_id = carrier_agent_id;
+            self.shipments[idx].queued_hours = 0;
         }
     }
 
@@ -437,6 +490,83 @@ impl ShipmentSystem {
         if let Some((old_idx, new_idx)) = agents.remove_freight_carrier(carrier_agent_id) {
             self.remap_carrier_agent_index(old_idx, new_idx);
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fail_in_transit_shipment(
+        &mut self,
+        shipment_idx: usize,
+        allocator: &mut BuildingAllocator,
+        agents: &mut AgentSystem,
+        treasury_balance: &mut f64,
+        retry_cooldown_hours: u16,
+        catalog: &RuntimeEconomyCatalog,
+        final_status: ShipmentStatus,
+        reason: &'static str,
+    ) {
+        let shipment = self.shipments[shipment_idx].clone();
+        if let ShipmentEndpoint::Building(destination_idx) = shipment.destination
+            && destination_idx < allocator.buildings.len()
+        {
+            refund_input_payment(
+                allocator,
+                treasury_balance,
+                destination_idx,
+                shipment.total_cost,
+            );
+            allocator.buildings[destination_idx].shipment_cooldown_hours = retry_cooldown_hours;
+        }
+        if shipment.carrier_agent_id != usize::MAX
+            && let ShipmentEndpoint::Building(source_idx) = shipment.source
+            && source_idx < allocator.buildings.len()
+        {
+            allocator.buildings[source_idx]
+                .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+            allocator.buildings[source_idx].shipment_cooldown_hours = retry_cooldown_hours;
+        }
+
+        let (source_kind, source_id) = shipment_endpoint_log_fields(shipment.source);
+        let (destination_kind, destination_id) = shipment_endpoint_log_fields(shipment.destination);
+        debug_log!(
+            "economy",
+            "freight shipment failed shipment_id={} status={:?} reason={} source_kind={} source_id={} destination_kind={} destination_id={} resource={} amount={:.1} age={}h eta={}h timeout={}h cost={:.1}",
+            shipment.id,
+            final_status,
+            reason,
+            source_kind,
+            source_id,
+            destination_kind,
+            destination_id,
+            catalog
+                .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                .unwrap_or("unknown"),
+            shipment.amount,
+            shipment.queued_hours,
+            shipment.eta_hours,
+            in_transit_timeout_hours(&shipment),
+            shipment.total_cost,
+        );
+
+        self.shipments[shipment_idx].status = final_status;
+        self.shipments[shipment_idx].carrier_agent_id = usize::MAX;
+        if shipment.carrier_agent_id != usize::MAX {
+            self.remove_carrier_agent(agents, shipment.carrier_agent_id);
+        }
+    }
+}
+
+fn in_transit_timeout_hours(shipment: &Shipment) -> u16 {
+    shipment
+        .eta_hours
+        .saturating_mul(4)
+        .saturating_add(2)
+        .max(6)
+}
+
+fn shipment_endpoint_log_fields(endpoint: ShipmentEndpoint) -> (&'static str, u64) {
+    match endpoint {
+        ShipmentEndpoint::Building(building_idx) => ("building", building_idx as u64),
+        ShipmentEndpoint::OwaBorder(border_node) => ("owa", u64::from(border_node)),
     }
 }
 
@@ -578,6 +708,7 @@ fn dispatch_queued_shipments(
         if *active_count < active_cap {
             *active_count += 1;
             shipment.status = ShipmentStatus::InTransit;
+            shipment.queued_hours = 0;
         }
     }
 }

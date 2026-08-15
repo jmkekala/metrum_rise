@@ -3,8 +3,8 @@ id = "grain_farm_basic"
 display_name = "Grain Farm"
 kind = "field_producer"
 description = "Starter field-backed farm producing grain from player-drawn fields; authored output is per hectare."
-worker_capacity = 10
-base_rate_units_per_day = 160.0
+worker_capacity = 8
+base_rate_units_per_day = 280.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
 unit_price_currency = 6.0
@@ -20,7 +20,7 @@ inputs = []
 
 [[profiles.outputs]]
 resource = "grain"
-units_per_day = 160.0
+units_per_day = 280.0
 
 [[profiles]]
 id = "food_processor_basic"
@@ -77,6 +77,52 @@ resource = "household_supplies"
 units_per_day = 200.0
 
 [[profiles]]
+id = "personal_service_small"
+display_name = "Small Personal Service"
+kind = "service_store"
+description = "Small labor-driven commercial service such as a barber, salon, tailor, or laundromat. Outputs aggregate service capacity rather than stored goods."
+worker_capacity = 4
+base_rate_units_per_day = 80.0
+wage_min_currency_per_day = 50.0
+wage_max_currency_per_day = 70.0
+unit_price_currency = 12.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "daytime_work"
+inputs = []
+
+[[profiles.outputs]]
+resource = "personal_services"
+units_per_day = 80.0
+
+[[profiles]]
+id = "health_essentials_small"
+display_name = "Small Health Essentials"
+kind = "service_store"
+description = "Small pharmacy-style commercial service for day-to-day health essentials. Outputs aggregate service capacity and has no freight inputs in the first pass."
+worker_capacity = 6
+base_rate_units_per_day = 120.0
+wage_min_currency_per_day = 70.0
+wage_max_currency_per_day = 95.0
+unit_price_currency = 14.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "daytime_work"
+inputs = []
+
+[[profiles.outputs]]
+resource = "health_essentials"
+units_per_day = 120.0
+
+[[profiles]]
 id = "basic_household_demand"
 display_name = "Household Demand"
 kind = "demand_sink"
@@ -99,15 +145,59 @@ resource = "household_supplies"
 units_per_day = 2.0
 
 [[profiles]]
+id = "personal_service_demand"
+display_name = "Personal Service Demand"
+kind = "demand_sink"
+description = "Aggregate resident demand for low-frequency personal services. This does not create individual shopping trips."
+worker_capacity = 0
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 0.0
+wage_max_currency_per_day = 0.0
+unit_price_currency = 0.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.03
+starting_inventory_days = 0.0
+outputs = []
+
+[[profiles.inputs]]
+resource = "personal_services"
+units_per_day = 1.0
+
+[[profiles]]
+id = "health_essentials_demand"
+display_name = "Health Essentials Demand"
+kind = "demand_sink"
+description = "Aggregate resident demand for pharmacy-style health essentials. This does not create individual shopping trips."
+worker_capacity = 0
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 0.0
+wage_max_currency_per_day = 0.0
+unit_price_currency = 0.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.05
+starting_inventory_days = 0.0
+outputs = []
+
+[[profiles.inputs]]
+resource = "health_essentials"
+units_per_day = 1.0
+
+[[profiles]]
 id = "coal_mine_basic"
 display_name = "Coal Mine"
 kind = "extractor"
 description = "Deposit-backed starter coal mine that extracts local coal into on-site inventory for power plants and OWA export."
-worker_capacity = 16
+worker_capacity = 5
 base_rate_units_per_day = 120.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 4.0
+unit_price_currency = 8.0
 stock_target_days = 4.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
@@ -128,7 +218,7 @@ display_name = "Power Plant"
 kind = "utility_producer"
 description = "Basic coal-fired power station providing electricity to connected buildings. If absent or unfueled, the city falls back to OWA power at higher cost."
 worker_capacity = 20
-base_rate_units_per_day = 240.0
+base_rate_units_per_day = 1200.0
 wage_min_currency_per_day = 100.0
 wage_max_currency_per_day = 130.0
 unit_price_currency = 3.0
@@ -145,7 +235,7 @@ outputs = []
 
 [[profiles.inputs]]
 resource = "coal"
-units_per_day = 24.0
+units_per_day = 96.0
 
 [[profiles]]
 id = "water_plant_basic"
@@ -189,10 +279,8 @@ outputs = []
 
 [runtime_tuning]
 owa_import_price_multiplier = 1.75
-owa_export_price_multiplier = 0.45
+owa_export_price_multiplier = 0.60
 owa_distress_liquidation_multiplier = 0.25
-commercial_owa_utility_cost_per_day = 8.0
-industrial_owa_utility_cost_per_day = 12.0
 startup_treasury_balance = 100000.0
 unemployment_daily_benefit_per_member = 30.0
 unemployment_max_days = 30

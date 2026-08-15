@@ -22,8 +22,8 @@ use crate::simulation::economy::fiscal::{CityFiscalPolicy, tax_amount};
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, active_worker_capacity_equivalent_for_profile_with_floor_scale,
     active_worker_capacity_for_profile_with_floor_scale,
-    candidate_immigrant_household_size_from_flat_size, commercial_activity_signal_for_city,
-    household_reserve_days, service_funded_worker_capacity,
+    building_operation_factors_with_floor_scale, candidate_immigrant_household_size_from_flat_size,
+    commercial_activity_signal_for_city, household_reserve_days, service_funded_worker_capacity,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
@@ -181,6 +181,8 @@ pub(super) struct DailyDemandSnapshot {
     #[cfg(test)]
     pub(super) unmet_commercial_consumer_demand: f32,
     pub(super) committed_unmet_commercial_consumer_demand: f32,
+    pub(super) committed_unmet_commercial_consumer_demand_by_resource:
+        Vec<(ResourceRuntimeId, f32)>,
     pub(super) industrial_input_capacity_deficit: f32,
     #[cfg(test)]
     pub(super) commercial_input_need_value: f32,
@@ -260,7 +262,10 @@ impl DailyDemandSnapshot {
     ) -> Self {
         let mut commercial_profile_output_resources = Vec::new();
         for profile in catalog.all_profiles() {
-            if profile.kind != EconomyProfileRuntimeKind::Store {
+            if !matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::Store | EconomyProfileRuntimeKind::ServiceStore
+            ) {
                 continue;
             }
             for output_port in &profile.outputs {
@@ -311,6 +316,15 @@ impl DailyDemandSnapshot {
             daily_supply_cost_per_resident + tuning.households.utility_cost_per_member_per_day;
         let commercial_activity_signal =
             commercial_activity_signal_for_city(catalog, &households.households, allocator);
+        let household_accumulator =
+            collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
+        let housed_resident_count = household_accumulator.housed_resident_count;
+        let service_activity_scale_by_resource = service_store_activity_scale_by_resource(
+            catalog,
+            allocator,
+            &demand_sink_rates_by_resource,
+            housed_resident_count,
+        );
         let building_accumulator = collect_building_snapshot_accumulator(
             allocator,
             catalog,
@@ -318,6 +332,7 @@ impl DailyDemandSnapshot {
             &demand_sink_rates_by_resource,
             commercial_activity_signal.household_supply_resource_runtime_id,
             commercial_activity_signal.activity_floor_scale,
+            &service_activity_scale_by_resource,
             service_funding_by_building,
         );
         let total_household_slots = building_accumulator.total_household_slots;
@@ -372,19 +387,6 @@ impl DailyDemandSnapshot {
             candidate_household_supply_demand_units,
             service_funding_by_building,
         );
-        let move_in_job_slots = open_job_slots.saturating_add(marginal_commercial_jobs.open_slots);
-        let move_in_job_equivalent_slots =
-            open_job_slots as f32 + marginal_commercial_jobs.job_equivalent_slots;
-        let average_move_in_job_wage_per_day = if move_in_job_equivalent_slots <= EPSILON {
-            0.0
-        } else {
-            (open_job_wage_sum + marginal_commercial_jobs.job_equivalent_net_wage_sum)
-                / move_in_job_equivalent_slots
-        };
-
-        let household_accumulator =
-            collect_household_snapshot_accumulator(allocator, households, catalog, tuning, config);
-        let housed_resident_count = household_accumulator.housed_resident_count;
         let housed_adult_count = household_accumulator.housed_adult_count;
         let live_child_count = household_accumulator.live_child_count;
         let live_elder_count = household_accumulator.live_elder_count;
@@ -422,6 +424,7 @@ impl DailyDemandSnapshot {
         let mut total_commercial_consumer_demand = 0.0_f32;
         let mut unmet_commercial_consumer_demand = 0.0_f32;
         let mut committed_unmet_commercial_consumer_demand = 0.0_f32;
+        let mut committed_unmet_commercial_consumer_demand_by_resource = Vec::new();
         for &(resource_runtime_id, consumption_rate_per_resident) in &demand_sink_rates_by_resource
         {
             let consumer_demand = if resource_runtime_id
@@ -444,8 +447,13 @@ impl DailyDemandSnapshot {
             );
             total_commercial_consumer_demand += consumer_demand;
             unmet_commercial_consumer_demand += (consumer_demand - live_capacity).max(0.0);
-            committed_unmet_commercial_consumer_demand +=
-                (consumer_demand - committed_capacity).max(0.0);
+            let committed_gap = (consumer_demand - committed_capacity).max(0.0);
+            committed_unmet_commercial_consumer_demand += committed_gap;
+            add_resource_amount(
+                &mut committed_unmet_commercial_consumer_demand_by_resource,
+                resource_runtime_id,
+                committed_gap,
+            );
         }
         let commercial_capacity_deficit = if total_commercial_consumer_demand <= 0.0 {
             0.0
@@ -515,10 +523,49 @@ impl DailyDemandSnapshot {
         };
         let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
         let candidate_effective_workers = f32::from(candidate.composition.adult_count);
-        let candidate_worker_denominator = candidate_effective_workers.max(1.0);
-        let open_job_household_pull = open_job_slots as f32 / candidate_worker_denominator;
-        let marginal_commercial_job_household_pull =
-            (marginal_commercial_jobs.job_equivalent_slots / candidate_worker_denominator).min(1.0);
+        let net_open_job_slots = open_job_slots.saturating_sub(existing_unemployed_member_count);
+        let existing_unemployed_after_open_jobs =
+            existing_unemployed_member_count.saturating_sub(open_job_slots);
+        let net_open_job_wage_sum = if open_job_slots == 0 {
+            0.0
+        } else {
+            open_job_wage_sum * net_open_job_slots as f32 / open_job_slots as f32
+        };
+        let net_marginal_commercial_job_slots = marginal_commercial_jobs
+            .open_slots
+            .saturating_sub(existing_unemployed_after_open_jobs);
+        let net_marginal_commercial_job_equivalent_slots = (marginal_commercial_jobs
+            .job_equivalent_slots
+            - existing_unemployed_after_open_jobs as f32)
+            .max(0.0);
+        let net_marginal_commercial_job_wage_sum =
+            if marginal_commercial_jobs.job_equivalent_slots <= EPSILON {
+                0.0
+            } else {
+                marginal_commercial_jobs.job_equivalent_net_wage_sum
+                    * net_marginal_commercial_job_equivalent_slots
+                    / marginal_commercial_jobs.job_equivalent_slots
+            };
+        let move_in_job_slots =
+            net_open_job_slots.saturating_add(net_marginal_commercial_job_slots);
+        let move_in_job_equivalent_slots =
+            net_open_job_slots as f32 + net_marginal_commercial_job_equivalent_slots;
+        let average_move_in_job_wage_per_day = if move_in_job_equivalent_slots <= EPSILON {
+            0.0
+        } else {
+            (net_open_job_wage_sum + net_marginal_commercial_job_wage_sum)
+                / move_in_job_equivalent_slots
+        };
+        let open_job_household_pull = if candidate_effective_workers <= EPSILON {
+            0.0
+        } else {
+            net_open_job_slots as f32 / candidate_effective_workers
+        };
+        let marginal_commercial_job_household_pull = if candidate_effective_workers <= EPSILON {
+            0.0
+        } else {
+            (net_marginal_commercial_job_equivalent_slots / candidate_effective_workers).min(1.0)
+        };
         let bootstrap_household_pull = if total_household_count == 0 { 1.0 } else { 0.0 };
         let regional_growth_household_pull = regional_growth_household_pull(
             config,
@@ -618,6 +665,7 @@ impl DailyDemandSnapshot {
             #[cfg(test)]
             unmet_commercial_consumer_demand,
             committed_unmet_commercial_consumer_demand,
+            committed_unmet_commercial_consumer_demand_by_resource,
             under_construction_household_slots,
             industrial_input_capacity_deficit,
             #[cfg(test)]
@@ -761,6 +809,7 @@ impl BuildingSnapshotAccumulator {
         demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
         household_supply_resource_runtime_id: ResourceRuntimeId,
         commercial_activity_floor_scale: f32,
+        service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
         service_funding_by_building: &[f32],
         idx: usize,
         building: &Building,
@@ -781,6 +830,15 @@ impl BuildingSnapshotAccumulator {
         }
 
         let active_profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+        let profile_activity_floor_scale = active_profile
+            .map(|profile| {
+                profile_activity_floor_scale(
+                    profile,
+                    commercial_activity_floor_scale,
+                    service_activity_scale_by_resource,
+                )
+            })
+            .unwrap_or(commercial_activity_floor_scale);
 
         if building.is_under_construction() {
             if matches!(building.zone_type, ZoneType::Residential) {
@@ -842,7 +900,7 @@ impl BuildingSnapshotAccumulator {
                 catalog,
                 building,
                 profile,
-                commercial_activity_floor_scale,
+                profile_activity_floor_scale,
             );
             let funded_worker_capacity = service_funded_worker_capacity(
                 physical_worker_capacity,
@@ -888,7 +946,7 @@ impl BuildingSnapshotAccumulator {
                 catalog,
                 building,
                 profile,
-                commercial_activity_floor_scale,
+                profile_activity_floor_scale,
             );
             for output_port in &profile.outputs {
                 add_resource_amount(
@@ -917,7 +975,7 @@ impl BuildingSnapshotAccumulator {
                     catalog,
                     building,
                     profile,
-                    commercial_activity_floor_scale,
+                    profile_activity_floor_scale,
                 );
                 for output_port in &profile.outputs {
                     if resource_amount(
@@ -1050,6 +1108,96 @@ fn profile_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> 
     )
 }
 
+fn service_store_activity_scale_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+    demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
+    housed_resident_count: u32,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    if housed_resident_count == 0 {
+        return Vec::new();
+    }
+    let live_output_units_by_resource =
+        service_store_live_output_units_by_resource(catalog, allocator);
+    if live_output_units_by_resource.is_empty() {
+        return Vec::new();
+    }
+
+    let mut activity_scale_by_resource = Vec::new();
+    for &(resource_runtime_id, consumption_rate_per_resident) in demand_sink_rates_by_resource {
+        let live_output_units =
+            resource_amount(&live_output_units_by_resource, resource_runtime_id);
+        if live_output_units <= EPSILON {
+            continue;
+        }
+        let demand_units = housed_resident_count as f32 * consumption_rate_per_resident.max(0.0);
+        add_resource_amount(
+            &mut activity_scale_by_resource,
+            resource_runtime_id,
+            (demand_units / live_output_units).clamp(0.0, 1.0),
+        );
+    }
+    activity_scale_by_resource
+}
+
+fn service_store_live_output_units_by_resource(
+    catalog: &RuntimeEconomyCatalog,
+    allocator: &BuildingAllocator,
+) -> Vec<(ResourceRuntimeId, f32)> {
+    allocator
+        .buildings
+        .par_iter()
+        .filter_map(|building| {
+            if building.broken
+                || building.economy_broken
+                || building.is_deserted
+                || building.is_under_construction()
+                || building.edge_idx == usize::MAX
+                || !matches!(building.zone_type, ZoneType::Commercial)
+            {
+                return None;
+            }
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)?;
+            (profile.kind == EconomyProfileRuntimeKind::ServiceStore)
+                .then_some(profile.outputs.as_slice())
+        })
+        .fold(Vec::new, |mut local, outputs| {
+            for output in outputs {
+                add_resource_amount(
+                    &mut local,
+                    output.resource_runtime_id,
+                    output.units_per_day.max(0.0),
+                );
+            }
+            local
+        })
+        .reduce(Vec::new, |mut left, right| {
+            merge_resource_amounts(&mut left, right);
+            left
+        })
+}
+
+fn profile_activity_floor_scale(
+    profile: &EconomyProfileRuntime,
+    commercial_activity_floor_scale: f32,
+    service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
+) -> f32 {
+    if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
+        return commercial_activity_floor_scale;
+    }
+    profile
+        .outputs
+        .iter()
+        .map(|output| {
+            resource_amount(
+                service_activity_scale_by_resource,
+                output.resource_runtime_id,
+            )
+        })
+        .fold(0.0, f32::max)
+        .clamp(0.0, 1.0)
+}
+
 fn collect_building_snapshot_accumulator(
     allocator: &BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
@@ -1057,6 +1205,7 @@ fn collect_building_snapshot_accumulator(
     demand_sink_rates_by_resource: &[(ResourceRuntimeId, f32)],
     household_supply_resource_runtime_id: ResourceRuntimeId,
     commercial_activity_floor_scale: f32,
+    service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
     service_funding_by_building: &[f32],
 ) -> BuildingSnapshotAccumulator {
     let mut chunks: Vec<_> = allocator
@@ -1074,6 +1223,7 @@ fn collect_building_snapshot_accumulator(
                     demand_sink_rates_by_resource,
                     household_supply_resource_runtime_id,
                     commercial_activity_floor_scale,
+                    service_activity_scale_by_resource,
                     service_funding_by_building,
                     start_idx + local_idx,
                     building,
@@ -1241,6 +1391,16 @@ fn profile_output_capacity_scale(
 ) -> f32 {
     if !matches!(building.zone_type, ZoneType::Commercial) || profile.worker_capacity == 0 {
         return 1.0;
+    }
+    if profile.kind == EconomyProfileRuntimeKind::ServiceStore {
+        return building_operation_factors_with_floor_scale(
+            catalog,
+            building,
+            profile,
+            commercial_activity_floor_scale,
+        )
+        .throughput_factor
+        .clamp(0.0, 1.0);
     }
     let active_capacity = active_worker_capacity_for_profile_with_floor_scale(
         catalog,

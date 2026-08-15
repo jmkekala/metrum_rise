@@ -6,10 +6,13 @@ use std::sync::atomic::AtomicU32;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
+use super::building_economy::liquidate_outputs_until_budget;
 use super::data::{Household, HouseholdSystem};
 use super::metrics::{
-    UTILITY_SERVICE_POWER, active_worker_capacity_for_profile, household_demand_profile,
-    household_supply_unit_price, refresh_commercial_activity_floor, service_funded_worker_capacity,
+    UTILITY_SERVICE_POWER, active_worker_capacity_for_profile,
+    demand_sink_cash_cost_per_resident_excluding_resource, household_demand_profile,
+    household_supply_resource_runtime_id, household_supply_unit_price,
+    refresh_commercial_activity_floor, service_funded_worker_capacity,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
@@ -24,9 +27,11 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::fiscal::tax_amount;
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
+use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use crate::{debug, debug_log};
 use rayon::prelude::*;
@@ -487,12 +492,14 @@ impl HouseholdSystem {
         income_tax_rate: f32,
         treasury_balance: &mut f64,
     ) -> f32 {
+        let empty_logistics = ShipmentSystem::new();
         self.pay_daily_wages_with_service_funding(
             agents,
             allocator,
             income_tax_rate,
             treasury_balance,
             &[],
+            &empty_logistics,
         )
     }
 
@@ -503,11 +510,16 @@ impl HouseholdSystem {
         income_tax_rate: f32,
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
+        logistics: &ShipmentSystem,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let reserved_outbound = logistics.reserved_outbound_view(catalog.resource_count());
         refresh_commercial_activity_floor(&catalog, &self.households, allocator);
         eject_inactive_work_assignments(agents, allocator, &catalog);
+        shed_overstaffed_active_capacity_workers(agents, allocator, &catalog);
         self.last_city_service_wage_cost = 0.0;
         let city_funded_by_building: Vec<bool> = allocator
             .buildings
@@ -583,6 +595,20 @@ impl HouseholdSystem {
                 .get(plan.work_building)
                 .copied()
                 .unwrap_or(false);
+            if within_active_capacity
+                && !city_funded
+                && allocator.buildings[plan.work_building].operating_budget < plan.wage
+            {
+                liquidate_outputs_until_budget(
+                    plan.work_building,
+                    &mut allocator.buildings[plan.work_building],
+                    &catalog,
+                    &reserved_outbound,
+                    catalog.resource_count(),
+                    tuning.owa_distress_liquidation_multiplier,
+                    plan.wage,
+                );
+            }
             if within_active_capacity
                 && (city_funded
                     || allocator.buildings[plan.work_building].operating_budget >= plan.wage)
@@ -908,6 +934,68 @@ fn eject_inactive_work_assignments(
     }
 }
 
+fn shed_overstaffed_active_capacity_workers(
+    agents: &mut AgentSystem,
+    allocator: &mut BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+) {
+    let active_capacity_by_building: Vec<Option<u32>> = allocator
+        .buildings
+        .par_iter()
+        .map(|building| {
+            let profile = active_work_profile(catalog, building)?;
+            if profile.kind == EconomyProfileRuntimeKind::ServiceStore
+                || profile_kind_uses_explicit_work_area(profile.kind)
+            {
+                Some(active_worker_capacity_for_profile(
+                    catalog, building, profile,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if active_capacity_by_building
+        .iter()
+        .all(|capacity| capacity.is_none())
+    {
+        return;
+    }
+
+    let mut kept_workers_by_building = vec![0u32; allocator.buildings.len()];
+    for agent_idx in 0..agents.len() {
+        let work = agents.work_building[agent_idx];
+        let Some(active_capacity) = active_capacity_by_building.get(work).copied().flatten() else {
+            continue;
+        };
+        if !age_group_can_work(agents.age_group[agent_idx]) {
+            continue;
+        }
+        let kept_workers = &mut kept_workers_by_building[work];
+        if *kept_workers < active_capacity {
+            *kept_workers = kept_workers.saturating_add(1);
+            continue;
+        }
+        agents.assign_work_building(agent_idx, usize::MAX, 0);
+        agents.consecutive_unpaid_days[agent_idx] = 0;
+    }
+
+    allocator
+        .buildings
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(building_idx, building)| {
+            if active_capacity_by_building
+                .get(building_idx)
+                .copied()
+                .flatten()
+                .is_some()
+            {
+                building.worker_count = kept_workers_by_building[building_idx];
+            }
+        });
+}
+
 fn active_work_profile<'a>(
     catalog: &'a RuntimeEconomyCatalog,
     building: &Building,
@@ -935,11 +1023,15 @@ fn household_income_pressure(
     let profile = household_demand_profile(catalog);
     let target_days = profile.stock_target_days;
 
-    let daily_consumption = household.member_count.max(1) as f32 * household.consumption_rate;
-    let reserve_target = daily_consumption * household_supply_unit_price(catalog) * target_days
-        + household.member_count.max(1) as f32
-            * tuning.households.utility_cost_per_member_per_day
-            * target_days;
+    let members = household.member_count.max(1) as f32;
+    let household_supply_resource = household_supply_resource_runtime_id(catalog);
+    let daily_supply_cost =
+        members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
+    let daily_service_cost = members
+        * demand_sink_cash_cost_per_resident_excluding_resource(catalog, household_supply_resource);
+    let daily_utility_cost = members * tuning.households.utility_cost_per_member_per_day;
+    let reserve_target =
+        (daily_supply_cost + daily_service_cost + daily_utility_cost) * target_days;
     (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 

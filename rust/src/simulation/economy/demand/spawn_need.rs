@@ -36,6 +36,30 @@ pub(super) fn resource_amount(
         .unwrap_or(0.0)
 }
 
+fn add_resource_count(
+    counts: &mut Vec<(ResourceRuntimeId, u32)>,
+    resource_runtime_id: ResourceRuntimeId,
+) {
+    if let Some((_, existing)) = counts
+        .iter_mut()
+        .find(|(resource, _)| *resource == resource_runtime_id)
+    {
+        *existing = existing.saturating_add(1);
+    } else {
+        counts.push((resource_runtime_id, 1));
+    }
+}
+
+fn resource_count(
+    counts: &[(ResourceRuntimeId, u32)],
+    resource_runtime_id: ResourceRuntimeId,
+) -> u32 {
+    counts
+        .iter()
+        .find_map(|(resource, count)| (*resource == resource_runtime_id).then_some(*count))
+        .unwrap_or(0)
+}
+
 pub(super) fn spawn_need_buildings_for_use(
     use_kind: DemandUse,
     allocator: &BuildingAllocator,
@@ -95,6 +119,25 @@ pub(super) fn commercial_spawn_need_buildings(
     if snapshot.committed_unmet_commercial_consumer_demand <= EPSILON {
         return 0.0;
     }
+    if !snapshot
+        .committed_unmet_commercial_consumer_demand_by_resource
+        .is_empty()
+    {
+        let average_output_units_by_resource =
+            average_candidate_output_units_by_resource_for_household_demand(
+                allocator, catalog, candidates,
+            );
+        return snapshot
+            .committed_unmet_commercial_consumer_demand_by_resource
+            .iter()
+            .filter_map(|&(resource_runtime_id, unmet_units)| {
+                let output_units =
+                    resource_amount(&average_output_units_by_resource, resource_runtime_id);
+                (unmet_units > EPSILON && output_units > EPSILON)
+                    .then(|| (unmet_units / output_units).ceil())
+            })
+            .fold(0.0, f32::max);
+    }
     let average_output_units =
         average_candidate_output_units_for_household_demand(allocator, catalog, candidates);
     if average_output_units <= EPSILON {
@@ -143,6 +186,50 @@ fn average_residential_candidate_household_slots(
     } else {
         total_slots / candidate_count as f32
     }
+}
+
+fn average_candidate_output_units_by_resource_for_household_demand(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    candidates: &[DemandSpawnCandidate],
+) -> Vec<(ResourceRuntimeId, f32)> {
+    let mut total_output_units_by_resource = Vec::new();
+    let mut output_candidate_count_by_resource = Vec::new();
+    for candidate in candidates {
+        let Some(profile) =
+            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
+        else {
+            continue;
+        };
+        for port in &profile.outputs {
+            if !resource_has_household_demand(catalog, port.resource_runtime_id) {
+                continue;
+            }
+            let units = port.units_per_day.max(0.0);
+            if units <= EPSILON {
+                continue;
+            }
+            add_resource_amount(
+                &mut total_output_units_by_resource,
+                port.resource_runtime_id,
+                units,
+            );
+            add_resource_count(
+                &mut output_candidate_count_by_resource,
+                port.resource_runtime_id,
+            );
+        }
+    }
+    if output_candidate_count_by_resource.is_empty() {
+        return Vec::new();
+    }
+    for (resource_runtime_id, units) in &mut total_output_units_by_resource {
+        let divisor = resource_count(&output_candidate_count_by_resource, *resource_runtime_id);
+        if divisor > 0 {
+            *units /= divisor as f32;
+        }
+    }
+    total_output_units_by_resource
 }
 
 fn average_candidate_output_units_for_household_demand(

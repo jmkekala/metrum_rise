@@ -74,8 +74,12 @@ pub(crate) struct DailyPowerSettlementSummary {
     pub(crate) private_local_revenue: f32,
     /// City-service payments routed to local city providers.
     pub(crate) city_service_local_cost: f32,
-    /// City-service payments routed to OWA fallback.
-    pub(crate) city_service_owa_cost: f32,
+    /// Local utility revenue across all settled services.
+    pub(crate) utility_local_revenue: f32,
+    /// City-service payments routed to local providers across all settled services.
+    pub(crate) city_service_utility_local_cost: f32,
+    /// City-service payments routed to OWA fallback across all settled services.
+    pub(crate) city_service_utility_owa_cost: f32,
 }
 
 /// Explicit household runtime record anchored to a residential building.

@@ -10,8 +10,10 @@ use crate::simulation::economy::definitions::{EconomyProfileRuntime, EconomyProf
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::{
     active_worker_capacity_for_profile_with_floor_scale, commercial_activity_signal_for_city,
+    scaled_output_buffer_capacity_units_for_building, scaled_output_units_per_day_for_building,
     service_funded_worker_capacity,
 };
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
@@ -595,22 +597,22 @@ impl SimCore {
             .sum::<f64>();
         let city_wages = f64::from(self.households.last_city_service_wage_cost().max(0.0));
         let power = self.households.last_power_settlement();
-        let utility_service_revenue = f64::from(
+        let electricity_revenue = f64::from(
             power.household_local_revenue
                 + power.private_local_revenue
                 + power.city_service_local_cost,
         );
-        let imports_owa = f64::from(power.city_service_owa_cost.max(0.0));
+        let utility_service_revenue = f64::from(power.utility_local_revenue.max(0.0));
+        let imports_owa = f64::from(power.city_service_utility_owa_cost.max(0.0));
         let construction_service_costs = construction_delta
             + self.treasury.last_daily_upkeep.max(0.0)
-            + f64::from(power.city_service_local_cost.max(0.0));
+            + f64::from(power.city_service_utility_local_cost.max(0.0));
         let (coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost) =
             self.electricity_provider_daily_fuel_summary();
         let electricity_wage_cost = city_wages;
         let power_consumed = f64::from(power.served_units.max(0.0));
         let power_unmet = f64::from((power.demand_units - power.served_units).max(0.0));
         let power_produced = f64::from(power.supply_units.max(0.0));
-        let electricity_revenue = utility_service_revenue;
         let electricity_net = electricity_revenue - electricity_fuel_cost - electricity_wage_cost;
 
         let income = tax_income + utility_service_revenue;
@@ -1113,6 +1115,10 @@ impl SimCore {
             self.households.reset_daily_ledgers();
             return;
         };
+        let service_funding_by_building = self.electricity_funding_by_building();
+        let reserved_outbound = self
+            .logistics
+            .reserved_outbound_view(catalog.resource_count());
 
         for (idx, b) in self.allocator.buildings.iter().enumerate() {
             if b.zone_type == ZoneType::Residential {
@@ -1128,10 +1134,40 @@ impl SimCore {
                 .allocator
                 .worker_capacity_with_catalog(idx, catalog.as_ref());
             let _resident_cap = self.allocator.household_capacity(idx);
-            let profile_id = catalog
-                .profile_by_runtime_id(b.economy_profile_runtime_id)
-                .map(|p| p.id.as_str())
-                .unwrap_or("none");
+            let profile = catalog.profile_by_runtime_id(b.economy_profile_runtime_id);
+            let profile_id = profile.map(|p| p.id.as_str()).unwrap_or("none");
+            let active_worker_capacity = profile
+                .map(|p| {
+                    active_worker_capacity_for_profile_with_floor_scale(
+                        catalog.as_ref(),
+                        b,
+                        p,
+                        b.commercial_activity_floor_scale,
+                    )
+                })
+                .unwrap_or(0);
+            let funded_worker_capacity = profile
+                .map(|p| {
+                    service_funded_worker_capacity(
+                        active_worker_capacity,
+                        p,
+                        idx,
+                        &service_funding_by_building,
+                    )
+                })
+                .unwrap_or(0);
+            let budget_worker_capacity = profile
+                .map(|p| {
+                    let wage = p.average_daily_wage();
+                    let budget_capacity =
+                        if self.allocator.is_city_service_building(b) || wage <= 0.1 {
+                            funded_worker_capacity
+                        } else {
+                            (b.operating_budget.max(0.0) / wage).floor() as u32
+                        };
+                    funded_worker_capacity.min(budget_capacity)
+                })
+                .unwrap_or(0);
 
             // Build inventory snapshot string for all non-zero resources.
             let mut inv_parts = Vec::new();
@@ -1147,7 +1183,7 @@ impl SimCore {
                         p.outputs
                             .iter()
                             .find(|o| o.resource_runtime_id == rid)
-                            .map(|o| p.output_buffer_capacity_units_for(o))
+                            .map(|o| scaled_output_buffer_capacity_units_for_building(b, p, o))
                             .unwrap_or(0.0)
                     } else {
                         0.0
@@ -1162,6 +1198,38 @@ impl SimCore {
                 "none".to_owned()
             } else {
                 inv_parts.join(" ")
+            };
+
+            let mut export_parts = Vec::new();
+            if let Some(p) = profile {
+                for output in &p.outputs {
+                    let current_inventory = b.inventory_units(output.resource_runtime_id);
+                    let reserved = ShipmentSystem::reservation_slot_for_building(
+                        idx,
+                        output.resource_runtime_id,
+                        catalog.resource_count(),
+                    )
+                    .and_then(|slot| reserved_outbound.get(slot).copied())
+                    .unwrap_or(0.0);
+                    let unreserved = (current_inventory - reserved).max(0.0);
+                    if unreserved <= 0.0 {
+                        continue;
+                    }
+                    let name = catalog
+                        .resource_id_for_runtime_id(output.resource_runtime_id)
+                        .unwrap_or("?");
+                    let buffer = scaled_output_units_per_day_for_building(b, p, output);
+                    let surplus = (unreserved - buffer).max(0.0);
+                    export_parts.push(format!(
+                        "{}:buffer={:.1} surplus={:.1}",
+                        name, buffer, surplus
+                    ));
+                }
+            }
+            let export_str = if export_parts.is_empty() {
+                "none".to_owned()
+            } else {
+                export_parts.join(" ")
             };
 
             // Daily I/O from profile (per-day throughput at full capacity).
@@ -1193,14 +1261,18 @@ impl SimCore {
             };
 
             println!(
-                "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} distress={} broken={} io=[{}] inventory=[{}]",
+                "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} capacity=[active={} profile={} budget={} area={:.3}] budget={:.1} revenue={:.1} distress={} broken={} io=[{}] inventory=[{}] export=[{}]",
                 day_index,
                 idx,
                 zone_tag,
                 b.asset_id,
                 profile_id,
                 b.worker_count,
+                active_worker_capacity,
+                active_worker_capacity,
                 worker_cap,
+                budget_worker_capacity,
+                b.work_area_scale,
                 b.operating_budget,
                 b.revenue,
                 if b.budget_distress { "Y" } else { "N" },
@@ -1211,6 +1283,7 @@ impl SimCore {
                 },
                 io_str,
                 inv_str,
+                export_str,
             );
         }
 

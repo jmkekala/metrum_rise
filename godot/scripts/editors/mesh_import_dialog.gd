@@ -372,13 +372,23 @@ func _on_file_item_activated(index: int) -> void:
 func _preview_mesh(path: String) -> void:
 	if path.is_empty() or not FileAccess.file_exists(path):
 		return
+	var preview_path := _preferred_mesh_path_for_import(path)
+	if preview_path.is_empty() or not FileAccess.file_exists(preview_path):
+		preview_path = path
 	_clear_model()
 	_selected_path = ""
 	_import_btn.disabled = true
-	_set_status("Loading preview: %s" % path.get_file(), false)
+	var using_preferred := preview_path != path
+	if using_preferred:
+		_set_status(
+			"Loading preview: %s (using GLB sibling for %s)" % [preview_path.get_file(), path.get_file()],
+			false
+		)
+	else:
+		_set_status("Loading preview: %s" % path.get_file(), false)
 	_stats_lbl.text = "Loading..."
 
-	var ext := path.get_extension().to_lower()
+	var ext := preview_path.get_extension().to_lower()
 	var doc: GLTFDocument
 	var state: GLTFState
 	if ext == "fbx":
@@ -387,15 +397,15 @@ func _preview_mesh(path: String) -> void:
 	else:
 		doc = GLTFDocument.new()
 		state = GLTFState.new()
-	var err := doc.append_from_file(path, state)
+	var err := doc.append_from_file(preview_path, state)
 	if err != OK:
-		_set_status("Could not preview '%s' (error %d)" % [path.get_file(), err], true)
+		_set_status("Could not preview '%s' (error %d)" % [preview_path.get_file(), err], true)
 		_stats_lbl.text = "Preview failed."
 		return
 
 	var scene := doc.generate_scene(state)
 	if not scene:
-		_set_status("Preview generated no scene: %s" % path.get_file(), true)
+		_set_status("Preview generated no scene: %s" % preview_path.get_file(), true)
 		_stats_lbl.text = "Preview failed."
 		return
 
@@ -404,10 +414,16 @@ func _preview_mesh(path: String) -> void:
 	if scene is Node3D:
 		aabb = _compute_aabb(scene as Node3D)
 	_frame_camera(aabb)
-	_selected_path = path
+	_selected_path = preview_path
 	_import_btn.disabled = false
-	_set_status("Selected: %s" % path.get_file(), false)
-	_stats_lbl.text = _format_stats(path, scene, aabb)
+	if using_preferred:
+		_set_status(
+			"Selected: %s (GLB sibling for %s)" % [preview_path.get_file(), path.get_file()],
+			false
+		)
+	else:
+		_set_status("Selected: %s" % preview_path.get_file(), false)
+	_stats_lbl.text = _format_stats(preview_path, scene, aabb)
 
 func _confirm_selection() -> void:
 	if _selected_path.is_empty():
@@ -422,6 +438,31 @@ func _clear_model() -> void:
 
 func _is_supported_mesh(path: String) -> bool:
 	return SUPPORTED_EXTENSIONS.has(path.get_extension().to_lower())
+
+func _preferred_mesh_path_for_import(path: String) -> String:
+	if path.get_extension().to_lower() != "fbx":
+		return path
+	var same_dir_glb := path.get_basename() + ".glb"
+	if FileAccess.file_exists(same_dir_glb):
+		return same_dir_glb
+	var same_dir_gltf := path.get_basename() + ".gltf"
+	if FileAccess.file_exists(same_dir_gltf):
+		return same_dir_gltf
+
+	var source_dir := path.get_base_dir()
+	var source_folder := source_dir.get_file().to_lower()
+	if source_folder != "fbx format" and source_folder != "fbx":
+		return path
+	var model_root := source_dir.get_base_dir()
+	var basename := path.get_file().get_basename()
+	for glb_folder in ["GLB format", "glb format", "GLB", "glb"]:
+		var glb_candidate := model_root.path_join(glb_folder).path_join(basename + ".glb")
+		if FileAccess.file_exists(glb_candidate):
+			return glb_candidate
+		var gltf_candidate := model_root.path_join(glb_folder).path_join(basename + ".gltf")
+		if FileAccess.file_exists(gltf_candidate):
+			return gltf_candidate
+	return path
 
 func _set_status(message: String, is_error: bool) -> void:
 	if not _status_lbl:

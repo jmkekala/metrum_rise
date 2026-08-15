@@ -198,6 +198,8 @@ impl ShipmentSystem {
                     reserved_inbound[slot] += shipment.amount;
                     has_open_inbound[slot] = true;
                 }
+            }
+            if shipment_reserves_source_inventory(shipment) {
                 if let ShipmentEndpoint::Building(source_building_id) = shipment.source
                     && let Some(slot) = reservation_slot(
                         source_building_id,
@@ -235,6 +237,11 @@ impl ShipmentSystem {
             border_queued_job_counts,
         }
     }
+}
+
+fn shipment_reserves_source_inventory(shipment: &super::data::Shipment) -> bool {
+    matches!(shipment.status, ShipmentStatus::Queued)
+        || (shipment.status == ShipmentStatus::InTransit && shipment.carrier_agent_id == usize::MAX)
 }
 
 pub(super) fn reservation_slot(

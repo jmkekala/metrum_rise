@@ -104,10 +104,6 @@ impl ShipmentSystem {
                     self.clear_request_failure(request_key);
                     continue;
                 }
-                if self.request_is_terminal(request_key) {
-                    continue;
-                }
-
                 let allow_emergency = effective_input_stock <= critical_units;
                 let desired_amount = (target_units - effective_input_stock).max(0.0);
                 if desired_amount <= 0.0 {

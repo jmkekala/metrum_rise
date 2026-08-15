@@ -459,17 +459,19 @@ Baseline `v0.1` city-level signal families:
 - `open_job_slots`
 - `marginal_commercial_job_household_pull` — forecast-only household pull from budget-backed
   commercial store worker-equivalent demand if one candidate household's demand were included; it
-  is continuous below integer staffing thresholds, capped to one candidate household, and does not
-  hire workers before that household exists
+  is continuous below integer staffing thresholds, capped to one candidate household, net of
+  existing unemployed adults after current open jobs are consumed, and does not hire workers before
+  that household exists
 - `marginal_commercial_job_slots` — integer forecast-only commercial job slots that would become
   active if one candidate household's demand crossed a staffing threshold
 - `marginal_commercial_job_equivalent_slots` — fractional commercial worker-equivalent progress
   caused by one candidate household, with integer threshold crossings promoted to at least the
   unlocked slot count
-- `move_in_job_slots` — physical current or forecast-unlocked job slots that can become real jobs
-  after admission
-- `move_in_job_equivalent_slots` — current open job slots plus fractional forecast-only marginal
-  commercial worker-equivalents used for move-in viability and expected income
+- `move_in_job_slots` — physical current or forecast-unlocked job slots remaining for the
+  candidate household after existing unemployed adults are counted against job demand
+- `move_in_job_equivalent_slots` — remaining current open job slots plus remaining fractional
+  forecast-only marginal commercial worker-equivalents used for move-in viability and expected
+  income
 - `average_move_in_job_wage_per_day`
 - `regional_growth_household_pull` — an authored outside-world household attraction signal after
   external connection, city-health damping, and the soft household target are applied
@@ -493,8 +495,8 @@ Baseline ownership rule:
   households, so failed households cannot be hidden by affluent housed survivors
 - `household_stock_stability` comes from household stock buffers owned by economy
 - `commercial_capacity_deficit` is derived by the demand snapshot from catalog demand-sink input
-  resources that a store-style commercial profile can produce, comparing housed-resident
-  per-resource demand against live non-deserted commercial output capacity
+  resources that a `store` or `service_store` commercial profile can produce, comparing
+  housed-resident per-resource demand against live non-deserted commercial output capacity
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
 - `regional_growth_household_pull` is derived by demand from authored demand tuning plus the
@@ -508,8 +510,8 @@ Baseline ownership rule:
   flat-size capacity so a home's maximum fit is not treated as the requested household size.
 - `candidate_effective_workers` is `candidate_adult_count`; children and elders contribute no
   worker capacity
-- `candidate_daily_essential_cost` combines household demand-sink resource prices and
-  per-member utility cost for that candidate size
+- `candidate_daily_essential_cost` combines household demand-sink resource prices, including
+  aggregate service-store demand resources, and per-member utility cost for that candidate size
 - `immigrant_starter_savings_per_household` comes from economy-owned household starter tuning
 - transfer amounts come from live economy-owned `CityFiscalPolicy`
 - `existing_unemployed_adult_count`, `existing_child_count`, `existing_elder_count`, and
@@ -670,8 +672,17 @@ household_purchase_power =
 
 candidate_effective_workers =
     candidate_adult_count
+net_open_job_slots =
+    max(open_job_slots - existing_unemployed_adult_count, 0)
+existing_unemployed_after_open_jobs =
+    max(existing_unemployed_adult_count - open_job_slots, 0)
+net_marginal_commercial_job_equivalent_slots =
+    max(
+        marginal_commercial_job_equivalent_slots - existing_unemployed_after_open_jobs,
+        0.0
+    )
 move_in_job_equivalent_slots =
-    open_job_slots + marginal_commercial_job_equivalent_slots
+    net_open_job_slots + net_marginal_commercial_job_equivalent_slots
 expected_employed_members =
     min(candidate_effective_workers, move_in_job_equivalent_slots)
 expected_unemployed_members =
@@ -735,9 +746,11 @@ admission_failure_factor =
 residential_construction_viability =
     construction_move_in_acceptance * admission_failure_factor
 open_job_household_pull =
-    open_job_slots / max(candidate_effective_workers, 1.0)
+    if candidate_effective_workers <= EPSILON then 0.0
+    else net_open_job_slots / candidate_effective_workers
 marginal_commercial_job_household_pull =
-    min(marginal_commercial_job_equivalent_slots / max(candidate_effective_workers, 1.0), 1.0)
+    if candidate_effective_workers <= EPSILON then 0.0
+    else min(net_marginal_commercial_job_equivalent_slots / candidate_effective_workers, 1.0)
 bootstrap_household_pull =
     if total_household_count == 0 then 1.0 else 0.0
 incoming_household_need =
@@ -822,8 +835,9 @@ Interpretation:
 - `ResidentialGrowth < 0.5` means net outflow desire — more people are leaving than arriving,
   or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
 - `incoming_household_need` is the deterministic household pull from current budget-backed open
-  jobs, forecast-only marginal commercial worker-equivalents, and regional migration pressure, with a
-  one-household bootstrap pull when the city has no households yet
+  jobs that remain after existing unemployed adults are counted first, forecast-only marginal
+  commercial worker-equivalents that remain after that same unemployed pool is counted, and regional
+  migration pressure, with a one-household bootstrap pull when the city has no households yet
 - `admission_pressure` and `inflow_desire` deliberately read the same incoming household pressure:
   vacant homes satisfy that pressure and cap actual admission, but they do not create or remove the
   desire for households to enter the city
@@ -1186,11 +1200,15 @@ If any denominator is `<= EPSILON`, that use's raw spawn need is `0.0` for the p
 count does not multiply spawn need; it only caps how many deterministic empty sites can be selected.
 This means one valid industrial parcel can receive the full one-factory need immediately instead of
 turning the need into `1 / 24` of a parcel-count-scaled daily drip.
-Commercial `unmet_commercial_consumer_demand_units_per_day` includes baseline resident consumption
-plus below-target household pantry recovery spread over the authored stock target window. Existing
-live commercial shops subtract only their effective demand-responsive output capacity, not their
-raw full-profile output, while under-construction shops remain committed future capacity so the
-planner does not duplicate an already-started site. Because
+Commercial `unmet_commercial_consumer_demand_units_per_day` includes baseline resident consumption,
+aggregate service demand from `service_store` sink profiles, plus below-target household pantry
+recovery spread over the authored stock target window. Existing live commercial shops subtract only
+their effective demand-responsive output capacity, not their raw full-profile output, while
+under-construction shops remain committed future capacity so the planner does not duplicate an
+already-started site. Commercial spawn need is matched by resource and averages output only across
+candidates that produce that resource: a candidate grocery can satisfy `household_supplies` demand
+but not unresolved `personal_services` or `health_essentials` demand.
+Because
 `industrial_missing_input_value_per_day` subtracts existing local capacity from active commercial
 input need, one commercial building that actively needs `160` input units/day and one industrial
 building that outputs `160` compatible units/day yields zero further industrial spawn need even if
@@ -1698,8 +1716,9 @@ budget is not redistributed to other candidates on the same hourly pass.
 Workplace capacity must not be a hard spawn prerequisite. A commercial or industrial building may
 spawn with fewer current residents than its full `worker_capacity` when demand and output
 absorption justify the building. The new building's budget-backed open jobs then feed
-`incoming_household_need` on the next demand snapshot, which raises household admission and
-residential construction pressure.
+`incoming_household_need` on the next demand snapshot after existing unemployed adults are counted
+against those jobs, which raises household admission and residential construction pressure only for
+the remaining workforce shortfall.
 
 Deterministic rule:
 

@@ -1,0 +1,57 @@
+asset_id = "building.commercial.barber_small"
+display_name = "Small Barber"
+tags = ["barber", "personal_service"]
+
+[building]
+placement_mode = "zoned_private"
+zone_type = "commercial"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+level = 1
+economy_profile = "personal_service_small"
+
+[[mesh_parts]]
+name = "main"
+position = [3.39, 0, -0.51]
+rotation_degrees = [0, 0, 0]
+scale = 7
+
+[[mesh_parts.lods]]
+file = "building-c.glb"
+distance_min_m = 0
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [1.98, 0, -2.36]
+forward = [0, 0, -1]
+
+[[anchors]]
+type = "parking"
+position = [-4.47, 0, -4.97]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "parking"
+position = [-4.53, 0, -1.76]
+forward = [-1, 0, 0]
+width_m = 2.5
+length_m = 5
+vehicle_class = "car"
+
+[[anchors]]
+type = "driveway"
+position = [-2, 0, -10]
+forward = [0, 0, 1]
+width_m = 3
+vehicle_class = "car"
+
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [10, -10], [10, -4.18], [2.88, -4.3], [2.87, -2.29], [0.54, -2.41], [0.87, 10], [-10, 10]]

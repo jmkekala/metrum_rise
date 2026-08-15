@@ -107,6 +107,14 @@ impl ShipmentSystem {
             || self.freight_route_cache_cch_generation != cch_generation
         {
             self.freight_route_cache.clear();
+            if !self.request_failures.is_empty() {
+                debug_log!(
+                    "economy",
+                    "freight request failures cleared after route topology changed count={}",
+                    self.request_failures.len()
+                );
+                self.request_failures.clear();
+            }
             self.freight_route_cache_building_revision = building_revision;
             self.freight_route_cache_entrance_revision = entrance_revision;
             self.freight_route_cache_cch_generation = cch_generation;

@@ -94,8 +94,22 @@ impl DemandSystem {
         cadence_fraction: f32,
         log_label: &str,
     ) {
-        let mut spawn_candidates_by_use =
-            allocator.collect_demand_spawn_candidates_by_use(zoning, graph, catalog);
+        let mut commercial_spawn_resource_priorities = snapshot
+            .committed_unmet_commercial_consumer_demand_by_resource
+            .clone();
+        commercial_spawn_resource_priorities.retain(|(_, unmet_units)| *unmet_units > EPSILON);
+        commercial_spawn_resource_priorities.sort_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let mut spawn_candidates_by_use = allocator.collect_demand_spawn_candidates_by_use(
+            zoning,
+            graph,
+            catalog,
+            &commercial_spawn_resource_priorities,
+        );
         let absorption_context = &snapshot.output_absorption;
         for use_kind in [
             DemandUse::Residential,
