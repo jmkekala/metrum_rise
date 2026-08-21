@@ -508,6 +508,9 @@ Baseline ownership rule:
   residential vacancy index. They come from the same deterministic starter mix used by actual
   household admission, may describe a one-person household, and are capped by the authored
   flat-size capacity so a home's maximum fit is not treated as the requested household size.
+  When current budget-backed open jobs remain after existing unemployed adults are counted, the
+  preview prefers a claimable household with at least one adult worker before falling back to the
+  deterministic smallest-vacancy order.
 - `candidate_effective_workers` is `candidate_adult_count`; children and elders contribute no
   worker capacity
 - `candidate_daily_essential_cost` combines household demand-sink resource prices, including
@@ -1420,6 +1423,9 @@ Rules:
 - after bootstrap, budget-backed open jobs, forecast-only marginal commercial worker-equivalents,
   and authored regional migration pressure define incoming household pull; vacant homes are
   execution capacity only
+- job-driven admission uses the same future household id as materialization and prefers an
+  adult-capable claimable household over a workerless front candidate; if no adult-capable
+  candidate exists, deterministic vacancy order remains the fallback
 - immigration pressure is driven by coarse city signals only, not by hidden magic or static floors
 - no hard job requirement for the first settlement: people may move to a new city before jobs exist
   when starter savings and reliable transfer income provide the authored search runway
