@@ -565,7 +565,7 @@ Purpose:
 - `planned_detach_lane_id`: exact frontage-side lane used for the final destination-side network approach and the exact network exit point
 - `planned_attach_lane_d`: exact lane distance where the agent leaves short egress and enters the origin frontage lane
 - `planned_detach_lane_d`: exact lane distance where the agent leaves the destination frontage lane and enters short ingress
-- `access_flags`: compact authoritative trip metadata for plan validity, zero-hop routing, flow-field provenance, and immigration-origin handling
+- `access_flags`: compact authoritative trip metadata for plan validity, zero-hop routing, flow-field provenance, immigration-origin handling, and freight border destinations
 - `next_replan_time`: absolute `sim_time` gate; the planner may only build or rebuild a trip when `sim_time >= next_replan_time`
 
 This is the minimum set that turns building access into exact planned legs, while also preventing failed trips from calling pathfinding every tick.
@@ -610,7 +610,7 @@ Reset and save rules:
 - `0x02 = ACCESS_ZERO_HOP_NODE_PATH`
 - `0x04 = ACCESS_PATH_FROM_FLOW_FIELD`
 - `0x08 = ACCESS_IMMIGRATION_ORIGIN`
-- `0x10 = reserved`, must be zero
+- `0x10 = ACCESS_FREIGHT_BORDER_DESTINATION`
 - `0x20 = reserved`, must be zero
 - `0x40 = reserved`, must be zero
 - `0x80 = reserved`, must be zero
@@ -624,6 +624,7 @@ Reset and save rules:
 - successful plan build must rewrite the full used bitset from scratch
 - successful `NETWORK` replan must rewrite `ACCESS_ZERO_HOP_NODE_PATH` and `ACCESS_PATH_FROM_FLOW_FIELD`
 - successful immigration planning must set `ACCESS_IMMIGRATION_ORIGIN`
+- successful freight export planning or freight border replanning must set `ACCESS_FREIGHT_BORDER_DESTINATION`
 - `access_flags` must be saved and loaded together with the other trip-plan SoA fields
 
 ##### Exact planned-node sentinel and lifecycle rules
@@ -633,13 +634,20 @@ Use `u32::MAX` as the invalid sentinel for both `planned_attach_node` and `plann
 Use these exact lifecycle rules:
 
 - if `access_flags & ACCESS_PLAN_VALID == 0`, then both planned nodes must be `u32::MAX`
-- if `access_flags & ACCESS_PLAN_VALID != 0`, then both planned nodes must be `< graph.node_count()`
+- if `access_flags & ACCESS_PLAN_VALID != 0` and `ACCESS_FREIGHT_BORDER_DESTINATION == 0`, then both planned nodes must be `< graph.node_count()`
 - for an ordinary building-origin trip:
   - `planned_attach_node` must equal either `origin_edge.start_node` or `origin_edge.end_node`
   - `planned_detach_node` must equal either `destination_edge.start_node` or `destination_edge.end_node`
 - for an immigration trip:
   - `planned_attach_node = border_node`
   - `planned_detach_node` follows the ordinary destination rule
+- for a freight export trip with `ACCESS_FREIGHT_BORDER_DESTINATION`:
+  - `target_building = usize::MAX`
+  - `freight_target_border_node = planned_detach_node`
+  - `planned_detach_node < graph.node_count()`
+  - `planned_detach_lane_id = u32::MAX`
+  - during the initial building-origin export plan, `planned_attach_node` follows the ordinary origin rule
+  - after road-edit route invalidation, `planned_attach_node` and `planned_attach_lane_id` may be `u32::MAX` while `ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION` remains set; the current lane or node anchor plus `freight_target_border_node` is then the authoritative replan context
 - `planned_attach_node` is written once on successful initial planning and remains immutable until the trip completes, aborts, or is cancelled
 - `planned_detach_node` is written on successful initial planning and may be replaced by successful `NETWORK` replans
 - entering `IN_BUILDING`, trip cancellation, trip completion, `ACCESS_EGRESS` abort back to building, and `kill_agent()` must clear both planned nodes to `u32::MAX`

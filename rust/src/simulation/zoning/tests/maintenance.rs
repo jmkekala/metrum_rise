@@ -2,6 +2,8 @@
 
 use super::helpers::{make_straight_road, make_zoning};
 use crate::simulation::zoning::ZoneType;
+use godot::prelude::Vector3;
+use std::collections::HashSet;
 
 #[test]
 fn test_parcel_edge_compaction_remaps_and_drops_missing_edges() {
@@ -38,6 +40,56 @@ fn test_no_build_edge_cleanup_removes_attached_parcels() {
 
     assert_eq!(z.remove_parcels_attached_to_edge(edge_idx), 1);
     assert!(z.parcels().is_empty());
+}
+
+#[test]
+fn road_corridor_overlap_query_finds_blocking_parcel() {
+    let (graph, _) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    let parcel_id = z
+        .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &graph)
+        .expect("parcel");
+
+    let crossing = [Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 80.0)];
+    let clear = [
+        Vector3::new(40.0, 0.0, -80.0),
+        Vector3::new(40.0, 0.0, 80.0),
+    ];
+
+    assert_eq!(
+        z.parcel_ids_overlapping_road_corridor(&crossing, 5.0),
+        vec![parcel_id.raw()]
+    );
+    assert!(
+        z.parcel_ids_overlapping_road_corridor(&clear, 5.0)
+            .is_empty()
+    );
+}
+
+#[test]
+fn remove_parcels_by_raw_ids_removes_only_requested_parcels() {
+    let (graph, _) = make_straight_road();
+    let mut z = make_zoning();
+    let residential = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+
+    let left = z
+        .place_or_rezone_default_parcel_at(-30.0, -20.0, residential, &graph)
+        .expect("left parcel");
+    let right = z
+        .place_or_rezone_default_parcel_at(30.0, -20.0, residential, &graph)
+        .expect("right parcel");
+
+    assert_eq!(z.remove_parcels_by_raw_ids(&HashSet::from([left.raw()])), 1);
+    assert_eq!(z.parcels().len(), 1);
+    assert_eq!(z.parcels()[0].id(), right);
 }
 
 #[test]

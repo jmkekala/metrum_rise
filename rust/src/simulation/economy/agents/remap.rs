@@ -2,8 +2,8 @@
 
 use super::data::AgentSystem;
 use super::{
-    ACCESS_PATH_FROM_FLOW_FIELD, ACCESS_ZERO_HOP_NODE_PATH, MODE_WALK, TRANSIT_INTERSECTION,
-    TRANSIT_NETWORK,
+    ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_VALID, MODE_WALK, TRANSIT_IN_BUILDING,
+    TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
@@ -72,12 +72,7 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
-        let mut affected_lane_ids: HashSet<usize> = HashSet::new();
-        for &edge_id in &affected_edges {
-            if let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) {
-                affected_lane_ids.extend(lane_ids);
-            }
-        }
+        let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
 
         for i in 0..self.agents.len() {
             let lid = self.agents.current_lane_id[i];
@@ -124,6 +119,8 @@ impl AgentSystem {
         graph: &RegionGraph,
     ) {
         let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
+        let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
+        let affected_nodes = collect_nodes_for_edges(&affected_edges, graph);
         let max_dist_sq = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
         for i in 0..self.agents.len() {
             if self.agents.current_lane_id[i] != usize::MAX
@@ -161,16 +158,172 @@ impl AgentSystem {
             self.agents.pos_y[i] = candidate.pos.y;
             self.agents.current_path[i].clear();
             self.agents.current_path_index[i] = 0;
-            self.agents.access_flags[i] &=
-                !(ACCESS_ZERO_HOP_NODE_PATH | ACCESS_PATH_FROM_FLOW_FIELD);
+            self.agents.transit[i] = TRANSIT_NETWORK;
             self.agents.lane_change_from_lane_id[i] = u32::MAX;
             self.agents.lane_change_start_d[i] = 0.0;
             self.agents.lane_change_length_m[i] = 0.0;
             self.agents.overtake_blocked_time_s[i] = 0.0;
             self.agents.overtake_cooldown_s[i] = 0.0;
         }
+
+        for i in 0..self.agents.len() {
+            if self.agents.transit[i] == TRANSIT_IN_BUILDING {
+                continue;
+            }
+            if agent_route_state_touches_road_edit(
+                self,
+                i,
+                &affected_edges,
+                &affected_nodes,
+                &affected_lane_ids,
+                lane_system,
+            ) {
+                self.clear_route_plan_after_road_edit(i);
+            }
+        }
         self.invalidate_lane_bucket_snapshot();
     }
+
+    fn clear_route_plan_after_road_edit(&mut self, i: usize) {
+        let freight_border_node = self.agents.freight_target_border_node[i];
+        let preserve_freight_border = freight_border_node != u32::MAX
+            && (self.agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION) != 0;
+
+        self.agents.current_path[i].clear();
+        self.agents.current_path_index[i] = 0;
+        self.agents.planned_attach_node[i] = u32::MAX;
+        self.agents.planned_attach_lane_id[i] = u32::MAX;
+        self.agents.planned_attach_lane_d[i] = 0.0;
+        self.agents.planned_detach_lane_d[i] = 0.0;
+        if preserve_freight_border {
+            self.agents.planned_detach_node[i] = freight_border_node;
+            self.agents.planned_detach_lane_id[i] = u32::MAX;
+            self.agents.access_flags[i] = ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION;
+        } else {
+            self.agents.planned_detach_node[i] = u32::MAX;
+            self.agents.planned_detach_lane_id[i] = u32::MAX;
+            self.agents.access_flags[i] = 0;
+        }
+        self.agents.next_replan_time[i] = 0.0;
+        self.agents.lane_change_from_lane_id[i] = u32::MAX;
+        self.agents.lane_change_start_d[i] = 0.0;
+        self.agents.lane_change_length_m[i] = 0.0;
+        self.agents.overtake_blocked_time_s[i] = 0.0;
+        self.agents.overtake_cooldown_s[i] = 0.0;
+    }
+}
+
+fn collect_lane_ids_for_edges(
+    affected_edges: &HashSet<usize>,
+    lane_system: &LaneSystem,
+) -> HashSet<usize> {
+    let mut affected_lane_ids = HashSet::new();
+    for &edge_id in affected_edges {
+        if let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) {
+            affected_lane_ids.extend(lane_ids);
+        }
+    }
+    affected_lane_ids
+}
+
+fn collect_nodes_for_edges(affected_edges: &HashSet<usize>, graph: &RegionGraph) -> HashSet<u32> {
+    let mut affected_nodes = HashSet::new();
+    for &edge_id in affected_edges {
+        let Some(edge) = graph.get_edge(edge_id) else {
+            continue;
+        };
+        affected_nodes.insert(graph.get_valid_node(edge.start_node));
+        affected_nodes.insert(graph.get_valid_node(edge.end_node));
+    }
+    affected_nodes
+}
+
+fn agent_route_state_touches_road_edit(
+    agents: &AgentSystem,
+    i: usize,
+    affected_edges: &HashSet<usize>,
+    affected_nodes: &HashSet<u32>,
+    affected_lane_ids: &HashSet<usize>,
+    lane_system: &LaneSystem,
+) -> bool {
+    let current_edge = agents.agents.current_edge[i];
+    if current_edge != usize::MAX && affected_edges.contains(&current_edge) {
+        return true;
+    }
+    let current_node = agents.agents.current_node[i];
+    if current_node != u32::MAX && affected_nodes.contains(&current_node) {
+        return true;
+    }
+    if lane_usize_touches_road_edit(
+        agents.agents.current_lane_id[i],
+        affected_edges,
+        affected_lane_ids,
+        lane_system,
+    ) {
+        return true;
+    }
+    if lane_u32_touches_road_edit(
+        agents.agents.planned_attach_lane_id[i],
+        affected_edges,
+        affected_lane_ids,
+        lane_system,
+    ) || lane_u32_touches_road_edit(
+        agents.agents.planned_detach_lane_id[i],
+        affected_edges,
+        affected_lane_ids,
+        lane_system,
+    ) {
+        return true;
+    }
+
+    let attach_node = agents.agents.planned_attach_node[i];
+    if attach_node != u32::MAX && affected_nodes.contains(&attach_node) {
+        return true;
+    }
+    let detach_node = agents.agents.planned_detach_node[i];
+    if detach_node != u32::MAX && affected_nodes.contains(&detach_node) {
+        return true;
+    }
+
+    agents.agents.current_path[i]
+        .iter()
+        .any(|node| affected_nodes.contains(node))
+}
+
+fn lane_u32_touches_road_edit(
+    lane_id: u32,
+    affected_edges: &HashSet<usize>,
+    affected_lane_ids: &HashSet<usize>,
+    lane_system: &LaneSystem,
+) -> bool {
+    if lane_id == u32::MAX {
+        return false;
+    }
+    lane_usize_touches_road_edit(
+        lane_id as usize,
+        affected_edges,
+        affected_lane_ids,
+        lane_system,
+    )
+}
+
+fn lane_usize_touches_road_edit(
+    lane_id: usize,
+    affected_edges: &HashSet<usize>,
+    affected_lane_ids: &HashSet<usize>,
+    lane_system: &LaneSystem,
+) -> bool {
+    if lane_id == usize::MAX || affected_lane_ids.contains(&lane_id) {
+        return lane_id != usize::MAX;
+    }
+    lane_system.lanes.get(lane_id).is_some_and(|lane| {
+        (lane.edge_id != usize::MAX && affected_edges.contains(&lane.edge_id))
+            || (lane.edge_id == usize::MAX
+                && lane
+                    .next_lanes
+                    .iter()
+                    .any(|next_lane_id| affected_lane_ids.contains(next_lane_id)))
+    })
 }
 
 fn invalidated_lane_reattach_edge(
@@ -299,7 +452,9 @@ fn project_point_to_lane(point: Vector2, lane: &Lane) -> Option<(f32, Vector2, f
 mod tests {
     use super::super::data::{Agent, AgentSystem};
     use super::super::{
-        AGE_ADULT, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
+        ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PATH_FROM_FLOW_FIELD, ACCESS_PLAN_VALID,
+        ACCESS_ZERO_HOP_NODE_PATH, AGE_ADULT, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
+        TRANSIT_NETWORK,
     };
     use super::*;
     use crate::simulation::network::graph::RegionGraph;
@@ -672,6 +827,113 @@ mod tests {
             old_pos.distance_to(new_pos) < 0.5,
             "reattach moved the car too far: old={old_pos:?} new={new_pos:?}",
         );
+    }
+
+    #[test]
+    fn test_reattach_clears_stale_access_plan_after_road_edit() {
+        let (graph, lane_system) = make_simple_lane_system();
+        let current_lane = lane_system.edge_lanes[&0]
+            .iter()
+            .copied()
+            .find(|&lane_id| {
+                let lane = &lane_system.lanes[lane_id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("forward vehicle lane on edge 0");
+        let detach_lane = lane_system.edge_lanes[&1]
+            .iter()
+            .copied()
+            .find(|&lane_id| {
+                let lane = &lane_system.lanes[lane_id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("forward vehicle lane on edge 1");
+
+        let mut sys = AgentSystem::new();
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 10.0, 0.0);
+        sys.agents.transit[idx] = TRANSIT_NETWORK;
+        sys.agents.transit_mode[idx] = MODE_CAR;
+        sys.agents.current_node[idx] = 0;
+        sys.agents.current_edge[idx] = 0;
+        sys.agents.current_lane_id[idx] = current_lane;
+        sys.agents.lane_distance[idx] = 10.0;
+        sys.agents.target_building[idx] = 123;
+        sys.agents.planned_attach_node[idx] = 1;
+        sys.agents.planned_detach_node[idx] = 2;
+        sys.agents.planned_attach_lane_id[idx] = current_lane as u32;
+        sys.agents.planned_detach_lane_id[idx] = detach_lane as u32;
+        sys.agents.planned_attach_lane_d[idx] = 10.0;
+        sys.agents.planned_detach_lane_d[idx] = 20.0;
+        sys.agents.access_flags[idx] =
+            ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH | ACCESS_PATH_FROM_FLOW_FIELD;
+        sys.agents.next_replan_time[idx] = 123.0;
+        sys.agents.current_path[idx] = vec![0, 1, 2];
+        sys.agents.current_path_index[idx] = 1;
+
+        let affected = HashSet::from([0usize]);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
+        sys.reattach_invalidated_lanes_for_edges(&affected, &lane_system, &graph);
+
+        assert_ne!(sys.agents.current_lane_id[idx], usize::MAX);
+        assert_eq!(sys.agents.transit[idx], TRANSIT_NETWORK);
+        assert!(sys.agents.current_path[idx].is_empty());
+        assert_eq!(sys.agents.current_path_index[idx], 0);
+        assert_eq!(sys.agents.planned_attach_node[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_attach_lane_id[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_attach_lane_d[idx], 0.0);
+        assert_eq!(sys.agents.planned_detach_node[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_lane_id[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_lane_d[idx], 0.0);
+        assert_eq!(sys.agents.access_flags[idx], 0);
+        assert_eq!(sys.agents.next_replan_time[idx], 0.0);
+    }
+
+    #[test]
+    fn test_reattach_preserves_freight_border_replan_marker_after_road_edit() {
+        let (graph, lane_system) = make_simple_lane_system();
+        let current_lane = lane_system.edge_lanes[&0]
+            .iter()
+            .copied()
+            .find(|&lane_id| {
+                let lane = &lane_system.lanes[lane_id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("forward vehicle lane on edge 0");
+        let border_node = graph.edge(1).end_node;
+
+        let mut sys = AgentSystem::new();
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 10.0, 0.0);
+        sys.agents.transit[idx] = TRANSIT_NETWORK;
+        sys.agents.transit_mode[idx] = MODE_CAR;
+        sys.agents.current_node[idx] = 0;
+        sys.agents.current_edge[idx] = 0;
+        sys.agents.current_lane_id[idx] = current_lane;
+        sys.agents.lane_distance[idx] = 10.0;
+        sys.agents.target_building[idx] = usize::MAX;
+        sys.agents.freight_target_border_node[idx] = border_node;
+        sys.agents.planned_detach_node[idx] = border_node;
+        sys.agents.planned_detach_lane_id[idx] = u32::MAX;
+        sys.agents.access_flags[idx] = ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION;
+        sys.agents.next_replan_time[idx] = 123.0;
+        sys.agents.current_path[idx] = vec![0, 1, border_node];
+        sys.agents.current_path_index[idx] = 1;
+
+        let affected = HashSet::from([0usize]);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
+        sys.reattach_invalidated_lanes_for_edges(&affected, &lane_system, &graph);
+
+        assert_ne!(sys.agents.current_lane_id[idx], usize::MAX);
+        assert!(sys.agents.current_path[idx].is_empty());
+        assert_eq!(sys.agents.current_path_index[idx], 0);
+        assert_eq!(sys.agents.planned_attach_node[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_attach_lane_id[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_node[idx], border_node);
+        assert_eq!(sys.agents.planned_detach_lane_id[idx], u32::MAX);
+        assert_eq!(
+            sys.agents.access_flags[idx],
+            ACCESS_PLAN_VALID | ACCESS_FREIGHT_BORDER_DESTINATION
+        );
+        assert_eq!(sys.agents.next_replan_time[idx], 0.0);
     }
 
     #[test]

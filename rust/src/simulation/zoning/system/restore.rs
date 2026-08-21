@@ -18,6 +18,68 @@ impl ZoningSystem {
         runtime_id: u16,
         graph: &RegionGraph,
     ) -> Result<ParcelId, ParcelPlacementError> {
+        let (id, geometry) = self.restored_parcel_geometry_from_attachment(
+            parcel_id,
+            edge_idx,
+            side,
+            frontage_center_t,
+            frontage_m,
+            depth_m,
+            runtime_id,
+            graph,
+        )?;
+        self.validate_single_parcel_geometry(&geometry, graph)?;
+        self.parcels.insert_loaded(id, geometry, runtime_id);
+        self.bump_overlay_revision();
+        Ok(id)
+    }
+
+    pub(crate) fn restore_saved_parcel_from_attachment(
+        &mut self,
+        parcel_id: u64,
+        edge_idx: usize,
+        side: i8,
+        frontage_center_t: f32,
+        frontage_m: f32,
+        depth_m: f32,
+        runtime_id: u16,
+        graph: &RegionGraph,
+    ) -> Result<(bool, bool), ParcelPlacementError> {
+        let (id, geometry) = self.restored_parcel_geometry_from_attachment(
+            parcel_id,
+            edge_idx,
+            side,
+            frontage_center_t,
+            frontage_m,
+            depth_m,
+            runtime_id,
+            graph,
+        )?;
+        if !parcels::geometry_inside_world(&geometry, self.config.width_m, self.config.height_m) {
+            return Err(ParcelPlacementError::OutsideWorld);
+        }
+        if parcels::geometry_overlaps_road(graph, &geometry) {
+            return Ok((true, false));
+        }
+        if self.parcels.overlaps_existing(&geometry) {
+            return Ok((false, true));
+        }
+        self.parcels.insert_loaded(id, geometry, runtime_id);
+        self.bump_overlay_revision();
+        Ok((false, false))
+    }
+
+    fn restored_parcel_geometry_from_attachment(
+        &self,
+        parcel_id: u64,
+        edge_idx: usize,
+        side: i8,
+        frontage_center_t: f32,
+        frontage_m: f32,
+        depth_m: f32,
+        runtime_id: u16,
+        graph: &RegionGraph,
+    ) -> Result<(ParcelId, parcels::ParcelGeometry), ParcelPlacementError> {
         self.validate_profile_id(runtime_id)?;
         Self::validate_parcel_dimensions(frontage_m, depth_m)?;
         if edge_idx >= graph.edge_count() {
@@ -47,10 +109,7 @@ impl ZoningSystem {
             frontage_m,
             depth_m,
         );
-        self.validate_single_parcel_geometry(&geometry, graph)?;
-        self.parcels.insert_loaded(id, geometry, runtime_id);
-        self.bump_overlay_revision();
-        Ok(id)
+        Ok((id, geometry))
     }
 
     pub(crate) fn repair_parcel_attachment(

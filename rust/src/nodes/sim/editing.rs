@@ -1034,6 +1034,25 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
+        let road_width_m = (f32::from(fwd_lanes_u8) + f32::from(bkw_lanes_u8)) * config::LANE_WIDTH;
+        let corridor_half_width_m = road_width_m.max(2.0) * 0.5 + config::SIDEWALK_WIDTH;
+        let overlapping_parcels = self
+            .zoning
+            .parcel_ids_overlapping_road_corridor(&fixed_points, corridor_half_width_m);
+        if !overlapping_parcels.is_empty() {
+            debug_log!(
+                "road",
+                "road_commit_rejected reason=parcel_overlap parcels={} first_parcel={}",
+                overlapping_parcels.len(),
+                overlapping_parcels[0]
+            );
+            self.last_road_timing = format!(
+                "rejected=parcel_overlap parcels={}",
+                overlapping_parcels.len()
+            );
+            return RoadAddOutcome::rejected();
+        }
+
         let t_undo = Instant::now();
         if !self.benchmark_mode {
             self.push_network_undo_for_polyline(&fixed_points, ROAD_UNDO_TOPOLOGY_MARGIN_M);

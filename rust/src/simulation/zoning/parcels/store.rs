@@ -1,10 +1,11 @@
 //! Stable parcel storage and chunk-local parcel lookup.
 
 use super::geometry::{
-    chunks_for_aabb, point_inside_parcel, rectangles_overlap_geometry, segment_touches_parcel,
+    chunks_for_aabb, geometry_for_parcel, geometry_overlaps_road_corridor_segment,
+    point_inside_parcel, rectangles_overlap_geometry, segment_touches_parcel,
 };
 use super::types::{ParcelGeometry, ParcelId, ZoningParcel};
-use godot::prelude::Vector2;
+use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
 /// Stable parcel collection plus its coarse chunk index.
@@ -129,6 +130,19 @@ impl ParcelStore {
         removed
     }
 
+    pub(crate) fn remove_ids(&mut self, ids: &HashSet<ParcelId>) -> usize {
+        if ids.is_empty() {
+            return 0;
+        }
+        let before = self.parcels.len();
+        self.parcels.retain(|parcel| !ids.contains(&parcel.id()));
+        let removed = before - self.parcels.len();
+        if removed > 0 {
+            self.rebuild_indices();
+        }
+        removed
+    }
+
     pub(crate) fn can_restore_removed(
         &self,
         original_count: usize,
@@ -219,6 +233,65 @@ impl ParcelStore {
         }
         touched.sort_unstable();
         touched
+    }
+
+    pub(crate) fn ids_overlapping_road_corridor(
+        &self,
+        points: &[Vector3],
+        half_width_m: f32,
+    ) -> Vec<ParcelId> {
+        let mut tested = HashSet::new();
+        let mut overlapped = HashSet::new();
+        self.collect_ids_overlapping_corridor(points, half_width_m, &mut tested, &mut overlapped);
+        let mut ids: Vec<_> = overlapped.into_iter().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn collect_ids_overlapping_corridor(
+        &self,
+        points: &[Vector3],
+        half_width_m: f32,
+        tested: &mut HashSet<(ParcelId, usize)>,
+        overlapped: &mut HashSet<ParcelId>,
+    ) {
+        if points.len() < 2 || half_width_m <= 0.0 || !half_width_m.is_finite() {
+            return;
+        }
+        for (segment_idx, window) in points.windows(2).enumerate() {
+            let start = Vector2::new(window[0].x, window[0].z);
+            let end = Vector2::new(window[1].x, window[1].z);
+            if start.distance_squared_to(end) <= super::OVERLAP_EPSILON_M * super::OVERLAP_EPSILON_M
+            {
+                continue;
+            }
+            let min = Vector2::new(
+                start.x.min(end.x) - half_width_m,
+                start.y.min(end.y) - half_width_m,
+            );
+            let max = Vector2::new(
+                start.x.max(end.x) + half_width_m,
+                start.y.max(end.y) + half_width_m,
+            );
+            for chunk in chunks_for_aabb(min, max) {
+                let Some(ids) = self.chunk_index.get(&chunk) else {
+                    continue;
+                };
+                for &id in ids {
+                    if overlapped.contains(&id) || !tested.insert((id, segment_idx)) {
+                        continue;
+                    }
+                    let Some(parcel) = self.get(id) else {
+                        continue;
+                    };
+                    let geometry = geometry_for_parcel(parcel);
+                    if geometry_overlaps_road_corridor_segment(&geometry, start, end, half_width_m)
+                    {
+                        overlapped.insert(id);
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn overlaps_existing(&self, geometry: &ParcelGeometry) -> bool {

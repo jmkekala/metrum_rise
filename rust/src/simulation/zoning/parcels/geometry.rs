@@ -13,4 +13,4 @@ pub(crate) use overlap::{
 pub(super) use polyline::sample_pos_on_polyline;
 pub(crate) use spatial::{chunk_key, chunks_for_aabb};
 
-pub(crate) use road_overlap::geometry_overlaps_road;
+pub(crate) use road_overlap::{geometry_overlaps_road, geometry_overlaps_road_corridor_segment};

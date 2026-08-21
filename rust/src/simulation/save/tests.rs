@@ -780,3 +780,221 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         120.0
     );
 }
+
+#[test]
+fn load_quarantines_invalid_legacy_saved_parcels() {
+    let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
+    let time = TimeSystem::new();
+    let terrain = TerrainSystem::from_world_config(&config);
+    let water = WaterSystem::from_world_config(&config);
+    let resource_deposits = ResourceDepositSystem::from_world_config(&config);
+    let pollution = PollutionSystem::new(&config);
+    let noise = NoiseSystem::new(&config);
+    let demand = DemandSystem::new();
+    let mut graph = RegionGraph::new();
+    let n0 = graph.add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+    let edge_id = graph.add_edge(Edge {
+        start_node: n0,
+        end_node: n1,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 7.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
+        base_cost: 120.0,
+        physical_length: 120.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+    });
+
+    let mut zoning = ZoningSystem::new(&config);
+    let residential_profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .expect("residential runtime id");
+    zoning
+        .restore_parcel_from_attachment(1, edge_id, 1, 0.5, 20.0, 20.0, residential_profile, &graph)
+        .expect("initial parcel is valid before legacy road edit");
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "legacy_overlap_residential",
+        ZoneClass::Residential,
+    );
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        support_height_m: 0.0,
+        width_cells: 2,
+        depth_cells: 2,
+        zone_profile_runtime_id: residential_profile,
+        parcel_id: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.5,
+        side_offset: 1.0,
+        budget_distress: false,
+        is_deserted: false,
+        edge_idx: edge_id,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        service_funding_override: -1.0,
+        asset_id: residential_asset,
+        level: 1,
+        construction_total_hours: 0,
+        construction_remaining_hours: 0,
+        broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
+        resource_inventory: vec![0.0; catalog.resource_count()],
+        revenue: 0.0,
+        operating_budget: 500.0,
+        profit_tax_budget_baseline: 500.0,
+        last_day_profit: 0.0,
+        shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
+        daily_city_funded_input_cost: 0.0,
+        daily_household_sales_value: 0.0,
+        daily_power_service_units: 0.0,
+        daily_power_served_units: 0.0,
+        recent_power_service_units: 0.0,
+        recent_power_served_units: 0.0,
+        recent_household_sales_value: 0.0,
+        commercial_activity_floor_scale: 0.0,
+        work_area_scale: 1.0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
+
+    let households = HouseholdSystem::new();
+    let logistics = ShipmentSystem::new();
+    let resource_extraction = ResourceExtractionSystem::new();
+    let agriculture = AgricultureSystem::new();
+    let agents_sys = AgentSystem::new();
+    let mut network_sys = TransitNetwork::new();
+    network_sys.lane_system.rebuild(&mut graph);
+    let treasury = CityTreasury::new(1_000.0);
+    let service_policy = CityServicePolicy::default();
+    let fiscal_policy = CityFiscalPolicy::default();
+    let budget_history = VecDeque::new();
+    let mut pending_demand_spawns = VecDeque::new();
+    pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        due_minute: 10,
+        zone_type: ZoneType::Residential,
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: "test:legacy_overlap_residential".to_owned(),
+        },
+        planned_day_index: 1,
+        planned_minute_of_day: 10,
+    });
+    pending_demand_spawns.push_back(PendingDemandSpawnAction {
+        due_minute: 20,
+        zone_type: ZoneType::Residential,
+        action: DemandSpawnAction {
+            parcel_id: 3,
+            asset_id: "test:legacy_overlap_residential".to_owned(),
+        },
+        planned_day_index: 1,
+        planned_minute_of_day: 20,
+    });
+
+    let path = temp_path("legacy_overlap");
+    save_to_sqlite(
+        &path,
+        SaveGameView {
+            config: &config,
+            time: &time,
+            terrain: &terrain,
+            water: &water,
+            resource_deposits: &resource_deposits,
+            graph: &graph,
+            zoning: &zoning,
+            pollution: &pollution,
+            noise: &noise,
+            demand: &demand,
+            pending_demand_spawns: &pending_demand_spawns,
+            allocator: &allocator,
+            households: &households,
+            logistics: &logistics,
+            resource_extraction: &resource_extraction,
+            agriculture: &agriculture,
+            agents: &agents_sys,
+            network: &network_sys,
+            treasury: &treasury,
+            service_policy: &service_policy,
+            fiscal_policy: &fiscal_policy,
+            budget_history: &budget_history,
+        },
+    )
+    .expect("save");
+
+    {
+        let conn = rusqlite::Connection::open(&path).expect("open saved sqlite");
+        conn.execute(
+            "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![2_i64, 0.0_f32, 0.0_f32, -80.0_f32, 0_i64],
+        )
+        .expect("insert crossing start node");
+        conn.execute(
+            "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![3_i64, 0.0_f32, 0.0_f32, 80.0_f32, 0_i64],
+        )
+        .expect("insert crossing end node");
+        conn.execute(
+            "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access)
+             SELECT 1, 2, 3, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, 160.0, 160.0, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges WHERE edge_id = 0",
+            [],
+        )
+        .expect("insert crossing edge");
+        for physical in [0_i64, 1_i64] {
+            conn.execute(
+                "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![1_i64, 0_i64, 0.0_f32, 0.0_f32, -80.0_f32, physical],
+            )
+            .expect("insert crossing geometry start");
+            conn.execute(
+                "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![1_i64, 1_i64, 0.0_f32, 0.0_f32, 80.0_f32, physical],
+            )
+            .expect("insert crossing geometry end");
+        }
+        conn.execute(
+            "INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id)
+             SELECT 2, edge_id, side, 0.65, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels WHERE parcel_id = 1",
+            [],
+        )
+        .expect("insert overlapping neighboring parcel");
+        conn.execute(
+            "INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id)
+             SELECT 3, edge_id, side, 0.80, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels WHERE parcel_id = 1",
+            [],
+        )
+        .expect("insert second overlapping neighboring parcel");
+    }
+
+    let loaded = load_from_sqlite(&path, &allocator.registry).expect("load legacy overlap");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(loaded.zoning.parcels().len(), 1);
+    assert_eq!(loaded.zoning.parcels()[0].id().raw(), 2);
+    assert!(loaded.allocator.buildings.is_empty());
+    assert!(loaded.pending_demand_spawns.is_empty());
+}

@@ -22,18 +22,22 @@ pub(crate) fn geometry_overlaps_road(graph: &RegionGraph, geometry: &ParcelGeome
         .get_edges_near_aabb(min, max)
         .into_iter()
         .any(|edge_idx| {
-            edge_idx != geometry.edge_idx && geometry_overlaps_edge(graph, geometry, edge_idx)
+            edge_idx != geometry.edge_idx && geometry_overlaps_road_edge(graph, geometry, edge_idx)
         })
 }
 
-fn geometry_overlaps_edge(graph: &RegionGraph, geometry: &ParcelGeometry, edge_idx: usize) -> bool {
+fn geometry_overlaps_road_edge(
+    graph: &RegionGraph,
+    geometry: &ParcelGeometry,
+    edge_idx: usize,
+) -> bool {
     let edge = graph.edge(edge_idx);
     if edge.deleted || edge.physical_geometry.len() < 2 {
         return false;
     }
     let half_width = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
     edge.physical_geometry.windows(2).any(|window| {
-        parcel_overlaps_road_segment(
+        geometry_overlaps_road_corridor_segment(
             geometry,
             Vector2::new(window[0].x, window[0].z),
             Vector2::new(window[1].x, window[1].z),
@@ -42,7 +46,7 @@ fn geometry_overlaps_edge(graph: &RegionGraph, geometry: &ParcelGeometry, edge_i
     })
 }
 
-fn parcel_overlaps_road_segment(
+pub(crate) fn geometry_overlaps_road_corridor_segment(
     geometry: &ParcelGeometry,
     start: Vector2,
     end: Vector2,

@@ -5,6 +5,7 @@ use crate::simulation::agriculture::{AgricultureSystem, FieldSite, validate_fiel
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSystem};
 use crate::simulation::economy::households::{Household, HouseholdSystem};
@@ -36,7 +37,7 @@ use super::{
     optional_building_to_db, pack_f32_slice, pack_u16_slice, u32_to_i64, u64_to_i64,
     unpack_f32_blob, unpack_u16_blob, usize_to_i64,
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 const SHIPMENT_ENDPOINT_BUILDING: i64 = 0;
 const SHIPMENT_ENDPOINT_OWA_BORDER: i64 = 1;
@@ -700,8 +701,11 @@ pub(super) fn load_zoning(
     conn: &Connection,
     config: &WorldConfig,
     graph: &RegionGraph,
-) -> SaveLoadResult<ZoningSystem> {
+) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
+    let mut quarantined_parcels = Vec::new();
+    let mut road_overlap_count = 0usize;
+    let mut existing_overlap_count = 0usize;
     let mut stmt = conn.prepare(
         "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels ORDER BY parcel_id",
     )?;
@@ -714,8 +718,8 @@ pub(super) fn load_zoning(
         let frontage_m: f32 = row.get(4)?;
         let depth_m: f32 = row.get(5)?;
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
-        zoning
-            .restore_parcel_from_attachment(
+        let (overlaps_road, overlaps_existing) = zoning
+            .restore_saved_parcel_from_attachment(
                 parcel_id,
                 edge_idx,
                 side,
@@ -725,9 +729,28 @@ pub(super) fn load_zoning(
                 profile_runtime_id,
                 graph,
             )
-            .map_err(|err| SaveLoadError::custom(format!("invalid saved parcel: {err:?}")))?;
+            .map_err(|err| {
+                SaveLoadError::custom(format!(
+                    "invalid saved parcel parcel_id={parcel_id} edge_id={edge_idx} side={side} frontage_t={frontage_t:.6}: {err:?}"
+                ))
+            })?;
+        if overlaps_road || overlaps_existing {
+            quarantined_parcels.push(parcel_id);
+        }
+        if overlaps_road {
+            road_overlap_count += 1;
+        }
+        existing_overlap_count += usize::from(overlaps_existing);
     }
-    Ok(zoning)
+    if road_overlap_count > 0 || existing_overlap_count > 0 {
+        crate::debug_log!(
+            "save",
+            "legacy_saved_parcel_quarantine road_overlaps={} existing_overlaps={}",
+            road_overlap_count,
+            existing_overlap_count
+        );
+    }
+    Ok((zoning, quarantined_parcels))
 }
 
 pub(super) fn load_buildings(
@@ -1080,6 +1103,62 @@ pub(super) fn repaint_building_occupancy(
             return Err(SaveLoadError::custom("building parcel occupancy mismatch"));
         }
     }
+    Ok(())
+}
+
+pub(super) fn repair_quarantined_loaded_parcels(
+    zoning: &mut ZoningSystem,
+    allocator: &mut BuildingAllocator,
+    households: &mut HouseholdSystem,
+    logistics: &mut ShipmentSystem,
+    resource_extraction: &mut ResourceExtractionSystem,
+    agriculture: &mut AgricultureSystem,
+    agents: &mut AgentSystem,
+    pending_demand_spawns: &mut VecDeque<PendingDemandSpawnAction>,
+    parcel_ids: &[u64],
+) -> SaveLoadResult<()> {
+    if parcel_ids.is_empty() {
+        return Ok(());
+    }
+
+    let invalid: HashSet<u64> = parcel_ids.iter().copied().collect();
+    let pending_before = pending_demand_spawns.len();
+    pending_demand_spawns.retain(|spawn| !invalid.contains(&spawn.action.parcel_id));
+    let dropped_pending_spawns = pending_before - pending_demand_spawns.len();
+
+    let mut removed_buildings = 0usize;
+    while let Some(building_idx) = allocator
+        .buildings
+        .iter()
+        .position(|building| building.parcel_id != 0 && invalid.contains(&building.parcel_id))
+    {
+        let last_building_idx_before_remove = allocator.buildings.len().saturating_sub(1);
+        if !allocator.remove_building_for_bulldoze(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+        ) {
+            return Err(SaveLoadError::custom(
+                "legacy invalid parcel repair could not remove building",
+            ));
+        }
+        resource_extraction
+            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
+        agriculture
+            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
+        removed_buildings += 1;
+    }
+
+    let removed_parcels = zoning.remove_parcels_by_raw_ids(&invalid);
+    crate::debug_log!(
+        "save",
+        "legacy_invalid_parcel_repair removed_parcels={} removed_buildings={} dropped_pending_spawns={}",
+        removed_parcels,
+        removed_buildings,
+        dropped_pending_spawns
+    );
     Ok(())
 }
 

@@ -255,11 +255,15 @@ Persisted parcel fields:
 - `depth_m`
 - `zone_profile_runtime_id`
 
-Load restores each parcel through `restore_parcel_from_attachment(...)`, which revalidates road
-attachment, bounds, existing parcel overlap, and road-corridor overlap before inserting it. Building
-parcel occupancy is rebuilt after buildings load.
+Normal load restores each parcel through the same road attachment, bounds, existing parcel overlap,
+and road-corridor overlap validation used by `restore_parcel_from_attachment(...)`. A parcel record
+that fails road-corridor or existing-parcel overlap validation is not inserted into zoning.
+Building parcel occupancy is rebuilt after buildings load.
 
-Old save compatibility is not required for this project stage.
+Old save compatibility is best-effort and must preserve live invariants. The SQLite loader may
+quarantine malformed legacy parcel records, then remove buildings and pending demand spawns that
+referenced those quarantined parcel ids through the normal lifecycle invalidation hooks. This repair
+path is for invalid saved data only; it must never leave illegal parcel geometry in `ZoningSystem`.
 
 ---
 

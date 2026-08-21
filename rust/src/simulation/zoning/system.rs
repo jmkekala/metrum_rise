@@ -10,7 +10,8 @@ mod validation;
 use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
 use super::{ParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
-use std::collections::HashMap;
+use godot::prelude::Vector3;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Road-aligned parcel zoning system.
@@ -74,6 +75,30 @@ impl ZoningSystem {
             self.bump_overlay_revision();
         }
         removed
+    }
+
+    pub(crate) fn remove_parcels_by_raw_ids(&mut self, raw_ids: &HashSet<u64>) -> usize {
+        let ids = raw_ids
+            .iter()
+            .map(|&raw_id| crate::simulation::zoning::ParcelId::from_raw(raw_id))
+            .collect();
+        let removed = self.parcels.remove_ids(&ids);
+        if removed > 0 {
+            self.bump_overlay_revision();
+        }
+        removed
+    }
+
+    pub(crate) fn parcel_ids_overlapping_road_corridor(
+        &self,
+        points: &[Vector3],
+        half_width_m: f32,
+    ) -> Vec<u64> {
+        self.parcels
+            .ids_overlapping_road_corridor(points, half_width_m)
+            .into_iter()
+            .map(|id| id.raw())
+            .collect()
     }
 
     pub(crate) fn capture_parcel_removal_undo(&self, edge_idx: usize) -> ZoningParcelRemovalUndo {

@@ -522,20 +522,32 @@ pub(crate) fn load_from_sqlite(
         demand_row.recent_household_failure_pressure,
         demand_row.cheat_max_demands_enabled,
     );
-    let pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
+    let mut pending_demand_spawns = world::load_pending_demand_spawns(&conn)?;
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
     let mut graph = network::load_graph(&conn)?;
-    let mut zoning = world::load_zoning(&conn, &config, &graph)?;
+    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
-    let households = world::load_households(&conn)?;
-    let logistics = world::load_shipments(&conn)?;
-    let resource_extraction = world::load_resource_extraction(&conn, allocator.buildings.len())?;
-    let agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
+    let mut households = world::load_households(&conn)?;
+    let mut logistics = world::load_shipments(&conn)?;
+    let mut resource_extraction =
+        world::load_resource_extraction(&conn, allocator.buildings.len())?;
+    let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
+    let mut agents = agents::load_agents(&conn, time_r.5)?;
+    world::repair_quarantined_loaded_parcels(
+        &mut zoning,
+        &mut allocator,
+        &mut households,
+        &mut logistics,
+        &mut resource_extraction,
+        &mut agriculture,
+        &mut agents,
+        &mut pending_demand_spawns,
+        &quarantined_parcels,
+    )?;
     resource_extraction.apply_work_area_scales(&mut allocator);
     agriculture.apply_work_area_scales(&mut allocator);
-    let mut agents = agents::load_agents(&conn, time_r.5)?;
 
     let mut transit_network = TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m);
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
