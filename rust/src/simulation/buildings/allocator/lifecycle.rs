@@ -6,7 +6,7 @@ use crate::simulation::buildings::allocator::{
     BuildingAllocator, DemandSpawnPlacementRejection, baseline_private_zone_slot,
     resolve_building_economy_profile_binding_with_catalog, zone_class_to_zone_type,
 };
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::{AgentSystem, household_age_composition};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
@@ -280,6 +280,8 @@ impl BuildingAllocator {
     pub(super) fn admit_households_from_demand(
         &mut self,
         households_to_spawn: usize,
+        next_household_id: usize,
+        prefer_worker_capable: bool,
         agents: &mut AgentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
@@ -296,7 +298,10 @@ impl BuildingAllocator {
         }
         let mut launched = 0;
         for _ in 0..households_to_spawn {
-            let Some((home_idx, household_size)) = self.claim_home_for_household() else {
+            let Some((home_idx, household_size)) = self.claim_home_for_household(
+                next_household_id.saturating_add(launched),
+                prefer_worker_capable,
+            ) else {
                 for category in ["economy", "spawn"] {
                     debug_log!(
                         category,
@@ -913,11 +918,22 @@ impl BuildingAllocator {
     ///
     /// Selection uses the residential vacancy index, prefers the smallest deterministic starter
     /// household currently claimable, and preserves vacancy-index order as the tie-breaker.
+    #[cfg(test)]
     pub(crate) fn next_household_admission_candidate(&self) -> Option<(usize, u16)> {
+        self.next_household_admission_candidate_for_household(0, false)
+    }
+
+    /// Returns the next demand-owned household target for a specific future household id.
+    pub(crate) fn next_household_admission_candidate_for_household(
+        &self,
+        next_household_id: usize,
+        prefer_worker_capable: bool,
+    ) -> Option<(usize, u16)> {
         let residential_slot = baseline_private_zone_slot(ZoneType::Residential)?;
         let mut selected_home_idx = usize::MAX;
         let mut selected_size = u16::MAX;
         let mut selected_order = usize::MAX;
+        let mut selected_worker_rank = u8::MAX;
 
         for (order, &building_idx) in self.vacancy_index[residential_slot].iter().enumerate() {
             let Some(building) = self.buildings.get(building_idx) else {
@@ -938,20 +954,36 @@ impl BuildingAllocator {
                 continue;
             };
 
-            if candidate_size < selected_size
-                || (candidate_size == selected_size && order < selected_order)
+            let worker_rank = if prefer_worker_capable {
+                let composition =
+                    household_age_composition(building_idx, next_household_id, candidate_size);
+                if composition.adult_count > 0 { 0 } else { 1 }
+            } else {
+                0
+            };
+
+            if (worker_rank, candidate_size, order)
+                < (selected_worker_rank, selected_size, selected_order)
             {
                 selected_home_idx = building_idx;
                 selected_size = candidate_size;
                 selected_order = order;
+                selected_worker_rank = worker_rank;
             }
         }
 
         (selected_home_idx != usize::MAX).then_some((selected_home_idx, selected_size))
     }
 
-    fn claim_home_for_household(&mut self) -> Option<(usize, u16)> {
-        let (fallback_idx, fallback_size) = self.next_household_admission_candidate()?;
+    fn claim_home_for_household(
+        &mut self,
+        next_household_id: usize,
+        prefer_worker_capable: bool,
+    ) -> Option<(usize, u16)> {
+        let (fallback_idx, fallback_size) = self.next_household_admission_candidate_for_household(
+            next_household_id,
+            prefer_worker_capable,
+        )?;
         // Note: vacancy count for residential is now household-based.
         // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
         Some((fallback_idx, fallback_size))

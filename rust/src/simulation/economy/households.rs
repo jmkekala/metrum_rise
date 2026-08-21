@@ -10,6 +10,7 @@ mod metrics;
 mod relocation;
 mod removal;
 mod replenishment;
+mod service_visits;
 #[cfg(test)]
 mod tests;
 mod tick;

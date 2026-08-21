@@ -596,6 +596,7 @@ impl BuildingAllocator {
         self.dirty = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn execute_demand_household_admission(
         &mut self,
         households_to_admit_today: u32,
@@ -603,8 +604,29 @@ impl BuildingAllocator {
         transit_network: &crate::simulation::network::TransitNetwork,
         graph: &RegionGraph,
     ) -> u32 {
+        self.execute_demand_household_admission_with_preference(
+            households_to_admit_today,
+            0,
+            false,
+            agents,
+            transit_network,
+            graph,
+        )
+    }
+
+    pub(crate) fn execute_demand_household_admission_with_preference(
+        &mut self,
+        households_to_admit_today: u32,
+        next_household_id: usize,
+        prefer_worker_capable: bool,
+        agents: &mut crate::simulation::economy::agents::AgentSystem,
+        transit_network: &crate::simulation::network::TransitNetwork,
+        graph: &RegionGraph,
+    ) -> u32 {
         self.admit_households_from_demand(
             households_to_admit_today as usize,
+            next_household_id,
+            prefer_worker_capable,
             agents,
             transit_network,
             graph,

@@ -755,12 +755,16 @@ impl SimCore {
             service_funding_by_building,
             &self.fiscal_policy,
         );
-        let launched_households = self.allocator.execute_demand_household_admission(
-            self.demand.households_to_admit_today,
-            &mut self.agents,
-            &self.transit_network,
-            &self.region_graph,
-        );
+        let launched_households = self
+            .allocator
+            .execute_demand_household_admission_with_preference(
+                self.demand.households_to_admit_today,
+                self.households.households.len(),
+                self.demand.prefer_worker_capable_admission(),
+                &mut self.agents,
+                &self.transit_network,
+                &self.region_graph,
+            );
         self.debug_household_admissions_since_daily = self
             .debug_household_admissions_since_daily
             .saturating_add(launched_households);

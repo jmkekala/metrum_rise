@@ -27,6 +27,7 @@ use crate::simulation::economy::households::{
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -364,8 +365,13 @@ impl DailyDemandSnapshot {
         let sales_scaled_household_supply_output_units_per_day =
             building_accumulator.sales_scaled_household_supply_output_units_per_day;
 
+        let housed_adult_count = household_accumulator.housed_adult_count;
+        let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
+        let prefer_worker_capable_candidate = open_job_slots > existing_unemployed_member_count;
+
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
-        let candidate = candidate_household_preview(allocator, households);
+        let candidate =
+            candidate_household_preview(allocator, households, prefer_worker_capable_candidate);
         let candidate_household_size = candidate.household_size as f32;
         let immigrant_starter_savings_per_household =
             candidate_household_size * tuning.households.immigrant_starting_budget_per_member;
@@ -387,7 +393,6 @@ impl DailyDemandSnapshot {
             candidate_household_supply_demand_units,
             service_funding_by_building,
         );
-        let housed_adult_count = household_accumulator.housed_adult_count;
         let live_child_count = household_accumulator.live_child_count;
         let live_elder_count = household_accumulator.live_elder_count;
         let housed_household_count = household_accumulator.housed_household_count;
@@ -521,7 +526,6 @@ impl DailyDemandSnapshot {
         } else {
             clamp01(zero_budget_household_count as f32 / total_household_count as f32)
         };
-        let existing_unemployed_member_count = housed_adult_count.saturating_sub(filled_job_count);
         let candidate_effective_workers = f32::from(candidate.composition.adult_count);
         let net_open_job_slots = open_job_slots.saturating_sub(existing_unemployed_member_count);
         let existing_unemployed_after_open_jobs =
@@ -752,9 +756,11 @@ struct CandidateHouseholdPreview {
 fn candidate_household_preview(
     allocator: &BuildingAllocator,
     households: &HouseholdSystem,
+    prefer_worker_capable: bool,
 ) -> CandidateHouseholdPreview {
     let next_household_id = households.households.len();
-    if let Some((home_building_id, household_size)) = allocator.next_household_admission_candidate()
+    if let Some((home_building_id, household_size)) = allocator
+        .next_household_admission_candidate_for_household(next_household_id, prefer_worker_capable)
     {
         return CandidateHouseholdPreview {
             household_size,
@@ -833,12 +839,13 @@ impl BuildingSnapshotAccumulator {
         let profile_activity_floor_scale = active_profile
             .map(|profile| {
                 profile_activity_floor_scale(
+                    building,
                     profile,
                     commercial_activity_floor_scale,
                     service_activity_scale_by_resource,
                 )
             })
-            .unwrap_or(commercial_activity_floor_scale);
+            .unwrap_or(1.0);
 
         if building.is_under_construction() {
             if matches!(building.zone_type, ZoneType::Residential) {
@@ -1178,24 +1185,33 @@ fn service_store_live_output_units_by_resource(
 }
 
 fn profile_activity_floor_scale(
+    building: &Building,
     profile: &EconomyProfileRuntime,
     commercial_activity_floor_scale: f32,
     service_activity_scale_by_resource: &[(ResourceRuntimeId, f32)],
 ) -> f32 {
-    if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-        return commercial_activity_floor_scale;
+    if profile.kind == EconomyProfileRuntimeKind::ServiceStore {
+        return profile
+            .outputs
+            .iter()
+            .map(|output| {
+                resource_amount(
+                    service_activity_scale_by_resource,
+                    output.resource_runtime_id,
+                )
+            })
+            .fold(0.0, f32::max)
+            .clamp(0.0, 1.0);
     }
-    profile
-        .outputs
-        .iter()
-        .map(|output| {
-            resource_amount(
-                service_activity_scale_by_resource,
-                output.resource_runtime_id,
-            )
-        })
-        .fold(0.0, f32::max)
-        .clamp(0.0, 1.0)
+    if profile_kind_uses_explicit_work_area(profile.kind) {
+        return building.commercial_activity_floor_scale.clamp(0.0, 1.0);
+    }
+    if matches!(building.zone_type, ZoneType::Commercial)
+        && profile.kind == EconomyProfileRuntimeKind::Store
+    {
+        return commercial_activity_floor_scale.clamp(0.0, 1.0);
+    }
+    1.0
 }
 
 fn collect_building_snapshot_accumulator(

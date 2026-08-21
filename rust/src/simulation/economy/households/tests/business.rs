@@ -428,7 +428,10 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
 
     households.run_building_economy(&mut allocator, true);
 
-    let expected_revenue = 100.0 * 0.03 / 24.0 * 12.0;
+    let service_unit_price = catalog
+        .unit_price_for_resource(personal_services)
+        .expect("personal service unit price");
+    let expected_revenue = 100.0 * 0.03 / 24.0 * service_unit_price;
     assert!(
         (allocator.buildings[1].revenue - expected_revenue).abs() < 0.001,
         "service revenue should be demand-capped and capacity-share credited"

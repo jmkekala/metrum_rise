@@ -104,6 +104,10 @@ impl DemandSystem {
         self.runtime_tuning.as_ref()
     }
 
+    pub(crate) fn prefer_worker_capable_admission(&self) -> bool {
+        self.last_admission_diagnostics.move_in_job_equivalent_slots > 0.001
+    }
+
     /// Refreshes RCI telemetry and advances hourly household and building demand outputs.
     #[cfg(test)]
     pub(crate) fn run_hourly_pass(

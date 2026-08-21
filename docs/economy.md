@@ -1549,7 +1549,8 @@ Agents do not need a daily "buy food" trip. Instead:
 - lack of household supplies reduces happiness, stability, or health-related metrics
 - optional leisure or personal shopping trips remain low-frequency and non-essential
 - standalone commercial services such as barbers and pharmacies are satisfied through aggregate
-  per-resident demand; they do not create individual service errands in `v0.1`
+  per-resident demand; personal-service demand may also schedule capped representative visits for
+  visible city life, but those visits do not change service revenue or inventory accounting
 
 Essential replenishment may create a visible shopping task, but it is household-owned and limited
 to one selected carrier. This keeps daily essentials in the household/logistics layer rather than
@@ -1578,8 +1579,12 @@ The first standalone service-commercial extension is intentionally shallow:
 - `health_essentials_small` outputs `120 health_essentials/day` with `6` full-staff worker slots
 - `personal_service_demand` creates `0.03 personal_services/day/resident`
 - `health_essentials_demand` creates `0.05 health_essentials/day/resident`
-- hourly service sales are aggregate: no individual route search, no shopping carrier, and no
-  per-agent service chore
+- hourly service sales are aggregate: no inventory, freight, or per-agent service accounting is
+  created by service demand
+- `personal_services` may create capped representative shopping-style trips to staffed reachable
+  personal-service buildings; these trips use existing agent target/activity fields and are
+  visual-only over the aggregate sales model
+- `health_essentials` remains aggregate-only in the first pass
 - active service worker slots scale from aggregate resident demand divided by total live authored
   capacity for the service resource, rounded up to one slot when demand exists and to zero when it
   does not

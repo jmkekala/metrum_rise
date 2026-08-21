@@ -7,9 +7,11 @@ use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
+use crate::simulation::economy::agents::household_age_composition;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::{
     Household, HouseholdSystem, REPLENISHMENT_STABLE,
+    candidate_immigrant_household_size_for_vacancy,
     candidate_immigrant_household_size_from_flat_size,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -85,6 +87,58 @@ fn register_test_utility_asset(
                 household_capacity: None,
                 worker_capacity: Some(20),
                 service_class: Some("power".to_owned()),
+                economy_profile: Some(profile_id.to_owned()),
+                extractor: None,
+                field: None,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        },
+        String::new(),
+    );
+    format!("test:{asset_id}")
+}
+
+fn register_explicit_profile_asset(
+    allocator: &mut BuildingAllocator,
+    asset_id: &str,
+    profile_id: &str,
+) -> String {
+    allocator.registry.register(
+        "test",
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test Explicit Work Area".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![],
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
+            }],
+            site_surfaces: vec![],
+            building: Some(BuildingData {
+                flat_size_m2: None,
+                placement_mode: PlacementMode::Explicit,
+                zone_type: None,
+                density: None,
+                lot_width_cells: 2,
+                lot_depth_cells: 2,
+                frontage_forward: None,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                household_capacity: None,
+                worker_capacity: Some(8),
+                service_class: None,
                 economy_profile: Some(profile_id.to_owned()),
                 extractor: None,
                 field: None,
@@ -1395,6 +1449,172 @@ fn runtime_snapshot_uses_existing_unemployed_before_new_household_job_pull() {
         snapshot.incoming_household_need <= snapshot.regional_growth_household_pull + 0.001,
         "raw open jobs should not pull immigrants while existing unemployed adults can fill them"
     );
+}
+
+#[test]
+fn job_driven_admission_prefers_worker_candidate_over_workerless_front_candidate() {
+    const TEST_FLAT_SIZE_M2: f32 = 65.5;
+
+    let next_household_id = 0;
+    let mut workerless_home_idx = None;
+    let mut worker_home_idx = None;
+    for building_idx in 0..256 {
+        let Some(candidate_size) =
+            candidate_immigrant_household_size_for_vacancy(TEST_FLAT_SIZE_M2, building_idx, 0)
+        else {
+            continue;
+        };
+        if candidate_size != 1 {
+            continue;
+        }
+        let composition =
+            household_age_composition(building_idx, next_household_id, candidate_size);
+        if composition.adult_count == 0 {
+            workerless_home_idx.get_or_insert(building_idx);
+        } else if workerless_home_idx.is_some() {
+            worker_home_idx = Some(building_idx);
+            break;
+        }
+    }
+    let workerless_home_idx =
+        workerless_home_idx.expect("test seed should find a workerless front candidate");
+    let worker_home_idx =
+        worker_home_idx.expect("test seed should find a worker-capable later candidate");
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_family_asset_with_economy_profile_and_flat_size(
+        &mut allocator,
+        "worker_preferred_home",
+        ZoneType::Residential,
+        None,
+        1,
+        None,
+        Some(TEST_FLAT_SIZE_M2),
+    );
+    let industrial_asset = register_test_asset(
+        &mut allocator,
+        "worker_preferred_jobs",
+        ZoneType::Industrial,
+    );
+
+    for building_idx in 0..=worker_home_idx {
+        let zone_type = if building_idx == workerless_home_idx || building_idx == worker_home_idx {
+            ZoneType::Residential
+        } else {
+            ZoneType::None
+        };
+        allocator
+            .buildings
+            .push(building(zone_type, 0.0, 0, 0, residential_asset.clone()));
+    }
+    let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, industrial_asset);
+    factory.operating_budget = 100_000.0;
+    allocator.buildings.push(factory);
+    allocator.rebuild_zone_index();
+
+    let normal_candidate = allocator
+        .next_household_admission_candidate_for_household(next_household_id, false)
+        .expect("normal candidate should exist");
+    assert_eq!(normal_candidate.0, workerless_home_idx);
+    assert_eq!(
+        household_age_composition(normal_candidate.0, next_household_id, normal_candidate.1)
+            .adult_count,
+        0
+    );
+
+    let preferred_candidate = allocator
+        .next_household_admission_candidate_for_household(next_household_id, true)
+        .expect("preferred candidate should exist");
+    assert_eq!(preferred_candidate.0, worker_home_idx);
+    assert!(
+        household_age_composition(
+            preferred_candidate.0,
+            next_household_id,
+            preferred_candidate.1
+        )
+        .adult_count
+            > 0
+    );
+
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let zoning = empty_zoning();
+    let mut demand = DemandSystem::new();
+
+    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, -20_000.0);
+
+    let diagnostics = demand.last_admission_diagnostics;
+    assert!(diagnostics.open_job_slots > 0);
+    assert_eq!(diagnostics.existing_unemployed_member_count, 0);
+    assert!(
+        diagnostics.candidate_adult_count > 0,
+        "job-driven admission should evaluate a worker-capable household"
+    );
+    assert!(
+        diagnostics.move_in_acceptance > 0.0,
+        "negative treasury should not block a worker household whose job income covers essentials"
+    );
+    assert!(demand.prefer_worker_capable_admission());
+    assert!(demand.households_to_admit_today > 0);
+}
+
+#[test]
+fn runtime_snapshot_counts_cached_explicit_work_area_jobs_when_commercial_floor_is_zero() {
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset =
+        register_test_asset(&mut allocator, "explicit_work_home", ZoneType::Residential);
+    let farm_asset =
+        register_explicit_profile_asset(&mut allocator, "explicit_work_farm", "grain_farm_basic");
+    allocator.buildings.push(building(
+        ZoneType::Residential,
+        0.0,
+        1,
+        0,
+        residential_asset,
+    ));
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm profile");
+    let mut farm = building(
+        ZoneType::Industrial,
+        0.0,
+        0,
+        farm_profile.worker_capacity,
+        farm_asset,
+    );
+    farm.zone_type = ZoneType::None;
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.operating_budget = 100_000.0;
+    farm.work_area_scale = 1.0;
+    farm.commercial_activity_floor_scale = 1.0;
+    allocator.buildings.push(farm);
+    allocator.rebuild_zone_index();
+
+    let mut households = HouseholdSystem::new();
+    households.households.push(housed_household(
+        0,
+        farm_profile.worker_capacity as u16,
+        10_000.0,
+        3.0,
+    ));
+
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().expect("built-in demand config must load");
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+
+    assert_eq!(
+        snapshot.physical_worker_capacity,
+        farm_profile.worker_capacity
+    );
+    assert_eq!(
+        snapshot.funded_worker_capacity,
+        farm_profile.worker_capacity
+    );
+    assert_eq!(snapshot.open_job_slots, 0);
+    assert_eq!(snapshot.existing_unemployed_member_count, 0);
 }
 
 #[test]

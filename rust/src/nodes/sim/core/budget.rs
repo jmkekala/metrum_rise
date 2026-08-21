@@ -14,6 +14,7 @@ use crate::simulation::economy::households::{
     service_funded_worker_capacity,
 };
 use crate::simulation::economy::logistics::{ShipmentSystem, has_connected_border_node};
+use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
@@ -314,6 +315,13 @@ struct DailyCityFlowDiagnostics {
     service_active_filled_jobs: u32,
 }
 
+#[derive(Clone, Copy)]
+enum DailyCityFlowWorkBucket {
+    Commercial,
+    Industrial,
+    Service,
+}
+
 fn profile_offers_daily_city_flow_work(
     building_zone: ZoneType,
     profile: &EconomyProfileRuntime,
@@ -326,6 +334,50 @@ fn profile_offers_daily_city_flow_work(
                 | EconomyProfileRuntimeKind::UtilityProducer
                 | EconomyProfileRuntimeKind::UtilityProcessor
         )
+}
+
+fn daily_city_flow_work_bucket(
+    building_zone: ZoneType,
+    profile: Option<&EconomyProfileRuntime>,
+) -> Option<DailyCityFlowWorkBucket> {
+    match building_zone {
+        ZoneType::Commercial => Some(DailyCityFlowWorkBucket::Commercial),
+        ZoneType::Industrial => Some(DailyCityFlowWorkBucket::Industrial),
+        _ => {
+            let profile = profile?;
+            if profile_kind_uses_explicit_work_area(profile.kind) {
+                Some(DailyCityFlowWorkBucket::Industrial)
+            } else if matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::UtilityProducer
+                    | EconomyProfileRuntimeKind::UtilityProcessor
+            ) {
+                Some(DailyCityFlowWorkBucket::Service)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn daily_city_flow_activity_floor_scale(
+    building_zone: ZoneType,
+    cached_floor_scale: f32,
+    profile: &EconomyProfileRuntime,
+    commercial_activity_floor_scale: f32,
+) -> f32 {
+    if profile_kind_uses_explicit_work_area(profile.kind)
+        || (matches!(building_zone, ZoneType::Commercial)
+            && profile.kind == EconomyProfileRuntimeKind::ServiceStore)
+    {
+        return cached_floor_scale.clamp(0.0, 1.0);
+    }
+    if matches!(building_zone, ZoneType::Commercial)
+        && profile.kind == EconomyProfileRuntimeKind::Store
+    {
+        return commercial_activity_floor_scale.clamp(0.0, 1.0);
+    }
+    1.0
 }
 
 fn active_budget_backed_worker_capacity(
@@ -819,6 +871,9 @@ impl SimCore {
                     );
             }
 
+            let theoretical_profile = catalog.as_ref().and_then(|catalog| {
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            });
             let worker_capacity = catalog
                 .as_ref()
                 .map(|catalog| {
@@ -826,18 +881,22 @@ impl SimCore {
                         .worker_capacity_with_catalog(building_idx, catalog.as_ref())
                 })
                 .unwrap_or_else(|| self.allocator.worker_capacity(building_idx));
-            match building.zone_type {
-                ZoneType::Commercial => {
-                    diagnostics.commercial_job_capacity = diagnostics
-                        .commercial_job_capacity
-                        .saturating_add(worker_capacity);
+            if let Some(work_bucket) =
+                daily_city_flow_work_bucket(building.zone_type, theoretical_profile)
+            {
+                match work_bucket {
+                    DailyCityFlowWorkBucket::Commercial => {
+                        diagnostics.commercial_job_capacity = diagnostics
+                            .commercial_job_capacity
+                            .saturating_add(worker_capacity);
+                    }
+                    DailyCityFlowWorkBucket::Industrial => {
+                        diagnostics.industrial_job_capacity = diagnostics
+                            .industrial_job_capacity
+                            .saturating_add(worker_capacity);
+                    }
+                    DailyCityFlowWorkBucket::Service => {}
                 }
-                ZoneType::Industrial => {
-                    diagnostics.industrial_job_capacity = diagnostics
-                        .industrial_job_capacity
-                        .saturating_add(worker_capacity);
-                }
-                _ => {}
             }
 
             if building.broken
@@ -857,11 +916,17 @@ impl SimCore {
             if !profile_offers_daily_city_flow_work(building.zone_type, profile) {
                 continue;
             }
+            let activity_floor_scale = daily_city_flow_activity_floor_scale(
+                building.zone_type,
+                building.commercial_activity_floor_scale,
+                profile,
+                commercial_activity_floor_scale,
+            );
             let active_worker_capacity = active_worker_capacity_for_profile_with_floor_scale(
                 catalog,
                 building,
                 profile,
-                commercial_activity_floor_scale,
+                activity_floor_scale,
             );
             let active_worker_capacity = service_funded_worker_capacity(
                 active_worker_capacity,
@@ -876,8 +941,12 @@ impl SimCore {
                 profile,
             );
             let active_filled_jobs = building.worker_count.min(active_worker_capacity);
-            match building.zone_type {
-                ZoneType::Commercial => {
+            let Some(work_bucket) = daily_city_flow_work_bucket(building.zone_type, Some(profile))
+            else {
+                continue;
+            };
+            match work_bucket {
+                DailyCityFlowWorkBucket::Commercial => {
                     diagnostics.commercial_active_job_capacity = diagnostics
                         .commercial_active_job_capacity
                         .saturating_add(active_worker_capacity);
@@ -885,7 +954,7 @@ impl SimCore {
                         .commercial_active_filled_jobs
                         .saturating_add(active_filled_jobs);
                 }
-                ZoneType::Industrial => {
+                DailyCityFlowWorkBucket::Industrial => {
                     diagnostics.industrial_active_job_capacity = diagnostics
                         .industrial_active_job_capacity
                         .saturating_add(active_worker_capacity);
@@ -893,7 +962,7 @@ impl SimCore {
                         .industrial_active_filled_jobs
                         .saturating_add(active_filled_jobs);
                 }
-                _ => {
+                DailyCityFlowWorkBucket::Service => {
                     diagnostics.service_active_job_capacity = diagnostics
                         .service_active_job_capacity
                         .saturating_add(active_worker_capacity);

@@ -307,7 +307,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   targets scale from the larger of recent household sales and local household demand/stock
   recovery instead of immediately using full authored capacity.
 - Added `service_store` economy profiles for aggregate standalone commercial services, with starter
-  barber and pharmacy assets bound to `personal_service_small` and `health_essentials_small`.
+  barber and pharmacy assets bound to `personal_service_small` and `health_essentials_small`;
+  personal-service demand now also creates capped representative visible visits without changing
+  aggregate revenue accounting.
 - Added `flat_size_m2` to building assets to control household compatibility.
 - Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.
 - Updated the Inspector UI to display both Household occupancy and total Agent counts.

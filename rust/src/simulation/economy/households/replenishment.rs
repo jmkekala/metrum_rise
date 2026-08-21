@@ -493,6 +493,7 @@ impl HouseholdSystem {
             shopping_leg_timeout_hours,
             household_vat_rate,
         );
+        self.process_visible_service_visit_returns(agents, allocator, &catalog, absolute_hour);
 
         self.plan_and_apply_household_replenishment(
             agents,
@@ -506,6 +507,14 @@ impl HouseholdSystem {
             household_vat_rate,
             progress.restock_candidate_exists,
             progress.urgent_restock_candidate_exists,
+        );
+        self.plan_and_apply_visible_service_visits(
+            agents,
+            allocator,
+            transit_network,
+            graph,
+            absolute_hour,
+            &catalog,
         );
         household_vat_collected
     }
@@ -900,7 +909,10 @@ impl HouseholdSystem {
         }
     }
 
-    fn collect_eligible_shopper_candidates(&mut self, agents: &AgentSystem) -> Vec<usize> {
+    pub(super) fn collect_eligible_shopper_candidates(
+        &mut self,
+        agents: &AgentSystem,
+    ) -> Vec<usize> {
         use std::sync::atomic::Ordering;
 
         self.reset_shopper_candidate_scratch();
