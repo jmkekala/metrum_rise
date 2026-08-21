@@ -901,7 +901,7 @@ fn explicit_field_producer_supplies_processor_input() {
 }
 
 #[test]
-fn owa_export_buffer_scales_for_explicit_work_area() {
+fn owa_export_buffer_uses_active_explicit_work_area_output() {
     let (graph, network, industrial_edge, _commercial_edge, border_node) =
         simple_graph_with_border();
     let mut allocator = BuildingAllocator::new();
@@ -916,6 +916,8 @@ fn owa_export_buffer_scales_for_explicit_work_area() {
         0.0,
     ));
     allocator.buildings[0].work_area_scale = 0.25;
+    allocator.buildings[0].commercial_activity_floor_scale = 1.0;
+    allocator.buildings[0].worker_count = 1;
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
@@ -927,7 +929,39 @@ fn owa_export_buffer_scales_for_explicit_work_area() {
         shipments.shipments[0].destination,
         ShipmentEndpoint::OwaBorder(border_node)
     );
-    assert_eq!(shipments.shipments[0].amount, 40.0);
+    assert_eq!(shipments.shipments[0].amount, 80.0);
+}
+
+#[test]
+fn owa_export_buffer_ignores_output_headroom_throttle() {
+    let (graph, network, industrial_edge, _commercial_edge, border_node) =
+        simple_graph_with_border();
+    let mut allocator = BuildingAllocator::new();
+    let field_asset = register_test_field_asset(&mut allocator, "test", "headroom_export_field");
+    allocator.buildings.push(make_building(
+        &allocator,
+        -70.0,
+        ZoneType::None,
+        industrial_edge,
+        &field_asset,
+        290.0,
+        0.0,
+    ));
+    allocator.buildings[0].work_area_scale = 0.25;
+    allocator.buildings[0].commercial_activity_floor_scale = 1.0;
+    allocator.buildings[0].worker_count = 1;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    allocator.rebuild_zone_index();
+
+    let mut shipments = ShipmentSystem::new();
+    create_profile_output_exports_for_test(&mut shipments, &mut allocator, &network, &graph, 480);
+
+    assert_eq!(shipments.shipments.len(), 1);
+    assert_eq!(
+        shipments.shipments[0].destination,
+        ShipmentEndpoint::OwaBorder(border_node)
+    );
+    assert_eq!(shipments.shipments[0].amount, 240.0);
 }
 
 #[test]

@@ -118,7 +118,8 @@ impl HouseholdSystem {
             if !is_active_utility_consumer(building) {
                 continue;
             }
-            if is_private_utility_consumer_zone(building.zone_type) {
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            if is_private_utility_consumer(building, profile) {
                 for units in &mut private_utility_demand_units_by_service {
                     *units += NON_RESIDENTIAL_UTILITY_DEMAND_UNITS_PER_DAY;
                 }
@@ -127,8 +128,7 @@ impl HouseholdSystem {
                     *units += CITY_SERVICE_UTILITY_DEMAND_UNITS_PER_DAY;
                 }
             }
-            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            else {
+            let Some(profile) = profile else {
                 continue;
             };
             if !is_operational_utility_provider(&catalog, building, profile) {
@@ -216,7 +216,8 @@ impl HouseholdSystem {
             if !is_active_utility_consumer(building) {
                 continue;
             }
-            if !is_private_utility_consumer_zone(building.zone_type) {
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            if !is_private_utility_consumer(building, profile) {
                 continue;
             }
             let mut daily_cost = 0.0f32;
@@ -308,7 +309,9 @@ impl HouseholdSystem {
                 {
                     false
                 } else {
-                    building_participates_in_budget_distress(building)
+                    let profile =
+                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+                    building_participates_in_budget_distress(building, profile)
                 }
             };
             if !participates {
@@ -343,6 +346,8 @@ impl HouseholdSystem {
         allocator: &mut BuildingAllocator,
         fiscal_policy: &CityFiscalPolicy,
     ) -> FiscalRevenue {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         self.ensure_daily_ledger_len();
         let mut revenue = FiscalRevenue::default();
 
@@ -373,15 +378,18 @@ impl HouseholdSystem {
                 .registry
                 .is_city_service_asset(&allocator.buildings[building_idx].asset_id);
             let building = &mut allocator.buildings[building_idx];
-            if !is_taxable_private_nonresidential_building(building, is_city_service) {
+            let profile = catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            let Some(tax_zone) =
+                private_nonresidential_property_tax_zone(building, profile, is_city_service)
+            else {
                 continue;
-            }
-            let tax = daily_property_tax(building.zone_type, building.level, fiscal_policy);
+            };
+            let tax = daily_property_tax(tax_zone, building.level, fiscal_policy);
             if tax <= 0.0 {
                 continue;
             }
             building.operating_budget -= tax;
-            match building.zone_type {
+            match tax_zone {
                 ZoneType::Commercial => revenue.commercial_property_tax += tax,
                 ZoneType::Industrial => revenue.industrial_property_tax += tax,
                 _ => {}
@@ -440,10 +448,19 @@ impl HouseholdSystem {
         total_tax
     }
 
-    pub(super) fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
+    pub(super) fn run_building_economy(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        owa_exports_available: bool,
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
+        refresh_commercial_activity_floor(
+            &catalog,
+            &self.households,
+            allocator,
+            owa_exports_available,
+        );
         self.settle_hourly_service_store_sales(allocator, &catalog);
         allocator.buildings.par_iter_mut().for_each(|building| {
             let zone = building.zone_type;
@@ -906,16 +923,30 @@ fn is_taxable_residential_home(building: &Building) -> bool {
         && building.edge_idx != usize::MAX
 }
 
-fn is_taxable_private_nonresidential_building(building: &Building, is_city_service: bool) -> bool {
-    matches!(
+fn private_nonresidential_property_tax_zone(
+    building: &Building,
+    profile: Option<&EconomyProfileRuntime>,
+    is_city_service: bool,
+) -> Option<ZoneType> {
+    if is_city_service
+        || building.broken
+        || building.economy_broken
+        || building.is_deserted
+        || building.is_under_construction()
+        || building.edge_idx == usize::MAX
+    {
+        return None;
+    }
+    if matches!(
         building.zone_type,
         ZoneType::Commercial | ZoneType::Industrial
-    ) && !is_city_service
-        && !building.broken
-        && !building.economy_broken
-        && !building.is_deserted
-        && !building.is_under_construction()
-        && building.edge_idx != usize::MAX
+    ) {
+        return Some(building.zone_type);
+    }
+    if is_explicit_private_industry_profile(profile) {
+        return Some(ZoneType::Industrial);
+    }
+    None
 }
 
 fn is_operational_utility_provider(
@@ -986,8 +1017,11 @@ fn utility_service_settlement(
     }
 }
 
-fn building_participates_in_budget_distress(building: &Building) -> bool {
-    is_private_utility_consumer_zone(building.zone_type)
+fn building_participates_in_budget_distress(
+    building: &Building,
+    profile: Option<&EconomyProfileRuntime>,
+) -> bool {
+    is_private_utility_consumer(building, profile)
 }
 
 fn is_private_utility_consumer_zone(zone_type: ZoneType) -> bool {
@@ -995,6 +1029,23 @@ fn is_private_utility_consumer_zone(zone_type: ZoneType) -> bool {
         zone_type,
         ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed | ZoneType::Industrial
     )
+}
+
+fn is_private_utility_consumer(
+    building: &Building,
+    profile: Option<&EconomyProfileRuntime>,
+) -> bool {
+    is_private_utility_consumer_zone(building.zone_type)
+        || is_explicit_private_industry_profile(profile)
+}
+
+fn is_explicit_private_industry_profile(profile: Option<&EconomyProfileRuntime>) -> bool {
+    profile.is_some_and(|profile| {
+        matches!(
+            profile.kind,
+            EconomyProfileRuntimeKind::FieldProducer | EconomyProfileRuntimeKind::Extractor
+        )
+    })
 }
 
 fn household_utility_bill_by_service(ledgers: &[DailyHouseholdLedger], service_idx: usize) -> f32 {

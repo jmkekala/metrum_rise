@@ -28,6 +28,8 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::fiscal::tax_amount;
 use crate::simulation::economy::logistics::ShipmentSystem;
+#[cfg(test)]
+use crate::simulation::economy::logistics::has_connected_border_node;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -210,6 +212,7 @@ impl HouseholdSystem {
             transit_network,
             graph,
             &[],
+            has_connected_border_node(graph),
         );
     }
 
@@ -220,6 +223,7 @@ impl HouseholdSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         service_funding_by_building: &[f32],
+        owa_exports_available: bool,
     ) {
         let timing_enabled = debug::category_enabled("economy");
         let total_start = Instant::now();
@@ -230,7 +234,12 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let load_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
+        refresh_commercial_activity_floor(
+            &catalog,
+            &self.households,
+            allocator,
+            owa_exports_available,
+        );
         let profile = household_demand_profile(&catalog);
         let target_days = profile.stock_target_days;
 
@@ -425,13 +434,19 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         service_funding_by_building: &[f32],
+        owa_exports_available: bool,
     ) {
         if service_funding_by_building.is_empty() {
             return;
         }
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
+        refresh_commercial_activity_floor(
+            &catalog,
+            &self.households,
+            allocator,
+            owa_exports_available,
+        );
         let funded_capacity_by_building: Vec<u32> = allocator
             .buildings
             .par_iter()
@@ -500,6 +515,7 @@ impl HouseholdSystem {
             treasury_balance,
             &[],
             &empty_logistics,
+            true,
         )
     }
 
@@ -511,13 +527,19 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
         service_funding_by_building: &[f32],
         logistics: &ShipmentSystem,
+        owa_exports_available: bool,
     ) -> f32 {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let reserved_outbound = logistics.reserved_outbound_view(catalog.resource_count());
-        refresh_commercial_activity_floor(&catalog, &self.households, allocator);
+        refresh_commercial_activity_floor(
+            &catalog,
+            &self.households,
+            allocator,
+            owa_exports_available,
+        );
         eject_inactive_work_assignments(agents, allocator, &catalog);
         shed_overstaffed_active_capacity_workers(agents, allocator, &catalog);
         self.last_city_service_wage_cost = 0.0;

@@ -16,6 +16,7 @@ use crate::simulation::economy::households::metrics::{
     demand_sink_cash_cost_per_resident_excluding_resource, household_is_housed,
     household_supply_resource_runtime_id, household_supply_unit_price,
     refresh_commercial_activity_floor, scaled_output_buffer_capacity_units_for_building,
+    scaled_output_units_per_day_for_building,
 };
 use crate::simulation::economy::logistics::{
     CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem,

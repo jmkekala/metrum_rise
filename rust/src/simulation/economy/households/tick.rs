@@ -4,7 +4,7 @@ use super::HouseholdSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::fiscal::{CityFiscalPolicy, FiscalRevenue};
-use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::economy::logistics::{ShipmentSystem, has_connected_border_node};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
@@ -38,7 +38,8 @@ impl HouseholdSystem {
         self.rebuild_household_and_worker_counts(agents, allocator);
         let counts_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.run_building_economy(allocator);
+        let owa_exports_available = has_connected_border_node(graph);
+        self.run_building_economy(allocator, owa_exports_available);
         let building_economy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         logistics.hourly_tick(
@@ -67,6 +68,7 @@ impl HouseholdSystem {
             transit_network,
             graph,
             service_funding_by_building,
+            owa_exports_available,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -140,6 +142,7 @@ impl HouseholdSystem {
         let bankruptcy_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         // Step 2: pay wages (budget does not go negative from this step).
+        let owa_exports_available = has_connected_border_node(graph);
         let income_tax = self.pay_daily_wages_with_service_funding(
             agents,
             allocator,
@@ -147,6 +150,7 @@ impl HouseholdSystem {
             treasury_balance,
             service_funding_by_building,
             logistics,
+            owa_exports_available,
         );
         let wages_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -176,6 +180,7 @@ impl HouseholdSystem {
             transit_network,
             graph,
             service_funding_by_building,
+            owa_exports_available,
         );
         let workplace_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();

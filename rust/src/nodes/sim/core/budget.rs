@@ -13,7 +13,7 @@ use crate::simulation::economy::households::{
     scaled_output_buffer_capacity_units_for_building, scaled_output_units_per_day_for_building,
     service_funded_worker_capacity,
 };
-use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::economy::logistics::{ShipmentSystem, has_connected_border_node};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
@@ -469,6 +469,7 @@ impl SimCore {
             &mut self.agents,
             &mut self.allocator,
             &funding,
+            has_connected_border_node(&self.region_graph),
         );
     }
 

@@ -1,15 +1,17 @@
 //! Output surplus export planning to `OWA` border terminals.
 
 use crate::debug_log;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
     ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
 };
 use crate::simulation::economy::definitions::{
-    ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
+    RuntimeEconomyTuning, RuntimeResourcePort,
 };
 use crate::simulation::economy::households::{
-    scaled_input_inventory_targets_for_building, scaled_output_units_per_day_for_building,
+    building_operation_factors, scaled_input_inventory_targets_for_building,
+    scaled_output_units_per_day_for_building,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -123,7 +125,8 @@ impl ShipmentSystem {
                 let unreserved = (current_inventory - reserved).max(0.0);
 
                 // Keep one current day of production as a local buffer; export the rest.
-                let buffer = scaled_output_units_per_day_for_building(
+                let buffer = owa_export_buffer_units_for_building(
+                    &catalog,
                     &allocator.buildings[src_idx],
                     profile,
                     output_port,
@@ -558,4 +561,24 @@ fn saturation_floor_units(
         * logistics_tuning
             .owa_export_saturation_loads_to_floor
             .max(0.000_1)
+}
+
+fn owa_export_buffer_units_for_building(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    output_port: &RuntimeResourcePort,
+) -> f32 {
+    let full_output_units =
+        scaled_output_units_per_day_for_building(building, profile, output_port);
+    if !matches!(
+        profile.kind,
+        EconomyProfileRuntimeKind::FieldProducer | EconomyProfileRuntimeKind::Extractor
+    ) {
+        return full_output_units;
+    }
+
+    let active_output_units = full_output_units
+        * building_operation_factors(catalog, building, profile).output_capacity_factor;
+    active_output_units.clamp(0.0, full_output_units)
 }

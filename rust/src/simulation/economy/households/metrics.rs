@@ -23,7 +23,6 @@ const HOUSEHOLD_BASE_AREA_M2: f32 = 25.0;
 const HOUSEHOLD_ADULT_AREA_M2: f32 = 22.0;
 const HOUSEHOLD_CHILD_AREA_M2: f32 = 12.0;
 const MIN_POSITIVE_VALUE: f32 = 0.000_1;
-const EXPLICIT_WORK_AREA_OWA_MARKET_LOADS_PER_DAY: f32 = 1.0;
 pub(crate) const UTILITY_SERVICE_POWER: &str = "power";
 const UTILITY_SERVICE_WATER: &str = "water";
 const UTILITY_SERVICE_SEWAGE: &str = "sewage";
@@ -522,21 +521,27 @@ fn explicit_work_area_activity_scale_by_resource(
     catalog: &RuntimeEconomyCatalog,
     allocator: &BuildingAllocator,
     tuning: &RuntimeEconomyTuning,
+    owa_exports_available: bool,
 ) -> Vec<(ResourceRuntimeId, f32)> {
     let full_output_units = explicit_work_area_full_output_units_by_resource(catalog, allocator);
     if full_output_units.is_empty() {
         return Vec::new();
     }
     let local_input_demand = local_input_demand_units_by_resource(catalog, allocator);
-    let owa_market_units =
-        tuning.logistics.truck_load_units.max(0.0) * EXPLICIT_WORK_AREA_OWA_MARKET_LOADS_PER_DAY;
+    let owa_exports_enabled =
+        owa_exports_available && tuning.owa_export_price_multiplier > MIN_POSITIVE_VALUE;
     let mut scales = Vec::with_capacity(full_output_units.len());
     for (resource_runtime_id, output_units_per_day) in full_output_units {
         if output_units_per_day <= MIN_POSITIVE_VALUE {
             continue;
         }
-        let market_units =
-            resource_amount(&local_input_demand, resource_runtime_id) + owa_market_units;
+        let local_market_units = resource_amount(&local_input_demand, resource_runtime_id);
+        let owa_market_units = if owa_exports_enabled {
+            output_units_per_day
+        } else {
+            0.0
+        };
+        let market_units = local_market_units + owa_market_units;
         scales.push((
             resource_runtime_id,
             (market_units / output_units_per_day).clamp(0.0, 1.0),
@@ -561,14 +566,19 @@ pub(crate) fn refresh_commercial_activity_floor(
     catalog: &RuntimeEconomyCatalog,
     households: &[Household],
     allocator: &mut BuildingAllocator,
+    owa_exports_available: bool,
 ) -> CommercialActivitySignal {
     let tuning = load_runtime_economy_tuning()
         .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
     let signal = commercial_activity_signal_for_city(catalog, households, allocator);
     let service_activity_scale_by_resource =
         service_store_activity_scale_by_resource(catalog, households, allocator);
-    let explicit_activity_scale_by_resource =
-        explicit_work_area_activity_scale_by_resource(catalog, allocator, tuning.as_ref());
+    let explicit_activity_scale_by_resource = explicit_work_area_activity_scale_by_resource(
+        catalog,
+        allocator,
+        tuning.as_ref(),
+        owa_exports_available,
+    );
     allocator.buildings.par_iter_mut().for_each(|building| {
         building.commercial_activity_floor_scale = 0.0;
         if building.broken
@@ -789,6 +799,8 @@ pub(crate) struct BuildingOperationFactors {
     pub(crate) input_factor: f32,
     /// Output-buffer contribution to the current hourly throughput.
     pub(crate) output_headroom_factor: f32,
+    /// Current staffed/input-backed production ratio before output-buffer throttling.
+    pub(crate) output_capacity_factor: f32,
     /// Final current-hour throughput ratio against authored full capacity.
     pub(crate) throughput_factor: f32,
 }
@@ -831,18 +843,20 @@ pub(crate) fn building_operation_factors_with_floor_scale(
     };
     let input_factor =
         hourly_input_availability_factor(profile, building, staffing_factor, production_rate_scale);
+    let output_capacity_factor = staffing_factor * input_factor;
     let output_headroom_factor = hourly_output_headroom_factor(
         profile,
         building,
-        staffing_factor * input_factor,
+        output_capacity_factor,
         production_rate_scale,
     );
-    let throughput_factor = staffing_factor * input_factor * output_headroom_factor;
+    let throughput_factor = output_capacity_factor * output_headroom_factor;
     BuildingOperationFactors {
         active_worker_capacity,
         effective_workers,
         input_factor,
         output_headroom_factor,
+        output_capacity_factor,
         throughput_factor,
     }
 }
@@ -1085,15 +1099,18 @@ pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn owa_utility_cost_for_zone(
+fn owa_utility_cost_for_building(
     catalog: &RuntimeEconomyCatalog,
     tuning: &RuntimeEconomyTuning,
-    zone_type: ZoneType,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
 ) -> f32 {
-    if !matches!(
-        zone_type,
+    let private_zone = matches!(
+        building.zone_type,
         ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed | ZoneType::Industrial
-    ) {
+    );
+    let explicit_area_business = profile_kind_uses_explicit_work_area(profile.kind);
+    if !private_zone && !explicit_area_business {
         return 0.0;
     }
     local_utility_daily_unit_cost(catalog) * tuning.owa_import_price_multiplier.max(0.0)
@@ -1127,7 +1144,7 @@ pub(crate) fn building_operating_buffer_days(
         return 0.0;
     };
     let daily_operating_cost = building.worker_count as f32 * profile.average_daily_wage()
-        + owa_utility_cost_for_zone(catalog, tuning, building.zone_type);
+        + owa_utility_cost_for_building(catalog, tuning, building, profile);
     if daily_operating_cost <= 0.0 {
         0.0
     } else {

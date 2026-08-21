@@ -150,6 +150,35 @@ fn daily_nonresidential_property_tax_debits_private_building_budgets() {
 }
 
 #[test]
+fn explicit_work_area_property_tax_uses_industrial_rate() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "explicit_property_tax_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.operating_budget = 100.0;
+    allocator.buildings.push(farm);
+
+    let mut households = HouseholdSystem::new();
+    let mut policy = crate::simulation::economy::fiscal::CityFiscalPolicy::default();
+    policy.industrial_property_tax_per_building_per_day = 35.0;
+
+    let revenue = households.settle_daily_property_tax(&mut allocator, &policy);
+
+    assert_eq!(revenue.commercial_property_tax, 0.0);
+    assert!((revenue.industrial_property_tax - 35.0).abs() < 0.001);
+    assert!((allocator.buildings[0].operating_budget - 65.0).abs() < 0.001);
+}
+
+#[test]
 fn ensure_agent_households_does_not_materialize_missing_household_ids() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
@@ -397,7 +426,7 @@ fn service_store_sales_use_staffed_aggregate_household_demand() {
     household.budget = 10.0;
     households.households.push(household);
 
-    households.run_building_economy(&mut allocator);
+    households.run_building_economy(&mut allocator, true);
 
     let expected_revenue = 100.0 * 0.03 / 24.0 * 12.0;
     assert!(
@@ -450,7 +479,7 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
     allocator.buildings.push(service_building);
 
     let empty_households = HouseholdSystem::new();
-    refresh_commercial_activity_floor(&catalog, &empty_households.households, &mut allocator);
+    refresh_commercial_activity_floor(&catalog, &empty_households.households, &mut allocator, true);
     assert_eq!(
         active_worker_capacity_for_profile(
             &catalog,
@@ -464,7 +493,7 @@ fn service_store_active_worker_slots_scale_from_aggregate_demand() {
     let mut households = HouseholdSystem::new();
     households.households.push(make_household(0, 70, 0.0, 0.0));
 
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
 
     assert_eq!(
         active_worker_capacity_for_profile(
@@ -603,7 +632,7 @@ fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
 }
 
 #[test]
-fn explicit_work_area_wage_pass_sheds_workers_above_market_capacity() {
+fn explicit_work_area_wage_pass_keeps_owa_backed_area_workers() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let farm_profile = catalog
         .profile_for_id("grain_farm_basic")
@@ -654,13 +683,11 @@ fn explicit_work_area_wage_pass_sheds_workers_above_market_capacity() {
     households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
     assert_eq!(
-        allocator.buildings[1].worker_count, 2,
-        "one OWA export load should keep only two full-area farm slots active"
+        allocator.buildings[1].worker_count, 8,
+        "OWA-capable farms should keep their full area-scaled worker slots active"
     );
-    assert_eq!(agents.work_building[workers[0]], 1);
-    assert_eq!(agents.work_building[workers[1]], 1);
-    for &agent in &workers[2..] {
-        assert_eq!(agents.work_building[agent], usize::MAX);
+    for &agent in &workers {
+        assert_eq!(agents.work_building[agent], 1);
         assert_eq!(agents.consecutive_unpaid_days[agent], 0);
     }
 }
@@ -874,6 +901,79 @@ fn private_nonresidential_utility_bill_uses_unified_service_prices() {
         households.last_power_settlement().private_local_revenue,
         0.0
     );
+}
+
+#[test]
+fn explicit_work_area_utility_bill_uses_private_business_prices() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "explicit_utility_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.operating_budget = 100.0;
+    allocator.buildings.push(farm);
+
+    let logistics = ShipmentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    let expected_owa_utility_cost = [
+        "power_plant_basic",
+        "water_plant_basic",
+        "wastewater_treatment_basic",
+    ]
+    .iter()
+    .map(|profile_id| {
+        catalog
+            .profile_for_id(profile_id)
+            .expect("utility profile")
+            .unit_price_currency
+    })
+    .sum::<f32>()
+        * tuning.owa_import_price_multiplier;
+    assert!(
+        (allocator.buildings[0].operating_budget - (100.0 - expected_owa_utility_cost)).abs()
+            < 0.001
+    );
+    assert_eq!(treasury_balance, 0.0);
+}
+
+#[test]
+fn explicit_work_area_negative_budget_enters_distress() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "explicit_distress_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.operating_budget = -10.0;
+    allocator.buildings.push(farm);
+
+    let logistics = ShipmentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut treasury_balance = 0.0;
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+
+    assert!(allocator.buildings[0].budget_distress);
+    households.run_bankruptcy_check(&mut allocator);
+    assert!(allocator.buildings[0].is_deserted);
 }
 
 #[test]
@@ -1137,7 +1237,7 @@ fn power_service_funding_sheds_workers_to_funded_capacity() {
         agents.assign_work_building(agent, 1, 0);
     }
 
-    households.enforce_service_funding_staffing(&mut agents, &mut allocator, &[1.0, 0.05]);
+    households.enforce_service_funding_staffing(&mut agents, &mut allocator, &[1.0, 0.05], true);
 
     assert_eq!(allocator.buildings[1].worker_count, 1);
     assert_eq!(agents.work_building[a0], 1);

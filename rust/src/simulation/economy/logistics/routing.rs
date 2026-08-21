@@ -20,3 +20,14 @@ pub(super) fn connected_border_nodes(graph: &RegionGraph) -> Vec<u32> {
         })
         .collect()
 }
+
+/// Returns whether ordinary `OWA` freight has at least one physical city gateway.
+pub(crate) fn has_connected_border_node(graph: &RegionGraph) -> bool {
+    graph.nodes().iter().enumerate().any(|(idx, node)| {
+        node.node_type == NodeType::Border
+            && graph
+                .node_adjacency(idx as u32)
+                .iter()
+                .any(|&edge_idx| !graph.edge(edge_idx).deleted)
+    })
+}

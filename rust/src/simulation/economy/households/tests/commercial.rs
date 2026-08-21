@@ -36,7 +36,7 @@ fn household_shortage_floor_opens_commercial_workers_without_sales() {
         households.households.push(make_household(0, 2, 10.0, 0.0));
     }
 
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
     let store = &allocator.buildings[1];
     let profile = catalog
         .profile_by_runtime_id(store.economy_profile_runtime_id)
@@ -68,7 +68,12 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
             < 0.001,
         "explicit work-area output storage should scale with committed area"
     );
-    building.set_inventory_units(output_port.resource_runtime_id, output_capacity - 2.0);
+    let scaled_hourly_output =
+        scaled_output_units_per_day_for_building(&building, profile, output_port) / 24.0;
+    building.set_inventory_units(
+        output_port.resource_runtime_id,
+        output_capacity - scaled_hourly_output - 2.0,
+    );
 
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &building, profile),
@@ -113,15 +118,11 @@ fn explicit_work_area_market_scale_limits_jobs_and_output() {
 }
 
 #[test]
-fn explicit_work_area_activity_uses_local_input_demand_plus_owa_allowance() {
+fn explicit_work_area_activity_uses_owa_as_external_market() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let tuning = load_runtime_economy_tuning().expect("runtime economy tuning");
     let farm_profile = catalog
         .profile_for_id("grain_farm_basic")
         .expect("grain farm runtime profile");
-    let processor_profile = catalog
-        .profile_for_id("food_processor_basic")
-        .expect("food processor runtime profile");
     let mut allocator = BuildingAllocator::new();
     let farm_asset = register_test_asset(
         &mut allocator,
@@ -134,31 +135,46 @@ fn explicit_work_area_activity_uses_local_input_demand_plus_owa_allowance() {
     farm.work_area_scale = 2.0;
     farm.operating_budget = 10_000.0;
     allocator.buildings.push(farm);
-    let processor_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "market_scaled_processor",
-        ZoneClass::Industrial,
-    );
-    let mut processor = make_building(10.0, ZoneType::Industrial, &processor_asset, 0.0);
-    processor.economy_profile_runtime_id = processor_profile.runtime_id;
-    processor.operating_budget = 10_000.0;
-    allocator.buildings.push(processor);
 
     let households = HouseholdSystem::new();
-    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator);
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, true);
 
-    let expected_activity_scale = (processor_profile.inputs[0].units_per_day
-        + tuning.logistics.truck_load_units)
-        / (farm_profile.outputs[0].units_per_day * 2.0);
     assert!(
-        (allocator.buildings[0].commercial_activity_floor_scale - expected_activity_scale).abs()
-            < 0.001,
-        "farm activity should track operational local processing demand plus one weak OWA load"
+        (allocator.buildings[0].commercial_activity_floor_scale - 1.0).abs() < 0.001,
+        "OWA-capable explicit producers should not throttle staffing to local input demand"
     );
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
-        10
+        16
+    );
+}
+
+#[test]
+fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let farm_profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm runtime profile");
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "no_gateway_market_scaled_farm",
+        ZoneClass::Industrial,
+    );
+    let mut farm = make_building(0.0, ZoneType::None, &farm_asset, 0.0);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 2.0;
+    farm.operating_budget = 10_000.0;
+    allocator.buildings.push(farm);
+
+    let households = HouseholdSystem::new();
+    refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, false);
+
+    assert_eq!(allocator.buildings[0].commercial_activity_floor_scale, 0.0);
+    assert_eq!(
+        active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
+        0
     );
 }
 
@@ -177,7 +193,7 @@ fn one_worker_commercial_production_uses_hourly_input_need() {
     allocator.buildings.push(store);
 
     let mut households = HouseholdSystem::new();
-    households.run_building_economy(&mut allocator);
+    households.run_building_economy(&mut allocator, true);
 
     let output_units = allocator.buildings[0].inventory_units(household_supply_resource);
     let expected_units = profile.outputs[0].units_per_day / 24.0 / profile.worker_capacity as f32;

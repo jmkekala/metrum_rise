@@ -728,10 +728,19 @@ industrial growth. That pressure is diagnostic of actual outside-input use; indu
 quantity remains guarded by the demand-side committed local input-capacity accounting in
 [`demand.md`](demand.md).
 
-Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** after local input holds, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. For explicit field producers and extractors, both the output inventory cap and the export buffer use the current area-scaled daily output rather than the authored one-hectare output. Explicit field producers and extractors also cap active worker slots by aggregate market demand: operational local input demand plus a small OWA allowance of one baseline truckload per day. Their throughput still divides staffed workers by the full physical area-scaled worker capacity, so market-capped crews produce proportionally less instead of running oversized sites at full output.
+Exports work as a lower-priced outside market for surplus. When an industrial building's
+unreserved output inventory exceeds a **one-day production buffer** after local input holds, the
+logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal.
+For explicit field producers and extractors, output inventory capacity uses the committed
+area-scaled daily output, while the export buffer uses current active staffed output so a weakly
+staffed starter farm is not forced to accumulate a full-field theoretical reserve before exporting.
+`OWA` export demand is allowed to back explicit field/extractor staffing when scheduled exports are
+enabled and the city has at least one connected outside freight gateway; local input holds and lower
+`OWA` pricing preserve local buyers as the better market without making outside trade block
+early-city job growth.
 
 **Export Constraints**:
-- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.60x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.60x), ensuring that local sales are always more profitable than selling surplus on the external market.
 - **Saturation**: repeated fulfilled exports of the same resource reduce the effective export bid.
   Authored logistics tuning controls the truckloads needed to reach the floor, the floor factor,
   and the recovery hours. Queued, failed, expired, or still-in-transit export offers do not
@@ -1326,8 +1335,8 @@ Rules:
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
 - `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
-- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales physical hourly output and physical worker capacity against a 10,000 m2 authored baseline, market-backed demand caps active worker slots, and the first committed extraction area tops up startup operating budget to the area-scaled payroll runway
-- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and physical worker capacity are interpreted per hectare of committed field area, market-backed demand caps active worker slots, and the first committed field tops up startup operating budget to the area-scaled payroll runway
+- authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales physical hourly output and physical worker capacity against a 10,000 m2 authored baseline, scheduled `OWA` exports can back area-scaled active worker slots when a connected outside freight gateway exists, and the first committed extraction area tops up startup operating budget to the area-scaled payroll runway
+- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and physical worker capacity are interpreted per hectare of committed field area, scheduled `OWA` exports can back area-scaled active worker slots when a connected outside freight gateway exists, and the first committed field tops up startup operating budget to the area-scaled payroll runway
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -2268,7 +2277,7 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - household utility cost: `3.0 currency / resident / day`
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
-- `grain_farm` `base_rate`: `280 grain / day / hectare`
+- `grain_farm` `base_rate`: `290 grain / day / hectare`
 - `grain_farm` worker capacity: `8 / hectare`
 - `grain_farm` wage band: `80-100 currency / workday`
 - `food_processor` `base_rate`: `160 packaged_food / day`
@@ -2287,8 +2296,8 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - `OWA import_ask` for `packaged_food`: `26.25 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
 - `OWA import_ask` for `household_supplies`: `43.75 currency / unit` (local × 1.75)
 - initial `OWA export_bid` for `packaged_food`: `9.00 currency / unit` (local × `owa_export_price_multiplier = 0.60`)
-- saturated `OWA export_bid` bottoms at `35%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
-- OWA utility fallback uses the same per-service unit prices as local utility billing; with no local power, water, or sewage provider, a private non-residential building pays `(3.0 + 2.0 + 1.5) × 1.75 = 11.375 currency/day`
+- saturated `OWA export_bid` bottoms at `75%` of the normal export bid after roughly `4` same-resource truckloads, then recovers over `24` operational hours with no further exports
+- OWA utility fallback uses the same per-service unit prices as local utility billing; with no local power, water, or sewage provider, a private non-residential or explicit field/extractor business pays `(3.0 + 2.0 + 1.5) × 1.75 = 11.375 currency/day`
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
@@ -2703,7 +2712,7 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `coal_mine_basic.base_rate_units_per_day` | 120.0 units/day/hectare | Full-staffed starter coal output before reserve, staffing, and buffer limits |
 | `coal_mine_basic.worker_capacity` | 5 / hectare | Full-staffed starter coal-mine worker demand for a 10,000 m2 extraction area |
 | `coal_mine_basic.unit_price_currency` | 8.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
-| `grain_farm_basic.base_rate_units_per_day` | 280.0 units/day/hectare | Full-staffed starter farm output before staffing and buffer limits |
+| `grain_farm_basic.base_rate_units_per_day` | 290.0 units/day/hectare | Full-staffed starter farm output before staffing and buffer limits |
 | `grain_farm_basic.worker_capacity` | 8 / hectare | Full-staffed starter farm worker demand for a 10,000 m2 field area |
 | `power_plant_basic.base_rate_units_per_day` | 1200.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
 | `power_plant_basic.inputs.coal` | 96.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
@@ -2773,8 +2782,11 @@ becoming viable, the daily settlement sequence handles the outcome.
 
 ### Daily Settlement Sequence
 
-The following steps execute once per day for every commercial, industrial, and utility building
-that is not already `is_deserted` or `broken`. Order is fixed and deterministic.
+The following steps execute once per day for every commercial, industrial, utility, and explicit
+field/extractor business that is not already `is_deserted` or `broken`. Explicit field/extractor
+assets may keep `ZoneType::None` for placement legality, but their economy profile classifies them
+as private industrial businesses for utility billing, industrial property tax, distress liquidation,
+and bankruptcy. Order is fixed and deterministic.
 
 **Step 1 — Bankruptcy check.**
 

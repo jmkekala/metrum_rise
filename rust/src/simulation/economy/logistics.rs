@@ -29,3 +29,4 @@ pub use self::data::{
     CarrierClass, FreightRequestFailure, FreightRequestKey, Shipment, ShipmentEndpoint,
     ShipmentStatus, ShipmentSystem,
 };
+pub(crate) use self::routing::has_connected_border_node;

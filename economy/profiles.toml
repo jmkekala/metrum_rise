@@ -4,7 +4,7 @@ display_name = "Grain Farm"
 kind = "field_producer"
 description = "Starter field-backed farm producing grain from player-drawn fields; authored output is per hectare."
 worker_capacity = 8
-base_rate_units_per_day = 280.0
+base_rate_units_per_day = 290.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
 unit_price_currency = 6.0
@@ -20,7 +20,7 @@ inputs = []
 
 [[profiles.outputs]]
 resource = "grain"
-units_per_day = 280.0
+units_per_day = 290.0
 
 [[profiles]]
 id = "food_processor_basic"
@@ -294,7 +294,7 @@ border_queued_jobs_per_node = 4
 queued_shipment_expiry_hours = 12
 terminal_failure_attempts = 3
 owa_export_saturation_loads_to_floor = 4.0
-owa_export_saturation_floor_factor = 0.35
+owa_export_saturation_floor_factor = 0.75
 owa_export_saturation_recovery_hours = 24.0
 
 [runtime_tuning.construction]
