@@ -56,6 +56,7 @@ impl AgentSystem {
         self.agents.planned_target_building[agent_idx] = usize::MAX;
         self.clear_route_and_lane_state(agent_idx);
         self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.network_replan_failures[agent_idx] = 0;
         self.agents.transit_mode[agent_idx] = MODE_WALK;
         self.agents.activity[agent_idx] = 0;
         self.agents.planned_activity[agent_idx] = 0;
@@ -115,6 +116,7 @@ impl AgentSystem {
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
+                self.agents.network_replan_failures[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
             }
         }
@@ -151,6 +153,7 @@ impl AgentSystem {
             if needs_replan {
                 self.clear_access_plan_and_path(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
+                self.agents.network_replan_failures[agent_idx] = 0;
                 self.clear_schedule_building_cache(agent_idx);
             }
         }
@@ -188,6 +191,7 @@ impl AgentSystem {
                 if needs_replan {
                     self.clear_access_plan_and_path(agent_idx);
                     self.agents.next_replan_time[agent_idx] = 0.0;
+                    self.agents.network_replan_failures[agent_idx] = 0;
                 }
             }
         }
@@ -380,6 +384,7 @@ impl AgentSystem {
                 };
                 self.clear_access_plan_and_path(agent_idx);
                 self.agents.next_replan_time[agent_idx] = 0.0;
+                self.agents.network_replan_failures[agent_idx] = 0;
             }
         }
         self.invalidate_lane_bucket_snapshot();
@@ -469,6 +474,7 @@ impl AgentSystem {
         self.agents.planned_detach_lane_d[agent_idx] = plan.planned_detach_lane_d;
         self.agents.access_flags[agent_idx] = plan.access_flags;
         self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.network_replan_failures[agent_idx] = 0;
         self.agents.current_node[agent_idx] = origin_node;
         self.agents.current_edge[agent_idx] = lane.edge_id;
         self.agents.current_lane_id[agent_idx] = plan.planned_attach_lane_id;
@@ -544,6 +550,7 @@ impl AgentSystem {
         self.agents.lane_distance[agent_idx] = 0.0;
         self.agents.access_flags[agent_idx] = 0;
         self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.network_replan_failures[agent_idx] = 0;
         self.clear_access_plan_and_path(agent_idx);
         self.agents.current_node[agent_idx] = current_node;
         self.agents.current_edge[agent_idx] = current_edge;
@@ -647,6 +654,7 @@ impl AgentSystem {
         self.agents.access_flags[agent_idx] = 0;
         self.agents.current_path[agent_idx].clear();
         self.agents.current_path_index[agent_idx] = 0;
+        self.agents.network_replan_failures[agent_idx] = 0;
     }
 }
 

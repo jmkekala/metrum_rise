@@ -21,9 +21,11 @@ impl AgentSystem {
                 if let Some(&new_id) = mapping.get(&self.agents.current_edge[i]) {
                     self.agents.current_edge[i] = new_id;
                     self.agents.current_path[i].clear();
+                    self.agents.network_replan_failures[i] = 0;
                 } else {
                     self.agents.current_edge[i] = usize::MAX;
                     self.agents.current_path[i].clear();
+                    self.agents.network_replan_failures[i] = 0;
                 }
             }
         }
@@ -158,6 +160,7 @@ impl AgentSystem {
             self.agents.pos_y[i] = candidate.pos.y;
             self.agents.current_path[i].clear();
             self.agents.current_path_index[i] = 0;
+            self.agents.network_replan_failures[i] = 0;
             self.agents.transit[i] = TRANSIT_NETWORK;
             self.agents.lane_change_from_lane_id[i] = u32::MAX;
             self.agents.lane_change_start_d[i] = 0.0;
@@ -205,6 +208,7 @@ impl AgentSystem {
             self.agents.access_flags[i] = 0;
         }
         self.agents.next_replan_time[i] = 0.0;
+        self.agents.network_replan_failures[i] = 0;
         self.agents.lane_change_from_lane_id[i] = u32::MAX;
         self.agents.lane_change_start_d[i] = 0.0;
         self.agents.lane_change_length_m[i] = 0.0;
@@ -594,6 +598,7 @@ mod tests {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: 0,
             current_lane_id: e0_lane,
             lane_distance: 10.0,
@@ -653,6 +658,7 @@ mod tests {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: 1,
             current_lane_id: e1_lane,
             lane_distance: 10.0,
@@ -732,6 +738,7 @@ mod tests {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,

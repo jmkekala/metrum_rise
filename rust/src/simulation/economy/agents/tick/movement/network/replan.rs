@@ -10,7 +10,9 @@ use super::super::super::planning::{
     BuiltNetworkReplan, BuiltTripPlan, plan_immigration_trip, plan_network_replan,
 };
 use super::super::super::slices::MovementSlices;
-use super::super::NETWORK_REPLAN_DELAY_S;
+use super::super::replan_watchdog::{
+    delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -99,8 +101,14 @@ unsafe fn bootstrap_immigration_trip(
             apply_immigration_trip(i, border_node, plan, slices);
             true
         } else {
-            *s_speed.get_mut(i) = 0.0;
-            *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+            delay_or_recover_after_network_replan_failure(
+                i,
+                sim_time,
+                allocator,
+                graph,
+                "immigration-bootstrap",
+                slices,
+            );
             false
         }
     }
@@ -138,7 +146,14 @@ unsafe fn ensure_exact_access_plan(
 
         let Some((start_node, incoming_edge)) = replan_start(i, transit_network, graph, slices)
         else {
-            clear_path_and_delay(i, sim_time, slices);
+            delay_or_recover_after_network_replan_failure(
+                i,
+                sim_time,
+                allocator,
+                graph,
+                "missing-replan-start",
+                slices,
+            );
             return false;
         };
 
@@ -156,7 +171,14 @@ unsafe fn ensure_exact_access_plan(
             apply_network_replan(i, replan, slices);
             true
         } else {
-            clear_path_and_delay(i, sim_time, slices);
+            delay_or_recover_after_network_replan_failure(
+                i,
+                sim_time,
+                allocator,
+                graph,
+                "exact-access-replan",
+                slices,
+            );
             false
         }
     }
@@ -212,7 +234,14 @@ unsafe fn repair_stale_detach_plan(
 
         let Some((start_node, incoming_edge)) = replan_start(i, transit_network, graph, slices)
         else {
-            clear_path_and_delay(i, sim_time, slices);
+            delay_or_recover_after_network_replan_failure(
+                i,
+                sim_time,
+                allocator,
+                graph,
+                "missing-stale-detach-replan-start",
+                slices,
+            );
             return false;
         };
 
@@ -230,7 +259,14 @@ unsafe fn repair_stale_detach_plan(
             apply_network_replan(i, replan, slices);
             true
         } else {
-            clear_path_and_delay(i, sim_time, slices);
+            delay_or_recover_after_network_replan_failure(
+                i,
+                sim_time,
+                allocator,
+                graph,
+                "stale-detach-replan",
+                slices,
+            );
             false
         }
     }
@@ -302,6 +338,7 @@ unsafe fn apply_immigration_trip(
         *s_plan_detach_lane_d.get_mut(i) = plan.planned_detach_lane_d;
         *s_access_flags.get_mut(i) = plan.access_flags;
         *s_next_replan_time.get_mut(i) = 0.0;
+        reset_network_replan_watchdog(i, slices);
         *s_cur_n.get_mut(i) = border_node;
         *s_cur_e.get_mut(i) = usize::MAX;
         *s_lane_id.get_mut(i) = usize::MAX;
@@ -330,19 +367,6 @@ unsafe fn apply_network_replan(i: usize, replan: BuiltNetworkReplan, slices: &Mo
         *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
         *s_access_flags.get_mut(i) = replan.access_flags;
         *s_next_replan_time.get_mut(i) = 0.0;
-    }
-}
-
-unsafe fn clear_path_and_delay(i: usize, sim_time: f32, slices: &MovementSlices) {
-    unsafe {
-        let s_speed = &slices.speed;
-        let s_path = &slices.path;
-        let s_path_idx = &slices.path_idx;
-        let s_next_replan_time = &slices.next_replan_time;
-
-        s_path.get_mut(i).clear();
-        *s_path_idx.get_mut(i) = 0;
-        *s_speed.get_mut(i) = 0.0;
-        *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+        reset_network_replan_watchdog(i, slices);
     }
 }

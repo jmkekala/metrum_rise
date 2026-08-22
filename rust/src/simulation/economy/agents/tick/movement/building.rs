@@ -59,6 +59,7 @@ pub(super) unsafe fn handle_in_building(
         let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
+        let s_network_replan_failures = &slices.network_replan_failures;
         let s_lane_id = &slices.lane_id;
         let s_lane_d = &slices.lane_d;
         let s_pos_x = &slices.pos_x;
@@ -139,6 +140,7 @@ pub(super) unsafe fn handle_in_building(
             *s_plan_detach_lane_d.get_mut(i) = plan.planned_detach_lane_d;
             *s_access_flags.get_mut(i) = plan.access_flags;
             *s_next_replan_time.get_mut(i) = 0.0;
+            *s_network_replan_failures.get_mut(i) = 0;
             *s_cur_n.get_mut(i) = u32::MAX;
             *s_cur_e.get_mut(i) = usize::MAX;
             *s_lane_id.get_mut(i) = usize::MAX;

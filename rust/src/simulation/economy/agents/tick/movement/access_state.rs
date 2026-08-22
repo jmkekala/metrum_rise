@@ -44,6 +44,7 @@ pub(super) unsafe fn reset_invalid_access_plan(
         clear_network_state(i, slices);
         *slices.transit.get_mut(i) = TRANSIT_IN_BUILDING;
         *slices.next_replan_time.get_mut(i) = next_replan_time;
+        *slices.network_replan_failures.get_mut(i) = 0;
     }
 }
 
@@ -77,6 +78,7 @@ pub(super) unsafe fn arrive_in_building(
         clear_access_plan(i, slices);
         clear_network_state(i, slices);
         *slices.next_replan_time.get_mut(i) = 0.0;
+        *slices.network_replan_failures.get_mut(i) = 0;
 
         let commute_time = sim_time - *slices.jstart.get(i);
         *slices.happiness.get_mut(i) =

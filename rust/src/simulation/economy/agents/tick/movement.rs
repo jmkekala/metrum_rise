@@ -3,6 +3,7 @@
 mod access_state;
 mod building;
 mod network;
+mod replan_watchdog;
 
 use super::super::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING,

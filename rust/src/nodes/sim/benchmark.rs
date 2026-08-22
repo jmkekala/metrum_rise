@@ -186,6 +186,7 @@ impl SimCore {
                 planned_detach_lane_d: 0.0,
                 access_flags: 0,
                 next_replan_time: 0.0,
+                network_replan_failures: 0,
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
                 lane_distance: 0.0,

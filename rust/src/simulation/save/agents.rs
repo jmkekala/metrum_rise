@@ -295,6 +295,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         planned_detach_lane_d: rec.planned_detach_lane_d,
         access_flags: rec.access_flags,
         next_replan_time: rec.next_replan_time,
+        network_replan_failures: 0,
         current_edge: rec.current_edge,
         current_lane_id: rec.current_lane_id as usize,
         lane_distance: rec.lane_distance,
@@ -498,6 +499,7 @@ fn repair_orphaned_loaded_network_agent(
     agents.target_building[i] = target;
     agents.planned_target_building[i] = usize::MAX;
     agents.next_replan_time[i] = 0.0;
+    agents.network_replan_failures[i] = 0;
     agents.speed[i] = 0.0;
     agents.lane_change_from_lane_id[i] = u32::MAX;
     agents.lane_change_start_d[i] = 0.0;
@@ -548,6 +550,7 @@ fn clear_agent_access_plan(agents: &mut AgentSystem, i: usize) {
     agents.planned_detach_lane_d[i] = 0.0;
     agents.access_flags[i] = 0;
     agents.next_replan_time[i] = 0.0;
+    agents.network_replan_failures[i] = 0;
 }
 
 pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_count: usize) {

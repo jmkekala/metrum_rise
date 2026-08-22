@@ -9,6 +9,10 @@ use super::super::super::planning::{plan_border_network_replan, plan_network_rep
 use super::super::super::slices::MovementSlices;
 use super::super::super::traffic::deterministic_choice_index;
 use super::super::NETWORK_REPLAN_DELAY_S;
+use super::super::replan_watchdog::{
+    delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
+    reset_network_replan_watchdog,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -84,6 +88,7 @@ pub(super) unsafe fn prepare_lane_entry(
                         if *s_speed.get(i) == 0.0 {
                             *s_speed.get_mut(i) = graph.edge(parent_edge).speed_limit;
                         }
+                        reset_network_replan_watchdog(i, slices);
                         return LaneEntryAction::Continue;
                     }
                 }
@@ -115,10 +120,17 @@ pub(super) unsafe fn prepare_lane_entry(
                         *s_plan_detach_lane_d.get_mut(i) = 0.0;
                         *s_access_flags.get_mut(i) = replan.access_flags;
                         *s_next_replan_time.get_mut(i) = 0.0;
+                        reset_network_replan_watchdog(i, slices);
                         return LaneEntryAction::Continue;
                     }
-                    *s_speed.get_mut(i) = 0.0;
-                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "freight-border-lane-entry",
+                        slices,
+                    );
                     return LaneEntryAction::Break;
                 }
                 if sim_time < *s_next_replan_time.get(i) {
@@ -127,8 +139,14 @@ pub(super) unsafe fn prepare_lane_entry(
                 }
                 let cur_n = *s_cur_n.get(i);
                 if cur_n == u32::MAX {
-                    *s_speed.get_mut(i) = 0.0;
-                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "missing-current-node-lane-entry",
+                        slices,
+                    );
                     return LaneEntryAction::Break;
                 }
                 if let Some(replan) = plan_network_replan(
@@ -149,19 +167,36 @@ pub(super) unsafe fn prepare_lane_entry(
                     *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
                     *s_access_flags.get_mut(i) = replan.access_flags;
                     *s_next_replan_time.get_mut(i) = 0.0;
+                    reset_network_replan_watchdog(i, slices);
                 } else {
-                    s_path.get_mut(i).clear();
-                    *s_path_idx.get_mut(i) = 0;
-                    *s_speed.get_mut(i) = 0.0;
-                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "network-lane-entry",
+                        slices,
+                    );
                     return LaneEntryAction::Break;
                 }
                 if s_path.get(i).is_empty() {
                     return LaneEntryAction::Continue;
                 }
             } else {
-                *s_speed.get_mut(i) = 0.0;
-                *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                if has_recoverable_network_trip(i, slices) {
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "missing-access-plan-lane-entry",
+                        slices,
+                    );
+                } else {
+                    *s_speed.get_mut(i) = 0.0;
+                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    reset_network_replan_watchdog(i, slices);
+                }
                 return LaneEntryAction::Break;
             }
         }
@@ -216,6 +251,7 @@ pub(super) unsafe fn prepare_lane_entry(
                                 if *s_speed.get(i) == 0.0 {
                                     *s_speed.get_mut(i) = graph.edge(best_e).speed_limit;
                                 }
+                                reset_network_replan_watchdog(i, slices);
                             } else {
                                 s_path.get_mut(i).clear();
                             }

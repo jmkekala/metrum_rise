@@ -8,7 +8,9 @@ use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
-use super::super::NETWORK_REPLAN_DELAY_S;
+use super::super::replan_watchdog::{
+    delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -160,6 +162,7 @@ pub(super) unsafe fn handle_lane_end(
                         *s_plan_detach_lane_d.get_mut(i) = 0.0;
                         *s_access_flags.get_mut(i) = replan.access_flags;
                         *s_next_replan_time.get_mut(i) = 0.0;
+                        reset_network_replan_watchdog(i, slices);
                         traffic_log!(
                             "[FREIGHT_BORDER_REPLAN] agent={} node={} border_node={} incoming_edge={} path_idx={}/{} path={:?}",
                             i,
@@ -172,7 +175,14 @@ pub(super) unsafe fn handle_lane_end(
                         );
                         return LaneEndAction::Break;
                     }
-                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "freight-border-junction",
+                        slices,
+                    );
                 }
                 *s_path_idx.get_mut(i) = 0;
                 *s_speed.get_mut(i) = 0.0;
@@ -197,10 +207,16 @@ pub(super) unsafe fn handle_lane_end(
                     *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
                     *s_access_flags.get_mut(i) = replan.access_flags;
                     *s_next_replan_time.get_mut(i) = 0.0;
+                    reset_network_replan_watchdog(i, slices);
                 } else {
-                    *s_path_idx.get_mut(i) = 0;
-                    *s_speed.get_mut(i) = 0.0;
-                    *s_next_replan_time.get_mut(i) = sim_time + NETWORK_REPLAN_DELAY_S;
+                    delay_or_recover_after_network_replan_failure(
+                        i,
+                        sim_time,
+                        allocator,
+                        graph,
+                        "network-junction",
+                        slices,
+                    );
                 }
             } else {
                 *s_path_idx.get_mut(i) = 0;

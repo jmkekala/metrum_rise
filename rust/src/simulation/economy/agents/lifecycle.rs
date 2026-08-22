@@ -72,6 +72,7 @@ impl AgentSystem {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
@@ -151,6 +152,7 @@ impl AgentSystem {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
@@ -499,6 +501,7 @@ impl AgentSystem {
             planned_detach_lane_d: 0.0,
             access_flags: 0,
             next_replan_time: 0.0,
+            network_replan_failures: 0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
@@ -548,6 +551,7 @@ impl AgentSystem {
         self.agents.planned_detach_lane_d[agent_idx] = plan.planned_detach_lane_d;
         self.agents.access_flags[agent_idx] = plan.access_flags;
         self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.network_replan_failures[agent_idx] = 0;
         self.agents.current_node[agent_idx] = u32::MAX;
         self.agents.current_edge[agent_idx] = usize::MAX;
         self.agents.current_lane_id[agent_idx] = usize::MAX;
@@ -607,6 +611,7 @@ impl AgentSystem {
         self.agents.planned_detach_lane_d[agent_idx] = plan.planned_detach_lane_d;
         self.agents.access_flags[agent_idx] = plan.access_flags;
         self.agents.next_replan_time[agent_idx] = 0.0;
+        self.agents.network_replan_failures[agent_idx] = 0;
         self.agents.current_path[agent_idx] = plan.current_path;
         self.agents.current_path_index[agent_idx] =
             if self.agents.current_path[agent_idx].len() >= 2 {

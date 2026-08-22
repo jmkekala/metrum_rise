@@ -556,6 +556,7 @@ Add:
 - `planned_detach_lane_d: f32`
 - `access_flags: u8`
 - `next_replan_time: f32`
+- `network_replan_failures: u8`
 
 Purpose:
 
@@ -567,6 +568,7 @@ Purpose:
 - `planned_detach_lane_d`: exact lane distance where the agent leaves the destination frontage lane and enters short ingress
 - `access_flags`: compact authoritative trip metadata for plan validity, zero-hop routing, flow-field provenance, immigration-origin handling, and freight border destinations
 - `next_replan_time`: absolute `sim_time` gate; the planner may only build or rebuild a trip when `sim_time >= next_replan_time`
+- `network_replan_failures`: transient watchdog counter for consecutive failed live network/access replans; reset on successful planning, trip completion, recovery, road-edit route invalidation, and load
 
 This is the minimum set that turns building access into exact planned legs, while also preventing failed trips from calling pathfinding every tick.
 
@@ -794,6 +796,7 @@ Failed planning or replanning must:
 - clear the invalid active network/path targets for that failed attempt
 - set `next_replan_time = sim_time + retry_delay`
 - never immediately loop into a second planning attempt in the same tick
+- for live network/access replans, increment `network_replan_failures`; after three consecutive failures, cancel the active trip via watchdog recovery instead of retrying forever
 
 #### `IN_BUILDING`
 
@@ -939,6 +942,9 @@ No midpoint heuristics are needed here.
   - keep the current destination
   - set movement speed to zero until the next allowed retry
   - set `next_replan_time = sim_time + NETWORK_REPLAN_DELAY_S`
+- If repeated live network/access replans hit the watchdog threshold, cancel the active trip instead of preserving the visible stall:
+  - for ordinary housed non-freight citizens, place the agent back inside `home_building`, clear destination/access/path/lane state, set home activity, and reset `next_replan_time` plus `network_replan_failures`
+  - for freight carriers, immigrant carriers, pending household arrivals, or agents without a valid home, recover to a connected border node, preferring the freight target border/current anchor/planned anchors before the first connected border; keep a valid building target in `TRANSIT_IMMIGRATING`, otherwise remain route-less in `TRANSIT_NETWORK`
 - If `sim_time < next_replan_time`, do not attempt another replan and do not hide the agent.
 
 #### `ACCESS_INGRESS`

@@ -137,7 +137,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   from their preserved world positions using authoritative lane arc length, while strict
   degree-two road splits may use direct vehicle lane continuity instead of zero-length junction
   connectors. True junctions keep connector lanes so speed and spacing semantics still apply, and
-  building-site CDT seams now prefer road-owned heights at shared XZ vertices. See
+  building-site CDT seams now prefer road-owned heights at shared XZ vertices. Repeated failed
+  live network/access replans now trigger a watchdog recovery: housed citizens are returned inside
+  `home_building`, while freight and immigrant carriers recover to a connected border node with
+  traffic-debug evidence preserved. See
   [`roads.md`](roads.md) and [`traffic.md`](traffic.md).
 - Pedestrian runtime characters now use Quaternius-derived VAT bakes for the shipped adult male
   and adult female archetypes. The bake path selects the explicit walk action from the source
