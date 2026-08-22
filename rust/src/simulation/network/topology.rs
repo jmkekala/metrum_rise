@@ -622,16 +622,42 @@ fn apply_splits(
             if factor < 0.1 {
                 let start_node = graph.edge(eid).start_node;
                 network.mark_point_dirty(graph.node(start_node).pos);
+                crate::traffic_log!(
+                    "[ROAD_SPLIT_APPLY] action=unite-start edge={} factor={:.3} junction=N{} start_node=N{} segments={}",
+                    eid,
+                    factor,
+                    junction_id,
+                    start_node,
+                    geo_len.saturating_sub(1),
+                );
                 graph.unite_nodes(junction_id, start_node);
                 continue;
             }
             if factor > (geo_len - 1) as f32 - 0.1 {
                 let end_node = graph.edge(eid).end_node;
                 network.mark_point_dirty(graph.node(end_node).pos);
+                crate::traffic_log!(
+                    "[ROAD_SPLIT_APPLY] action=unite-end edge={} factor={:.3} junction=N{} end_node=N{} segments={}",
+                    eid,
+                    factor,
+                    junction_id,
+                    end_node,
+                    geo_len.saturating_sub(1),
+                );
                 graph.unite_nodes(junction_id, end_node);
                 continue;
             }
             let valid_junction_id = graph.get_valid_node(junction_id);
+            crate::traffic_log!(
+                "[ROAD_SPLIT_APPLY] action=split-request edge={} factor={:.3} segment={} t={:.3} junction=N{} valid_junction=N{} segments={}",
+                eid,
+                factor,
+                seg_idx,
+                sub_t,
+                junction_id,
+                valid_junction_id,
+                geo_len.saturating_sub(1),
+            );
             split_edge(
                 network,
                 graph,
@@ -657,20 +683,56 @@ fn migrate_split_dependents(
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
     let cell_size = zoning.config.zone_cell_m;
+    let traffic_debug = crate::debug::is_traffic_enabled();
+    let old_occ_cells = allocator
+        .edge_occupancy
+        .get(&edge_id)
+        .map(|occ| occ.cells_long)
+        .unwrap_or(0);
+    let occ_part1_len = split_x.min(old_occ_cells);
+    let occ_part2_len = old_occ_cells.saturating_sub(split_x);
+    let mut buildings_part1 = 0usize;
+    let mut buildings_part2 = 0usize;
 
     // Migrate buildings
-    for b in &mut allocator.buildings {
+    for (building_idx, b) in allocator.buildings.iter_mut().enumerate() {
         if b.edge_idx == edge_id {
+            let old_cell_x = b.cell_x;
+            let old_frontage_t = b.frontage_t;
             if b.cell_x >= split_x {
                 b.edge_idx = new_edge_id;
                 b.cell_x = b.cell_x.saturating_sub(split_x);
                 let half_cells = b.width_cells as f32 * 0.5;
                 b.frontage_t =
                     (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
+                buildings_part2 += 1;
+                if traffic_debug {
+                    crate::traffic_log!(
+                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=move-to-new-edge old_edge={} new_edge={} old_cell_x={} new_cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
+                        building_idx,
+                        edge_id,
+                        new_edge_id,
+                        old_cell_x,
+                        b.cell_x,
+                        old_frontage_t,
+                        b.frontage_t,
+                    );
+                }
             } else {
                 let half_cells = b.width_cells as f32 * 0.5;
                 b.frontage_t =
                     (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
+                buildings_part1 += 1;
+                if traffic_debug {
+                    crate::traffic_log!(
+                        "[ROAD_SPLIT_DEPENDENTS] bldg={} action=stay-on-old-edge edge={} cell_x={} old_frontage_t={:.3} new_frontage_t={:.3}",
+                        building_idx,
+                        edge_id,
+                        b.cell_x,
+                        old_frontage_t,
+                        b.frontage_t,
+                    );
+                }
             }
         }
     }
@@ -697,6 +759,19 @@ fn migrate_split_dependents(
                 },
             );
         }
+    }
+    if traffic_debug {
+        crate::traffic_log!(
+            "[ROAD_SPLIT_DEPENDENTS] edge={} new_edge={} split_cell={} occ_cells={} occ_part1={} occ_part2={} buildings_part1={} buildings_part2={}",
+            edge_id,
+            new_edge_id,
+            split_x,
+            old_occ_cells,
+            occ_part1_len,
+            occ_part2_len,
+            buildings_part1,
+            buildings_part2,
+        );
     }
 }
 
@@ -815,13 +890,15 @@ pub fn process_intersections(
             t0.elapsed().as_micros()
         );
         for (&eid, splits) in &all_splits {
+            let segments = graph.edge(eid).geometry.len().saturating_sub(1);
             for &(factor, jid) in splits {
                 if jid < graph.node_count() as u32 {
                     let p = graph.node(jid).pos;
                     crate::traffic_log!(
-                        "[ROAD]   split e{} factor={:.3} junction=N{} ({:.1},{:.1})",
+                        "[ROAD]   split e{} factor={:.3} segments={} junction=N{} ({:.1},{:.1})",
                         eid,
                         factor,
+                        segments,
                         jid,
                         p.x,
                         p.z
@@ -853,7 +930,7 @@ pub fn split_edge(
     graph: &mut RegionGraph,
     edge_id: usize,
     segment_idx: usize,
-    _t: f32,
+    t: f32,
     junction_node_id: u32,
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
@@ -867,6 +944,15 @@ pub fn split_edge(
     let start_pos = geometry[0];
     let end_pos = *geometry.last().unwrap();
     if split_pos.distance_to(start_pos) < 0.2 || split_pos.distance_to(end_pos) < 0.2 {
+        crate::traffic_log!(
+            "[ROAD_SPLIT_APPLY] action=skip-too-close edge={} junction=N{} segment={} t={:.3} split=({:.1},{:.1})",
+            edge_id,
+            junction_node_id,
+            segment_idx,
+            t,
+            split_pos.x,
+            split_pos.z,
+        );
         return;
     }
 
@@ -942,6 +1028,19 @@ pub fn split_edge(
     // --- MIGRATION LOGIC ---
     let new_len_first = graph.edge(edge_id).physical_length;
     let new_len_second = graph.edge(new_edge_id).physical_length;
+    crate::traffic_log!(
+        "[ROAD_SPLIT_APPLY] action=split edge={} new_edge={} junction=N{} segment={} t={:.3} old_end=N{} len_first={:.2} len_second={:.2} geom_first={} geom_second={}",
+        edge_id,
+        new_edge_id,
+        junction_node_id,
+        segment_idx,
+        t,
+        old_end_node,
+        new_len_first,
+        new_len_second,
+        graph.edge(edge_id).geometry.len(),
+        graph.edge(new_edge_id).geometry.len(),
+    );
     let split_x = (new_len_first / zoning.config.zone_cell_m).floor() as usize;
 
     migrate_split_dependents(

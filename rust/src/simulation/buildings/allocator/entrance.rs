@@ -39,6 +39,8 @@ struct FreightBorderCandidate {
 
 impl BuildingAllocator {
     pub(crate) fn rebuild_entrance_cache(&mut self, graph: &RegionGraph, lanes: &LaneSystem) {
+        let traffic_debug = crate::debug::is_traffic_enabled();
+        let old_entrances = traffic_debug.then(|| self.entrances.clone());
         self.entrances.clear();
         self.entrances.reserve(self.buildings.len());
         for building in &self.buildings {
@@ -47,6 +49,9 @@ impl BuildingAllocator {
         }
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
+        if let Some(old_entrances) = old_entrances.as_deref() {
+            log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
+        }
     }
 
     /// Appends the derived entrance for a newly appended building to a clean cache.
@@ -242,6 +247,105 @@ impl BuildingAllocator {
 
         best.map(|candidate| candidate.total_time_s)
     }
+}
+
+fn log_entrance_cache_rebuild(
+    old_entrances: &[BuildingEntrance],
+    new_entrances: &[BuildingEntrance],
+    buildings: &[Building],
+) {
+    let mut changed = 0usize;
+    let mut edge_changed = 0usize;
+    let mut lanes_changed = 0usize;
+    let mut lost_foot = 0usize;
+    let mut lost_car = 0usize;
+    let mut gained_foot = 0usize;
+    let mut gained_car = 0usize;
+
+    for (idx, new) in new_entrances.iter().enumerate() {
+        let Some(old) = old_entrances.get(idx) else {
+            changed += 1;
+            continue;
+        };
+        if !entrance_debug_changed(old, new) {
+            continue;
+        }
+
+        changed += 1;
+        edge_changed += usize::from(old.edge_idx != new.edge_idx);
+        lanes_changed += usize::from(entrance_lane_fields_changed(old, new));
+
+        let old_foot = entrance_has_foot_access_debug(old);
+        let new_foot = entrance_has_foot_access_debug(new);
+        let old_car = entrance_has_car_access(old);
+        let new_car = entrance_has_car_access(new);
+        lost_foot += usize::from(old_foot && !new_foot);
+        gained_foot += usize::from(!old_foot && new_foot);
+        lost_car += usize::from(old_car && !new_car);
+        gained_car += usize::from(!old_car && new_car);
+
+        let building = buildings.get(idx);
+        crate::traffic_log!(
+            "[ENTRANCE_CACHE]   bldg={} building_edge={} frontage_t={:.3} edge {}->{} side {}->{} flags 0x{:02x}->0x{:02x} s {:.2}->{:.2} foot_fwd {}->{} foot_bkw {}->{} car_fwd {}->{} car_bkw {}->{} curb ({:.2},{:.2})->({:.2},{:.2})",
+            idx,
+            building.map(|b| b.edge_idx).unwrap_or(usize::MAX),
+            building.map(|b| b.frontage_t).unwrap_or(0.0),
+            old.edge_idx,
+            new.edge_idx,
+            old.side,
+            new.side,
+            old.flags,
+            new.flags,
+            old.entrance_s_m,
+            new.entrance_s_m,
+            old.foot_lane_fwd,
+            new.foot_lane_fwd,
+            old.foot_lane_bkw,
+            new.foot_lane_bkw,
+            old.car_lane_fwd,
+            new.car_lane_fwd,
+            old.car_lane_bkw,
+            new.car_lane_bkw,
+            old.curb_pos.x,
+            old.curb_pos.y,
+            new.curb_pos.x,
+            new.curb_pos.y,
+        );
+    }
+
+    crate::traffic_log!(
+        "[ENTRANCE_CACHE] rebuild old_entries={} new_entries={} changed={} edge_changed={} lanes_changed={} lost_foot={} gained_foot={} lost_car={} gained_car={}",
+        old_entrances.len(),
+        new_entrances.len(),
+        changed,
+        edge_changed,
+        lanes_changed,
+        lost_foot,
+        gained_foot,
+        lost_car,
+        gained_car,
+    );
+}
+
+fn entrance_debug_changed(old: &BuildingEntrance, new: &BuildingEntrance) -> bool {
+    old.edge_idx != new.edge_idx
+        || old.side != new.side
+        || old.vehicle_frontage_access != new.vehicle_frontage_access
+        || old.flags != new.flags
+        || entrance_lane_fields_changed(old, new)
+        || (old.entrance_s_m - new.entrance_s_m).abs() > 0.01
+        || old.curb_pos.distance_squared_to(new.curb_pos) > 0.0001
+}
+
+fn entrance_lane_fields_changed(old: &BuildingEntrance, new: &BuildingEntrance) -> bool {
+    old.foot_lane_fwd != new.foot_lane_fwd
+        || old.foot_lane_bkw != new.foot_lane_bkw
+        || old.car_lane_fwd != new.car_lane_fwd
+        || old.car_lane_bkw != new.car_lane_bkw
+}
+
+fn entrance_has_foot_access_debug(entrance: &BuildingEntrance) -> bool {
+    entrance.foot_lane_fwd != INVALID_LANE_ID || entrance.foot_lane_bkw != INVALID_LANE_ID
 }
 
 pub(crate) fn main_entrance_anchor(

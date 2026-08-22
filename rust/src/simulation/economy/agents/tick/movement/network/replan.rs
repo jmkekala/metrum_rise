@@ -167,6 +167,7 @@ unsafe fn ensure_exact_access_plan(
             transit_network,
             graph,
             pathfind_count,
+            Some((i, "exact-access-replan")),
         ) {
             apply_network_replan(i, replan, slices);
             true
@@ -255,6 +256,7 @@ unsafe fn repair_stale_detach_plan(
             transit_network,
             graph,
             pathfind_count,
+            Some((i, "stale-detach-replan")),
         ) {
             apply_network_replan(i, replan, slices);
             true

@@ -159,6 +159,7 @@ pub(super) unsafe fn prepare_lane_entry(
                     transit_network,
                     graph,
                     pathfind_count,
+                    Some((i, "network-lane-entry")),
                 ) {
                     *s_path.get_mut(i) = replan.current_path;
                     *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };

@@ -202,6 +202,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     transit_network,
                     graph,
                     pathfind_count,
+                    Some((i, "invalid-ingress-replan")),
                 ) {
                     *s_path.get_mut(i) = replan.current_path;
                     *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };

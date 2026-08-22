@@ -73,8 +73,19 @@ impl AgentSystem {
         lane_system: &LaneSystem,
         graph: &RegionGraph,
     ) {
+        let input_edges = affected_edges;
         let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
+        let traffic_debug = crate::debug::is_traffic_enabled();
+        if traffic_debug {
+            log_road_edit_affected(
+                "lane-invalidate",
+                input_edges,
+                &affected_edges,
+                &affected_lane_ids,
+                graph,
+            );
+        }
 
         for i in 0..self.agents.len() {
             let lid = self.agents.current_lane_id[i];
@@ -91,9 +102,32 @@ impl AgentSystem {
                 continue;
             };
             {
-                if let Some(pos) = sample_lane_position_xz(lane, self.agents.lane_distance[i]) {
+                let old_edge = self.agents.current_edge[i];
+                let old_node = self.agents.current_node[i];
+                let old_lane_d = self.agents.lane_distance[i];
+                let old_pos_x = self.agents.pos_x[i];
+                let old_pos_y = self.agents.pos_y[i];
+                let sampled_pos = sample_lane_position_xz(lane, old_lane_d);
+                if let Some(pos) = sampled_pos {
                     self.agents.pos_x[i] = pos.x;
                     self.agents.pos_y[i] = pos.y;
+                }
+                if traffic_debug {
+                    let log_pos_x = sampled_pos.map(|pos| pos.x).unwrap_or(old_pos_x);
+                    let log_pos_y = sampled_pos.map(|pos| pos.y).unwrap_or(old_pos_y);
+                    crate::traffic_log!(
+                        "[ROAD_EDIT_AGENT_INVALIDATE] agent={} transit={} mode={} old_edge={} old_node={} old_lane={} old_lane_d={:.2} reattach_edge={} pos=({:.2},{:.2})",
+                        i,
+                        self.agents.transit[i],
+                        self.agents.transit_mode[i],
+                        old_edge,
+                        old_node,
+                        lid,
+                        old_lane_d,
+                        reattach_edge_id,
+                        log_pos_x,
+                        log_pos_y,
+                    );
                 }
                 self.agents.current_edge[i] = reattach_edge_id;
                 self.agents.current_lane_id[i] = usize::MAX;
@@ -120,10 +154,21 @@ impl AgentSystem {
         lane_system: &LaneSystem,
         graph: &RegionGraph,
     ) {
+        let input_edges = affected_edges;
         let affected_edges = LaneSystem::incremental_rebuild_edge_closure(graph, affected_edges);
         let affected_lane_ids = collect_lane_ids_for_edges(&affected_edges, lane_system);
         let affected_nodes = collect_nodes_for_edges(&affected_edges, graph);
         let max_dist_sq = LANE_REATTACH_MAX_DIST_M * LANE_REATTACH_MAX_DIST_M;
+        let traffic_debug = crate::debug::is_traffic_enabled();
+        if traffic_debug {
+            log_road_edit_affected(
+                "lane-reattach",
+                input_edges,
+                &affected_edges,
+                &affected_lane_ids,
+                graph,
+            );
+        }
         for i in 0..self.agents.len() {
             if self.agents.current_lane_id[i] != usize::MAX
                 || !matches!(
@@ -140,6 +185,11 @@ impl AgentSystem {
             } else {
                 LaneType::Vehicle
             };
+            let old_edge = self.agents.current_edge[i];
+            let old_node = self.agents.current_node[i];
+            let old_lane_d = self.agents.lane_distance[i];
+            let old_pos_x = self.agents.pos_x[i];
+            let old_pos_y = self.agents.pos_y[i];
             let agent_pos = Vector2::new(self.agents.pos_x[i], self.agents.pos_y[i]);
             let Some(candidate) = best_reattach_lane(
                 agent_pos,
@@ -149,9 +199,43 @@ impl AgentSystem {
                 graph,
                 max_dist_sq,
             ) else {
+                if traffic_debug {
+                    crate::traffic_log!(
+                        "[ROAD_EDIT_AGENT_REATTACH] agent={} action=no-candidate transit={} mode={} old_edge={} old_node={} old_lane_d={:.2} pos=({:.2},{:.2}) max_dist_m={:.2}",
+                        i,
+                        self.agents.transit[i],
+                        self.agents.transit_mode[i],
+                        old_edge,
+                        old_node,
+                        old_lane_d,
+                        old_pos_x,
+                        old_pos_y,
+                        LANE_REATTACH_MAX_DIST_M,
+                    );
+                }
                 continue;
             };
 
+            if traffic_debug {
+                crate::traffic_log!(
+                    "[ROAD_EDIT_AGENT_REATTACH] agent={} action=reattach transit={} mode={} old_edge={} old_node={} old_lane_d={:.2} old_pos=({:.2},{:.2}) new_edge={} new_node={} new_lane={} new_lane_d={:.2} snap_m={:.2} new_pos=({:.2},{:.2})",
+                    i,
+                    self.agents.transit[i],
+                    self.agents.transit_mode[i],
+                    old_edge,
+                    old_node,
+                    old_lane_d,
+                    old_pos_x,
+                    old_pos_y,
+                    candidate.edge_id,
+                    candidate.origin_node,
+                    candidate.lane_id,
+                    candidate.lane_d,
+                    candidate.dist_sq.sqrt(),
+                    candidate.pos.x,
+                    candidate.pos.y,
+                );
+            }
             self.agents.current_lane_id[i] = candidate.lane_id;
             self.agents.current_edge[i] = candidate.edge_id;
             self.agents.current_node[i] = candidate.origin_node;
@@ -181,6 +265,9 @@ impl AgentSystem {
                 &affected_lane_ids,
                 lane_system,
             ) {
+                if traffic_debug {
+                    log_agent_route_clear_after_road_edit(self, i);
+                }
                 self.clear_route_plan_after_road_edit(i);
             }
         }
@@ -240,6 +327,56 @@ fn collect_nodes_for_edges(affected_edges: &HashSet<usize>, graph: &RegionGraph)
         affected_nodes.insert(graph.get_valid_node(edge.end_node));
     }
     affected_nodes
+}
+
+fn log_road_edit_affected(
+    phase: &str,
+    input_edges: &HashSet<usize>,
+    closure_edges: &HashSet<usize>,
+    affected_lane_ids: &HashSet<usize>,
+    graph: &RegionGraph,
+) {
+    let affected_nodes = collect_nodes_for_edges(closure_edges, graph);
+    crate::traffic_log!(
+        "[ROAD_EDIT_AFFECTED] phase={} input_edges={:?} closure_edges={:?} affected_nodes={:?} affected_lane_count={}",
+        phase,
+        sorted_usize_ids(input_edges),
+        sorted_usize_ids(closure_edges),
+        sorted_u32_ids(&affected_nodes),
+        affected_lane_ids.len(),
+    );
+}
+
+fn log_agent_route_clear_after_road_edit(agents: &AgentSystem, i: usize) {
+    crate::traffic_log!(
+        "[ROAD_EDIT_ROUTE_CLEAR] agent={} transit={} mode={} current_edge={} current_node={} current_lane={} target_bldg={} planned_attach_node={} planned_detach_node={} planned_attach_lane={} planned_detach_lane={} path_len={} path_idx={} flags_before=0x{:02x}",
+        i,
+        agents.agents.transit[i],
+        agents.agents.transit_mode[i],
+        agents.agents.current_edge[i],
+        agents.agents.current_node[i],
+        agents.agents.current_lane_id[i],
+        agents.agents.target_building[i],
+        agents.agents.planned_attach_node[i],
+        agents.agents.planned_detach_node[i],
+        agents.agents.planned_attach_lane_id[i],
+        agents.agents.planned_detach_lane_id[i],
+        agents.agents.current_path[i].len(),
+        agents.agents.current_path_index[i],
+        agents.agents.access_flags[i],
+    );
+}
+
+fn sorted_usize_ids(values: &HashSet<usize>) -> Vec<usize> {
+    let mut ids: Vec<usize> = values.iter().copied().collect();
+    ids.sort_unstable();
+    ids
+}
+
+fn sorted_u32_ids(values: &HashSet<u32>) -> Vec<u32> {
+    let mut ids: Vec<u32> = values.iter().copied().collect();
+    ids.sort_unstable();
+    ids
 }
 
 fn agent_route_state_touches_road_edit(
