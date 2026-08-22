@@ -268,19 +268,31 @@ impl AgentSystem {
                 if traffic_debug {
                     log_agent_route_clear_after_road_edit(self, i);
                 }
-                self.clear_route_plan_after_road_edit(i);
+                self.clear_route_plan_after_road_edit(i, lane_system);
             }
         }
         self.invalidate_lane_bucket_snapshot();
     }
 
-    fn clear_route_plan_after_road_edit(&mut self, i: usize) {
+    fn clear_route_plan_after_road_edit(&mut self, i: usize, lane_system: &LaneSystem) {
         let freight_border_node = self.agents.freight_target_border_node[i];
         let preserve_freight_border = freight_border_node != u32::MAX
             && (self.agents.access_flags[i] & ACCESS_FREIGHT_BORDER_DESTINATION) != 0;
+        let should_drop_intersection_lane = self.agents.transit[i] == TRANSIT_INTERSECTION
+            && match lane_system.lanes.get(self.agents.current_lane_id[i]) {
+                Some(lane) => lane.edge_id == usize::MAX,
+                None => true,
+            };
 
         self.agents.current_path[i].clear();
         self.agents.current_path_index[i] = 0;
+        if should_drop_intersection_lane {
+            self.agents.transit[i] = TRANSIT_NETWORK;
+            self.agents.current_edge[i] = usize::MAX;
+            self.agents.current_lane_id[i] = usize::MAX;
+            self.agents.lane_distance[i] = 0.0;
+            self.agents.speed[i] = 0.0;
+        }
         self.agents.planned_attach_node[i] = u32::MAX;
         self.agents.planned_attach_lane_id[i] = u32::MAX;
         self.agents.planned_attach_lane_d[i] = 0.0;
@@ -664,6 +676,101 @@ mod tests {
         (graph, lanes)
     }
 
+    struct TurnConnectorFixture {
+        graph: RegionGraph,
+        lane_system: LaneSystem,
+        n_west: u32,
+        n_center: u32,
+        n_north: u32,
+        inbound_lane: usize,
+        connector_lane: usize,
+    }
+
+    fn make_turn_connector_lane_system() -> TurnConnectorFixture {
+        let mut graph = RegionGraph::new();
+        let n_west = graph.add_node(
+            Vector3::new(-100.0, 0.0, 0.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let n_center = graph.add_node(
+            Vector3::ZERO,
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let n_east = graph.add_node(
+            Vector3::new(100.0, 0.0, 0.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let n_north = graph.add_node(
+            Vector3::new(0.0, 0.0, -100.0),
+            crate::simulation::network::types::NodeType::Junction,
+        );
+        let add_edge = |graph: &mut RegionGraph, start_node: u32, end_node: u32| {
+            let start = graph.node(start_node).pos;
+            let end = graph.node(end_node).pos;
+            graph.add_edge(Edge {
+                start_node,
+                end_node,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                class: EdgeClass::Standard,
+                width: 7.0,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                speed_limit: 50.0,
+                base_cost: 1.0,
+                physical_length: start.distance_to(end),
+                current_congestion: 0.0,
+                start_clip: 0.0,
+                end_clip: 0.0,
+                geometry: vec![start, end],
+                physical_geometry: vec![start, end],
+                ..Default::default()
+            })
+        };
+        let west_edge = add_edge(&mut graph, n_west, n_center);
+        let _east_edge = add_edge(&mut graph, n_center, n_east);
+        let north_edge = add_edge(&mut graph, n_center, n_north);
+        graph.rebuild_adjacency_list();
+
+        let mut lane_system = LaneSystem::new();
+        lane_system.rebuild(&mut graph);
+
+        let inbound_lane = lane_system.edge_lanes[&west_edge]
+            .iter()
+            .copied()
+            .find(|&lane_id| {
+                let lane = &lane_system.lanes[lane_id];
+                lane.lane_type == LaneType::Vehicle && lane.is_fwd
+            })
+            .expect("west inbound vehicle lane");
+        let connector_lane = lane_system.lanes[inbound_lane]
+            .next_lanes
+            .iter()
+            .copied()
+            .find(|&lane_id| {
+                let lane = &lane_system.lanes[lane_id];
+                lane.edge_id == usize::MAX
+                    && lane.lane_type == LaneType::Vehicle
+                    && lane.next_lanes.first().is_some_and(|&target_lane_id| {
+                        lane_system
+                            .lanes
+                            .get(target_lane_id)
+                            .is_some_and(|target_lane| target_lane.edge_id == north_edge)
+                    })
+            })
+            .expect("west-to-north vehicle connector");
+
+        TurnConnectorFixture {
+            graph,
+            lane_system,
+            n_west,
+            n_center,
+            n_north,
+            inbound_lane,
+            connector_lane,
+        }
+    }
+
     #[test]
     fn remaps_cached_schedule_building_ids() {
         let mut sys = AgentSystem::new();
@@ -1030,6 +1137,59 @@ mod tests {
         assert_eq!(sys.agents.planned_detach_lane_d[idx], 0.0);
         assert_eq!(sys.agents.access_flags[idx], 0);
         assert_eq!(sys.agents.next_replan_time[idx], 0.0);
+    }
+
+    #[test]
+    fn test_route_clear_drops_intersection_connector_lane_after_road_edit() {
+        let TurnConnectorFixture {
+            graph: _graph,
+            lane_system,
+            n_west,
+            n_center,
+            n_north,
+            inbound_lane,
+            connector_lane,
+        } = make_turn_connector_lane_system();
+
+        let mut sys = AgentSystem::new();
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, n_north, 0.0, 0.0, n_west, 100.0, 0.0);
+        sys.agents.transit[idx] = TRANSIT_INTERSECTION;
+        sys.agents.transit_mode[idx] = MODE_CAR;
+        sys.agents.current_node[idx] = n_center;
+        sys.agents.current_edge[idx] = usize::MAX;
+        sys.agents.current_lane_id[idx] = connector_lane;
+        sys.agents.lane_distance[idx] = lane_system.lanes[connector_lane].length * 0.5;
+        sys.agents.speed[idx] = 3.5;
+        sys.agents.target_building[idx] = 123;
+        sys.agents.planned_attach_node[idx] = u32::MAX;
+        sys.agents.planned_detach_node[idx] = n_center;
+        sys.agents.planned_attach_lane_id[idx] = u32::MAX;
+        sys.agents.planned_detach_lane_id[idx] = inbound_lane as u32;
+        sys.agents.planned_detach_lane_d[idx] = 10.0;
+        sys.agents.access_flags[idx] = ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH;
+        sys.agents.next_replan_time[idx] = 77.0;
+        sys.agents.network_replan_failures[idx] = 2;
+        sys.agents.current_path[idx] = vec![n_center];
+        sys.agents.current_path_index[idx] = 1;
+
+        sys.clear_route_plan_after_road_edit(idx, &lane_system);
+
+        assert_eq!(sys.agents.transit[idx], TRANSIT_NETWORK);
+        assert_eq!(sys.agents.current_node[idx], n_center);
+        assert_eq!(sys.agents.current_edge[idx], usize::MAX);
+        assert_eq!(sys.agents.current_lane_id[idx], usize::MAX);
+        assert_eq!(sys.agents.lane_distance[idx], 0.0);
+        assert_eq!(sys.agents.speed[idx], 0.0);
+        assert!(sys.agents.current_path[idx].is_empty());
+        assert_eq!(sys.agents.current_path_index[idx], 0);
+        assert_eq!(sys.agents.planned_attach_node[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_attach_lane_id[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_node[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_lane_id[idx], u32::MAX);
+        assert_eq!(sys.agents.planned_detach_lane_d[idx], 0.0);
+        assert_eq!(sys.agents.access_flags[idx], 0);
+        assert_eq!(sys.agents.next_replan_time[idx], 0.0);
+        assert_eq!(sys.agents.network_replan_failures[idx], 0);
     }
 
     #[test]

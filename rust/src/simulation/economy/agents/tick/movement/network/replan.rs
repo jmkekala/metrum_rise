@@ -286,21 +286,20 @@ unsafe fn replan_start(
         let s_lane_id = &slices.lane_id;
 
         let current_lane_id = *s_lane_id.get(i);
+        let current_node = *s_cur_n.get(i);
+        let current_edge = *s_cur_e.get(i);
         let lane_valid = current_lane_id != usize::MAX
             && current_lane_id < transit_network.lane_system.lanes.len();
-        let start_node = if lane_valid {
-            lane_terminal_node(current_lane_id, transit_network, graph)
-        } else if *s_cur_n.get(i) != u32::MAX {
-            Some(*s_cur_n.get(i))
-        } else {
-            None
-        }?;
-        let incoming_edge = if lane_valid {
-            transit_network.lane_system.lanes[current_lane_id].edge_id
-        } else {
-            *s_cur_e.get(i)
-        };
-        Some((start_node, incoming_edge))
+        if lane_valid {
+            let lane_edge = transit_network.lane_system.lanes[current_lane_id].edge_id;
+            if lane_edge != usize::MAX
+                && let Some(start_node) =
+                    lane_terminal_node(current_lane_id, transit_network, graph)
+            {
+                return Some((start_node, lane_edge));
+            }
+        }
+        (current_node != u32::MAX).then_some((current_node, current_edge))
     }
 }
 
@@ -370,5 +369,99 @@ unsafe fn apply_network_replan(i: usize, replan: BuiltNetworkReplan, slices: &Mo
         *s_access_flags.get_mut(i) = replan.access_flags;
         *s_next_replan_time.get_mut(i) = 0.0;
         reset_network_replan_watchdog(i, slices);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::economy::agents::data::AgentSystem;
+    use crate::simulation::economy::agents::tick::slices::{MovementSlices, RawSlice};
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::lanes::Lane;
+    use crate::simulation::network::types::NodeType;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn replan_start_falls_back_to_current_node_for_connector_lane() {
+        let mut graph = RegionGraph::new();
+        let node = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let mut transit_network = TransitNetwork::new();
+        transit_network.lane_system.lanes.push(Lane {
+            edge_id: usize::MAX,
+            node_id: node as usize,
+            ..Lane::default()
+        });
+
+        let mut agents = AgentSystem::new();
+        let agent_idx =
+            agents.spawn_border_arrival_agent(usize::MAX, node, 0.0, 0.0, node, 0.0, 0.0);
+        agents.agents.current_node[agent_idx] = node;
+        agents.agents.current_edge[agent_idx] = usize::MAX;
+        agents.agents.current_lane_id[agent_idx] = 0;
+
+        let slices = movement_slices(&mut agents);
+        let start = unsafe { replan_start(agent_idx, &transit_network, &graph, &slices) };
+
+        assert_eq!(start, Some((node, usize::MAX)));
+    }
+
+    fn movement_slices(agents: &mut AgentSystem) -> MovementSlices {
+        MovementSlices {
+            home: RawSlice::new(&mut agents.agents.home_building),
+            work: RawSlice::new(&mut agents.agents.work_building),
+            age_group: RawSlice::new(&mut agents.agents.age_group),
+            pos_x: RawSlice::new(&mut agents.agents.pos_x),
+            pos_y: RawSlice::new(&mut agents.agents.pos_y),
+            activity: RawSlice::new(&mut agents.agents.activity),
+            transit: RawSlice::new(&mut agents.agents.transit),
+            happiness: RawSlice::new(&mut agents.agents.happiness),
+            jstart: RawSlice::new(&mut agents.agents.journey_start_time),
+            schedule_seed: RawSlice::new(&mut agents.agents.schedule_seed),
+            cached_commute_minutes: RawSlice::new(&mut agents.agents.cached_commute_minutes),
+            next_commute_refresh_time: RawSlice::new(&mut agents.agents.next_commute_refresh_time),
+            next_departure_day: RawSlice::new(&mut agents.agents.next_departure_day),
+            next_departure_minute: RawSlice::new(&mut agents.agents.next_departure_minute),
+            next_departure_origin: RawSlice::new(&mut agents.agents.next_departure_origin_building),
+            next_departure_target: RawSlice::new(&mut agents.agents.next_departure_target_building),
+            next_departure_activity: RawSlice::new(&mut agents.agents.next_departure_activity),
+            cached_schedule_work_building: RawSlice::new(
+                &mut agents.agents.cached_schedule_work_building,
+            ),
+            cached_work_profile_index: RawSlice::new(&mut agents.agents.cached_work_profile_index),
+            pending_household_size: RawSlice::new(&mut agents.agents.pending_household_size),
+            freight_shipment_id: RawSlice::new(&mut agents.agents.freight_shipment_id),
+            cur_b: RawSlice::new(&mut agents.agents.current_building),
+            tgt_b: RawSlice::new(&mut agents.agents.target_building),
+            planned_tgt_b: RawSlice::new(&mut agents.agents.planned_target_building),
+            freight_target_border_node: RawSlice::new(
+                &mut agents.agents.freight_target_border_node,
+            ),
+            cur_n: RawSlice::new(&mut agents.agents.current_node),
+            planned_attach_n: RawSlice::new(&mut agents.agents.planned_attach_node),
+            planned_detach_n: RawSlice::new(&mut agents.agents.planned_detach_node),
+            planned_attach_lane: RawSlice::new(&mut agents.agents.planned_attach_lane_id),
+            planned_detach_lane: RawSlice::new(&mut agents.agents.planned_detach_lane_id),
+            planned_attach_lane_d: RawSlice::new(&mut agents.agents.planned_attach_lane_d),
+            planned_detach_lane_d: RawSlice::new(&mut agents.agents.planned_detach_lane_d),
+            access_flags: RawSlice::new(&mut agents.agents.access_flags),
+            next_replan_time: RawSlice::new(&mut agents.agents.next_replan_time),
+            network_replan_failures: RawSlice::new(&mut agents.agents.network_replan_failures),
+            cur_e: RawSlice::new(&mut agents.agents.current_edge),
+            lane_id: RawSlice::new(&mut agents.agents.current_lane_id),
+            lane_d: RawSlice::new(&mut agents.agents.lane_distance),
+            lane_change_from_lane: RawSlice::new(&mut agents.agents.lane_change_from_lane_id),
+            lane_change_start_d: RawSlice::new(&mut agents.agents.lane_change_start_d),
+            lane_change_length: RawSlice::new(&mut agents.agents.lane_change_length_m),
+            overtake_blocked_time: RawSlice::new(&mut agents.agents.overtake_blocked_time_s),
+            overtake_cooldown: RawSlice::new(&mut agents.agents.overtake_cooldown_s),
+            tmode: RawSlice::new(&mut agents.agents.transit_mode),
+            planned_activity: RawSlice::new(&mut agents.agents.planned_activity),
+            path: RawSlice::new(&mut agents.agents.current_path),
+            path_idx: RawSlice::new(&mut agents.agents.current_path_index),
+            has_car: RawSlice::new(&mut agents.agents.has_car),
+            speed: RawSlice::new(&mut agents.agents.speed),
+            walk_phase: RawSlice::new(&mut agents.agents.walk_phase),
+        }
     }
 }
