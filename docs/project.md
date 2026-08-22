@@ -50,7 +50,6 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   compact edge-local authority keys and spatially indexed compatible overlap candidates. Complete
   assembled node export buffers and fresh release gameplay measurements remain.
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
-- `CIV-01`: validate and harden the first city-owned service-building slice across UI, runtime economy, and save/load.
 - `WATER-01`: harden baseline-water rendering and remove remaining dense compatibility boundaries.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
@@ -296,7 +295,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   Rust-owned daily budget ledgers, graphs city income/expenses/net/treasury, and exposes a live
   electricity funding slider that sets default staffed power-plant worker slots; individual power
   plants can override that default from their inspector without being reset by later citywide
-  changes. Production follows the staffed workers and fuel availability. See
+  changes. Production follows the staffed workers and fuel availability. `CIV-01` is now marked
+  done after a 39-day gameplay run validated coal power placement, coal freight, funding-sensitive
+  production, local utility revenue, OWA fallback on under-coverage, and recovery to full power
+  coverage after increasing funding. See
   [`economy.md`](economy.md).
 - Freight shipments now dispatch physical truck carrier agents through the existing lane movement
   system. Local freight, `OWA` imports, and `OWA` exports settle only when the carrier reaches the
