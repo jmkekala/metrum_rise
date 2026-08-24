@@ -5,6 +5,8 @@
 ## simulation or UI policy logic out of Rust/Godot owner scripts.
 extends Control
 
+const UIStyle = preload("res://scripts/ui/ui_style.gd")
+
 const EDGE_LEFT := 1
 const EDGE_RIGHT := 2
 const EDGE_TOP := 4
@@ -41,6 +43,7 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
 		_dragging = false
 		_active_edges = 0
+		UIStyle.save_persistent_window_layout(_window)
 		get_viewport().set_input_as_handled()
 
 func _build_handles() -> void:
@@ -140,6 +143,7 @@ func _on_handle_gui_input(event: InputEvent, edges: int) -> void:
 		else:
 			_dragging = false
 			_active_edges = 0
+			UIStyle.save_persistent_window_layout(_window)
 		accept_event()
 
 func _apply_resize(delta: Vector2) -> void:

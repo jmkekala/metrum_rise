@@ -6,6 +6,8 @@ extends Control
 
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
+const GRAPH_FONT_SIZE := 13
+
 var _series: Array = []
 var _colors: Array = []
 var _labels: Array = []
@@ -36,7 +38,7 @@ func _draw() -> void:
 	draw_rect(rect, Color(0.30, 0.30, 0.45, 0.45), false, 1.0)
 
 	var font := get_theme_default_font()
-	var font_size := maxi(10, get_theme_default_font_size() - 2)
+	var font_size := UIStyle.scaled_font_size(GRAPH_FONT_SIZE)
 
 	var value_min := INF
 	var value_max := -INF
@@ -52,7 +54,7 @@ func _draw() -> void:
 	if point_count == 0 or not is_finite(value_min) or not is_finite(value_max):
 		draw_string(
 			font,
-			Vector2(10.0, 24.0),
+			Vector2(10.0, float(font_size) + 10.0),
 			"No data",
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1.0,
@@ -67,9 +69,15 @@ func _draw() -> void:
 
 	_draw_legend(font, font_size)
 
+	var left_margin := maxf(58.0, float(font_size) * 4.0)
+	var top_margin := maxf(28.0, float(font_size) * 1.8)
+	var bottom_margin := maxf(52.0, float(font_size) * 2.4)
 	var graph_rect := Rect2(
-		Vector2(58.0, 28.0),
-		Vector2(maxf(1.0, rect.size.x - 70.0), maxf(1.0, rect.size.y - 52.0))
+		Vector2(left_margin, top_margin),
+		Vector2(
+			maxf(1.0, rect.size.x - left_margin - 12.0),
+			maxf(1.0, rect.size.y - top_margin - bottom_margin)
+		)
 	)
 	graph_rect.size.x = maxf(graph_rect.size.x, 1.0)
 	graph_rect.size.y = maxf(graph_rect.size.y, 1.0)
@@ -103,26 +111,30 @@ func _draw() -> void:
 
 func _draw_legend(font: Font, font_size: int) -> void:
 	var x := 8.0
-	var y := 18.0
+	var y := float(font_size) + 5.0
+	var row_height := float(font_size) + 5.0
+	var segment_width := maxf(16.0, float(font_size) * 1.25)
+	var item_width := maxf(118.0, float(font_size) * 7.6)
 	for series_idx in range(_series.size()):
 		var label := _series_label(series_idx)
 		if label.is_empty():
 			continue
 		var color := _series_color(series_idx)
-		_draw_styled_segment(Vector2(x, y - 7.0), Vector2(x + 16.0, y - 7.0), color, series_idx, 3.0)
+		var segment_y := y - float(font_size) * 0.45
+		_draw_styled_segment(Vector2(x, segment_y), Vector2(x + segment_width, segment_y), color, series_idx, 3.0)
 		draw_string(
 			font,
-			Vector2(x + 22.0, y),
+			Vector2(x + segment_width + 6.0, y),
 			label,
 			HORIZONTAL_ALIGNMENT_LEFT,
 			-1.0,
 			font_size,
 			UIStyle.TEXT_PRIMARY
 		)
-		x += 118.0
-		if x + 110.0 > size.x:
+		x += item_width
+		if x + item_width > size.x:
 			x = 8.0
-			y += 16.0
+			y += row_height
 
 func _draw_series(points: PackedVector2Array, color: Color, series_idx: int) -> void:
 	if points.is_empty():
@@ -201,7 +213,7 @@ func _draw_axes(
 		draw_line(Vector2(graph_rect.position.x, y), Vector2(graph_rect.end.x, y), color, 1.0)
 		draw_string(
 			font,
-			Vector2(4.0, y + 4.0),
+			Vector2(4.0, y + float(font_size) * 0.35),
 			_format_axis_value(float(tick["value"])),
 			HORIZONTAL_ALIGNMENT_RIGHT,
 			graph_rect.position.x - 8.0,
@@ -251,7 +263,7 @@ func _draw_x_labels(font: Font, font_size: int, graph_rect: Rect2) -> void:
 			draw_x = x - width
 		draw_string(
 			font,
-			Vector2(draw_x, graph_rect.end.y + 17.0),
+			Vector2(draw_x, graph_rect.end.y + float(font_size) + 3.0),
 			label,
 			alignment,
 			width,

@@ -7,6 +7,7 @@ extends CanvasLayer
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const EconomyOverviewWindow = preload("res://scripts/ui/economy_overview.gd")
+const OptionsWindow = preload("res://scripts/ui/options_window.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 const BAR_HEIGHT := 28
@@ -26,6 +27,7 @@ enum ActionId {
 	FILE_OPEN_WORLD = 7,
 	FILE_SAVE_AS = 8,
 	FILE_NEW_ASSET = 9,
+	FILE_OPTIONS = 70,
 	VIEW_TOGGLE_ZONING = 10,
 	VIEW_OVERLAY_NONE = 11,
 	VIEW_OVERLAY_POLLUTION = 12,
@@ -49,6 +51,7 @@ var scene_kind: String = SCENE_GAMEPLAY
 
 var _scene_root: Node
 var _windows: Dictionary = {}
+var _options_window = null
 var _shell: PanelContainer
 var _bar_margin: MarginContainer
 var _bar_row: HBoxContainer
@@ -153,6 +156,8 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	file_popup.add_item("New Game", ActionId.FILE_NEW_GAME)
 	file_popup.add_item("Load [Ctrl+L]", ActionId.FILE_LOAD)
 	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
+	file_popup.add_separator()
+	file_popup.add_item("Options...", ActionId.FILE_OPTIONS)
 	file_popup.add_separator()
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
 	file_popup.id_pressed.connect(_on_file_menu_pressed)
@@ -268,6 +273,8 @@ func _on_file_menu_pressed(id: int) -> void:
 		ActionId.FILE_RETURN_TO_GAME:
 			if _scene_root and _scene_root.has_method("menu_return_to_game"):
 				_scene_root.menu_return_to_game()
+		ActionId.FILE_OPTIONS:
+			_open_options_window()
 		ActionId.FILE_QUIT:
 			get_tree().quit()
 
@@ -417,11 +424,16 @@ func _ensure_text_window(key: String, title: String, lines: Array[String], size:
 
 	var window := Window.new()
 	window.title = title
-	window.size = size
-	window.min_size = Vector2i(220, 160)
 	window.unresizable = false
 	window.exclusive = false
 	window.close_requested.connect(window.hide)
+	UIStyle.set_persistent_window_layout(
+		window,
+		"top_menu_%s" % key,
+		size,
+		Vector2i(220, 160),
+		get_viewport()
+	)
 
 	var body := PanelContainer.new()
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -468,11 +480,17 @@ func _ensure_economy_overview_window() -> Window:
 
 func _open_window(window: Window) -> void:
 	if not window.has_meta("opened_once"):
-		window.popup_centered()
+		UIStyle.popup_persistent_window(window)
 		window.set_meta("opened_once", true)
 	else:
 		window.show()
 		window.grab_focus()
+
+func _open_options_window() -> void:
+	if not _options_window:
+		_options_window = OptionsWindow.new()
+		add_child(_options_window)
+	_options_window.popup_options(OptionsWindow.CONTEXT_GAMEPLAY)
 
 func _detect_scene_kind() -> String:
 	var simulation_node := _scene_root.get_node_or_null("SimulationNode")

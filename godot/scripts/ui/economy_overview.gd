@@ -4,6 +4,7 @@
 ## and apply on the next relevant economy tick whether the game is paused or running.
 extends Window
 
+const GameSettings = preload("res://scripts/core/game_settings.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const TrendGraph = preload("res://scripts/ui/economy_trend_graph.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
@@ -12,6 +13,19 @@ const SERVICE_ELECTRICITY := "electricity"
 const INCOME_COLOR := Color(0.22, 0.74, 0.48)
 const EXPENSE_COLOR := Color(0.92, 0.42, 0.32)
 const NET_COLOR := Color(0.36, 0.68, 0.92)
+const TITLE_FONT_SIZE := 16
+const CONTROL_FONT_SIZE := 14
+const SECTION_FONT_SIZE := 13
+const ROW_FONT_SIZE := 14
+const LAYOUT_ID := "economy_overview"
+const KEY_BUDGET_SPLIT := "budget_split"
+const KEY_BUDGET_LEFT_SPLIT := "budget_left_split"
+const KEY_BUDGET_GRAPHS_SPLIT := "budget_graphs_split"
+const KEY_BUDGET_LOWER_GRAPHS_SPLIT := "budget_lower_graphs_split"
+const KEY_POLICY_SPLIT := "policy_split"
+const KEY_POLICY_DETAIL_SPLIT := "policy_detail_split"
+const KEY_SERVICE_SPLIT := "service_split"
+const KEY_SERVICE_DETAIL_SPLIT := "service_detail_split"
 
 var simulation_node: Node
 
@@ -38,15 +52,30 @@ var _policy_timeframe: OptionButton
 var _policy_rows: VBoxContainer
 var _policy_details: VBoxContainer
 var _policy_graph: Control
+var _budget_split: HSplitContainer
+var _budget_left_split: VSplitContainer
+var _budget_graphs_split: VSplitContainer
+var _budget_lower_graphs_split: VSplitContainer
+var _policy_split: HSplitContainer
+var _policy_detail_split: VSplitContainer
+var _service_split: HSplitContainer
+var _service_detail_split: VSplitContainer
+var _panel_layout_dirty := false
 
 func _ready() -> void:
 	title = "Economy Overview"
-	size = Vector2i(920, 560)
-	min_size = Vector2i(760, 460)
 	unresizable = false
 	exclusive = false
-	close_requested.connect(hide)
+	close_requested.connect(_on_close_requested)
 	visibility_changed.connect(_on_visibility_changed)
+	tree_exiting.connect(_save_panel_layout)
+	UIStyle.set_persistent_window_layout(
+		self,
+		LAYOUT_ID,
+		Vector2i(1040, 640),
+		Vector2i(860, 520),
+		get_parent().get_viewport()
+	)
 	_build_ui()
 	WindowResizeHandles.install(self)
 	refresh()
@@ -72,6 +101,13 @@ func _on_visibility_changed() -> void:
 	if visible:
 		_refresh_elapsed = 0.0
 		refresh()
+	else:
+		_save_panel_layout()
+
+func _on_close_requested() -> void:
+	_save_panel_layout()
+	UIStyle.save_persistent_window_layout(self)
+	hide()
 
 func _build_ui() -> void:
 	var body := PanelContainer.new()
@@ -90,6 +126,7 @@ func _build_ui() -> void:
 	var tabs := TabContainer.new()
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	UIStyle.set_font_size(tabs, CONTROL_FONT_SIZE)
 	margin.add_child(tabs)
 
 	var budget_tab := _build_budget_tab()
@@ -121,71 +158,81 @@ func _build_budget_tab() -> Control:
 	treasury_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	treasury_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	treasury_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	UIStyle.set_font_size(treasury_label, TITLE_FONT_SIZE)
 	top_row.add_child(treasury_label)
 
-	var split := HSplitContainer.new()
-	split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.split_offset = 270
-	root.add_child(split)
+	_budget_split = HSplitContainer.new()
+	_budget_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_budget_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_budget_split.split_offset = _layout_offset(KEY_BUDGET_SPLIT, 300.0)
+	_budget_split.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
+	root.add_child(_budget_split)
 
 	var left := VSplitContainer.new()
-	left.custom_minimum_size.x = 240.0
+	_budget_left_split = left
+	left.custom_minimum_size.x = UIStyle.scaled_px(280.0)
 	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	left.split_offset = 150
-	split.add_child(left)
+	left.split_offset = _layout_offset(KEY_BUDGET_LEFT_SPLIT, 150.0)
+	left.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
+	_budget_split.add_child(left)
 
 	_budget_summary = VBoxContainer.new()
 	_budget_summary.add_theme_constant_override("separation", 4)
 	var summary_panel := _section_panel("Summary", _budget_summary)
-	summary_panel.custom_minimum_size.y = 120.0
+	summary_panel.custom_minimum_size.y = UIStyle.scaled_px(120.0)
 	left.add_child(summary_panel)
 
 	_budget_categories = VBoxContainer.new()
 	_budget_categories.add_theme_constant_override("separation", 4)
 	var category_panel := _section_panel("Category Breakdown", _budget_categories)
-	category_panel.custom_minimum_size.y = 160.0
+	category_panel.custom_minimum_size.y = UIStyle.scaled_px(160.0)
 	left.add_child(category_panel)
 
 	var graphs := VSplitContainer.new()
-	graphs.custom_minimum_size.x = 320.0
+	_budget_graphs_split = graphs
+	graphs.custom_minimum_size.x = UIStyle.scaled_px(360.0)
 	graphs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	graphs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	graphs.split_offset = 150
-	split.add_child(graphs)
+	graphs.split_offset = _layout_offset(KEY_BUDGET_GRAPHS_SPLIT, 150.0)
+	graphs.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
+	_budget_split.add_child(graphs)
 
 	_income_graph = TrendGraph.new()
 	var income_panel := _section_panel("Income vs Expenses", _income_graph)
-	income_panel.custom_minimum_size.y = 120.0
+	income_panel.custom_minimum_size.y = UIStyle.scaled_px(120.0)
 	graphs.add_child(income_panel)
 
 	var lower_graphs := VSplitContainer.new()
+	_budget_lower_graphs_split = lower_graphs
 	lower_graphs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lower_graphs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	lower_graphs.split_offset = 150
+	lower_graphs.split_offset = _layout_offset(KEY_BUDGET_LOWER_GRAPHS_SPLIT, 150.0)
+	lower_graphs.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
 	graphs.add_child(lower_graphs)
 
 	_net_graph = TrendGraph.new()
 	var net_panel := _section_panel("Net Daily Cashflow", _net_graph)
-	net_panel.custom_minimum_size.y = 120.0
+	net_panel.custom_minimum_size.y = UIStyle.scaled_px(120.0)
 	lower_graphs.add_child(net_panel)
 
 	_treasury_graph = TrendGraph.new()
 	var treasury_panel := _section_panel("Treasury", _treasury_graph)
-	treasury_panel.custom_minimum_size.y = 120.0
+	treasury_panel.custom_minimum_size.y = UIStyle.scaled_px(120.0)
 	lower_graphs.add_child(treasury_panel)
 
 	return root
 
 func _build_policy_tab() -> Control:
 	var root := HSplitContainer.new()
+	_policy_split = root
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.split_offset = 520
+	root.split_offset = _layout_offset(KEY_POLICY_SPLIT, 520.0)
+	root.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size.x = 360.0
+	scroll.custom_minimum_size.x = UIStyle.scaled_px(360.0)
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
@@ -196,7 +243,7 @@ func _build_policy_tab() -> Control:
 	root.add_child(_section_panel("Controls", scroll))
 
 	var right := VBoxContainer.new()
-	right.custom_minimum_size.x = 360.0
+	right.custom_minimum_size.x = UIStyle.scaled_px(360.0)
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 8)
@@ -211,7 +258,7 @@ func _build_policy_tab() -> Control:
 	details_title.text = "Policy Impact"
 	details_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	details_title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	details_title.add_theme_font_size_override("font_size", 14)
+	UIStyle.set_font_size(details_title, TITLE_FONT_SIZE)
 	header.add_child(details_title)
 
 	_policy_timeframe = _make_timeframe_selector()
@@ -219,38 +266,42 @@ func _build_policy_tab() -> Control:
 	header.add_child(_policy_timeframe)
 
 	var policy_split := VSplitContainer.new()
+	_policy_detail_split = policy_split
 	policy_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	policy_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	policy_split.split_offset = 250
+	policy_split.split_offset = _layout_offset(KEY_POLICY_DETAIL_SPLIT, 250.0)
+	policy_split.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
 	right.add_child(policy_split)
 
 	_policy_details = VBoxContainer.new()
 	_policy_details.add_theme_constant_override("separation", 4)
 	var details_panel := _section_panel("Details", _policy_details)
-	details_panel.custom_minimum_size.y = 170.0
+	details_panel.custom_minimum_size.y = UIStyle.scaled_px(170.0)
 	policy_split.add_child(details_panel)
 
 	_policy_graph = TrendGraph.new()
 	var graph_panel := _section_panel("Selected Policy Trend", _policy_graph)
-	graph_panel.custom_minimum_size.y = 150.0
+	graph_panel.custom_minimum_size.y = UIStyle.scaled_px(150.0)
 	policy_split.add_child(graph_panel)
 
 	return root
 
 func _build_services_tab() -> Control:
 	var root := HSplitContainer.new()
+	_service_split = root
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.split_offset = 310
+	root.split_offset = _layout_offset(KEY_SERVICE_SPLIT, 310.0)
+	root.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
 
 	_service_rows = VBoxContainer.new()
-	_service_rows.custom_minimum_size.x = 260.0
+	_service_rows.custom_minimum_size.x = UIStyle.scaled_px(260.0)
 	_service_rows.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_service_rows.add_theme_constant_override("separation", 8)
 	root.add_child(_section_panel("Funding", _service_rows))
 
 	var right := VBoxContainer.new()
-	right.custom_minimum_size.x = 360.0
+	right.custom_minimum_size.x = UIStyle.scaled_px(360.0)
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.add_theme_constant_override("separation", 8)
@@ -265,7 +316,7 @@ func _build_services_tab() -> Control:
 	details_title.text = "Electricity"
 	details_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	details_title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	details_title.add_theme_font_size_override("font_size", 14)
+	UIStyle.set_font_size(details_title, TITLE_FONT_SIZE)
 	header.add_child(details_title)
 
 	_services_timeframe = _make_timeframe_selector()
@@ -273,20 +324,22 @@ func _build_services_tab() -> Control:
 	header.add_child(_services_timeframe)
 
 	var service_split := VSplitContainer.new()
+	_service_detail_split = service_split
 	service_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	service_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	service_split.split_offset = 250
+	service_split.split_offset = _layout_offset(KEY_SERVICE_DETAIL_SPLIT, 250.0)
+	service_split.dragged.connect(func(_offset: int): _mark_panel_layout_dirty())
 	right.add_child(service_split)
 
 	_service_details = VBoxContainer.new()
 	_service_details.add_theme_constant_override("separation", 4)
 	var details_panel := _section_panel("Details", _service_details)
-	details_panel.custom_minimum_size.y = 170.0
+	details_panel.custom_minimum_size.y = UIStyle.scaled_px(170.0)
 	service_split.add_child(details_panel)
 
 	_service_graph = TrendGraph.new()
 	var service_graph_panel := _section_panel("Produced vs Consumed vs Unmet", _service_graph)
-	service_graph_panel.custom_minimum_size.y = 150.0
+	service_graph_panel.custom_minimum_size.y = UIStyle.scaled_px(150.0)
 	service_split.add_child(service_graph_panel)
 
 	return root
@@ -297,7 +350,8 @@ func _make_timeframe_selector() -> OptionButton:
 	selector.add_item("7D", 7)
 	selector.add_item("30D", 30)
 	selector.select(1)
-	selector.custom_minimum_size.x = 112.0
+	selector.custom_minimum_size.x = UIStyle.scaled_px(112.0)
+	UIStyle.set_font_size(selector, CONTROL_FONT_SIZE)
 	return selector
 
 func _section_panel(title: String, child: Control) -> PanelContainer:
@@ -320,7 +374,7 @@ func _section_panel(title: String, child: Control) -> PanelContainer:
 	var label := Label.new()
 	label.text = title
 	label.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, SECTION_FONT_SIZE)
 	box.add_child(label)
 
 	child.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -402,7 +456,7 @@ func _refresh_policy_tab() -> void:
 			var header := Label.new()
 			header.text = group
 			header.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-			header.add_theme_font_size_override("font_size", 12)
+			UIStyle.set_font_size(header, SECTION_FONT_SIZE)
 			_policy_rows.add_child(header)
 
 		var policy_id := str(control.get("id", ""))
@@ -433,14 +487,16 @@ func _refresh_policy_tab() -> void:
 		label.text = str(control.get("label", control.get("id", "")))
 		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+		UIStyle.set_font_size(label, ROW_FONT_SIZE)
 		line.add_child(label)
 
 		var unit := str(control.get("unit", ""))
 		var value_label := Label.new()
 		value_label.text = _policy_value_text(float(control.get("value", 0.0)), unit)
 		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		value_label.custom_minimum_size.x = 84.0
+		value_label.custom_minimum_size.x = UIStyle.scaled_px(84.0)
 		value_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+		UIStyle.set_font_size(value_label, ROW_FONT_SIZE)
 		line.add_child(value_label)
 
 		var slider := HSlider.new()
@@ -490,6 +546,7 @@ func _refresh_service_rows() -> void:
 		name_label.text = str(service.get("name", service_id))
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		name_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+		UIStyle.set_font_size(name_label, ROW_FONT_SIZE)
 		line.add_child(name_label)
 
 		var status_label := Label.new()
@@ -499,6 +556,7 @@ func _refresh_service_rows() -> void:
 		]
 		status_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 		status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		UIStyle.set_font_size(status_label, ROW_FONT_SIZE)
 		line.add_child(status_label)
 
 		var slider := HSlider.new()
@@ -746,6 +804,40 @@ func _clear(container: Node) -> void:
 		container.remove_child(child)
 		child.queue_free()
 
+func _layout_offset(key: String, default_offset: float) -> int:
+	return maxi(0, GameSettings.get_layout_int(
+		LAYOUT_ID,
+		key,
+		int(UIStyle.scaled_px(default_offset))
+	))
+
+func _mark_panel_layout_dirty() -> void:
+	_panel_layout_dirty = true
+
+func _save_panel_layout() -> void:
+	if not _panel_layout_dirty:
+		return
+	var values := {}
+	if _budget_split != null:
+		values[KEY_BUDGET_SPLIT] = _budget_split.split_offset
+	if _budget_left_split != null:
+		values[KEY_BUDGET_LEFT_SPLIT] = _budget_left_split.split_offset
+	if _budget_graphs_split != null:
+		values[KEY_BUDGET_GRAPHS_SPLIT] = _budget_graphs_split.split_offset
+	if _budget_lower_graphs_split != null:
+		values[KEY_BUDGET_LOWER_GRAPHS_SPLIT] = _budget_lower_graphs_split.split_offset
+	if _policy_split != null:
+		values[KEY_POLICY_SPLIT] = _policy_split.split_offset
+	if _policy_detail_split != null:
+		values[KEY_POLICY_DETAIL_SPLIT] = _policy_detail_split.split_offset
+	if _service_split != null:
+		values[KEY_SERVICE_SPLIT] = _service_split.split_offset
+	if _service_detail_split != null:
+		values[KEY_SERVICE_DETAIL_SPLIT] = _service_detail_split.split_offset
+	if not values.is_empty():
+		GameSettings.save_layout_values(LAYOUT_ID, values)
+	_panel_layout_dirty = false
+
 func _add_category_header(parent: VBoxContainer, label_text: String, value_text: String, color: Color) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
@@ -755,14 +847,14 @@ func _add_category_header(parent: VBoxContainer, label_text: String, value_text:
 	label.text = label_text
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", color)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	row.add_child(label)
 
 	var value := Label.new()
 	value.text = value_text
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value.add_theme_color_override("font_color", color)
-	value.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(value, ROW_FONT_SIZE)
 	row.add_child(value)
 
 func _add_metric(
@@ -779,21 +871,21 @@ func _add_metric(
 
 	if indent > 0.0:
 		var spacer := Control.new()
-		spacer.custom_minimum_size.x = indent
+		spacer.custom_minimum_size.x = UIStyle.scaled_px(indent)
 		row.add_child(spacer)
 
 	var label := Label.new()
 	label.text = label_text
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", label_color)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	row.add_child(label)
 
 	var value := Label.new()
 	value.text = value_text
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value.add_theme_color_override("font_color", value_color)
-	value.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(value, ROW_FONT_SIZE)
 	row.add_child(value)
 
 func _money(value: float) -> String:

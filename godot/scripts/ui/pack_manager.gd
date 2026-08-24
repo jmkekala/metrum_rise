@@ -1,4 +1,4 @@
-## Mod pack manager popup.
+## Mod pack options panel.
 ##
 ## Scans user://mods/ for installed packs, reads/writes user://active_packs.cfg
 ## to persist which packs are enabled. Missing config defaults to the bundled
@@ -6,69 +6,88 @@
 ##
 ## No Rust methods called directly — pack loading happens in buildings.gd via
 ## load_asset_packs(). This script only manages the config file and the UI.
-extends Window
+extends VBoxContainer
 
-const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
+const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
 
 const MODS_DIR := "user://mods/"
 
 signal packs_changed
+signal dirty_changed(has_pending_changes: bool)
 
 var _checks: Dictionary = {}   # pack_id -> CheckBox
+var _initial_enabled: Array = []
+var _list: VBoxContainer
+var _status_label: Label
 
 func _ready() -> void:
-	title = "Mod Packs"
-	size = Vector2(480, 400)
-	min_size = Vector2i(360, 280)
-	unresizable = false
-	exclusive = true
-	close_requested.connect(hide)
+	_build_ui()
+	refresh()
 
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 16)
-	margin.add_theme_constant_override("margin_right", 16)
-	margin.add_theme_constant_override("margin_top", 16)
-	margin.add_theme_constant_override("margin_bottom", 16)
-	add_child(margin)
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 10)
-	margin.add_child(vbox)
+func _build_ui() -> void:
+	size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_theme_constant_override("separation", 10)
 
 	var title_lbl := Label.new()
 	title_lbl.text = "Installed Packs"
-	title_lbl.add_theme_font_size_override("font_size", 16)
-	vbox.add_child(title_lbl)
+	UIStyle.set_font_size(title_lbl, 18)
+	title_lbl.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	add_child(title_lbl)
+
+	var restart_lbl := Label.new()
+	restart_lbl.text = "Pack selection takes effect after restarting the game."
+	restart_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	restart_lbl.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(restart_lbl, 12)
+	add_child(restart_lbl)
 
 	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vbox.add_child(scroll)
+	add_child(scroll)
 
-	var list := VBoxContainer.new()
-	list.name = "PackList"
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 6)
-	scroll.add_child(list)
+	_list = VBoxContainer.new()
+	_list.name = "PackList"
+	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_list)
 
-	var btn_row := HBoxContainer.new()
-	btn_row.alignment = BoxContainer.ALIGNMENT_END
-	btn_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(btn_row)
+	_status_label = Label.new()
+	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status_label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
+	UIStyle.set_font_size(_status_label, 12)
+	add_child(_status_label)
 
-	var apply_btn := Button.new()
-	apply_btn.text = "Apply & Restart Required"
-	apply_btn.pressed.connect(_on_apply_pressed)
-	btn_row.add_child(apply_btn)
+func refresh() -> void:
+	if not _list:
+		return
+	_refresh_list(_list)
+	_initial_enabled = _selected_pack_ids()
+	_emit_dirty_state()
 
-	var close_btn := Button.new()
-	close_btn.text = "Close"
-	close_btn.pressed.connect(hide)
-	btn_row.add_child(close_btn)
+func has_pending_changes() -> bool:
+	return _selected_pack_ids() != _initial_enabled
 
-	_refresh_list(list)
-	WindowResizeHandles.install(self)
+func apply_changes() -> Error:
+	var enabled := _selected_pack_ids()
+	var err := ModPackConfig.save_enabled_pack_ids(enabled)
+	if err != OK:
+		_status_label.text = "Could not save active pack selection."
+		push_warning("Could not save active pack selection (error %d)." % err)
+		return err
+	_initial_enabled = enabled
+	_status_label.text = "Pack selection saved. Restart required."
+	emit_signal("packs_changed")
+	_emit_dirty_state()
+	return OK
+
+func reset_defaults() -> void:
+	var defaults := ModPackConfig.DEFAULT_ENABLED_PACK_IDS
+	for pack_id in _checks:
+		(_checks[pack_id] as CheckBox).button_pressed = pack_id in defaults
+	_emit_dirty_state()
 
 func _refresh_list(list: VBoxContainer) -> void:
 	for child in list.get_children():
@@ -103,6 +122,7 @@ func _refresh_list(list: VBoxContainer) -> void:
 		lbl.text = "No packs found in mods directory."
 		lbl.add_theme_color_override("font_color", Color.YELLOW)
 		list.add_child(lbl)
+	_status_label.text = ""
 
 func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabled: bool) -> void:
 	var panel := PanelContainer.new()
@@ -124,6 +144,7 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 
 	var chk := CheckBox.new()
 	chk.button_pressed = enabled
+	chk.toggled.connect(func(_pressed: bool): _emit_dirty_state())
 	hbox.add_child(chk)
 	_checks[pack_id] = chk
 
@@ -133,7 +154,7 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 
 	var name_lbl := Label.new()
 	name_lbl.text = meta.get("display_name", pack_id)
-	name_lbl.add_theme_font_size_override("font_size", 14)
+	UIStyle.set_font_size(name_lbl, 14)
 	info.add_child(name_lbl)
 
 	var detail := Label.new()
@@ -141,7 +162,7 @@ func _add_pack_row(list: VBoxContainer, pack_id: String, meta: Dictionary, enabl
 	var version: String = meta.get("version", "")
 	detail.text = "ID: %s  |  Author: %s  |  v%s" % [pack_id, author, version]
 	detail.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
-	detail.add_theme_font_size_override("font_size", 11)
+	UIStyle.set_font_size(detail, 11)
 	info.add_child(detail)
 
 func _read_pack_meta(path: String) -> Dictionary:
@@ -165,19 +186,13 @@ func _read_pack_meta(path: String) -> Dictionary:
 func _load_enabled_packs() -> Array:
 	return ModPackConfig.load_enabled_pack_ids()
 
-func _on_apply_pressed() -> void:
+func _selected_pack_ids() -> Array:
 	var enabled: Array = []
 	for pack_id in _checks:
 		if (_checks[pack_id] as CheckBox).button_pressed:
 			enabled.append(pack_id)
 	enabled.sort()
-	var err := ModPackConfig.save_enabled_pack_ids(enabled)
-	if err != OK:
-		push_warning("Could not save active pack selection (error %d)." % err)
-	emit_signal("packs_changed")
-	# Inform the user a restart is needed for changes to take effect.
-	var dialog := AcceptDialog.new()
-	dialog.dialog_text = "Pack selection saved.\nRestart the game to apply changes."
-	add_child(dialog)
-	dialog.popup_centered()
-	dialog.confirmed.connect(dialog.queue_free)
+	return enabled
+
+func _emit_dirty_state() -> void:
+	emit_signal("dirty_changed", has_pending_changes())

@@ -9,6 +9,10 @@ extends Node
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
+const TITLE_FONT_SIZE := 16
+const SECTION_FONT_SIZE := 13
+const ROW_FONT_SIZE := 14
+
 @onready var simulation_node = $"../SimulationNode"
 
 var _open_windows: Dictionary = {}
@@ -78,12 +82,18 @@ func _current_absolute_hour() -> int:
 func _create_window_entry(key: String) -> Dictionary:
 	var window := Window.new()
 	window.title = "Building Inspector"
-	window.size = Vector2i(340, 420)
-	window.min_size = Vector2i(280, 260)
 	window.unresizable = false
 	window.exclusive = false
 	window.visible = false
 	window.close_requested.connect(_close_entry.bind(key))
+	UIStyle.set_persistent_window_layout(
+		window,
+		"building_inspector",
+		Vector2i(420, 470),
+		Vector2i(340, 320),
+		get_viewport(),
+		false
+	)
 
 	var body := PanelContainer.new()
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -103,7 +113,7 @@ func _create_window_entry(key: String) -> Dictionary:
 	margin.add_child(root_vbox)
 
 	var title_label := Label.new()
-	title_label.add_theme_font_size_override("font_size", 14)
+	UIStyle.set_font_size(title_label, TITLE_FONT_SIZE)
 	title_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	title_label.clip_text = true
 	root_vbox.add_child(title_label)
@@ -138,6 +148,7 @@ func _close_entry(key: String) -> void:
 	_open_windows.erase(key)
 	var window: Window = entry["window"]
 	if is_instance_valid(window):
+		UIStyle.save_persistent_window_layout(window)
 		window.queue_free()
 
 func _update_anchor(entry: Dictionary, info: Dictionary) -> void:
@@ -367,7 +378,7 @@ func _add_section(stats_body: VBoxContainer, title: String) -> void:
 	var label := Label.new()
 	label.text = title
 	label.add_theme_color_override("font_color", UIStyle.TEXT_SECTION)
-	label.add_theme_font_size_override("font_size", 11)
+	UIStyle.set_font_size(label, SECTION_FONT_SIZE)
 	stats_body.add_child(label)
 
 func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String) -> void:
@@ -378,13 +389,13 @@ func _add_row(stats_body: VBoxContainer, label_text: String, value_text: String)
 	label.text = label_text
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	hbox.add_child(label)
 
 	var value := Label.new()
 	value.text = value_text
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	value.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(value, ROW_FONT_SIZE)
 	hbox.add_child(value)
 
 func _add_extractor_reserve_section(stats_body: VBoxContainer, info: Dictionary) -> void:
@@ -424,7 +435,7 @@ func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) ->
 	label.text = "Plant Funding"
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	hbox.add_child(label)
 
 	var slider := HSlider.new()
@@ -432,16 +443,16 @@ func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) ->
 	slider.max_value = 1.0
 	slider.step = 0.01
 	slider.value = clampf(float(info.get("service_funding_effective", 1.0)), 0.0, 1.0)
-	slider.custom_minimum_size = Vector2(120.0, 0.0)
+	slider.custom_minimum_size = UIStyle.scaled_vector2(Vector2(120.0, 0.0))
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox.add_child(slider)
 
 	var value := Label.new()
-	value.custom_minimum_size = Vector2(42.0, 0.0)
+	value.custom_minimum_size = UIStyle.scaled_vector2(Vector2(42.0, 0.0))
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value.text = "%.0f%%" % (slider.value * 100.0)
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	value.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(value, ROW_FONT_SIZE)
 	hbox.add_child(value)
 
 	slider.value_changed.connect(
@@ -468,11 +479,11 @@ func _add_reserve_consumption_bar(
 	label.text = "Pit Used"
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	hbox.add_child(label)
 
 	var bar_holder := Control.new()
-	bar_holder.custom_minimum_size = Vector2(0.0, 18.0)
+	bar_holder.custom_minimum_size = UIStyle.scaled_vector2(Vector2(0.0, 18.0))
 	bar_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox.add_child(bar_holder)
 
@@ -497,7 +508,7 @@ func _add_reserve_consumption_bar(
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	value.add_theme_font_size_override("font_size", 11)
+	UIStyle.set_font_size(value, SECTION_FONT_SIZE)
 	value.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar_holder.add_child(value)
 
@@ -536,11 +547,11 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 	label.text = "Power Use"
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	label.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	hbox.add_child(label)
 
 	var bar_holder := Control.new()
-	bar_holder.custom_minimum_size = Vector2(0.0, 18.0)
+	bar_holder.custom_minimum_size = UIStyle.scaled_vector2(Vector2(0.0, 18.0))
 	bar_holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox.add_child(bar_holder)
 
@@ -565,7 +576,7 @@ func _add_power_consumption_bar(stats_body: VBoxContainer, consumed_units: float
 	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	value.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	value.add_theme_font_size_override("font_size", 11)
+	UIStyle.set_font_size(value, SECTION_FONT_SIZE)
 	value.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar_holder.add_child(value)
 
@@ -573,5 +584,5 @@ func _add_alert(stats_body: VBoxContainer, text: String) -> void:
 	var label := Label.new()
 	label.text = "! " + text
 	label.add_theme_color_override("font_color", UIStyle.TEXT_ALERT)
-	label.add_theme_font_size_override("font_size", 12)
+	UIStyle.set_font_size(label, ROW_FONT_SIZE)
 	stats_body.add_child(label)

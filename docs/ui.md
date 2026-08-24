@@ -22,7 +22,7 @@ belong here. Rust methods are called through `SimulationNode`.
 | Top menu bar | — | ✓ | ✓ | ✓ | ✓ |
 | Bottom toolbar | — | ✓ | — | — | ✓ |
 | Context panel | — | — | — | — | — |
-| Floating windows | — | ✓ | — | — | — |
+| Floating windows | ✓ | ✓ | — | — | — |
 
 The top menu bar is shared across gameplay and editor scenes. AssetEditor and EconomyEditor remain
 self-contained editor applications with no bottom toolbar. WorldEditor is the editor-shell
@@ -53,6 +53,7 @@ Current deterministic rules:
 - normal launch routes to `MainMenu.tscn`
 - startup creates `user://worlds/`, `user://mods/`, and `user://saves/`, then copies missing
   bundled starter entries from `res://bootstrap/worlds/` and `res://bootstrap/mods/`
+- when `user://settings.cfg` is missing, startup seeds default general UI/runtime settings
 - when `user://active_packs.cfg` is missing, startup seeds it with the bundled `kenney` pack
   enabled; a saved empty enabled-pack list remains an explicit player choice
 - `MainMenu` contains no `SimulationNode`
@@ -73,6 +74,7 @@ MainMenu v1 actions:
 | New Game | Pick a `WorldDefinition` from `user://worlds/` and enter gameplay |
 | Load Game | Pick a city save from `user://saves/` and enter gameplay |
 | World Editor | Spawn a `--world-editor` instance |
+| Options | Open the shared options window |
 | Quit | Exit the application |
 
 ### 1. Top Menu Bar
@@ -82,7 +84,7 @@ MainMenu v1 actions:
 
 | Menu   | Items |
 |--------|-------|
-| File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Quit |
+| File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Options, —, Quit |
 | View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`, Deposits `[-]`), — , Toggle Zoning Overlay |
 | City   | City Statistics *(window)*, Economy Overview *(window)*, Demand Overview *(window)* |
 | Tools  | Open Asset Editor, Open Economy Editor |
@@ -101,6 +103,31 @@ Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`,
 `WorldEditor`).
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
+
+### Options Window
+
+**Node:** draggable Godot `Window`.
+**Script:** `scripts/ui/options_window.gd` *(implemented)*.
+
+The same options window is launched from `MainMenu` and from gameplay `File -> Options...`.
+It uses a left category rail and right content pane with footer-level `Reset Defaults`,
+`Cancel`, and `Apply` actions. General options state is persisted through
+`user://settings.cfg` via `scripts/core/game_settings.gd`; the window currently remembers its
+last active category plus size and position. The same settings file also stores reusable
+`layout/<id>` sections for player-adjusted floating-window sizes, positions where appropriate,
+and split-panel offsets such as Economy Overview's budget/service/policy panes. `Accessibility`
+owns the runtime-safe `UI Scale`
+setting, currently bounded to `80%..150%` in `5%` increments and applied immediately to
+scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Building Inspector,
+and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
+sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
+gently grow on high-resolution viewports while preserving user-resized larger windows and restored
+layout values. `Graphics` owns the Apply-based `Fullscreen` display toggle, persisted through
+`user://settings.cfg` and applied through the Options footer and on boot. `Mods` embeds the content-pack manager from
+`scripts/ui/pack_manager.gd`; pack selection changes are persisted through
+`user://active_packs.cfg` and take effect after restart. The previous gameplay toolbar `Mods`
+button is intentionally removed so content-pack management lives under global options rather than
+construction tools.
 
 WorldEditor menu:
 
@@ -148,7 +175,6 @@ The toolbar is the primary tool-selection surface. It is always visible during g
 | Industry | Explicit resource-extractor asset palette; selecting an extractor temporarily shows the Deposits overlay through building placement and extraction-polygon drawing; placing a mine switches to extraction-polygon drawing with a pale-blue cursor sphere under the mouse and a live filled preview of the current polygon; the first vertex must start within 10 m of the building footprint and becomes a stronger light-blue close marker, edges may not cross, closing only happens by clicking that first vertex again, the committed polygon is still validated against the building link distance, and committed coal pits render as a terrain-shader coal-texture mask |
 | Terrain | Terrain sub-menu for gameplay terrain tools |
 | Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
-| Mods    | Opens the Pack Manager window |
 
 Bulldoze is intentionally separate from the centered construction toolbar: a bottom-right icon
 button activates `BulldozeTool`. Hover asks Rust for exactly one target, prioritizing building
@@ -203,8 +229,7 @@ WorldEditor toolbar rules:
 - selecting `Resources` opens an upward-expanding tool row with `Diameter m` and `Richness %`
 - authored coal is rendered through the terrain overlay texture; it must not use terrain-following
   meshes or decals that can fight the terrain depth buffer
-- WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, Inspect,
-  or Mods
+- WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, or Inspect
 - WorldEditor does not include gameplay HUD widgets such as the clock, city-status panel, or
   R/C/I meter
 
@@ -309,11 +334,14 @@ its close button is used.
 
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
+| Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
+| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Embedded fullscreen/windowed display toggle, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |
-| Pack Manager | Toolbar → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Mod pack browser / manager window. |
+| Mods | Options → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Embedded content-pack browser / manager panel. |
 | City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
-| Economy Overview | City → Economy Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future commercial/industrial budgets, OWA ratio, and freight-facing signals. |
+| Economy Overview | City → Economy Overview | `scripts/ui/economy_overview.gd` *(implemented)* | Live fiscal budget, services, and policy overview with persisted window layout and split-panel offsets. |
 | Demand Overview | City → Demand Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future residential/commercial/industrial demand pressure, spawn credit, and growth candidates. |
 | Keyboard Shortcuts | Help → Keyboard Shortcuts | inline in `scripts/ui/top_menu.gd` *(implemented)* | Read-only shortcut reference. |
 
@@ -478,8 +506,10 @@ godot/
     Router.tscn
   scripts/
     core/                         Scene-attached nodes, global orchestration
+      game_settings.gd            Persistent user://settings.cfg helper for runtime/UI options state
       input_manager.gd            Gameplay tool state machine, keyboard routing, gameplay camera input routing
       launch_router.gd            Scene routing / startup
+      main_menu.gd                Front-door scene UI and launch handoff actions
       editor_camera_input.gd      AssetEditor sandbox camera pan / orbit / zoom
     tools/                        Player-facing placement and editing tools
       road_tool.gd
@@ -510,7 +540,10 @@ godot/
       city_status_panel.gd        Compact treasury + agent-count HUD panel
       demand_meter.gd             Compact R/C/I HUD demand meter
       top_menu.gd                 MenuBar + PopupMenu tree, menu action dispatch
-      pack_manager.gd             Mods / pack manager window
+      options_window.gd           Shared Options window category shell
+      graphics_options.gd         Embedded Options -> Graphics settings panel
+      accessibility_options.gd    Embedded Options -> Accessibility settings panel
+      pack_manager.gd             Embedded Options -> Mods content-pack panel
       road_properties_window.gd   Floating road-properties editor window
       building_inspector.gd       Floating building stats window manager
   project.godot

@@ -3,10 +3,13 @@
 ## save before gameplay scene loading begins.
 extends Control
 
+const OptionsWindow = preload("res://scripts/ui/options_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
+
+var _options_window = null
 
 func _ready() -> void:
 	_build_ui()
@@ -43,7 +46,7 @@ func _build_ui() -> void:
 	var title := Label.new()
 	title.text = "Metrum Rise"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 40)
+	UIStyle.set_font_size(title, 40)
 	title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	content.add_child(title)
 
@@ -51,7 +54,7 @@ func _build_ui() -> void:
 	subtitle.text = "Choose a world or save before entering gameplay."
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	subtitle.add_theme_font_size_override("font_size", 16)
+	UIStyle.set_font_size(subtitle, 16)
 	subtitle.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	content.add_child(subtitle)
 
@@ -62,13 +65,14 @@ func _build_ui() -> void:
 	buttons.add_child(_make_main_button("New Game", _on_new_game_pressed))
 	buttons.add_child(_make_main_button("Load Game", _on_load_game_pressed))
 	buttons.add_child(_make_main_button("World Editor", _on_world_editor_pressed))
+	buttons.add_child(_make_main_button("Options", _on_options_pressed))
 	buttons.add_child(_make_main_button("Quit", _on_quit_pressed))
 
 	var footer := Label.new()
 	footer.text = "New Game loads worlds from user://worlds/\nLoad Game loads saves from user://saves/"
 	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	footer.add_theme_font_size_override("font_size", 13)
+	UIStyle.set_font_size(footer, 13)
 	footer.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	content.add_child(footer)
 
@@ -77,6 +81,7 @@ func _make_main_button(label: String, callback: Callable) -> Button:
 	button.text = label
 	button.custom_minimum_size = Vector2(320.0, 58.0)
 	button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	UIStyle.set_font_size(button, 16)
 	button.pressed.connect(callback)
 	return button
 
@@ -108,6 +113,12 @@ func _on_world_editor_pressed() -> void:
 	var pid := OS.create_instance(["--", "--world-editor"])
 	if pid == -1:
 		push_error("Failed to launch world editor.")
+
+func _on_options_pressed() -> void:
+	if not _options_window:
+		_options_window = OptionsWindow.new()
+		add_child(_options_window)
+	_options_window.popup_options(OptionsWindow.CONTEXT_MAIN_MENU)
 
 func _on_quit_pressed() -> void:
 	get_tree().quit()

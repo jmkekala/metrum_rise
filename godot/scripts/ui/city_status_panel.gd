@@ -37,7 +37,7 @@ func set_stats(treasury_balance: float, agent_count: int) -> void:
 
 func _make_value_label() -> Label:
 	var label := Label.new()
-	label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	UIStyle.set_font_size(label, UIStyle.HUD_TEXT_SIZE)
 	label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.clip_text = true

@@ -9,7 +9,6 @@
 extends CanvasLayer
 
 const CityStatusPanel = preload("res://scripts/ui/city_status_panel.gd")
-const PackManager = preload("res://scripts/ui/pack_manager.gd")
 const DemandMeter = preload("res://scripts/ui/demand_meter.gd")
 const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
@@ -365,7 +364,7 @@ func _build_ui():
 	zoning_options_btn.tooltip_text = "Parcel options"
 	zoning_options_btn.custom_minimum_size = Vector2(70, 50)
 	zoning_options_btn.focus_mode = Control.FOCUS_NONE
-	zoning_options_btn.add_theme_font_size_override("font_size", 24)
+	UIStyle.set_font_size(zoning_options_btn, 24)
 	zoning_options_btn.button_down.connect(_remember_zoning_options_button_down_state)
 	zoning_options_btn.pressed.connect(_toggle_zoning_options_popup)
 	zoning_mode_menu.add_child(zoning_options_btn)
@@ -515,15 +514,6 @@ func _build_ui():
 	select_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(select_main_btn)
 
-	var mods_btn := Button.new()
-	mods_btn.text = "Mods"
-	mods_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
-	mods_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_apply_hud_toolbar_text_style(mods_btn)
-	mods_btn.add_theme_stylebox_override("normal", style.duplicate())
-	mods_btn.pressed.connect(_on_mods_btn_pressed)
-	main_toolbar.add_child(mods_btn)
-	
 	# Wrapper to center main toolbar
 	var hbox_main_center = HBoxContainer.new()
 	hbox_main_center.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -588,7 +578,7 @@ func _build_clock_content() -> VBoxContainer:
 	clock_label = Label.new()
 	clock_label.text = "Day 1 00:00"
 	clock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	clock_label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	UIStyle.set_font_size(clock_label, UIStyle.HUD_TEXT_SIZE)
 	clock_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	clock_vbox.add_child(clock_label)
 
@@ -606,7 +596,7 @@ func _build_clock_content() -> VBoxContainer:
 	speed_label.text = "Paused"
 	speed_label.custom_minimum_size = Vector2(90, 0)
 	speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	speed_label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	UIStyle.set_font_size(speed_label, UIStyle.HUD_TEXT_SIZE)
 	speed_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	speed_hbox.add_child(speed_label)
 
@@ -668,7 +658,7 @@ func _create_bottom_group_shell(content: Control) -> PanelContainer:
 
 func _apply_hud_toolbar_text_style(button: Button) -> void:
 	button.focus_mode = Control.FOCUS_NONE
-	button.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	UIStyle.set_font_size(button, UIStyle.HUD_TEXT_SIZE)
 	button.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	button.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
 	button.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
@@ -1356,11 +1346,3 @@ func set_sim_speed_display(speed: float):
 		speed_label.text = "Paused"
 	else:
 		speed_label.text = "%.1fx" % speed
-
-var _pack_manager: Window = null
-
-func _on_mods_btn_pressed() -> void:
-	if not _pack_manager:
-		_pack_manager = PackManager.new()
-		add_child(_pack_manager)
-	_pack_manager.popup_centered()

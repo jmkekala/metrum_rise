@@ -27,12 +27,17 @@ func _ready() -> void:
 func _build_window() -> void:
 	_window = Window.new()
 	_window.title = "Road Properties"
-	_window.size = Vector2i(320, 260)
-	_window.min_size = Vector2i(280, 220)
 	_window.unresizable = false
 	_window.exclusive = false
 	_window.visible = false
 	_window.close_requested.connect(_window.hide)
+	UIStyle.set_persistent_window_layout(
+		_window,
+		"road_properties",
+		Vector2i(380, 300),
+		Vector2i(320, 260),
+		get_viewport()
+	)
 
 	var body := PanelContainer.new()
 	body.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -54,12 +59,14 @@ func _build_window() -> void:
 	_warning_label = Label.new()
 	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_warning_label.add_theme_color_override("font_color", Color.YELLOW)
+	UIStyle.set_font_size(_warning_label, 13)
 	root_vbox.add_child(_warning_label)
 
 	for i in range(3):
 		var button := Button.new()
 		button.toggle_mode = true
 		button.text = ["Standard", "Bridge", "Tunnel"][i]
+		UIStyle.set_font_size(button, 14)
 		button.pressed.connect(_on_class_button_pressed.bind(i))
 		root_vbox.add_child(button)
 		_class_buttons.append(button)
@@ -68,6 +75,7 @@ func _build_window() -> void:
 
 	_no_build_check = CheckBox.new()
 	_no_build_check.text = "No buildings"
+	UIStyle.set_font_size(_no_build_check, 14)
 	_no_build_check.toggled.connect(_on_no_build_toggled)
 	root_vbox.add_child(_no_build_check)
 
@@ -82,9 +90,10 @@ func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO
 		return
 	_refresh()
 	_last_screen_pos = screen_pos
-	_place_window_near_cursor(screen_pos)
+	if not _window.has_meta("opened_once") and not UIStyle.has_persistent_window_position(_window):
+		_place_window_near_cursor(screen_pos)
 	if not _window.has_meta("opened_once"):
-		_window.popup()
+		UIStyle.popup_persistent_window(_window, false)
 		_window.set_meta("opened_once", true)
 	else:
 		_window.show()
@@ -92,6 +101,7 @@ func show_for_edges(edge_indices: Array[int], screen_pos: Vector2 = Vector2.ZERO
 
 func close_window() -> void:
 	if _window:
+		UIStyle.save_persistent_window_layout(_window)
 		_window.hide()
 
 func _place_window_near_cursor(screen_pos: Vector2) -> void:

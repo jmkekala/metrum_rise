@@ -511,7 +511,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Added a shared top menu scaffold across gameplay and editor scenes, with gameplay File/View/City/Tools/Help menus and reduced editor File/editor-action menus. See [`ui.md`](ui.md).
 - Migrated the Building Inspector and SelectTool road-properties UI onto draggable Godot `Window` surfaces instead of custom anchored panels. See [`ui.md`](ui.md).
 - Building Inspector now supports multiple simultaneous per-building windows and refreshes open inspectors on each in-game hour boundary. See [`ui.md`](ui.md).
-- Added an in-game Pack Manager window through the gameplay `Mods` toolbar action. See [`ui.md`](ui.md).
+- Moved content-pack management into the shared Options window, available from MainMenu and gameplay `File -> Options...`; the gameplay construction toolbar no longer carries a `Mods` action. The Options window also now exposes `Graphics -> Fullscreen` and `Accessibility -> UI Scale`, persisted through `user://settings.cfg`; UI Scale applies immediately to scale-aware procedural UI, including inspector/economy detail text and eligible floating-window sizes. `settings.cfg` also stores restored `layout/<id>` window sizes/positions and Economy Overview split offsets. See [`ui.md`](ui.md).
 - Asset Editor building assets now use building-only `[[mesh_parts]]` with per-part transforms and
   nested LOD entries, replacing the old top-level building `[[lods]]` contract. See
   [`asset_editor.md`](asset_editor.md).
@@ -590,9 +590,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Added release startup user-data bootstrap: the router creates `user://worlds/`, `user://mods/`,
   and `user://saves/`, then copies missing bundled starter entries from `res://bootstrap/worlds/`
   and `res://bootstrap/mods/` without overwriting user-owned files. Fresh profiles also seed
-  `user://active_packs.cfg` with the bundled `kenney` pack enabled; later saved pack selections,
-  including an empty list, remain player-owned. See [`ui.md`](ui.md), [`terrain.md`](terrain.md),
-  and [`asset_editor.md`](asset_editor.md).
+  `user://settings.cfg` for general options state and `user://active_packs.cfg` with the bundled
+  `kenney` pack enabled; later saved pack selections, including an empty list, remain
+  player-owned. See [`ui.md`](ui.md), [`terrain.md`](terrain.md), and
+  [`asset_editor.md`](asset_editor.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).
 - Gameplay `File -> New Game` now opens a `user://worlds/` picker and loads the selected `WorldDefinition` into the live gameplay scene, pausing immediately after the refresh. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).
 - Gameplay `Save` and `Load` now open file pickers rooted at `user://saves/` instead of using one fixed `savegame.sqlite` path. See [`ui.md`](ui.md).
