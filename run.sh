@@ -52,8 +52,10 @@
 #   --visuals [mode]     Alias for --debug visuals [mode]
 #
 # Release crash diagnostics:
-#   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic dumps to logs/
+#   --release defaults METRUM_CRASH_DIAGNOSTICS=1 and writes panic/hang dumps to logs/
 #   METRUM_CRASH_DIAGNOSTICS=0 ./run.sh --release disables the background recorder
+#   METRUM_HANG_WATCHDOG_MS=0 disables the hang watchdog only
+#   METRUM_HANG_ABORT=1 aborts after the first hang dump
 #
 # Godot import cache:
 #   Missing/stale imported resources are repaired once per asset-source state.
@@ -384,7 +386,7 @@ fi
 
 if [ -n "${METRUM_CRASH_DIAGNOSTICS:-}" ] && [ "${METRUM_CRASH_DIAGNOSTICS}" != "0" ]; then
     mkdir -p "$METRUM_CRASH_LOG_DIR"
-    echo "Crash diagnostics enabled (panic dumps go to $METRUM_CRASH_LOG_DIR)"
+    echo "Crash diagnostics enabled (panic/hang dumps go to $METRUM_CRASH_LOG_DIR)"
 fi
 
 if [ $DEBUG -eq 0 ] && [ -n "${METRUM_DEBUG_FILTER:-}" ]; then

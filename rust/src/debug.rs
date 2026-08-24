@@ -8,7 +8,9 @@
 //! - `METRUM_DEBUG_SIM=1` — hourly simulation summaries (`./run.sh --debug-sim`)
 //! - `METRUM_DEBUG_PERF=1` — renderer and simulation frame timing summaries
 //! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs
-//! - `METRUM_CRASH_DIAGNOSTICS=1` — release-safe panic dump and flight-recorder capture
+//! - `METRUM_CRASH_DIAGNOSTICS=1` — release-safe panic/hang dumps and flight-recorder capture
+//! - `METRUM_HANG_WATCHDOG_MS=10000` — override the crash-diagnostics hang timeout; `0` disables it
+//! - `METRUM_HANG_ABORT=1` — abort after writing the first hang dump
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
 //! Use [`debug_log!`] and [`traffic_log!`] throughout the codebase — both are
@@ -22,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use crash::{CRASH_DIAGNOSTICS_ENABLED, is_crash_diagnostics_enabled};
 pub(crate) use crash::{
     CrashCommand, CrashSimSnapshot, flush_crash_diagnostics, record_crash_command,
-    record_crash_frame, record_crash_phase,
+    record_crash_frame, record_crash_phase, suspend_hang_watchdog,
 };
 
 /// General debug flag — set once at startup by [`init`], read by [`debug_log!`].

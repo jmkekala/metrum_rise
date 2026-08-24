@@ -415,6 +415,7 @@ pub(crate) fn run_sim_thread(
         }
         let command_ms = command_start.elapsed().as_secs_f64() * 1000.0;
         if should_quit {
+            crate::debug::suspend_hang_watchdog();
             return;
         }
 

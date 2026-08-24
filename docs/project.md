@@ -95,8 +95,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   export staffing. See
   [`economy.md`](economy.md) and [`ui.md`](ui.md).
 - Release launches now default to a low-overhead crash-diagnostics recorder: `run.sh --release`
-  sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook, and the sim thread records a
-  fixed-size flight recorder of command, phase, and frame summaries that dumps to `logs/` on panic.
+  sets `METRUM_CRASH_DIAGNOSTICS=1`, Rust installs a panic hook plus hang watchdog, and the sim
+  thread records a fixed-size flight recorder of command, phase, and frame summaries that dumps to
+  `logs/` on panic or watchdog-detected progress stalls. `METRUM_HANG_WATCHDOG_MS=0` disables only
+  hang detection, and `METRUM_HANG_ABORT=1` aborts after the first hang dump.
   Foreground debug modes such as `--debug road`, `--debug perf`, and `--debug traffic` remain
   opt-in. See [`reference.md`](reference.md).
 - The Rust runtime bridge now keeps `simulation_node.rs` as the `SimulationNode` lifecycle and

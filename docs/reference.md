@@ -112,7 +112,7 @@ variables before building Rust, deploying `libmetrum_rise.so`, and launching God
 
 | Flag | Main environment | Output / effect |
 |------|------------------|-----------------|
-| `--release` | `METRUM_CRASH_DIAGNOSTICS=1`, `METRUM_CRASH_LOG_DIR=<repo>/logs` unless already set | Enables the release-safe panic hook and fixed-size flight recorder. Panic dumps are written under `logs/`. Set `METRUM_CRASH_DIAGNOSTICS=0` to disable. |
+| `--release` | `METRUM_CRASH_DIAGNOSTICS=1`, `METRUM_CRASH_LOG_DIR=<repo>/logs` unless already set | Enables the release-safe panic hook, hang watchdog, and fixed-size flight recorder. Panic and hang dumps are written under `logs/`. Set `METRUM_CRASH_DIAGNOSTICS=0` to disable diagnostics, `METRUM_HANG_WATCHDOG_MS=0` to disable only the hang watchdog, or `METRUM_HANG_ABORT=1` to abort after the first hang dump. |
 | `--debug` | `METRUM_DEBUG=1` | General debug logging to stdout. |
 | `--debug <category>` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Category-filtered logging. Common categories include `isect`, `economy`, `demand`, `spawn`, `road`, `border`, `terrain`, `buildings`, `visuals`, `perf`, and `world-editor`. |
 | `METRUM_DEBUG_FILTER=<category> ./run.sh ...` | `METRUM_DEBUG=1`, `METRUM_DEBUG_FILTER=<category>` | Environment shorthand for category-filtered logging. |

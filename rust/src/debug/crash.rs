@@ -2,11 +2,13 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, Once, OnceLock, TryLockError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const CRASH_RECORDER_CAPACITY: usize = 4096;
+const DEFAULT_HANG_WATCHDOG_TIMEOUT_MS: u64 = 10_000;
+const HANG_WATCHDOG_POLL_MS: u64 = 500;
 
 /// Crash diagnostics flag — set by `METRUM_CRASH_DIAGNOSTICS=1`.
 pub static CRASH_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -15,7 +17,14 @@ static CRASH_RECORDER: OnceLock<Mutex<CrashRecorder>> = OnceLock::new();
 static CRASH_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CRASH_START: OnceLock<Instant> = OnceLock::new();
 static PANIC_HOOK: Once = Once::new();
+static HANG_WATCHDOG: Once = Once::new();
 static CRASH_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
+static HANG_DUMP_WRITTEN: AtomicBool = AtomicBool::new(false);
+static WATCHDOG_MONITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
+static WATCHDOG_ABORT_AFTER_DUMP: AtomicBool = AtomicBool::new(false);
+static WATCHDOG_LAST_PROGRESS_MS: AtomicU64 = AtomicU64::new(0);
+static WATCHDOG_PROGRESS_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static WATCHDOG_STATE: OnceLock<Mutex<WatchdogState>> = OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct CrashEvent {
@@ -33,6 +42,11 @@ struct CrashRecorder {
     sequence: u64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct WatchdogState {
+    last_event: Option<CrashEvent>,
+}
+
 impl CrashRecorder {
     fn new() -> Self {
         Self {
@@ -43,7 +57,7 @@ impl CrashRecorder {
         }
     }
 
-    fn push(&mut self, kind: CrashEventKind, summary: CrashSimSnapshot) {
+    fn push(&mut self, kind: CrashEventKind, summary: CrashSimSnapshot) -> CrashEvent {
         let event = CrashEvent {
             sequence: self.sequence,
             elapsed_ms: CRASH_START
@@ -57,6 +71,7 @@ impl CrashRecorder {
         self.next = (self.next + 1) % CRASH_RECORDER_CAPACITY;
         self.len = (self.len + 1).min(CRASH_RECORDER_CAPACITY);
         self.sequence = self.sequence.wrapping_add(1);
+        event
     }
 
     fn write_events(&self, out: &mut impl Write) -> std::io::Result<()> {
@@ -194,7 +209,11 @@ pub(crate) fn init() {
     }
     let _ = CRASH_LOG_DIR.set(log_dir);
     let _ = CRASH_RECORDER.set(Mutex::new(CrashRecorder::new()));
+    let _ = WATCHDOG_STATE.set(Mutex::new(WatchdogState::default()));
     install_panic_hook();
+    if let Some(timeout_ms) = hang_watchdog_timeout_ms() {
+        start_hang_watchdog(timeout_ms);
+    }
     println!(
         "[DEBUG] Crash diagnostics enabled (METRUM_CRASH_DIAGNOSTICS=1, logs={})",
         crash_log_dir().display()
@@ -259,6 +278,11 @@ pub(crate) fn flush_crash_diagnostics(reason: &str) {
     let _ = write_crash_dump(reason, None);
 }
 
+/// Disarms hang detection after an orderly simulation-thread shutdown.
+pub(crate) fn suspend_hang_watchdog() {
+    WATCHDOG_MONITOR_ACTIVE.store(false, Ordering::Release);
+}
+
 fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let previous_hook = std::panic::take_hook();
@@ -279,7 +303,91 @@ fn record_crash_event(kind: CrashEventKind, summary: CrashSimSnapshot) {
         return;
     };
     if let Ok(mut recorder) = recorder.lock() {
-        recorder.push(kind, summary);
+        let event = recorder.push(kind, summary);
+        drop(recorder);
+        record_watchdog_progress(event);
+    }
+}
+
+fn record_watchdog_progress(event: CrashEvent) {
+    let elapsed_ms = event.elapsed_ms.min(u128::from(u64::MAX)) as u64;
+    WATCHDOG_LAST_PROGRESS_MS.store(elapsed_ms, Ordering::Release);
+    WATCHDOG_PROGRESS_SEQUENCE.store(event.sequence.saturating_add(1), Ordering::Release);
+    if let Some(state) = WATCHDOG_STATE.get() {
+        if let Ok(mut state) = state.lock() {
+            state.last_event = Some(event);
+        }
+    }
+    WATCHDOG_MONITOR_ACTIVE.store(true, Ordering::Release);
+}
+
+fn hang_watchdog_timeout_ms() -> Option<u64> {
+    match std::env::var("METRUM_HANG_WATCHDOG_MS") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed == "0" {
+                None
+            } else {
+                trimmed.parse::<u64>().ok().filter(|value| *value > 0)
+            }
+        }
+        Err(_) => Some(DEFAULT_HANG_WATCHDOG_TIMEOUT_MS),
+    }
+}
+
+fn start_hang_watchdog(timeout_ms: u64) {
+    HANG_WATCHDOG.call_once(|| {
+        WATCHDOG_ABORT_AFTER_DUMP.store(
+            std::env::var("METRUM_HANG_ABORT")
+                .map(|value| !value.is_empty() && value != "0")
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+        let spawn_result = std::thread::Builder::new()
+            .name("metrum-hang-watchdog".to_string())
+            .spawn(move || run_hang_watchdog(timeout_ms));
+        if let Err(err) = spawn_result {
+            eprintln!("[CRASH_DIAGNOSTICS] could not start hang watchdog: {err}");
+        }
+    });
+}
+
+fn run_hang_watchdog(timeout_ms: u64) {
+    let poll = Duration::from_millis(HANG_WATCHDOG_POLL_MS);
+    loop {
+        std::thread::sleep(poll);
+        if !is_crash_diagnostics_enabled() {
+            continue;
+        }
+        if WATCHDOG_PROGRESS_SEQUENCE.load(Ordering::Acquire) == 0 {
+            continue;
+        }
+        if !WATCHDOG_MONITOR_ACTIVE.load(Ordering::Acquire) {
+            continue;
+        }
+        let Some(start) = CRASH_START.get() else {
+            continue;
+        };
+        let now_ms = start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let last_progress_ms = WATCHDOG_LAST_PROGRESS_MS.load(Ordering::Acquire);
+        let stalled_ms = now_ms.saturating_sub(last_progress_ms);
+        if stalled_ms < timeout_ms {
+            continue;
+        }
+        if HANG_DUMP_WRITTEN.swap(true, Ordering::AcqRel) {
+            continue;
+        }
+        match write_hang_dump(stalled_ms, timeout_ms) {
+            Ok(path) => {
+                eprintln!("[CRASH_DIAGNOSTICS] watchdog hang dump: {}", path.display());
+            }
+            Err(err) => {
+                eprintln!("[CRASH_DIAGNOSTICS] could not write watchdog hang dump: {err}");
+            }
+        }
+        if WATCHDOG_ABORT_AFTER_DUMP.load(Ordering::Relaxed) {
+            std::process::abort();
+        }
     }
 }
 
@@ -310,30 +418,98 @@ fn write_crash_dump(
         write_panic_info(&mut out, info)?;
     }
     writeln!(out)?;
+    write_flight_recorder(&mut out, "locked_by_panicking_thread")?;
+    write_backtrace(&mut out, "backtrace")?;
+    out.flush()?;
+    eprintln!("[CRASH_DIAGNOSTICS] wrote crash dump to {}", path.display());
+    Ok(path)
+}
+
+fn write_hang_dump(stalled_ms: u64, timeout_ms: u64) -> std::io::Result<PathBuf> {
+    let log_dir = crash_log_dir();
+    std::fs::create_dir_all(log_dir)?;
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+    let path = log_dir.join(format!(
+        "metrum-hang-{}-pid{}.log",
+        timestamp,
+        std::process::id()
+    ));
+    let file = std::fs::File::create(&path)?;
+    let mut out = std::io::BufWriter::new(file);
+
+    writeln!(out, "Metrum Rise hang diagnostics")?;
+    writeln!(out, "reason=watchdog_hang")?;
+    writeln!(out, "timestamp={}", chrono::Local::now().to_rfc3339())?;
+    writeln!(out, "pid={}", std::process::id())?;
+    writeln!(out, "timeout_ms={timeout_ms}")?;
+    writeln!(out, "stalled_ms={stalled_ms}")?;
+    writeln!(
+        out,
+        "abort_after_dump={}",
+        WATCHDOG_ABORT_AFTER_DUMP.load(Ordering::Relaxed)
+    )?;
+    write_watchdog_state(&mut out)?;
+    writeln!(out)?;
+    write_flight_recorder(&mut out, "locked_by_stalled_thread")?;
+    write_backtrace(&mut out, "watchdog_backtrace")?;
+    out.flush()?;
+    Ok(path)
+}
+
+fn write_watchdog_state(out: &mut impl Write) -> std::io::Result<()> {
+    match WATCHDOG_STATE.get() {
+        Some(state) => match state.try_lock() {
+            Ok(state) => match state.last_event {
+                Some(event) => {
+                    write!(out, "last_progress_event=")?;
+                    write_crash_event(out, event)?;
+                }
+                None => {
+                    writeln!(out, "last_progress_event=none")?;
+                }
+            },
+            Err(TryLockError::Poisoned(poisoned)) => match poisoned.into_inner().last_event {
+                Some(event) => {
+                    write!(out, "last_progress_event=")?;
+                    write_crash_event(out, event)?;
+                }
+                None => {
+                    writeln!(out, "last_progress_event=none")?;
+                }
+            },
+            Err(TryLockError::WouldBlock) => {
+                writeln!(out, "watchdog_state_unavailable=locked")?;
+            }
+        },
+        None => {
+            writeln!(out, "watchdog_state_unavailable=not_initialized")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_flight_recorder(out: &mut impl Write, locked_reason: &str) -> std::io::Result<()> {
     writeln!(out, "flight_recorder_capacity={CRASH_RECORDER_CAPACITY}")?;
     match CRASH_RECORDER.get() {
         Some(recorder) => match recorder.try_lock() {
-            Ok(recorder) => recorder.write_events(&mut out)?,
-            Err(TryLockError::Poisoned(poisoned)) => {
-                poisoned.into_inner().write_events(&mut out)?
-            }
+            Ok(recorder) => recorder.write_events(out)?,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().write_events(out)?,
             Err(TryLockError::WouldBlock) => {
-                writeln!(
-                    out,
-                    "flight_recorder_unavailable=locked_by_panicking_thread"
-                )?;
+                writeln!(out, "flight_recorder_unavailable={locked_reason}")?;
             }
         },
         None => {
             writeln!(out, "flight_recorder_unavailable=not_initialized")?;
         }
     }
+    Ok(())
+}
+
+fn write_backtrace(out: &mut impl Write, label: &str) -> std::io::Result<()> {
     writeln!(out)?;
-    writeln!(out, "backtrace:")?;
+    writeln!(out, "{label}:")?;
     writeln!(out, "{:?}", std::backtrace::Backtrace::force_capture())?;
-    out.flush()?;
-    eprintln!("[CRASH_DIAGNOSTICS] wrote crash dump to {}", path.display());
-    Ok(path)
+    Ok(())
 }
 
 fn crash_log_dir() -> &'static Path {
