@@ -139,7 +139,7 @@ impl TerrainSystem {
             terrain_chunk_cells_for_config(config),
             config.terrain_base_elevation_m,
         )
-        .with_render_chunk_span(config.terrain_chunk_m)
+        .with_render_chunk_span(config.terrain_render_chunk_span_m())
     }
 
     fn with_render_chunk_span(mut self, chunk_span_m: f32) -> Self {

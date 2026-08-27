@@ -2,8 +2,11 @@
 
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
+use crate::simulation::network::surface::{
+    RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
+};
 use godot::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{NetworkMeshData, TransitRenderer};
 
@@ -43,7 +46,14 @@ impl RoadRenderer {
             standard_surface::build_compiled_surface_coverage(graph, road_surface, terrain);
         let mut mesh = NetworkMeshData::new();
 
-        crosswalks::emit_crosswalk_markings(&mut mesh, graph, lane_system, terrain, road_surface);
+        crosswalks::emit_crosswalk_markings(
+            &mut mesh,
+            graph,
+            lane_system,
+            terrain,
+            road_surface,
+            &compiled_surface,
+        );
         standard_surface::emit_compiled_surface_mesh(
             &mut mesh,
             graph,
@@ -61,6 +71,59 @@ impl RoadRenderer {
         );
 
         mesh
+    }
+
+    /// Generates complete replacement meshes for a bounded set of render chunks.
+    pub(crate) fn generate_mesh_chunks_with_surface(
+        &self,
+        graph: &RegionGraph,
+        lane_system: &mut crate::simulation::network::lanes::LaneSystem,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        road_surface: &RoadSurfaceSystem,
+        target_chunks: &BTreeSet<SurfaceChunkKey>,
+    ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
+        let compiled_surface = standard_surface::build_compiled_surface_coverage_for_chunks(
+            graph,
+            road_surface,
+            terrain,
+            target_chunks,
+        );
+        lane_system.sync_heights_to_visible_surface_for_owners(
+            graph,
+            terrain,
+            road_surface,
+            &compiled_surface.edge_indices,
+            &compiled_surface.node_ids,
+        );
+
+        let mut mesh = NetworkMeshData::new_chunk_partitioned(
+            road_surface.chunk_span_m(),
+            target_chunks.clone(),
+        );
+        crosswalks::emit_crosswalk_markings(
+            &mut mesh,
+            graph,
+            lane_system,
+            terrain,
+            road_surface,
+            &compiled_surface,
+        );
+        standard_surface::emit_compiled_surface_mesh(
+            &mut mesh,
+            graph,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
+        standard_surface::emit_compiled_lane_markings(
+            &mut mesh,
+            graph,
+            lane_system,
+            road_surface,
+            terrain,
+            &compiled_surface,
+        );
+        mesh.into_partitioned_chunks()
     }
 }
 
@@ -204,6 +267,31 @@ fn push_triangle_to_layer(
     color: Color,
     normal: Vector3,
 ) {
+    if let Some(partition) = mesh.chunk_partition.as_mut() {
+        let centroid_x =
+            (f64::from(vertices[0].x) + f64::from(vertices[1].x) + f64::from(vertices[2].x)) / 3.0;
+        let centroid_z =
+            (f64::from(vertices[0].z) + f64::from(vertices[1].z) + f64::from(vertices[2].z)) / 3.0;
+        let chunk_span_m = f64::from(partition.chunk_span_m);
+        let chunk = (
+            (centroid_x / chunk_span_m).floor() as i32,
+            (centroid_z / chunk_span_m).floor() as i32,
+        );
+        if !partition.target_chunks.contains(&chunk) {
+            return;
+        }
+        let origin_x = chunk.0 as f32 * partition.chunk_span_m;
+        let origin_z = chunk.1 as f32 * partition.chunk_span_m;
+        let local_vertices =
+            vertices.map(|vertex| Vector3::new(vertex.x - origin_x, vertex.y, vertex.z - origin_z));
+        let chunk_mesh = partition
+            .chunks
+            .entry(chunk)
+            .or_insert_with(NetworkMeshData::new);
+        push_triangle_to_layer(chunk_mesh, layer, local_vertices, uvs, color, normal);
+        return;
+    }
+
     let target = match layer {
         MeshLayer::Earthwork => (
             &mut mesh.earthwork_vertices,

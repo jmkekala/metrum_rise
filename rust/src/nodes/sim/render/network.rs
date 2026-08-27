@@ -4,74 +4,155 @@
 
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::RoadSurfaceCompileReason;
+use crate::simulation::network::surface::{RoadSurfaceCompileReason, SurfaceChunkKey};
 use crate::{debug, debug_log};
 use godot::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 impl SimCore {
     // ── Network Renderer ──
 
-    /// Returns dictionary of road/intersection mesh data.
-    pub fn get_road_mesh_data_internal(&mut self) -> VarDictionary {
-        let road_debug = debug::category_enabled("road");
-        let total_start = road_debug.then(Instant::now);
-        let cache_hit = self.cached_road_mesh_data.is_some() && !self.network_dirty;
-        if self.network_dirty || self.cached_road_mesh_data.is_none() {
-            if let Some(mesh) = self
-                .transit_network
-                .try_generate_mesh_data(&self.region_graph, &self.heightmap)
-            {
-                self.cached_road_mesh_data = Some(Arc::new(mesh));
-                self.cached_road_mesh_generation = self.road_tool_surface_generation;
-            }
-        }
-        let Some(mesh_data) = self.cached_road_mesh_data.as_ref() else {
-            return VarDictionary::new();
-        };
-        let vertex_count = Self::network_mesh_vertex_count(mesh_data);
-        let dict = Self::network_mesh_data_dict(mesh_data);
-        if road_debug {
-            debug_log!(
-                "road",
-                "road_mesh_data cache_hit={} vertices={} total_ms={:.3}",
-                cache_hit,
-                vertex_count,
-                total_start
-                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                    .unwrap_or(0.0)
-            );
-        }
-        dict
-    }
-
-    /// Regenerates the full road mesh cache after a network edit on the sim thread.
+    /// Regenerates only dirty road mesh chunks after a network edit on the sim thread.
     pub(crate) fn precompute_road_mesh_data(&mut self) {
         let road_debug = debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
-        if let Some(mesh) = self
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
+        if !self
             .transit_network
-            .try_generate_mesh_data(&self.region_graph, &self.heightmap)
+            .road_surface
+            .published_generation_matches_source()
         {
-            self.cached_road_mesh_data = Some(Arc::new(mesh));
+            return;
+        }
+        let mut target_chunks = BTreeSet::new();
+        if self.road_mesh_full_replace {
+            target_chunks.extend(
+                self.transit_network
+                    .road_surface
+                    .surface_chunk_cache()
+                    .keys()
+                    .copied(),
+            );
+            target_chunks.extend(
+                self.transit_network
+                    .road_surface
+                    .earthwork_chunk_cache()
+                    .keys()
+                    .copied(),
+            );
+            target_chunks.extend(self.cached_road_mesh_chunks.keys().copied());
+        } else {
+            target_chunks.extend(
+                self.transit_network
+                    .road_surface
+                    .last_rebuilt_surface_chunks
+                    .iter()
+                    .copied(),
+            );
+            target_chunks.extend(
+                self.transit_network
+                    .road_surface
+                    .last_rebuilt_terrain_chunks
+                    .iter()
+                    .copied(),
+            );
+        }
+
+        let mut rebuilt_vertex_count = 0;
+        if let Some(mut generated_chunks) = self.transit_network.try_generate_mesh_chunks(
+            &self.region_graph,
+            &self.heightmap,
+            &target_chunks,
+        ) {
+            let published_chunks = Arc::make_mut(&mut self.published_road_mesh_chunks);
+            if self.road_mesh_full_replace {
+                published_chunks.clear();
+            }
+            for chunk in &target_chunks {
+                if let Some(mesh) = generated_chunks.remove(chunk) {
+                    if mesh.is_empty() {
+                        self.cached_road_mesh_chunks.remove(chunk);
+                        published_chunks.remove(chunk);
+                    } else {
+                        rebuilt_vertex_count += mesh.vertex_count();
+                        let mesh = Arc::new(mesh);
+                        self.cached_road_mesh_chunks
+                            .insert(*chunk, Arc::clone(&mesh));
+                        published_chunks.insert(*chunk, mesh);
+                    }
+                } else {
+                    self.cached_road_mesh_chunks.remove(chunk);
+                    published_chunks.remove(chunk);
+                }
+            }
+            Arc::make_mut(&mut self.pending_road_mesh_chunks).extend(target_chunks.iter().copied());
             self.cached_road_mesh_generation = self.road_tool_surface_generation;
         }
         if road_debug {
-            let vertex_count = self
-                .cached_road_mesh_data
-                .as_deref()
-                .map(Self::network_mesh_vertex_count)
-                .unwrap_or(0);
             debug_log!(
                 "road",
-                "road_mesh_precompute vertices={} total_ms={:.3}",
-                vertex_count,
+                "road_mesh_precompute dirty_chunks={} cached_chunks={} rebuilt_vertices={} total_ms={:.3}",
+                target_chunks.len(),
+                self.cached_road_mesh_chunks.len(),
+                rebuilt_vertex_count,
                 total_start
                     .map(|start| start.elapsed().as_secs_f64() * 1000.0)
                     .unwrap_or(0.0)
             );
         }
+    }
+
+    pub(crate) fn road_mesh_chunks_dict(
+        chunks: &BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+        pending_chunks: &BTreeSet<SurfaceChunkKey>,
+        full_replace: bool,
+        generation: u64,
+        chunk_span_m: f32,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "surface_generation",
+            i64::try_from(generation).unwrap_or(i64::MAX),
+        );
+        dict.set("full_replace", full_replace);
+        dict.set("chunk_span_m", chunk_span_m);
+
+        let mut updates = VarArray::new();
+        if full_replace {
+            for (&chunk, mesh) in chunks {
+                updates.push(&Self::road_mesh_chunk_dict(chunk, mesh).to_variant());
+            }
+        } else {
+            for &chunk in pending_chunks {
+                let update = chunks
+                    .get(&chunk)
+                    .map(|mesh| Self::road_mesh_chunk_dict(chunk, mesh))
+                    .unwrap_or_else(|| {
+                        let mut removed = VarDictionary::new();
+                        removed.set("chunk_x", chunk.0);
+                        removed.set("chunk_z", chunk.1);
+                        removed.set("removed", true);
+                        removed
+                    });
+                updates.push(&update.to_variant());
+            }
+        }
+        dict.set("chunks", updates);
+        dict
+    }
+
+    fn road_mesh_chunk_dict(chunk: SurfaceChunkKey, mesh_data: &NetworkMeshData) -> VarDictionary {
+        let mut dict = Self::network_mesh_data_dict(mesh_data);
+        dict.set("chunk_x", chunk.0);
+        dict.set("chunk_z", chunk.1);
+        dict.set("removed", false);
+        dict
     }
 
     pub(crate) fn network_mesh_data_dict(mesh_data: &NetworkMeshData) -> VarDictionary {
@@ -191,16 +272,6 @@ impl SimCore {
             PackedColorArray::from_iter(mesh_data.concrete_colors.iter().copied()),
         );
         dict
-    }
-
-    fn network_mesh_vertex_count(mesh_data: &NetworkMeshData) -> usize {
-        mesh_data.earthwork_vertices.len()
-            + mesh_data.curb_vertices.len()
-            + mesh_data.raised_step_vertices.len()
-            + mesh_data.sidewalk_vertices.len()
-            + mesh_data.road_vertices.len()
-            + mesh_data.marking_vertices.len()
-            + mesh_data.concrete_vertices.len()
     }
 
     /// Returns compiled road-surface debug line data for editor visualization.

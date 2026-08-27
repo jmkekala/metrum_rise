@@ -1,6 +1,6 @@
 //! Undo and render snapshots produced from authoritative simulation state.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::state::{PendingDemandSpawnAction, SimCore};
@@ -15,7 +15,9 @@ use crate::simulation::extraction::ExtractorSite;
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::network::lanes::{Lane, LaneType};
 use crate::simulation::network::render::NetworkMeshData;
-use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceTopologyUndo};
+use crate::simulation::network::surface::{
+    CURB_STEP_HEIGHT_M, RoadSurfaceTopologyUndo, SurfaceChunkKey,
+};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
@@ -234,8 +236,14 @@ pub struct RenderSnapshot {
     pub network_dirty: bool,
     /// Authoritative road-surface revision consumed by the network renderer.
     pub network_generation: u64,
-    /// Precomputed road mesh for the published network revision.
-    pub road_mesh_data: Option<Arc<NetworkMeshData>>,
+    /// Road-mesh upserts accumulated for the unacknowledged render revision.
+    pub road_mesh_chunks: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
+    /// Changed or removed chunks accumulated for the unacknowledged revision.
+    pub pending_road_mesh_chunks: Arc<BTreeSet<SurfaceChunkKey>>,
+    /// Whether the next upload must discard every previously rendered road chunk.
+    pub road_mesh_full_replace: bool,
+    /// World-space span used to partition committed road render meshes.
+    pub road_mesh_chunk_span_m: f32,
     /// Sorted terrain patches whose raw heightmap payloads are forbidden.
     pub engineered_terrain_patch_keys: Arc<Vec<(usize, usize)>>,
     /// Current simulation day.
@@ -296,7 +304,10 @@ impl Default for RenderSnapshot {
             water_border_depths: Arc::new(Vec::new()),
             network_dirty: false,
             network_generation: 0,
-            road_mesh_data: None,
+            road_mesh_chunks: Arc::new(BTreeMap::new()),
+            pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
+            road_mesh_full_replace: true,
+            road_mesh_chunk_span_m: 0.0,
             engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
@@ -474,7 +485,10 @@ impl SimCore {
         snapshot.water_payload_generation = water_payload_generation;
         snapshot.network_dirty = self.network_dirty;
         snapshot.network_generation = self.cached_road_mesh_generation;
-        snapshot.road_mesh_data = self.cached_road_mesh_data.clone();
+        snapshot.road_mesh_chunks = Arc::clone(&self.published_road_mesh_chunks);
+        snapshot.pending_road_mesh_chunks = Arc::clone(&self.pending_road_mesh_chunks);
+        snapshot.road_mesh_full_replace = self.road_mesh_full_replace;
+        snapshot.road_mesh_chunk_span_m = self.transit_network.road_surface.chunk_span_m();
         snapshot.engineered_terrain_patch_keys =
             Arc::new(self.engineered_terrain_patch_keys.clone());
         snapshot.node_positions = node_positions;

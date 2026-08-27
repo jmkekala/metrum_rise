@@ -58,7 +58,9 @@ fn test_core() -> SimCore {
         heightmap: TerrainSystem::from_world_config(&config),
         watermap: WaterSystem::from_world_config(&config),
         region_graph: RegionGraph::new(),
-        transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+        transit_network: TransitNetwork::new_with_surface_chunk_span(
+            config.terrain_render_chunk_span_m(),
+        ),
         zoning: ZoningSystem::new(&config),
         pollution: PollutionSystem::new(&config),
         noise: NoiseSystem::new(&config),
@@ -104,7 +106,10 @@ fn test_core() -> SimCore {
         terrain_payload_global_generation: 1,
         terrain_payload_patch_generations: HashMap::new(),
         refined_terrain_assembly_ledgers: HashMap::new(),
-        cached_road_mesh_data: None,
+        cached_road_mesh_chunks: std::collections::BTreeMap::new(),
+        published_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeMap::new()),
+        pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
+        road_mesh_full_replace: true,
         cached_road_mesh_generation: 0,
         cached_network_node_positions: std::sync::Arc::new(Vec::new()),
         cached_network_node_positions_dirty: true,
@@ -132,11 +137,20 @@ fn fiscal_policy_api_clamps_values_and_rejects_unknown_ids() {
 }
 
 #[test]
-fn test_core_keeps_road_surface_chunks_aligned_to_terrain_chunks() {
+fn test_core_uses_terrain_render_span_for_road_surface_chunks() {
     let core = test_core();
     assert_eq!(
         core.transit_network.road_surface.chunk_span_m(),
-        core.config.terrain_chunk_m
+        core.heightmap.chunk_span_m()
+    );
+    assert_eq!(
+        core.heightmap.chunk_span_m(),
+        core.config.terrain_render_chunk_span_m()
+    );
+    assert_eq!(
+        core.heightmap.chunk_span_m(),
+        core.config.terrain_cell_m * core.heightmap.render_patch_interval_cells() as f32,
+        "advertised render span must equal the physical terrain-patch interval span"
     );
 }
 
@@ -278,28 +292,201 @@ fn stale_network_acknowledgement_preserves_newer_render_revision() {
     core.mark_network_render_dirty();
     let stale_generation = core.road_tool_surface_generation;
     core.mark_network_render_dirty();
+    core.pending_road_mesh_chunks =
+        std::sync::Arc::new(std::collections::BTreeSet::from([(1, 2), (3, 4)]));
+    core.published_road_mesh_chunks = std::sync::Arc::new(std::collections::BTreeMap::from([(
+        (1, 2),
+        std::sync::Arc::new(crate::simulation::network::NetworkMeshData::new()),
+    )]));
 
     assert!(!core.acknowledge_network_render_generation(stale_generation));
     assert!(core.network_dirty);
+    assert_eq!(core.pending_road_mesh_chunks.len(), 2);
+    assert_eq!(core.published_road_mesh_chunks.len(), 1);
+    assert!(core.road_mesh_full_replace);
 
     let current_generation = core.road_tool_surface_generation;
     assert!(core.acknowledge_network_render_generation(current_generation));
     assert!(!core.network_dirty);
+    assert!(core.pending_road_mesh_chunks.is_empty());
+    assert!(core.published_road_mesh_chunks.is_empty());
+    assert!(!core.road_mesh_full_replace);
+}
+
+#[test]
+fn removed_road_publishes_chunk_tombstones_without_rebuilding_the_world() {
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
+    let old_chunks = core
+        .cached_road_mesh_chunks
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!old_chunks.is_empty());
+    assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
+
+    let edge = core.region_graph.edge(0);
+    let endpoints = [edge.start_node, edge.end_node];
+    core.region_graph.edge_mut(0).deleted = true;
+    core.region_graph.rebuild_adjacency_list();
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    core.transit_network
+        .road_surface
+        .mark_edge_dirty(&core.region_graph, 0);
+    for node_id in endpoints {
+        core.transit_network
+            .road_surface
+            .mark_node_dirty(&core.region_graph, node_id);
+    }
+    core.mark_local_network_render_dirty();
+    core.precompute_road_mesh_data();
+
+    assert!(core.cached_road_mesh_chunks.is_empty());
+    assert!(
+        old_chunks
+            .iter()
+            .all(|chunk| core.pending_road_mesh_chunks.contains(chunk)),
+        "every removed cache entry must stay in the pending ledger as a Godot tombstone"
+    );
+    assert!(!core.road_mesh_full_replace);
+}
+
+#[test]
+fn local_road_precompute_reuses_distant_chunk_mesh_allocation() {
+    let mut core = test_core();
+    for (start, end) in [
+        (
+            Vector3::new(-1_000.0, 0.0, 64.0),
+            Vector3::new(-900.0, 0.0, 64.0),
+        ),
+        (
+            Vector3::new(900.0, 0.0, 64.0),
+            Vector3::new(1_000.0, 0.0, 64.0),
+        ),
+    ] {
+        let start_node = core.region_graph.add_node(start, NodeType::Junction);
+        let end_node = core.region_graph.add_node(end, NodeType::Junction);
+        core.region_graph
+            .add_edge(test_road_edge(start_node, end_node, vec![start, end]));
+    }
+    core.region_graph.rebuild_adjacency_list();
+    core.region_graph.rebuild_intersection_clips();
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
+    assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
+
+    let distant_chunk = core
+        .transit_network
+        .road_surface
+        .surface_chunk_cache()
+        .iter()
+        .find_map(|(&chunk, entry)| {
+            (entry.edge_indices.contains(&1) && !entry.edge_indices.contains(&0)).then_some(chunk)
+        })
+        .expect("the separated road must own a distant render chunk");
+    let distant_mesh = std::sync::Arc::clone(
+        core.cached_road_mesh_chunks
+            .get(&distant_chunk)
+            .expect("distant road mesh chunk"),
+    );
+
+    core.transit_network
+        .road_surface
+        .mark_edge_dirty(&core.region_graph, 0);
+    core.mark_local_network_render_dirty();
+    core.precompute_road_mesh_data();
+
+    assert!(std::sync::Arc::ptr_eq(
+        core.cached_road_mesh_chunks
+            .get(&distant_chunk)
+            .expect("unaffected distant chunk must remain cached"),
+        &distant_mesh
+    ));
+    assert!(!core.pending_road_mesh_chunks.contains(&distant_chunk));
+}
+
+#[test]
+fn unacknowledged_local_road_generations_accumulate_chunk_payloads() {
+    let mut core = test_core();
+    for (start, end) in [
+        (
+            Vector3::new(-1_000.0, 0.0, 64.0),
+            Vector3::new(-900.0, 0.0, 64.0),
+        ),
+        (
+            Vector3::new(900.0, 0.0, 64.0),
+            Vector3::new(1_000.0, 0.0, 64.0),
+        ),
+    ] {
+        let start_node = core.region_graph.add_node(start, NodeType::Junction);
+        let end_node = core.region_graph.add_node(end, NodeType::Junction);
+        core.region_graph
+            .add_edge(test_road_edge(start_node, end_node, vec![start, end]));
+    }
+    core.region_graph.rebuild_adjacency_list();
+    core.region_graph.rebuild_intersection_clips();
+    core.transit_network
+        .lane_system
+        .rebuild(&mut core.region_graph);
+    core.mark_network_render_dirty();
+    core.precompute_road_mesh_data();
+    assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
+
+    core.transit_network
+        .road_surface
+        .mark_edge_dirty(&core.region_graph, 0);
+    core.mark_local_network_render_dirty();
+    core.precompute_road_mesh_data();
+    let first_generation = core.cached_road_mesh_generation;
+    let first_pending = core.pending_road_mesh_chunks.as_ref().clone();
+    let first_payloads = core.published_road_mesh_chunks.as_ref().clone();
+    assert!(!first_pending.is_empty());
+    assert!(!first_payloads.is_empty());
+
+    core.transit_network
+        .road_surface
+        .mark_edge_dirty(&core.region_graph, 1);
+    core.mark_local_network_render_dirty();
+    core.precompute_road_mesh_data();
+
+    assert!(core.cached_road_mesh_generation > first_generation);
+    assert!(first_pending.is_subset(&core.pending_road_mesh_chunks));
+    assert!(first_payloads.iter().all(|(chunk, mesh)| {
+        std::sync::Arc::ptr_eq(
+            core.published_road_mesh_chunks
+                .get(chunk)
+                .expect("a skipped generation must retain its pending upsert"),
+            mesh,
+        )
+    }));
+    assert!(core.pending_road_mesh_chunks.len() > first_pending.len());
+
+    assert!(core.acknowledge_network_render_generation(core.cached_road_mesh_generation));
+    assert!(core.pending_road_mesh_chunks.is_empty());
+    assert!(core.published_road_mesh_chunks.is_empty());
 }
 
 #[test]
 fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
     let mut core = test_core();
-    core.cached_road_mesh_data = Some(std::sync::Arc::new(
-        crate::simulation::network::NetworkMeshData::new(),
-    ));
+    core.cached_road_mesh_chunks = std::collections::BTreeMap::from([(
+        (0, 0),
+        std::sync::Arc::new(crate::simulation::network::NetworkMeshData::new()),
+    )]);
     core.cached_road_mesh_generation = core.road_tool_surface_generation;
     core.cached_network_node_positions = std::sync::Arc::new(vec![Vector3::new(12.0, 3.0, -8.0)]);
     core.cached_network_node_positions_dirty = false;
     let previous_mesh = std::sync::Arc::clone(
-        core.cached_road_mesh_data
-            .as_ref()
-            .expect("test road mesh cache"),
+        core.cached_road_mesh_chunks
+            .get(&(0, 0))
+            .expect("seeded road mesh chunk"),
     );
     let previous_node_positions = std::sync::Arc::clone(&core.cached_network_node_positions);
     let unchanged_generation = core.terrain_payload_generation_for_patch(9, 9);
@@ -320,9 +507,9 @@ fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
     assert!(core.road_tool_surface_generation > road_query_generation);
     assert!(core.network_dirty);
     assert!(std::sync::Arc::ptr_eq(
-        core.cached_road_mesh_data
-            .as_ref()
-            .expect("local invalidation must retain the last-good road mesh"),
+        core.cached_road_mesh_chunks
+            .get(&(0, 0))
+            .expect("local invalidation must retain the cached chunk"),
         &previous_mesh
     ));
     let snapshot = core.build_snapshot();
@@ -337,7 +524,7 @@ fn local_network_render_invalidation_preserves_unrelated_terrain_generation() {
 
     core.mark_network_render_dirty();
     assert!(
-        core.cached_road_mesh_data.is_none(),
+        core.cached_road_mesh_chunks.is_empty() && core.road_mesh_full_replace,
         "world-wide invalidation must discard a mesh from the previous world generation"
     );
 }
@@ -455,10 +642,10 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     core.region_graph.rebuild_intersection_clips();
     core.precompute_road_mesh_data();
 
-    let published_mesh = std::sync::Arc::clone(
-        core.cached_road_mesh_data
-            .as_ref()
-            .expect("the flat four-way junction must publish a baseline mesh"),
+    let published_mesh = std::sync::Arc::clone(&core.published_road_mesh_chunks);
+    assert!(
+        !published_mesh.is_empty(),
+        "the flat four-way junction must publish a baseline mesh"
     );
     let published_generation = core.cached_road_mesh_generation;
     let published_node_positions = core.build_snapshot().node_positions;
@@ -506,12 +693,14 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
             .published_generation_matches_source(),
         "the contradictory JunctionN must exercise the failed-production path"
     );
-    assert!(std::sync::Arc::ptr_eq(
-        core.cached_road_mesh_data
-            .as_ref()
-            .expect("failed precompute must retain the last-good mesh"),
-        &published_mesh
-    ));
+    assert!(published_mesh.iter().all(|(chunk, mesh)| {
+        std::sync::Arc::ptr_eq(
+            core.cached_road_mesh_chunks
+                .get(chunk)
+                .expect("failed precompute must retain every last-good chunk"),
+            mesh,
+        )
+    }));
     assert_eq!(core.cached_road_mesh_generation, published_generation);
     assert!(
         road_tool_snapshots_from_core(&core).is_none(),
@@ -520,10 +709,7 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
     let failed_snapshot = core.build_snapshot();
     assert_eq!(failed_snapshot.network_generation, published_generation);
     assert!(std::sync::Arc::ptr_eq(
-        failed_snapshot
-            .road_mesh_data
-            .as_ref()
-            .expect("failed render snapshot must retain the last-good mesh"),
+        &failed_snapshot.road_mesh_chunks,
         &published_mesh
     ));
     assert!(std::sync::Arc::ptr_eq(

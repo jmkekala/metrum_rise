@@ -357,12 +357,13 @@ func _refresh_after_world_load():
 	if move_tool and move_tool.current_state != 0:
 		move_tool.cancel_move()
 	_cancel_active_tool()
+	# Never leave the previous world's road chunks visible while the new terrain is rebuilt.
+	if road_tool:
+		road_tool.reset_main_mesh_chunks()
 	if terrain_node:
 		terrain_node.rebuild_from_simulation_state()
 	if water_node:
 		water_node.rebuild_from_simulation_state()
-	if road_tool:
-		road_tool.update_main_mesh()
 	if buildings_node:
 		buildings_node.reload_asset_packs()
 		buildings_node.update_all_buildings()

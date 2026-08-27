@@ -527,7 +527,7 @@ impl SimCore {
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
         self.transit_network =
-            TransitNetwork::new_with_surface_chunk_span(self.config.terrain_chunk_m);
+            TransitNetwork::new_with_surface_chunk_span(self.config.terrain_render_chunk_span_m());
         self.zoning = ZoningSystem::new(&self.config);
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
@@ -564,7 +564,6 @@ impl SimCore {
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
-        self.cached_road_mesh_data = None;
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
@@ -1049,7 +1048,9 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(
+                config.terrain_render_chunk_span_m(),
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1095,7 +1096,10 @@ mod tests {
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
             refined_terrain_assembly_ledgers: HashMap::new(),
-            cached_road_mesh_data: None,
+            cached_road_mesh_chunks: std::collections::BTreeMap::new(),
+            published_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeMap::new()),
+            pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
+            road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
@@ -1151,11 +1155,24 @@ mod tests {
                 .published_generation_matches_source(),
             "the replacement empty road surface must be published after authored water rebuild"
         );
-        assert!(core.cached_road_mesh_data.is_some());
+        assert!(core.cached_road_mesh_chunks.is_empty());
+        assert!(core.road_mesh_full_replace);
         assert_eq!(
             core.cached_road_mesh_generation, core.road_tool_surface_generation,
             "the snapshot token must identify the final post-water world generation"
         );
+    }
+
+    #[test]
+    fn blank_world_reset_uses_terrain_render_span_when_cell_exceeds_authored_chunk() {
+        let mut core = test_core_with_small_world();
+
+        core.create_blank_world_internal(40.0, 40.0, 8.0, 4.0, 0.0)
+            .expect("the supported coarse-cell world should reset");
+
+        assert_eq!(core.config.terrain_render_chunk_span_m(), 8.0);
+        assert_eq!(core.heightmap.chunk_span_m(), 8.0);
+        assert_eq!(core.transit_network.road_surface.chunk_span_m(), 8.0);
     }
 
     #[test]

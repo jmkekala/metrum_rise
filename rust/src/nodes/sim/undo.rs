@@ -387,7 +387,6 @@ impl SimCore {
         self.building_site_owned_terrain_patch_keys.clear();
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
-        self.cached_road_mesh_data = None;
         self.terrain_dirty = true;
         self.mark_network_render_dirty();
     }

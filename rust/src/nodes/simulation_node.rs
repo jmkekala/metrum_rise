@@ -74,7 +74,7 @@
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `get_network_render_generation` | `network_renderer.gd` |
 //! | | `acknowledge_network_render` | `network_renderer.gd` |
-//! | | `get_road_mesh_data` | `network_renderer.gd` |
+//! | | `get_road_mesh_data` | `network_tool.gd` (coordinated by `network_renderer.gd`) |
 //! | | `validate_road_candidate` | `road_tool.gd` |
 //! | | `request_preview_road_surface` | `road_tool.gd` |
 //! | | `get_preview_road_surface_result` | `road_tool.gd` |
@@ -162,7 +162,7 @@ use crate::simulation::zoning::ZoningSystem;
 
 use crate::debug_log;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -450,7 +450,9 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(
+                config.terrain_render_chunk_span_m(),
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -502,7 +504,10 @@ impl INode3D for SimulationNode {
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
             refined_terrain_assembly_ledgers: HashMap::new(),
-            cached_road_mesh_data: None,
+            cached_road_mesh_chunks: BTreeMap::new(),
+            published_road_mesh_chunks: Arc::new(BTreeMap::new()),
+            pending_road_mesh_chunks: Arc::new(BTreeSet::new()),
+            road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
             cached_network_node_positions: Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,

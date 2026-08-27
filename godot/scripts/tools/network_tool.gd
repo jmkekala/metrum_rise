@@ -1,7 +1,7 @@
 ## Base class for all road-network editing tools (RoadTool, MoveTool, CulDeSacTool).
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
-##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_world_surface_height(),
+##   get_road_mesh_data(full_snapshot), get_network_nodes(), get_node_pos(), get_world_surface_height(),
 ##   get_road_ghost_line_data(), get_road_ghost_snap(), intersect_world_surface(),
 ##   get_road_tool_cursor_pos(), get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
@@ -20,7 +20,10 @@ var is_valid: bool = true
 var blue_color = Color(0.0, 1.0, 1.0, 0.6)
 var red_color = Color(1.0, 0.1, 0.1, 0.6)
 
-var mesh_instance: MeshInstance3D # The final road mesh
+var road_mesh_root: Node3D # Final road chunks owned only by RoadTool
+var _road_chunk_instances: Dictionary = {}
+var _road_mesh_generation: int = -1
+var _road_chunk_span_m: float = 0.0
 var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
@@ -38,6 +41,8 @@ var _node_visuals_visible: bool = false
 
 const SURFACE_DEBUG_REFRESH_SEC := 0.2
 const SURFACE_PROBE_REFRESH_SEC := 0.25
+const CHUNK_COORD_MIN := -2147483648
+const CHUNK_COORD_MAX := 2147483647
 
 func _ready():
 	if name == "RoadTool":
@@ -49,13 +54,9 @@ func _ready():
 func _setup_visuals():
 	# Final mesh container (ONLY RoadTool owns the final mesh)
 	if name == "RoadTool":
-		mesh_instance = MeshInstance3D.new()
-		SceneLightingConfig.apply_shadow_policy(
-			mesh_instance,
-			SceneLightingConfig.SHADOW_RECEIVER_ONLY,
-			"roads"
-		)
-		add_child(mesh_instance)
+		road_mesh_root = Node3D.new()
+		road_mesh_root.name = "RoadMeshChunks"
+		add_child(road_mesh_root)
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
@@ -314,17 +315,259 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		return -1
 
 	mark_network_nodes_dirty()
-	var data = simulation_node.get_road_mesh_data()
-	if not data:
+	# Dirty revisions are coordinated by NetworkRenderer so terrain and roads swap together.
+	if expected_generation < 0 and simulation_node.is_network_dirty():
 		return -1
-	var surface_generation := int(data.get("surface_generation", -1))
+	var data = simulation_node.get_road_mesh_data(_road_mesh_generation < 0)
+	if typeof(data) != TYPE_DICTIONARY:
+		return -1
+	if (
+		not data.has("surface_generation")
+		or typeof(data["surface_generation"]) != TYPE_INT
+		or not data.has("full_replace")
+		or typeof(data["full_replace"]) != TYPE_BOOL
+		or not data.has("chunk_span_m")
+		or (
+			typeof(data["chunk_span_m"]) != TYPE_FLOAT
+			and typeof(data["chunk_span_m"]) != TYPE_INT
+		)
+		or not data.has("chunks")
+		or typeof(data["chunks"]) != TYPE_ARRAY
+	):
+		return -1
+	var surface_generation: int = data["surface_generation"]
+	if surface_generation < 0:
+		return -1
 	if expected_generation >= 0 and surface_generation != expected_generation:
 		return -1
-	var road_mat := WorldMaterials.road_asphalt_material()
-	var sidewalk_mat := WorldMaterials.road_sidewalk_material()
-	var sidewalk_face_mat := WorldMaterials.road_sidewalk_face_material()
-	var concrete_mat := WorldMaterials.road_concrete_material()
+	if surface_generation < _road_mesh_generation:
+		return -1
+	var full_replace: bool = data["full_replace"]
+	if _road_mesh_generation < 0 and not full_replace:
+		return -1
+	var chunk_span_m := float(data["chunk_span_m"])
+	if not is_finite(chunk_span_m) or chunk_span_m <= 0.0:
+		return -1
+	if not full_replace and chunk_span_m != _road_chunk_span_m:
+		return -1
+	var chunk_updates: Array = data["chunks"]
+	var validated_updates: Array[Dictionary] = []
+	var seen_keys: Dictionary = {}
+	for chunk_variant in chunk_updates:
+		if typeof(chunk_variant) != TYPE_DICTIONARY:
+			return -1
+		var chunk_data: Dictionary = chunk_variant
+		if (
+			not chunk_data.has("chunk_x")
+			or typeof(chunk_data["chunk_x"]) != TYPE_INT
+			or not chunk_data.has("chunk_z")
+			or typeof(chunk_data["chunk_z"]) != TYPE_INT
+			or not chunk_data.has("removed")
+			or typeof(chunk_data["removed"]) != TYPE_BOOL
+		):
+			return -1
+		if full_replace and chunk_data["removed"]:
+			return -1
+		var chunk_x: int = chunk_data["chunk_x"]
+		var chunk_z: int = chunk_data["chunk_z"]
+		if (
+			chunk_x < CHUNK_COORD_MIN
+			or chunk_x > CHUNK_COORD_MAX
+			or chunk_z < CHUNK_COORD_MIN
+			or chunk_z > CHUNK_COORD_MAX
+		):
+			return -1
+		var key := Vector2i(chunk_x, chunk_z)
+		if seen_keys.has(key):
+			return -1
+		seen_keys[key] = true
+		validated_updates.append(chunk_data)
 
+	var staged_instances: Dictionary = {}
+	for chunk_data in validated_updates:
+		if chunk_data["removed"]:
+			continue
+		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
+		var instance := _build_road_chunk_instance(chunk_data, key, chunk_span_m)
+		if instance == null:
+			_discard_staged_road_chunks(staged_instances)
+			return -1
+		staged_instances[key] = instance
+
+	# Building ArrayMeshes can span frames under a debugger. Never commit a stale batch.
+	if int(simulation_node.get_network_render_generation()) != surface_generation:
+		_discard_staged_road_chunks(staged_instances)
+		return -1
+
+	if full_replace:
+		for key in _road_chunk_instances.keys():
+			_remove_road_chunk(key)
+	for chunk_data in validated_updates:
+		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
+		if chunk_data["removed"]:
+			_remove_road_chunk(key)
+	for key in staged_instances:
+		_remove_road_chunk(key)
+		var instance: MeshInstance3D = staged_instances[key]
+		road_mesh_root.add_child(instance)
+		_road_chunk_instances[key] = instance
+	_road_mesh_generation = surface_generation
+	_road_chunk_span_m = chunk_span_m
+	return surface_generation
+
+func reset_main_mesh_chunks() -> void:
+	for key in _road_chunk_instances.keys():
+		_remove_road_chunk(key)
+	_road_mesh_generation = -1
+	_road_chunk_span_m = 0.0
+
+func needs_main_mesh_hydration() -> bool:
+	return name == "RoadTool" and _road_mesh_generation < 0
+
+func _discard_staged_road_chunks(staged_instances: Dictionary) -> void:
+	for instance in staged_instances.values():
+		instance.queue_free()
+
+func _remove_road_chunk(key: Vector2i) -> void:
+	if not _road_chunk_instances.has(key):
+		return
+	var instance: MeshInstance3D = _road_chunk_instances[key]
+	_road_chunk_instances.erase(key)
+	if is_instance_valid(instance):
+		if instance.get_parent() != null:
+			instance.get_parent().remove_child(instance)
+		instance.queue_free()
+
+func _build_road_chunk_instance(
+	chunk_data: Dictionary,
+	key: Vector2i,
+	chunk_span_m: float
+) -> MeshInstance3D:
+	_ensure_road_mesh_materials()
+	var arr_mesh := ArrayMesh.new()
+	if not _append_road_surface(arr_mesh, chunk_data, "earthwork", _earthwork_mat):
+		return null
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"curb",
+		WorldMaterials.road_sidewalk_face_material()
+	):
+		return null
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"raised_step",
+		WorldMaterials.road_sidewalk_face_material()
+	):
+		return null
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"sidewalk",
+		WorldMaterials.road_sidewalk_material()
+	):
+		return null
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"road",
+		WorldMaterials.road_asphalt_material()
+	):
+		return null
+	if not _append_road_surface(arr_mesh, chunk_data, "marking", _marking_mat):
+		return null
+	if not _append_road_surface(
+		arr_mesh,
+		chunk_data,
+		"concrete",
+		WorldMaterials.road_concrete_material()
+	):
+		return null
+	if arr_mesh.get_surface_count() == 0:
+		return null
+
+	var instance := MeshInstance3D.new()
+	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
+	instance.position = Vector3(float(key.x) * chunk_span_m, 0.0, float(key.y) * chunk_span_m)
+	instance.mesh = arr_mesh
+	SceneLightingConfig.apply_shadow_policy(
+		instance,
+		SceneLightingConfig.SHADOW_RECEIVER_ONLY,
+		"roads"
+	)
+	return instance
+
+func _append_road_surface(
+	arr_mesh: ArrayMesh,
+	chunk_data: Dictionary,
+	layer: String,
+	material: Material
+) -> bool:
+	var vertices_key := layer + "_vertices"
+	var normals_key := layer + "_normals"
+	var colors_key := layer + "_colors"
+	var uvs_key := layer + "_uvs"
+	if (
+		not chunk_data.has(vertices_key)
+		or typeof(chunk_data[vertices_key]) != TYPE_PACKED_VECTOR3_ARRAY
+		or not chunk_data.has(normals_key)
+		or typeof(chunk_data[normals_key]) != TYPE_PACKED_VECTOR3_ARRAY
+		or not chunk_data.has(colors_key)
+		or typeof(chunk_data[colors_key]) != TYPE_PACKED_COLOR_ARRAY
+		or not chunk_data.has(uvs_key)
+		or typeof(chunk_data[uvs_key]) != TYPE_PACKED_VECTOR2_ARRAY
+	):
+		return false
+	var vertices: PackedVector3Array = chunk_data[vertices_key]
+	var normals: PackedVector3Array = chunk_data[normals_key]
+	var colors: PackedColorArray = chunk_data[colors_key]
+	var uvs: PackedVector2Array = chunk_data[uvs_key]
+	if (
+		vertices.size() % 3 != 0
+		or normals.size() != vertices.size()
+		or colors.size() != vertices.size()
+		or uvs.size() != vertices.size()
+	):
+		return false
+	if vertices.is_empty():
+		return true
+	if material == null:
+		return false
+	for index in vertices.size():
+		var vertex := vertices[index]
+		var normal := normals[index]
+		var uv := uvs[index]
+		var color := colors[index]
+		if (
+			not is_finite(vertex.x)
+			or not is_finite(vertex.y)
+			or not is_finite(vertex.z)
+			or not is_finite(normal.x)
+			or not is_finite(normal.y)
+			or not is_finite(normal.z)
+			or not is_finite(uv.x)
+			or not is_finite(uv.y)
+			or not is_finite(color.r)
+			or not is_finite(color.g)
+			or not is_finite(color.b)
+			or not is_finite(color.a)
+		):
+			return false
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR] = colors
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var previous_surface_count := arr_mesh.get_surface_count()
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	if arr_mesh.get_surface_count() != previous_surface_count + 1:
+		return false
+	arr_mesh.surface_set_material(previous_surface_count, material)
+	return true
+
+func _ensure_road_mesh_materials() -> void:
 	if _marking_mat == null:
 		_marking_mat = StandardMaterial3D.new()
 		_marking_mat.vertex_color_use_as_albedo = true
@@ -332,97 +575,9 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		_marking_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		_marking_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.35)
 		_marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
 	if _earthwork_mat == null:
 		_earthwork_mat = StandardMaterial3D.new()
 		_earthwork_mat.vertex_color_use_as_albedo = true
 		_earthwork_mat.roughness = 1.0
 		_earthwork_mat.metallic = 0.0
 		_earthwork_mat.cull_mode = BaseMaterial3D.CULL_BACK
-
-	var arr_mesh = ArrayMesh.new()
-	var surface_map = [] # To keep track of which material goes to which surface
-	
-	# Surface 0: Earthwork tie-in faces
-	if data.has("earthwork_vertices") and data.earthwork_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.earthwork_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.earthwork_normals
-		arrays[Mesh.ARRAY_COLOR] = data.earthwork_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.earthwork_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_earthwork_mat)
-
-	# Curb / shoulder transition faces
-	if data.has("curb_vertices") and data.curb_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.curb_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.curb_normals
-		arrays[Mesh.ARRAY_COLOR] = data.curb_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.curb_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(sidewalk_face_mat)
-
-	# Explicit raised-step faces between solved owner-pair top surfaces
-	if data.has("raised_step_vertices") and data.raised_step_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.raised_step_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.raised_step_normals
-		arrays[Mesh.ARRAY_COLOR] = data.raised_step_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.raised_step_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(sidewalk_face_mat)
-
-	# Sidewalk base
-	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.sidewalk_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.sidewalk_normals
-		arrays[Mesh.ARRAY_COLOR] = data.sidewalk_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.sidewalk_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(sidewalk_mat)
-
-	# Asphalt & Junctions
-	if data.has("road_vertices") and data.road_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.road_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.road_normals
-		arrays[Mesh.ARRAY_COLOR] = data.road_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.road_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(road_mat)
-
-	# Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
-	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.marking_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.marking_normals
-		arrays[Mesh.ARRAY_COLOR] = data.marking_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.marking_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_marking_mat)
-
-	# Concrete
-	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
-		var arrays = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.concrete_vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.concrete_normals
-		arrays[Mesh.ARRAY_COLOR] = data.concrete_colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.concrete_uvs
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(concrete_mat)
-	
-	mesh_instance.mesh = arr_mesh
-	
-	# Apply materials according to the mapped surface indices
-	for i in range(surface_map.size()):
-		mesh_instance.set_surface_override_material(i, surface_map[i])
-	return surface_generation

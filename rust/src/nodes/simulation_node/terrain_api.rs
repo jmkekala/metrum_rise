@@ -215,18 +215,20 @@ impl SimulationNode {
             return false;
         };
         let accepted = core.acknowledge_network_render_generation(generation);
-        let network_dirty = core.network_dirty;
-        let mesh_generation = core.cached_road_mesh_generation;
-        let road_mesh_data = core.cached_road_mesh_data.clone();
-        drop(core);
         if !accepted {
             return false;
         }
 
+        // Keep the core guard until the matching road fields reach RenderSnapshot. Otherwise the
+        // sim thread could publish G+1 between these locks and this acknowledgement could overwrite
+        // only its road fields with the already-clean G state.
         let mut snapshot = self.snapshot.write().unwrap();
-        snapshot.network_dirty = network_dirty;
-        snapshot.network_generation = mesh_generation;
-        snapshot.road_mesh_data = road_mesh_data;
+        snapshot.network_dirty = core.network_dirty;
+        snapshot.network_generation = core.cached_road_mesh_generation;
+        snapshot.road_mesh_chunks = Arc::clone(&core.published_road_mesh_chunks);
+        snapshot.pending_road_mesh_chunks = Arc::clone(&core.pending_road_mesh_chunks);
+        snapshot.road_mesh_full_replace = core.road_mesh_full_replace;
+        snapshot.road_mesh_chunk_span_m = core.transit_network.road_surface.chunk_span_m();
         true
     }
 

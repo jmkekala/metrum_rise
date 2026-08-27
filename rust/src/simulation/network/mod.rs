@@ -18,13 +18,13 @@ pub mod interaction;
 pub mod lanes;
 pub mod topology;
 use crate::config;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::pathing::flow_field::FlowFieldSystem;
 use graph::*;
 use render::road::RoadRenderer;
-use surface::{RoadSurfaceCompileReason, RoadSurfaceSystem};
+use surface::{RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey};
 use types::*;
 
 pub(in crate::simulation::network) fn build_surface_edge(
@@ -353,6 +353,31 @@ impl TransitNetwork {
             &self.lane_system,
             terrain,
             &self.road_surface,
+        ))
+    }
+
+    /// Generates complete replacement meshes for the requested road render chunks.
+    pub fn try_generate_mesh_chunks(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        target_chunks: &BTreeSet<SurfaceChunkKey>,
+    ) -> Option<BTreeMap<SurfaceChunkKey, NetworkMeshData>> {
+        self.road_surface.compile_dirty_with_reason(
+            graph,
+            terrain,
+            RoadSurfaceCompileReason::MeshPrecompute,
+        );
+        if !self.road_surface.published_generation_matches_source() {
+            return None;
+        }
+        let renderer = RoadRenderer;
+        Some(renderer.generate_mesh_chunks_with_surface(
+            graph,
+            &mut self.lane_system,
+            terrain,
+            &self.road_surface,
+            target_chunks,
         ))
     }
 

@@ -8,14 +8,23 @@ pub(super) fn emit_crosswalk_markings(
     lane_system: &crate::simulation::network::lanes::LaneSystem,
     terrain: &crate::simulation::terrain::TerrainSystem,
     road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+    coverage: &super::standard_surface::CompiledSurfaceCoverage,
 ) {
     use crate::simulation::network::lanes::LaneType;
-    for lane in &lane_system.lanes {
-        if lane.edge_id == usize::MAX
-            && lane.lane_type == LaneType::Foot
-            && let Some(marking) = lane.crosswalk_marking
-        {
-            emit_zebra_stripes(mesh, graph, marking, terrain, road_surface);
+    for &node_id in &coverage.node_ids {
+        let Some(lane_ids) = lane_system.node_lanes.get(&(node_id as usize)) else {
+            continue;
+        };
+        for &lane_id in lane_ids {
+            let Some(lane) = lane_system.lanes.get(lane_id) else {
+                continue;
+            };
+            if lane.edge_id == usize::MAX
+                && lane.lane_type == LaneType::Foot
+                && let Some(marking) = lane.crosswalk_marking
+            {
+                emit_zebra_stripes(mesh, graph, marking, terrain, road_surface);
+            }
         }
     }
 }

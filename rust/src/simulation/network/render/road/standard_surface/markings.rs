@@ -16,7 +16,7 @@ use crate::simulation::network::surface::{
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Color, Vector2, Vector3};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 const LANE_MARKING_CROSSWALK_CLEARANCE_M: f32 = 0.25;
 const CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M: f32 = 0.25;
@@ -30,7 +30,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
     coverage: &CompiledSurfaceCoverage,
 ) {
     let crosswalk_endpoint_flags =
-        lane_marking_crosswalk_endpoint_flags_by_edge(graph, lane_system);
+        lane_marking_crosswalk_endpoint_flags_by_edge(graph, lane_system, &coverage.edge_indices);
     for &edge_idx in &coverage.edge_indices {
         let edge = graph.edge(edge_idx);
         if edge.deleted || edge.primary_type != TransitType::Road {
@@ -168,45 +168,62 @@ fn edge_lane_marking_s_range(
 fn lane_marking_crosswalk_endpoint_flags_by_edge(
     graph: &RegionGraph,
     lane_system: &LaneSystem,
+    edge_indices: &[usize],
 ) -> HashMap<usize, (bool, bool)> {
+    let mut selected_edges = BTreeSet::new();
+    let mut endpoint_nodes = BTreeSet::new();
+    for &edge_idx in edge_indices {
+        if edge_idx >= graph.edge_count() {
+            continue;
+        }
+        let edge = graph.edge(edge_idx);
+        if edge.deleted || edge.primary_type != TransitType::Road {
+            continue;
+        }
+        selected_edges.insert(edge_idx);
+        endpoint_nodes.insert(graph.get_valid_node(edge.start_node));
+        endpoint_nodes.insert(graph.get_valid_node(edge.end_node));
+    }
+
     let mut flags_by_edge = HashMap::new();
-    for lane in &lane_system.lanes {
-        let Some(crosswalk) = lane.crosswalk_marking else {
+    for node_id in endpoint_nodes {
+        let Some(lane_ids) = lane_system.node_lanes.get(&(node_id as usize)) else {
             continue;
         };
-        if lane.edge_id != usize::MAX || lane.lane_type != LaneType::Foot {
-            continue;
-        }
-
-        let node_id = lane.node_id as u32;
-        if node_id as usize >= graph.node_adjacency_count() {
-            continue;
-        }
-        let center = crosswalk_center_xz(crosswalk);
-        for &edge_idx in graph.node_adjacency(node_id) {
-            if edge_idx >= graph.edge_count() {
+        for &lane_id in lane_ids {
+            let Some(lane) = lane_system.lanes.get(lane_id) else {
+                continue;
+            };
+            let Some(crosswalk) = lane.crosswalk_marking else {
+                continue;
+            };
+            if lane.edge_id != usize::MAX
+                || lane.lane_type != LaneType::Foot
+                || !selected_edges.contains(&crosswalk.edge_id)
+                || crosswalk.edge_id >= graph.edge_count()
+            {
                 continue;
             }
-            let edge = graph.edge(edge_idx);
+
+            let edge = graph.edge(crosswalk.edge_id);
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
             }
-            let start_node = graph.get_valid_node(edge.start_node);
-            let end_node = graph.get_valid_node(edge.end_node);
-            let entry = flags_by_edge.entry(edge_idx).or_insert((false, false));
-            if node_id == start_node
+            let center = crosswalk_center_xz(crosswalk);
+            let at_start = graph.get_valid_node(edge.start_node) == node_id
                 && crosswalk_mouth_center(edge, true).is_some_and(|mouth| {
                     mouth.distance_to(center) <= CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M
-                })
-            {
-                entry.0 = true;
-            }
-            if node_id == end_node
+                });
+            let at_end = graph.get_valid_node(edge.end_node) == node_id
                 && crosswalk_mouth_center(edge, false).is_some_and(|mouth| {
                     mouth.distance_to(center) <= CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M
-                })
-            {
-                entry.1 = true;
+                });
+            if at_start || at_end {
+                let endpoint_flags = flags_by_edge
+                    .entry(crosswalk.edge_id)
+                    .or_insert((false, false));
+                endpoint_flags.0 |= at_start;
+                endpoint_flags.1 |= at_end;
             }
         }
     }

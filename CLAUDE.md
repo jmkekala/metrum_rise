@@ -30,6 +30,9 @@ Current stack summary. For exact versions, check `rust/Cargo.toml` and the Godot
 ```bash
 ./run.sh              # Debug build, deploys .so, launches Godot
 ./run.sh --headless   # Headless mode
+./run.sh --test       # Rust suite plus headless Godot bridge regressions
+./run.sh --benchmark-road-chunks  # Deterministic Rust/Godot road chunk benchmark
+./run.sh --benchmark-road-chunk-upload  # Godot half without prior Criterion load
 cd rust && cargo build --release   # Release build
 cd rust && cargo bench             # Criterion benchmarks
 ```

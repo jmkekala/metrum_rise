@@ -43,3 +43,7 @@ harness = false
 [[bench]]
 name = "surface_benchmark"
 harness = false
+
+[[bench]]
+name = "road_chunk_benchmark"
+harness = false

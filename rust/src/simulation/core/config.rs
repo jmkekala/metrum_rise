@@ -89,6 +89,13 @@ impl WorldConfig {
         )
     }
 
+    /// Returns the shared world-space span used by terrain, water, and road render chunks.
+    pub fn terrain_render_chunk_span_m(&self) -> f32 {
+        let cell_m = self.terrain_cell_m.max(f32::EPSILON);
+        let interval_count = (self.terrain_chunk_m.max(cell_m) / cell_m).round().max(1.0);
+        interval_count * cell_m
+    }
+
     /// Returns the number of authored terrain chunks along the X axis.
     pub fn terrain_chunk_columns(&self) -> usize {
         (self.width_m / self.terrain_chunk_m).ceil() as usize
@@ -142,5 +149,28 @@ impl Default for WorldConfig {
     /// Returns the default chunk-aware gameplay fallback world.
     fn default() -> Self {
         Self::gameplay_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorldConfig;
+
+    #[test]
+    fn render_chunk_span_never_falls_below_one_terrain_sample() {
+        let config = WorldConfig::new(100.0, 100.0, 10.0, 10.0)
+            .with_chunking(4.0, 0.0)
+            .with_terrain_resolution(8.0);
+
+        assert_eq!(config.terrain_render_chunk_span_m(), 8.0);
+    }
+
+    #[test]
+    fn render_chunk_span_is_an_exact_terrain_interval_multiple() {
+        let config = WorldConfig::default();
+
+        assert_eq!(config.terrain_chunk_m, 512.0);
+        assert_eq!(config.terrain_cell_m, 10.0);
+        assert_eq!(config.terrain_render_chunk_span_m(), 510.0);
     }
 }

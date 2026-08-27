@@ -1,7 +1,7 @@
 //! Lane geometry, lane connectivity, and per-lane derived planning caches.
 
 use godot::prelude::*;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
@@ -130,36 +130,72 @@ impl LaneSystem {
         road_surface: &RoadSurfaceSystem,
     ) {
         for lane in &mut self.lanes {
-            if lane.geometry.is_empty() {
-                continue;
-            }
+            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+    }
 
-            let sidewalk_base_offset = if lane_is_road_sidewalk(lane, graph) {
-                CURB_STEP_HEIGHT_M
-            } else {
-                0.0
-            };
-            let lane_type = lane.lane_type;
-
-            let mut changed = false;
-            for point in &mut lane.geometry {
-                let Some(surface_y) =
-                    lane_visible_surface_height(lane_type, graph, terrain, road_surface, point)
-                else {
-                    continue;
-                };
-                let target_y = surface_y - sidewalk_base_offset;
-                if (point.y - target_y).abs() > 1e-4 {
-                    point.y = target_y;
-                    changed = true;
-                }
-            }
-
-            if changed {
-                lane.cum_dist = geometry::build_cum_dist(&lane.geometry);
-                lane.length = lane.cum_dist.last().copied().unwrap_or(0.0);
+    pub(crate) fn sync_heights_to_visible_surface_for_owners(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        road_surface: &RoadSurfaceSystem,
+        edge_indices: &[usize],
+        node_ids: &[u32],
+    ) {
+        let mut lane_ids = BTreeSet::new();
+        for edge_idx in edge_indices {
+            if let Some(ids) = self.edge_lanes.get(edge_idx) {
+                lane_ids.extend(ids.iter().copied());
             }
         }
+        for node_id in node_ids {
+            if let Some(ids) = self.node_lanes.get(&(*node_id as usize)) {
+                lane_ids.extend(ids.iter().copied());
+            }
+        }
+        for lane_id in lane_ids {
+            let Some(lane) = self.lanes.get_mut(lane_id) else {
+                continue;
+            };
+            sync_lane_height_to_visible_surface(lane, graph, terrain, road_surface);
+        }
+    }
+}
+
+fn sync_lane_height_to_visible_surface(
+    lane: &mut Lane,
+    graph: &RegionGraph,
+    terrain: &TerrainSystem,
+    road_surface: &RoadSurfaceSystem,
+) {
+    if lane.geometry.is_empty() {
+        return;
+    }
+
+    let sidewalk_base_offset = if lane_is_road_sidewalk(lane, graph) {
+        CURB_STEP_HEIGHT_M
+    } else {
+        0.0
+    };
+    let lane_type = lane.lane_type;
+
+    let mut changed = false;
+    for point in &mut lane.geometry {
+        let Some(surface_y) =
+            lane_visible_surface_height(lane_type, graph, terrain, road_surface, point)
+        else {
+            continue;
+        };
+        let target_y = surface_y - sidewalk_base_offset;
+        if (point.y - target_y).abs() > 1e-4 {
+            point.y = target_y;
+            changed = true;
+        }
+    }
+
+    if changed {
+        lane.cum_dist = geometry::build_cum_dist(&lane.geometry);
+        lane.length = lane.cum_dist.last().copied().unwrap_or(0.0);
     }
 }
 

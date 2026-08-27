@@ -201,6 +201,10 @@ impl SimCore {
         if road_surface_had_dirty_work {
             self.bump_terrain_payload_patch_generations(&dirty_patch_keys);
         }
+        // Terrain-authoring APIs publish their snapshot immediately rather than passing through the
+        // simulation command finalizer. Build the matching road delta here so NetworkRenderer does
+        // not repeatedly observe a newer source generation paired with the previous mesh.
+        self.precompute_road_mesh_data();
         self.rebuild_building_entrances_internal();
         if self.has_authored_water_internal() {
             if let Err(err) = self.rebuild_authored_water_preview_internal() {
@@ -1938,7 +1942,9 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(
+                config.terrain_render_chunk_span_m(),
+            ),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1984,7 +1990,10 @@ mod tests {
             terrain_payload_global_generation: 1,
             terrain_payload_patch_generations: HashMap::new(),
             refined_terrain_assembly_ledgers: HashMap::new(),
-            cached_road_mesh_data: None,
+            cached_road_mesh_chunks: std::collections::BTreeMap::new(),
+            published_road_mesh_chunks: Arc::new(std::collections::BTreeMap::new()),
+            pending_road_mesh_chunks: Arc::new(std::collections::BTreeSet::new()),
+            road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
@@ -2454,11 +2463,8 @@ mod tests {
         assert_eq!(core.region_graph.edge_count(), 1);
 
         finalize_network_render_for_test(&mut core);
-        let previous_mesh = Arc::clone(
-            core.cached_road_mesh_data
-                .as_ref()
-                .expect("baseline road mesh must be cached before undo"),
-        );
+        let previous_mesh = core.cached_road_mesh_chunks.clone();
+        assert!(!previous_mesh.is_empty());
 
         let stale_road_locked_patches = core.road_locked_terrain_patch_keys.clone();
         assert!(!stale_road_locked_patches.is_empty());
@@ -2487,12 +2493,15 @@ mod tests {
             core.transit_network.road_surface.has_pending_rebuild_work(),
             "removed road coverage must remain queued for local cleanup"
         );
-        assert!(Arc::ptr_eq(
-            core.cached_road_mesh_data
-                .as_ref()
-                .expect("bounded undo must retain the last-good road mesh"),
-            &previous_mesh
-        ));
+        assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
+        assert!(previous_mesh.iter().all(|(chunk, mesh)| {
+            Arc::ptr_eq(
+                core.cached_road_mesh_chunks
+                    .get(chunk)
+                    .expect("undo invalidation must retain the cached chunk"),
+                mesh,
+            )
+        }));
         assert!(core.terrain_dirty);
         assert!(core.network_dirty);
 
@@ -2556,11 +2565,8 @@ mod tests {
             .values()
             .flat_map(|patch| patch.windows.iter().cloned())
             .collect::<Vec<_>>();
-        let previous_mesh = Arc::clone(
-            core.cached_road_mesh_data
-                .as_ref()
-                .expect("post-edit road mesh must be cached before undo"),
-        );
+        let previous_mesh = core.cached_road_mesh_chunks.clone();
+        assert!(!previous_mesh.is_empty());
         let global_generation_before_undo = core.terrain_payload_global_generation;
 
         assert!(core.undo_action_internal());
@@ -2574,12 +2580,15 @@ mod tests {
             "undo must keep the complete post-edit generation as an immutable reuse source"
         );
         assert!(core.transit_network.road_surface.compiled_once);
-        assert!(Arc::ptr_eq(
-            core.cached_road_mesh_data
-                .as_ref()
-                .expect("bounded undo must retain the last-good road mesh"),
-            &previous_mesh
-        ));
+        assert_eq!(core.cached_road_mesh_chunks.len(), previous_mesh.len());
+        assert!(previous_mesh.iter().all(|(chunk, mesh)| {
+            Arc::ptr_eq(
+                core.cached_road_mesh_chunks
+                    .get(chunk)
+                    .expect("undo invalidation must retain the cached chunk"),
+                mesh,
+            )
+        }));
         assert!(core.network_dirty);
 
         core.rebuild_network_surface_terrain_internal();
@@ -2672,18 +2681,35 @@ mod tests {
             .get(&center)
             .expect("JunctionN must retain its canonical topology")
             .clone();
-        let baseline_mesh = core
-            .cached_road_mesh_data
-            .as_deref()
-            .expect("baseline road mesh must be precomputed");
         let baseline_mesh_vertices = (
-            baseline_mesh.earthwork_vertices.clone(),
-            baseline_mesh.curb_vertices.clone(),
-            baseline_mesh.raised_step_vertices.clone(),
-            baseline_mesh.sidewalk_vertices.clone(),
-            baseline_mesh.road_vertices.clone(),
-            baseline_mesh.marking_vertices.clone(),
-            baseline_mesh.concrete_vertices.clone(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.earthwork_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.curb_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.raised_step_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.sidewalk_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.road_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.marking_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.concrete_vertices.iter().copied())
+                .collect::<Vec<_>>(),
         );
 
         core.benchmark_mode = false;
@@ -2895,29 +2921,38 @@ mod tests {
                         && !entry.node_ids.contains(&appended_node)),
             "rebuilt chunk shells must not retain appended owner IDs"
         );
-        let restored_mesh = core
-            .cached_road_mesh_data
-            .as_deref()
-            .expect("restored road mesh must be precomputed");
+        let restored_mesh_vertices = (
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.earthwork_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.curb_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.raised_step_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.sidewalk_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.road_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.marking_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+            core.cached_road_mesh_chunks
+                .values()
+                .flat_map(|mesh| mesh.concrete_vertices.iter().copied())
+                .collect::<Vec<_>>(),
+        );
         assert_eq!(
-            (
-                &restored_mesh.earthwork_vertices,
-                &restored_mesh.curb_vertices,
-                &restored_mesh.raised_step_vertices,
-                &restored_mesh.sidewalk_vertices,
-                &restored_mesh.road_vertices,
-                &restored_mesh.marking_vertices,
-                &restored_mesh.concrete_vertices,
-            ),
-            (
-                &baseline_mesh_vertices.0,
-                &baseline_mesh_vertices.1,
-                &baseline_mesh_vertices.2,
-                &baseline_mesh_vertices.3,
-                &baseline_mesh_vertices.4,
-                &baseline_mesh_vertices.5,
-                &baseline_mesh_vertices.6,
-            ),
+            restored_mesh_vertices, baseline_mesh_vertices,
             "the final rendered mesh must contain exactly the baseline three-mouth geometry"
         );
     }
@@ -3031,5 +3066,29 @@ mod tests {
                 .dirty_terrain_chunks()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn finished_terrain_edit_publishes_matching_road_mesh_generation() {
+        let mut core = test_core();
+        let outcome = core.add_road_internal(
+            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+            1,
+            1,
+        );
+        assert!(outcome.committed);
+        finalize_network_render_for_test(&mut core);
+        assert!(core.acknowledge_network_render_generation(core.road_tool_surface_generation));
+        let baseline_generation = core.cached_road_mesh_generation;
+
+        core.sculpt_terrain_internal(Vector2::ZERO, 12.0, 0.05);
+
+        assert!(core.road_tool_surface_generation > baseline_generation);
+        assert_eq!(
+            core.cached_road_mesh_generation, core.road_tool_surface_generation,
+            "terrain finalization must publish the road delta before its immediate snapshot"
+        );
+        assert!(!core.pending_road_mesh_chunks.is_empty());
+        assert!(!core.published_road_mesh_chunks.is_empty());
     }
 }

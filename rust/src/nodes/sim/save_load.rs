@@ -105,7 +105,6 @@ impl SimCore {
         );
         self.terrain_dirty = true;
         self.water_dirty = true;
-        self.cached_road_mesh_data = None;
         self.mark_network_render_dirty();
         // Loading advances the render-facing road generation after the persisted
         // surface was rebuilt. Stamp a matching mesh generation before water and

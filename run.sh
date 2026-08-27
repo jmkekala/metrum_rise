@@ -1,6 +1,13 @@
 #!/bin/bash
 # Metrum Rise Run Script
 #
+# Verification:
+#   --test               Run the Rust suite and headless Godot bridge regressions
+#   --benchmark-road-chunks
+#                        Run deterministic Rust generation and Godot upload benchmarks
+#   --benchmark-road-chunk-upload
+#                        Run only the deterministic Godot upload benchmark
+#
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
@@ -65,6 +72,9 @@
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GODOT_DIR="$PROJECT_ROOT/godot"
 RELEASE=0
+TEST=0
+ROAD_CHUNK_BENCHMARK=0
+ROAD_CHUNK_UPLOAD_BENCHMARK=0
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
@@ -163,6 +173,14 @@ i=1
 while [ $i -le $# ]; do
     arg="${!i}"
     if [ "$arg" = "--release" ]; then
+        RELEASE=1
+    elif [ "$arg" = "--test" ]; then
+        TEST=1
+    elif [ "$arg" = "--benchmark-road-chunks" ]; then
+        ROAD_CHUNK_BENCHMARK=1
+        RELEASE=1
+    elif [ "$arg" = "--benchmark-road-chunk-upload" ]; then
+        ROAD_CHUNK_UPLOAD_BENCHMARK=1
         RELEASE=1
     elif [[ "$arg" == --visuals=* ]]; then
         VISUAL_DEBUG=1
@@ -535,6 +553,35 @@ mkdir -p ../godot/.godot
 printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cfg
 
 repair_godot_import_cache_if_needed
+
+if [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 1 ]; then
+    echo "Running deterministic Godot road-chunk upload benchmark..."
+    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    exit $?
+fi
+
+if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
+    echo "Running deterministic Rust road-chunk benchmark..."
+    if ! cargo bench --bench road_chunk_benchmark; then
+        echo "Rust road-chunk benchmark failed!"
+        exit 1
+    fi
+    echo "Running deterministic Godot road-chunk upload benchmark..."
+    godot --headless --path "$GODOT_DIR" --script res://tests/road_chunk_renderer_benchmark.gd
+    exit $?
+fi
+
+if [ $TEST -eq 1 ]; then
+    echo "Running Rust tests..."
+    if ! cargo test; then
+        echo "Rust tests failed!"
+        exit 1
+    fi
+    echo "Running Godot bridge tests..."
+    cd ../godot
+    godot --headless --script res://tests/network_tool_chunk_renderer_test.gd
+    exit $?
+fi
 
 echo "Launching Metrum Rise..."
 cd ../godot && godot "${GODOT_ENGINE_ARGS[@]}" -- "${GODOT_ARGS[@]}"

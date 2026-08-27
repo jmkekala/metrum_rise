@@ -2812,4 +2812,172 @@ mod tests {
             mesh_data.marking_vertices.len()
         );
     }
+
+    #[test]
+    fn chunked_renderer_assigns_every_triangle_to_exactly_one_chunk() {
+        let terrain = TerrainSystem::new(256, 256);
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(Vector3::new(-24.0, 0.0, 4.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(24.0, 0.0, 4.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            west,
+            east,
+            graph.node(west).pos,
+            graph.node(east).pos,
+            7.0,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let mut network = TransitNetwork::new_with_surface_chunk_span(16.0);
+        network.lane_system.rebuild(&mut graph);
+        let global = network
+            .try_generate_mesh_data(&graph, &terrain)
+            .expect("baseline surface should compile");
+        let target_chunks = network
+            .road_surface
+            .surface_chunk_cache()
+            .keys()
+            .chain(network.road_surface.earthwork_chunk_cache().keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let chunks = network
+            .try_generate_mesh_chunks(&graph, &terrain, &target_chunks)
+            .expect("chunked surface should compile");
+        assert!(chunks.len() >= 2, "the road must cross a chunk boundary");
+
+        macro_rules! assert_layer {
+            ($label:literal, $vertices:ident, $normals:ident, $uvs:ident, $colors:ident) => {{
+                let mut global_triangles = quantized_render_triangles(
+                    &global.$vertices,
+                    &global.$normals,
+                    &global.$uvs,
+                    &global.$colors,
+                    Vector3::ZERO,
+                );
+                global_triangles.sort_unstable();
+
+                let mut chunk_triangles = Vec::new();
+                for (&chunk, mesh) in &chunks {
+                    let origin = Vector3::new(chunk.0 as f32 * 16.0, 0.0, chunk.1 as f32 * 16.0);
+                    chunk_triangles.extend(quantized_render_triangles(
+                        &mesh.$vertices,
+                        &mesh.$normals,
+                        &mesh.$uvs,
+                        &mesh.$colors,
+                        origin,
+                    ));
+                }
+                chunk_triangles.sort_unstable();
+                assert_eq!(
+                    chunk_triangles, global_triangles,
+                    "chunk routing must preserve every complete {} triangle exactly once",
+                    $label
+                );
+            }};
+        }
+
+        assert_layer!(
+            "earthwork",
+            earthwork_vertices,
+            earthwork_normals,
+            earthwork_uvs,
+            earthwork_colors
+        );
+        assert_layer!("curb", curb_vertices, curb_normals, curb_uvs, curb_colors);
+        assert_layer!(
+            "raised_step",
+            raised_step_vertices,
+            raised_step_normals,
+            raised_step_uvs,
+            raised_step_colors
+        );
+        assert_layer!(
+            "sidewalk",
+            sidewalk_vertices,
+            sidewalk_normals,
+            sidewalk_uvs,
+            sidewalk_colors
+        );
+        assert_layer!("road", road_vertices, road_normals, road_uvs, road_colors);
+        assert_layer!(
+            "marking",
+            marking_vertices,
+            marking_normals,
+            marking_uvs,
+            marking_colors
+        );
+        assert_layer!(
+            "concrete",
+            concrete_vertices,
+            concrete_normals,
+            concrete_uvs,
+            concrete_colors
+        );
+    }
+
+    type QuantizedRenderVertex = (
+        (i64, i64, i64),
+        (i64, i64, i64),
+        (i64, i64),
+        (i64, i64, i64, i64),
+    );
+
+    fn quantized_render_triangles(
+        vertices: &[Vector3],
+        normals: &[Vector3],
+        uvs: &[Vector2],
+        colors: &[Color],
+        origin: Vector3,
+    ) -> Vec<[QuantizedRenderVertex; 3]> {
+        assert_eq!(vertices.len(), normals.len());
+        assert_eq!(vertices.len(), uvs.len());
+        assert_eq!(vertices.len(), colors.len());
+        assert_eq!(vertices.len() % 3, 0);
+        vertices
+            .chunks_exact(3)
+            .zip(normals.chunks_exact(3))
+            .zip(uvs.chunks_exact(3))
+            .zip(colors.chunks_exact(3))
+            .map(
+                |(((triangle_vertices, triangle_normals), triangle_uvs), triangle_colors)| {
+                    std::array::from_fn(|index| {
+                        (
+                            quantized_render_vector3(triangle_vertices[index] + origin),
+                            quantized_render_vector3(triangle_normals[index]),
+                            quantized_render_vector2(triangle_uvs[index]),
+                            quantized_render_color(triangle_colors[index]),
+                        )
+                    })
+                },
+            )
+            .collect()
+    }
+
+    fn quantized_render_vector3(point: Vector3) -> (i64, i64, i64) {
+        let scale = 100_000.0;
+        (
+            (point.x * scale).round() as i64,
+            (point.y * scale).round() as i64,
+            (point.z * scale).round() as i64,
+        )
+    }
+
+    fn quantized_render_vector2(point: Vector2) -> (i64, i64) {
+        let scale = 100_000.0;
+        (
+            (point.x * scale).round() as i64,
+            (point.y * scale).round() as i64,
+        )
+    }
+
+    fn quantized_render_color(color: Color) -> (i64, i64, i64, i64) {
+        let scale = 100_000.0;
+        (
+            (color.r * scale).round() as i64,
+            (color.g * scale).round() as i64,
+            (color.b * scale).round() as i64,
+            (color.a * scale).round() as i64,
+        )
+    }
 }

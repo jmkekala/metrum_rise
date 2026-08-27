@@ -430,6 +430,42 @@ Required bounds:
   explicit full reset
 - steady-state chunk rebuilds use sorted contributor lists; they must not scan every compiled node
   piece in the world
+- committed road rendering uses the same normalized render-chunk span as terrain and water. The
+  road surface grid remains anchored at world coordinate zero, while terrain patch keys start at
+  the world minimum; the shared span bounds update scale but does not make their keys or boundaries
+  interchangeable. A local edit rebuilds the sorted union of changed surface and earthwork chunks,
+  collects their unique owners once, and assigns each non-indexed triangle to exactly one
+  deterministic XZ-centroid home chunk. Chunk vertices are stored relative to that chunk's origin;
+  unchanged mesh buffers remain immutable and shared.
+- Rust accumulates changed chunk keys and removal tombstones until Godot acknowledges the exact
+  road generation. Godot stages every changed `ArrayMesh`, rejects stale generations before the
+  swap, and then replaces only those `MeshInstance3D` children after matching terrain is visible.
+  The bridge rejects malformed or non-finite layer arrays atomically, and a chunk-span change is
+  legal only in a full replacement so retained instances cannot use mixed coordinate grids.
+  World replacement clears old chunks before terrain rebuild and remains an explicit full-chunk
+  replacement, including the empty-road case. A recreated renderer hydrates from a full snapshot
+  even when the simulation has no pending dirty revision.
+- ordinary road-render work is `O(affected owners + affected triangles + changed chunk upload)`;
+  immutable snapshot publication copies only accumulated unacknowledged update metadata and `Arc`
+  handles, never the full occupied-chunk map or unchanged vertex buffers. A renderer-requested full
+  snapshot remains `O(total chunks + total vertices)` because it necessarily uploads the network.
+- `./run.sh --benchmark-road-chunks` is the reproducible scaling check. Its Rust fixture keeps one
+  32 m two-lane local road, its selected owners, target chunk, and emitted vertex signature fixed
+  while occupied chunks rise through 1, 64, 256, and 1,024. `chunk_emit_only` isolates targeted
+  generation, `full_network_emit` provides the former whole-network-work comparator, and
+  `dirty_compile_plus_chunk_emit_diagnostic` separately exposes the known global stale-cache scans
+  in dirty surface compilation. The Godot fixture replays the same immutable packed arrays with 4,
+  64, 256, 1,024, and 4,096 resident instances while one 8,190-vertex chunk changes, then holds
+  residency at 1,024 while 0, 1, 4, and 16 chunks change. It reports median and p95 both for command
+  staging and for a render-server synchronization fence; this headless boundary covers validation,
+  `ArrayMesh` construction, scene/RID mutation, and command drain, not physical GPU upload or frame
+  rendering. Fixture geometry digests and retained-instance checks are correctness gates;
+  wall-clock comparisons are made between release runs on the same machine rather than encoded as
+  test thresholds. `./run.sh --benchmark-road-chunk-upload` runs the Godot half without inheriting
+  thermal/boost state from Criterion.
+- centroid ownership makes these chunks deterministic update/upload batches. A triangle may extend
+  beyond its home chunk, so this contract does not yet authorize independent chunk streaming or
+  residency; Godot derives each instance AABB from its actual vertices for normal scene culling
 - refined road-touched terrain uses fixed world-aligned bounded CDT core tiles rather than
   connected-footprint windows whose bounds grow with the road network
 - an interior border-candidate query must reject against the immutable world snapshot without
@@ -638,6 +674,10 @@ Maintained coverage must continue to prove:
 - refined-CDT unchanged-tile reuse, changed-tile rebuild, old-coverage removal, deterministic shared
   tile seams, and stale-generation rejection
 - rendered mesh upload containing the same canonical raised-step intervals as the compiled surface
+- road render chunk partitioning preserves the complete global triangle multiset across positive
+  and negative chunk boundaries, with no duplicate triangle ownership
+- the deterministic road-chunk benchmark preserves identical local owner/output signatures at each
+  Rust scale and identical changed payloads at each Godot resident-instance scale
 
 Use the focused surface tests for narrow changes and the full `surface` suite when changing shared
 ownership, terrain, query, node, or render contracts.

@@ -273,24 +273,50 @@ impl SimulationNode {
         dict
     }
 
-    /// Returns dictionary of road/intersection mesh data.
+    /// Returns a generation-stamped road-mesh batch for the Godot chunk renderer.
+    ///
+    /// A full snapshot contains every occupied chunk and costs `O(total chunks + total vertices)`.
+    /// An incremental response contains only accumulated upserts and removal tombstones since the
+    /// last exact-generation acknowledgement. Each response also identifies whether it replaces
+    /// all resident chunks and supplies the world-space chunk span used by its local vertices.
     #[func]
-    pub fn get_road_mesh_data(&self) -> VarDictionary {
-        let (mesh_data, generation) = {
-            let snapshot = self.snapshot.read().unwrap();
-            (snapshot.road_mesh_data.clone(), snapshot.network_generation)
-        };
-        let mut dict = mesh_data
-            .as_deref()
-            .map(SimCore::network_mesh_data_dict)
-            .unwrap_or_default();
-        if !dict.is_empty() {
-            dict.set(
-                "surface_generation",
-                i64::try_from(generation).unwrap_or(i64::MAX),
+    pub fn get_road_mesh_data(&self, full_snapshot: bool) -> VarDictionary {
+        if full_snapshot {
+            // A renderer rebuild is rare and necessarily uploads the whole network. Clone only
+            // the Arc handles under the sim lock, then pack Godot arrays after releasing it.
+            let (chunks, generation, chunk_span_m) = {
+                let core = self.lock_core();
+                (
+                    core.cached_road_mesh_chunks.clone(),
+                    core.cached_road_mesh_generation,
+                    core.transit_network.road_surface.chunk_span_m(),
+                )
+            };
+            return SimCore::road_mesh_chunks_dict(
+                &chunks,
+                &BTreeSet::new(),
+                true,
+                generation,
+                chunk_span_m,
             );
         }
-        dict
+        let (chunks, pending_chunks, full_replace, generation, chunk_span_m) = {
+            let snapshot = self.snapshot.read().unwrap();
+            (
+                Arc::clone(&snapshot.road_mesh_chunks),
+                Arc::clone(&snapshot.pending_road_mesh_chunks),
+                snapshot.road_mesh_full_replace,
+                snapshot.network_generation,
+                snapshot.road_mesh_chunk_span_m,
+            )
+        };
+        SimCore::road_mesh_chunks_dict(
+            &chunks,
+            &pending_chunks,
+            full_replace,
+            generation,
+            chunk_span_m,
+        )
     }
 
     /// Returns the ID of the closest network node.
