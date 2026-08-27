@@ -450,6 +450,7 @@ fn claim_connector_to_edge(
             seed,
             lane_buckets,
             lane_claims,
+            Some(&transit_network.lane_system),
         )
     })
 }
@@ -478,6 +479,7 @@ fn claim_connector_to_lane(
             seed,
             lane_buckets,
             lane_claims,
+            Some(&transit_network.lane_system),
         )
     })
 }

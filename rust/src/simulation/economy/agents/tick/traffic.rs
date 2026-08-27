@@ -18,9 +18,9 @@ pub(super) use lane_change::{
     planned_lane_change_target,
 };
 pub(super) use occupancy::{
-    ConnectorEntry, claim_connector_entry, claim_lane_entry, deterministic_choice_index,
-    idm_gap_bucket, lane_attach_slot_clear, lane_change_gap_clear, lane_entry_slot_clear,
-    live_lane_bucket_transit,
+    ConnectorEntry, claim_connector_entry, claim_lane_entry, conflicting_movements_clear,
+    deterministic_choice_index, idm_gap_bucket, lane_attach_slot_clear, lane_change_gap_clear,
+    lane_entry_slot_clear, live_lane_bucket_transit,
 };
 
 #[cfg(test)]
@@ -83,14 +83,14 @@ mod tests {
         let claim_context = LaneClaimContext::new(&lane_claims, &serial_agents);
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
+            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::Enter(0)
         );
         assert!(lane_claims[0].load(Ordering::Acquire));
 
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
+            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::ClaimedThisTick
         );
 
@@ -106,13 +106,14 @@ mod tests {
                 0,
                 &occupied_buckets,
                 &claim_context,
+                None,
             ),
             ConnectorEntry::Occupied
         );
 
         let mut candidates = Vec::new();
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, false, 0, &lane_buckets, &claim_context,),
+            claim_connector_entry(0, &mut candidates, false, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::MissingConnection
         );
     }

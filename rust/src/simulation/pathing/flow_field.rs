@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: flow_field.rs
+//  script_path: rust/src/simulation/pathing/flow_field.rs
+//  module_name: flow_field
+//  version: 0.1.0
+//  description: Multi-source reverse Dijkstra per zone type, answering
+//           next-hop toward the nearest building of that type in constant
+//           time per agent step. Routine work and shop trips dominate
+//           agent count, so serving them from at most six fields costs
+//           O(M(V+E) log V) per rebuild instead of one CCH query per
+//           agent. Fields rebuild lazily on a dirty flag set by topology
+//           changes and building spawns or removals.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, zoning]
+//  external_dependencies: []
+//  features: [flow-field, dijkstra, zone-routing, lazy-rebuild]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Flow-field routing: multi-source reverse Dijkstra per zone type.
 //!
 //! A [`FlowField`] answers "from any node V, which node should I move to next
@@ -90,11 +113,11 @@ impl FlowField {
             let cost = edge.base_cost.max(1e-6);
             let s = edge.start_node as usize;
             let e = edge.end_node as usize;
-            if edge.fwd_lanes > 0 && e < node_count && s < node_count {
+            if edge.fwd_lane_count() > 0 && e < node_count && s < node_count {
                 // Original forward edge: s → e.  Reverse: from e, update s.
                 rev_adj[e].push((edge.start_node, cost));
             }
-            if edge.bkw_lanes > 0 && s < node_count && e < node_count {
+            if edge.bkw_lane_count() > 0 && s < node_count && e < node_count {
                 // Original backward edge: e → s.  Reverse: from s, update e.
                 rev_adj[s].push((edge.end_node, cost));
             }
@@ -348,8 +371,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: cost,
             physical_length: cost * 50.0,
@@ -362,6 +384,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

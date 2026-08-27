@@ -94,7 +94,7 @@ Current deterministic rule:
 Implication:
 
 - terrain sample density is now configurable independently from zoning density
-- runtime world-space XZ is now canonical metres
+- runtime world-space XZ is now canonical meters
 - terrain, zoning, and environment each use their own cell spacing explicitly
 
 ### 3. Terrain Uses Dual Sparse Buffers
@@ -157,14 +157,14 @@ Current deterministic rule:
 - `world_y = terrain_sample * HEIGHT_SCALE`
 - `HEIGHT_SCALE = 20.0`
 
-This means the live terrain buffer is not currently a direct world-space metre heightfield.
+This means the live terrain buffer is not currently a direct world-space meter heightfield.
 
 Important note:
 
 - `terrain_base_elevation_m` is currently forwarded into the raw terrain sample storage before
   `HEIGHT_SCALE` is applied
 - the `_m` suffix is therefore ahead of the current implementation and should not be treated as a
-  proof that the live terrain buffer already stores fully world-space metres
+  proof that the live terrain buffer already stores fully world-space meters
 
 ### 6. Terrain Coordinates Are Centered At World Origin
 
@@ -178,7 +178,7 @@ Current deterministic rules:
   - `half_h = ((height - 1) * terrain_cell_m) * 0.5`
 - world-to-grid conversion for terrain queries uses that centered origin convention
 - terrain samples sit on world-edge coordinates
-- zoning and environmental cells remain centre-aligned metre cells
+- zoning and environmental cells remain center-aligned meter cells
 
 ### 7. Sparse Chunk Storage Is Authoritative At Rest
 
@@ -515,7 +515,7 @@ Current gap:
 
 Required direction:
 
-- terrain base elevation and sample values should eventually become direct world-space metres
+- terrain base elevation and sample values should eventually become direct world-space meters
 - no future authored-world format should assume the current scaled-height compatibility contract
 
 ### 6. `WorldDefinition` V1 Keeps The First Authored-Water Slice
@@ -930,7 +930,7 @@ Current source format rules:
   such as `Korkeusmalli 2 m`:
   - single-band `Float32`
   - projected horizontal CRS
-  - explicit pixel size in metres
+  - explicit pixel size in meters
   - explicit `NoData` value
 - v1 does not accept:
   - hillshade rasters
@@ -945,11 +945,11 @@ Current ownership rules:
 - the current importer creates a new `WorldDefinition`; it does not merge into an already edited
   world
 - imported terrain becomes the new authoritative source terrain for that world extent
-- runtime coordinates remain centred world-local metres after import; source georeferencing is not
+- runtime coordinates remain centerd world-local meters after import; source georeferencing is not
   preserved as gameplay-space coordinates
 - import provenance may be stored as non-authoritative metadata, but gameplay must not depend on it
 - because the live runtime still multiplies terrain samples by `HEIGHT_SCALE` at render/query
-  boundaries, the importer currently converts DEM elevation metres into that pre-scaled runtime
+  boundaries, the importer currently converts DEM elevation meters into that pre-scaled runtime
   sample space before writing source terrain
 
 Deterministic validation rules:
@@ -979,14 +979,14 @@ Current deterministic import sequence:
    - `terrain_chunk_m` follows the normal authored-world chunk rules
    - `terrain_base_elevation_m` stays an authored-world default only; it must not be used to
      reinterpret imported heights
-6. resample the import raster into the authored terrain grid in canonical world metres
+6. resample the import raster into the authored terrain grid in canonical world meters
 7. write the resampled values into authoritative source terrain
 8. reset visual terrain from source terrain
 9. save the result as a normal `WorldDefinition`
 
 Current deterministic resampling rules:
 
-- resampling happens at terrain sample positions, not cell centres of a separate import-only grid
+- resampling happens at terrain sample positions, not cell centers of a separate import-only grid
 - v1 uses bilinear interpolation from source DEM values
 - border-only nodata introduced by edge-aligned resampling is clamped from the nearest interior
   valid sample; any remaining nodata after that is a hard rejection
@@ -1250,7 +1250,7 @@ The following are explicitly not implemented yet and should not be assumed by ot
 - chunk-window water simulation
 - explicit atmospheric / horizon brightening independent from terrain material detail fade
 - authoritative terrain undo across source plus derived state
-- direct-metre terrain height storage without `HEIGHT_SCALE`
+- direct-meter terrain height storage without `HEIGHT_SCALE`
 
 ## Implementation Guardrails
 
@@ -1263,13 +1263,144 @@ These rules must stay true as the terrain/world system grows:
 - old save migration is not required unless a future change explicitly decides otherwise
 - large-world support must avoid whole-world dense simulation assumptions
 
+## World Generation
+
+[BantedHam:] The section below details world generation as it will be implimented as
+I convert gdscript to rust.
+
+Two paths produce a world and both are supported: authored import from real
+elevation data, which is what the DEM / GeoTIFF pipeline serves and is the path
+the player can use for a sandbox game, and generation from a seed, which is what a
+new game uses.
+
+The generator targets one arrangement: a large inland sea with islands, ringed
+by land, somewhat like the Mediterranean. Two shelves of land in a 'U' shape with
+an ocean between them.
+
+The Mediterranean is a shape reference and nothing more. Nothing about the
+setting is Roman, or ancient; it is a body of water of roughly the right form,
+with enough coast and enough interior to hold every biome the country needs.
+
+Size is chosen so the whole biome range fits: tropical in the middle,
+high-elevation mountains with a short summer and a hard winter at one end, and
+blistering desert with towering dunes on the third, and everything between.
+Because the play area is that large, the range is achievable rather than aspirational.
+
+The generator seeds a checklist before any terrain is evaluated and places:
+- Every biome
+- the inland sea and its islands
+- the 'U' shaped coastline
+- the mountain ranges and the rain shadows behind them
+- the river outlets
+- one region of each difficulty class
+
+Those become constraints, and noise fills in around them. Everything required is
+therefore present by construction. What varies between seeds is where each piece
+sits, how big it is, how many of them there are, and what the land between looks
+like. Seeding a mountain range seeds a plate boundary and lets orogeny build the
+range. The rain shadow falls out of the weather reading that terrain rather than
+being painted.
+
+Every seeded feature follows this rule: a constraint decides where, and the
+simulation decides what. A range placed directly as heightfield noise is a
+picture of a mountain; a range raised by convergence has a windward side, a
+leeward side, a drainage pattern, and a rock type, none of which had to be
+authored.
+
+### Regions and difficulty
+
+The map divides into 20 to 30 regions. The average player reaching the endgame will
+have taken around 10 to 12 of them by the time they meet a win condition, so more
+than half the country is still unclaimed when the game is won, giving average gamers
+plenty of choice and the map keeps somewhere to go post game for the 100%ers.
+
+A region carries its own difficulty and its own resources, and the two are related
+but not identical.
+
+Difficulty is a property of the land. The tropics are the easiest place to start.
+High-elevation mountains and deserts are very hard, plausibly not viable as a first
+city, but not forbidden: a player who wants that as a challenge should be able to
+try it.
+
+## Minerals and Deposits
+
+The mineral and strata layers derive a deposit from how the rock formed. The
+checklist then verifies the outcome. Deriving honestly and verifying the result
+are different jobs and both are needed: derivation produces a world that makes
+sense, and verification catches the seed where it made sense and was still
+unplayable.
+
+No single region, and no cluster of adjacent regions, holds every resource.
+That is what makes expansion mechanically necessary rather than merely new space
+to build in. The rule is stated in reach rather than radius: whatever a
+player can plausibly hold by the midpoint must still be missing several endgame resources.
+The player reaches out several times over a run to assemble what the endgame chains
+require, and no single push completes the set.
+- Basics touch nearly every region. Fertile land, game, and lumber are present in most
+  regions in some form, each with the tradeoff its biome implies. A boreal region
+  has lumber and a short growing season; a tropical one has neither problem but has
+  higher rates of disease and rot.
+- Hard regions pay better. Uranium, oil, and lithium sit where the living is
+  difficult. The reward for solving a hostile region is a resource the
+  comfortable regions do not have, which is why a player eventually leaves the
+  tropics.
+
+There is no separate excavation system. Removing material from the ground is
+the terrain deformation the earthworks model already performs, and a mine is a
+building that does it continuously against a deposit that depletes.
+
+`earthworks.md` owns the cut and fill, and `economy.md` owns the extraction rate,
+the labor, and the freight out. What belongs here is that the deposit is a
+finite quantity in the ground with a position, a richness, and a depth, and that
+digging it out changes the terrain the same way any other excavation does.
+
+Groundwater is a real resource with a real failure mode. It depletes when
+drawn faster than it recharges, so a desert city on an aquifer is viable until it
+isn't, and a player who looks can see it coming.
+
+### Deposits must be found before they can be seen
+
+A deposit exists in the world from generation, but the player does not know it is
+there. What is visible from the air or the ground is visible immediately: fertile
+land, timber, game, surface stone, and groundwater indicated by what grows over
+it. Everything else is hidden until a survey finds it, which is every advanced
+resource, ore bodies, oil, gas, coal at depth, uranium, lithium, and the rare
+earths the endgame chains need.
+
+Finding one takes a survey team sent to a tile. They run seismic tests, float
+balloons carrying ground-penetrating radar, and take core samples, and the tile
+resolves from unknown to whatever is actually under it. A tile that holds nothing
+resolves to nothing, which is information too and costs the same to obtain.
+
+Surveyors are real agents, not a timer on a menu. A team is dispatched with a
+route: an ordered set of tiles, roughly a dozen or two at a time, which the player
+draws or lets the game plan. They drive it, taking roads where roads exist and going
+off-road where they must, so a region with no road in it is slower and more
+expensive to survey than one already opened up. That is the mechanic: the road
+network is what makes prospecting cheap, and the frontier stays expensive because
+it has no roads yet.
+
+A find is added to the player's view the moment it is made, not at the end of the
+route. A team halfway through a dozen tiles has already returned half its answers.
+
+The same team and the same equipment serve any subsurface question, so the survey
+is the mechanism for scientific work as well: locating archaeological sites before
+a dig rather than discovering them by accident during construction, which
+`narrative.md` owns as an event. A player who surveys ahead of expansion knows
+what is under the ground before committing to build on it.
+
+`economy.md` owns what a survey team costs to field and what its findings are
+worth. What belongs here is that a deposit carries a discovered state alongside
+its position, richness, and depth, and that the generator places it whether or not
+anyone has looked.
+
 ## Short Version
 
 What is implemented now:
 
 - `WorldConfig` replaced the legacy map config
 - `terrain_cell_m` exists and terrain/water sample density is independently configurable
-- runtime world-space XZ is canonical metres again
+- runtime world-space XZ is canonical meters again
 - terrain and water are sparse chunk-backed at rest
 - terrain keeps authoritative source plus derived visual buffers
 - water keeps sparse baseline depth at rest

@@ -99,28 +99,67 @@ impl SimCore {
     /// Called from `run_benchmark_from_save` on the Godot main thread (while
     /// holding the `SimCore` lock).
     pub(crate) fn spawn_benchmark_agents(&mut self) {
-        use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
+        self.spawn_looping_car_traffic(100_000);
+    }
+
+    /// Puts `count` cars on the existing road graph, each looping a fixed route.
+    ///
+    /// Used by the benchmark and by `SimCommand::SpawnTestTraffic`, which is how
+    /// a test or a tool gets moving traffic without a full economy behind it.
+    /// The routes bounce back and forth so a car never runs out of path and
+    /// despawns, which would otherwise empty the roads mid-measurement.
+    pub(crate) fn spawn_test_traffic_internal(&mut self, count: i32) {
+        if count > 0 {
+            self.spawn_looping_car_traffic(count as usize);
+        }
+    }
+
+    fn spawn_looping_car_traffic(&mut self, agent_count: usize) {
+        use crate::config::{CAR_LENGTH, DEFAULT_URBAN_ROAD_SPEED_MS};
         use crate::simulation::economy::agents::data::Agent;
         use crate::simulation::economy::agents::{AGE_ADULT, MODE_CAR, TRANSIT_NETWORK};
         use crate::simulation::network::types::TransitFlags;
 
         let t_spawn = Instant::now();
-        let agent_count = 100_000usize;
         let node_count = self.region_graph.node_count();
         if node_count == 0 {
             godot_print!("[bench] ERROR: no nodes in graph, cannot spawn agents");
             return;
         }
 
-        let n_routes = 200usize;
-        let mut routes: Vec<Vec<u32>> = Vec::with_capacity(n_routes);
-        let t_routes = Instant::now();
-        for i in 0..n_routes {
-            let s = (i * node_count / n_routes) as u32;
-            let e = ((i + n_routes / 2) * node_count / n_routes % node_count) as u32;
-            if s == e {
+        // One route per pair of distant nodes, capped so a large graph does not
+        // pathfind hundreds of times. A small graph gets fewer, because a route
+        // whose endpoints collide is skipped and would otherwise leave none.
+        // Every ordered pair of distinct nodes on a small graph, so a cross gets
+        // routes along both streets rather than several along one. The old
+        // stride pairing produced `node_count` routes that mostly shared an
+        // axis, which put all 120 cars on one road and none on the other, and
+        // made a junction test measure nothing about the junction.
+        // Route endpoints must be places a car can legally turn around, which
+        // means a road end rather than a junction: a four-way node has no
+        // U-turn connector, so a bounce route that reverses there strands the
+        // car at the mouth forever with `reason=no-connection-lane`.
+        let is_turnaround_node = |n: usize| -> bool {
+            self.region_graph.node_adjacency_count_at(n as u32) <= 2
+        };
+        let mut pairs: Vec<(u32, u32)> = Vec::new();
+        'outer: for s in 0..node_count {
+            if !is_turnaround_node(s) {
                 continue;
             }
+            for e in 0..node_count {
+                if s == e || !is_turnaround_node(e) {
+                    continue;
+                }
+                pairs.push((s as u32, e as u32));
+                if pairs.len() >= 200 {
+                    break 'outer;
+                }
+            }
+        }
+        let mut routes: Vec<Vec<u32>> = Vec::with_capacity(pairs.len());
+        let t_routes = Instant::now();
+        for &(s, e) in &pairs {
             if let Some((_, _, path)) = self.transit_network.cch_graph.find_path(
                 s,
                 e,
@@ -129,6 +168,15 @@ impl SimCore {
                 TransitFlags::CAR,
             ) {
                 if path.len() > 1 {
+                    // Bounce the path so cars keep driving instead of reaching a
+                    // destination and leaving the road empty.
+                    //
+                    // The reversal turns the car around at the far end, which is
+                    // a U-turn. That is legal at a road end and impossible at a
+                    // four-way junction, so the turnaround must land on the
+                    // endpoints. `path` runs between two chosen nodes, and the
+                    // reversal is appended at those endpoints only, never
+                    // mid-route.
                     let mut bounce = path.clone();
                     for _ in 0..4 {
                         let mut rev = path.clone();
@@ -152,9 +200,18 @@ impl SimCore {
         }
 
         for i in 0..agent_count {
-            let route = routes[i % routes.len()].clone();
+            let route_idx = i % routes.len();
+            let route = routes[route_idx].clone();
             let path_len = route.len();
-            let start_idx = (i * path_len / agent_count).min(path_len.saturating_sub(2));
+
+            // Spread agents along their own route rather than across the whole
+            // fleet. Deriving the start from `i` made every agent sharing a
+            // route land on the same index, so cars spawned inside each other
+            // and stayed stacked.
+            let nth_on_route = i / routes.len();
+            let per_route = agent_count.div_ceil(routes.len()).max(1);
+            let start_idx =
+                (nth_on_route * path_len / per_route).min(path_len.saturating_sub(2));
             let current_node = route[start_idx];
             let node_pos = self.region_graph.node(current_node).pos;
             let render_id = self.agents.allocate_render_id();
@@ -189,12 +246,18 @@ impl SimCore {
                 network_replan_failures: 0,
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
-                lane_distance: 0.0,
+                // Staggered so cars sharing a route segment do not all attach at
+                // the same point. Lane attachment clamps this to the lane, and
+                // a car whose offset exceeds the segment simply starts at its
+                // end rather than inside the car ahead.
+                lane_distance: (nth_on_route % 8) as f32 * (CAR_LENGTH * 2.0),
                 lane_change_from_lane_id: u32::MAX,
                 lane_change_start_d: 0.0,
                 lane_change_length_m: 0.0,
                 overtake_blocked_time_s: 0.0,
                 overtake_cooldown_s: 0.0,
+                junction_release_time_s: f32::MIN,
+                next_reroute_time_s: 0.0,
                 speed: DEFAULT_URBAN_ROAD_SPEED_MS,
                 transit_mode: MODE_CAR,
                 planned_activity: 0,

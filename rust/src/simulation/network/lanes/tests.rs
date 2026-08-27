@@ -1,3 +1,24 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/network/lanes/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Lane geometry and junction connectivity regression tests.
+//           Builds real graphs and compiles the road surface so lane
+//           lengths, curb step heights, and connection counts are measured
+//           against generated geometry rather than expected values written
+//           by hand.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [lanes, surface, terrain]
+//  external_dependencies: [godot]
+//  features: [lane-geometry, junction-connectivity, curb-step]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Lane geometry and junction-connectivity regression tests.
 
 use super::super::graph::{Edge, RegionGraph};
@@ -21,8 +42,7 @@ fn test_lane_geometry_and_length() {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 2.0,
         physical_length: 100.0,
@@ -35,6 +55,7 @@ fn test_lane_geometry_and_length() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -83,8 +104,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 10.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 13.0,
         base_cost: 2.0,
         physical_length: 40.0,
@@ -97,6 +117,7 @@ fn lane_height_sync_matches_compiled_visible_surface() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -150,8 +171,7 @@ fn test_highway_no_sidewalks() {
         allowed_types: TransitFlags::CAR, // No FOOT
         class: EdgeClass::Standard,
         width: 14.0,
-        fwd_lanes: 2,
-        bkw_lanes: 2,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(2, 2),
         speed_limit: 100.0,
         base_cost: 1.0,
         physical_length: 100.0,
@@ -164,6 +184,7 @@ fn test_highway_no_sidewalks() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -194,8 +215,7 @@ fn test_dedicated_footpath_centering() {
         allowed_types: TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 3.0,
-        fwd_lanes: 0,
-        bkw_lanes: 0,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(0, 0),
         speed_limit: 5.0,
         base_cost: 20.0,
         physical_length: 100.0,
@@ -208,6 +228,7 @@ fn test_dedicated_footpath_centering() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -244,8 +265,7 @@ fn test_junction_pedestrian_connectivity() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -258,6 +278,7 @@ fn test_junction_pedestrian_connectivity() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
     }
     graph.rebuild_adjacency_list();
@@ -321,8 +342,7 @@ fn build_pedestrian_junction(
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: start.distance_to(end),
@@ -335,6 +355,7 @@ fn build_pedestrian_junction(
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }));
     }
     graph.rebuild_adjacency_list();
@@ -496,8 +517,7 @@ fn test_rht_lane_offsets() {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 1.0,
         physical_length: 100.0,
@@ -510,6 +530,7 @@ fn test_rht_lane_offsets() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -561,8 +582,7 @@ fn test_crosswalk_counts() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -575,6 +595,7 @@ fn test_crosswalk_counts() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
     }
     graph.rebuild_adjacency_list();
@@ -631,8 +652,7 @@ fn test_vehicle_connections() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -651,6 +671,7 @@ fn test_vehicle_connections() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
     }
     graph.rebuild_adjacency_list();
@@ -695,8 +716,7 @@ fn build_t_junction() -> (RegionGraph, u32, usize, usize, usize) {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: p0.distance_to(p1),
@@ -709,6 +729,7 @@ fn build_t_junction() -> (RegionGraph, u32, usize, usize, usize) {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         })
     };
 
@@ -840,8 +861,7 @@ fn test_vehicle_pass_through_split_uses_direct_lane_link() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: p0.distance_to(p1),
@@ -854,6 +874,7 @@ fn test_vehicle_pass_through_split_uses_direct_lane_link() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         })
     };
 
@@ -903,8 +924,7 @@ fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: p0.distance_to(p1),
@@ -917,6 +937,7 @@ fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         })
     };
 
@@ -994,8 +1015,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: ((fwd_lanes + bkw_lanes) as f32 * crate::config::LANE_WIDTH).max(2.0),
-                fwd_lanes,
-                bkw_lanes,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd_lanes, bkw_lanes),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: p0.distance_to(p1),
@@ -1008,6 +1028,7 @@ fn test_asymmetric_t_junction_vehicle_connectors_use_junction_span() {
                 no_building_spawn: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                frontage_class: Default::default(),
             })
         };
 
@@ -1185,8 +1206,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 1.0,
         physical_length: p0.distance_to(p1),
@@ -1199,6 +1219,7 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     })
 }
 

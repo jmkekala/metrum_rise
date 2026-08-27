@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/save/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: SQLite save and load round-trip test. Builds a populated
+//           world, agents, households, shipments, demand actions,
+//           agriculture, extraction, and the budget ledger, writes it,
+//           reads it back, and compares. Written as one wide case rather
+//           than many narrow ones because the failure being guarded is a
+//           field silently dropped from the schema, which only shows when
+//           the whole authoritative state is compared at once.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [save, economy, allocator]
+//  external_dependencies: [rusqlite]
+//  features: [save-load, sqlite, round-trip, persistence]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
@@ -146,8 +169,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 40.0,
         physical_length: 40.0,
@@ -159,6 +181,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
@@ -801,8 +824,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 120.0,
         physical_length: 120.0,
@@ -814,6 +836,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
 
     let mut zoning = ZoningSystem::new(&config);

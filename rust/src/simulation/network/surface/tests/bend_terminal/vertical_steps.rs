@@ -61,8 +61,7 @@ fn logged_one_way_elevated_terminal_compiles_mouth_vertical_step() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 0));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 
@@ -98,8 +97,7 @@ fn logged_two_lane_elevated_terminal_compiles_endpoint_vertical_step() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 1;
-    edge.bkw_lanes = 1;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(1, 1));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 

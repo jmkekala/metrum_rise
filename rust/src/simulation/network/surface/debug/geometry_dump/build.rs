@@ -268,8 +268,8 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump, "      \"class\": \"{:?}\",", edge.class);
         let _ = writeln!(dump, "      \"primary_type\": \"{:?}\",", edge.primary_type);
         let _ = writeln!(dump, "      \"width_m\": {:.3},", edge.width);
-        let _ = writeln!(dump, "      \"fwd_lanes\": {},", edge.fwd_lanes);
-        let _ = writeln!(dump, "      \"bkw_lanes\": {},", edge.bkw_lanes);
+        let _ = writeln!(dump, "      \"fwd_lanes\": {},", edge.fwd_lane_count());
+        let _ = writeln!(dump, "      \"bkw_lanes\": {},", edge.bkw_lane_count());
         let _ = writeln!(
             dump,
             "      \"physical_length_m\": {:.3},",

@@ -2,21 +2,29 @@
 
 ## Purpose
 
-Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on unbounded per-resident shopping behavior that explodes pathfinding and logistics cost. The baseline household-supply loop may use a bounded one-shopper carrier task per replenishing household.
+Metrum Rise needs an economy model that is believable enough to make sense, abstract enough
+to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of
+hardcoded constants in Rust, and it also cannot depend on unbounded per-resident shopping
+behavior that explodes pathfinding and logistics cost. The baseline household-supply loop may
+use a bounded one-shopper carrier task per replenishing household.
 
 This document defines a building-centric economy with the following design goals:
 
 - support a closed production and distribution loop that feels believable to the player
-- preserve the 1,000,000-population performance target through aggregation and bounded runtime rules
-- keep the simulation understandable, so cause and effect are visible rather than hidden behind opaque formulas
+- preserve the 20,000,000-agent performance target through aggregation and bounded runtime
+  rules
+- keep the simulation understandable, so cause and effect are visible rather than hidden
+  behind opaque formulas
 - stay fun and easy to use, avoiding mandatory micromanagement and per-agent shopping chores
-- give developers a visual tool for balancing and validating economic relationships without hand-editing numbers in files
+- give developers a visual tool for balancing and validating economic relationships without
+  hand-editing numbers in files
 
 ## Core Principles
 
 ### 1. Buildings are the primary economic actors
 
-Individual agents are not the main production graph nodes. Buildings, terminals, service facilities, and other concrete runtime facilities are.
+Individual agents are not the main production graph nodes. Buildings, terminals, service
+facilities, and other concrete runtime facilities are.
 
 Agents still matter, but mostly in three roles:
 
@@ -24,7 +32,8 @@ Agents still matter, but mostly in three roles:
 - households that consume from shared household supplies
 - optional low-frequency leisure or shopping travelers
 
-This keeps the hot path building-to-building instead of turning every essential good into an individual errand.
+This keeps the hot path building-to-building instead of turning every essential good into an
+individual errand.
 
 ### 2. Household essentials are replenished periodically, not bought daily by individual agents
 
@@ -39,15 +48,18 @@ The default model is:
 - that household supply reserve is replenished by occasional household-owned shopping in `v0.1`
 - residents consume from household supplies while at home
 
-An agent's everyday need is therefore not "buy bread now" but "does my household have access to supplies at home."
+An agent's everyday need is therefore not "buy bread now" but "does my household have access to
+supplies at home."
 
 ### 3. Physical logistics matter
 
-Goods do not teleport through the economy. If a transfer is local and meaningful to gameplay, it should be represented by a physical movement job across the `RegionGraph`.
+Goods do not teleport through the economy. If a transfer is local and meaningful to gameplay, it
+should be represented by a physical movement job across the `RegionGraph`.
 
 Important exception for `v0.1`:
 
-- networked utilities such as `power`, `water`, and `sewage` should not behave like trucked goods in the first pass
+- networked utilities such as `power`, `water`, and `sewage` should not behave like trucked goods
+  in the first pass
 - they use the separate `Utility Service Layer` described later in this document
 
 This creates the intended feedback loop:
@@ -58,9 +70,11 @@ This creates the intended feedback loop:
 
 ### 4. Balancing and validation are visual; persistence is data-driven
 
-Developers should use a tool, not raw text files, to balance production chains, controllers, and developer-authored scenario rules.
+Developers should use a tool, not raw text files, to balance production chains, controllers, and
+developer-authored scenario rules.
 
-Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
+Persisted data files still exist for save/load, export, version control, and modding, but they are
+outputs of the economy tool rather than the primary authoring surface.
 
 Player-facing fiscal controls such as tax sliders and household transfer levels are a separate
 gameplay policy layer. Baseline income tax, household VAT, business profit tax, daily property
@@ -77,13 +91,17 @@ The economy must scale primarily with:
 - number of active logistics jobs
 - number of active policy scopes, if later gameplay or scenario systems add them
 
-Derived per-building or future per-policy-scope summaries may aggregate those households for UI and coarse analysis, but those summaries are not an alternative source of truth.
+Derived per-building or future per-policy-scope summaries may aggregate those households for UI
+and coarse analysis, but those summaries are not an alternative source of truth.
 
-It must not require per-tick per-agent inventory searches, market scans, or one shopping trip per resident. Low-frequency household-owned trips are allowed only when they stay bounded to one active shopper per replenishing household and reuse the normal building-origin trip planner.
+It must not require per-tick per-agent inventory searches, market scans, or one shopping trip per
+resident. Low-frequency household-owned trips are allowed only when they stay bounded to one active
+shopper per replenishing household and reuse the normal building-origin trip planner.
 
 ## Economy Time Scale
 
-The economy needs an explicit time scale so labor, household consumption, replenishment, and travel all fit together.
+The economy needs an explicit time scale so labor, household consumption, replenishment, and travel
+all fit together.
 
 ### Multiple clocks are required
 
@@ -104,7 +122,8 @@ At `1.0x` speed, the target economy pacing is:
 - `1 in-game hour = 60 real seconds`
 - `1 in-game minute = 1 real second`
 
-This is the design target for economy balancing. The current prototype clock may use a different placeholder value, but economy rules should not be authored against an ultra-compressed day.
+This is the design target for economy balancing. The current prototype clock may use a different
+placeholder value, but economy rules should not be authored against an ultra-compressed day.
 
 ### Why this scale is the target
 
@@ -114,7 +133,8 @@ This pacing is intended to keep:
 - normal commutes in the range of tens of in-game minutes to a few in-game hours
 - long cross-city trips inside the same in-game day under normal conditions
 
-If routine travel starts taking multiple in-game days, the time scale, travel speeds, or network assumptions are wrong.
+If routine travel starts taking multiple in-game days, the time scale, travel speeds, or network
+assumptions are wrong.
 
 ### Economy cadence
 
@@ -123,8 +143,10 @@ The simulation does not need to update every economic rule every render frame.
 Baseline `v0.1` cadence:
 
 - movement and deliveries: continuous, on the normal simulation tick
-- labor availability, production, and household consumption: evaluated on coarse sub-daily steps such as once per in-game hour
-- household replenishment checks: every few in-game hours or when the supply reserve falls below a threshold
+- labor availability, production, and household consumption: evaluated on coarse sub-daily steps
+  such as once per in-game hour
+- household replenishment checks: every few in-game hours or when the supply reserve falls below
+  a threshold
 - wages, building operating costs, and daily summaries: settled once per in-game day
 
 Authoring units should follow this scale:
@@ -194,15 +216,19 @@ Interpretation:
 
 ### Operational clock runtime state
 
-The operational clock needs an explicit shared runtime representation so traffic, labor, deliveries, and schools all use the same time source.
+The operational clock needs an explicit shared runtime representation so traffic, labor,
+deliveries, and schools all use the same time source.
 
 Recommended state:
 
 - `day_index`: current operational day
-- `minute_of_day`: current minute since operational midnight, in the range `0..1439` where `0 = 00:00`, `60 = 01:00`, `720 = 12:00`, and `1439 = 23:59`
-- optional sub-minute interpolation for smooth movement and rendering, without changing the authored minute-based schedule rules
+- `minute_of_day`: current minute since operational midnight, in the range `0..1439` where
+  `0 = 00:00`, `60 = 01:00`, `720 = 12:00`, and `1439 = 23:59`
+- optional sub-minute interpolation for smooth movement and rendering, without changing the
+  authored minute-based schedule rules
 
-`minute_of_day` is the main authoring and debugging unit. Runtime code may advance smoothly between minute boundaries, but authored schedules should not depend on second-level precision.
+`minute_of_day` is the main authoring and debugging unit. Runtime code may advance smoothly between
+minute boundaries, but authored schedules should not depend on second-level precision.
 
 ### Schedule windows and authored time data
 
@@ -225,15 +251,23 @@ Examples:
 - office arrival window: `07:00-09:00`
 - school arrival window: `08:00-08:30`
 - factory shift changes: `06:00`, `14:00`, `22:00` with surrounding stagger windows
-- freight timing profiles such as `always_open`, `night_preferred`, `early_morning_preferred`, or `daytime_receive`
+- freight timing profiles such as `always_open`, `night_preferred`, `early_morning_preferred`,
+  or `daytime_receive`
 
-This keeps authored data readable and avoids unrealistic one-frame mass departures. It also makes clear that freight timing should not be forced into the same daytime pattern as office or school travel.
+This keeps authored data readable and avoids unrealistic one-frame mass departures. It also
+makes clear that freight timing should not be forced into the same daytime pattern as office
+or school travel.
 
-For `v0.1`, freight timing should usually be modeled as a soft preference profile rather than a strict accept/reject delivery window. A night-preferred or early-morning-preferred site should still be able to receive freight outside its preferred period, but with less favorable congestion, priority, or operating-cost characteristics.
+For `v0.1`, freight timing should usually be modeled as a soft preference profile rather than a
+strict accept/reject delivery window. A night-preferred or early-morning-preferred site should
+still be able to receive freight outside its preferred period, but with less favorable congestion,
+priority, or operating-cost characteristics.
 
 ### Stable offsets and departure planning
 
-Workers, students, and similar repeated travelers should not choose a totally new random minute every day. They should receive a stable offset inside the relevant schedule window unless a strong reason forces a resample.
+Workers, students, and similar repeated travelers should not choose a totally new random minute
+every day. They should receive a stable offset inside the relevant schedule window unless a strong
+reason forces a resample.
 
 This gives the simulation:
 
@@ -245,9 +279,11 @@ Planned departure should follow the rule:
 
 - `planned_departure = target_arrival - estimated_travel_time - reliability_buffer_minutes`
 
-So the clock defines when an arrival is desired, while routing and traffic determine how early departure must happen.
+So the clock defines when an arrival is desired, while routing and traffic determine how early
+departure must happen.
 
-For `v0.1`, `reliability_buffer_minutes` is an authored constant on the relevant schedule or trip-purpose profile rather than a dynamic variance model.
+For `v0.1`, `reliability_buffer_minutes` is an authored constant on the relevant schedule or
+trip-purpose profile rather than a dynamic variance model.
 
 Recommended first-pass seed values:
 
@@ -258,12 +294,16 @@ Recommended first-pass seed values:
 
 Implementation note:
 
-- `estimated_travel_time` should be treated as a cached or periodically refreshed planning estimate, not as a mandatory fresh path query for every agent on every tick
+- `estimated_travel_time` should be treated as a cached or periodically refreshed planning
+  estimate, not as a mandatory fresh path query for every agent on every tick
 - exact destination travel should reuse the existing `CCH` pathfinding layer
-- shared-destination travel should reuse existing flow-field routing where that already fits the destination type
-- any per-agent planning state such as cached commute estimate, planned departure, or lateness should live in the existing agent SoA layout rather than in a parallel economy-only data structure
+- shared-destination travel should reuse existing flow-field routing where that already fits
+  the destination type
+- any per-agent planning state such as cached commute estimate, planned departure, or lateness
+  should live in the existing agent SoA layout rather than in a parallel economy-only data structure
 
-The economy must not introduce a second routing stack. It should build on the pathing and agent-storage systems the project already has.
+The economy must not introduce a second routing stack. It should build on the pathing and
+agent-storage systems the project already has.
 
 ### Traffic affects arrival reliability, not the clock itself
 
@@ -276,11 +316,13 @@ The correct relationship is:
 - traffic and pathing estimate how long the trip should take
 - actual congestion determines whether the trip arrives on time, late, or not at all
 
-This means traffic creates lateness, reduced staffed time, delayed deliveries, and missed replenishment windows. It should not create a separate special-purpose rush-hour clock.
+This means traffic creates lateness, reduced staffed time, delayed deliveries, and missed replenishment
+windows. It should not create a separate special-purpose rush-hour clock.
 
 ### Rush hour emerges from overlapping windows
 
-Rush hour belongs to the operational clock, but it should be represented as overlapping authored windows rather than as a hardcoded flag.
+Rush hour belongs to the operational clock, but it should be represented as overlapping authored windows
+rather than as a hardcoded flag.
 
 It should emerge from synchronized or semi-synchronized departure and arrival windows for:
 
@@ -289,7 +331,8 @@ It should emerge from synchronized or semi-synchronized departure and arrival wi
 - daytime retail
 - any other workplace profile that clusters arrivals and departures into morning and evening windows
 
-Rush hour should not be treated as a universal rule for all labor. Some sectors will contribute strongly to the peak, while others operate across the whole day with flatter traffic demand.
+Rush hour should not be treated as a universal rule for all labor. Some sectors will contribute strongly
+to the peak, while others operate across the whole day with flatter traffic demand.
 
 The runtime representation should therefore be:
 
@@ -317,9 +360,11 @@ On that demographic clock, it is acceptable for:
 - `1 demographic day = 1 year of life`
 - one school-year step to advance on the same demographic cadence
 
-That gives the game a fast enough life-stage progression without breaking commute time, work schedules, deliveries, or household consumption on the operational economy clock.
+That gives the game a fast enough life-stage progression without breaking commute time, work schedules,
+deliveries, or household consumption on the operational economy clock.
 
-The exact demographic implementation is outside the v0.1 economy scope, but the clock separation is a required design rule.
+The exact demographic implementation is outside the v0.1 economy scope, but the clock separation is a
+required design rule.
 
 ## Money Model
 
@@ -331,8 +376,10 @@ Households own the money used for essentials.
 
 - wages earned by workers flow into the shared household budget
 - household replenishment purchases are paid from that shared budget
-- household-side utility charges such as residential `power`, `water`, and sewage service may also draw from that shared budget in `v0.1`
-- those household utility charges are service payments to the utility operator rather than automatic city revenue by default
+- household-side utility charges such as residential `power`, `water`, and sewage service may also draw
+  from that shared budget in `v0.1`
+- those household utility charges are service payments to the utility operator rather than automatic city
+  revenue by default
 - basic consumption should not require one separate wallet transaction per resident
 
 ### Buildings
@@ -341,13 +388,20 @@ Buildings own the money used for production and operations.
 
 - sellers receive revenue when households or other buildings buy goods
 - workplaces pay wages and operating costs
-- **Solvency-Based Hiring**: Buildings may only offer open recruitment slots if their current `operating_budget` can sustain the daily wages of all existing employees plus the new hire. This prevents bankrupt businesses from functioning as "zombie employers."
-- non-residential utility consumption and sewage-management charges should count as building operating cost in `v0.1`
-- utility-producing or utility-processing buildings are normal economic operators that earn service revenue from those utility charges
-- city-owned service buildings are the municipal exception: their wages and placement costs are paid by the city treasury, and their local utility fees deposit into the treasury rather than into the building operating budget
+- **Solvency-Based Hiring**: Buildings may only offer open recruitment slots if their current
+  `operating_budget` can sustain the daily wages of all existing employees plus the new hire.
+  This prevents bankrupt businesses from functioning as "zombie employers."
+- non-residential utility consumption and sewage-management charges should count as building
+  operating cost in `v0.1`
+- utility-producing or utility-processing buildings are normal economic operators that earn
+  service revenue from those utility charges
+- city-owned service buildings are the municipal exception: their wages and placement costs are
+  paid by the city treasury, and their local utility fees deposit into the treasury rather than
+  into the building operating budget
 - producers buy or reserve required inputs through the building-level economy
 
-This gives the simulation a readable money loop without requiring every essential purchase to be modeled as an individual per-agent checkout event.
+This gives the simulation a readable money loop without requiring every essential purchase to be
+modeled as an individual per-agent checkout event.
 
 ### Private building construction
 
@@ -2226,6 +2280,123 @@ After the first household supply loop is stable, add:
 - richer regional trade layers beyond the `OWA`
 - additional transport modes for freight
 
+## Industry: One Scaffold, Different Loops
+
+Every industry runs the same underlying scaffold: inputs, a process, outputs,
+labor, power, water, and freight in and out, what differs is the gameplay loop on top:
+- Extraction is about finding a deposit and depleting it. [C] Finding is its own
+  cost center before any of it: a survey team must reach the tile and test it
+  before a deposit is on the map at all. See below. [C]
+- Agriculture is about land, seasons, and water.
+- Manufacturing is about input logistics and throughput.
+- End-game industry, microchips and rocket ships, is about purity, precision, and
+  a supply chain no single region can feed.
+
+Three economies that most city builders leave as a zoning multiplier. Here they
+are first class and they actually run, somewhat like a tycoon game or the CSL1
+industries expansion but refined past the aggregate level abstraction they use.
+- Nightlife. Bars, clubs, music venues, and the cellar and side-entrance
+  businesses that alley frontage makes possible.
+- Tourism and gambling. Visitors arrive through the transport network, stay
+  somewhere, spend, and leave. A gambling economy is a strong attractor with a
+  strong downside, and both should be visible rather than collapsed into a single
+  desirability number.
+- Amusement parks. Laid out by the player, with rides, paths, and throughput. The tycoon
+  loop is intact: capacity against demand, price against satisfaction, upkeep against age,
+  but rendered simply enough that how well a park is doing is never more than a few data
+  points and the price of admission.
+
+What keeps these from being minigames bolted on is that they draw from the
+same simulation as everything else and we never separate them as independent systems.
+look over the CSL:1 Parks DLC for a good example of what has been done. A park's visitors
+are agents who traveled here, and ther level of detail which you can choose to get
+lost in is the same everywhere else, its staff are households who live somewhere and
+commute, its peak day is a traffic problem for the district around it, and its failure
+is an economic hole in a real place. 
+
+## Survey Teams
+
+Prospecting is a cost center with its own payroll and vehicles, and it runs before
+any extraction industry can exist. `terrain.md` owns what a survey reveals and how
+a deposit is hidden until then. What belongs here is the money.
+
+A team is a staffed unit like any other service: a headcount, wages, and fleet vehicles.
+Fielding one is a standing cost whether or not it finds anything, and a tile that
+resolves to nothing costs exactly what a tile holding uranium costs, and is necessary
+to discover late game deposits. Cost scales with reach rather than distance alone.
+A team routed over existing roads is cheap and fast; the same tiles reached off-road
+cost more in time, fuel, and wear.
+
+The strategic shape this produces: a player who surveys early spends money before
+having a use for the answers, and a player who does not survey builds an industrial
+chain toward a deposit they have not confirmed and may need to import. The endgame
+chains need resources no single region holds, so at some point the question stops
+being whether to prospect and becomes where.
+
+The same teams serve scientific work at the same cost, which is how a player looks
+for archaeological sites deliberately rather than hitting one during construction.
+`narrative.md` owns what happens once a site is found.
+
+## Two Money Pools
+
+There are only ever two pools, and the second one is not touchable when the
+game starts. What the player holds changes it lense twice, and each change unlocked
+by progression.
+
+At the start there is one city and the player holds its budget. Taxes are paid
+upward to the region, which the player does not control and does not see the
+inside of. Money leaves and does not come back, which is the whole early-game
+relationship to the tier above.
+
+Unlocking the region moves the player up into the regional pool. It is still one
+pool. The taxes that had been disappearing upward are now back, and the
+accumulated sum should be nearly be what is needed for a good start to founding a
+second city. The player can now fund and place regional assets freely up the the
+unincorporated population limit.
+
+From here the region is the level of abstraction. Cities are data points inside
+the regional pool rather than pools of their own. A city is budgeted and reported
+individually, but the regional budget is shared. Unlocking a second region creates
+the national/federal pool, and this is the only time a new pool appears. Regional
+taxes now flow to it (the player gains the ability to control these rates), along
+with the responsibilities that outgrew a region: power, border patrol, and the rest
+of what a country runs rather than a place.
+
+The regional pool does not go away when the national one arrives. It becomes a
+pile of city budgets, still one pool, still holding each city as a separate data
+point. The structure below the region is unchanged. If done right, this is not
+confusing and the player will intuit this progression as the natural evolution of
+Metrum's fiscal policy as it rises. Moving money between regions costs political
+capital, and there is no abstracted transfer button to move money from one region
+to another. The player must loan or grant it between their own regions, and each
+region's people hold an opinion about it. That is what stops the national pool from
+being one undifferentiated treasury with extra steps. Regions are places with
+populations, and the populations have a view.
+
+A scaffold for this exists in `simulation/region`: `FundingScope` names which
+pool owns a service, `FundingStage` names how far the sequence has progressed,
+and `stage.payer(scope)` resolves the two into who actually pays, so a national
+service falls back to the region until a second region unlocks. `RegionLedger`
+holds one balance and a `CityLedger` line per city. Nothing ticks it and nothing
+saves it. What it waits on is a City entity the simulation recognizes and an
+owner for the tiles a city holds, neither of which exists.
+
+## Foreign Capital
+
+Foreign companies approach throughout the game, starting early. They want to move
+industry into the country, buy a domestic company, or take a position in something the player
+built. Their offers range from predatory to genuinely decent, and the predatory ones are the
+attractive ones. A young country short of capital is exactly the counterparty a bad deal is
+designed for. The player who takes every early offer gets a fast start and a country whose
+industry belongs to somebody else.
+
+The mechanical requirement: a bad deal must look good at the time it is offered. An offer
+flagged as predatory is not a decision, it is a warning label. What makes it fair is that the
+terms are legible if the player reads them, not that the game refuses to let them be taken.
+
+The narrative framing of these offers, and the companies that make them, is owned
+by `narrative.md`.
+
 ## Example Chain
 
 A good starter chain for both simulation and developer-tool tuning is:
@@ -3123,3 +3294,4 @@ The recommended design is:
 - fresh-map startup support and later private development remain bounded systems, and zoning alone must not spam empty buildings
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.
+

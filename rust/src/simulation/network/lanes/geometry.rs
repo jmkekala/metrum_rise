@@ -151,7 +151,11 @@ pub fn build_one_lane(
     edge_lane_indices.push(new_lane_id);
 }
 
-/// Returns the half-width of the road asphalt based on the number of lanes.
+/// Returns the half-width of the road asphalt.
+///
+/// Summed from the layout's real band widths rather than a lane count times a
+/// fixed width, so a median, a verge, parking, or a lane wider than its
+/// neighbours all widen the asphalt by exactly what they occupy.
 pub fn road_half_width(edge: &Edge) -> f32 {
-    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+    edge.lane_layout().asphalt_width() * 0.5
 }

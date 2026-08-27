@@ -88,6 +88,7 @@ impl ZoningSystem {
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= frontage_m
         {
@@ -137,6 +138,7 @@ impl ZoningSystem {
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= frontage_m
         {

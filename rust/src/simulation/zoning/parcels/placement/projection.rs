@@ -21,6 +21,7 @@ pub(super) fn project_buildable_road_point_at(
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_length <= frontage_m
             || edge.physical_geometry.len() < 2
         {

@@ -88,6 +88,16 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_minute_of_day
     }
 
+    /// Seconds of simulated time since the world started.
+    ///
+    /// This is the clock `get_junction_signal_aspect` expects. Passing anything
+    /// else asks what a light *would* show at some other moment, not what it is
+    /// showing now.
+    #[func]
+    pub fn get_sim_time(&self) -> f32 {
+        self.snapshot.read().unwrap().sim_time_s
+    }
+
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
     pub fn get_agent_transforms(&self) -> VarDictionary {
@@ -154,10 +164,25 @@ impl SimulationNode {
     }
 
     /// High-level city setup for performance testing.
+    ///
+    /// Holds the core lock for the whole build, so it may only be called before
+    /// the simulation thread has spawned. Calling it on a node already in the
+    /// scene tree deadlocks against the sim tick. Use `spawn_test_traffic` and
+    /// `add_road` for a world that is already running.
     #[func]
     pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {
         self.lock_core()
             .setup_benchmark_city_internal(grid_size, agent_count);
+    }
+
+    /// Puts `count` looping cars on the existing roads.
+    ///
+    /// Queued to the sim thread, so it is safe on a running world. Each car
+    /// follows a fixed route that doubles back, which keeps traffic on the road
+    /// indefinitely without an economy driving trips.
+    #[func]
+    pub fn spawn_test_traffic(&mut self, count: i32) {
+        let _ = self.cmd_tx.send(SimCommand::SpawnTestTraffic { count });
     }
 
     /// Returns performance stats (ms, FPS, agents).

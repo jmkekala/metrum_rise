@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: remap.rs
+//  script_path: rust/src/simulation/economy/agents/remap.rs
+//  module_name: remap
+//  version: 0.1.0
+//  description: Repairs agent-held indices after the graph, lanes,
+//           buildings, or households are renumbered. Agents cache edge,
+//           lane, building, and household indices for speed, so every
+//           compaction or rebuild must be followed by a pass here; an
+//           index with no mapping is cleared to the sentinel and the
+//           cached path dropped rather than left pointing at whatever now
+//           occupies the slot.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, lanes, allocator]
+//  external_dependencies: [godot]
+//  features: [index-remap, compaction, lane-reattach, agent-repair]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;
@@ -638,8 +661,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -657,8 +679,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -714,8 +735,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: start.distance_to(end),
@@ -851,6 +871,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -911,6 +933,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -991,6 +1015,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -1269,8 +1295,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: start.distance_to(end),

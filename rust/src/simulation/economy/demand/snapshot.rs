@@ -515,7 +515,17 @@ impl DailyDemandSnapshot {
                     })
             })
             .count() as u32;
-        let external_connection_available = if connected_border_count > 0 { 1.0 } else { 0.0 };
+        // A physical connection is still required: with no border road there is
+        // no route in, and no policy can conjure one. What changed is that a
+        // connection is no longer all-or-nothing. Border policy scales how much
+        // of that connection admits arrivals, so a sealed border reads 0.0,
+        // which is the same value the no-connection case has always produced
+        // and which every consumer downstream already handles.
+        let external_connection_available = if connected_border_count > 0 {
+            fiscal_policy.border_openness
+        } else {
+            0.0
+        };
         let unhoused_household_ratio = if total_household_count == 0 {
             0.0
         } else {

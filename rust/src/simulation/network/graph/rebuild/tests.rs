@@ -1,3 +1,25 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/network/graph/rebuild/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Junction endpoint profile rebuild and connectivity
+//           regression tests. Pins the mouth grade limit and the support
+//           step against real edge geometry, and checks that the island
+//           count ignores floating nodes and deleted edges, since
+//           soft-deleted edges remain in the vector and once inflated the
+//           connectivity result.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [rebuild, data]
+//  external_dependencies: [godot]
+//  features: [junction-profile, graph-rebuild, island-count, connectivity]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Junction profile rebuild regression tests.
 
 use super::junction_profiles::{
@@ -15,8 +37,7 @@ fn profile_test_edge(points: Vec<Vector3>) -> Edge {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         geometry: points.clone(),
         physical_geometry: points,

@@ -840,8 +840,12 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
+            // A service way never carries an address. Without this an alley is
+            // a thin street and the allocator fills it with houses facing the
+            // wrong way, which is the result that makes the genre cut alleys.
             if edge.deleted
                 || edge.no_building_spawn
+                || !edge.frontage_class.can_address()
                 || edge.physical_geometry.len() < 2
                 || edge.physical_length <= 1e-6
             {
@@ -887,7 +891,11 @@ impl BuildingAllocator {
         edge_t: f32,
     ) -> Option<Vector2> {
         let edge = graph.get_edge(edge_idx)?;
-        if edge.deleted || edge.no_building_spawn || edge.physical_geometry.len() < 2 {
+        if edge.deleted
+            || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
+            || edge.physical_geometry.len() < 2
+        {
             return None;
         }
         let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);

@@ -12,6 +12,7 @@ pub(crate) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
         RoadSurfaceBandKind::Parking => 5,
         RoadSurfaceBandKind::CycleTrack => 6,
         RoadSurfaceBandKind::TramReservation => 7,
+        RoadSurfaceBandKind::Verge => 8,
     }
 }
 
@@ -24,7 +25,8 @@ pub(crate) fn raised_step_band_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
         | RoadSurfaceBandKind::Median
         | RoadSurfaceBandKind::Parking
         | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
+        | RoadSurfaceBandKind::TramReservation
+        | RoadSurfaceBandKind::Verge => None,
     }
 }
 

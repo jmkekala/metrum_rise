@@ -5,9 +5,27 @@ use super::super::{RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceSection, Roa
 use crate::config;
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
+use crate::simulation::network::graph::{LaneKind, LaneSpec};
 use crate::simulation::network::types::{TransitFlags, TransitType};
 
 // Standard roadbed lateral shaping.
+/// How far a band stands above the carriageway.
+///
+/// A built median is kerbed and planted, so it sits at kerb height and a
+/// vehicle cannot cross it. A painted median is a line on the road surface and
+/// sits flush, which is the whole difference between the two. Every other band
+/// is level with the carriageway it belongs to.
+fn median_lift_m(lane: &LaneSpec) -> f32 {
+    match lane.kind {
+        // A built median is curbed and planted; a painted one is a line on the
+        // road and sits flush. That is the whole difference between them.
+        LaneKind::Median if lane.blocks_turns_across() => CURB_STEP_HEIGHT_M,
+        // A verge is always planted ground, so it always stands proud.
+        LaneKind::Verge => CURB_STEP_HEIGHT_M,
+        _ => 0.0,
+    }
+}
+
 const CURB_BAND_WIDTH_M: f32 = 0.15;
 const SHOULDER_BAND_WIDTH_M: f32 = 0.75;
 pub(in crate::simulation::network::surface::edge) const CURB_STEP_HEIGHT_M: f32 = 0.12;
@@ -126,8 +144,10 @@ impl RoadSurfaceSystem {
             .unwrap_or_else(|| edge.width.max(config::LANE_WIDTH) * 0.5)
             .max(config::LANE_WIDTH * 0.5);
         let has_sidewalk = edge.allowed_types & TransitFlags::FOOT != 0;
+        // Authored per layout, falling back to the project default, so a high
+        // street and a residential lane are not forced to the same width.
         let sidewalk_total = if has_sidewalk {
-            config::SIDEWALK_WIDTH
+            edge.lane_layout().sidewalk_width()
         } else {
             0.0
         };
@@ -159,20 +179,67 @@ impl RoadSurfaceSystem {
             height_offset_start_m: raised_offset_m,
             height_offset_end_m: raised_offset_m,
         });
-        emit(EdgeLateralBandSpec {
-            kind: RoadSurfaceBandKind::Carriageway,
-            lateral_start_m: -half_carriageway,
-            lateral_end_m: 0.0,
-            height_offset_start_m: 0.0,
-            height_offset_end_m: 0.0,
-        });
-        emit(EdgeLateralBandSpec {
-            kind: RoadSurfaceBandKind::Carriageway,
-            lateral_start_m: 0.0,
-            lateral_end_m: half_carriageway,
-            height_offset_start_m: 0.0,
-            height_offset_end_m: 0.0,
-        });
+        // The carriageway is the ordered bands of the lane layout, not one
+        // slab split at the centreline. A median, a parking lane, and a cycle
+        // track are each their own band with their own surface, which is what
+        // `roads.md` asks for: explicit ordered bands rather than special-case
+        // render offsets.
+        //
+        // Bands must tile the carriageway left to right with no gap, because
+        // the section profile walks them in order and takes each band's end as
+        // the next band's start.
+        let layout = edge.lane_layout();
+        let emitted_from_layout = if carriageway_half_width_override_m.is_none()
+            && !layout.is_empty()
+            && layout.asphalt_width() > 0.0
+        {
+            let scale = (half_carriageway * 2.0) / layout.asphalt_width();
+            let mut cursor = -half_carriageway;
+            for lane in layout.lanes() {
+                let end = cursor + lane.width_m * scale;
+                emit(EdgeLateralBandSpec {
+                    kind: match lane.kind {
+                        LaneKind::Median => RoadSurfaceBandKind::Median,
+                        LaneKind::Parking => RoadSurfaceBandKind::Parking,
+                        LaneKind::CycleTrack => RoadSurfaceBandKind::CycleTrack,
+                        LaneKind::Verge => RoadSurfaceBandKind::Verge,
+                        // A reversible lane is ordinary asphalt. What makes it
+                        // reversible is its markings and who may enter it,
+                        // not the surface it is built from.
+                        LaneKind::Travel | LaneKind::Shoulder | LaneKind::Reversible => {
+                            RoadSurfaceBandKind::Carriageway
+                        }
+                    },
+                    lateral_start_m: cursor,
+                    lateral_end_m: end,
+                    // A built median stands proud of the road at kerb height;
+                    // a painted one is flush, and so is everything else.
+                    height_offset_start_m: median_lift_m(lane),
+                    height_offset_end_m: median_lift_m(lane),
+                });
+                cursor = end;
+            }
+            true
+        } else {
+            false
+        };
+
+        if !emitted_from_layout {
+            emit(EdgeLateralBandSpec {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: -half_carriageway,
+                lateral_end_m: 0.0,
+                height_offset_start_m: 0.0,
+                height_offset_end_m: 0.0,
+            });
+            emit(EdgeLateralBandSpec {
+                kind: RoadSurfaceBandKind::Carriageway,
+                lateral_start_m: 0.0,
+                lateral_end_m: half_carriageway,
+                height_offset_start_m: 0.0,
+                height_offset_end_m: 0.0,
+            });
+        }
         emit(EdgeLateralBandSpec {
             kind: RoadSurfaceBandKind::CurbOrShoulder,
             lateral_start_m: half_carriageway,

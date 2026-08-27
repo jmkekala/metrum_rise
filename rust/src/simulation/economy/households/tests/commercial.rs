@@ -68,6 +68,11 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
             < 0.001,
         "explicit work-area output storage should scale with committed area"
     );
+    // Leave a full hour of production free, plus slack. The headroom factor
+    // compares what is left in the buffer against one hour of scaled output,
+    // so anything less than that is a genuine throttle rather than full
+    // running, and the two bare units this test used to leave produced a 0.63
+    // factor that the assertion below then read as a staffing penalty.
     let scaled_hourly_output =
         scaled_output_units_per_day_for_building(&building, profile, output_port) / 24.0;
     building.set_inventory_units(
@@ -143,6 +148,9 @@ fn explicit_work_area_activity_uses_owa_as_external_market() {
         (allocator.buildings[0].commercial_activity_floor_scale - 1.0).abs() < 0.001,
         "OWA-capable explicit producers should not throttle staffing to local input demand"
     );
+    // Two hectares of an eight-worker profile, and an OWA gateway that takes
+    // the crop, so every one of the sixteen physically possible workers is
+    // justified.
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
         16
@@ -171,6 +179,8 @@ fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
     let households = HouseholdSystem::new();
     refresh_commercial_activity_floor(&catalog, &households.households, &mut allocator, false);
 
+    // No outside gateway, so the weak OWA export bid is not available and
+    // nothing local wants the crop. The farm opens no jobs at all.
     assert_eq!(allocator.buildings[0].commercial_activity_floor_scale, 0.0);
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),

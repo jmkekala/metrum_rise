@@ -36,7 +36,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         if edge.deleted || edge.primary_type != TransitType::Road {
             continue;
         }
-        let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
+        let fwd_lanes = edge.fwd_lane_count();
+        let bkw_lanes = edge.bkw_lane_count();
+        let total_lanes = usize::from(fwd_lanes) + usize::from(bkw_lanes);
         if total_lanes <= 1 {
             continue;
         }
@@ -63,7 +65,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
 
         for divider in 1..total_lanes {
             let is_center =
-                edge.fwd_lanes > 0 && edge.bkw_lanes > 0 && divider == edge.bkw_lanes as usize;
+                fwd_lanes > 0 && bkw_lanes > 0 && divider == usize::from(bkw_lanes);
             let color = if is_center {
                 marking_center_color()
             } else {

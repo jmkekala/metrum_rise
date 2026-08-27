@@ -110,6 +110,18 @@ pub struct Agent {
     pub overtake_blocked_time_s: f32,
     /// Remaining cooldown before another discretionary overtaking/return lane change may start.
     pub overtake_cooldown_s: f32,
+    /// Simulation time at which a junction's priority sign releases this agent.
+    ///
+    /// Set on arrival at a controlled stop line and compared against `sim_time`
+    /// on each subsequent tick. `f32::MIN` means the agent is not being held,
+    /// which is the resting state everywhere outside a yield or stop arm.
+    pub junction_release_time_s: f32,
+    /// Earliest simulation time this agent may reconsider its route.
+    ///
+    /// Rerouting is a comparison against a fresh pathfind, so it is rate limited
+    /// per vehicle rather than run every tick. Distinct from `next_replan_time`,
+    /// which paces recovery after a plan has already failed.
+    pub next_reroute_time_s: f32,
     /// Current movement speed in m/s. Updated each tick by the IDM model (cars) or held constant
     /// (pedestrians). Initialised to the edge speed limit on first lane entry.
     pub speed: f32,

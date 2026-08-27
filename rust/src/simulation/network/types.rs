@@ -31,6 +31,22 @@ impl TransitFlags {
     pub const SHIP: u8 = 1 << 3;
     /// Aircraft allowed.
     pub const AIR: u8 = 1 << 4;
+    /// Buses allowed.
+    ///
+    /// Separate from [`TransitFlags::CAR`] because a bus lane is defined by
+    /// what it excludes. An ordinary lane carries both bits; a bus lane
+    /// carries this one alone, and that difference is the whole feature.
+    pub const BUS: u8 = 1 << 5;
+    /// Cycles allowed.
+    ///
+    /// Separate from [`TransitFlags::FOOT`] because a cycle track is not a
+    /// footway: it belongs to the carriageway, runs at vehicle speed, and a
+    /// pedestrian on it is in the wrong place.
+    pub const BIKE: u8 = 1 << 6;
+
+    /// What an ordinary travel lane carries: private vehicles and the buses
+    /// that share the road with them.
+    pub const ROAD_TRAFFIC: u8 = Self::CAR | Self::BUS;
 }
 
 /// The functional role of a network node.

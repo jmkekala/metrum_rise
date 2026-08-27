@@ -100,8 +100,7 @@ fn logged_curved_terminal_top_surfaces_cover_footprint() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 2;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 2));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 
@@ -143,7 +142,7 @@ fn logged_terminal_with_tiny_boundary_dust_exports_final_top_footprint() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(edge.fwd_lane_count(), 0));
     graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -228,8 +227,7 @@ fn logged_terminal_handoff_keeps_both_sidewalk_edges_owned() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 0));
     let edge_idx = graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);

@@ -147,6 +147,10 @@ impl RoadSurfaceSystem {
             RoadSurfaceBandKind::Parking => TerrainCdtRoadBandKind::Parking,
             RoadSurfaceBandKind::CycleTrack => TerrainCdtRoadBandKind::CycleTrack,
             RoadSurfaceBandKind::TramReservation => TerrainCdtRoadBandKind::TramReservation,
+            // A verge is planted ground the road owns, which is the same thing
+            // a median is to the terrain solve: raised, not driven on, and
+            // inside the road footprint.
+            RoadSurfaceBandKind::Verge => TerrainCdtRoadBandKind::Median,
         }
     }
 

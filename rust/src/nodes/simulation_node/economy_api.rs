@@ -214,10 +214,11 @@ fn fiscal_policy_controls_array(
 
 fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str, &'static str) {
     use crate::simulation::economy::fiscal::{
-        POLICY_BUSINESS_PROFIT_TAX, POLICY_CHILD_SUPPORT, POLICY_COMMERCIAL_PROPERTY_TAX,
-        POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX, POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION,
-        POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER, POLICY_RESIDENTIAL_PROPERTY_TAX,
-        POLICY_UNEMPLOYMENT_BENEFIT, POLICY_UNEMPLOYMENT_MAX_DAYS,
+        POLICY_BORDER_OPENNESS, POLICY_BUSINESS_PROFIT_TAX, POLICY_CHILD_SUPPORT,
+        POLICY_COMMERCIAL_PROPERTY_TAX, POLICY_HOUSEHOLD_VAT, POLICY_INCOME_TAX,
+        POLICY_INDUSTRIAL_PROPERTY_TAX, POLICY_PENSION, POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
+        POLICY_RESIDENTIAL_PROPERTY_TAX, POLICY_UNEMPLOYMENT_BENEFIT,
+        POLICY_UNEMPLOYMENT_MAX_DAYS,
     };
 
     match policy_id {
@@ -245,6 +246,10 @@ fn fiscal_policy_control_impact(policy_id: &str) -> (&'static str, &'static str,
             "revenue",
         ),
         POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER => ("property_tax", "Property Tax", "revenue"),
+        // Border policy is not a tax. It changes who arrives, which reaches the
+        // treasury only through the households that do or do not turn up, so it
+        // reports against population rather than against a revenue line.
+        POLICY_BORDER_OPENNESS => ("border_openness", "Border Openness", "population"),
         _ => ("net", "Policy Impact", "revenue"),
     }
 }

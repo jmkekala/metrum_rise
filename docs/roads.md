@@ -20,6 +20,10 @@ internals, or the shared engineered-ground model. Those are owned by
 The roadbed rewrite is shipped for the current surface-road scope:
 
 - the logical road graph owns connectivity, IDs, lanes, authored plan curves, and road class
+- an edge's cross-section is an ordered `LaneLayout` of `LaneSpec` bands, each carrying its
+  own kind, direction, width, permitted modes, marking, turn set, and longitudinal range;
+  the stored `fwd_lanes` and `bkw_lanes` counts are gone, and `fwd_lane_count()` and
+  `bkw_lane_count()` derive from the layout on call
 - `RoadSurfaceSystem` owns the visible roadbed, query surface, terrain clip inputs, and chunk
   coverage
 - road pieces are explicit `Span`, `Terminal`, `Bend`, and `JunctionN` visual carriers
@@ -107,9 +111,161 @@ For every road-owned top surface:
 - preview and committed placement use the same Rust surface solve rules
 - render triangles and query triangles use the same compiled ownership
 
-The current required band model supports carriageway, curb / shoulder, sidewalk, and no-sidewalk
-profiles. Later medians, parking lanes, cycle tracks, tram reservations, or richer shoulders must
-add explicit ordered bands instead of special-case render offsets.
+The band model supports carriageway, curb/shoulder, sidewalk, and no-sidewalk profiles, and the
+carriageway is now subdivided into the ordered bands of the edge's lane layout rather than emitted as
+one slab split at the centerline. Medians, parking lanes, and cycle tracks are explicit ordered bands,
+as required; tram reservations remain reserved until rail exists. Richer shoulders must be added the
+same way, never as special-case render offsets.
+
+Band width comes from each lane's own `width_m`. A wide truck lane, a narrow cycle track, or a
+median widens the roadbed by exactly what it occupies. A built median is emitted at curb height and
+a painted one flush, which is the only difference between a line on the road and an island a vehicle
+may not cross.
+
+## Lane Model
+
+An edge's lanes are one ordered list across the carriageway, stored leftmost backward lane through
+rightmost forward lane, and lets a median sit between the two directions as an ordinary entry rather
+than a special case.
+
+Each `LaneSpec` carries:
+
+- `kind`: travel, median, parking, verge, shoulder, cycle track, or reversible
+- `direction`: forward, backward, or none, the last being a band that carries nothing
+- `width_m`: real width, so bands of differing width sit correctly beside each other
+- `modes`: which transit modes may use it, from `TransitFlags`
+- `marking`: the line painted on its left boundary
+- `turns`: which movements it permits at the far node
+- `range`: the fractions of the edge over which it exists
+
+Road roles are mode bits on a band rather than new road types:
+
+| Role | What it admits |
+|---|---|
+| Bus-only lane | Buses, and not private cars |
+| Part-time bus lane | Buses always, cars outside the hours it is in force |
+| Cycle track | Bicycles; painted or separated is width and marking, not a kind |
+| Pedestrian street | Foot and cycles, plus waste collection, buses and trams, and emergency |
+| Truck route | Freight, for the corridors near ports and industry |
+| Tram reservation | Rail vehicles; reserved until rail exists, see `transit.md` |
+
+The pedestrian case proves the model. It is not a footpath: it is a street with private vehicles
+withheld, so deliveries still arrive, the garbage truck still runs, a tram may still pass, and an
+ambulance is never blocked. Modeling it as a path throws all of that away and starves the businesses
+on it.
+
+- Lane offsets accumulate real widths. The offset of a band is the running sum of the widths before
+  it, plus half its own, less half the carriageway. The former `(index + 0.5) * LANE_WIDTH` held only
+  while every lane was identical, and a wide lane or a median broke it.
+- Both lane rebuild paths walk the layout. Full and incremental rebuild must produce identical
+  geometry for the same edge. When the incremental path computed offsets from lane counts instead,
+  editing a road silently discarded every band the counts could not express.
+- Lane indices keep their meaning downstream. Forward lanes count outward from the center from 0
+  backward lanes from -1. Bands carrying no traffic take width and receive no lane index.
+- A mode question has a mode-specific answer. `fwd_count` is the car answer; `count_for_mode` is
+  the general one, and a road with a bus lane returns a larger number to a bus than to a car.
+- A restriction is a permission on the lane, not a different object. A pedestrianised street keeps
+  its lanes, its width, its address, and its deliveries; only its mode bits change. A walkway is an edge 
+  with no carriageway at all, which is a different thing. Emergency and service vehicle may still
+  traverse pedestrian streets.
+- A turn pocket is a lane with a partial range. It is absent at the start of the edge and live at
+  the node, so it widens the carriageway where the queue forms and nowhere else. `asphalt_width` is
+  the widest the road ever gets, which the roadbed must reserve; `asphalt_width_at` is what it is at
+  a given point, and the two differ exactly where a pocket opens.
+- Asymmetry is ordinary, not a rounding error. Two lanes one way and one the other is a legal
+  road. The carriageway is centerd on its own alignment whatever the split, because the sidewalks
+  were always placed at plus and minus half the asphalt width and the lanes have to agree with them.
+- A reversible lane belongs to neither count. A two-way left-turn lane is entered from both
+  sides, so `fwd_count` and `bkw_count` deliberately do not sum to the lane total. A tidal lane
+  changes which count it joins when its direction flips, and its geometry does not move when it
+  does.
+- A road's lane count differs at its two ends. A street carrying two lanes between junctions
+  arrives at one with four, separating a left and a right turn out of the through traffic and
+  narrowing again immediately after. Any consumer reading a single lane count for a whole edge is
+  reading something that does not exist.
+
+A parking band carries the angle it is marked at, the angle sets both
+how deep the band is and how many cars fit along a meter of curb. Parallel is
+2.5 m deep at 6.0 m per car; forty-five is 4.8 m deep at 3.5 m per car; ninety
+is 5.5 m deep at 2.7 m per car. Angling trades roadway depth for curb frontage.
+
+`parking_spaces_along` is what a parking supply model reads. The same width of
+street holds very different numbers of cars depending on how the bays are
+marked, so the count comes from the angle rather than from the area.
+
+A verge is a planted strip or a run of planters between carriageway and
+sidewalk. It carries nothing, takes width like a median, and sits at curb
+height.
+
+Sidewalk width is authored per layout and falls back to the project default.
+The save records whether a layout authored one, so changing the default later
+moves every street that never overrode it and leaves the rest alone.
+
+Save version 58 adds `network_edge_lanes`, one row per band. `fwd_lanes` and `bkw_lanes` are still
+written so an older build can open the save. A save without the table loads with the layout its counts
+imply.
+
+## Intersection Control
+
+Lane connectors and per-junction control are built. The rest of this section is
+still a requirement.
+
+- Lane connectors, built. Which incoming lane feeds which outgoing lane.
+  `Node.lane_connections` holds the table and `vehicle_junctions.rs` enforces it:
+  a node carrying any explicit connection blocks every turn not listed, and a
+  node carrying none stays open. The `LaneLayout` ordering gives every band the
+  stable identity a connector names.
+- Priority signs, built. Main, yield, or stop per approach arm, held on
+  `Node.control`. An arm nobody assigned yields rather than assuming priority,
+  and a stop pays its halt once on arrival rather than on every tick it waits.
+- Timed traffic lights, built. An ordered phase list with green, amber, and a
+  cycle offset so neighboring junctions on a corridor can be progressed into a
+  green wave. A program that cannot cycle shows green, because a signal must not
+  deadlock the junction it controls. Switching driven by measured flow against
+  wait time is not built; the cycle is fixed.
+
+Both are reachable from GDScript: `set_junction_priority`,
+`add_junction_signal_phase`, `set_junction_signal_offset`,
+`clear_junction_control`, `get_junction_control`, and
+`get_junction_signal_aspect`. A node carries priority signs or a signal program,
+never both, so setting one discards the other. No tool or panel drives them yet,
+which is the gap between the API existing and a player using it.
+
+Conflicting movements, built. Each permitted turn is its own connector lane, and
+a lane separates cars only along its own length, so a left turn and the oncoming
+through movement never tested each other and both proceeded. A per-node table
+now records which connector paths cross, computed when lanes are rebuilt. Both
+directions of one street run together the way a signal phase does; movements out
+of one approach lane are a diverge and only contest the mouth; movements into one
+exit are a merge.
+
+Turning lanes and a turn hierarchy are the next thing, and right turns still
+collide without them. The table can say a path is occupied but not who had the
+better claim. That needs dedicated turn lanes, so a turning car queues out of the
+through lane, and a stated precedence: through beats turning, protected beats
+permissive.
+- Junction restrictions, each independently settable per arm: U-turns, lane
+  changing inside the junction, entering a blocked junction, and pedestrian
+  crossing.
+- Speed limits per lane, not per road. A lane is the unit everything else here
+  is expressed in.
+- Vehicle restrictions per lane, applied as a routing penalty rather than a
+  hard gate. A ban has to be taken seriously without making the network
+  unsolvable.
+
+A large interchange is one logical intersection made of many physical nodes, and
+the player must be able to treat it as a single object: signal it as one, set its
+priorities as one, and read its performance as one. See; super-nodes from Cites:
+Skylines 2. The granularity is in descending from that whole-interchange view into
+any individual movement inside it. A player who wants to adjust one left turn in a
+9 way intersection with 2 opposing roundabouts should not have to reason about
+which internal node carries it.
+
+Junction markings are stored against node and segment topology rather than as
+placed objects, so they redraw themselves when an intersection is moved or
+reshaped and they cost nothing against object budgets. A lane connector and the
+arrow painted on the road describe the same intent, and drawing them from one
+source is what stops the paint disagreeing with the routing.
 
 ## Pedestrian Junction Crossings
 
@@ -195,7 +351,7 @@ renderer bevel, shader mask, or test-only helper. For every non-degenerate adjac
 side-join generator must round asphalt-to-curb / sidewalk material boundaries and outer
 roadbed-to-terrain footprint boundaries before the ownership boolean. The emitted visible side-join
 contours are adjacent-mouth boundaries: their endpoints come from the generated rail / band boundary
-points, not from the shared graph endpoint or node centre. A shared endpoint / centreline point may
+points, not from the shared graph endpoint or node center. A shared endpoint / centerline point may
 remain as internal owner or height support, but it must not be emitted as an exposed side-join
 material or footprint boundary for the rounded corner.
 
@@ -211,7 +367,7 @@ loops, and earthwork roots all consume this same rounded ownership output.
 
 Node throat clips use the roadbed half-width plus a small numeric safety margin as their baseline
 distance from the graph node, so ordinary orthogonal junction mouths stay close to the junction
-centre without producing exact tangencies in node ownership. Acute-angle and near-parallel conflicts
+center without producing exact tangencies in node ownership. Acute-angle and near-parallel conflicts
 may still expand the clip distance deterministically from incident roadbed widths and angular
 separation. Same-width conflicts cap that expansion to a small multiplier of the incident roadbed
 half-width so ordinary acute mouths do not become long flat platforms; mixed-width conflicts may
@@ -228,7 +384,7 @@ cross-section axis at the shared endpoint, so `Bridge` / `Standard` and same-cla
 without a transverse cap, terrain slit, or overlapping roadbed.
 
 Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
-and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a
+and node compilation. Profile distances are measured in horizontal XZ meters because the cap is a
 road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only when
 limiting stays close to the incident road samples; otherwise the original source-supported plane is
 preserved.
@@ -365,7 +521,7 @@ Editor preview must use the same road-surface solve rules as committed placement
 commit may differ in cache lifetime or display detail, but not in geometry ownership.
 
 Standard-road input keeps the player's authored XZ alignment, then prepares its physical geometry
-before graph commit or preview compilation: long spans are densified every few metres, samples are
+before graph commit or preview compilation: long spans are densified every few meters, samples are
 grounded against source terrain or existing visible road support, true endpoints and road
 connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
 respecting road grade / curvature limits. The dense solved profile is stored on
@@ -642,6 +798,13 @@ Do not reintroduce:
 - shader, water, zoning, material-order, cull-mode, or background masking for missing topology
 - seam strips, closure carpets, guard strips, miter caps, or connector patches not derived from
   final canonical ownership
+- lane offsets computed as `(index + 0.5) * LANE_WIDTH`, or carriageway width as
+  `(fwd_lanes + bkw_lanes) * LANE_WIDTH`; both are correct only while every lane is
+  identical and silently wrong once one is not
+- a second lane-geometry path that does not walk the layout, in either full or
+  incremental rebuild
+- a median, bus lane, cycle track, or parking band expressed as a render offset rather
+  than an ordered band
 - paired adjacent-mouth strips as final node ownership
 - generic node disks, annuli, halos, or global sidewalk rings
 - Godot-side road topology, terrain clipping, or road-height decisions

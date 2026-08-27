@@ -1,10 +1,20 @@
 //! SQLite schema and enum mapping for persistent storage.
 
 use super::SaveLoadError;
+use crate::simulation::buildings::frontage::EdgeFrontageClass;
+use crate::simulation::network::graph::{LaneDirection, LaneKind, LaneMarking, ParkingAngle};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 57;
+///
+/// 59 adds the edge frontage class, an authored sidewalk width, and the angle
+/// a parking band is marked at.
+///
+/// 58 added `network_edge_lanes`, the authored cross-section. Before it an
+/// edge stored two lane counts, which cannot express a median, a bus lane, a
+/// cycle track, curbside parking, or a turn pocket. A save without the table
+/// still loads: the counts rebuild the layout they always implied.
+pub const SAVE_VERSION: i64 = 59;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -130,7 +140,23 @@ CREATE TABLE network_edges(
     start_clip REAL NOT NULL,
     end_clip REAL NOT NULL,
     no_building_spawn INTEGER NOT NULL DEFAULT 0,
-    vehicle_frontage_access INTEGER NOT NULL DEFAULT 1
+    vehicle_frontage_access INTEGER NOT NULL DEFAULT 1,
+    frontage_class INTEGER NOT NULL DEFAULT 0,
+    sidewalk_width_m REAL
+);
+CREATE TABLE network_edge_lanes(
+    edge_id INTEGER NOT NULL,
+    band_index INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    direction INTEGER NOT NULL,
+    width_m REAL NOT NULL,
+    modes INTEGER NOT NULL,
+    marking INTEGER NOT NULL,
+    turns INTEGER NOT NULL,
+    range_start REAL NOT NULL,
+    range_end REAL NOT NULL,
+    parking_angle INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(edge_id, band_index)
 );
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
@@ -286,7 +312,8 @@ CREATE TABLE city_fiscal_policy(
     residential_property_tax_per_home_per_day REAL NOT NULL,
     commercial_property_tax_per_building_per_day REAL NOT NULL,
     industrial_property_tax_per_building_per_day REAL NOT NULL,
-    property_tax_level_multiplier REAL NOT NULL
+    property_tax_level_multiplier REAL NOT NULL,
+    border_openness REAL NOT NULL
 );
 CREATE TABLE city_budget_history(
     sequence INTEGER PRIMARY KEY,
@@ -499,6 +526,104 @@ pub fn vehicle_frontage_access_from_i64(
         1 => Ok(VehicleFrontageAccess::BothSides),
         _ => Err(SaveLoadError::custom(format!(
             "unknown VehicleFrontageAccess value {}",
+            value
+        ))),
+    }
+}
+
+pub fn lane_kind_to_i64(value: LaneKind) -> i64 {
+    match value {
+        LaneKind::Travel => 0,
+        LaneKind::Median => 1,
+        LaneKind::Parking => 2,
+        LaneKind::Shoulder => 3,
+        LaneKind::CycleTrack => 4,
+        LaneKind::Reversible => 5,
+        LaneKind::Verge => 6,
+    }
+}
+
+pub fn lane_kind_from_i64(value: i64) -> Result<LaneKind, SaveLoadError> {
+    match value {
+        0 => Ok(LaneKind::Travel),
+        1 => Ok(LaneKind::Median),
+        2 => Ok(LaneKind::Parking),
+        3 => Ok(LaneKind::Shoulder),
+        4 => Ok(LaneKind::CycleTrack),
+        5 => Ok(LaneKind::Reversible),
+        6 => Ok(LaneKind::Verge),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown LaneKind value {}",
+            value
+        ))),
+    }
+}
+
+pub fn lane_direction_to_i64(value: LaneDirection) -> i64 {
+    match value {
+        LaneDirection::Forward => 0,
+        LaneDirection::Backward => 1,
+        LaneDirection::None => 2,
+    }
+}
+
+pub fn lane_direction_from_i64(value: i64) -> Result<LaneDirection, SaveLoadError> {
+    match value {
+        0 => Ok(LaneDirection::Forward),
+        1 => Ok(LaneDirection::Backward),
+        2 => Ok(LaneDirection::None),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown LaneDirection value {}",
+            value
+        ))),
+    }
+}
+
+pub fn lane_marking_to_i64(value: LaneMarking) -> i64 {
+    match value {
+        LaneMarking::None => 0,
+        LaneMarking::Dashed => 1,
+        LaneMarking::Solid => 2,
+        LaneMarking::DoubleSolid => 3,
+    }
+}
+
+pub fn lane_marking_from_i64(value: i64) -> Result<LaneMarking, SaveLoadError> {
+    match value {
+        0 => Ok(LaneMarking::None),
+        1 => Ok(LaneMarking::Dashed),
+        2 => Ok(LaneMarking::Solid),
+        3 => Ok(LaneMarking::DoubleSolid),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown LaneMarking value {}",
+            value
+        ))),
+    }
+}
+
+pub fn parking_angle_to_i64(value: ParkingAngle) -> i64 {
+    i64::from(value.as_ordinal())
+}
+
+pub fn parking_angle_from_i64(value: i64) -> Result<ParkingAngle, SaveLoadError> {
+    match value {
+        0..=2 => Ok(ParkingAngle::from_ordinal(value as u8)),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown ParkingAngle value {}",
+            value
+        ))),
+    }
+}
+
+pub fn edge_frontage_class_to_i64(value: EdgeFrontageClass) -> i64 {
+    i64::from(value.as_ordinal())
+}
+
+pub fn edge_frontage_class_from_i64(value: i64) -> Result<EdgeFrontageClass, SaveLoadError> {
+    match value {
+        0..=2 => Ok(EdgeFrontageClass::from_ordinal(value as u8)),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown EdgeFrontageClass value {}",
             value
         ))),
     }

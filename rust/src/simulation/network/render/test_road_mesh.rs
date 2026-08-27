@@ -134,8 +134,7 @@ mod tests {
             allowed_types,
             class,
             width,
-            fwd_lanes,
-            bkw_lanes,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd_lanes, bkw_lanes),
             speed_limit: 13.0,
             base_cost: 0.0,
             physical_length,
@@ -148,6 +147,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

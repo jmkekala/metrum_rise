@@ -1001,7 +1001,7 @@ System RAM is a separate discussion. This section covers GPU memory and render c
 
 Budget constraints:
 
-- The total-population target does not imply `1,000,000` fully detailed close-up characters on screen at once.
+**[C] - The total-agent target does not imply `20,000,000` fully detailed close-up characters on screen at once. [C]
 - VAT character cost scales with visible vertex count.
 - Asset budgets must hold even without perfect per-agent occlusion behind buildings.
 - Buildings, cars, and props use instancing and LOD, but careless materials and texture sizes still waste VRAM before triangle count becomes the first bottleneck.
@@ -1290,7 +1290,7 @@ Runtime output rules:
 
 - V1 runtime output is a VAT-ready rest mesh plus baked animation textures.
 - V1 runtime packs store baked VAT outputs only and do not include character source clips or source meshes.
-- Runtime VAT rest meshes are normalized around a feet-centred origin at their authored target
+- Runtime VAT rest meshes are normalized around a feet-centerd origin at their authored target
   height, with shipped adult pedestrians currently baked to `1.8 m`.
 - A far-distance SDF billboard descriptor is a later crowd LoD tier, not part of the primary v1 runtime path.
 - The bake path is self-contained from the modder's point of view: opening the shipped editor and pressing bake is enough.
@@ -1735,8 +1735,8 @@ Optional `[[site_surfaces]]` table for building visual yard polygons:
 
 - `material`: enum, one of `asphalt` or `concrete`
 - `name`: optional editor label
-- `y_m`: optional finite vertical offset in asset-local metres, default `0.0`
-- `vertices`: at least three `[x, z]` pairs in asset-local metres, in winding order
+- `y_m`: optional finite vertical offset in asset-local meters, default `0.0`
+- `vertices`: at least three `[x, z]` pairs in asset-local meters, in winding order
 - `vertices` must define a finite, non-self-intersecting polygon fully inside the authored lot
 
 Optional `[[lods]]` table for non-building mesh assets:
@@ -1776,7 +1776,7 @@ Conditional zoning fields:
 Optional fields:
 
 - `mesh_parts.name`: editor label for the part
-- `mesh_parts.position`: `[f32, f32, f32]`, local metres from building origin
+- `mesh_parts.position`: `[f32, f32, f32]`, local meters from building origin
 - `mesh_parts.rotation_degrees`: `[f32, f32, f32]`; the v1 runtime supports Y rotation for building parts
 - `mesh_parts.scale`: uniform part scale, default `1.0`
 - `mesh_parts.pivot_offset`: optional `[f32, f32, f32]` mesh pivot correction
@@ -2093,6 +2093,45 @@ The runtime derives the fully qualified identifier from the pack and asset manif
 kenney_city_pack:building.residential.lowrise_corner
 ```
 
+## The Asset Editor As A First Class System
+
+The generator that fills a zone is one and the same as the editor. The game will
+place it, cost it, staff it, and burn it down on the same terms. Click any building
+in the world to save it. Saved buildings go into the player library, and from there
+it can be plopped elsewhere or opened in the editor. This applies to anything the
+player can see, including what the generator grew on its own. A district fills in,
+the player likes one of the houses it made, and that house is theirs now.
+
+When a building is plopped it is painted in the menu first, drawn differently
+every time, and the paint carries several dials, how many and what they will
+tweak is yet to be fully determined:
+- Size
+- Density.
+- Level.
+
+Those 3 make a good starting point, other potential dials include architectural style,
+squareness, 
+
+The player sets the dials, the generator draws a building satisfying them, and
+the player skips or goes back until one appears that they want. Then it is
+placed and it grows.
+
+Every placeable thing in the game (barring unique buildings and monuments) can be built
+three ways:
+- Zone it. Draw a zone and let procedurally generated buildings grow into it
+  organically.
+- Draw it. Draw a shape and the procedural algorithm fills that exact
+  footprint.
+- Plop it. Place a specific building, from the library or from the reroll
+  loop above.
+
+Interiors generate once during construction and then stop mattering, a building's
+interior is generated while it is being built, from what it is for, and then never
+computed again. It becomes visible again only when something destroys the building
+and a disaster opens it up.
+
+Build granularity as a whole, including subletting, is owned by `zoning.md`.
+
 ## Validation Rules
 
 The validator is strict. Invalid content fails before it enters a playable build.
@@ -2116,7 +2155,8 @@ Hard errors:
 - one `upgrade_family` spanning multiple footprint sizes
 - `upgrade_family` present on `placement_mode = "explicit"` buildings
 - missing canonical mesh file
-- invalid enum value for asset class, placement mode, zone type, prop snap mode, prop terrain behavior, vehicle taxonomy, or character archetype fields
+- invalid enum value for asset class, placement mode, zone type, prop snap mode, prop
+  terrain behavior, vehicle taxonomy, or character archetype fields
 - invalid axes / origin conventions
 - character VAT authoring input lacks required `walk` source clip
 
@@ -2134,24 +2174,30 @@ Warnings:
 
 ### Phase 0: Schema, Scanner, And Registry
 
-- Lock the v1 `pack.toml` / `asset.toml` schema, scanner rules, and `asset_id` grammar in both Rust and the editor UI.
+- Lock the v1 `pack.toml` / `asset.toml` schema, scanner rules, and `asset_id` grammar in
+  both Rust and the editor UI.
 - Add a pack registry and enable-disable list.
 - Add runtime loading that reads manifests, not hardcoded directory assumptions.
-- Redesign zoning storage so plot size is bounded by painted area, not by a fixed global `ZONING_DEPTH`.
+- Redesign zoning storage so plot size is bounded by painted area, not by a fixed global
+  `ZONING_DEPTH`.
 
 ### Phase 1: Building Importer
 
 - Create the separate editor scene/executable.
-- Support `.glb` import, thumbnail generation, metadata editing, variable lot-size authoring, lot-size validation, and pack saving.
+- Support `.glb` import, thumbnail generation, metadata editing, variable lot-size authoring,
+  lot-size validation, and pack saving.
 - Hook building metadata into the existing variant and footprint systems.
-- Replace fixed-depth zoning assumptions in storage, obstruction passes, rendering, and spawning so authored lot dimensions and runtime lot dimensions agree.
-- Fix stale runtime `3x3` assumptions and building scale handling so authored lot dimensions and rendered dimensions agree.
+- Replace fixed-depth zoning assumptions in storage, obstruction passes, rendering, and
+  spawning so authored lot dimensions and runtime lot dimensions agree.
+- Fix stale runtime `3x3` assumptions and building scale handling so authored lot dimensions and
+  rendered dimensions agree.
 
 ### Phase 2: Prop And Vehicle Importer
 
 - Add explicit prop placement authoring using the v1 `snap_mode` and `terrain_behavior` contract.
 - Add vehicle-class templates and lane-scale preview scenes.
-- Support static meshes, color variants, thumbnails, pack membership, and import-time vehicle orientation normalization.
+- Support static meshes, color variants, thumbnails, pack membership, and import-time vehicle
+  orientation normalization.
 
 ### Phase 3: Character Source Bake Pipeline
 
@@ -2165,11 +2211,21 @@ Warnings:
 
 ### Later
 
-- Add in-game content-manager polish, compatibility metadata, redirect handling, workspace support, manifest caches, cross-pack library resources, and signing if/when the moddable ecosystem needs them.
+- Add in-game content-manager polish, compatibility metadata, redirect handling, workspace
+  support, manifest caches, cross-pack library resources, and signing if/when the moddable
+  ecosystem needs them.
 - Define road assets as lane/topology/material templates, not as ordinary imported meshes.
 
 ## Implementation Summary
 
-Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as the canonical asset format. Start implementation from the v1 contract in this document: canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml` schemas, and the minimum preview-scene interactions required to author each asset class. Export manifest files directly into the pack output folder next to the asset files.
+Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as
+the canonical asset format. Start implementation from the v1 contract in this document:
+canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml`
+schemas, and the minimum preview-scene interactions required to author each asset class.
+Export manifest files directly into the pack output folder next to the asset files.
 
-For buildings specifically, plot size is required asset metadata from day one. `3x3` remains only a default preset, not a design limit, and fixed `ZONING_DEPTH` is retired in favor of dynamic per-edge zoning extents. Compatibility metadata, redirect handling, workspaces, cross-pack sharing, signing, and similar ecosystem features stay in the later section until the base importer actually exists.
+For buildings specifically, plot size is required asset metadata from day one. `3x3` remains
+only a default preset, not a design limit, and fixed `ZONING_DEPTH` is retired in favor of
+dynamic per-edge zoning extents. Compatibility metadata, redirect handling, workspaces,
+cross-pack sharing, signing, and similar ecosystem features stay in the later section until
+the base importer actually exists.

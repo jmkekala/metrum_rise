@@ -31,13 +31,16 @@ pub fn build_vehicle_connections_at_node(
             continue;
         }
 
+        let fwd_lanes = edge.fwd_lane_count();
+        let bkw_lanes = edge.bkw_lane_count();
+
         if edge.start_node as usize == node_id {
-            for l in 0..edge.fwd_lanes {
+            for l in 0..fwd_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
                     outbound.push((e_idx, l as i8, lid));
                 }
             }
-            for l in 0..edge.bkw_lanes {
+            for l in 0..bkw_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
                     inbound.push((e_idx, -(l as i8) - 1, lid));
                 }
@@ -45,12 +48,12 @@ pub fn build_vehicle_connections_at_node(
         }
 
         if edge.end_node as usize == node_id {
-            for l in 0..edge.fwd_lanes {
+            for l in 0..fwd_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
                     inbound.push((e_idx, l as i8, lid));
                 }
             }
-            for l in 0..edge.bkw_lanes {
+            for l in 0..bkw_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
                     outbound.push((e_idx, -(l as i8) - 1, lid));
                 }

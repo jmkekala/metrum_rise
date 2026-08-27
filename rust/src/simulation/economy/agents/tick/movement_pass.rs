@@ -71,6 +71,8 @@ impl AgentSystem {
             lane_change_length: RawSlice::new(&mut self.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut self.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut self.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut self.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut self.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut self.agents.transit_mode),
             planned_activity: RawSlice::new(&mut self.agents.planned_activity),
             path: RawSlice::new(&mut self.agents.current_path),

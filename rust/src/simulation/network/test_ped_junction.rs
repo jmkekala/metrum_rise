@@ -1,3 +1,24 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: test_ped_junction.rs
+//  script_path: rust/src/simulation/network/test_ped_junction.rs
+//  module_name: test_ped_junction
+//  version: 0.1.0
+//  description: Pedestrian junction connection-count regressions on a
+//           4-way crossing. Sweeps LANE_CONFIGS because the number of
+//           footway connections generated at a node depends on the vehicle
+//           lane counts of the incident edges, and asymmetric
+//           configurations have produced missing crossings.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [graph, lanes]
+//  external_dependencies: [godot]
+//  features: [pedestrian-junction, connection-count, crossings]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Pedestrian junction connection-count regressions.
 
 #[cfg(test)]
@@ -31,8 +52,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: (fwd as f32 + bkw as f32) * 3.5,
-                fwd_lanes: fwd,
-                bkw_lanes: bkw,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd, bkw),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: 50.0,
@@ -45,6 +65,7 @@ mod tests {
                 no_building_spawn: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                frontage_class: Default::default(),
             });
         }
         graph.rebuild_adjacency_list();

@@ -1,3 +1,25 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: support.rs
+//  script_path: rust/src/simulation/economy/agents/tests/support.rs
+//  module_name: support
+//  version: 0.1.0
+//  description: Shared fixtures for the agent movement tests: asset
+//           registration, test buildings, and the small road networks the
+//           cases run on. Centralised here so lane_dynamics and trips
+//           assert against identical geometry; divergent hand-built
+//           networks were producing failures that were fixture differences
+//           rather than behaviour changes.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [agents, network, assets]
+//  external_dependencies: [godot]
+//  features: [test-fixtures, network-builder, test-assets]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Shared agent movement fixtures and network builders.
 
 use super::*;
@@ -71,8 +93,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 1.0,
         physical_length: 100.0,
@@ -85,6 +106,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 
@@ -283,8 +305,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width,
-        fwd_lanes: fwd,
-        bkw_lanes: bkw,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd, bkw),
         speed_limit: 14.0,
         base_cost: 1.0,
         physical_length: 100.0,
@@ -297,6 +318,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -328,8 +350,7 @@ pub(super) fn build_4way_junction(
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width,
-        fwd_lanes: fwd,
-        bkw_lanes: bkw,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd, bkw),
         speed_limit: 14.0,
         base_cost: 1.0,
         physical_length: 100.0,
@@ -342,6 +363,7 @@ pub(super) fn build_4way_junction(
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     let ee = graph.add_edge(arm(ne, nc, 100.0, 0.0, 0.0, 0.0));

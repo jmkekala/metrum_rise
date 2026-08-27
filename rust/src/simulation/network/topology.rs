@@ -115,6 +115,7 @@ impl RegionGraph {
             node_type,
             lane_connections: std::collections::HashMap::new(),
             crosswalk_overrides: std::collections::HashMap::new(),
+            control: Default::default(),
         });
         self.adjacency.push(Vec::new());
         self.add_node_to_spatial_index(id);
@@ -969,13 +970,13 @@ pub fn split_edge(
     let primary_type = old_edge.primary_type;
     let allowed_types = old_edge.allowed_types;
     let width = old_edge.width;
-    let fwd_lanes = old_edge.fwd_lanes;
-    let bkw_lanes = old_edge.bkw_lanes;
+    let lanes = old_edge.lane_layout().clone();
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
+    let frontage_class = old_edge.frontage_class;
 
     let old_end_node = graph.edges[edge_id].end_node;
 
@@ -1003,8 +1004,11 @@ pub fn split_edge(
         primary_type,
         allowed_types,
         width,
-        fwd_lanes,
-        bkw_lanes,
+        // A split inherits its parent's cross-section whole: the same road
+        // continues past a new junction, so the bands do not change shape.
+        // Rebuilding from counts here would drop a median, a bus lane, or a
+        // verge on every road the player splits.
+        lanes: lanes.clone(),
         speed_limit,
         base_cost: 0.0,
         physical_length: 0.0,
@@ -1017,6 +1021,10 @@ pub fn split_edge(
         deleted: false,
         no_building_spawn,
         vehicle_frontage_access,
+        // Splitting an edge produces two pieces of the same road, so both
+        // inherit what the original was: a service way stays a service way on
+        // both sides of the split.
+        frontage_class,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

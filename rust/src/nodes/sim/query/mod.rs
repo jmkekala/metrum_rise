@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/nodes/sim/query/mod.rs
+//  module_name: query
+//  version: 0.1.0
+//  description: Read-only spatial and state inspection for the sim node,
+//           split into lanes, network, and terrain sub-modules. The node
+//           canonicality helpers live at this level because every
+//           sub-module needs them: after a node merge the removed id still
+//           resolves, so a query that skipped get_valid_node would return
+//           an alias, and a node whose only edge is deleted must not
+//           answer an editor click either.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph]
+//  external_dependencies: [godot]
+//  features: [spatial-query, node-canonicality, editor-picking]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Modular query sub-modules for spatial and simulation state inspection (Item R13).
 
 pub mod lanes;
@@ -105,8 +128,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 20.0,
@@ -119,6 +141,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 }

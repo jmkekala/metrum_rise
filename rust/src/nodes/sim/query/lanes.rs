@@ -153,8 +153,8 @@ impl SimCore {
                 let mut current_pos = junction_pos + dir_to_leg * 5.0;
                 current_pos.y += 0.4;
 
-                let fwd_lanes = edge.fwd_lanes;
-                let bkw_lanes = edge.bkw_lanes;
+                let fwd_lanes = edge.fwd_lane_count();
+                let bkw_lanes = edge.bkw_lane_count();
                 let total_lanes = (fwd_lanes + bkw_lanes) as i32;
                 let lane_w = 1.0;
 

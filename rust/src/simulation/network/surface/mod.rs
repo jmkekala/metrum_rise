@@ -109,6 +109,9 @@ pub enum RoadSurfaceBandKind {
     CycleTrack,
     /// Reserved tram corridor.
     TramReservation,
+    /// Planted strip or planters between carriageway and sidewalk. Not
+    /// walkable and not drivable; it is what makes a street tree-lined.
+    Verge,
 }
 
 /// One ordered lateral band inside a compiled roadbed section.

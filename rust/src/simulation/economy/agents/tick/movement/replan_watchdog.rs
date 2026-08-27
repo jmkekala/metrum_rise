@@ -462,6 +462,8 @@ mod tests {
             lane_change_length: RawSlice::new(&mut agents.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut agents.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut agents.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut agents.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut agents.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut agents.agents.transit_mode),
             planned_activity: RawSlice::new(&mut agents.agents.planned_activity),
             path: RawSlice::new(&mut agents.agents.current_path),
@@ -487,8 +489,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -500,6 +501,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

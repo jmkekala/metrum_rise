@@ -250,6 +250,12 @@ pub struct RenderSnapshot {
     pub current_day: u32,
     /// Current minute since operational midnight.
     pub current_minute_of_day: u16,
+    /// Seconds of simulated time since the world started.
+    ///
+    /// The same clock the junction control gate reads, so a renderer drawing a
+    /// signal aspect and the movement code deciding whether to hold a car agree
+    /// on what the light is showing.
+    pub sim_time_s: f32,
     /// Duration of the last daily tick in milliseconds.
     pub last_tick_ms: f64,
     /// Duration of the last agent tick in microseconds.
@@ -311,6 +317,7 @@ impl Default for RenderSnapshot {
             engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
+            sim_time_s: 0.0,
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
@@ -494,6 +501,7 @@ impl SimCore {
         snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
+        snapshot.sim_time_s = self.agents.sim_time;
         snapshot.last_tick_ms = self.last_tick_duration;
         snapshot.last_agent_tick_us = self.last_agent_tick_us;
         snapshot.pathfind_count = self

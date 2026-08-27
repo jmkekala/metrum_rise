@@ -83,6 +83,8 @@ pub(crate) struct MovementSlices {
     pub(super) lane_change_length: RawSlice<f32>,
     pub(super) overtake_blocked_time: RawSlice<f32>,
     pub(super) overtake_cooldown: RawSlice<f32>,
+    pub(super) junction_release_time: RawSlice<f32>,
+    pub(super) next_reroute_time: RawSlice<f32>,
     pub(super) tmode: RawSlice<u8>,
     pub(super) planned_activity: RawSlice<u8>,
     pub(super) path: RawSlice<Vec<u32>>,

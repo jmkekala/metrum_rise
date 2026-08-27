@@ -455,6 +455,8 @@ mod tests {
             lane_change_length: RawSlice::new(&mut agents.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut agents.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut agents.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut agents.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut agents.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut agents.agents.transit_mode),
             planned_activity: RawSlice::new(&mut agents.agents.planned_activity),
             path: RawSlice::new(&mut agents.agents.current_path),

@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: editing.rs
+//  script_path: rust/src/nodes/sim/editing.rs
+//  module_name: editing
+//  version: 0.1.0
+//  description: All mutating operations the player can drive on the
+//           simulation: road placement, terrain sculpt, zoning, edge
+//           editing, and bulldoze. Split out of SimCore as an impl block
+//           so the read-only query and snapshot paths stay in separate
+//           files; every entry point here validates input before touching
+//           the graph, then triggers a surface recompile, because a
+//           half-applied edit leaves lanes and terrain disagreeing.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [core, surface, buildings]
+//  external_dependencies: [godot]
+//  features: [road-placement, terrain-sculpt, zoning, bulldoze, undo]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 
 use crate::config;
@@ -13,12 +36,15 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::network::graph::{
+    JunctionControl, LaneLayout, PrioritySign, SignalAspect, SignalPhase, SignalProgram,
+};
 use crate::simulation::network::surface::{
     RoadExtensionReprofile, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
 use crate::traffic_log;
 use godot::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
@@ -904,6 +930,36 @@ impl SimCore {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> RoadAddOutcome {
+        self.add_road_internal_with_cross_section(
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            None,
+            snap_to_existing_roads,
+        )
+    }
+
+    /// Adds a road from an authored cross-section.
+    ///
+    /// `cross_section` is the flat form `LaneLayout::from_flat` reads. When it
+    /// is present and well-formed the lane counts are derived from it and the
+    /// two count arguments are ignored, which is what lets the road tool place
+    /// a road with a median, a bus lane, or curbside parking rather than the
+    /// nearest pair of numbers. A malformed run falls back to the counts, so a
+    /// bad payload from the bridge gives an ordinary road rather than nothing.
+    pub(crate) fn add_road_internal_with_cross_section(
+        &mut self,
+        points: Vec<godot::prelude::Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        cross_section: Option<&[i32]>,
+        snap_to_existing_roads: bool,
+    ) -> RoadAddOutcome {
+        let authored_layout = cross_section.and_then(LaneLayout::from_flat);
+        let (fwd_lanes, bkw_lanes) = match authored_layout.as_ref() {
+            Some(layout) => (i32::from(layout.fwd_count()), i32::from(layout.bkw_count())),
+            None => (fwd_lanes, bkw_lanes),
+        };
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
@@ -1077,6 +1133,7 @@ impl SimCore {
             .sum();
 
         let t_topo = Instant::now();
+        let edges_before = self.region_graph.edge_count();
         self.transit_network.add_road(
             &mut self.region_graph,
             fixed_points,
@@ -1086,6 +1143,17 @@ impl SimCore {
             &mut self.zoning,
             &mut self.allocator,
         );
+        // The counts above placed the road; the authored section replaces the
+        // layout they implied. Applied per created edge because one drawn road
+        // becomes several edges wherever it crosses or snaps to an existing
+        // one, and every piece of one drawn road carries the same section.
+        if let Some(layout) = authored_layout {
+            for edge_idx in edges_before..self.region_graph.edge_count() {
+                let mut edge_layout = layout.clone();
+                edge_layout.set_sidewalk_width(layout.authored_sidewalk_width());
+                self.region_graph.edge_mut(edge_idx).set_lane_layout(edge_layout);
+            }
+        }
         let dt_topo_us = t_topo.elapsed().as_micros();
 
         self.mark_local_network_render_dirty();
@@ -1533,6 +1601,170 @@ impl SimCore {
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
             self.transit_network.mark_point_dirty(pos);
+        }
+    }
+
+    /// Sets a priority sign on one approach arm of a junction.
+    ///
+    /// `sign`: 0 main, 1 yield, 2 stop. Switching a node from a signal to
+    /// priority discards the signal program, since the two schemes are
+    /// exclusive. Control changes alter neither geometry nor connectivity, so
+    /// no lane, entrance, or routing rebuild is required.
+    pub fn set_junction_priority_internal(&mut self, node_id: u32, edge_id: i32, sign: u8) {
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) >= self.region_graph.node_count() || edge_id < 0 {
+            return;
+        }
+        let sign = match sign {
+            0 => PrioritySign::Main,
+            2 => PrioritySign::Stop,
+            _ => PrioritySign::Yield,
+        };
+        if !matches!(
+            self.region_graph.node(node_id).control,
+            JunctionControl::Priority(_)
+        ) {
+            self.region_graph
+                .set_node_control(node_id, JunctionControl::Priority(HashMap::new()));
+        }
+        if let JunctionControl::Priority(signs) = self.region_graph.node_control_mut(node_id) {
+            signs.insert(edge_id as usize, sign);
+        }
+    }
+
+    /// Appends a phase to a junction's signal program.
+    ///
+    /// Switching a node from priority to a signal discards the priority signs.
+    /// `green_arms` is the set of approach edges holding green for the phase.
+    pub fn add_junction_signal_phase_internal(
+        &mut self,
+        node_id: u32,
+        green_arms: PackedInt32Array,
+        green_s: f32,
+        amber_s: f32,
+    ) {
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) >= self.region_graph.node_count() {
+            return;
+        }
+        let arms: Vec<usize> = green_arms
+            .as_slice()
+            .iter()
+            .filter(|&&e| e >= 0)
+            .map(|&e| e as usize)
+            .collect();
+        if !matches!(
+            self.region_graph.node(node_id).control,
+            JunctionControl::Signal(_)
+        ) {
+            self.region_graph
+                .set_node_control(node_id, JunctionControl::Signal(SignalProgram::default()));
+        }
+        if let JunctionControl::Signal(program) = self.region_graph.node_control_mut(node_id) {
+            program.phases.push(SignalPhase {
+                green_arms: arms,
+                green_s: green_s.max(0.0),
+                amber_s: amber_s.max(0.0),
+            });
+        }
+    }
+
+    /// Sets the cycle offset of a junction's signal program, in seconds.
+    ///
+    /// Offsetting neighboring junctions along a corridor is what produces a
+    /// green wave. Does nothing at a node that carries no signal.
+    pub fn set_junction_signal_offset_internal(&mut self, node_id: u32, offset_s: f32) {
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) >= self.region_graph.node_count() {
+            return;
+        }
+        if let JunctionControl::Signal(program) = self.region_graph.node_control_mut(node_id) {
+            program.offset_s = offset_s;
+        }
+    }
+
+    /// Removes all control from a junction, returning it to uncontrolled.
+    pub fn clear_junction_control_internal(&mut self, node_id: u32) {
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) < self.region_graph.node_count() {
+            self.region_graph
+                .set_node_control(node_id, JunctionControl::Uncontrolled);
+        }
+    }
+
+    /// Describes a junction's control for the UI.
+    ///
+    /// Returns `kind` as `"uncontrolled"`, `"priority"`, or `"signal"`. A
+    /// priority node adds `signs`, a dictionary of edge id to sign integer. A
+    /// signal node adds `offset_s`, `cycle_s`, and `phases`, each phase holding
+    /// its green arms and durations.
+    pub fn get_junction_control_internal(&self, node_id: u32) -> VarDictionary {
+        let mut out = VarDictionary::new();
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) >= self.region_graph.node_count() {
+            out.set("kind", "uncontrolled");
+            return out;
+        }
+        match &self.region_graph.node(node_id).control {
+            JunctionControl::Uncontrolled => {
+                out.set("kind", "uncontrolled");
+            }
+            JunctionControl::Priority(signs) => {
+                out.set("kind", "priority");
+                let mut map = VarDictionary::new();
+                for (&edge, &sign) in signs {
+                    let code: u8 = match sign {
+                        PrioritySign::Main => 0,
+                        PrioritySign::Yield => 1,
+                        PrioritySign::Stop => 2,
+                    };
+                    map.set(edge as i64, code as i64);
+                }
+                out.set("signs", map);
+            }
+            JunctionControl::Signal(program) => {
+                out.set("kind", "signal");
+                out.set("offset_s", program.offset_s);
+                out.set("cycle_s", program.cycle_s());
+                let mut phases = VarArray::new();
+                for phase in &program.phases {
+                    let mut p = VarDictionary::new();
+                    let arms: PackedInt32Array =
+                        phase.green_arms.iter().map(|&e| e as i32).collect();
+                    p.set("green_arms", arms);
+                    p.set("green_s", phase.green_s);
+                    p.set("amber_s", phase.amber_s);
+                    phases.push(&p.to_variant());
+                }
+                out.set("phases", phases);
+            }
+        }
+        out
+    }
+
+    /// Returns the aspect one approach arm is showing at `sim_time`.
+    ///
+    /// `0` green, `1` amber, `2` red. An uncontrolled or priority junction
+    /// reports green, because neither shows an aspect.
+    pub fn get_junction_signal_aspect_internal(
+        &self,
+        node_id: u32,
+        edge_id: i32,
+        sim_time: f32,
+    ) -> u8 {
+        let node_id = self.region_graph.get_valid_node(node_id);
+        if (node_id as usize) >= self.region_graph.node_count() || edge_id < 0 {
+            return 0;
+        }
+        match &self.region_graph.node(node_id).control {
+            JunctionControl::Signal(program) => {
+                match program.aspect_at(edge_id as usize, sim_time) {
+                    SignalAspect::Green => 0,
+                    SignalAspect::Amber => 1,
+                    SignalAspect::Red => 2,
+                }
+            }
+            _ => 0,
         }
     }
 
@@ -2012,8 +2244,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: start.distance_to(end),
             physical_length: start.distance_to(end),
@@ -2025,6 +2256,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         })
     }
 
@@ -2095,8 +2327,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 10.0,
             physical_length: 10.0,
@@ -2108,6 +2339,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
 
         core.set_vehicle_frontage_access_internal(0, 0);
@@ -2139,8 +2371,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 120.0,
@@ -2152,6 +2383,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         let residential = core
             .zoning
@@ -2184,8 +2416,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 120.0,
@@ -2197,6 +2428,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         core.region_graph.rebuild_adjacency_list();
         let residential = core
@@ -2331,8 +2563,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 120.0,
             physical_length: 20.0,
@@ -2344,6 +2575,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         core.region_graph.rebuild_adjacency_list();
 
@@ -3023,8 +3255,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 10.0,
             physical_length: 8.0,
@@ -3036,6 +3267,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         core.region_graph.rebuild_all_indices();
 

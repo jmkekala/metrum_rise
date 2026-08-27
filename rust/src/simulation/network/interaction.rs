@@ -1,3 +1,25 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: interaction.rs
+//  script_path: rust/src/simulation/network/interaction.rs
+//  module_name: interaction
+//  version: 0.1.0
+//  description: Snapping and projection between world positions and the
+//           road network for editor and placement code. Nodes win over
+//           segments when both are in range, so a click near a junction
+//           attaches to the junction rather than splitting an edge beside
+//           it; the endpoint margin keeps a segment hit from landing close
+//           enough to an end to produce a degenerate split.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph]
+//  external_dependencies: [godot]
+//  features: [snapping, projection, editor-picking, road-side]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Spatial interaction and querying utilities for the road network.
 //!
 //! Provides functions for snapping world positions to nodes and edges,
@@ -357,8 +379,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 20.0,
@@ -370,6 +391,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

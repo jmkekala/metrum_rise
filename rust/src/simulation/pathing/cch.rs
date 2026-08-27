@@ -1,3 +1,27 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: cch.rs
+//  script_path: rust/src/simulation/pathing/cch.rs
+//  module_name: cch
+//  version: 0.1.0
+//  description: Customizable Contraction Hierarchy routing, the primary
+//           path engine for agents, replacing HPA*. The contraction order
+//           is computed once and reused, so changing traffic costs is an
+//           O(E) customization rather than a rebuild; only a topology
+//           change forces the full contraction again. Shortcuts store
+//           child indices and a middle node instead of an unpacked path,
+//           keeping each one O(1) in memory however long the route it
+//           stands for.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, types]
+//  external_dependencies: []
+//  features: [cch, pathfinding, shortcuts, metric-customization]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Customizable Contraction Hierarchy (CCH) pathfinding.
 //!
 //! Provides fast queries and O(E) metric customization for dynamic traffic.
@@ -219,13 +243,13 @@ impl CchGraph {
                 continue;
             }
 
-            if edge.fwd_lanes > 0
+            if edge.fwd_lane_count() > 0
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
             {
                 self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge);
             }
-            if edge.bkw_lanes > 0
+            if edge.bkw_lane_count() > 0
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
             {
@@ -892,24 +916,28 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
             Node {
                 pos: Vector3::new(1200.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 600.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
         ];
 
@@ -919,8 +947,7 @@ mod tests {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 10.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 20.0,
             base_cost: 30.0,
             physical_length: 600.0,
@@ -934,6 +961,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         };
 
         let edges = vec![

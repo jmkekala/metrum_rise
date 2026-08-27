@@ -6,8 +6,9 @@ use super::runtime::dispatch_agents;
 use super::slices::RawSlice;
 use super::traffic::{
     LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_MIN_SPEED_GAIN_MS, braking_speed_for_distance,
-    connector_turn_speed, idm_gap_bucket, idm_new_speed, lane_change_gap_clear,
-    lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit, overtake_follow_gap,
+    conflicting_movements_clear, connector_turn_speed, idm_gap_bucket, idm_new_speed,
+    lane_change_gap_clear, lane_entry_slot_clear, limit_speed_change, live_lane_bucket_transit,
+    overtake_follow_gap,
     planned_lane_change_target,
 };
 use crate::config::{CAR_JUNCTION_SPEED_MS, DEFAULT_URBAN_ROAD_SPEED_MS, IDM_B};
@@ -68,6 +69,12 @@ impl AgentSystem {
                 let my_d = *s_lane_d_idm.get(i);
                 let eid = *s_cur_e_idm.get(i);
 
+                // A car already inside a junction is committed. Its speed comes
+                // from the turn geometry and the car ahead of it on the same
+                // connector, never from a conflict rule: holding it here strands
+                // a vehicle in the middle of the box, blocking every movement
+                // that crosses it, while traffic that does not test it drives
+                // through. Yielding happens before entry, not after.
                 let v_max = if transit == TRANSIT_INTERSECTION {
                     transit_network
                         .lane_system
@@ -111,7 +118,21 @@ impl AgentSystem {
                                     .lanes
                                     .get(connector_id)
                                     .map(|connector| {
-                                        if lane_entry_slot_clear(connector_id, buckets) {
+                                        // Braking must ask the same question entry
+                                        // asks. Checking only this connector's own
+                                        // bucket makes a car roll up to the mouth
+                                        // expecting to go, then be refused by the
+                                        // conflict rule, so it halts on the line
+                                        // and never restarts while traffic that
+                                        // never tests it drives past.
+                                        let clear = lane_entry_slot_clear(connector_id, buckets)
+                                            && conflicting_movements_clear(
+                                                connector.node_id,
+                                                connector_id,
+                                                &transit_network.lane_system,
+                                                buckets,
+                                            );
+                                        if clear {
                                             connector_turn_speed(connector)
                                         } else {
                                             0.0

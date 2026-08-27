@@ -1,3 +1,25 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/network/mod.rs
+//  module_name: network
+//  version: 0.1.0
+//  description: Road network module root and the TransitNetwork entry
+//           point for every structural edit. Add, split, merge, and remove
+//           all route through TransitNetwork so the CCH routing hierarchy
+//           and the flow fields are rebuilt atomically with the change;
+//           editing RegionGraph directly from outside this module leaves
+//           routing pointing at a topology that no longer exists.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, cch, flow_field, surface]
+//  external_dependencies: [godot]
+//  features: [transit-network, module-root, topology-edits, cch-rebuild]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Road network: graph data, topology operations, rendering, and pathfinding integration.
 //!
 //! The public entry point for road edits is [`TransitNetwork`], which manages the
@@ -8,6 +30,8 @@
 //! **Never modify [`graph::RegionGraph`] directly from outside this module.**
 
 use godot::prelude::*;
+/// Border crossing presentation: the four states and their dressing.
+pub mod border;
 pub mod graph;
 pub mod render;
 pub mod surface;
@@ -17,6 +41,7 @@ pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
 pub mod topology;
+use crate::simulation::buildings::frontage::EdgeFrontageClass;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -35,14 +60,44 @@ pub(in crate::simulation::network) fn build_surface_edge(
     bkw_lanes: u8,
     class: EdgeClass,
 ) -> graph::Edge {
-    let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
+    build_surface_edge_with_layout(
+        start_node,
+        end_node,
+        points,
+        graph::LaneLayout::from_counts(fwd_lanes, bkw_lanes),
+        class,
+    )
+}
+
+/// Build an edge from an explicit cross-section.
+///
+/// This is the authoring path. `build_surface_edge` is the same call with a
+/// layout derived from two counts, which is all the road tool could express
+/// before a cross-section could be authored.
+pub(in crate::simulation::network) fn build_surface_edge_with_layout(
+    start_node: u32,
+    end_node: u32,
+    points: Vec<Vector3>,
+    layout: graph::LaneLayout,
+    class: EdgeClass,
+) -> graph::Edge {
+    // A walkway is a road with no carriageway at all, not merely one no car
+    // may drive on: a pedestrianised street keeps its lanes and its
+    // deliveries, and only withholds the mode bits.
+    let is_walkway = layout.is_empty();
     let mut allowed_types = TransitFlags::NONE;
-    if fwd_lanes > 0 || bkw_lanes > 0 {
+    if layout.admits(TransitFlags::CAR) {
         allowed_types |= TransitFlags::CAR;
     }
-    if is_walkway || fwd_lanes > 0 || bkw_lanes > 0 {
-        allowed_types |= TransitFlags::FOOT;
+    if layout.admits(TransitFlags::BUS) {
+        allowed_types |= TransitFlags::BUS;
     }
+    if layout.admits(TransitFlags::BIKE) {
+        allowed_types |= TransitFlags::BIKE;
+    }
+    // Every surface edge takes pedestrians: a walkway is nothing but footway,
+    // and a carriageway carries sidewalks beside it.
+    allowed_types |= TransitFlags::FOOT;
     let vehicle_frontage_access = if is_walkway {
         VehicleFrontageAccess::SameSideOnly
     } else {
@@ -63,9 +118,12 @@ pub(in crate::simulation::network) fn build_surface_edge(
         },
         allowed_types,
         class,
-        width: ((fwd_lanes + bkw_lanes) as f32 * config::LANE_WIDTH).max(2.0),
-        fwd_lanes,
-        bkw_lanes,
+        // Width accumulates each band's real width, so a median, a parking
+        // lane, or a cycle track widens the road by exactly what it occupies.
+        // Multiplying a lane count by a fixed width could not express any of
+        // them.
+        width: layout.asphalt_width().max(2.0),
+        lanes: layout,
         speed_limit: config::DEFAULT_URBAN_ROAD_SPEED_MS,
         base_cost: 0.0,
         physical_length,
@@ -77,6 +135,9 @@ pub(in crate::simulation::network) fn build_surface_edge(
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access,
+        // An ordinary street unless something says otherwise, which is what
+        // every road was before frontage roles existed.
+        frontage_class: EdgeFrontageClass::Street,
     }
 }
 
@@ -232,6 +293,35 @@ impl TransitNetwork {
         zoning: &mut crate::simulation::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
+        self.create_edge_internal_with_layout(
+            graph,
+            start,
+            end,
+            points,
+            LaneLayout::from_counts(fwd, bkw),
+            class,
+            zoning,
+            allocator,
+        );
+    }
+
+    /// Add a road edge from an explicit cross-section.
+    ///
+    /// The counts form above is this call with a layout built from two
+    /// numbers. Everything that can express a median, a bus lane, a cycle
+    /// track, parking, or a turn pocket comes through here.
+    #[allow(clippy::too_many_arguments)]
+    fn create_edge_internal_with_layout(
+        &mut self,
+        graph: &mut RegionGraph,
+        start: u32,
+        end: u32,
+        points: Vec<Vector3>,
+        layout: LaneLayout,
+        class: EdgeClass,
+        zoning: &mut crate::simulation::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
         if start == end {
             return;
         }
@@ -241,7 +331,8 @@ impl TransitNetwork {
             return;
         }
 
-        let edge_id = graph.add_edge(build_surface_edge(start, end, points, fwd, bkw, class));
+        let edge_id =
+            graph.add_edge(build_surface_edge_with_layout(start, end, points, layout, class));
 
         let (cost, length) =
             crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));

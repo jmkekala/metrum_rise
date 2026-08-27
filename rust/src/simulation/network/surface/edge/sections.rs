@@ -1,3 +1,27 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: sections.rs
+//  script_path: rust/src/simulation/network/surface/edge/sections.rs
+//  module_name: sections
+//  version: 0.1.0
+//  description: Samples cross-section stations along an edge centerline
+//           and picks the longitudinal height at each. The sampling step
+//           varies by edge class, standard, bridge, and tunnel, and
+//           tightens through profile transitions and width-change tapers,
+//           because those are the places where a coarse step visibly kinks
+//           the road surface. Taper length scales with the width delta and
+//           is capped as a fraction of the edge so a short edge cannot be
+//           entirely consumed by its taper.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, backend]
+//  external_dependencies: []
+//  features: [section-sampling, road-surface, width-taper, profile-blend]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Edge centerline section sampling and longitudinal height selection.
 
 use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
@@ -703,8 +727,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width,
-            fwd_lanes: ((width / config::LANE_WIDTH).round() as u8).max(1),
-            bkw_lanes: 0,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(((width / config::LANE_WIDTH).round() as u8).max(1), 0),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: length,
@@ -716,6 +739,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

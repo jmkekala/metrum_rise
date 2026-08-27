@@ -400,7 +400,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         params![view.service_policy.electricity_funding.clamp(0.0, 1.0)],
     )?;
     tx.execute(
-        "INSERT INTO city_fiscal_policy(unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO city_fiscal_policy(unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier, border_openness) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             view.fiscal_policy.unemployment_benefit_per_adult_per_day,
             i64::from(view.fiscal_policy.unemployment_max_days),
@@ -413,6 +413,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             view.fiscal_policy.commercial_property_tax_per_building_per_day,
             view.fiscal_policy.industrial_property_tax_per_building_per_day,
             view.fiscal_policy.property_tax_level_multiplier,
+            view.fiscal_policy.border_openness,
         ],
     )?;
     save_budget_history(&tx, view.budget_history)?;
@@ -672,8 +673,8 @@ pub(crate) fn load_from_sqlite(
 }
 
 fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
-    let row: (f32, i64, f32, f32, f32, f32, f32, f32, f32, f32, f32) = conn.query_row(
-        "SELECT unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier FROM city_fiscal_policy LIMIT 1",
+    let row: (f32, i64, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) = conn.query_row(
+        "SELECT unemployment_benefit_per_adult_per_day, unemployment_max_days, pension_per_elder_per_day, child_support_per_child_per_day, income_tax_rate, household_vat_rate, business_profit_tax_rate, residential_property_tax_per_home_per_day, commercial_property_tax_per_building_per_day, industrial_property_tax_per_building_per_day, property_tax_level_multiplier, border_openness FROM city_fiscal_policy LIMIT 1",
         [],
         |r| {
             Ok((
@@ -688,6 +689,7 @@ fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
                 r.get(8)?,
                 r.get(9)?,
                 r.get(10)?,
+                r.get(11)?,
             ))
         },
     )?;
@@ -729,6 +731,10 @@ fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
     policy.set_value(
         crate::simulation::economy::fiscal::POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER,
         row.10,
+    );
+    policy.set_value(
+        crate::simulation::economy::fiscal::POLICY_BORDER_OPENNESS,
+        row.11,
     );
     Ok(policy)
 }

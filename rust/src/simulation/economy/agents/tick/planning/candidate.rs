@@ -1,3 +1,26 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: candidate.rs
+//  script_path: rust/src/simulation/economy/agents/tick/planning/candidate.rs
+//  module_name: candidate
+//  version: 0.1.0
+//  description: Scores candidate trip plans and builds the exact path for
+//           the winner. Every origin and destination has up to two usable
+//           network ranks, so the four rank pairs are enumerated and
+//           costed together; car candidates carry a fixed mode-choice
+//           overhead so a short drive does not beat a walk of equal travel
+//           time. Only the chosen candidate pays for exact path
+//           construction.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, lanes, allocator]
+//  external_dependencies: []
+//  features: [trip-candidates, mode-choice, path-construction]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Candidate scoring and exact path construction for building-origin trips.
 
 use super::super::super::{
@@ -940,8 +963,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: (end_x - start_x).abs(),
@@ -960,6 +982,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

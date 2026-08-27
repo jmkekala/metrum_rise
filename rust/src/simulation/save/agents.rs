@@ -304,6 +304,8 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         lane_change_length_m: 0.0,
         overtake_blocked_time_s: 0.0,
         overtake_cooldown_s: 0.0,
+        junction_release_time_s: f32::MIN,
+        next_reroute_time_s: 0.0,
         speed: if rec.transit_mode == MODE_CAR {
             DEFAULT_URBAN_ROAD_SPEED_MS
         } else {

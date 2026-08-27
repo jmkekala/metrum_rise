@@ -2,8 +2,8 @@
 
 ## Paradigm
 
-Hybrid: **top menu bar** for global actions and window launchers + **floating windows** for
-information panels and selection-driven properties + **bottom toolbar** for placement tools.
+Hybrid: top menu bar for global actions and window launchers + floating windows for
+information panels and selection-driven properties + bottom toolbar for placement tools.
 
 All UI is built procedurally in GDScript. The six `.tscn` files (`MainMenu.tscn`, `Main.tscn`,
 `AssetEditor.tscn`, `EconomyEditor.tscn`, `WorldEditor.tscn`, `Router.tscn`) describe the scene node tree but
@@ -42,8 +42,8 @@ no `Return To Game` action and no City / Demand / Economy launchers, which are g
 
 ### 0. Main Menu
 
-**Node:** full-screen `Control`.
-**Script:** `scripts/core/main_menu.gd` *(implemented)*.
+Node: full-screen `Control`.
+Script: `scripts/core/main_menu.gd` *(implemented)*.
 
 MainMenu is now the default normal-launch surface. Normal startup must not instantiate a gameplay
 map before the player chooses content.
@@ -79,8 +79,8 @@ MainMenu v1 actions:
 
 ### 1. Top Menu Bar
 
-**Node:** `MenuBar` anchored `PRESET_TOP_WIDE`, height ~28 px.
-**Script:** `scripts/ui/top_menu.gd` *(implemented)*.
+Node: `MenuBar` anchored `PRESET_TOP_WIDE`, height ~28 px.
+Script: `scripts/ui/top_menu.gd` *(implemented)*.
 
 | Menu   | Items |
 |--------|-------|
@@ -106,8 +106,8 @@ It is not owned by `main_ui.gd`, because the editor scenes do not use the gamepl
 
 ### Options Window
 
-**Node:** draggable Godot `Window`.
-**Script:** `scripts/ui/options_window.gd` *(implemented)*.
+Node: draggable Godot `Window`.
+Script: `scripts/ui/options_window.gd` *(implemented)*.
 
 The same options window is launched from `MainMenu` and from gameplay `File -> Options...`.
 It uses a left category rail and right content pane with footer-level `Reset Defaults`,
@@ -158,12 +158,12 @@ Deterministic rule:
 
 ### 2. Bottom Toolbar
 
-**Nodes:** Procedural bottom-strip layout rooted under a full-screen `Control`. The left
+Nodes: Procedural bottom-strip layout rooted under a full-screen `Control`. The left
 gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
 tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
 shell so the submenu stack can read as one cluster while the actual toolbar row still matches
 the clock / city-status / RCI strip height.
-**Script:** `scripts/ui/main_ui.gd` (current — stays here).
+Script: `scripts/ui/main_ui.gd` (current — stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
@@ -284,7 +284,7 @@ Current WorldEditor shortcuts:
 | Ctrl+Shift+S | Save world as |
 | Escape | Cancel active surface-fill preview, otherwise clear active tool |
 
-**Keyboard shortcuts** (owned by `input_manager.gd`, toolbar reflects active tool visually):
+Keyboard shortcuts (owned by `input_manager.gd`, toolbar reflects active tool visually):
 
 | Key        | Action |
 |------------|--------|
@@ -378,7 +378,7 @@ menu until a real renderer path exists.
 
 ## Style Conventions (`UIStyle`)
 
-**Script:** `scripts/ui/ui_style.gd` *(implemented)*.
+Script: `scripts/ui/ui_style.gd` *(implemented)*.
 
 `UIStyle` owns the shared color, sizing, and shell helpers used by the current HUD/menu
 implementation. Most new UI code calls `UIStyle` factory methods instead of constructing
@@ -549,7 +549,7 @@ godot/
   project.godot
 ```
 
-**Layout maintenance rules:**
+Layout maintenance rules:
 - Moving a script requires updating its `res://` path in every `.tscn` that references it
   and in every `preload(...)` call in other scripts. Do this in one dedicated pass per
   subdirectory, not incrementally across unrelated sessions.
@@ -606,23 +606,59 @@ Camera ownership rules:
 These are the concrete changes needed to move from current state to the target paradigm.
 They are tracked in the roadmap under `CODE-02` scope.
 
-1. **Add `UIStyle`** — completed. `scripts/ui/ui_style.gd` now owns the shared color,
+1. Add `UIStyle` — completed. `scripts/ui/ui_style.gd` now owns the shared color,
    radius, padding constants and common `StyleBoxFlat` factory helpers.
 
-2. **Add top menu** — completed. `scripts/ui/top_menu.gd` is instantiated from each scene
+2. Add top menu — completed. `scripts/ui/top_menu.gd` is instantiated from each scene
    root (`Main`, `AssetEditor`, `EconomyEditor`) and remains separate from `main_ui.gd`.
    Gameplay File/View/City/Tools/Help actions are wired, editor scenes expose reduced
    File/editor-action menus, and the City/Help windows currently use placeholder content
    where full data windows are not yet implemented.
 
-3. **Migrate selection-driven properties to `Window`s** — completed for the Building
+3. Migrate selection-driven properties to `Window`s — completed for the Building
    Inspector (`scripts/ui/building_inspector.gd`) and Road Properties
    (`scripts/ui/road_properties_window.gd`). Both now use Godot's built-in title bar, drag
    behavior, and close button while preserving the existing selection/edit APIs underneath.
 
-4. **Add City / Economy / Demand windows** — still pending. The top menu currently opens
+4. Add City / Economy / Demand windows — still pending. The top menu currently opens
    inline placeholder windows from `scripts/ui/top_menu.gd`; replace those one at a time
    with dedicated `Window`-based scripts when the live data views are implemented.
 
-5. **Reorganise `scripts/` into subdirectories** — completed. New UI work starts from the
+5. Reorganise `scripts/` into subdirectories — completed. New UI work starts from the
    `scripts/ui/` subtree and follows the current layout documented above.
+
+## Editing Tools
+
+The player draws a road and then edits its cross-section. That is the interface.
+
+`LaneLayout` already carries everything the editor needs to expose: per-band
+kind, direction, width, permitted modes, marking, turn set, and longitudinal
+range.
+
+What the editor must reach:
+
+- add, remove, and reorder bands
+- set a band's width independently of its neighbors
+- set which modes a band admits
+- set a band's longitudinal range
+- apply a cross-section to a whole road, a selected run, or one edge
+
+- A selection model. Marquee select, filter by type, and step through objects
+  overlapping under the cursor.
+- An undo stack over world edits. 
+- Height as an independently authored value, not derived from terrain at plop
+  time.
+- Alignment operations across a selection: align heights, align to terrain,
+  align to a line, align to a slope, mirror.
+- Export and import of a selection
+
+The player chooses how much of the work they do themselves, per area, at any
+time. Plop a building, draw a site, zone and let it fill, or sublet a chunk to a
+developer. None of the four is the designated path, and switching between them
+is merely a tool change. 
+
+## Camera
+
+Full 3D perspective by default.
+
+Optional tilt-shift camera.

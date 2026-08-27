@@ -70,6 +70,7 @@ pub(super) unsafe fn handle_network_movement(
                     transit_network,
                     graph,
                     pathfind_count,
+                    lane_buckets,
                     slices,
                 ) {
                     LaneEntryAction::Ready => {}

@@ -28,6 +28,8 @@ pub(crate) const POLICY_INDUSTRIAL_PROPERTY_TAX: &str =
     "industrial_property_tax_per_building_per_day";
 /// Stable policy id for per-level property-tax multiplier.
 pub(crate) const POLICY_PROPERTY_TAX_LEVEL_MULTIPLIER: &str = "property_tax_level_multiplier";
+/// How open the border is to arrivals, from 0.0 sealed to 1.0 fully open.
+pub(crate) const POLICY_BORDER_OPENNESS: &str = "border_openness";
 
 const TRANSFER_MIN: f32 = 0.0;
 const TRANSFER_MAX: f32 = 200.0;
@@ -40,6 +42,10 @@ const PROPERTY_TAX_PER_DAY_MIN: f32 = 0.0;
 const PROPERTY_TAX_PER_DAY_MAX: f32 = 500.0;
 const PROPERTY_TAX_MULTIPLIER_MIN: f32 = 1.0;
 const PROPERTY_TAX_MULTIPLIER_MAX: f32 = 5.0;
+/// A sealed border. Arrivals stop; nothing else does.
+const BORDER_OPENNESS_MIN: f32 = 0.0;
+/// A fully open border, which is what an unpoliced connection always was.
+const BORDER_OPENNESS_MAX: f32 = 1.0;
 
 /// Tax revenue collected by economy subsystems during one deterministic phase.
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,6 +89,14 @@ pub(crate) struct CityFiscalPolicy {
     pub(crate) industrial_property_tax_per_building_per_day: f32,
     /// Per-level multiplier applied to property tax above level 1.
     pub(crate) property_tax_level_multiplier: f32,
+    /// How open the border is to arrivals, from 0.0 sealed to 1.0 fully open.
+    ///
+    /// Migration already flowed through a term that was 1.0 when any border
+    /// road connected and 0.0 otherwise. This is that term made continuous, so
+    /// a sealed border is the case the model already handled and everything
+    /// between is a policy the player sets. It scales arrivals; it is not a
+    /// gate, and a closed border does not stop the rest of the simulation.
+    pub(crate) border_openness: f32,
 }
 
 impl CityFiscalPolicy {
@@ -121,6 +135,9 @@ impl CityFiscalPolicy {
                 .fiscal
                 .property_tax_level_multiplier
                 .clamp(PROPERTY_TAX_MULTIPLIER_MIN, PROPERTY_TAX_MULTIPLIER_MAX),
+            // Fully open by default, which is exactly the behaviour before this
+            // policy existed: a connected border admitted at full strength.
+            border_openness: BORDER_OPENNESS_MAX,
         }
     }
 
@@ -148,6 +165,9 @@ impl CityFiscalPolicy {
             }
             POLICY_HOUSEHOLD_VAT => {
                 self.household_vat_rate = value.clamp(0.0, VAT_MAX);
+            }
+            POLICY_BORDER_OPENNESS => {
+                self.border_openness = value.clamp(BORDER_OPENNESS_MIN, BORDER_OPENNESS_MAX);
             }
             POLICY_BUSINESS_PROFIT_TAX => {
                 self.business_profit_tax_rate = value.clamp(0.0, BUSINESS_PROFIT_TAX_MAX);
@@ -319,6 +339,7 @@ impl CityFiscalPolicy {
             commercial_property_tax_per_building_per_day: 25.0,
             industrial_property_tax_per_building_per_day: 35.0,
             property_tax_level_multiplier: 1.75,
+            border_openness: BORDER_OPENNESS_MAX,
         }
     }
 }
@@ -482,5 +503,35 @@ mod tests {
         assert!((policy.pension_per_elder_per_day - TRANSFER_MAX).abs() < f32::EPSILON);
         assert!(!policy.set_value("unknown", 1.0));
         assert!(!policy.set_value(POLICY_CHILD_SUPPORT, f32::NAN));
+    }
+
+    #[test]
+    fn the_border_defaults_to_open() {
+        // Before this policy existed, a connected border admitted at full
+        // strength. A new city must behave exactly that way or the policy has
+        // silently changed the game for everyone who never touches it.
+        let policy = CityFiscalPolicy::fallback();
+        assert!((policy.border_openness - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn border_openness_spans_sealed_to_open_and_clamps_outside_it() {
+        let mut policy = CityFiscalPolicy::fallback();
+
+        assert!(policy.set_value(POLICY_BORDER_OPENNESS, 0.0));
+        assert!((policy.border_openness - 0.0).abs() < f32::EPSILON);
+
+        assert!(policy.set_value(POLICY_BORDER_OPENNESS, 0.35));
+        assert!((policy.border_openness - 0.35).abs() < f32::EPSILON);
+
+        // Past either end it clamps rather than refusing, so a UI that hands
+        // over a stray value gets the nearest legal policy instead of an error.
+        assert!(policy.set_value(POLICY_BORDER_OPENNESS, 5.0));
+        assert!((policy.border_openness - BORDER_OPENNESS_MAX).abs() < f32::EPSILON);
+        assert!(policy.set_value(POLICY_BORDER_OPENNESS, -2.0));
+        assert!((policy.border_openness - BORDER_OPENNESS_MIN).abs() < f32::EPSILON);
+
+        // A non-finite value is refused outright, as every other policy is.
+        assert!(!policy.set_value(POLICY_BORDER_OPENNESS, f32::NAN));
     }
 }

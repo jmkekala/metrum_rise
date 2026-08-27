@@ -1,3 +1,24 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: test_compaction.rs
+//  script_path: rust/src/simulation/network/test_compaction.rs
+//  module_name: test_compaction
+//  version: 0.1.0
+//  description: Tests that edge compaction remaps every holder of an edge
+//           index: agents, buildings, and zoning. Also pins the case where
+//           pathing is rebuilt over soft-deleted edges without compacting,
+//           since skipping the deleted entries while leaving indices
+//           untouched is the cheaper path and must not renumber anything.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [network, agents, allocator, zoning]
+//  external_dependencies: [godot]
+//  features: [edge-compaction, index-remap, deleted-edges]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
@@ -198,12 +219,14 @@ mod tests {
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
             Node {
                 pos: Vector3::new(100.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
                 crosswalk_overrides: HashMap::new(),
+                control: Default::default(),
             },
         ];
 
@@ -214,8 +237,7 @@ mod tests {
             allowed_types: TransitFlags::CAR,
             class: EdgeClass::Standard,
             width: 8.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 20.0,
             base_cost: 0.0,
             physical_length: 100.0,
@@ -228,6 +250,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         };
 
         graph.edges = vec![

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Metrum Rise is a large-scale city simulation game. The long-term goal is to support **≥1,000,000 total population across simulation tiers**. Full-FSM simulation is reserved for the active area of interest; distant parts of the same world may run at coarser aggregate fidelity. World scale is flexible, with 20 km × 20 km as the default working scale.
+**[C]** Metrum Rise is a large-scale country simulation game. The long-term goal is to support **≥20,000,000 total agents across multiple cities, regions, and simulation tiers** in one large world. Full-FSM simulation is reserved for the active area of interest; distant parts of the same world may run at coarser aggregate fidelity. World scale is flexible, with 20 km × 20 km as the default working scale for a single city. **[C]**
 
 **Architecture:** Rust simulation backend compiled as a GDExtension DLL (`libmetrum_rise.so`), loaded by a Godot 4 frontend that handles rendering and user input.
 
@@ -41,7 +41,7 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 ## Performance Philosophy
 
-**This project is performance-first.** The 1M-agent scale target is non-negotiable and must be kept in mind for every decision, including small ones. Correctness without acceptable performance is not a done state.
+**[C]** **This project is performance-first.** The 20M-agent scale target is non-negotiable and must be kept in mind for every decision, including small ones. Correctness without acceptable performance is not a done state. **[C]**
 
 - Determinism is the default. Given the same save state, inputs, and tick sequence, the simulation should produce the same results. Any intentional randomness must be explicit, controlled, and justified; cosmetic variance should not silently change simulation outcomes. Heuristic solutions are not tolerated.
 - Measure before you add. Every new system must have a clear complexity bound. If a proposed implementation would degrade an existing O(1) or O(log N) path to O(N) or worse at city scale, it is not acceptable.
@@ -67,7 +67,7 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 - **Do not create additional `*.md` files in `docs/`** unless they have a durable distinct role and are linked from `docs/README.md`. Prefer updating the owning subsystem document rather than piling more detail into `project.md`.
 - **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
 
-## AI Behaviour Guidelines
+## AI Behavior Guidelines
 
 ### Persona & Collaboration
 

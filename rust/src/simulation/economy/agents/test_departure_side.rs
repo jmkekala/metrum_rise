@@ -1,3 +1,24 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: test_departure_side.rs
+//  script_path: rust/src/simulation/economy/agents/test_departure_side.rs
+//  module_name: test_departure_side
+//  version: 0.1.0
+//  description: Tests that an agent leaving a building picks the sidewalk
+//           on the correct side of the road. The entrance anchor, the road
+//           frontage side, and the forward or backward foot lane must
+//           agree, so these cases build a real graph, lane system, and CCH
+//           before asserting the chosen lane.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [agents, network, cch]
+//  external_dependencies: [godot]
+//  features: [departure-side, sidewalk-selection, building-entrance]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
@@ -87,8 +108,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: (fwd as f32 + bkw as f32) * 3.5,
-            fwd_lanes: fwd,
-            bkw_lanes: bkw,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd, bkw),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -101,6 +121,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

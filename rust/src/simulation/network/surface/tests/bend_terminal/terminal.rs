@@ -426,8 +426,7 @@ fn oblique_two_lane_terminal_caps_cover_asphalt_end_edges() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 2;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 2));
     graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);

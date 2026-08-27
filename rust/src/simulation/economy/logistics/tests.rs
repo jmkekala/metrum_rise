@@ -1,3 +1,23 @@
+// =========================================================================
+//  MANIFEST
+// =========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/economy/logistics/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Shipment and freight regression tests. The logistics_tick
+//           macro exists because an hourly tick needs an agent system, a
+//           treasury balance, a network, and a graph threaded through it;
+//           spelling that out per case buried the assertion being made.
+//  kind: test
+//  spec: none
+//  internal_dependencies: [logistics, allocator, network]
+//  external_dependencies: [godot]
+//  features: [shipments, freight, logistics-tick, carrier]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// =========================================================================
+
 //! Logistics unit tests.
 
 use super::*;
@@ -381,8 +401,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 20.0,
         base_cost: 5.0,
         physical_length: end_x.max(1.0),
@@ -395,6 +414,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     let e1 = graph.add_edge(Edge {
         start_node: n1,
@@ -403,8 +423,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 20.0,
         base_cost: 5.0,
         physical_length: 100.0,
@@ -417,6 +436,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 

@@ -47,8 +47,24 @@ pub(crate) enum SimCommand {
         fwd_lanes: i32,
         /// Backward lane count.
         bkw_lanes: i32,
+        /// An authored cross-section, in the flat form `LaneLayout::from_flat`
+        /// reads. When present the counts above are ignored and derived from
+        /// it instead, so a road with a median or a bus lane is placed as what
+        /// it is rather than as the nearest pair of numbers.
+        cross_section: Option<Vec<i32>>,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
+    },
+    /// Spawn looping car traffic across the existing road graph.
+    ///
+    /// Runs on the sim thread because it pathfinds and mutates the agent
+    /// arrays, both of which need the core lock the sim thread already holds
+    /// each tick. Calling the equivalent from the main thread deadlocks against
+    /// it, which is why `setup_benchmark_city` may only be used before the
+    /// thread spawns.
+    SpawnTestTraffic {
+        /// How many cars to put on the road.
+        count: i32,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -158,6 +174,11 @@ pub(crate) fn run_sim_thread(
                     camera_aabb_commands += 1;
                     pending_camera_aabb = Some((x0, x1, z0, z1));
                 }
+                Ok(SimCommand::SpawnTestTraffic { count }) => {
+                    commands_processed += 1;
+                    let mut core = core.lock().expect("simulation core lock poisoned");
+                    core.spawn_test_traffic_internal(count);
+                }
                 Ok(SimCommand::Undo) => {
                     commands_processed += 1;
                     undo_commands += 1;
@@ -214,6 +235,7 @@ pub(crate) fn run_sim_thread(
                     points,
                     fwd_lanes,
                     bkw_lanes,
+                    cross_section,
                     snap_to_existing_roads,
                 }) => {
                     commands_processed += 1;
@@ -246,10 +268,11 @@ pub(crate) fn run_sim_thread(
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
                         record_crash_phase_for_core(&c, "add road internal");
-                        let road_add = c.add_road_internal_with_snap(
+                        let road_add = c.add_road_internal_with_cross_section(
                             points,
                             fwd_lanes,
                             bkw_lanes,
+                            cross_section.as_deref(),
                             snap_to_existing_roads,
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;

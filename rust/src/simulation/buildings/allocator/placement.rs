@@ -55,6 +55,7 @@ impl BuildingAllocator {
                     let edge = graph.edge(edge_idx);
                     if edge.deleted
                         || edge.no_building_spawn
+                        || !edge.frontage_class.can_address()
                         || edge.physical_length < 0.1
                         || edge.physical_geometry.len() < 2
                         || !parcel.is_available()
@@ -391,7 +392,11 @@ impl BuildingAllocator {
         let edge = graph.edge(edge_idx);
         let edge_width = edge.width;
         let zone_cell_m = zoning.config.zone_cell_m;
-        if parcel.occupied_building().is_some() || edge.deleted || edge.no_building_spawn {
+        if parcel.occupied_building().is_some()
+            || edge.deleted
+            || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
+        {
             return None;
         }
 
