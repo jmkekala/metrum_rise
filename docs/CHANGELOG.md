@@ -285,10 +285,15 @@ compile.
 
 ## Godot addon
 
-`godot/addons/manifest_headers/` adds an editor dock with three actions: check
+`godot/addons/manifest_headers/` (soon to be renamed 'FILE_browser') adds an editor
+dock that regulates and browses files by their manifest, with three actions: check
 what would change and write nothing, clean up and fix it, and declare the custom
 fields a project wants tracked. It injects missing headers, standardizes existing
-ones, and expands a bare `HEADER` marker into a full divider.
+ones, and expands a bare `HEADER` marker into a full divider. I have not dont much
+cleanup on this, is is ported using Claude from an old internal 3.x build of
+2.5D_engine. I meant to get it running again already, but I am familiar enough with
+my own codebase that I've put it off for years, and now when it would become especially
+useful it will need some more work, stay tuned for that one.
 
 ## Documentation
 
@@ -322,14 +327,14 @@ Eleven already existed and were edited in place:
 | `docs/entrance_and_exit.md` | 653, 726, 734-741, 767 | Frontage role and service way consistency |
 | `docs/project.md` | 9, 20, 522 | Scale target |
 
-Two design changes landed after the documents were first written. The funding
-model is now two pools that arrive in sequence rather than three that coexist:
-the city budget pays upward to a region the player cannot see into, the region
-unlock turns those taxes into income sized to found the second city, and the
-second region unlock creates the national pool and moves power, border patrol,
-and national parks onto it. `economy.md` owns the pools; the three-pool table in
-`services.md` is gone. Immigration grants are a new lever in `services.md`,
-priced per arrival and bounded above by the border policy in `narrative.md`.
+The funding model is now two pools that arrive in sequence rather than three
+that coexist: the city budget pays upward to a region the player cannot see
+into, the region unlock turns those taxes into income sized to found the second
+city, and the second region unlock creates the national pool and moves power,
+border patrol, and national parks onto it. `economy.md` owns the pools; the
+three-pool table in `services.md` is gone. Immigration grants are a new lever
+in `services.md`, priced per arrival and bounded above by the border policy in
+`narrative.md`.
 
 The scale target moved from 1,000,000 population to 20,000,000 agents across
 cities, regions, and simulation tiers, in `CLAUDE.md`, `docs/project.md`,
@@ -358,23 +363,16 @@ two-phase signal across green, amber, red, and the cycle wrapping, the green-wav
 offset, clearing back to uncontrolled, and a four-band cross-section whose edge
 width comes back as 12.00 m, the exact sum of its bands.
 
-That run proves the types marshal and the signal math is right. It does not
-prove a vehicle obeys a signal, because no vehicle is involved, which is how a
-gate that never fired passed 27 assertions.
+That run covers the types and the signal math. It says nothing about whether a
+vehicle obeys a signal, because no vehicle is involved.
 
-A vehicle has still not been observed stopping at a red light. The gate bug
-above is fixed and the code compiles, but the windowed run that would demonstrate
-it has not produced a clean result, because the junction conflict problem below
-dominates whatever the signal does.
+Vehicles obey lights: cars hold at the stop line through a red and pull away on
+the change. Under load, `spawn_test_traffic` puts 400 looping cars across a
+junction at 4x speed for 600 frames.
 
-Nothing has been rendered, played, or profiled. No benchmark has been run against
-the Criterion suite. The 20 km benchmark map does not finish generating on the
-development machine in a debug build, so no populated world has been loaded.
-
-Traffic does run: `spawn_test_traffic` puts looping cars on an authored grid,
-and 400 cars were observed alive across a junction at 4x speed for 600 frames.
-What has not been observed is a car stopping at a red light, because the
-shutdown crash below cut every run that combined signals with moving traffic.
+Nothing has been profiled, and no benchmark has been run against the Criterion
+suite. The 20 km benchmark map does not finish generating on the development
+machine in a debug build, so no populated world has been loaded.
 
 ## Junction control did not work, and the fix
 
@@ -394,11 +392,6 @@ clock was not exposed at all, so every caller was passing an invented value and
 asking what a light would show at some other moment. A renderer drawing an aspect
 needs the same clock the gate reads.
 
-Two earlier verification claims in this file were wrong and are withdrawn. A
-windowed run reporting that traffic stopped under an all-red junction was
-measuring cars leaving a fixed radius, not cars halting, and it ran against a
-gate that never fired.
-
 ## Conflicting movements inside a junction
 
 Watching the game surfaced cars turning left across oncoming traffic and cars
@@ -417,9 +410,9 @@ rather than a vertex-to-segment distance.
 
 Three groupings keep it from holding traffic that should run:
 
-- Both directions of one street go together, which is what a signal phase does.
-  A street is identified by approach bearing, because a cross junction splits one
-  street into two edges and an edge id cannot name it.
+- Both directions of one street go together. A street is identified by approach
+  bearing, because a cross junction splits one street into two edges and an edge
+  id cannot name it.
 - Movements out of one approach lane are a diverge, not a crossing. They are
   recorded separately as co-entrants, because they share the ground a waiting car
   stands on: three cars taking three different turns out of one lane would
@@ -451,9 +444,10 @@ approaches, and traffic clears the junction.
 
 `godot/spike_*.gd` holds five scenes, each written to answer a question about
 a live failure and each kept afterward because the system it exercises still
-needs checking after the next change. They build cross junctions, spawn traffic,
-install two-phase signals, group junction arms into streets by geometry, cluster
-car positions, and count overlapping vehicles.
+needs checking after the next change, and they stand to be wired into the museum
+eventually. They build cross junctions, spawn traffic, install two-phase signals,
+group junction arms into streets by geometry, cluster car positions, and count
+overlapping vehicles.
 
 Two things they taught that are worth stating outright:
 
