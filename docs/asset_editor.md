@@ -1001,7 +1001,7 @@ System RAM is a separate discussion. This section covers GPU memory and render c
 
 Budget constraints:
 
-**[C] - The total-agent target does not imply `20,000,000` fully detailed close-up characters on screen at once. [C]
+- The total-agent target does not imply `20,000,000` fully detailed close-up characters on screen at once. 
 - VAT character cost scales with visible vertex count.
 - Asset budgets must hold even without perfect per-agent occlusion behind buildings.
 - Buildings, cars, and props use instancing and LOD, but careless materials and texture sizes still waste VRAM before triangle count becomes the first bottleneck.
