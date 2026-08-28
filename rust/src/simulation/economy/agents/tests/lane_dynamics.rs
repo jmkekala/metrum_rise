@@ -1,8 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: lane_dynamics.rs
+//  script_path: rust/src/simulation/economy/agents/tests/lane_dynamics.rs
+//  module_name: lane_dynamics
+//  version: 0.1.0
+//  description: Lane bucket occupancy, frontage delay, and steady-state
+//  kind: test
+//  spec: none
+//  internal_dependencies: [agents, lanes]
+//  external_dependencies: []
+//  features: [lane-buckets, congestion, junction-gate, frontage-delay]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Lane buckets, frontage delay, and steady-state congestion tests.
 
 use super::support::*;
 use super::*;
 use crate::simulation::LANE_CONFIGS;
+
+// ========================================================================
+// LANE DYNAMICS TESTS
+// ========================================================================
 
 #[test]
 fn test_junction_gate_prevents_stacking() {
@@ -426,8 +447,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -440,6 +460,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         };
         edges.push(graph.add_edge(e));
     }

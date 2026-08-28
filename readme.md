@@ -7,7 +7,13 @@ License: [GNU General Public License, version 2](https://www.gnu.org/licenses/ol
 ## Requirements
 - Godot (4.x)
 - Rust  (made with 1.97)
-- Linux. Probably works with WSL2 just fine. As for a proper port, I personally do not care, one should not use Windows anymore anyways.
+- Linux **OR** Windows 10+
+
+**Minimum specs:**
+- Not entirely sure. It is however worth noting that I got this running on a *very* cursed
+AMD laptop from 2017 just to see, and it ran the intersection spike without melting
+at least.
+
 
 ## How-to
 
@@ -21,16 +27,18 @@ For asset editor
 ./run.sh --release --asset-editor
 ```
 
-There are also economy and world editor. But these are not update in awhile so they are not that usable currently.
+There are also economy and world editor. But these are not update in awhile
+so they are not that usable currently.
 
 
 ## Bugs
-Loads of bugs
+Loads of bugs: less of the old ones, probably more new ones.
 
 ## Credits
 
 ### Kuopio map:
-Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 19.04.2026)
+Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey
+of Finland Topographic Database/ Date: 19.04.2026)
 
 ### 3rd party assets used
 - https://ambientcg.com/view?id=DaySkyHDRI059B

@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/nodes/sim/core/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Regression tests for SimCore state: treasury and daily
+//  kind: test
+//  spec: none
+//  internal_dependencies: [economy, network, assets]
+//  external_dependencies: [godot]
+//  features: [sim-core, budget-ledger, render-snapshot, demand-cadence]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 use super::{
@@ -39,6 +56,10 @@ use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector3;
 use std::collections::HashSet;
 use std::collections::{HashMap, VecDeque};
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 fn temp_save_path(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
@@ -117,6 +138,10 @@ fn test_core() -> SimCore {
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
     }
 }
+
+// ========================================================================
+// SIM CORE TESTS
+// ========================================================================
 
 #[test]
 fn fiscal_policy_api_clamps_values_and_rejects_unknown_ids() {
@@ -784,8 +809,7 @@ fn add_test_border_road(core: &mut SimCore) {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 13.89,
         base_cost: 180.0,
         physical_length: 180.0,
@@ -797,6 +821,7 @@ fn add_test_border_road(core: &mut SimCore) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     core.transit_network
         .lane_system
@@ -925,8 +950,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 13.89,
         base_cost: physical_length,
         physical_length,
@@ -938,6 +962,7 @@ fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edg
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 

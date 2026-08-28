@@ -1,8 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: network.rs
+//  script_path: rust/src/simulation/save/network.rs
+//  module_name: network
+//  version: 0.1.0
+//  description: Road graph and lane connection serialization.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Road graph and lane connection serialization.
 
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::{
+    Edge, LaneLayout, LaneRange, LaneSpec, RegionGraph, TurnSet,
+};
 use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
@@ -12,6 +31,28 @@ use std::collections::HashMap;
 use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{i64_to_i8, i64_to_u32, i64_to_usize, usize_to_i64};
+
+// ========================================================================
+// FORWARD COMPATIBILITY
+// ========================================================================
+
+/// True when the save carries this table.
+///
+/// A save written by an older build has no lane table, and asking for one is
+/// an ordinary condition rather than a corrupt file, so this answers the
+/// question instead of failing the load.
+fn table_exists(conn: &Connection, name: &str) -> SaveLoadResult<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+// ========================================================================
+// WRITING
+// ========================================================================
 
 pub(super) fn save_network(
     tx: &Transaction,
@@ -43,7 +84,7 @@ pub(super) fn save_network(
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, frontage_class, sidewalk_width_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
                 continue;
@@ -66,8 +107,8 @@ pub(super) fn save_network(
                 i64::from(edge.allowed_types),
                 edge_class_to_i64(edge.class),
                 edge.width,
-                i64::from(edge.fwd_lanes),
-                i64::from(edge.bkw_lanes),
+                i64::from(edge.fwd_lane_count()),
+                i64::from(edge.bkw_lane_count()),
                 edge.speed_limit,
                 edge.base_cost,
                 edge.physical_length,
@@ -75,8 +116,40 @@ pub(super) fn save_network(
                 edge.start_clip,
                 edge.end_clip,
                 i64::from(edge.no_building_spawn),
-                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access)
+                vehicle_frontage_access_to_i64(edge.vehicle_frontage_access),
+                edge_frontage_class_to_i64(edge.frontage_class),
+                edge.lane_layout().authored_sidewalk_width()
             ])?;
+        }
+    }
+
+    // 2b. Lane cross-sections
+    //
+    // The authored bands, in carriageway order. The two counts above are what
+    // this reduces to for an ordinary road, and they stay written so an older
+    // build can still open the save; a median, a bus lane, a cycle track, or a
+    // turn pocket exists only here.
+    {
+        let mut stmt = tx.prepare("INSERT INTO network_edge_lanes(edge_id, band_index, kind, direction, width_m, modes, marking, turns, range_start, range_end, parking_angle) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+        for (old_id, edge) in graph.edges().iter().enumerate() {
+            let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else {
+                continue;
+            };
+            for (band_index, lane) in edge.lane_layout().lanes().iter().enumerate() {
+                stmt.execute(params![
+                    usize_to_i64(saved_id)?,
+                    usize_to_i64(band_index)?,
+                    lane_kind_to_i64(lane.kind),
+                    lane_direction_to_i64(lane.direction),
+                    lane.width_m,
+                    i64::from(lane.modes),
+                    lane_marking_to_i64(lane.marking),
+                    i64::from(lane.turns.0),
+                    lane.range.start,
+                    lane.range.end,
+                    parking_angle_to_i64(lane.parking_angle)
+                ])?;
+            }
         }
     }
 
@@ -137,6 +210,10 @@ pub(super) fn save_network(
     Ok(())
 }
 
+// ========================================================================
+// READING
+// ========================================================================
+
 pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     let mut graph = RegionGraph::new();
     {
@@ -177,8 +254,39 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         }
     }
 
+    // Authored cross-sections, if this save has them. A save written before
+    // the lane table existed has none, and every edge falls back to the layout
+    // its two counts imply, which is exactly how it rendered when it was
+    // written.
+    let mut lane_layouts: HashMap<usize, LaneLayout> = HashMap::new();
+    if table_exists(conn, "network_edge_lanes")? {
+        let mut stmt = conn.prepare("SELECT edge_id, kind, direction, width_m, modes, marking, turns, range_start, range_end, parking_angle FROM network_edge_lanes ORDER BY edge_id, band_index")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let eid = i64_to_usize(row.get(0)?)?;
+            let lane = LaneSpec {
+                kind: lane_kind_from_i64(row.get(1)?)?,
+                direction: lane_direction_from_i64(row.get(2)?)?,
+                width_m: row.get(3)?,
+                modes: (row.get::<_, i64>(4)?) as u8,
+                marking: lane_marking_from_i64(row.get(5)?)?,
+                turns: TurnSet((row.get::<_, i64>(6)?) as u8),
+                range: LaneRange {
+                    start: row.get(7)?,
+                    end: row.get(8)?,
+                },
+                parking_angle: parking_angle_from_i64(row.get(9)?)?,
+            };
+            lane_layouts
+                .entry(eid)
+                .or_default()
+                .lanes_mut()
+                .push(lane);
+        }
+    }
+
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn, vehicle_frontage_access, frontage_class, sidewalk_width_m FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -199,8 +307,21 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 allowed_types: (row.get::<_, i64>(4)?) as u8,
                 class: edge_class_from_i64(row.get(5)?)?,
                 width: row.get(6)?,
-                fwd_lanes: (row.get::<_, i64>(7)?) as u8,
-                bkw_lanes: (row.get::<_, i64>(8)?) as u8,
+                // The authored cross-section if the save carries one, and
+                // otherwise the layout the two counts imply, which is
+                // byte-identical to how the road rendered when it was saved.
+                lanes: {
+                    let mut layout = lane_layouts.remove(&eid).unwrap_or_else(|| {
+                        LaneLayout::from_counts(
+                            (row.get::<_, i64>(7).unwrap_or(0)) as u8,
+                            (row.get::<_, i64>(8).unwrap_or(0)) as u8,
+                        )
+                    });
+                    // NULL means the layout never authored one, so it follows
+                    // the project default rather than freezing today's value.
+                    layout.set_sidewalk_width(row.get::<_, Option<f32>>(18).unwrap_or(None));
+                    layout
+                },
                 speed_limit,
                 base_cost: row.get(10)?,
                 physical_length: row.get(11)?,
@@ -212,6 +333,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 deleted: false,
                 no_building_spawn,
                 vehicle_frontage_access: vehicle_frontage_access_from_i64(row.get(16)?)?,
+                frontage_class: edge_frontage_class_from_i64(row.get(17).unwrap_or(0))?,
             });
         }
     }
@@ -239,6 +361,10 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     graph.rebuild_all_indices();
     Ok(graph)
 }
+
+// ========================================================================
+// REBUILDING RUNTIME STATE
+// ========================================================================
 
 pub(super) fn rebuild_loaded_graph_runtime(
     graph: &mut RegionGraph,

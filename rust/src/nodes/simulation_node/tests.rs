@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/nodes/simulation_node/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Regression tests for the Godot simulation-node bridge and
+//  kind: test
+//  spec: none
+//  internal_dependencies: [simulation_node, terrain]
+//  external_dependencies: [godot]
+//  features: [node-bridge, terrain-cdt, variant-export]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Regression tests for the Godot simulation-node bridge.
 
 use super::async_terrain::{
@@ -17,10 +34,18 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtRoadBandKind, TerrainCdtRoadLoopSourceEdge, TerrainCdtSpanRegionRole,
 };
 
+// ========================================================================
+// SUBMODULES
+// ========================================================================
+
 mod async_payload;
 mod cdt;
 mod road_tool;
 mod zoning;
+
+// ========================================================================
+// SHARED FIXTURES
+// ========================================================================
 
 fn export_has_world_xz(
     export: &TerrainCdtTriangleBufferExport,
@@ -70,8 +95,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 20.0,
@@ -83,6 +107,7 @@ fn test_snap_graph() -> crate::simulation::network::graph::RegionGraph {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph
 }

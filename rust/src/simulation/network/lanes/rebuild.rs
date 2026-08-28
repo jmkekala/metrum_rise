@@ -1,4 +1,21 @@
-use super::super::graph::RegionGraph;
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: rebuild.rs
+//  script_path: rust/src/simulation/network/lanes/rebuild.rs
+//  module_name: rebuild
+//  version: 0.1.0
+//  description: Rebuilds all physical lane geometry and junction
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, geometry]
+//  external_dependencies: []
+//  features: [lane-rebuild, junction-connections, lane-geometry]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
+use super::super::graph::{LaneDirection, RegionGraph};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
 use super::pedestrian_junctions::build_pedestrian_connections_at_node;
@@ -6,6 +23,10 @@ use super::vehicle_junctions::build_vehicle_connections_at_node;
 use super::{LaneSystem, LaneType};
 use crate::config;
 use std::collections::{HashMap, HashSet};
+
+// ========================================================================
+// REBUILD
+// ========================================================================
 
 impl LaneSystem {
     /// Completely rebuilds all physical lane geometry and connection splines for the entire graph.
@@ -39,23 +60,44 @@ impl LaneSystem {
                 );
             };
 
-            let lane_w = config::LANE_WIDTH;
             let sidewalk_w = config::SIDEWALK_WIDTH;
-            let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+            let layout = edge.lane_layout();
+            let asphalt_width = layout.asphalt_width();
             let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
 
-            // 1. Forward Lanes
-            for l in 0..edge.fwd_lanes {
-                // Lane 0 is closest to center
-                let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
-                build_lane(true, l as i8, LaneType::Vehicle, lane_offset);
+            // Lane offsets come from the layout, which accumulates each band's
+            // real width. The old form was (index + 0.5) * LANE_WIDTH, correct
+            // only while every lane was the same width, and it is a wide truck
+            // lane or a median that breaks it. For a layout built from counts
+            // the two agree exactly.
+            //
+            // Lane indices keep their existing meaning for everything
+            // downstream: forward lanes count outward from the centre from 0,
+            // backward lanes from -1. Medians and other non-travel bands take
+            // width and receive no lane of their own.
+            // Backward lanes are stored outermost-first but indexed
+            // innermost-first, so they are walked in reverse to keep index -1
+            // on the lane nearest the centre, which is what every consumer
+            // downstream already assumes.
+            let mut fwd_seen: i8 = 0;
+            for (band, lane) in layout.lanes().iter().enumerate() {
+                if lane.direction != LaneDirection::Forward || !lane.carries(TransitFlags::CAR) {
+                    continue;
+                }
+                if let Some(offset) = layout.centre_offset(band) {
+                    build_lane(true, fwd_seen, LaneType::Vehicle, offset * side_mul);
+                    fwd_seen += 1;
+                }
             }
-
-            // 2. Backward Lanes
-            for l in 0..edge.bkw_lanes {
-                // Lane 0 is closest to center
-                let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
-                build_lane(false, -(l as i8) - 1, LaneType::Vehicle, lane_offset);
+            let mut bkw_seen: i8 = 0;
+            for (band, lane) in layout.lanes().iter().enumerate().rev() {
+                if lane.direction != LaneDirection::Backward || !lane.carries(TransitFlags::CAR) {
+                    continue;
+                }
+                if let Some(offset) = layout.centre_offset(band) {
+                    build_lane(false, -bkw_seen - 1, LaneType::Vehicle, offset * side_mul);
+                    bkw_seen += 1;
+                }
             }
 
             // 3. Sidewalks
@@ -96,6 +138,12 @@ impl LaneSystem {
                 node_id,
                 &mut self.node_lanes,
             );
+        }
+
+        // Crossing movements are pure geometry over the connectors just built,
+        // so they are computed here rather than per tick.
+        for node_id in 0..graph.node_count() {
+            self.rebuild_node_conflicts(node_id);
         }
     }
 
@@ -197,38 +245,56 @@ impl LaneSystem {
             }
 
             let mut edge_lane_indices = Vec::new();
-            let lane_w = config::LANE_WIDTH;
             let sidewalk_w = config::SIDEWALK_WIDTH;
-            let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+            let layout = edge.lane_layout();
+            let asphalt_width = layout.asphalt_width();
             let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
 
-            for l in 0..edge.fwd_lanes {
-                let off = (l as f32 + 0.5) * lane_w * side_mul;
-                build_one_lane(
-                    &mut self.lanes,
-                    &mut lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    true,
-                    l as i8,
-                    LaneType::Vehicle,
-                    off,
-                );
+            // The same layout walk as the full rebuild above, and it has to
+            // stay the same. When this path computed offsets from lane counts
+            // instead, a road drawn from scratch and the same road after an
+            // edit produced different geometry, and every band the counts
+            // cannot express (a median, a bus lane, a cycle track, a turn
+            // pocket) was silently dropped the moment anything touched it.
+            let mut fwd_seen: i8 = 0;
+            for (band, lane) in layout.lanes().iter().enumerate() {
+                if lane.direction != LaneDirection::Forward || !lane.carries(TransitFlags::CAR) {
+                    continue;
+                }
+                if let Some(offset) = layout.centre_offset(band) {
+                    build_one_lane(
+                        &mut self.lanes,
+                        &mut lane_map,
+                        &mut edge_lane_indices,
+                        edge_idx,
+                        edge,
+                        true,
+                        fwd_seen,
+                        LaneType::Vehicle,
+                        offset * side_mul,
+                    );
+                    fwd_seen += 1;
+                }
             }
-            for l in 0..edge.bkw_lanes {
-                let off = -(l as f32 + 0.5) * lane_w * side_mul;
-                build_one_lane(
-                    &mut self.lanes,
-                    &mut lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    false,
-                    -(l as i8) - 1,
-                    LaneType::Vehicle,
-                    off,
-                );
+            let mut bkw_seen: i8 = 0;
+            for (band, lane) in layout.lanes().iter().enumerate().rev() {
+                if lane.direction != LaneDirection::Backward || !lane.carries(TransitFlags::CAR) {
+                    continue;
+                }
+                if let Some(offset) = layout.centre_offset(band) {
+                    build_one_lane(
+                        &mut self.lanes,
+                        &mut lane_map,
+                        &mut edge_lane_indices,
+                        edge_idx,
+                        edge,
+                        false,
+                        -bkw_seen - 1,
+                        LaneType::Vehicle,
+                        offset * side_mul,
+                    );
+                    bkw_seen += 1;
+                }
             }
 
             if (edge.allowed_types & TransitFlags::FOOT) != 0 {
@@ -335,6 +401,7 @@ impl LaneSystem {
                     node_id,
                     &mut self.node_lanes,
                 );
+                self.rebuild_node_conflicts(node_id);
             }
         }
     }

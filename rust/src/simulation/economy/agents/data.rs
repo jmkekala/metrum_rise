@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: data.rs
+//  script_path: rust/src/simulation/economy/agents/data.rs
+//  module_name: data
+//  version: 0.1.0
+//  description: Core data layout for the agent simulation.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Core data layout for the agent simulation.
 //!
 //! # Memory layout
@@ -8,6 +25,10 @@
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+// ========================================================================
+// ONE AGENT
+// ========================================================================
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -110,6 +131,18 @@ pub struct Agent {
     pub overtake_blocked_time_s: f32,
     /// Remaining cooldown before another discretionary overtaking/return lane change may start.
     pub overtake_cooldown_s: f32,
+    /// Simulation time at which a junction's priority sign releases this agent.
+    ///
+    /// Set on arrival at a controlled stop line and compared against `sim_time`
+    /// on each subsequent tick. `f32::MIN` means the agent is not being held,
+    /// which is the resting state everywhere outside a yield or stop arm.
+    pub junction_release_time_s: f32,
+    /// Earliest simulation time this agent may reconsider its route.
+    ///
+    /// Rerouting is a comparison against a fresh pathfind, so it is rate limited
+    /// per vehicle rather than run every tick. Distinct from `next_replan_time`,
+    /// which paces recovery after a plan has already failed.
+    pub next_reroute_time_s: f32,
     /// Current movement speed in m/s. Updated each tick by the IDM model (cars) or held constant
     /// (pedestrians). Initialised to the edge speed limit on first lane entry.
     pub speed: f32,
@@ -140,6 +173,10 @@ pub struct Agent {
     /// Visual-only current cycle of the walk animation in `[0, 1]`.
     pub walk_phase: f32,
 }
+
+// ========================================================================
+// THE SYSTEM
+// ========================================================================
 
 /// Simulation-wide agent system.
 ///
@@ -211,6 +248,10 @@ pub struct AgentSystem {
     pub(crate) traffic_debug_next_log_time: Vec<f32>,
 }
 
+// ========================================================================
+// TRAIT IMPLEMENTATIONS
+// ========================================================================
+
 impl Clone for AgentSystem {
     fn clone(&self) -> Self {
         Self {
@@ -258,6 +299,10 @@ impl DerefMut for AgentSystem {
         &mut self.agents
     }
 }
+
+// ========================================================================
+// CONSTRUCTION
+// ========================================================================
 
 impl AgentSystem {
     /// Creates a new, empty agent system.

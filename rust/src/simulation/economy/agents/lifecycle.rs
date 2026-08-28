@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: lifecycle.rs
+//  script_path: rust/src/simulation/economy/agents/lifecycle.rs
+//  module_name: lifecycle
+//  version: 0.1.0
+//  description: Agent spawning, removal, and whole-store lifecycle
+//           helpers.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Agent spawning, removal, and whole-store lifecycle helpers.
 
 use super::data::{Agent, AgentSystem};
@@ -15,6 +33,10 @@ use crate::simulation::economy::agents::tick::{
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use std::sync::atomic::Ordering;
+
+// ========================================================================
+// SPAWNING RESIDENTS
+// ========================================================================
 
 impl AgentSystem {
     /// Spawns one agent already housed inside a building.
@@ -81,6 +103,8 @@ impl AgentSystem {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_WALK,
             planned_activity: 0,
@@ -161,6 +185,8 @@ impl AgentSystem {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: DEFAULT_URBAN_ROAD_SPEED_MS,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -458,6 +484,10 @@ impl AgentSystem {
     }
 }
 
+// ========================================================================
+// SPAWNING FREIGHT
+// ========================================================================
+
 impl AgentSystem {
     fn spawn_freight_carrier_base(&mut self, shipment_id: u64, origin_building: usize) -> usize {
         let spawn_index = self.agents.len() as u32;
@@ -510,6 +540,8 @@ impl AgentSystem {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -621,6 +653,10 @@ impl AgentSystem {
             };
     }
 }
+
+// ========================================================================
+// SEEDS
+// ========================================================================
 
 fn stable_schedule_seed(home_building: usize, spawn_index: u32) -> u32 {
     let mixed = (home_building as u64)

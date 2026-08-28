@@ -1,7 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: lanes.rs
+//  script_path: rust/src/nodes/sim/query/lanes.rs
+//  module_name: lanes
+//  version: 0.1.0
+//  description: Lane-specific spatial queries (lane positions, junction
+//           connectivity, crosswalks).
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Lane-specific spatial queries (lane positions, junction connectivity, crosswalks).
 
 use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
+
+// ========================================================================
+// LANE QUERIES
+// ========================================================================
 
 impl SimCore {
     /// Reports whether the lane rebuild emitted a visible crossing for this road arm.
@@ -153,8 +175,8 @@ impl SimCore {
                 let mut current_pos = junction_pos + dir_to_leg * 5.0;
                 current_pos.y += 0.4;
 
-                let fwd_lanes = edge.fwd_lanes;
-                let bkw_lanes = edge.bkw_lanes;
+                let fwd_lanes = edge.fwd_lane_count();
+                let bkw_lanes = edge.bkw_lane_count();
                 let total_lanes = (fwd_lanes + bkw_lanes) as i32;
                 let lane_w = 1.0;
 

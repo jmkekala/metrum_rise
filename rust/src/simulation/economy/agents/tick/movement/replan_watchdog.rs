@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: replan_watchdog.rs
+//  script_path: rust/src/simulation/economy/agents/tick/movement/replan_watchdog.rs
+//  module_name: replan_watchdog
+//  version: 0.1.0
+//  description: Network replan failure watchdog and deterministic recovery
+//           fallbacks.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Network replan failure watchdog and deterministic recovery fallbacks.
 
 use super::super::slices::MovementSlices;
@@ -11,6 +29,10 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 use crate::traffic_log;
 use godot::prelude::Vector2;
+
+// ========================================================================
+// FAILURE THRESHOLD
+// ========================================================================
 
 const NETWORK_REPLAN_WATCHDOG_FAILURES: u8 = 3;
 
@@ -217,6 +239,10 @@ unsafe fn recover_to_border(
     }
 }
 
+// ========================================================================
+// RECOVERY POSITIONS
+// ========================================================================
+
 fn home_recovery_position(home: usize, allocator: &BuildingAllocator) -> Vector2 {
     allocator
         .entrances
@@ -293,6 +319,10 @@ unsafe fn clear_access_and_network_state(i: usize, slices: &MovementSlices) {
         *slices.path_idx.get_mut(i) = 0;
     }
 }
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -462,6 +492,8 @@ mod tests {
             lane_change_length: RawSlice::new(&mut agents.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut agents.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut agents.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut agents.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut agents.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut agents.agents.transit_mode),
             planned_activity: RawSlice::new(&mut agents.agents.planned_activity),
             path: RawSlice::new(&mut agents.agents.current_path),
@@ -487,8 +519,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -500,6 +531,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

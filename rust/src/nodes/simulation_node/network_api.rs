@@ -1,8 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: network_api.rs
+//  script_path: rust/src/nodes/simulation_node/network_api.rs
+//  module_name: network_api
+//  version: 0.1.0
+//  description: Network, road-tool, and traffic-editing Godot API methods.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Network, road-tool, and traffic-editing Godot API methods.
 
 use super::*;
 
 mod road_tool;
+
+// ========================================================================
+// NETWORK API
+// ========================================================================
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -80,6 +101,33 @@ impl SimulationNode {
         self.add_road_with_snap(points, fwd_lanes, bkw_lanes, true);
     }
 
+    /// Adds a road from an authored cross-section.
+    ///
+    /// `cross_section` is seven integers per band: kind, direction, width in
+    /// millimeters, mode bits, marking, turn set, and parking angle. The lane
+    /// counts come from the section, so this is how the road builder places a
+    /// road with a median, a bus lane, curbside parking, or a planted verge
+    /// rather than the nearest pair of numbers.
+    ///
+    /// A malformed array falls back to a plain one-lane-each-way road, because
+    /// a bad payload from the bridge should give an ordinary road rather than
+    /// nothing at all.
+    #[func]
+    pub fn add_road_with_cross_section(
+        &mut self,
+        points: PackedVector3Array,
+        cross_section: PackedInt32Array,
+        snap_to_existing_roads: bool,
+    ) {
+        self.add_road_impl(
+            points,
+            1,
+            1,
+            Some(cross_section.to_vec()),
+            snap_to_existing_roads,
+        );
+    }
+
     /// Adds a new road segment to the network with optional existing-road snapping.
     #[func]
     pub fn add_road_with_snap(
@@ -87,6 +135,17 @@ impl SimulationNode {
         points: PackedVector3Array,
         fwd_lanes: i32,
         bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+    ) {
+        self.add_road_impl(points, fwd_lanes, bkw_lanes, None, snap_to_existing_roads);
+    }
+
+    fn add_road_impl(
+        &mut self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        cross_section: Option<Vec<i32>>,
         snap_to_existing_roads: bool,
     ) {
         // Send to the background thread so the Godot main thread is never blocked
@@ -107,6 +166,7 @@ impl SimulationNode {
                 points,
                 fwd_lanes,
                 bkw_lanes,
+                cross_section,
                 snap_to_existing_roads,
             })
             .is_ok();
@@ -376,6 +436,58 @@ impl SimulationNode {
     #[func]
     pub fn clear_lane_connections(&mut self, node_id: u32) {
         self.lock_core().clear_lane_connections_internal(node_id);
+    }
+
+    /// Sets a priority sign on one approach arm: 0 main, 1 yield, 2 stop.
+    ///
+    /// A node carries either priority signs or a signal program, never both, so
+    /// this discards any signal already on the node.
+    #[func]
+    pub fn set_junction_priority(&mut self, node_id: u32, edge_id: i32, sign: u8) {
+        self.lock_core()
+            .set_junction_priority_internal(node_id, edge_id, sign);
+    }
+
+    /// Appends a phase to a junction's signal program.
+    ///
+    /// `green_arms` holds the approach edges green for the phase. Discards any
+    /// priority signs already on the node.
+    #[func]
+    pub fn add_junction_signal_phase(
+        &mut self,
+        node_id: u32,
+        green_arms: PackedInt32Array,
+        green_s: f32,
+        amber_s: f32,
+    ) {
+        self.lock_core()
+            .add_junction_signal_phase_internal(node_id, green_arms, green_s, amber_s);
+    }
+
+    /// Shifts a junction's signal cycle, which is how a green wave is built.
+    #[func]
+    pub fn set_junction_signal_offset(&mut self, node_id: u32, offset_s: f32) {
+        self.lock_core()
+            .set_junction_signal_offset_internal(node_id, offset_s);
+    }
+
+    /// Returns a junction to uncontrolled.
+    #[func]
+    pub fn clear_junction_control(&mut self, node_id: u32) {
+        self.lock_core().clear_junction_control_internal(node_id);
+    }
+
+    /// Describes a junction's control. See the internal for the shape.
+    #[func]
+    pub fn get_junction_control(&self, node_id: u32) -> VarDictionary {
+        self.lock_core().get_junction_control_internal(node_id)
+    }
+
+    /// Aspect one arm shows at `sim_time`: 0 green, 1 amber, 2 red.
+    #[func]
+    pub fn get_junction_signal_aspect(&self, node_id: u32, edge_id: i32, sim_time: f32) -> u8 {
+        self.lock_core()
+            .get_junction_signal_aspect_internal(node_id, edge_id, sim_time)
     }
 
     /// Toggles a user override for a crosswalk at a specific road mouth.

@@ -1,6 +1,26 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: data.rs
+//  script_path: rust/src/simulation/network/graph/data.rs
+//  module_name: data
+//  version: 0.1.0
+//  description: Node, Edge, and RegionGraph, the authoritative road
+//  kind: module
+//  spec: none
+//  internal_dependencies: [types, lane_spec]
+//  external_dependencies: [godot, rstar]
+//  features: [region-graph, spatial-index, node-merge, soft-delete]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;
+use super::control::JunctionControl;
+use super::lane_spec::LaneLayout;
+use crate::simulation::buildings::frontage::EdgeFrontageClass;
 use godot::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
 use std::collections::{HashMap, HashSet};
@@ -35,6 +55,10 @@ impl PointDistance for EdgeEntry {
     }
 }
 
+// ========================================================================
+// NODES AND EDGES
+// ========================================================================
+
 /// A junction or endpoint in the road graph.
 #[derive(Clone)]
 pub struct Node {
@@ -51,6 +75,12 @@ pub struct Node {
     /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
     /// If an edge ID is missing, default procedural generation decides.
     pub crosswalk_overrides: HashMap<usize, bool>,
+    /// How conflicting movements are resolved here.
+    ///
+    /// `lane_connections` answers which turns exist; this answers when a
+    /// permitted turn may be taken. Defaults to uncontrolled, which is correct
+    /// for a node joining two segments of the same road.
+    pub control: JunctionControl,
 }
 
 /// A directed road segment connecting two [`Node`]s.
@@ -68,10 +98,20 @@ pub struct Edge {
     pub class: EdgeClass,
     /// Total road width in metres (asphalt + sidewalks).
     pub width: f32,
-    /// Number of forward (start->end) vehicle lanes.
-    pub fwd_lanes: u8,
-    /// Number of backward (end->start) vehicle lanes.
-    pub bkw_lanes: u8,
+    /// The ordered lane bands across this edge's carriageway.
+    ///
+    /// Left to right in the edge's own frame: backward lanes outermost first,
+    /// then forward lanes innermost first, with any median between them. This
+    /// is what `roads.md` asks for when it requires later medians, parking
+    /// lanes, cycle tracks, and tram reservations to be explicit ordered bands
+    /// rather than special-case render offsets.
+    ///
+    /// This is the only record of what lanes an edge has. Counts are derived
+    /// from it by `fwd_lane_count` and `bkw_lane_count` rather than stored
+    /// beside it, because a stored pair can disagree with the layout and a
+    /// literal that sets one without the other compiles fine and produces a
+    /// road claiming lanes it does not have.
+    pub lanes: LaneLayout,
     /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
     /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.
@@ -96,9 +136,48 @@ pub struct Edge {
     pub no_building_spawn: bool,
     /// Controls whether buildings along this edge may directly use only same-side lanes or both carriageways for car access.
     pub vehicle_frontage_access: VehicleFrontageAccess,
+    /// Which frontage roles this edge will carry.
+    ///
+    /// A `ServiceWay` refuses an address, which is what stops the allocator
+    /// filling an alley with houses facing the wrong way. Defaults to
+    /// `Street`, so an edge that says nothing behaves exactly as every edge
+    /// did before this field existed.
+    pub frontage_class: EdgeFrontageClass,
 }
 
 impl Edge {
+    /// Set the lane layout, and the width it implies.
+    pub fn set_lane_layout(&mut self, layout: LaneLayout) {
+        self.width = (layout.asphalt_width()).max(2.0);
+        self.lanes = layout;
+    }
+
+    /// The lane layout, which is the only record of what lanes this edge has.
+    pub fn lane_layout(&self) -> &LaneLayout {
+        &self.lanes
+    }
+
+    /// Forward travel lanes carrying cars.
+    #[inline]
+    pub fn fwd_lane_count(&self) -> u8 {
+        self.lanes.fwd_count()
+    }
+
+    /// Backward travel lanes carrying cars.
+    #[inline]
+    pub fn bkw_lane_count(&self) -> u8 {
+        self.lanes.bkw_count()
+    }
+
+    /// Travel lanes carrying cars in both directions.
+    ///
+    /// Smaller than the band count on any road with a median, a verge, or
+    /// parking, because those bands carry no cars.
+    #[inline]
+    pub fn car_lane_count(&self) -> u8 {
+        self.fwd_lane_count().saturating_add(self.bkw_lane_count())
+    }
+
     /// Returns the interpolated world-space Y (height) at a given T-coordinate [0, 1].
     pub fn get_y_at_t(&self, t: f32) -> f32 {
         self.get_pos_and_tangent_at_t(t).0.y
@@ -147,6 +226,10 @@ impl Edge {
         Vector2::new(t3.x, t3.z).normalized()
     }
 }
+
+// ========================================================================
+// THE GRAPH
+// ========================================================================
 
 /// A unified directed graph representing the road and transit network of the entire region.
 ///
@@ -468,6 +551,20 @@ impl RegionGraph {
     /// Sets the [`NodeType`] of the node at `node_id`.
     pub fn set_node_type(&mut self, node_id: u32, node_type: NodeType) {
         self.nodes[node_id as usize].node_type = node_type;
+    }
+
+    /// Replaces the [`JunctionControl`] at `node_id`.
+    pub fn set_node_control(&mut self, node_id: u32, control: JunctionControl) {
+        self.nodes[node_id as usize].control = control;
+    }
+
+    /// Returns a mutable reference to the [`JunctionControl`] at `node_id`.
+    ///
+    /// Control is edited in place because a signal program is appended to phase
+    /// by phase. Changing it alters neither geometry nor connectivity, so no
+    /// rebuild follows.
+    pub fn node_control_mut(&mut self, node_id: u32) -> &mut JunctionControl {
+        &mut self.nodes[node_id as usize].control
     }
 
     /// Sets the world-space position of the node at `node_id`.

@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: vehicle_junctions.rs
+//  script_path: rust/src/simulation/network/lanes/vehicle_junctions.rs
+//  module_name: vehicle_junctions
+//  version: 0.1.0
+//  description: 
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;
@@ -6,6 +23,10 @@ use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
 
+// ========================================================================
+// CURVE TUNING
+// ========================================================================
+
 const VEHICLE_CONNECTION_MAX_STEP_M: f32 = 1.0;
 const VEHICLE_CONNECTION_MIN_STEPS: usize = 8;
 const VEHICLE_CONNECTION_MAX_STEPS: usize = 64;
@@ -13,6 +34,10 @@ const VEHICLE_CONNECTION_CONTROL_DISTANCE_FACTOR: f32 = 0.35;
 const VEHICLE_TRUE_JUNCTION_CONTROL_DISTANCE_FACTOR: f32 = 0.55;
 const VEHICLE_DIRECT_PASS_THROUGH_EPS_M: f32 = 0.05;
 const VEHICLE_DIRECT_PASS_THROUGH_DOT: f32 = 0.98;
+
+// ========================================================================
+// CONNECTING EVERY APPROACH
+// ========================================================================
 
 /// Builds vehicle intersection connection lanes at a single node.
 pub fn build_vehicle_connections_at_node(
@@ -31,13 +56,16 @@ pub fn build_vehicle_connections_at_node(
             continue;
         }
 
+        let fwd_lanes = edge.fwd_lane_count();
+        let bkw_lanes = edge.bkw_lane_count();
+
         if edge.start_node as usize == node_id {
-            for l in 0..edge.fwd_lanes {
+            for l in 0..fwd_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
                     outbound.push((e_idx, l as i8, lid));
                 }
             }
-            for l in 0..edge.bkw_lanes {
+            for l in 0..bkw_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
                     inbound.push((e_idx, -(l as i8) - 1, lid));
                 }
@@ -45,12 +73,12 @@ pub fn build_vehicle_connections_at_node(
         }
 
         if edge.end_node as usize == node_id {
-            for l in 0..edge.fwd_lanes {
+            for l in 0..fwd_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
                     inbound.push((e_idx, l as i8, lid));
                 }
             }
-            for l in 0..edge.bkw_lanes {
+            for l in 0..bkw_lanes {
                 if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
                     outbound.push((e_idx, -(l as i8) - 1, lid));
                 }
@@ -194,6 +222,10 @@ pub fn build_vehicle_connections_at_node(
         }
     }
 }
+
+// ========================================================================
+// SAMPLING THE CURVE
+// ========================================================================
 
 fn vehicle_connection_distance_basis_m(
     graph: &RegionGraph,

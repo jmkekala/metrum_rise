@@ -1,4 +1,26 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: network.rs
+//  script_path: rust/src/simulation/economy/agents/tick/movement/network.rs
+//  module_name: network
+//  version: 0.1.0
+//  description: Network, immigration, and junction movement state
+//           orchestration.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Network, immigration, and junction movement state orchestration.
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 mod detach;
 mod junction;
@@ -22,6 +44,10 @@ use lane_entry::{LaneEntryAction, prepare_lane_entry};
 use pose::update_network_pose;
 use replan::prepare_network_replan;
 use std::sync::atomic::AtomicU32;
+
+// ========================================================================
+// ONE AGENT, ONE TICK
+// ========================================================================
 
 /// Handles network, immigration, and active junction connector movement.
 ///
@@ -70,6 +96,7 @@ pub(super) unsafe fn handle_network_movement(
                     transit_network,
                     graph,
                     pathfind_count,
+                    lane_buckets,
                     slices,
                 ) {
                     LaneEntryAction::Ready => {}

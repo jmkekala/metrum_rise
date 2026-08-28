@@ -1,7 +1,28 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: trips.rs
+//  script_path: rust/src/simulation/economy/agents/tests/trips.rs
+//  module_name: trips
+//  version: 0.1.0
+//  description: Trip planning, access, and arrival lifecycle tests. Covers
+//  kind: test
+//  spec: none
+//  internal_dependencies: [agents, network, allocator]
+//  external_dependencies: [godot]
+//  features: [trip-planning, agent-access, arrival, mode-choice]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Trip planning, access, and arrival lifecycle tests.
 
 use super::support::*;
 use super::*;
+
+// ========================================================================
+// TRIP TESTS
+// ========================================================================
 
 #[test]
 fn test_agent_departure_sidewalk_selection() {
@@ -296,8 +317,7 @@ fn test_car_avoids_walkway() {
         primary_type: TransitType::Foot,
         allowed_types: TransitFlags::FOOT,
         width: 2.0,
-        fwd_lanes: 0,
-        bkw_lanes: 0,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(0, 0),
         speed_limit: 5.0,
         base_cost: 10.0,
         physical_length: 10.0,

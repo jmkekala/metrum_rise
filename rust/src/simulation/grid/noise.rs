@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: noise.rs
+//  script_path: rust/src/simulation/grid/noise.rs
+//  module_name: noise
+//  version: 0.1.0
+//  description: Grid-based noise emission and diffusion. Vehicles above a
+//  kind: module
+//  spec: none
+//  internal_dependencies: [data_grid, graph, allocator]
+//  external_dependencies: [rayon]
+//  features: [noise-pollution, diffusion, environment-grid]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Traffic and building noise emission/diffusion system.
 
 use super::data_grid::DataGrid;
@@ -6,6 +23,10 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
+
+// ========================================================================
+// THE NOISE GRID
+// ========================================================================
 
 /// A grid-based system that simulates noise pollution.
 ///
@@ -17,6 +38,10 @@ pub struct NoiseSystem {
     /// Temporary buffer used during the diffusion pass.
     pub swap: DataGrid<f32>,
 }
+
+// ========================================================================
+// EMISSION AND DIFFUSION
+// ========================================================================
 
 impl NoiseSystem {
     /// Creates a new noise system for the given map dimensions.
@@ -132,6 +157,10 @@ impl NoiseSystem {
             });
     }
 }
+// ========================================================================
+// TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,8 +188,7 @@ mod tests {
             allowed_types: TransitFlags::CAR,
             width: 10.0,
             class: EdgeClass::Standard,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS, // Should emit '1.0' units
             base_cost: 0.0,
             physical_length: 50.0,
@@ -181,6 +209,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
 
         // 2. Tick once - source cells should be positive
@@ -247,8 +276,7 @@ mod tests {
             allowed_types: TransitFlags::CAR,
             width: 10.0,
             class: EdgeClass::Standard,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             base_cost: 0.0,
             physical_length: 10.0,
             current_congestion: 0.0,
@@ -260,6 +288,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
 
         let n1_h = graph_high.add_node(Vector3::ZERO, NodeType::Junction);
@@ -272,8 +301,7 @@ mod tests {
             allowed_types: TransitFlags::CAR,
             width: 10.0,
             class: EdgeClass::Standard,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             base_cost: 0.0,
             physical_length: 10.0,
             current_congestion: 0.0,
@@ -285,6 +313,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
 
         noise_low.tick(&allocator, &graph_low, &config);

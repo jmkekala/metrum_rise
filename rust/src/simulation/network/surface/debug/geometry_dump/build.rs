@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: build.rs
+//  script_path: rust/src/simulation/network/surface/debug/geometry_dump/build.rs
+//  module_name: build
+//  version: 0.1.0
+//  description: Top-level edge geometry debug dump assembly.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Top-level edge geometry debug dump assembly.
 
 use super::*;
@@ -9,6 +26,10 @@ struct RoadCutFillSummary {
     max_cut_m: f32,
     max_grade: f32,
 }
+
+// ========================================================================
+// CUT AND FILL TOTALS
+// ========================================================================
 
 impl RoadCutFillSummary {
     fn empty() -> Self {
@@ -32,6 +53,10 @@ impl RoadCutFillSummary {
         }
     }
 }
+
+// ========================================================================
+// BUILDING THE DUMP
+// ========================================================================
 
 impl RoadSurfaceSystem {
     /// Builds compact per-road cut/fill debug lines for road geometry dumps.
@@ -268,8 +293,8 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump, "      \"class\": \"{:?}\",", edge.class);
         let _ = writeln!(dump, "      \"primary_type\": \"{:?}\",", edge.primary_type);
         let _ = writeln!(dump, "      \"width_m\": {:.3},", edge.width);
-        let _ = writeln!(dump, "      \"fwd_lanes\": {},", edge.fwd_lanes);
-        let _ = writeln!(dump, "      \"bkw_lanes\": {},", edge.bkw_lanes);
+        let _ = writeln!(dump, "      \"fwd_lanes\": {},", edge.fwd_lane_count());
+        let _ = writeln!(dump, "      \"bkw_lanes\": {},", edge.bkw_lane_count());
         let _ = writeln!(
             dump,
             "      \"physical_length_m\": {:.3},",

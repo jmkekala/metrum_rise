@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: async_payload.rs
+//  script_path: rust/src/nodes/simulation_node/tests/async_payload.rs
+//  module_name: async_payload
+//  version: 0.1.0
+//  description: Tests for the asynchronous terrain and water patch payload
+//  kind: test
+//  spec: none
+//  internal_dependencies: [async_terrain]
+//  external_dependencies: []
+//  features: [async-payload, terrain-patch, stale-drop, water-patch]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Async Payload regression tests for the simulation-node bridge.
 
 use super::*;
+
+// ========================================================================
+// ASYNC PAYLOAD TESTS
+// ========================================================================
 
 #[test]
 fn terrain_patch_payload_async_clear_drops_stale_world_payloads() {
@@ -661,8 +682,7 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: end_z - start_z,
@@ -680,6 +700,7 @@ fn conservative_road_grading_pad_filters_only_margin_only_engineered_patches() {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         core.region_graph = graph;
         // This fixture replaces the graph directly, so it must explicitly invalidate the

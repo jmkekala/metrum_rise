@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: helpers.rs
+//  script_path: rust/src/simulation/zoning/tests/helpers.rs
+//  module_name: helpers
+//  version: 0.1.0
+//  description: Shared fixtures for the zoning tests: straight road spans
+//  kind: test
+//  spec: none
+//  internal_dependencies: [graph, zoning]
+//  external_dependencies: [godot]
+//  features: [test-fixtures, zoning, road-span]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Shared zoning test fixtures.
 
 use crate::simulation::core::config::WorldConfig;
@@ -7,6 +24,10 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 pub(super) fn make_straight_road() -> (RegionGraph, usize) {
     make_straight_road_span(-60.0, 60.0)
@@ -24,8 +45,7 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: length,
         physical_length: length,
@@ -43,6 +63,7 @@ pub(super) fn make_straight_road_span(start_x: f32, end_x: f32) -> (RegionGraph,
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     (graph, edge_idx)
 }
@@ -57,8 +78,7 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 160.0,
         physical_length: 160.0,
@@ -70,6 +90,7 @@ pub(super) fn add_vertical_road_at_x(graph: &mut RegionGraph, x: f32) -> usize {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     })
 }
 
@@ -98,8 +119,7 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: length,
         physical_length: length,
@@ -111,6 +131,7 @@ pub(super) fn make_quarter_arc_road(radius_m: f32) -> (RegionGraph, usize) {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     (graph, edge_idx)
 }

@@ -12,7 +12,7 @@ Terminology note: this file mirrors durable code-facing names on purpose. When s
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| World extent | Player-configurable | Fallback gameplay world is `20 km × 20 km`; authored blank worlds can be larger. |
+| World extent | Player-configurable | Fallback gameplay world is `20 km x 20 km`. Country target is in [`terrain.md`](terrain.md). |
 | Terrain sample cell | `10 m` (`terrain_cell_m`) | Configurable independently from `zone_cell_m` in `WorldConfig`. |
 | Terrain chunk | `512 m` (`terrain_chunk_m`) | Canonical authored terrain chunk size in `WorldConfig`. |
 | Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `WorldConfig`. |

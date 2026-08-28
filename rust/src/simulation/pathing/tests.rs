@@ -1,8 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/pathing/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Pathing regression tests covering slope cost
+//  kind: test
+//  spec: none
+//  internal_dependencies: [cch, graph]
+//  external_dependencies: [godot]
+//  features: [pathfinding, slope-cost, turn-restrictions, mode-access]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 use super::*;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::Vector3;
+
+// ========================================================================
+// PATHING TESTS
+// ========================================================================
 
 #[test]
 fn test_slope_cost_calculation() {
@@ -12,8 +33,7 @@ fn test_slope_cost_calculation() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 4.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 100.0,
@@ -27,6 +47,7 @@ fn test_slope_cost_calculation() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -62,8 +83,7 @@ fn test_pathing_avoids_steep_slope() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 100.0,
@@ -85,6 +105,7 @@ fn test_pathing_avoids_steep_slope() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -99,8 +120,7 @@ fn test_pathing_avoids_steep_slope() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 0.0,
@@ -114,6 +134,7 @@ fn test_pathing_avoids_steep_slope() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -127,8 +148,7 @@ fn test_pathing_avoids_steep_slope() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: 0.0,
@@ -148,6 +168,7 @@ fn test_pathing_avoids_steep_slope() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -183,8 +204,7 @@ fn test_bidirectional_walkway_pathing() {
         primary_type: TransitType::Foot,
         allowed_types: TransitFlags::FOOT,
         width: 2.0,
-        fwd_lanes: 0,
-        bkw_lanes: 0,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(0, 0),
         speed_limit: 5.0,
         base_cost: 0.0,
         physical_length: 10.0,
@@ -198,6 +218,7 @@ fn test_bidirectional_walkway_pathing() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
 
     let cch = CchGraph::build(&graph);
@@ -234,8 +255,7 @@ fn test_car_uturn_allowed() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 10.0,
         physical_length: 10.0,
@@ -249,6 +269,7 @@ fn test_car_uturn_allowed() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
 
     let cch = CchGraph::build(&graph);
@@ -290,8 +311,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 13.888889,
             base_cost: length / 13.888889,
             physical_length: length,
@@ -305,6 +325,7 @@ fn test_border_spur_routes_to_connected_residential_branch() {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     };
     graph.add_edge(edge(n0, center, 241.03, 0.0, 9.35));
@@ -348,8 +369,7 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 10.0,
         physical_length: 100.0,
@@ -363,6 +383,7 @@ fn test_car_avoids_walkway_shortcut() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -370,8 +391,7 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         width: 6.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 10.0,
         physical_length: 100.0,
@@ -385,6 +405,7 @@ fn test_car_avoids_walkway_shortcut() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -394,8 +415,7 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Foot,
         allowed_types: TransitFlags::FOOT,
         width: 2.0,
-        fwd_lanes: 0,
-        bkw_lanes: 0,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(0, 0),
         speed_limit: 10.0,
         base_cost: 5.0, // Cheaper than road
         physical_length: 200.0,
@@ -409,6 +429,7 @@ fn test_car_avoids_walkway_shortcut() {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -471,8 +492,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             allowed_types: TransitFlags::CAR,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: len / (50.0 / 3.6),
             physical_length: len,
@@ -485,6 +505,7 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         })
     };
 

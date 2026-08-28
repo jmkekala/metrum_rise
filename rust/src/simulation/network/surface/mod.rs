@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/network/surface/mod.rs
+//  module_name: mod
+//  version: 0.1.0
+//  description: Public road-surface contracts, module wiring, and shared
+//           numeric constants.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Public road-surface contracts, module wiring, and shared numeric constants.
 //!
 //! The sibling modules own the concrete edge, span, node, overlay, query,
@@ -5,6 +23,10 @@
 //! keeps only the public contracts and stage re-exports that cross those owners.
 
 use spade::{ConstrainedDelaunayTriangulation, Point2};
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 mod backend;
 mod band_semantics;
@@ -24,6 +46,10 @@ mod segments;
 mod span;
 mod system;
 mod terrain_clip;
+
+// ========================================================================
+// RE-EXPORTS
+// ========================================================================
 
 pub use backend::{RoadVec2, RoadVec3};
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
@@ -64,6 +90,10 @@ pub(crate) use terrain_clip::{
     terrain_clip_edge_kind_for_band,
 };
 
+// ========================================================================
+// SHARED TOLERANCES
+// ========================================================================
+
 // Shared geometric tolerances used across surface compilation, overlay solving, and queries.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 const WORLD_POINT_DEDUP_DISTANCE_M: f32 = 1.0e-4;
@@ -80,6 +110,10 @@ const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
 // Node pieces are much heavier than edge/span pieces; parallelize as soon as two dirty nodes exist.
 const PARALLEL_NODE_COMPILE_MIN_ITEMS: usize = 2;
 
+// ========================================================================
+// TYPE ALIASES
+// ========================================================================
+
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 type NodeOverlayPoint = [f64; 2];
 type NodeOverlayPointKey = (i64, i64);
@@ -89,6 +123,10 @@ type NodeOverlayShapes = Vec<NodeOverlayShape>;
 
 /// Chunk key used by the road-surface and earthwork caches.
 pub type SurfaceChunkKey = (i32, i32);
+
+// ========================================================================
+// BAND KINDS
+// ========================================================================
 
 /// Ordered lateral surface-band kinds supported by the compiled roadbed.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -109,6 +147,9 @@ pub enum RoadSurfaceBandKind {
     CycleTrack,
     /// Reserved tram corridor.
     TramReservation,
+    /// Planted strip or planters between carriageway and sidewalk. Not
+    /// walkable and not drivable; it is what makes a street tree-lined.
+    Verge,
 }
 
 /// One ordered lateral band inside a compiled roadbed section.

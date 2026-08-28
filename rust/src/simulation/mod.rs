@@ -1,8 +1,30 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/mod.rs
+//  module_name: mod
+//  version: 0.1.0
+//  description: All simulation subsystems. Driven by
+//           [`crate::nodes::simulation_node::SimulationNode`].
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! All simulation subsystems. Driven by [`crate::nodes::simulation_node::SimulationNode`].
 //!
 //! Subsystems communicate by passing references to each other in `simulate_tick` —
 //! there is no shared global state. The canonical tick order is:
 //! time → terrain (passive) → water → network (road edits) → pathing → grid (env) → buildings → agents.
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 pub(crate) mod agriculture;
 pub mod buildings;
@@ -12,6 +34,7 @@ pub(crate) mod extraction;
 pub mod grid;
 pub mod network;
 pub mod pathing;
+pub mod region;
 pub(crate) mod resources;
 pub(crate) mod save;
 pub mod terrain;
@@ -19,6 +42,10 @@ pub mod water;
 pub(crate) mod work_area;
 pub(crate) mod world_definition;
 pub mod zoning;
+
+// ========================================================================
+// SHARED TEST TABLE
+// ========================================================================
 
 /// Shared road-configuration table used by parametrized tests across all subsystems.
 ///

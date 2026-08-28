@@ -1,3 +1,27 @@
+# =========================================================================
+#  MANIFEST
+# =========================================================================
+#  script_name: Cargo.toml
+#  script_path: rust/Cargo.toml
+#  module_name: metrum_rise
+#  version: 0.1.0
+#  description: Crate manifest for the Rust simulation core. Builds both
+#           cdylib, for the Godot GDExtension the shell loads, and rlib, so
+#           tests and benches link the same code. The test profile raises
+#           opt-level to 1 and keeps debug-assertions plus overflow-checks
+#           on, because the simulation tests iterate enough agents and
+#           lanes to be slow at opt-level 0 while still needing arithmetic
+#           faults to trap. Release keeps debug = 1 so crash dumps resolve
+#           symbols.
+#  kind: module
+#  spec: none
+#  internal_dependencies: []
+#  external_dependencies: [godot, rayon, rusqlite, parry2d, criterion]
+#  features: [crate-manifest, dependencies, build-profiles, gdextension]
+#  api_version: metrum-v1.0.0
+#  last_updated: 2026-08-24
+# =========================================================================
+
 [package]
 name = "metrum_rise"
 version = "0.1.0"
@@ -20,6 +44,7 @@ glam = "0.30"
 i_overlay = "5.0"
 parry2d = { version = "0.26", features = ["enhanced-determinism"] }
 rstar = "0.12"
+smallvec = "1.15"
 soa_derive = "0.14"
 spade = "2.15"
 splines = { version = "5.0", features = ["glam"] }

@@ -1,4 +1,25 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/nodes/sim/query/mod.rs
+//  module_name: query
+//  version: 0.1.0
+//  description: Read-only spatial and state inspection for the sim node
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph]
+//  external_dependencies: [godot]
+//  features: [spatial-query, node-canonicality, editor-picking]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Modular query sub-modules for spatial and simulation state inspection (Item R13).
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 pub mod lanes;
 pub mod network;
@@ -6,6 +27,10 @@ pub mod terrain;
 
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::*;
+
+// ========================================================================
+// CANONICAL NODES
+// ========================================================================
 
 /// Checks if a node is canonical (not an alias/merged node).
 pub fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
@@ -36,6 +61,10 @@ pub fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_d
     }
     best_id
 }
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -105,8 +134,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 20.0,
@@ -119,6 +147,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 }

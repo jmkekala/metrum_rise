@@ -1,4 +1,26 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: slices.rs
+//  script_path: rust/src/simulation/economy/agents/tick/slices.rs
+//  module_name: slices
+//  version: 0.1.0
+//  description: Unsafe SoA slice wrappers used by the parallel agent
+//           movement pass.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Unsafe SoA slice wrappers used by the parallel agent movement pass.
+
+// ========================================================================
+// RAW COLUMN VIEW
+// ========================================================================
 
 // Safety invariant upheld by callers:
 // Rayon's `(0..n).into_par_iter()` visits each index `i` exactly once. All
@@ -37,6 +59,10 @@ impl<T> RawSlice<T> {
         unsafe { &mut *self.ptr.add(i) }
     }
 }
+
+// ========================================================================
+// THE MOVEMENT COLUMNS
+// ========================================================================
 
 /// Disjoint SoA slices used by `process_agent_movement` for parallel data access.
 pub(crate) struct MovementSlices {
@@ -83,6 +109,8 @@ pub(crate) struct MovementSlices {
     pub(super) lane_change_length: RawSlice<f32>,
     pub(super) overtake_blocked_time: RawSlice<f32>,
     pub(super) overtake_cooldown: RawSlice<f32>,
+    pub(super) junction_release_time: RawSlice<f32>,
+    pub(super) next_reroute_time: RawSlice<f32>,
     pub(super) tmode: RawSlice<u8>,
     pub(super) planned_activity: RawSlice<u8>,
     pub(super) path: RawSlice<Vec<u32>>,

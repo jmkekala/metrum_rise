@@ -1,7 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mapping.rs
+//  script_path: rust/src/simulation/network/surface/query/terrain_cdt/mapping.rs
+//  module_name: mapping
+//  version: 0.1.0
+//  description: Road-surface terrain clip provenance mapping into terrain
+//           CDT DTOs.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Road-surface terrain clip provenance mapping into terrain CDT DTOs.
 
 use super::stable_ids::{terrain_cdt_usize_to_u32, terrain_cdt_usize_to_u64};
 use super::*;
+
+// ========================================================================
+// TERRAIN MAPPING
+// ========================================================================
 
 impl RoadSurfaceSystem {
     pub(super) fn terrain_cdt_boundary_source_from_surface(
@@ -147,6 +169,10 @@ impl RoadSurfaceSystem {
             RoadSurfaceBandKind::Parking => TerrainCdtRoadBandKind::Parking,
             RoadSurfaceBandKind::CycleTrack => TerrainCdtRoadBandKind::CycleTrack,
             RoadSurfaceBandKind::TramReservation => TerrainCdtRoadBandKind::TramReservation,
+            // A verge is planted ground the road owns, which is the same thing
+            // a median is to the terrain solve: raised, not driven on, and
+            // inside the road footprint.
+            RoadSurfaceBandKind::Verge => TerrainCdtRoadBandKind::Median,
         }
     }
 

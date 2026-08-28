@@ -1,3 +1,24 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: test_uturn.rs
+//  script_path: rust/src/simulation/network/test_uturn.rs
+//  module_name: test_uturn
+//  version: 0.1.0
+//  description: Tests that U-turn lane connections are not generated where
+//  kind: test
+//  spec: none
+//  internal_dependencies: [graph, lanes]
+//  external_dependencies: [godot]
+//  features: [u-turn, turn-restrictions, lane-connections]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
+// ========================================================================
+// U-TURN TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -22,8 +43,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: 50.0,
@@ -36,6 +56,7 @@ mod tests {
                 no_building_spawn: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                frontage_class: Default::default(),
             });
         }
         graph.rebuild_adjacency_list();
@@ -101,8 +122,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: 50.0,
@@ -115,6 +135,7 @@ mod tests {
                 no_building_spawn: false,
                 vehicle_frontage_access:
                     crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+                frontage_class: Default::default(),
             });
         }
         graph.rebuild_adjacency_list();
@@ -162,8 +183,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 50.0,
@@ -176,6 +196,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();

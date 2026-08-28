@@ -1,9 +1,30 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: restore.rs
+//  script_path: rust/src/simulation/zoning/system/restore.rs
+//  module_name: restore
+//  version: 0.1.0
+//  description: Save/load parcel restoration from road attachment data.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Save/load parcel restoration from road attachment data.
 
 use super::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ParcelId;
 use crate::simulation::zoning::parcels::{self, ParcelPlacementError};
+
+// ========================================================================
+// RESTORING FROM A SAVE
+// ========================================================================
 
 impl ZoningSystem {
     /// Restores one saved parcel from road attachment data.
@@ -88,6 +109,7 @@ impl ZoningSystem {
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= frontage_m
         {
@@ -137,6 +159,7 @@ impl ZoningSystem {
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_geometry.len() < 2
             || edge.physical_length <= frontage_m
         {

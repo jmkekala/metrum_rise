@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/economy/logistics/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Shipment and freight regression tests. The logistics_tick
+//  kind: test
+//  spec: none
+//  internal_dependencies: [logistics, allocator, network]
+//  external_dependencies: [godot]
+//  features: [shipments, freight, logistics-tick, carrier]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Logistics unit tests.
 
 use super::*;
@@ -32,6 +49,10 @@ macro_rules! logistics_tick {
         )
     }};
 }
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 fn create_profile_input_shipments_for_test(
     shipments: &mut ShipmentSystem,
@@ -381,8 +402,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 20.0,
         base_cost: 5.0,
         physical_length: end_x.max(1.0),
@@ -395,6 +415,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     let e1 = graph.add_edge(Edge {
         start_node: n1,
@@ -403,8 +424,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 20.0,
         base_cost: 5.0,
         physical_length: 100.0,
@@ -417,6 +437,7 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph.rebuild_adjacency_list();
 
@@ -425,6 +446,10 @@ fn graph_with_border_to(end_x: f32) -> (RegionGraph, TransitNetwork, usize, usiz
     network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
     (graph, network, e0, e1, n0)
 }
+
+// ========================================================================
+// LOGISTICS TESTS
+// ========================================================================
 
 #[test]
 fn local_supplier_creates_and_delivers_shipment() {
