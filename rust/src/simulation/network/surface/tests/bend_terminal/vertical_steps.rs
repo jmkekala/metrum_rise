@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: vertical_steps.rs
+//  script_path: rust/src/simulation/network/surface/tests/bend_terminal/vertical_steps.rs
+//  module_name: vertical_steps
+//  version: 0.1.0
+//  description: Bend and terminal vertical-step tests.
+//  kind: test
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Bend and terminal vertical-step tests.
 
 use super::*;
+
+// ========================================================================
+// VERTICAL STEP TESTS
+// ========================================================================
 
 #[test]
 fn logged_elevated_bend_compiles_with_source_authorized_vertical_steps() {
@@ -61,8 +82,7 @@ fn logged_one_way_elevated_terminal_compiles_mouth_vertical_step() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 0));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 
@@ -98,8 +118,7 @@ fn logged_two_lane_elevated_terminal_compiles_endpoint_vertical_step() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 1;
-    edge.bkw_lanes = 1;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(1, 1));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 

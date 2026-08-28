@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/economy/demand/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Demand system regression tests: spawn need credit
+//  kind: test
+//  spec: none
+//  internal_dependencies: [demand, households, zoning]
+//  external_dependencies: [godot]
+//  features: [demand-spawn, absorption-gate, spawn-credit]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Demand tests.
 
 use super::credits::advance_spawn_need_credit;
@@ -20,6 +37,10 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -372,8 +393,7 @@ fn graph_with_connected_border() -> RegionGraph {
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 50.0,
         physical_length: 50.0,
@@ -385,6 +405,7 @@ fn graph_with_connected_border() -> RegionGraph {
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     });
     graph
 }
@@ -473,6 +494,10 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         commercial_owa_input_value: 0.0,
     }
 }
+
+// ========================================================================
+// DEMAND TESTS
+// ========================================================================
 
 #[test]
 fn daily_pass_raises_commercial_and_industrial_pressure_on_shortages() {

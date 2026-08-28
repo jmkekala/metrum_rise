@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: interaction.rs
+//  script_path: rust/src/simulation/network/interaction.rs
+//  module_name: interaction
+//  version: 0.1.0
+//  description: Snapping and projection between world positions and the
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph]
+//  external_dependencies: [godot]
+//  features: [snapping, projection, editor-picking, road-side]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Spatial interaction and querying utilities for the road network.
 //!
 //! Provides functions for snapping world positions to nodes and edges,
@@ -5,6 +22,10 @@
 
 use super::graph::RegionGraph;
 use godot::prelude::*;
+
+// ========================================================================
+// SNAP MARGIN
+// ========================================================================
 
 const EDGE_SNAP_ENDPOINT_MARGIN_M: f32 = 0.25;
 
@@ -15,6 +36,10 @@ fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
 fn is_live_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
     is_canonical_node(graph, node_id) && graph.node_has_live_incident_edge(node_id)
 }
+
+// ========================================================================
+// A PROJECTED POINT
+// ========================================================================
 
 /// Stores the result of a point projection onto a road segment.
 pub struct ProjectionData {
@@ -357,8 +382,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 20.0,
@@ -370,6 +394,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

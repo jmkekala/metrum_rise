@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: enter.rs
+//  script_path: rust/src/simulation/economy/agents/tick/movement/network/junction/enter.rs
+//  module_name: enter
+//  version: 0.1.0
+//  description: Connector entry, wait, and claim handling.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Connector entry, wait, and claim handling.
 
 use super::super::super::super::super::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};
@@ -16,11 +33,19 @@ use crate::simulation::network::lanes::LaneType;
 use crate::traffic_log;
 use std::cell::RefCell;
 
+// ========================================================================
+// SCRATCH AND TOLERANCE
+// ========================================================================
+
 thread_local! {
     static VALID_CONNS: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(8));
 }
 
 const CONNECTOR_ENTRY_RETAIN_EPS_M: f32 = 0.05;
+
+// ========================================================================
+// TAKING THE CONNECTOR
+// ========================================================================
 
 #[allow(clippy::too_many_arguments)]
 pub(super) unsafe fn enter_next_edge_connector(
@@ -306,6 +331,10 @@ pub(super) unsafe fn enter_detach_lane_connector(
     }
 }
 
+// ========================================================================
+// WHEN NO CONNECTOR IS NEEDED
+// ========================================================================
+
 fn direct_vehicle_lane_to_edge(
     from_lane_id: usize,
     target_edge_id: usize,
@@ -417,6 +446,10 @@ unsafe fn enter_direct_vehicle_lane(
     }
 }
 
+// ========================================================================
+// CLAIMING THE SLOT
+// ========================================================================
+
 fn target_edge_for_lane(lane_id: usize, transit_network: &TransitNetwork) -> usize {
     transit_network
         .lane_system
@@ -450,6 +483,7 @@ fn claim_connector_to_edge(
             seed,
             lane_buckets,
             lane_claims,
+            Some(&transit_network.lane_system),
         )
     })
 }
@@ -478,6 +512,7 @@ fn claim_connector_to_lane(
             seed,
             lane_buckets,
             lane_claims,
+            Some(&transit_network.lane_system),
         )
     })
 }
@@ -506,6 +541,10 @@ unsafe fn enter_connector_lane(
         clamp_remaining_to_connector_sample(conn_lane_id, remaining_dist, transit_network);
     }
 }
+
+// ========================================================================
+// DETERMINISTIC CHOICE AND GEOMETRY
+// ========================================================================
 
 #[inline(always)]
 fn connector_choice_seed(

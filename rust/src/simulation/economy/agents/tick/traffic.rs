@@ -1,9 +1,35 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: traffic.rs
+//  script_path: rust/src/simulation/economy/agents/tick/traffic.rs
+//  module_name: traffic
+//  version: 0.1.0
+//  description: Traffic movement helpers for car following, junctions, and
+//           lane changes.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Traffic movement helpers for car following, junctions, and lane changes.
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 mod idm;
 mod junction;
 mod lane_change;
 mod occupancy;
+
+// ========================================================================
+// RE-EXPORTS
+// ========================================================================
 
 pub(super) use idm::{braking_speed_for_distance, idm_new_speed, limit_speed_change};
 pub(super) use junction::{connector_turn_speed, junction_car_speed, junction_entry_speed};
@@ -18,10 +44,14 @@ pub(super) use lane_change::{
     planned_lane_change_target,
 };
 pub(super) use occupancy::{
-    ConnectorEntry, claim_connector_entry, claim_lane_entry, deterministic_choice_index,
-    idm_gap_bucket, lane_attach_slot_clear, lane_change_gap_clear, lane_entry_slot_clear,
-    live_lane_bucket_transit,
+    ConnectorEntry, claim_connector_entry, claim_lane_entry, conflicting_movements_clear,
+    deterministic_choice_index, idm_gap_bucket, lane_attach_slot_clear, lane_change_gap_clear,
+    lane_entry_slot_clear, live_lane_bucket_transit,
 };
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -83,14 +113,14 @@ mod tests {
         let claim_context = LaneClaimContext::new(&lane_claims, &serial_agents);
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
+            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::Enter(0)
         );
         assert!(lane_claims[0].load(Ordering::Acquire));
 
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
+            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::ClaimedThisTick
         );
 
@@ -106,13 +136,14 @@ mod tests {
                 0,
                 &occupied_buckets,
                 &claim_context,
+                None,
             ),
             ConnectorEntry::Occupied
         );
 
         let mut candidates = Vec::new();
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, false, 0, &lane_buckets, &claim_context,),
+            claim_connector_entry(0, &mut candidates, false, 0, &lane_buckets, &claim_context, None),
             ConnectorEntry::MissingConnection
         );
     }

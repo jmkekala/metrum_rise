@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: movement_pass.rs
+//  script_path: rust/src/simulation/economy/agents/tick/movement_pass.rs
+//  module_name: movement_pass
+//  version: 0.1.0
+//  description: Parallel dispatch phase for the movement state machine.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Parallel dispatch phase for the movement state machine.
 
 use super::claims::LaneClaimContext;
@@ -10,6 +27,10 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
+
+// ========================================================================
+// THE PARALLEL PASS
+// ========================================================================
 
 impl AgentSystem {
     /// Dispatches the parallel per-agent movement state machine.
@@ -71,6 +92,8 @@ impl AgentSystem {
             lane_change_length: RawSlice::new(&mut self.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut self.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut self.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut self.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut self.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut self.agents.transit_mode),
             planned_activity: RawSlice::new(&mut self.agents.planned_activity),
             path: RawSlice::new(&mut self.agents.current_path),

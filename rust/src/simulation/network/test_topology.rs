@@ -1,3 +1,24 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: test_topology.rs
+//  script_path: rust/src/simulation/network/test_topology.rs
+//  module_name: test_topology
+//  version: 0.1.0
+//  description: Topology edit regressions: adding roads, splitting edges
+//  kind: test
+//  spec: none
+//  internal_dependencies: [network, allocator, zoning]
+//  external_dependencies: [godot]
+//  features: [topology-edits, edge-split, node-merge, frontage-access]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
+// ========================================================================
+// TOPOLOGY TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
@@ -470,8 +491,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 10.0,
             physical_length: 10.0,
@@ -483,6 +503,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         };
 
         let e0 = graph.add_edge(common.clone());
@@ -492,6 +513,7 @@ mod tests {
             geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
             vehicle_frontage_access: VehicleFrontageAccess::SameSideOnly,
+            frontage_class: Default::default(),
             ..common
         });
 

@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: remap.rs
+//  script_path: rust/src/simulation/economy/agents/remap.rs
+//  module_name: remap
+//  version: 0.1.0
+//  description: Repairs agent-held indices after the graph, lanes
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, lanes, allocator]
+//  external_dependencies: [godot]
+//  features: [index-remap, compaction, lane-reattach, agent-repair]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;
@@ -11,7 +28,15 @@ use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
 use godot::prelude::Vector2;
 use std::collections::{HashMap, HashSet};
 
+// ========================================================================
+// REATTACH REACH
+// ========================================================================
+
 const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
+
+// ========================================================================
+// SURVIVING A ROAD EDIT
+// ========================================================================
 
 impl AgentSystem {
     /// Remaps the edge indices stored in all agents from old IDs to new IDs.
@@ -316,6 +341,10 @@ impl AgentSystem {
     }
 }
 
+// ========================================================================
+// WHAT THE EDIT TOUCHED
+// ========================================================================
+
 fn collect_lane_ids_for_edges(
     affected_edges: &HashSet<usize>,
     lane_system: &LaneSystem,
@@ -340,6 +369,10 @@ fn collect_nodes_for_edges(affected_edges: &HashSet<usize>, graph: &RegionGraph)
     }
     affected_nodes
 }
+
+// ========================================================================
+// LOGGING
+// ========================================================================
 
 fn log_road_edit_affected(
     phase: &str,
@@ -390,6 +423,10 @@ fn sorted_u32_ids(values: &HashSet<u32>) -> Vec<u32> {
     ids.sort_unstable();
     ids
 }
+
+// ========================================================================
+// WHO IS AFFECTED
+// ========================================================================
 
 fn agent_route_state_touches_road_edit(
     agents: &AgentSystem,
@@ -516,6 +553,10 @@ struct LaneReattachCandidate {
     dist_sq: f32,
 }
 
+// ========================================================================
+// FINDING A NEW LANE
+// ========================================================================
+
 fn best_reattach_lane(
     agent_pos: Vector2,
     desired_lane_type: LaneType,
@@ -601,6 +642,10 @@ fn project_point_to_lane(point: Vector2, lane: &Lane) -> Option<(f32, Vector2, f
     Some((lane_d, pos, dist_sq))
 }
 
+// ========================================================================
+// TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::super::data::{Agent, AgentSystem};
@@ -638,8 +683,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -657,8 +701,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -714,8 +757,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: start.distance_to(end),
@@ -851,6 +893,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -911,6 +955,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 10.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -991,6 +1037,8 @@ mod tests {
             lane_change_length_m: 0.0,
             overtake_blocked_time_s: 0.0,
             overtake_cooldown_s: 0.0,
+            junction_release_time_s: f32::MIN,
+            next_reroute_time_s: 0.0,
             speed: 0.0,
             transit_mode: MODE_CAR,
             planned_activity: 0,
@@ -1269,8 +1317,7 @@ mod tests {
                 allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
                 class: EdgeClass::Standard,
                 width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
+                lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
                 speed_limit: 50.0,
                 base_cost: 1.0,
                 physical_length: start.distance_to(end),

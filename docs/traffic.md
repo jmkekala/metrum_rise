@@ -23,9 +23,9 @@ Implementation lives mainly in:
 ## Current Scope
 
 The current traffic model is intentionally local and deterministic. Cars are independent agents
-travelling along lane centerlines with per-lane occupancy buckets used for local gap checks.
-There is no global microscopic traffic assignment, signal timing, parking search, multi-car
-negotiation, or stochastic driver personality model yet.
+traveling along lane centerlines with per-lane occupancy buckets used for local gap checks.
+There is no global microscopic traffic assignment, parking search, multi-car negotiation, or
+stochastic driver personality model yet.
 
 Supported live behavior:
 
@@ -35,6 +35,9 @@ Supported live behavior:
 - curve-based junction turn speed caps
 - acceleration and braking limits
 - connector entry spacing so multiple cars can use a junction when safely separated
+- crossing-movement conflict resolution at junctions
+- fixed-cycle signal timing and priority signs, set per node
+- congestion-aware rerouting at junctions, on a 15% improvement threshold
 - planned same-edge lane changes for reaching the correct destination frontage lane
 - conservative same-edge overtaking and return-to-cruise-lane behavior
 - render-side position and rotation smoothing by stable car render ID
@@ -149,6 +152,24 @@ spacing, and whitelist semantics still apply.
 Cars enter connector lanes through `TRANSIT_INTERSECTION`. Connector lanes are lane-bucketed like
 road lanes, so multiple cars may occupy the same connector when they respect separation. Connector
 entry also uses a per-tick claim to avoid two cars grabbing the same zero-distance entry slot.
+
+A lane separates cars only along its own length. Two connectors whose paths cross never
+tested each other and a left turn drove through the oncoming through movement.
+`network/lanes/conflicts.rs` builds a per-node table of crossing paths when lanes are
+rebuilt, and entry consults it. Three groupings keep it from holding traffic that should
+run: both directions of one street go together the way a signal phase does, identified by
+approach bearing because a cross junction splits one street into two edges; movements out
+of one approach lane are a diverge and only contest the mouth; movements into one exit are
+a merge governed by gap acceptance.
+
+Two rules that are load-bearing and were each learned by breaking them. A car already
+inside a connector is committed and must never be held, or it strands mid-box and blocks
+every crossing movement. And the exit test asks whether the exit is jammed, not whether it
+is empty: demanding an empty mouth deadlocks the junction, because the head car on each
+approach waits for an exit that ordinary moving traffic keeps occupied.
+
+Right turns still collide. The table can say a path is occupied but not who had the better
+claim, which needs turn lanes and a stated precedence. Tracked as `TURN-01`.
 
 ## Junction Speeds
 
@@ -325,6 +346,51 @@ Important log markers:
 When traffic debug is enabled, the agent render debug path also exposes richer lane / junction
 labels and path/connector visualization for visual diagnosis.
 
+## Routing Feedback
+
+The simulation had no negative feedback, which was the single most important
+gap in this document and the one most reference games in this genre get wrong.
+It is now closed, and the rest of this section records what the loop is and why
+it has the shape it does.
+
+In Cities: Skylines a vehicle selects its entire route, lanes included, before
+departing. Per the Paradox wiki the calculation "takes no account of other
+traffic", and a vehicle "will not change its planned path, or even its planned
+lanes, if it encounters traffic". Vehicles that gridlock are teleported back to
+their origin.
+
+The consequence is that congestion cannot influence routing, so the traffic
+model has no negative feedback, so the traffic problem the game is about does
+not exist inside the game's own simulation. Players compensate with what they
+call lane mathematics, which is a workaround for a missing loop rather than a
+skill the game intended.
+
+The loop is closed. Congestion is measured per tick as observed speed against
+the limit, committed to `Edge.current_congestion`, and priced into the router's
+metric as `base_cost * (1.0 + current_congestion)`. What was missing was the
+vehicle's side: a car holding a valid path never asked the question again.
+
+- Routing reads observed conditions, built. Congestion aggregation runs in
+  `lane_buckets/congestion.rs` and the contraction hierarchy customizes against
+  it.
+- A vehicle re-plans en route, built. At each junction a car prices the
+  remainder of its route against the live congested metric, asks the router for
+  a fresh one, and takes it when the new route is better. Pricing the remainder
+  with free-flow cost instead would make every congested route look cheap and
+  the comparison meaningless.
+- The threshold is 15%, built. A candidate must cost less than 85% of the
+  remainder to be taken, and a vehicle reconsiders at most every 15 seconds.
+  Without the margin two near-equal routes trade vehicles back and forth every
+  time they are compared, which is worse than the jam.
+- Despawning is not a congestion solution. It can be made available but must **never** be made load bearing. Removing a stuck vehicle hides
+  the failure the player needs to see. A jam that clears itself by deletion
+  teaches nothing and breaks immersion.
+
+Every simulated quantity needs a view that answers *'why'* this number, not
+merely 'what' it is. A system a player cannot inspect is one they cannot learn,
+and a system they cannot learn reads as random and does not make for a fun
+simulation game.
+
 ## Performance Contract
 
 Traffic code is a hot path. New traffic behavior must preserve these rules:
@@ -352,7 +418,9 @@ Current known bounded scans:
 - normal road bends do not yet use curvature speed limits
 - full IDM approach-speed interaction is not implemented because lead-vehicle speed is not tracked
 - overtaking has no driver personality, urgency, emergency behavior, or multi-car prediction
-- there are no traffic lights, stop signs, yield priorities, or priority-road rules yet
+- signal cycles are fixed; switching does not respond to measured flow or wait time
+- right turns still collide: a conflict is detected but no precedence decides who yields, and
+  there are no dedicated turn lanes
 - lane changes are centerline S-curves, not full swept-body collision geometry
 - parking, driveways, curb queues, and building entrance reservations are not modeled
 - connector lanes are generated from lane necks; if road geometry changes materially, lane rebuild

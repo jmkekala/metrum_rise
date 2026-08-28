@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: markings.rs
+//  script_path: rust/src/simulation/network/render/road/standard_surface/markings.rs
+//  module_name: markings
+//  version: 0.1.0
+//  description: Lane-divider marking placement and crosswalk-mouth
+//           clearance.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Lane-divider marking placement and crosswalk-mouth clearance.
 
 use super::super::crosswalks::CROSSWALK_STRIPE_LEN;
@@ -18,8 +36,16 @@ use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Color, Vector2, Vector3};
 use std::collections::{BTreeSet, HashMap};
 
+// ========================================================================
+// CROSSWALK CLEARANCE
+// ========================================================================
+
 const LANE_MARKING_CROSSWALK_CLEARANCE_M: f32 = 0.25;
 const CROSSWALK_MOUTH_CENTER_MATCH_TOLERANCE_M: f32 = 0.25;
+
+// ========================================================================
+// EMITTING MARKINGS
+// ========================================================================
 
 pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
     mesh: &mut NetworkMeshData,
@@ -36,7 +62,9 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
         if edge.deleted || edge.primary_type != TransitType::Road {
             continue;
         }
-        let total_lanes = edge.fwd_lanes as usize + edge.bkw_lanes as usize;
+        let fwd_lanes = edge.fwd_lane_count();
+        let bkw_lanes = edge.bkw_lane_count();
+        let total_lanes = usize::from(fwd_lanes) + usize::from(bkw_lanes);
         if total_lanes <= 1 {
             continue;
         }
@@ -63,7 +91,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
 
         for divider in 1..total_lanes {
             let is_center =
-                edge.fwd_lanes > 0 && edge.bkw_lanes > 0 && divider == edge.bkw_lanes as usize;
+                fwd_lanes > 0 && bkw_lanes > 0 && divider == usize::from(bkw_lanes);
             let color = if is_center {
                 marking_center_color()
             } else {
@@ -230,6 +258,10 @@ fn lane_marking_crosswalk_endpoint_flags_by_edge(
 
     flags_by_edge
 }
+
+// ========================================================================
+// CROSSWALK GEOMETRY
+// ========================================================================
 
 fn crosswalk_mouth_center(edge: &Edge, from_start: bool) -> Option<Vector2> {
     let distance_m = if from_start {

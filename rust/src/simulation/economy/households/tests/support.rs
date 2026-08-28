@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: support.rs
+//  script_path: rust/src/simulation/economy/households/tests/support.rs
+//  module_name: support
+//  version: 0.1.0
+//  description: Shared household test fixtures: buildings, networks
+//  kind: test
+//  spec: none
+//  internal_dependencies: [households, definitions]
+//  external_dependencies: []
+//  features: [test-fixtures, household, economy-runtime-id, replenishment]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Shared household, building, network, and replenishment fixtures.
 
 use super::*;
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 pub(super) fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
@@ -94,8 +115,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         allowed_types: TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 2.0,
-        fwd_lanes: 0,
-        bkw_lanes: 0,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(0, 0),
         speed_limit: 5.0,
         base_cost: 10.0,
         physical_length: 100.0,
@@ -108,6 +128,7 @@ pub(super) fn make_foot_only_edge(start_node: u32, end_node: u32) -> Edge {
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 
@@ -120,8 +141,7 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: length.max(1.0),
         physical_length: length.max(1.0),
@@ -140,6 +160,7 @@ pub(super) fn make_road_edge(start_node: u32, end_node: u32, start_x: f32, end_x
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 

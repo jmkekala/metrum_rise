@@ -1,9 +1,30 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: geometry.rs
+//  script_path: rust/src/simulation/network/lanes/geometry.rs
+//  module_name: geometry
+//  version: 0.1.0
+//  description: 
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 use super::super::graph::Edge;
 use super::super::types::TransitType;
 use super::{Lane, LaneType};
 use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
+
+// ========================================================================
+// ARC LENGTH
+// ========================================================================
 
 /// Builds the cumulative-distance prefix sum for a lane's geometry.
 pub fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
@@ -40,6 +61,10 @@ fn trim_from_front(geom: &[Vector3], dist: f32) -> Vec<Vector3> {
     }
     vec![*geom.last().unwrap()]
 }
+
+// ========================================================================
+// BUILDING A LANE
+// ========================================================================
 
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
 pub fn build_one_lane(
@@ -151,7 +176,15 @@ pub fn build_one_lane(
     edge_lane_indices.push(new_lane_id);
 }
 
-/// Returns the half-width of the road asphalt based on the number of lanes.
+// ========================================================================
+// ROAD WIDTH
+// ========================================================================
+
+/// Returns the half-width of the road asphalt.
+///
+/// Summed from the layout's real band widths rather than a lane count times a
+/// fixed width, so a median, a verge, parking, or a lane wider than its
+/// neighbours all widen the asphalt by exactly what they occupy.
 pub fn road_half_width(edge: &Edge) -> f32 {
-    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+    edge.lane_layout().asphalt_width() * 0.5
 }

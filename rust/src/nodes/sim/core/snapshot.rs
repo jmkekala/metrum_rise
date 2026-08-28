@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: snapshot.rs
+//  script_path: rust/src/nodes/sim/core/snapshot.rs
+//  module_name: snapshot
+//  version: 0.1.0
+//  description: Undo and render snapshots produced from authoritative
+//           simulation state.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Undo and render snapshots produced from authoritative simulation state.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -21,7 +39,15 @@ use crate::simulation::network::surface::{
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
+// ========================================================================
+// SURFACE CLEARANCE
+// ========================================================================
+
 const PEDESTRIAN_SURFACE_CLEARANCE_M: f32 = 0.02;
+
+// ========================================================================
+// AGENT POSE
+// ========================================================================
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -126,6 +152,10 @@ fn pedestrian_access_surface_height(core: &SimCore, world_x: f32, world_z: f32) 
 
     pedestrian_access_surface_height_from_samples(terrain_y, road_y, building_site_y)
 }
+
+// ========================================================================
+// WATER SNAPSHOT
+// ========================================================================
 
 /// Full water runtime snapshot for undo history.
 pub(crate) struct WaterRuntimeSnapshot {
@@ -250,6 +280,12 @@ pub struct RenderSnapshot {
     pub current_day: u32,
     /// Current minute since operational midnight.
     pub current_minute_of_day: u16,
+    /// Seconds of simulated time since the world started.
+    ///
+    /// The same clock the junction control gate reads, so a renderer drawing a
+    /// signal aspect and the movement code deciding whether to hold a car agree
+    /// on what the light is showing.
+    pub sim_time_s: f32,
     /// Duration of the last daily tick in milliseconds.
     pub last_tick_ms: f64,
     /// Duration of the last agent tick in microseconds.
@@ -311,6 +347,7 @@ impl Default for RenderSnapshot {
             engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
+            sim_time_s: 0.0,
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
@@ -494,6 +531,7 @@ impl SimCore {
         snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
+        snapshot.sim_time_s = self.agents.sim_time;
         snapshot.last_tick_ms = self.last_tick_duration;
         snapshot.last_agent_tick_us = self.last_agent_tick_us;
         snapshot.pathfind_count = self

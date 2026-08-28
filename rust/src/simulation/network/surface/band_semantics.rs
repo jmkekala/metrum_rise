@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: band_semantics.rs
+//  script_path: rust/src/simulation/network/surface/band_semantics.rs
+//  module_name: band_semantics
+//  version: 0.1.0
+//  description: Canonical semantic ordering for road-surface band kinds.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Canonical semantic ordering for road-surface band kinds.
 
 use super::RoadSurfaceBandKind;
+
+// ========================================================================
+// BAND ORDER
+// ========================================================================
 
 pub(crate) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
     match kind {
@@ -12,6 +33,7 @@ pub(crate) fn band_kind_sort_key(kind: RoadSurfaceBandKind) -> u8 {
         RoadSurfaceBandKind::Parking => 5,
         RoadSurfaceBandKind::CycleTrack => 6,
         RoadSurfaceBandKind::TramReservation => 7,
+        RoadSurfaceBandKind::Verge => 8,
     }
 }
 
@@ -24,7 +46,8 @@ pub(crate) fn raised_step_band_rank(kind: RoadSurfaceBandKind) -> Option<u8> {
         | RoadSurfaceBandKind::Median
         | RoadSurfaceBandKind::Parking
         | RoadSurfaceBandKind::CycleTrack
-        | RoadSurfaceBandKind::TramReservation => None,
+        | RoadSurfaceBandKind::TramReservation
+        | RoadSurfaceBandKind::Verge => None,
     }
 }
 
@@ -69,6 +92,10 @@ pub(crate) fn raised_step_requires_exact_constraint_span(
         ))
     )
 }
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {

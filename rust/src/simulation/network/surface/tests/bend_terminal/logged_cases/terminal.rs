@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: terminal.rs
+//  script_path: rust/src/simulation/network/surface/tests/bend_terminal/logged_cases/terminal.rs
+//  module_name: terminal
+//  version: 0.1.0
+//  description: Logged terminal regression tests.
+//  kind: test
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Logged terminal regression tests.
 
 use super::*;
+
+// ========================================================================
+// LOGGED TERMINAL CASES
+// ========================================================================
 
 #[test]
 fn logged_curved_terminal_exports_outer_boundary_from_visible_top_support() {
@@ -100,8 +121,7 @@ fn logged_curved_terminal_top_surfaces_cover_footprint() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 2;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 2));
     graph.add_edge(edge);
     graph.rebuild_intersection_clips();
 
@@ -143,7 +163,7 @@ fn logged_terminal_with_tiny_boundary_dust_exports_final_top_footprint() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(edge.fwd_lane_count(), 0));
     graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -228,8 +248,7 @@ fn logged_terminal_handoff_keeps_both_sidewalk_edges_owned() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 0;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 0));
     let edge_idx = graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);

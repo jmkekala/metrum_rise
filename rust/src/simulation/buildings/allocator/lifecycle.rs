@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: lifecycle.rs
+//  script_path: rust/src/simulation/buildings/allocator/lifecycle.rs
+//  module_name: lifecycle
+//  version: 0.1.0
+//  description: Building removal, demand-owned household admission, and
+//           coordinate restoration.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Building removal, demand-owned household admission, and coordinate restoration.
 
 use crate::config::SIDEWALK_WIDTH;
@@ -26,10 +44,18 @@ use crate::simulation::zoning::ZoneType;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::{Vector2, Vector3};
 
+// ========================================================================
+// GRACE AND REPAIR REACH
+// ========================================================================
+
 const REZONE_GRACE_DAYS: u8 = 3;
 const FRONTAGE_ATTACHMENT_REPAIR_MIN_SEARCH_M: f32 = 50.0;
 const FRONTAGE_ATTACHMENT_REPAIR_SEARCH_MARGIN_M: f32 = 20.0;
 const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
+
+// ========================================================================
+// WHAT A PASS REPORTS
+// ========================================================================
 
 /// Summary of building mutations performed by one demand-owned building action pass.
 #[derive(Clone, Copy, Debug, Default)]
@@ -132,6 +158,10 @@ impl DemandSpawnPlacementRejectionCounts {
             .saturating_sub(self.parcel_unavailable)
     }
 }
+
+// ========================================================================
+// CLEANUP AND REPAIR
+// ========================================================================
 
 impl BuildingAllocator {
     /// Removes buildings if their zone category has changed or their road edge no longer exists.
@@ -840,8 +870,12 @@ impl BuildingAllocator {
             let Some(edge) = graph.get_edge(edge_idx) else {
                 continue;
             };
+            // A service way never carries an address. Without this an alley is
+            // a thin street and the allocator fills it with houses facing the
+            // wrong way, which is the result that makes the genre cut alleys.
             if edge.deleted
                 || edge.no_building_spawn
+                || !edge.frontage_class.can_address()
                 || edge.physical_geometry.len() < 2
                 || edge.physical_length <= 1e-6
             {
@@ -887,7 +921,11 @@ impl BuildingAllocator {
         edge_t: f32,
     ) -> Option<Vector2> {
         let edge = graph.get_edge(edge_idx)?;
-        if edge.deleted || edge.no_building_spawn || edge.physical_geometry.len() < 2 {
+        if edge.deleted
+            || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
+            || edge.physical_geometry.len() < 2
+        {
             return None;
         }
         let center = Self::sample_pos_on_edge(graph, edge_idx, edge_t);
@@ -912,6 +950,10 @@ fn building_frontage_center(
     };
     center + facing * (building.depth_cells as f32 * zone_cell_m * 0.5)
 }
+
+// ========================================================================
+// ADMITTING HOUSEHOLDS
+// ========================================================================
 
 impl BuildingAllocator {
     /// Returns the next demand-owned household admission target without mutating occupancy.
@@ -989,6 +1031,10 @@ impl BuildingAllocator {
         Some((fallback_idx, fallback_size))
     }
 }
+
+// ========================================================================
+// DESPAWNING
+// ========================================================================
 
 impl BuildingAllocator {
     fn can_demand_despawn(&self, building_idx: usize) -> bool {

@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: placement.rs
+//  script_path: rust/src/simulation/buildings/allocator/placement.rs
+//  module_name: placement
+//  version: 0.1.0
+//  description: Demand-driven building placement candidate discovery and
+//           frontage-slot resolution.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Demand-driven building placement candidate discovery and frontage-slot resolution.
 
 use crate::assets::AnchorType;
@@ -27,10 +45,18 @@ use std::collections::BTreeMap;
 
 use super::site::building_site_support_tie_in_is_valid;
 
+// ========================================================================
+// SERVICE FRONTAGE SEARCH
+// ========================================================================
+
 const EXPLICIT_SERVICE_FRONTAGE_MIN_SEARCH_M: f32 = 50.0;
 const EXPLICIT_SERVICE_FRONTAGE_SEARCH_MARGIN_M: f32 = 20.0;
 const EXPLICIT_SERVICE_SITE_OVERLAP_EPS_M: f32 = 0.05;
 const EXPLICIT_SERVICE_ROAD_OVERLAP_QUERY_PAD_M: f32 = 128.0;
+
+// ========================================================================
+// FINDING A SITE
+// ========================================================================
 
 impl BuildingAllocator {
     pub(crate) fn collect_demand_spawn_candidates_by_use(
@@ -55,6 +81,7 @@ impl BuildingAllocator {
                     let edge = graph.edge(edge_idx);
                     if edge.deleted
                         || edge.no_building_spawn
+                        || !edge.frontage_class.can_address()
                         || edge.physical_length < 0.1
                         || edge.physical_geometry.len() < 2
                         || !parcel.is_available()
@@ -391,7 +418,11 @@ impl BuildingAllocator {
         let edge = graph.edge(edge_idx);
         let edge_width = edge.width;
         let zone_cell_m = zoning.config.zone_cell_m;
-        if parcel.occupied_building().is_some() || edge.deleted || edge.no_building_spawn {
+        if parcel.occupied_building().is_some()
+            || edge.deleted
+            || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
+        {
             return None;
         }
 
@@ -1641,6 +1672,10 @@ impl BuildingAllocator {
     }
 }
 
+// ========================================================================
+// FOOTPRINT OVERLAP
+// ========================================================================
+
 fn flat_support_footprints_overlap(left: &[Vector2], right: &[Vector2], eps_m: f32) -> bool {
     if left.len() < 3 || right.len() < 3 {
         return false;
@@ -1697,6 +1732,10 @@ fn polygon_bounds(points: &[Vector2]) -> (f32, f32, f32, f32) {
     }
     (min_x, min_z, max_x, max_z)
 }
+
+// ========================================================================
+// CONSTRUCTION TIME
+// ========================================================================
 
 fn construction_duration_hours(
     zone_type: ZoneType,
@@ -1986,6 +2025,10 @@ fn sort_demand_spawn_candidates(
 fn spawn_side_order(side: i8) -> u8 {
     if side > 0 { 0 } else { 1 }
 }
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {

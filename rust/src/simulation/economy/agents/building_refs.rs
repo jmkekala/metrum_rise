@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: building_refs.rs
+//  script_path: rust/src/simulation/economy/agents/building_refs.rs
+//  module_name: building_refs
+//  version: 0.1.0
+//  description: The agent side of the agent-to-building link: schedule
+//  kind: module
+//  spec: none
+//  internal_dependencies: [allocator, graph, households]
+//  external_dependencies: [godot]
+//  features: [agent-building-link, schedule-cache, trip-planning]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Agent references to building allocator indices.
 
 use super::data::AgentSystem;
@@ -16,6 +33,10 @@ use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
 use godot::prelude::Vector2;
 use std::collections::HashMap;
+
+// ========================================================================
+// AGENTS AND THE BUILDINGS THEY POINT AT
+// ========================================================================
 
 impl AgentSystem {
     /// Clears schedule-derived building cache fields for one agent.
@@ -658,6 +679,10 @@ impl AgentSystem {
     }
 }
 
+// ========================================================================
+// TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,8 +755,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -744,6 +768,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

@@ -1,10 +1,16 @@
 # Metrum Rise - Building Entrance and Exit System
 
-This document describes the current building entrance/exit behavior in the Rust simulation, why it has become brittle, and the recommended replacement architecture.
+This document describes the current building entrance/exit behavior in the Rust
+simulation, why it has become brittle, and the recommended replacement architecture.
 
-The target audience is future work on `simulation/economy/agents/` and `simulation/buildings/allocator/`. This is a standalone reference linked from `docs/project.md`; `project.md` tracks implementation status, while this file owns the detailed entrance/exit design and implementation spec.
+The target audience is future work on `simulation/economy/agents/` and
+`simulation/buildings/allocator/`. This is a standalone reference linked from
+`docs/project.md`; `project.md` tracks implementation status, while this file owns the
+detailed entrance/exit design and implementation spec.
 
-This document is now intended to be a deterministic implementation spec for the entrance/exit rewrite. If the implementation changes, update this file and `docs/project.md` together so they stay aligned.
+This document is now intended to be a deterministic implementation spec for the
+entrance/exit rewrite. If the implementation changes, update this file and
+`docs/project.md` together so they stay aligned.
 
 ## Current System
 
@@ -40,7 +46,8 @@ This document only owns how entrance and trip-planning logic consume them.
 - `edge.start_node` when `frontage_t < 0.5`
 - `edge.end_node` when `frontage_t >= 0.5`
 
-This means the path planner discards the true mid-edge location and compresses the building's network attachment to one bit of information.
+This means the path planner discards the true mid-edge location and compresses the
+building's network attachment to one bit of information.
 
 ### Agent state model
 
@@ -72,7 +79,7 @@ The actual building access flow is:
 2. The agent tick resolves `origin_node` and `target_node` from `building_depart_node(...)`.
 3. A road-network path is built between those nodes using flow fields or CCH.
 4. The agent enters `TRANSIT_DEPARTING`.
-5. During `TRANSIT_DEPARTING`, the agent walks in a straight line from its current world position, usually the building center, to a computed curb point on the frontage edge.
+5. During `TRANSIT_DEPARTING`, the agent walks in a straight line from its current world position, usually the building centre, to a computed curb point on the frontage edge.
 6. When the curb point is reached, the agent is inserted directly into a frontage lane partway along the edge.
 7. The agent travels normally through the lane/junction/pathing FSM.
 8. On the destination frontage edge, the system watches for the agent to come within about 4 meters of the building's `frontage_t`.
@@ -82,11 +89,15 @@ The actual building access flow is:
 
 ### Sidewalk and lane rules
 
-Pedestrian entry and exit are restricted to the building's frontage side when a matching sidewalk exists. The implementation currently does this by selecting a sidewalk lane whose sign matches `building.side`.
+Pedestrian entry and exit are restricted to the building's frontage side when a
+matching sidewalk exists. The implementation currently does this by selecting a
+sidewalk lane whose sign matches `building.side`.
 
-Cars do not use a modeled driveway or parking system. They also use the same curb-point handoff, then insert directly into a vehicle lane on the frontage edge.
+Cars do not use a modeled driveway or parking system. They also use the same
+curb-point handoff, then insert directly into a vehicle lane on the frontage edge.
 
-If the expected frontage-side lane does not exist, the code falls back to a much coarser node-based entry or arrival path.
+If the expected frontage-side lane does not exist, the code falls back to a much
+coarser node-based entry or arrival path.
 
 ### Special cases in the current code
 
@@ -723,7 +734,7 @@ That separation is the main reason to accept the SoA edit.
 
 ##### Memory budget
 
-At 1,000,000 agents, the added raw field cost is approximately:
+At 1,000,000 fully simulated agents, the added raw field cost is approximately:
 
 - `u32 × 4` = about 16 MB
 - `f32 × 3` = about 12 MB
@@ -731,7 +742,14 @@ At 1,000,000 agents, the added raw field cost is approximately:
 
 Total: about 29 MB plus normal `Vec` overhead.
 
-That is a meaningful increase, but it is still cheap compared to the cost of keeping ambiguous access state and rebuilding it in the hot path every tick.
+The 20,000,000-agent world target does not multiply this by twenty. The full-FSM
+agents inside the active area of interest are the only ones tracked, agents at
+distance run at a coarser aggregate fidelity and do not carry them. What this
+budget bounds is the size of that active set.
+
+This is still cheap compared to the cost of keeping ambiguous access state and
+rebuilding it in the hot path every tick, and there is arguably a lot of room
+left for optimizations, as none have been explored yet. 
 
 ##### Save/load and lifecycle impact
 
@@ -752,16 +770,12 @@ There will be two save/load passes:
 
 The SoA invariant remains unchanged: every field must still have exactly `self.count` elements at all times.
 
-##### Migration rule
-
 The rule for this redesign is:
 
 - accept new compact scalar SoA fields when they encode exact trip/access state
 - reject new SoA fields when they duplicate building geometry or derived lane topology already cached elsewhere
 
-### Proposed execution model
-
-Replace the current building access behavior with four explicit phases:
+Proposed execution model: replace the current building access behavior with four explicit phases:
 
 1. `IN_BUILDING`
 2. `ACCESS_EGRESS`

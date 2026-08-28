@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: run.rs
+//  script_path: rust/src/simulation/zoning/parcels/placement/run.rs
+//  module_name: run
+//  version: 0.1.0
+//  description: Same-road parcel-run projection.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Same-road parcel-run projection.
 
 mod spacing;
@@ -13,8 +30,16 @@ use spacing::{
     next_non_overlapping_run_geometry_directed,
 };
 
+// ========================================================================
+// SEARCH LIMITS
+// ========================================================================
+
 const RUN_PHASE_SEARCH_LIMIT: usize = 24;
 const RUN_PHASE_EPSILON_M: f32 = 0.001;
+
+// ========================================================================
+// CANDIDATE LAYOUTS
+// ========================================================================
 
 /// Candidate layouts for one same-edge drag run.
 pub(crate) struct ParcelRunProjection {
@@ -53,6 +78,7 @@ pub(crate) fn project_parcel_run_from_existing(
     let edge = graph.edge(edge_idx);
     if edge.deleted
         || edge.no_building_spawn
+        || !edge.frontage_class.can_address()
         || edge.physical_length <= frontage_m
         || edge.physical_geometry.len() < 2
     {
@@ -105,6 +131,10 @@ pub(crate) fn project_parcel_run_from_existing(
     }
     Ok(geometries)
 }
+
+// ========================================================================
+// PLACING THE RUN
+// ========================================================================
 
 fn project_parcel_run_layouts_from_projected_start(
     graph: &RegionGraph,

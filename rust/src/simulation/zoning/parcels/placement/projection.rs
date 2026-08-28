@@ -1,9 +1,31 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: projection.rs
+//  script_path: rust/src/simulation/zoning/parcels/placement/projection.rs
+//  module_name: projection
+//  version: 0.1.0
+//  description: Projection from world points to buildable road frontage
+//           positions.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Projection from world points to buildable road frontage positions.
 
 use super::super::geometry::sample_pos_on_polyline;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::parcels::ParcelPlacementError;
 use godot::prelude::{Vector2, Vector3};
+
+// ========================================================================
+// FINDING A BUILDABLE POINT
+// ========================================================================
 
 pub(super) fn project_buildable_road_point_at(
     graph: &RegionGraph,
@@ -21,6 +43,7 @@ pub(super) fn project_buildable_road_point_at(
         let edge = graph.edge(edge_idx);
         if edge.deleted
             || edge.no_building_spawn
+            || !edge.frontage_class.can_address()
             || edge.physical_length <= frontage_m
             || edge.physical_geometry.len() < 2
         {
@@ -56,6 +79,10 @@ pub(super) struct ProjectedRoadPoint {
     pub(super) edge_len_m: f32,
     pub(super) dist_m: f32,
 }
+
+// ========================================================================
+// PROJECTING ONTO AN EDGE
+// ========================================================================
 
 pub(super) fn project_point_to_edge(
     graph: &RegionGraph,

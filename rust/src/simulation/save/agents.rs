@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: agents.rs
+//  script_path: rust/src/simulation/save/agents.rs
+//  module_name: agents
+//  version: 0.1.0
+//  description: Agent SoA and path serialization.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Agent SoA and path serialization.
 
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
@@ -18,6 +35,10 @@ use super::{
     i64_to_u32, i64_to_usize, optional_building_to_db, optional_edge_to_db, optional_node_to_db,
     optional_u64_to_db, u32_to_i64, usize_to_i64,
 };
+
+// ========================================================================
+// ONE SAVED AGENT
+// ========================================================================
 
 pub(super) struct LoadedAgentRecord {
     pub home_building: usize,
@@ -66,6 +87,10 @@ pub(super) struct LoadedAgentRecord {
     pub pedestrian_type: u8,
     pub walk_phase: f32,
 }
+
+// ========================================================================
+// WRITING
+// ========================================================================
 
 pub(super) fn save_agents(
     tx: &Transaction,
@@ -172,6 +197,10 @@ pub(super) fn save_agents(
     }
     Ok(())
 }
+
+// ========================================================================
+// READING
+// ========================================================================
 
 pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<AgentSystem> {
     let mut car_paths = HashMap::new();
@@ -304,6 +333,8 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         lane_change_length_m: 0.0,
         overtake_blocked_time_s: 0.0,
         overtake_cooldown_s: 0.0,
+        junction_release_time_s: f32::MIN,
+        next_reroute_time_s: 0.0,
         speed: if rec.transit_mode == MODE_CAR {
             DEFAULT_URBAN_ROAD_SPEED_MS
         } else {
@@ -322,6 +353,10 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         consecutive_unpaid_days: 0,
     });
 }
+
+// ========================================================================
+// REPAIRING WHAT LOADED
+// ========================================================================
 
 pub(super) fn validate_loaded_agents(
     agents: &mut AgentSystem,

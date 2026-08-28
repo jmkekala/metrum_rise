@@ -1,7 +1,29 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: test_road_mesh.rs
+//  script_path: rust/src/simulation/network/render/test_road_mesh.rs
+//  module_name: test_road_mesh
+//  version: 0.1.0
+//  description: Black-box renderer tests for the graph-dilation road
+//           mesher.
+//  kind: test
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Black-box renderer tests for the graph-dilation road mesher.
 //!
 //! These tests validate the visible road/sidewalk contract of the replacement renderer rather
 //! than any specific internal junction contour implementation.
+
+// ========================================================================
+// ROAD MESH TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -134,8 +156,7 @@ mod tests {
             allowed_types,
             class,
             width,
-            fwd_lanes,
-            bkw_lanes,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(fwd_lanes, bkw_lanes),
             speed_limit: 13.0,
             base_cost: 0.0,
             physical_length,
@@ -148,6 +169,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: preview.rs
+//  script_path: rust/src/simulation/network/surface/edge/preview.rs
+//  module_name: preview
+//  version: 0.1.0
+//  description: Temporary road preview compilation from conditioned edge
+//           input.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Temporary road preview compilation from conditioned edge input.
 
 use super::super::backend::road_vec3_to_godot;
@@ -19,6 +37,10 @@ use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
 
+// ========================================================================
+// REJECTION REASONS
+// ========================================================================
+
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
@@ -26,6 +48,10 @@ const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
+
+// ========================================================================
+// WHAT THE PREVIEW REPORTS
+// ========================================================================
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,6 +106,10 @@ pub struct RoadPreviewValidation {
     pub required_clearance_m: f32,
 }
 
+// ========================================================================
+// THE COMPILED PREVIEW
+// ========================================================================
+
 /// Temporary preview compile output for one road-tool stroke.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreviewRoadSurfaceResult {
@@ -105,6 +135,10 @@ enum SurfaceValidationFailure {
     MissingSpans(Vec<usize>),
     MissingNodes(Vec<u32>),
 }
+
+// ========================================================================
+// COMPILING A PREVIEW
+// ========================================================================
 
 impl RoadSurfaceSystem {
     /// Compiles one temporary road preview using the same point conditioning and section compiler
@@ -1114,8 +1148,8 @@ impl RoadSurfaceSystem {
             new_edge_idx,
             edge.deleted,
             edge.class,
-            edge.fwd_lanes,
-            edge.bkw_lanes,
+            edge.fwd_lane_count(),
+            edge.bkw_lane_count(),
             edge.physical_length,
             edge.start_clip,
             edge.end_clip,
@@ -1551,6 +1585,10 @@ impl RoadSurfaceSystem {
     }
 }
 
+// ========================================================================
+// VALIDATION OUTCOMES
+// ========================================================================
+
 impl RoadPreviewValidation {
     fn valid(max_grade: f32) -> Self {
         Self {
@@ -1588,6 +1626,10 @@ impl RoadPreviewValidation {
         self
     }
 }
+
+// ========================================================================
+// TESTS
+// ========================================================================
 
 #[cfg(test)]
 mod tests {

@@ -178,7 +178,7 @@ Current deterministic rules:
   - `half_h = ((height - 1) * terrain_cell_m) * 0.5`
 - world-to-grid conversion for terrain queries uses that centered origin convention
 - terrain samples sit on world-edge coordinates
-- zoning and environmental cells remain centre-aligned metre cells
+- zoning and environmental cells remain center-aligned meter cells
 
 ### 7. Sparse Chunk Storage Is Authoritative At Rest
 
@@ -986,7 +986,7 @@ Current deterministic import sequence:
 
 Current deterministic resampling rules:
 
-- resampling happens at terrain sample positions, not cell centres of a separate import-only grid
+- resampling happens at terrain sample positions, not cell centers of a separate import-only grid
 - v1 uses bilinear interpolation from source DEM values
 - border-only nodata introduced by edge-aligned resampling is clamped from the nearest interior
   valid sample; any remaining nodata after that is a hard rejection
@@ -1262,6 +1262,181 @@ These rules must stay true as the terrain/world system grows:
 - new terrain import or authoring paths must write authoritative source terrain
 - old save migration is not required unless a future change explicitly decides otherwise
 - large-world support must avoid whole-world dense simulation assumptions
+
+## World Generation
+
+[BantedHam:] The section below details world generation as it will be implimented as
+I convert gdscript to rust.
+
+Two paths produce a world and both are supported: authored import from real
+elevation data, which is what the DEM / GeoTIFF pipeline serves and is the path
+the player can use for a sandbox game, and generation from a seed, which is what a
+new game uses.
+
+The generator targets one arrangement: a large inland sea with islands, ringed
+by land, somewhat like the Mediterranean. Two shelves of land in a 'U' shape with
+an ocean between them.
+
+The Mediterranean is a shape reference and nothing more. Nothing about the
+setting is Roman, or ancient; it is a body of water of roughly the right form,
+with enough coast and enough interior to hold every biome the country needs.
+
+Size is chosen so the whole biome range fits: tropical in the middle,
+high-elevation mountains with a short summer and a hard winter at one end, and
+blistering desert with towering dunes on the third, and everything between.
+Because the play area is that large, the range is achievable rather than aspirational.
+
+### World extent
+
+The country is `100,000 km2` of land, measured along the U as roughly
+`125 km x 800 km`. The inland sea does not count toward that figure and holds
+`50,000` to `75,000 km2`, so a generated world is `150,000` to `175,000 km2`
+in total.
+
+Every biome is present except arctic. The mountains are tall and dense, with
+short summers and long winters, which is as cold as the setting goes.
+
+The old `20 km x 20 km` figure was a city-builder target. It survives as the
+fallback gameplay world in [`reference.md`](reference.md) and as the shape of the existing
+benchmark map nad all that is currently needed for testing and build. It is not the final
+world-size target and must not be treated as one.
+
+### Real-scale slice validation
+
+Before the generator targets full country extent, one real-world-sized slice
+must be generated and driven, including curvature. Two things are proven
+there and nowhere else: that terrain, water, and road ownership hold at a
+scale where the horizon is a curve rather than a plane, and that the engine
+runs without the pixel-art shader.
+
+The pixel-art shader was a constraint of a development machine with no GPU.
+It is not a rendering requirement, and nothing in the terrain, water, or road
+contract may come to depend on it. The slice run is what demonstrates that.
+
+This work comes after the physical-layer port in [`simulation_layers.md`](simulation_layers.md),
+because the port changes what water and terrain mean before the slice is worth measuring.
+
+The generator seeds a checklist before any terrain is evaluated and places:
+- Every biome
+- the inland sea and its islands
+- the 'U' shaped coastline
+- the mountain ranges and the rain shadows behind them
+- the river outlets
+- one region of each difficulty class
+
+Those become constraints, and noise fills in around them. Everything required is
+therefore present by construction. What varies between seeds is where each piece
+sits, how big it is, how many of them there are, and what the land between looks
+like. Seeding a mountain range seeds a plate boundary and lets orogeny build the
+range. The rain shadow falls out of the weather reading that terrain rather than
+being painted.
+
+Every seeded feature follows this rule: a constraint decides where, and the
+simulation decides what. A range placed directly as heightfield noise is a
+picture of a mountain; a range raised by convergence has a windward side, a
+leeward side, a drainage pattern, and a rock type, none of which had to be
+authored.
+
+### Regions and difficulty
+
+The map divides into 20 to 30 regions. The average player reaching the endgame will
+have taken around 10 to 12 of them by the time they meet a win condition, so more
+than half the country is still unclaimed when the game is won, giving average gamers
+plenty of choice and the map keeps somewhere to go post game for the 100%ers.
+
+That count splits into roughly 20 land regions along the U and 5 or 6 that
+are mainly ocean, holding the islands and archipelagos. A land region
+averages `5,000 km2`, near the top of the `50 km` to `75 km` band that sizes
+them. That band is a land-region rule: an ocean region runs `8,000` to
+`15,000 km2`, two or three times a land region, because open water needs no
+subdivision and its islands are what give it content.
+
+Region size is dynamic and seed-derived rather than fixed. A region is drawn
+to its environment and is never square, unless the ground there is
+exceptionally flat with no natural feature to bind an edge to.
+
+A land region owns the coastal water along its shore, cutting off a kilometre
+or two out. Everything past that belongs to an ocean region.
+
+A region carries its own difficulty and its own resources, and the two are related
+but not identical.
+
+Difficulty is a property of the land. The tropics are the easiest place to start.
+High-elevation mountains and deserts are very hard, plausibly not viable as a first
+city, but not forbidden: a player who wants that as a challenge should be able to
+try it.
+
+## Minerals and Deposits
+
+The mineral and strata layers derive a deposit from how the rock formed. The
+checklist then verifies the outcome. Deriving honestly and verifying the result
+are different jobs and both are needed: derivation produces a world that makes
+sense, and verification catches the seed where it made sense and was still
+unplayable.
+
+No single region, and no cluster of adjacent regions, holds every resource.
+That is what makes expansion mechanically necessary rather than merely new space
+to build in. The rule is stated in reach rather than radius: whatever a
+player can plausibly hold by the midpoint must still be missing several endgame resources.
+The player reaches out several times over a run to assemble what the endgame chains
+require, and no single push completes the set.
+- Basics touch nearly every region. Fertile land, game, and lumber are present in most
+  regions in some form, each with the tradeoff its biome implies. A boreal region
+  has lumber and a short growing season; a tropical one has neither problem but has
+  higher rates of disease and rot.
+- Hard regions pay better. Uranium, oil, and lithium sit where the living is
+  difficult. The reward for solving a hostile region is a resource the
+  comfortable regions do not have, which is why a player eventually leaves the
+  tropics.
+
+There is no separate excavation system. Removing material from the ground is
+the terrain deformation the earthworks model already performs, and a mine is a
+building that does it continuously against a deposit that depletes.
+
+`earthworks.md` owns the cut and fill, and `economy.md` owns the extraction rate,
+the labor, and the freight out. What belongs here is that the deposit is a
+finite quantity in the ground with a position, a richness, and a depth, and that
+digging it out changes the terrain the same way any other excavation does.
+
+Groundwater is a real resource with a real failure mode. It depletes when
+drawn faster than it recharges, so a desert city on an aquifer is viable until it
+isn't, and a player who looks can see it coming.
+
+### Deposits must be found before they can be seen
+
+A deposit exists in the world from generation, but the player does not know it is
+there. What is visible from the air or the ground is visible immediately: fertile
+land, timber, game, surface stone, and groundwater indicated by what grows over
+it. Everything else is hidden until a survey finds it, which is every advanced
+resource, ore bodies, oil, gas, coal at depth, uranium, lithium, and the rare
+earths the endgame chains need.
+
+Finding one takes a survey team sent to a tile. They run seismic tests, float
+balloons carrying ground-penetrating radar, and take core samples, and the tile
+resolves from unknown to whatever is actually under it. A tile that holds nothing
+resolves to nothing, which is information too and costs the same to obtain.
+
+Surveyors are real agents, not a timer on a menu. A team is dispatched with a
+route: an ordered set of tiles, roughly a dozen or two at a time, which the player
+draws or lets the game plan. They drive it, taking roads where roads exist and going
+off-road where they must, so a region with no road in it is slower and more
+expensive to survey than one already opened up. That is the mechanic: the road
+network is what makes prospecting cheap, and the frontier stays expensive because
+it has no roads yet.
+
+A find is added to the player's view the moment it is made, not at the end of the
+route. A team halfway through a dozen tiles has already returned half its answers.
+
+The same team and the same equipment serve any subsurface question, so the survey
+is the mechanism for scientific work as well: locating archaeological sites before
+a dig rather than discovering them by accident during construction, which
+`narrative.md` owns as an event. A player who surveys ahead of expansion knows
+what is under the ground before committing to build on it.
+
+`economy.md` owns what a survey team costs to field and what its findings are
+worth. What belongs here is that a deposit carries a discovered state alongside
+its position, richness, and depth, and that the generator places it whether or not
+anyone has looked.
 
 ## Short Version
 

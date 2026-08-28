@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: snapshot.rs
+//  script_path: rust/src/simulation/economy/demand/snapshot.rs
+//  module_name: snapshot
+//  version: 0.1.0
+//  description: Settled economy snapshots consumed by demand pressure and
+//           planning.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Settled economy snapshots consumed by demand pressure and planning.
 
 use super::config::DemandConfig;
@@ -31,6 +49,10 @@ use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+// ========================================================================
+// RESIDENTIAL OCCUPANCY
+// ========================================================================
 
 #[derive(Clone, Debug)]
 pub(super) struct ResidentialOccupantSnapshot {
@@ -123,6 +145,10 @@ impl ResidentialOccupantScratch {
         );
     }
 }
+
+// ========================================================================
+// ATOMIC REDUCTION
+// ========================================================================
 
 fn atomic_min_f32(target: &AtomicU32, value: f32) {
     let value = if value.is_finite() {
@@ -222,6 +248,10 @@ pub(super) struct DailyDemandSnapshot {
     #[cfg(test)]
     pub(super) commercial_owa_input_value: f32,
 }
+
+// ========================================================================
+// THE DAILY SNAPSHOT
+// ========================================================================
 
 impl DailyDemandSnapshot {
     #[cfg(test)]
@@ -515,7 +545,17 @@ impl DailyDemandSnapshot {
                     })
             })
             .count() as u32;
-        let external_connection_available = if connected_border_count > 0 { 1.0 } else { 0.0 };
+        // A physical connection is still required: with no border road there is
+        // no route in, and no policy can conjure one. What changed is that a
+        // connection is no longer all-or-nothing. Border policy scales how much
+        // of that connection admits arrivals, so a sealed border reads 0.0,
+        // which is the same value the no-connection case has always produced
+        // and which every consumer downstream already handles.
+        let external_connection_available = if connected_border_count > 0 {
+            fiscal_policy.border_openness
+        } else {
+            0.0
+        };
         let unhoused_household_ratio = if total_household_count == 0 {
             0.0
         } else {
@@ -742,6 +782,10 @@ fn regional_growth_household_pull(
             * clamp01(failure_damping),
     )
 }
+
+// ========================================================================
+// CHUNKING
+// ========================================================================
 
 const BUILDING_SNAPSHOT_CHUNK_SIZE: usize = 1024;
 const HOUSEHOLD_SNAPSHOT_CHUNK_SIZE: usize = 2048;

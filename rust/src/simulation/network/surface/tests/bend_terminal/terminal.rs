@@ -1,6 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: terminal.rs
+//  script_path: rust/src/simulation/network/surface/tests/bend_terminal/terminal.rs
+//  module_name: terminal
+//  version: 0.1.0
+//  description: Terminal node-surface regression tests.
+//  kind: test
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Terminal node-surface regression tests.
 
 use super::*;
+
+// ========================================================================
+// BEND AND TERMINAL TESTS
+// ========================================================================
 
 #[test]
 fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
@@ -426,8 +447,7 @@ fn oblique_two_lane_terminal_caps_cover_asphalt_end_edges() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     );
-    edge.fwd_lanes = 2;
-    edge.bkw_lanes = 2;
+    edge.set_lane_layout(crate::simulation::network::graph::LaneLayout::from_counts(2, 2));
     graph.add_edge(edge);
 
     let mut surface = RoadSurfaceSystem::new(16.0);

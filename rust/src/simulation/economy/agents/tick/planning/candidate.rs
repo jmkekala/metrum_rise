@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: candidate.rs
+//  script_path: rust/src/simulation/economy/agents/tick/planning/candidate.rs
+//  module_name: candidate
+//  version: 0.1.0
+//  description: Scores candidate trip plans and builds the exact path for
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, lanes, allocator]
+//  external_dependencies: []
+//  features: [trip-candidates, mode-choice, path-construction]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Candidate scoring and exact path construction for building-origin trips.
 
 use super::super::super::{
@@ -18,10 +35,18 @@ use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+// ========================================================================
+// SEARCH CONSTANTS
+// ========================================================================
+
 pub(super) const NODE_RANKS: [u8; 2] = [0, 1];
 const NODE_RANK_PAIRS: [(u8, u8); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
 const CAR_MODE_CHOICE_OVERHEAD_S: f32 = 180.0;
 const WALK_CONNECTOR_COST_SPEED_MS: f32 = 1.4;
+
+// ========================================================================
+// WHAT A CANDIDATE HOLDS
+// ========================================================================
 
 #[derive(Clone)]
 pub(super) struct PlannedTripCandidate {
@@ -38,6 +63,10 @@ pub(super) struct PlannedTripCandidate {
     pub(super) planned_detach_lane_d: f32,
     pub(super) network_path: Option<Vec<u32>>,
 }
+
+// ========================================================================
+// SCORING A CANDIDATE
+// ========================================================================
 
 pub(super) fn transit_flags_for_mode(mode: u8) -> u8 {
     if mode == MODE_CAR {
@@ -295,6 +324,10 @@ fn evaluate_planned_trip_candidate(
     })
 }
 
+// ========================================================================
+// THE EXACT PATH
+// ========================================================================
+
 pub(super) fn build_exact_path_for_candidate(
     candidate: &mut PlannedTripCandidate,
     target_building: usize,
@@ -415,6 +448,10 @@ pub(super) fn build_exact_path_for_candidate(
     }
     Some((path, access_flags))
 }
+
+// ========================================================================
+// PEDESTRIAN CONNECTORS
+// ========================================================================
 
 pub(super) fn pedestrian_path_has_lane_connectors(
     path: &[u32],
@@ -940,8 +977,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 14.0,
             base_cost: 1.0,
             physical_length: (end_x - start_x).abs(),
@@ -960,6 +996,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 
@@ -1009,6 +1046,10 @@ mod tests {
         );
     }
 }
+
+// ========================================================================
+// CHOOSING THE BEST
+// ========================================================================
 
 pub(super) fn entrance_pair_supports_mode(
     mode: u8,

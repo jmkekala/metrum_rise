@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: flow_field.rs
+//  script_path: rust/src/simulation/pathing/flow_field.rs
+//  module_name: flow_field
+//  version: 0.1.0
+//  description: Multi-source reverse Dijkstra per zone type, answering
+//  kind: module
+//  spec: none
+//  internal_dependencies: [graph, zoning]
+//  external_dependencies: []
+//  features: [flow-field, dijkstra, zone-routing, lazy-rebuild]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Flow-field routing: multi-source reverse Dijkstra per zone type.
 //!
 //! A [`FlowField`] answers "from any node V, which node should I move to next
@@ -19,6 +36,10 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::zoning::ZoneType;
 use std::collections::BinaryHeap;
+
+// ========================================================================
+// HEAP ORDERING
+// ========================================================================
 
 // ---------------------------------------------------------------------------
 // HeapEntry — min-heap on cost for Dijkstra.
@@ -49,6 +70,10 @@ impl PartialOrd for HeapEntry {
 // ---------------------------------------------------------------------------
 // FlowField
 // ---------------------------------------------------------------------------
+
+// ========================================================================
+// ONE FIELD
+// ========================================================================
 
 /// A precomputed routing map from every reachable node toward the nearest
 /// building of one zone type, for one transit mode (car or foot).
@@ -90,11 +115,11 @@ impl FlowField {
             let cost = edge.base_cost.max(1e-6);
             let s = edge.start_node as usize;
             let e = edge.end_node as usize;
-            if edge.fwd_lanes > 0 && e < node_count && s < node_count {
+            if edge.fwd_lane_count() > 0 && e < node_count && s < node_count {
                 // Original forward edge: s → e.  Reverse: from e, update s.
                 rev_adj[e].push((edge.start_node, cost));
             }
-            if edge.bkw_lanes > 0 && s < node_count && e < node_count {
+            if edge.bkw_lane_count() > 0 && s < node_count && e < node_count {
                 // Original backward edge: e → s.  Reverse: from s, update e.
                 rev_adj[s].push((edge.end_node, cost));
             }
@@ -225,6 +250,10 @@ impl FlowField {
     }
 }
 
+// ========================================================================
+// ZONE SLOTS
+// ========================================================================
+
 // ---------------------------------------------------------------------------
 // FlowFieldSystem
 // ---------------------------------------------------------------------------
@@ -239,6 +268,10 @@ fn flow_field_zone_slot(zone: ZoneType) -> Option<usize> {
         ZoneType::None | ZoneType::Office | ZoneType::Mixed => None,
     }
 }
+
+// ========================================================================
+// THE FIELD SET
+// ========================================================================
 
 /// Manages one [`FlowField`] per zone type per transit mode, rebuilt lazily.
 ///
@@ -333,6 +366,10 @@ impl FlowFieldSystem {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ========================================================================
+// TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,8 +385,7 @@ mod tests {
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: cost,
             physical_length: cost * 50.0,
@@ -362,6 +398,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 

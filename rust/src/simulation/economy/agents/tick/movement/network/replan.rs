@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: replan.rs
+//  script_path: rust/src/simulation/economy/agents/tick/movement/network/replan.rs
+//  module_name: replan
+//  version: 0.1.0
+//  description: Pre-movement network replan gates for immigration and
+//           exact access trips.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{
@@ -17,6 +35,10 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use std::sync::atomic::AtomicU32;
+
+// ========================================================================
+// THE GATE
+// ========================================================================
 
 /// Runs the pre-movement replan gates and returns whether the agent may keep moving this tick.
 ///
@@ -59,6 +81,10 @@ pub(super) unsafe fn prepare_network_replan(
         )
     }
 }
+
+// ========================================================================
+// THE THREE REPAIRS
+// ========================================================================
 
 unsafe fn bootstrap_immigration_trip(
     i: usize,
@@ -274,6 +300,10 @@ unsafe fn repair_stale_detach_plan(
     }
 }
 
+// ========================================================================
+// WHERE A REPLAN STARTS AND LANDS
+// ========================================================================
+
 unsafe fn replan_start(
     i: usize,
     transit_network: &TransitNetwork,
@@ -372,6 +402,10 @@ unsafe fn apply_network_replan(i: usize, replan: BuiltNetworkReplan, slices: &Mo
     }
 }
 
+// ========================================================================
+// TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +489,8 @@ mod tests {
             lane_change_length: RawSlice::new(&mut agents.agents.lane_change_length_m),
             overtake_blocked_time: RawSlice::new(&mut agents.agents.overtake_blocked_time_s),
             overtake_cooldown: RawSlice::new(&mut agents.agents.overtake_cooldown_s),
+            junction_release_time: RawSlice::new(&mut agents.agents.junction_release_time_s),
+            next_reroute_time: RawSlice::new(&mut agents.agents.next_reroute_time_s),
             tmode: RawSlice::new(&mut agents.agents.transit_mode),
             planned_activity: RawSlice::new(&mut agents.agents.planned_activity),
             path: RawSlice::new(&mut agents.agents.current_path),

@@ -325,3 +325,57 @@ Recommended ownership split:
 - [`entrance_and_exit.md`](entrance_and_exit.md): exact meaning and runtime use of the derived
   entrance cache
 - [`economy.md`](economy.md): post-placement building economy behavior
+
+## Frontage Roles
+
+A building used to hold only one `edge_idx`, meaning it only has one 'street', and every
+consequence the genre gets wrong about alleys followed.
+
+`simulation/buildings/frontage.rs` now carries the types. A frontage says what it is
+for now, not how wide the road is because an alley is not necessarily just a narrow road,
+it is a second frontage on the far side of the parcel.
+
+| Role | What it is |
+|---|---|
+| `Primary` | The address. Pedestrians, residents, visitors, the front door. Exactly one per building. |
+| `Service` | Deliveries, waste collection, utility access. This can be in the alley. |
+| `Water` | A navigable edge, for the canal case. |
+
+An edge declares which roles it accepts through `EdgeFrontageClass`:
+
+| Class | Accepts |
+|---|---|
+| `Street` | `Primary` and `Service`, a building with no alley still takes deliveries at the curb |
+| `ServiceWay` | `Service` only |
+| `Waterway` | `Water` only |
+
+A service way never accepts an address. `EdgeFrontageClass::ServiceWay
+.can_address()` returns false, and no allocator score can override it.
+
+Without that rule an alley is a thin street, the allocator fills it with houses
+facing the wrong way.
+
+`FrontageRole` defaults to `Primary` and `EdgeFrontageClass` to `Street`, which
+together reproduce exactly the behavior every building had before roles
+existed. An unknown ordinal from a newer or corrupted save degrades to the same
+pair rather than dropping a building off the network.
+
+`MAX_FRONTAGES` is 3: one address, one service side, one water edge. A fixed
+array rather than a `Vec` because the allocator rebuilds every entrance on a
+dirty flag.
+
+`Edge` carries its `EdgeFrontageClass`, so an edge can declare itself a service
+way, and every path that assigns an address checks `can_address()` before it
+does. There are seven: candidate scoring and frontage repair in the
+allocator lifecycle, candidate collection and final placement validation in
+allocator placement, and parcel projection, parcel placement, and parcel
+restore in zoning.
+
+All matter. A filter in placement alone would still let zoning cut parcels against
+an alley, and the buildings would arrive later by another path.
+
+- `BuildingEntrance` still carries a single anchor; widening it to the fixed set
+  lets a building hold all three frontages at once.
+- Freight is not yet routed to the service frontage in preference to the
+  address, so a delivery still arrives at the front door even where a service
+  way exists. 

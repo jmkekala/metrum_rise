@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/network/graph/rebuild/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Junction endpoint profile rebuild and connectivity
+//  kind: test
+//  spec: none
+//  internal_dependencies: [rebuild, data]
+//  external_dependencies: [godot]
+//  features: [junction-profile, graph-rebuild, island-count, connectivity]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Junction profile rebuild regression tests.
 
 use super::junction_profiles::{
@@ -9,20 +26,27 @@ use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, Trans
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 
+// ========================================================================
+// FIXTURES
+// ========================================================================
+
 fn profile_test_edge(points: Vec<Vector3>) -> Edge {
     Edge {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
         width: 7.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         geometry: points.clone(),
         physical_geometry: points,
         ..Default::default()
     }
 }
+
+// ========================================================================
+// REBUILD TESTS
+// ========================================================================
 
 #[test]
 fn island_count_ignores_floating_nodes_and_deleted_edges() {

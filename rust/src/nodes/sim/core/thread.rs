@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: thread.rs
+//  script_path: rust/src/nodes/sim/core/thread.rs
+//  module_name: thread
+//  version: 0.1.0
+//  description: Background simulation command processing and fixed-rate
+//           thread loop.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Background simulation command processing and fixed-rate thread loop.
 
 use std::sync::atomic::Ordering;
@@ -14,6 +32,10 @@ use crate::debug::{CrashCommand, CrashSimSnapshot};
 use crate::debug_log;
 use crate::nodes::sim::editing::BulldozeTarget;
 use godot::prelude::godot_error;
+
+// ========================================================================
+// PHASE GUARDS
+// ========================================================================
 
 fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
@@ -47,8 +69,24 @@ pub(crate) enum SimCommand {
         fwd_lanes: i32,
         /// Backward lane count.
         bkw_lanes: i32,
+        /// An authored cross-section, in the flat form `LaneLayout::from_flat`
+        /// reads. When present the counts above are ignored and derived from
+        /// it instead, so a road with a median or a bus lane is placed as what
+        /// it is rather than as the nearest pair of numbers.
+        cross_section: Option<Vec<i32>>,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
+    },
+    /// Spawn looping car traffic across the existing road graph.
+    ///
+    /// Runs on the sim thread because it pathfinds and mutates the agent
+    /// arrays, both of which need the core lock the sim thread already holds
+    /// each tick. Calling the equivalent from the main thread deadlocks against
+    /// it, which is why `setup_benchmark_city` may only be used before the
+    /// thread spawns.
+    SpawnTestTraffic {
+        /// How many cars to put on the road.
+        count: i32,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -115,6 +153,10 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
     }
 }
 
+// ========================================================================
+// THE THREAD LOOP
+// ========================================================================
+
 /// Background simulation thread loop.
 ///
 /// Runs at ~60 Hz, decoupled from Godot's render frame. Movement ticks and queued
@@ -157,6 +199,11 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     camera_aabb_commands += 1;
                     pending_camera_aabb = Some((x0, x1, z0, z1));
+                }
+                Ok(SimCommand::SpawnTestTraffic { count }) => {
+                    commands_processed += 1;
+                    let mut core = core.lock().expect("simulation core lock poisoned");
+                    core.spawn_test_traffic_internal(count);
                 }
                 Ok(SimCommand::Undo) => {
                     commands_processed += 1;
@@ -214,6 +261,7 @@ pub(crate) fn run_sim_thread(
                     points,
                     fwd_lanes,
                     bkw_lanes,
+                    cross_section,
                     snap_to_existing_roads,
                 }) => {
                     commands_processed += 1;
@@ -246,10 +294,11 @@ pub(crate) fn run_sim_thread(
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
                         record_crash_phase_for_core(&c, "add road internal");
-                        let road_add = c.add_road_internal_with_snap(
+                        let road_add = c.add_road_internal_with_cross_section(
                             points,
                             fwd_lanes,
                             bkw_lanes,
+                            cross_section.as_deref(),
                             snap_to_existing_roads,
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;

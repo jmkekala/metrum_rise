@@ -1,6 +1,28 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: fixtures.rs
+//  script_path: rust/src/simulation/network/surface/tests/support/fixtures.rs
+//  module_name: fixtures
+//  version: 0.1.0
+//  description: Shared graph, terrain, and logged-input fixtures for
+//           road-surface tests.
+//  kind: test
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Shared graph, terrain, and logged-input fixtures for road-surface tests.
 
 use super::*;
+
+// ========================================================================
+// FIXTURES
+// ========================================================================
 
 pub(in crate::simulation::network::surface::tests) fn test_edge(
     start_node: u32,
@@ -15,6 +37,11 @@ pub(in crate::simulation::network::surface::tests) fn test_edge(
         .windows(2)
         .map(|segment| segment[0].distance_to(segment[1]))
         .sum();
+    let lane_count: u8 = if (allowed_types & TransitFlags::CAR) != 0 {
+        ((width / crate::config::LANE_WIDTH).round() as u8).max(1)
+    } else {
+        0
+    };
     Edge {
         start_node,
         end_node,
@@ -22,16 +49,7 @@ pub(in crate::simulation::network::surface::tests) fn test_edge(
         allowed_types,
         class,
         width,
-        fwd_lanes: if (allowed_types & TransitFlags::CAR) != 0 {
-            ((width / crate::config::LANE_WIDTH).round() as u8).max(1)
-        } else {
-            0
-        },
-        bkw_lanes: if (allowed_types & TransitFlags::CAR) != 0 {
-            ((width / crate::config::LANE_WIDTH).round() as u8).max(1)
-        } else {
-            0
-        },
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(lane_count, lane_count),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: length,
@@ -43,6 +61,7 @@ pub(in crate::simulation::network::surface::tests) fn test_edge(
         deleted: false,
         no_building_spawn: false,
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 

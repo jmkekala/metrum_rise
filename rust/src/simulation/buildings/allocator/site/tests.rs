@@ -1,3 +1,20 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tests.rs
+//  script_path: rust/src/simulation/buildings/allocator/site/tests.rs
+//  module_name: tests
+//  version: 0.1.0
+//  description: Regression tests for building-site derivation, grading
+//  kind: test
+//  spec: none
+//  internal_dependencies: [site, surface, terrain]
+//  external_dependencies: [godot]
+//  features: [building-site, site-grading, frontage, terrain-tie-in]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
 //! Building-site derivation, grading, and query regression tests.
 
 use super::derive::{
@@ -26,6 +43,10 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use std::collections::BTreeMap;
+
+// ========================================================================
+// BUILDING SITE TESTS
+// ========================================================================
 
 #[test]
 fn site_radius_is_measured_from_the_indexed_lot_center() {
@@ -67,8 +88,7 @@ fn road_test_edge(
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class,
         width,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
+        lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
         speed_limit: 50.0,
         base_cost: 0.0,
         physical_length: length,
@@ -81,6 +101,7 @@ fn road_test_edge(
         no_building_spawn: false,
         vehicle_frontage_access:
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+        frontage_class: Default::default(),
     }
 }
 

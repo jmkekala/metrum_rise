@@ -1,3 +1,24 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: test_clips.rs
+//  script_path: rust/src/simulation/network/test_clips.rs
+//  module_name: test_clips
+//  version: 0.1.0
+//  description: Tests for edge clipping at junctions and bends. A road
+//  kind: test
+//  spec: none
+//  internal_dependencies: [graph]
+//  external_dependencies: [godot]
+//  features: [edge-clipping, junction-geometry, acute-angle]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-24
+// ========================================================================
+
+// ========================================================================
+// EDGE CLIP TESTS
+// ========================================================================
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -13,8 +34,7 @@ mod tests {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             width,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
@@ -27,6 +47,7 @@ mod tests {
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         }
     }
 
@@ -47,8 +68,7 @@ mod tests {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 2.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
@@ -66,6 +86,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
@@ -74,8 +95,7 @@ mod tests {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 2.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
@@ -93,6 +113,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
@@ -101,8 +122,7 @@ mod tests {
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             width: 2.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            lanes: crate::simulation::network::graph::LaneLayout::from_counts(1, 1),
             speed_limit: 50.0,
             base_cost: 0.0,
             physical_length: 0.0,
@@ -120,6 +140,7 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access:
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            frontage_class: Default::default(),
         });
 
         g.rebuild_intersection_clips();

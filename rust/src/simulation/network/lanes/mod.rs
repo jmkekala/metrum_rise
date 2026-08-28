@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/network/lanes/mod.rs
+//  module_name: mod
+//  version: 0.1.0
+//  description: Lane geometry, lane connectivity, and per-lane derived
+//           planning caches.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: []
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-27
+// ========================================================================
+
 //! Lane geometry, lane connectivity, and per-lane derived planning caches.
 
 use godot::prelude::*;
@@ -8,6 +26,8 @@ use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem}
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
 
+/// Which connector movements through a junction cross each other.
+pub mod conflicts;
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
 /// Pedestrian sidewalk and crosswalk connection logic.
@@ -16,6 +36,10 @@ pub mod pedestrian_junctions;
 pub mod rebuild;
 /// High-level logic for vehicle connections at junctions.
 pub mod vehicle_junctions;
+
+// ========================================================================
+// LANE TYPES
+// ========================================================================
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,6 +60,10 @@ pub struct CrosswalkMarking {
     /// Opposite asphalt-edge endpoint of the stripe corridor.
     pub end: Vector3,
 }
+
+// ========================================================================
+// ONE LANE
+// ========================================================================
 
 /// A single travel lane through a road or intersection.
 #[derive(Clone)]
@@ -86,6 +114,10 @@ impl Default for Lane {
     }
 }
 
+// ========================================================================
+// THE LANE SYSTEM
+// ========================================================================
+
 /// System for managing road and intersection lanes.
 pub struct LaneSystem {
     /// All active lanes.
@@ -94,6 +126,11 @@ pub struct LaneSystem {
     pub edge_lanes: HashMap<usize, Vec<usize>>,
     /// Mapping of node IDs to their connection lane indices (crosswalks and vehicle turns).
     pub node_lanes: HashMap<usize, Vec<usize>>,
+    /// Crossing movements per node, so a turning car can yield to what it cuts across.
+    ///
+    /// Computed when lanes are rebuilt rather than per tick, because it is pure
+    /// geometry over connectors that only change when the junction does.
+    pub node_conflicts: HashMap<usize, conflicts::JunctionConflicts>,
 }
 
 impl LaneSystem {
@@ -103,6 +140,7 @@ impl LaneSystem {
             lanes: Vec::new(),
             edge_lanes: HashMap::new(),
             node_lanes: HashMap::new(),
+            node_conflicts: HashMap::new(),
         }
     }
 
@@ -111,6 +149,59 @@ impl LaneSystem {
         self.lanes.clear();
         self.edge_lanes.clear();
         self.node_lanes.clear();
+        self.node_conflicts.clear();
+    }
+
+    /// Recomputes the crossing-movement table for `node_id`.
+    ///
+    /// Call after the connectors at a node are built or rebuilt. Only vehicle
+    /// connectors participate: a crosswalk is governed by its own rules and a
+    /// road lane is not inside the junction box.
+    pub fn rebuild_node_conflicts(&mut self, node_id: usize) {
+        let Some(lane_ids) = self.node_lanes.get(&node_id) else {
+            self.node_conflicts.remove(&node_id);
+            return;
+        };
+        let vehicle: Vec<usize> = lane_ids
+            .iter()
+            .copied()
+            .filter(|&id| {
+                self.lanes
+                    .get(id)
+                    .is_some_and(|l| l.lane_type == LaneType::Vehicle)
+            })
+            .collect();
+
+        let table = conflicts::build_junction_conflicts(&vehicle, &self.lanes);
+        crate::traffic_log!(
+            "[JUNCTION_CONFLICTS] node={} vehicle_connectors={} lanes_with_conflicts={}",
+            node_id,
+            vehicle.len(),
+            table.len(),
+        );
+        if table.is_empty() {
+            self.node_conflicts.remove(&node_id);
+        } else {
+            self.node_conflicts.insert(node_id, table);
+        }
+    }
+
+    /// Crossing movements for `lane_id` at `node_id`, empty when there are none.
+    #[inline]
+    pub fn conflicting_lanes(&self, node_id: usize, lane_id: usize) -> &[usize] {
+        self.node_conflicts
+            .get(&node_id)
+            .map(|c| c.conflicting(lane_id))
+            .unwrap_or(&[])
+    }
+
+    /// Movements sharing a start point with `lane_id` at `node_id`.
+    #[inline]
+    pub fn co_entrant_lanes(&self, node_id: usize, lane_id: usize) -> &[usize] {
+        self.node_conflicts
+            .get(&node_id)
+            .map(|c| c.co_entrants(lane_id))
+            .unwrap_or(&[])
     }
 
     /// Retrieve the global `lane_id` given an `edge_idx` and a local `lane_idx`.
