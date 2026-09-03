@@ -24,6 +24,9 @@ var road_mesh_root: Node3D # Final road chunks owned only by RoadTool
 var _road_chunk_instances: Dictionary = {}
 var _road_mesh_generation: int = -1
 var _road_chunk_span_m: float = 0.0
+var _road_chunk_origin_x_m: float = 0.0
+var _road_chunk_origin_z_m: float = 0.0
+var _staged_road_mesh_update: Dictionary = {}
 var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
@@ -306,15 +309,15 @@ func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, c
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
 
-func update_main_mesh(expected_generation: int = -1) -> int:
+func update_main_mesh(expected_generation: int = -1, stage_only: bool = false) -> int:
 	if name != "RoadTool":
 		mark_network_nodes_dirty()
 		var road_tool = get_node_or_null("../RoadTool")
 		if road_tool:
-			return road_tool.update_main_mesh(expected_generation)
+			return road_tool.update_main_mesh(expected_generation, stage_only)
 		return -1
 
-	mark_network_nodes_dirty()
+	discard_staged_main_mesh_update()
 	# Dirty revisions are coordinated by NetworkRenderer so terrain and roads swap together.
 	if expected_generation < 0 and simulation_node.is_network_dirty():
 		return -1
@@ -330,6 +333,16 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		or (
 			typeof(data["chunk_span_m"]) != TYPE_FLOAT
 			and typeof(data["chunk_span_m"]) != TYPE_INT
+		)
+		or not data.has("chunk_origin_x_m")
+		or (
+			typeof(data["chunk_origin_x_m"]) != TYPE_FLOAT
+			and typeof(data["chunk_origin_x_m"]) != TYPE_INT
+		)
+		or not data.has("chunk_origin_z_m")
+		or (
+			typeof(data["chunk_origin_z_m"]) != TYPE_FLOAT
+			and typeof(data["chunk_origin_z_m"]) != TYPE_INT
 		)
 		or not data.has("chunks")
 		or typeof(data["chunks"]) != TYPE_ARRAY
@@ -348,7 +361,19 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 	var chunk_span_m := float(data["chunk_span_m"])
 	if not is_finite(chunk_span_m) or chunk_span_m <= 0.0:
 		return -1
+	var chunk_origin_x_m := float(data["chunk_origin_x_m"])
+	var chunk_origin_z_m := float(data["chunk_origin_z_m"])
+	if not is_finite(chunk_origin_x_m) or not is_finite(chunk_origin_z_m):
+		return -1
 	if not full_replace and chunk_span_m != _road_chunk_span_m:
+		return -1
+	if (
+		not full_replace
+		and (
+			chunk_origin_x_m != _road_chunk_origin_x_m
+			or chunk_origin_z_m != _road_chunk_origin_z_m
+		)
+	):
 		return -1
 	var chunk_updates: Array = data["chunks"]
 	var validated_updates: Array[Dictionary] = []
@@ -388,7 +413,13 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		if chunk_data["removed"]:
 			continue
 		var key := Vector2i(chunk_data["chunk_x"], chunk_data["chunk_z"])
-		var instance := _build_road_chunk_instance(chunk_data, key, chunk_span_m)
+		var instance := _build_road_chunk_instance(
+			chunk_data,
+			key,
+			chunk_span_m,
+			chunk_origin_x_m,
+			chunk_origin_z_m
+		)
 		if instance == null:
 			_discard_staged_road_chunks(staged_instances)
 			return -1
@@ -399,6 +430,69 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		_discard_staged_road_chunks(staged_instances)
 		return -1
 
+	if stage_only:
+		_staged_road_mesh_update = {
+			"surface_generation": surface_generation,
+			"full_replace": full_replace,
+			"chunk_span_m": chunk_span_m,
+			"chunk_origin_x_m": chunk_origin_x_m,
+			"chunk_origin_z_m": chunk_origin_z_m,
+			"validated_updates": validated_updates,
+			"staged_instances": staged_instances,
+		}
+		return surface_generation
+	return _commit_road_mesh_update(
+		surface_generation,
+		full_replace,
+		chunk_span_m,
+		chunk_origin_x_m,
+		chunk_origin_z_m,
+		validated_updates,
+		staged_instances
+	)
+
+func commit_staged_main_mesh_update(expected_generation: int) -> int:
+	if _staged_road_mesh_update.is_empty():
+		return -1
+	var staged := _staged_road_mesh_update
+	_staged_road_mesh_update = {}
+	var surface_generation := int(staged.get("surface_generation", -1))
+	if surface_generation != expected_generation or surface_generation < _road_mesh_generation:
+		_discard_staged_road_chunks(staged.get("staged_instances", {}) as Dictionary)
+		return -1
+	# A newer sim revision may arrive after staging. Committing this complete older road/terrain
+	# pair is safe; its exact acknowledgement will fail and the newer pair remains dirty.
+	return _commit_road_mesh_update(
+		surface_generation,
+		bool(staged["full_replace"]),
+		float(staged["chunk_span_m"]),
+		float(staged["chunk_origin_x_m"]),
+		float(staged["chunk_origin_z_m"]),
+		staged["validated_updates"] as Array,
+		staged["staged_instances"] as Dictionary,
+		false
+	)
+
+func discard_staged_main_mesh_update() -> void:
+	if _staged_road_mesh_update.is_empty():
+		return
+	_discard_staged_road_chunks(
+		_staged_road_mesh_update.get("staged_instances", {}) as Dictionary
+	)
+	_staged_road_mesh_update = {}
+
+func _commit_road_mesh_update(
+	surface_generation: int,
+	full_replace: bool,
+	chunk_span_m: float,
+	chunk_origin_x_m: float,
+	chunk_origin_z_m: float,
+	validated_updates: Array,
+	staged_instances: Dictionary,
+	invalidate_nodes: bool = true
+) -> int:
+	if invalidate_nodes:
+		mark_network_nodes_dirty()
 	if full_replace:
 		for key in _road_chunk_instances.keys():
 			_remove_road_chunk(key)
@@ -413,13 +507,18 @@ func update_main_mesh(expected_generation: int = -1) -> int:
 		_road_chunk_instances[key] = instance
 	_road_mesh_generation = surface_generation
 	_road_chunk_span_m = chunk_span_m
+	_road_chunk_origin_x_m = chunk_origin_x_m
+	_road_chunk_origin_z_m = chunk_origin_z_m
 	return surface_generation
 
 func reset_main_mesh_chunks() -> void:
+	discard_staged_main_mesh_update()
 	for key in _road_chunk_instances.keys():
 		_remove_road_chunk(key)
 	_road_mesh_generation = -1
 	_road_chunk_span_m = 0.0
+	_road_chunk_origin_x_m = 0.0
+	_road_chunk_origin_z_m = 0.0
 
 func needs_main_mesh_hydration() -> bool:
 	return name == "RoadTool" and _road_mesh_generation < 0
@@ -441,7 +540,9 @@ func _remove_road_chunk(key: Vector2i) -> void:
 func _build_road_chunk_instance(
 	chunk_data: Dictionary,
 	key: Vector2i,
-	chunk_span_m: float
+	chunk_span_m: float,
+	chunk_origin_x_m: float,
+	chunk_origin_z_m: float
 ) -> MeshInstance3D:
 	_ensure_road_mesh_materials()
 	var arr_mesh := ArrayMesh.new()
@@ -489,7 +590,11 @@ func _build_road_chunk_instance(
 
 	var instance := MeshInstance3D.new()
 	instance.name = "RoadChunk_%d_%d" % [key.x, key.y]
-	instance.position = Vector3(float(key.x) * chunk_span_m, 0.0, float(key.y) * chunk_span_m)
+	instance.position = Vector3(
+		chunk_origin_x_m + float(key.x) * chunk_span_m,
+		0.0,
+		chunk_origin_z_m + float(key.y) * chunk_span_m
+	)
 	instance.mesh = arr_mesh
 	SceneLightingConfig.apply_shadow_policy(
 		instance,

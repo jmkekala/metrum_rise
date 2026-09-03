@@ -96,6 +96,13 @@ impl WorldConfig {
         interval_count * cell_m
     }
 
+    /// Returns the world-space minimum corner of the runtime terrain sample grid.
+    pub fn terrain_world_origin_m(&self) -> (f32, f32) {
+        let width_m = self.terrain_grid_width().saturating_sub(1) as f32 * self.terrain_cell_m;
+        let height_m = self.terrain_grid_height().saturating_sub(1) as f32 * self.terrain_cell_m;
+        (-width_m * 0.5, -height_m * 0.5)
+    }
+
     /// Returns the number of authored terrain chunks along the X axis.
     pub fn terrain_chunk_columns(&self) -> usize {
         (self.width_m / self.terrain_chunk_m).ceil() as usize
@@ -172,5 +179,17 @@ mod tests {
         assert_eq!(config.terrain_chunk_m, 512.0);
         assert_eq!(config.terrain_cell_m, 10.0);
         assert_eq!(config.terrain_render_chunk_span_m(), 510.0);
+    }
+
+    #[test]
+    fn terrain_world_origin_matches_runtime_sample_extent() {
+        assert_eq!(
+            WorldConfig::gameplay_default().terrain_world_origin_m(),
+            (-10_000.0, -10_000.0)
+        );
+        assert_eq!(
+            WorldConfig::editor_sandbox().terrain_world_origin_m(),
+            (-250.0, -250.0)
+        );
     }
 }

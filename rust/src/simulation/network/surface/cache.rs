@@ -51,6 +51,8 @@ pub struct RoadEarthworkChunkCacheEntry {
 /// Bounded pre-edit road-surface compiler state retained by one graph undo entry.
 pub(crate) struct RoadSurfaceTopologyUndo {
     chunk_span_m_bits: u32,
+    chunk_origin_x_m_bits: u32,
+    chunk_origin_z_m_bits: u32,
     edges: Vec<RoadSurfaceEdgeTopologyUndo>,
     nodes: Vec<RoadSurfaceNodeTopologyUndo>,
 }

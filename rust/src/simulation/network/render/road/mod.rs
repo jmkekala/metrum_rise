@@ -96,8 +96,11 @@ impl RoadRenderer {
             &compiled_surface.node_ids,
         );
 
+        let (chunk_origin_x_m, chunk_origin_z_m) = road_surface.chunk_origin_m();
         let mut mesh = NetworkMeshData::new_chunk_partitioned(
             road_surface.chunk_span_m(),
+            chunk_origin_x_m,
+            chunk_origin_z_m,
             target_chunks.clone(),
         );
         crosswalks::emit_crosswalk_markings(
@@ -274,14 +277,14 @@ fn push_triangle_to_layer(
             (f64::from(vertices[0].z) + f64::from(vertices[1].z) + f64::from(vertices[2].z)) / 3.0;
         let chunk_span_m = f64::from(partition.chunk_span_m);
         let chunk = (
-            (centroid_x / chunk_span_m).floor() as i32,
-            (centroid_z / chunk_span_m).floor() as i32,
+            ((centroid_x - f64::from(partition.chunk_origin_x_m)) / chunk_span_m).floor() as i32,
+            ((centroid_z - f64::from(partition.chunk_origin_z_m)) / chunk_span_m).floor() as i32,
         );
         if !partition.target_chunks.contains(&chunk) {
             return;
         }
-        let origin_x = chunk.0 as f32 * partition.chunk_span_m;
-        let origin_z = chunk.1 as f32 * partition.chunk_span_m;
+        let origin_x = partition.chunk_origin_x_m + chunk.0 as f32 * partition.chunk_span_m;
+        let origin_z = partition.chunk_origin_z_m + chunk.1 as f32 * partition.chunk_span_m;
         let local_vertices =
             vertices.map(|vertex| Vector3::new(vertex.x - origin_x, vertex.y, vertex.z - origin_z));
         let chunk_mesh = partition

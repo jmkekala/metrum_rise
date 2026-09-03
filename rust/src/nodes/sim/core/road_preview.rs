@@ -28,6 +28,8 @@ pub(crate) struct RoadPreviewWorkerContext {
     road_surface: Arc<RoadSurfaceSystem>,
     water: Arc<WaterSystem>,
     surface_chunk_span_m: f32,
+    surface_chunk_origin_x_m: f32,
+    surface_chunk_origin_z_m: f32,
     surface_generation: u64,
 }
 
@@ -66,6 +68,7 @@ pub(crate) fn road_tool_snapshots_from_core(
     let road_surface = Arc::new(core.transit_network.road_surface.clone());
     let water = Arc::new(core.watermap.clone());
     let surface_chunk_span_m = road_surface.chunk_span_m();
+    let (surface_chunk_origin_x_m, surface_chunk_origin_z_m) = road_surface.chunk_origin_m();
     let surface_generation = core.road_tool_surface_generation;
     let ghost_snap_index = Arc::new(RoadGhostSnapIndex::from_graph(region_graph.as_ref()));
 
@@ -76,6 +79,8 @@ pub(crate) fn road_tool_snapshots_from_core(
             road_surface: Arc::clone(&road_surface),
             water: Arc::clone(&water),
             surface_chunk_span_m,
+            surface_chunk_origin_x_m,
+            surface_chunk_origin_z_m,
             surface_generation,
         },
         RoadToolQuerySnapshot {
@@ -149,7 +154,11 @@ pub(crate) fn compile_road_preview_from_context(
     request: RoadPreviewRequest,
 ) -> RoadPreviewSnapshot {
     let request_surface_generation = request.surface_generation;
-    let preview_surface = RoadSurfaceSystem::new(context.surface_chunk_span_m);
+    let preview_surface = RoadSurfaceSystem::new_with_chunk_grid(
+        context.surface_chunk_span_m,
+        context.surface_chunk_origin_x_m,
+        context.surface_chunk_origin_z_m,
+    );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let mut preview = if request.snap_to_existing_roads {

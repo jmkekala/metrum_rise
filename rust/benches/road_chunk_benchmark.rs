@@ -149,19 +149,30 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
         EXPECTED_RENDER_CHUNK_SPAN_M.to_bits(),
         "the benchmark fixture must track the production render span"
     );
+    let (chunk_origin_x_m, chunk_origin_z_m) = config.terrain_world_origin_m();
     let terrain = TerrainSystem::from_world_config(&config);
     let mut graph = RegionGraph::new();
-    let local_edge = add_isolated_road(&mut graph, 0, 0, render_chunk_span_m, &config);
-    let first_chunk = -DISTANT_GRID_SIDE / 2;
-    let last_chunk = first_chunk + DISTANT_GRID_SIDE;
+    let local_edge = add_world_road(&mut graph, -ROAD_LENGTH_M * 0.5, 0.0, &config);
+    let local_chunk = (
+        ((0.0 - chunk_origin_x_m) / render_chunk_span_m).floor() as i32,
+        ((0.0 - chunk_origin_z_m) / render_chunk_span_m).floor() as i32,
+    );
     let mut added_distant_chunks = 0;
     if distant_chunks > 0 {
-        'chunks: for chunk_z in first_chunk..last_chunk {
-            for chunk_x in first_chunk..last_chunk {
-                if (chunk_x, chunk_z) == (0, 0) {
+        'chunks: for chunk_z in 0..DISTANT_GRID_SIDE {
+            for chunk_x in 0..DISTANT_GRID_SIDE {
+                if (chunk_x, chunk_z) == local_chunk {
                     continue;
                 }
-                add_isolated_road(&mut graph, chunk_x, chunk_z, render_chunk_span_m, &config);
+                add_isolated_chunk_road(
+                    &mut graph,
+                    chunk_x,
+                    chunk_z,
+                    render_chunk_span_m,
+                    chunk_origin_x_m,
+                    chunk_origin_z_m,
+                    &config,
+                );
                 added_distant_chunks += 1;
                 if added_distant_chunks == distant_chunks {
                     break 'chunks;
@@ -173,7 +184,7 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
 
-    let mut network = TransitNetwork::new_with_surface_chunk_span(render_chunk_span_m);
+    let mut network = TransitNetwork::new_for_world(&config);
     network.lane_system.rebuild(&mut graph);
     network.road_surface.compile_dirty(&graph, &terrain);
 
@@ -194,8 +205,8 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         target_chunks,
-        BTreeSet::from([(0, 0)]),
-        "the local fixture must stay wholly inside one render chunk"
+        BTreeSet::from([local_chunk]),
+        "a typical central edit must stay wholly inside one terrain-aligned render chunk"
     );
 
     let occupied_chunks = network
@@ -279,15 +290,26 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
     }
 }
 
-fn add_isolated_road(
+fn add_isolated_chunk_road(
     graph: &mut RegionGraph,
     chunk_x: i32,
     chunk_z: i32,
     render_chunk_span_m: f32,
+    chunk_origin_x_m: f32,
+    chunk_origin_z_m: f32,
     config: &WorldConfig,
 ) -> usize {
-    let start_x = chunk_x as f32 * render_chunk_span_m + ROAD_INSET_M;
-    let start_z = chunk_z as f32 * render_chunk_span_m + ROAD_INSET_M;
+    let start_x = chunk_origin_x_m + chunk_x as f32 * render_chunk_span_m + ROAD_INSET_M;
+    let start_z = chunk_origin_z_m + chunk_z as f32 * render_chunk_span_m + ROAD_INSET_M;
+    add_world_road(graph, start_x, start_z, config)
+}
+
+fn add_world_road(
+    graph: &mut RegionGraph,
+    start_x: f32,
+    start_z: f32,
+    config: &WorldConfig,
+) -> usize {
     let end_x = start_x + ROAD_LENGTH_M;
     let half_width_m = config.width_m * 0.5;
     let half_height_m = config.height_m * 0.5;

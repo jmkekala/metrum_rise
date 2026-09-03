@@ -1942,9 +1942,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new_with_surface_chunk_span(
-                config.terrain_render_chunk_span_m(),
-            ),
+            transit_network: TransitNetwork::new_for_world(&config),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),

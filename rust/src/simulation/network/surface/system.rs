@@ -25,6 +25,8 @@ fn elapsed_ms(start: Option<Instant>) -> f64 {
 #[derive(Clone)]
 pub struct RoadSurfaceSystem {
     pub(crate) chunk_span_m: f32,
+    pub(crate) chunk_origin_x_m: f32,
+    pub(crate) chunk_origin_z_m: f32,
     pub(crate) compiled_once: bool,
     pub(crate) compile_invalidation_generation: u64,
     pub(crate) failed_compile_generation: Option<u64>,
@@ -99,8 +101,27 @@ impl RoadSurfaceCompileReason {
 impl RoadSurfaceSystem {
     /// Creates an empty road-surface system using the given chunk span in world metres.
     pub fn new(chunk_span_m: f32) -> Self {
+        Self::new_with_chunk_grid(chunk_span_m, 0.0, 0.0)
+    }
+
+    /// Creates an empty road-surface system with an explicit world-space chunk-grid origin.
+    pub fn new_with_chunk_grid(
+        chunk_span_m: f32,
+        chunk_origin_x_m: f32,
+        chunk_origin_z_m: f32,
+    ) -> Self {
         Self {
             chunk_span_m: chunk_span_m.max(f32::EPSILON),
+            chunk_origin_x_m: if chunk_origin_x_m.is_finite() {
+                chunk_origin_x_m
+            } else {
+                0.0
+            },
+            chunk_origin_z_m: if chunk_origin_z_m.is_finite() {
+                chunk_origin_z_m
+            } else {
+                0.0
+            },
             compiled_once: false,
             compile_invalidation_generation: 0,
             failed_compile_generation: None,
@@ -145,6 +166,11 @@ impl RoadSurfaceSystem {
     /// Returns the configured chunk span in world metres.
     pub fn chunk_span_m(&self) -> f32 {
         self.chunk_span_m
+    }
+
+    /// Returns the world-space minimum corner from which road chunk keys are measured.
+    pub fn chunk_origin_m(&self) -> (f32, f32) {
+        (self.chunk_origin_x_m, self.chunk_origin_z_m)
     }
 
     /// Returns the set of edge ids that need road-surface recompilation.
@@ -312,7 +338,11 @@ impl RoadSurfaceSystem {
         // Compiler methods read only the staged sections/spans, chunk scale, validation policy,
         // and explicitly supplied prior node topology. Keep that dirty-only state isolated so a
         // failed generation cannot mutate any published cache or coverage index.
-        let mut staging = RoadSurfaceSystem::new(self.chunk_span_m);
+        let mut staging = RoadSurfaceSystem::new_with_chunk_grid(
+            self.chunk_span_m,
+            self.chunk_origin_x_m,
+            self.chunk_origin_z_m,
+        );
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         for (edge_idx, sections) in section_results {
             if let Some(sections) = sections {
@@ -705,7 +735,11 @@ impl RoadSurfaceSystem {
         // Build the first published generation in isolation. Initial compilation is not allowed to
         // expose a subset of spans or nodes merely because one owner failed to materialize.
         let staging_start = road_debug.then(Instant::now);
-        let mut staging = RoadSurfaceSystem::new(self.chunk_span_m);
+        let mut staging = RoadSurfaceSystem::new_with_chunk_grid(
+            self.chunk_span_m,
+            self.chunk_origin_x_m,
+            self.chunk_origin_z_m,
+        );
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         let staging_ms = elapsed_ms(staging_start);
 

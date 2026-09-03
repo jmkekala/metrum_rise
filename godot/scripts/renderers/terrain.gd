@@ -335,7 +335,10 @@ func _process(delta: float) -> void:
 	var payload_poll_start_us := Time.get_ticks_usec()
 	payload_poll_count = _poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	payload_poll_elapsed_ms = float(Time.get_ticks_usec() - payload_poll_start_us) / 1000.0
-	residency_changed = _sync_patch_residency()
+	network_refresh_pending = network_refresh_pending or simulation_node.is_network_dirty()
+	# A network generation owns its complete terrain/road publication. Residency may hide patches
+	# while it is pending, but must not directly upload newly visible terrain outside that batch.
+	residency_changed = _sync_patch_residency(false, not network_refresh_pending)
 	var residency_elapsed_ms := float(Time.get_ticks_usec() - residency_start_us) / 1000.0
 	var upload_elapsed_ms := 0.0
 	var border_elapsed_ms := 0.0
@@ -345,32 +348,13 @@ func _process(delta: float) -> void:
 	var prewarm_elapsed_ms := 0.0
 	_terrain_lod_last_deferred_count = 0
 	_terrain_prewarm_last_deferred_count = 0
-	var terrain_ack_ready := _retry_pending_terrain_ack()
-	if terrain_ack_ready and not network_refresh_pending and simulation_node.is_terrain_dirty():
-		_refresh_engineered_patch_lookup()
+	if not network_refresh_pending and simulation_node.is_terrain_dirty():
 		var dirty_start_us := Time.get_ticks_usec()
-		var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
-		var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
+		var dirty_pairs: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
 		_terrain_debug_dirty_batches += 1
-		_terrain_debug_dirty_patch_total += dirty_keys.size()
-		var dirty_upload_pending := false
-		if dirty_keys.is_empty():
-			pass
-		else:
-			for key in dirty_keys:
-				if patches.has(key):
-					if _upload_patch(key, true):
-						_refresh_one_patch_mesh_lod(key)
-						_queue_water_patch_texture_sync(key)
-					elif not _dirty_engineered_patch_has_handled_bad_cdt(key):
-						dirty_upload_pending = true
+		_terrain_debug_dirty_patch_total += int(dirty_pairs.size() / 2)
+		_try_commit_standalone_terrain_visual_update()
 		upload_elapsed_ms = float(Time.get_ticks_usec() - dirty_start_us) / 1000.0
-		if not dirty_upload_pending:
-			var border_start_us := Time.get_ticks_usec()
-			if not dirty_keys.is_empty() and _dirty_patch_keys_touch_border(dirty_keys):
-				_rebuild_border_skirt()
-			border_elapsed_ms = float(Time.get_ticks_usec() - border_start_us) / 1000.0
-			_acknowledge_terrain_batch(dirty_states)
 	if not simulation_node.is_terrain_dirty():
 		_prune_patch_payload_cache()
 
@@ -527,36 +511,110 @@ func refresh_water_patch_binding(key: Vector2i) -> void:
 	_queue_water_patch_texture_sync(key)
 
 func update_terrain_visuals() -> bool:
-	if not _retry_pending_terrain_ack():
+	var prepared := prepare_terrain_visual_update()
+	if prepared.is_empty():
 		return false
+	return commit_prepared_terrain_visual_update(prepared)
+
+func _try_commit_standalone_terrain_visual_update() -> bool:
+	if simulation_node.is_network_dirty():
+		return false
+	var network_generation := _terrain_network_render_generation()
+	var prepared := prepare_terrain_visual_update(false)
+	if prepared.is_empty():
+		return false
+	# A network edit may arrive while detached resources are being built. Leave those resources
+	# inactive so NetworkRenderer can publish the new terrain/road generation as one pair.
+	if (
+		simulation_node.is_network_dirty()
+		or _terrain_network_render_generation() != network_generation
+	):
+		return false
+	return commit_prepared_terrain_visual_update(prepared)
+
+func _terrain_network_render_generation() -> int:
+	if simulation_node.has_method("get_network_render_generation"):
+		return int(simulation_node.get_network_render_generation())
+	return int(simulation_node.get_road_tool_surface_generation())
+
+func prepare_terrain_visual_update(poll_ready: bool = true) -> Dictionary:
+	if not _retry_pending_terrain_ack():
+		return {}
 	_refresh_engineered_patch_lookup()
 	var dirty_states: PackedInt64Array = simulation_node.get_dirty_terrain_patch_payload_states()
 	var dirty_keys := _dirty_patch_payload_keys_from_states(dirty_states)
 	if dirty_keys.is_empty():
-		_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-		return not simulation_node.is_terrain_dirty()
+		if simulation_node.is_terrain_dirty():
+			return {}
+		return {
+			"dirty_states": dirty_states,
+			"dirty_keys": dirty_keys,
+			"patch_stages": {},
+			"border_stage": _stage_terrain_border_update(),
+		}
 
-	_poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
+	if poll_ready:
+		_poll_ready_terrain_patch_payloads(PATCH_PAYLOAD_POLL_BUDGET_PER_FRAME)
 	if not _dirty_patch_payloads_ready_for_atomic_upload(dirty_keys):
-		_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-		return false
+		return {}
+	if not _dirty_patch_payloads_renderable_for_atomic_upload(dirty_keys):
+		return {}
+	var staged_result := _stage_dirty_patch_payloads_for_atomic_commit(dirty_keys)
+	if not bool(staged_result.get("valid", false)):
+		return {}
+	var border_stage: Dictionary = {}
+	if _dirty_patch_keys_touch_border(dirty_keys):
+		border_stage = _stage_terrain_border_update()
+		if not bool(border_stage.get("valid", false)):
+			return {}
+	return {
+		"dirty_states": dirty_states,
+		"dirty_keys": dirty_keys,
+		"patch_stages": staged_result["stages"],
+		"border_stage": border_stage,
+	}
 
-	var upload_pending := false
+func commit_prepared_terrain_visual_update(prepared: Dictionary) -> bool:
+	if (
+		not prepared.has("dirty_states")
+		or not prepared.has("dirty_keys")
+		or not prepared.has("patch_stages")
+		or not prepared.has("border_stage")
+	):
+		return false
+	var dirty_states: PackedInt64Array = prepared["dirty_states"] as PackedInt64Array
+	var dirty_keys: Array = prepared["dirty_keys"] as Array
+	var patch_stages: Dictionary = prepared["patch_stages"] as Dictionary
+	var border_stage: Dictionary = prepared["border_stage"] as Dictionary
+	# Verify every detached stage still targets the same resident node before the first scene swap.
 	for key in dirty_keys:
-		if patches.has(key):
-			if _upload_patch(key, true):
-				_refresh_one_patch_mesh_lod(key)
-				_queue_water_patch_texture_sync(key)
-			elif not _dirty_engineered_patch_has_handled_bad_cdt(key):
-				upload_pending = true
-	if not upload_pending and (dirty_keys.is_empty() or _dirty_patch_keys_touch_border(dirty_keys)):
-		_rebuild_border_skirt()
-	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-	if upload_pending:
+		if patches.has(key) and (
+			not patch_stages.has(key)
+			or typeof(patch_stages[key]) != TYPE_DICTIONARY
+			or not _terrain_patch_stage_matches_target(key, patch_stages[key] as Dictionary)
+		):
+			return false
+	if not border_stage.is_empty() and not bool(border_stage.get("valid", false)):
 		return false
-	return _acknowledge_terrain_batch(dirty_states)
+	for key in dirty_keys:
+		if not patches.has(key):
+			continue
+		patch_payload_ready.erase(key)
+		patch_payload_requested.erase(key)
+		patch_payload_requested_generation.erase(key)
+		_commit_staged_patch_data(key, patch_stages[key] as Dictionary)
+		_queue_water_patch_texture_sync(key)
+	if not border_stage.is_empty():
+		_commit_terrain_border_stage(border_stage)
+	# Scene resources now represent this complete terrain batch. A failed exact acknowledgement
+	# means a newer patch generation arrived; it remains dirty without invalidating this visual pair.
+	_acknowledge_terrain_batch(dirty_states)
+	return true
 
-func _sync_patch_residency(force_full_sync: bool = false) -> bool:
+func _sync_patch_residency(
+	force_full_sync: bool = false,
+	allow_visible_additions: bool = true
+) -> bool:
 	if patch_cols <= 0 or patch_rows <= 0:
 		_record_residency_perf_counters(0, 0, 0, 0)
 		return false
@@ -626,28 +684,29 @@ func _sync_patch_residency(force_full_sync: bool = false) -> bool:
 		processed_removes += 1
 		changed = true
 
-	var attempted_adds := 0
-	var add_attempt_limit: int = mini(
-		PATCH_RESIDENCY_ADD_ATTEMPT_MAX_PER_FRAME,
-		max(1, mutation_limit - processed_mutations)
-	)
-	for key in keys_to_add:
-		if processed_mutations >= mutation_limit:
-			break
-		if processed_adds >= PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME:
-			break
-		if attempted_adds >= add_attempt_limit:
-			break
-		if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
-			break
-		if not patches.has(key) and not patch_payload_ready.has(key):
+	if allow_visible_additions:
+		var attempted_adds := 0
+		var add_attempt_limit: int = mini(
+			PATCH_RESIDENCY_ADD_ATTEMPT_MAX_PER_FRAME,
+			max(1, mutation_limit - processed_mutations)
+		)
+		for key in keys_to_add:
+			if processed_mutations >= mutation_limit:
+				break
+			if processed_adds >= PATCH_RESIDENCY_ADD_APPLY_MAX_PER_FRAME:
+				break
+			if attempted_adds >= add_attempt_limit:
+				break
+			if _time_budget_exhausted(budget_start_us, PATCH_RESIDENCY_MUTATION_BUDGET_MS, processed_mutations):
+				break
+			if not patches.has(key) and not patch_payload_ready.has(key):
+				attempted_adds += 1
+				continue
 			attempted_adds += 1
-			continue
-		attempted_adds += 1
-		if _activate_patch(key):
-			processed_mutations += 1
-			processed_adds += 1
-			changed = true
+			if _activate_patch(key):
+				processed_mutations += 1
+				processed_adds += 1
+				changed = true
 
 	_terrain_residency_pending_mutations = (
 		processed_adds < keys_to_add.size()
@@ -953,6 +1012,14 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
+		"spare_height_image": patch_resources.get("spare_height_image", null),
+		"spare_height_texture": patch_resources.get("spare_height_texture", null),
+		"spare_height_texture_width": int(
+			patch_resources.get("spare_height_texture_width", 0)
+		),
+		"spare_height_texture_height": int(
+			patch_resources.get("spare_height_texture_height", 0)
+		),
 		"water_texture": empty_water_texture,
 		"water_texture_width": 2,
 		"water_texture_height": 2,
@@ -1036,20 +1103,37 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 				]
 			)
 		return false
-	patch["last_patch_data"] = patch_data
-	patch["engineered_bad_cdt_blocked"] = false
-	_clear_bad_cdt_generation_handled(key)
-	var metadata_start_us := Time.get_ticks_usec()
+	var stage := _stage_terrain_patch_update(
+		key,
+		patch_data,
+		int(patch_data.get("surface_generation", -1)),
+		_terrain_patch_payload_render_step_mm(key)
+	)
+	if stage.is_empty():
+		return false
+	_commit_staged_patch_data(key, stage, total_start_us, fetch_ms)
+	return true
+
+func _stage_terrain_patch_update(
+	key: Vector2i,
+	patch_data: Dictionary,
+	expected_generation: int,
+	expected_render_step_mm: int
+) -> Dictionary:
+	if not _terrain_patch_payload_is_stageable(
+		key,
+		patch_data,
+		expected_generation,
+		expected_render_step_mm
+	):
+		return {}
+	var patch: Dictionary = patches[key]
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
-	var old_texture_width := int(patch.get("texture_width", texture_width))
-	var old_texture_height := int(patch.get("texture_height", texture_height))
-	var material: ShaderMaterial = patch["material"]
-	var height_image: Image = patch["height_image"]
-	var height_texture: ImageTexture = patch["height_texture"]
-	var metadata_ms := float(Time.get_ticks_usec() - metadata_start_us) / 1000.0
-
 	var texture_start_us := Time.get_ticks_usec()
+	var height_image: Image = patch.get("spare_height_image", null) as Image
+	if height_image == null:
+		height_image = Image.new()
 	height_image.set_data(
 		texture_width,
 		texture_height,
@@ -1057,69 +1141,144 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		Image.FORMAT_RF,
 		_terrain_patch_height_bytes(patch_data)
 	)
-	if old_texture_width == texture_width and old_texture_height == texture_height:
+	if height_image.is_empty():
+		return {}
+	var height_texture: ImageTexture = patch.get("spare_height_texture", null) as ImageTexture
+	var spare_texture_width := int(patch.get("spare_height_texture_width", 0))
+	var spare_texture_height := int(patch.get("spare_height_texture_height", 0))
+	if (
+		height_texture != null
+		and spare_texture_width == texture_width
+		and spare_texture_height == texture_height
+	):
 		height_texture.update(height_image)
 	else:
 		height_texture = ImageTexture.create_from_image(height_image)
-		patch["height_texture"] = height_texture
-		material.set_shader_parameter("heightmap", height_texture)
-	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
+	if height_texture == null:
+		return {}
+	patch["spare_height_image"] = height_image
+	patch["spare_height_texture"] = height_texture
+	patch["spare_height_texture_width"] = texture_width
+	patch["spare_height_texture_height"] = texture_height
+	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
+
+	var sample_width := int(patch_data["sample_width"])
+	var world_size_x := float(patch_data["world_size_x"])
+	var world_size_z := float(patch_data["world_size_z"])
+	var sample_step_m := world_size_x / float(sample_width - 1)
+	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
+	var center_x := float(patch_data["world_origin_x"]) + world_size_x * 0.5
+	var center_z := float(patch_data["world_origin_z"]) + world_size_z * 0.5
+	var lod_step := _mesh_lod_step_for_patch(key, center_x, center_z)
+	var subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
+	var mesh_start_us := Time.get_ticks_usec()
+	var terrain_mesh := _terrain_patch_mesh_from_data(
+		patch_data,
+		lod_step,
+		subdivision_factor
+	)
+	if terrain_mesh == null:
+		return {}
+	if height_is_baked and (terrain_mesh as ArrayMesh).get_surface_count() != 1:
+		return {}
+	var mesh_ms := float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
+
+	var retaining_start_us := Time.get_ticks_usec()
+	var retaining_mesh := _retaining_wall_patch_mesh(patch_data)
+	var retaining_visible := _patch_has_retaining_wall_mesh(patch_data)
+	if retaining_visible and retaining_mesh.get_surface_count() != 1:
+		return {}
+	var retaining_ms := float(Time.get_ticks_usec() - retaining_start_us) / 1000.0
+	return {
+		"valid": true,
+		"patch_node_id": (patch["node"] as MeshInstance3D).get_instance_id(),
+		"patch_data": patch_data,
+		"height_image": height_image,
+		"height_texture": height_texture,
+		"terrain_mesh": terrain_mesh,
+		"retaining_mesh": retaining_mesh,
+		"retaining_visible": retaining_visible,
+		"position": Vector3(center_x, 0.0, center_z),
+		"sample_width": sample_width,
+		"sample_height": int(patch_data["sample_height"]),
+		"texture_width": texture_width,
+		"texture_height": texture_height,
+		"world_size_x": world_size_x,
+		"world_size_z": world_size_z,
+		"sample_step_m": sample_step_m,
+		"lod_step": lod_step,
+		"subdivision_factor": subdivision_factor,
+		"height_is_baked": height_is_baked,
+		"texture_ms": texture_ms,
+		"mesh_ms": mesh_ms,
+		"retaining_ms": retaining_ms,
+	}
+
+func _commit_staged_patch_data(
+	key: Vector2i,
+	stage: Dictionary,
+	total_start_us: int = 0,
+	fetch_ms: float = 0.0
+) -> void:
+	if total_start_us <= 0:
+		total_start_us = Time.get_ticks_usec()
+	var patch: Dictionary = patches[key]
+	var patch_data: Dictionary = stage["patch_data"] as Dictionary
+	var old_height_image: Image = patch["height_image"] as Image
+	var old_height_texture: ImageTexture = patch["height_texture"] as ImageTexture
+	var old_texture_width := int(patch.get("texture_width", 0))
+	var old_texture_height := int(patch.get("texture_height", 0))
+	patch["height_image"] = stage["height_image"]
+	patch["height_texture"] = stage["height_texture"]
+	patch["spare_height_image"] = old_height_image
+	patch["spare_height_texture"] = old_height_texture
+	patch["spare_height_texture_width"] = old_texture_width
+	patch["spare_height_texture_height"] = old_texture_height
+	patch["last_patch_data"] = patch_data
+	patch["engineered_bad_cdt_blocked"] = false
+	_clear_bad_cdt_generation_handled(key)
+
+	var material: ShaderMaterial = patch["material"] as ShaderMaterial
+	material.set_shader_parameter("heightmap", stage["height_texture"])
+	material.set_shader_parameter(
+		"heightmap_texture_size",
+		Vector2(int(stage["texture_width"]), int(stage["texture_height"]))
+	)
 	material.set_shader_parameter(
 		"inner_sample_offset_texels",
 		Vector2(float(patch_data["inner_offset_x"]), float(patch_data["inner_offset_z"]))
 	)
 	material.set_shader_parameter(
 		"inner_sample_size_texels",
-		Vector2(int(patch_data["sample_width"]), int(patch_data["sample_height"]))
+		Vector2(int(stage["sample_width"]), int(stage["sample_height"]))
 	)
-	material.set_shader_parameter("patch_world_size_m", Vector2(
-		float(patch_data["world_size_x"]),
-		float(patch_data["world_size_z"])
-	))
-	var height_is_baked: bool = _terrain_patch_mesh_is_baked(patch_data)
-	material.set_shader_parameter("height_is_baked", height_is_baked)
-	var texture_ms := float(Time.get_ticks_usec() - texture_start_us) / 1000.0
+	material.set_shader_parameter(
+		"patch_world_size_m",
+		Vector2(float(stage["world_size_x"]), float(stage["world_size_z"]))
+	)
+	material.set_shader_parameter("height_is_baked", bool(stage["height_is_baked"]))
+	material.set_shader_parameter("terrain_debug_lod_step", float(stage["lod_step"]))
 
+	patch["sample_width"] = int(stage["sample_width"])
+	patch["sample_height"] = int(stage["sample_height"])
+	patch["texture_width"] = int(stage["texture_width"])
+	patch["texture_height"] = int(stage["texture_height"])
+	patch["world_size_x"] = float(stage["world_size_x"])
+	patch["world_size_z"] = float(stage["world_size_z"])
+	patch["sample_step_m"] = float(stage["sample_step_m"])
+	patch["lod_step"] = int(stage["lod_step"])
+	patch["subdivision_factor"] = int(stage["subdivision_factor"])
+	patch["height_is_baked"] = bool(stage["height_is_baked"])
+
+	var patch_node: MeshInstance3D = patch["node"] as MeshInstance3D
+	patch_node.mesh = stage["terrain_mesh"] as Mesh
+	patch_node.position = stage["position"] as Vector3
+	var retaining_wall_node: MeshInstance3D = patch["retaining_wall_node"] as MeshInstance3D
+	retaining_wall_node.mesh = stage["retaining_mesh"] as Mesh
+	retaining_wall_node.visible = bool(stage["retaining_visible"])
+	_apply_patch_visibility_for_residency(key, patch, patch_data)
 	_terrain_debug_patch_uploads += 1
 
-	var patch_update_start_us := Time.get_ticks_usec()
-	var patch_node: MeshInstance3D = patch["node"]
-	var world_size_x := float(patch_data["world_size_x"])
-	var world_size_z := float(patch_data["world_size_z"])
-	patch["sample_width"] = int(patch_data["sample_width"])
-	patch["sample_height"] = int(patch_data["sample_height"])
-	patch["texture_width"] = texture_width
-	patch["texture_height"] = texture_height
-	patch["world_size_x"] = world_size_x
-	patch["world_size_z"] = world_size_z
-	patch["sample_step_m"] = world_size_x / float(max(1, int(patch_data["sample_width"]) - 1))
-	patch["height_is_baked"] = height_is_baked
-	var patch_update_ms := float(Time.get_ticks_usec() - patch_update_start_us) / 1000.0
-
-	var mesh_start_us := Time.get_ticks_usec()
-	var terrain_mesh := _terrain_patch_mesh_from_data(
-		patch_data,
-		int(patch.get("lod_step", 1)),
-		int(patch.get("subdivision_factor", 1))
-	)
-	patch_node.mesh = terrain_mesh
-	var mesh_ms := float(Time.get_ticks_usec() - mesh_start_us) / 1000.0
-
-	var retaining_start_us := Time.get_ticks_usec()
-	var retaining_wall_node: MeshInstance3D = patch.get("retaining_wall_node", null) as MeshInstance3D
-	if retaining_wall_node != null:
-		retaining_wall_node.mesh = _retaining_wall_patch_mesh(patch_data)
-		retaining_wall_node.visible = _patch_has_retaining_wall_mesh(patch_data)
-	var retaining_ms := float(Time.get_ticks_usec() - retaining_start_us) / 1000.0
-
-	var position_start_us := Time.get_ticks_usec()
-	patch_node.position = Vector3(
-		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
-		0.0,
-		float(patch_data["world_origin_z"]) + world_size_z * 0.5
-	)
-	_apply_patch_visibility_for_residency(key, patch, patch_data)
-	var position_ms := float(Time.get_ticks_usec() - position_start_us) / 1000.0
 	if _road_debug_enabled:
 		var terrain_vertices := 0
 		var terrain_indices := 0
@@ -1145,12 +1304,12 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 				str(engineered_patch_lookup.has(key)),
 				"false",
 				fetch_ms,
-				metadata_ms,
-				texture_ms,
-				patch_update_ms,
-				mesh_ms,
-				retaining_ms,
-				position_ms,
+				0.0,
+				float(stage["texture_ms"]),
+				0.0,
+				float(stage["mesh_ms"]),
+				float(stage["retaining_ms"]),
+				0.0,
 				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 				terrain_vertices,
 				terrain_indices,
@@ -1158,7 +1317,6 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 				retaining_indices,
 			]
 		)
-	return true
 
 func _block_engineered_patch_until_valid_cdt(patch: Dictionary) -> void:
 	patch["engineered_bad_cdt_blocked"] = true
@@ -1195,6 +1353,7 @@ func _apply_patch_visibility_for_residency(
 func _activate_patch(key: Vector2i) -> bool:
 	if resident_patch_lookup.has(key):
 		return false
+	var network_generation := _terrain_network_render_generation()
 	if not patches.has(key):
 		_create_patch(key)
 	var patch: Dictionary = patches.get(key, {})
@@ -1215,6 +1374,13 @@ func _activate_patch(key: Vector2i) -> bool:
 	if patch.is_empty() or _patch_is_blocked_by_bad_cdt(patch):
 		return false
 	_refresh_one_patch_mesh_lod(key)
+	# Creation and refresh can build hidden resources, but a concurrent network generation owns
+	# their first visible publication together with its road chunks.
+	if (
+		simulation_node.is_network_dirty()
+		or _terrain_network_render_generation() != network_generation
+	):
+		return false
 	resident_patch_lookup[key] = true
 	_apply_patch_visibility_for_residency(key, patch, last_patch_data)
 	_queue_water_patch_texture_sync(key)
@@ -1349,6 +1515,8 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 	var material: ShaderMaterial = patch.get("material", null) as ShaderMaterial
 	var height_image: Image = patch.get("height_image", null) as Image
 	var height_texture: ImageTexture = patch.get("height_texture", null) as ImageTexture
+	var spare_height_image: Image = patch.get("spare_height_image", null) as Image
+	var spare_height_texture: ImageTexture = patch.get("spare_height_texture", null) as ImageTexture
 	patch_node.visible = false
 	patch_node.mesh = null
 	patch_node.position = Vector3.ZERO
@@ -1370,6 +1538,10 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 		"height_texture": height_texture,
 		"height_texture_width": int(patch.get("texture_width", 0)),
 		"height_texture_height": int(patch.get("texture_height", 0)),
+		"spare_height_image": spare_height_image,
+		"spare_height_texture": spare_height_texture,
+		"spare_height_texture_width": int(patch.get("spare_height_texture_width", 0)),
+		"spare_height_texture_height": int(patch.get("spare_height_texture_height", 0)),
 	})
 	_terrain_resource_pool_release_count += 1
 
@@ -1413,6 +1585,10 @@ func _new_terrain_patch_resources() -> Dictionary:
 		"height_texture": height_texture,
 		"height_texture_width": texture_size.x,
 		"height_texture_height": texture_size.y,
+		"spare_height_image": null,
+		"spare_height_texture": null,
+		"spare_height_texture_width": 0,
+		"spare_height_texture_height": 0,
 	}
 
 func _terrain_default_patch_texture_size() -> Vector2i:
@@ -1941,6 +2117,247 @@ func _dirty_patch_payloads_ready_for_atomic_upload(keys: Array[Vector2i]) -> boo
 			all_ready = false
 	return all_ready
 
+func _dirty_patch_payloads_renderable_for_atomic_upload(keys: Array[Vector2i]) -> bool:
+	for key in keys:
+		if not patches.has(key):
+			continue
+		if _dirty_engineered_patch_has_handled_bad_cdt(key):
+			return false
+		var patch_data: Dictionary = patch_payload_ready.get(key, {}) as Dictionary
+		if patch_data.is_empty():
+			return false
+		if (
+			_patch_requires_engineered_refinement(key, patch_data)
+			and not _engineered_patch_cdt_status_is_renderable(patch_data)
+		):
+			_mark_bad_cdt_generation_handled(key, patch_data)
+			if _road_debug_enabled:
+				print(
+					"[DEBUG:road] terrain_atomic_upload_blocked key=(%d,%d) preserved_last_good_batch=true cdt_status=%s cdt_error=%s"
+					% [
+						key.x,
+						key.y,
+						str(patch_data.get("terrain_cdt_status", "none")),
+						str(patch_data.get("terrain_cdt_error", "none")),
+					]
+				)
+			return false
+	return true
+
+func _stage_dirty_patch_payloads_for_atomic_commit(keys: Array[Vector2i]) -> Dictionary:
+	var stages: Dictionary = {}
+	for key in keys:
+		if not patches.has(key):
+			continue
+		var patch_data: Dictionary = patch_payload_ready[key] as Dictionary
+		var expected_generation := int(dirty_patch_payload_generations.get(key, -1))
+		var stage := _stage_terrain_patch_update(
+			key,
+			patch_data,
+			expected_generation,
+			_terrain_patch_payload_render_step_mm(key)
+		)
+		if stage.is_empty():
+			return {"valid": false, "stages": {}}
+		stages[key] = stage
+	return {"valid": true, "stages": stages}
+
+func _terrain_patch_stage_matches_target(key: Vector2i, stage: Dictionary) -> bool:
+	if not bool(stage.get("valid", false)) or not patches.has(key):
+		return false
+	var patch: Dictionary = patches[key]
+	var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
+	return (
+		patch_node != null
+		and is_instance_valid(patch_node)
+		and int(stage.get("patch_node_id", 0)) == patch_node.get_instance_id()
+		and typeof(stage.get("patch_data", null)) == TYPE_DICTIONARY
+		and stage.get("height_image", null) is Image
+		and stage.get("height_texture", null) is ImageTexture
+		and stage.get("terrain_mesh", null) is Mesh
+		and stage.get("retaining_mesh", null) is Mesh
+	)
+
+func _terrain_patch_payload_is_stageable(
+	key: Vector2i,
+	patch_data: Dictionary,
+	expected_generation: int,
+	expected_render_step_mm: int
+) -> bool:
+	if not patches.has(key):
+		return false
+	var patch: Dictionary = patches[key]
+	if (
+		not (patch.get("node", null) is MeshInstance3D)
+		or not (patch.get("retaining_wall_node", null) is MeshInstance3D)
+		or not (patch.get("material", null) is ShaderMaterial)
+		or not (patch.get("height_image", null) is Image)
+		or not (patch.get("height_texture", null) is ImageTexture)
+	):
+		return false
+	if (
+		typeof(patch_data.get("patch_x", null)) != TYPE_INT
+		or typeof(patch_data.get("patch_z", null)) != TYPE_INT
+		or int(patch_data["patch_x"]) != key.x
+		or int(patch_data["patch_z"]) != key.y
+		or typeof(patch_data.get("surface_generation", null)) != TYPE_INT
+		or int(patch_data["surface_generation"]) != expected_generation
+		or typeof(patch_data.get("render_step_mm", null)) != TYPE_INT
+		or int(patch_data["render_step_mm"]) != expected_render_step_mm
+	):
+		return false
+	for field in [
+		"sample_width",
+		"sample_height",
+		"texture_width",
+		"texture_height",
+		"inner_offset_x",
+		"inner_offset_z",
+	]:
+		if typeof(patch_data.get(field, null)) != TYPE_INT:
+			return false
+	var sample_width := int(patch_data["sample_width"])
+	var sample_height := int(patch_data["sample_height"])
+	var texture_width := int(patch_data["texture_width"])
+	var texture_height := int(patch_data["texture_height"])
+	var inner_offset_x := int(patch_data["inner_offset_x"])
+	var inner_offset_z := int(patch_data["inner_offset_z"])
+	if (
+		sample_width < 2
+		or sample_height < 2
+		or texture_width <= 0
+		or texture_height <= 0
+		or inner_offset_x < 0
+		or inner_offset_z < 0
+		or inner_offset_x + sample_width > texture_width
+		or inner_offset_z + sample_height > texture_height
+	):
+		return false
+	for field in ["world_origin_x", "world_origin_z", "world_size_x", "world_size_z"]:
+		if not _terrain_numeric_field_is_finite(patch_data, field):
+			return false
+	if float(patch_data["world_size_x"]) <= 0.0 or float(patch_data["world_size_z"]) <= 0.0:
+		return false
+	var expected_height_bytes := texture_width * texture_height * 4
+	if expected_height_bytes <= 0:
+		return false
+	if patch_data.has("height_bytes"):
+		if (
+			typeof(patch_data["height_bytes"]) != TYPE_PACKED_BYTE_ARRAY
+			or (patch_data["height_bytes"] as PackedByteArray).size() != expected_height_bytes
+		):
+			return false
+	elif patch_data.has("height_data"):
+		if (
+			typeof(patch_data["height_data"]) != TYPE_PACKED_FLOAT32_ARRAY
+			or (patch_data["height_data"] as PackedFloat32Array).size()
+				!= texture_width * texture_height
+		):
+			return false
+	else:
+		return false
+
+	for field in [
+		"terrain_requires_engineered_refinement",
+		"terrain_requires_road_clipping",
+	]:
+		if patch_data.has(field) and typeof(patch_data[field]) != TYPE_BOOL:
+			return false
+	var engineered_patch := _patch_requires_engineered_refinement(key, patch_data)
+	if engineered_patch:
+		if (
+			typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
+			or typeof(patch_data.get("terrain_cdt_contract_revision", null)) != TYPE_INT
+			or typeof(patch_data.get("terrain_cdt_mesh_suppressed", null)) != TYPE_BOOL
+		):
+			return false
+		if (
+			patch_data.has("terrain_cdt_empty_refined")
+			and typeof(patch_data["terrain_cdt_empty_refined"]) != TYPE_BOOL
+		):
+			return false
+		if (
+			patch_data.has("terrain_cdt_pathological_faces_omitted")
+			and (
+				typeof(patch_data["terrain_cdt_pathological_faces_omitted"]) != TYPE_INT
+				or int(patch_data["terrain_cdt_pathological_faces_omitted"]) < 0
+			)
+		):
+			return false
+		if not _engineered_patch_data_is_renderable(patch_data):
+			return false
+	elif patch_data.has("terrain_cdt_status"):
+		return false
+	if (
+		not engineered_patch
+		and not _triangle_mesh_payload_is_valid(
+			patch_data,
+			"terrain_retaining_wall_mesh",
+			false
+		)
+	):
+		return false
+	return true
+
+func _terrain_numeric_field_is_finite(patch_data: Dictionary, field: String) -> bool:
+	var value = patch_data.get(field, null)
+	return (typeof(value) == TYPE_FLOAT or typeof(value) == TYPE_INT) and is_finite(float(value))
+
+func _triangle_mesh_payload_is_valid(
+	patch_data: Dictionary,
+	prefix: String,
+	required: bool
+) -> bool:
+	var vertices_key := prefix + "_vertices"
+	var normals_key := prefix + "_normals"
+	var uvs_key := prefix + "_uvs"
+	var indices_key := prefix + "_indices"
+	if not patch_data.has(vertices_key):
+		return (
+			not required
+			and not patch_data.has(normals_key)
+			and not patch_data.has(uvs_key)
+			and not patch_data.has(indices_key)
+		)
+	if typeof(patch_data[vertices_key]) != TYPE_PACKED_VECTOR3_ARRAY:
+		return false
+	var vertices: PackedVector3Array = patch_data[vertices_key]
+	if (
+		not patch_data.has(normals_key)
+		or typeof(patch_data[normals_key]) != TYPE_PACKED_VECTOR3_ARRAY
+		or not patch_data.has(uvs_key)
+		or typeof(patch_data[uvs_key]) != TYPE_PACKED_VECTOR2_ARRAY
+		or not patch_data.has(indices_key)
+		or typeof(patch_data[indices_key]) != TYPE_PACKED_INT32_ARRAY
+	):
+		return false
+	var normals: PackedVector3Array = patch_data[normals_key]
+	var uvs: PackedVector2Array = patch_data[uvs_key]
+	var indices: PackedInt32Array = patch_data[indices_key]
+	if vertices.is_empty():
+		return not required and normals.is_empty() and uvs.is_empty() and indices.is_empty()
+	if vertices.size() < 3:
+		return false
+	if normals.size() != vertices.size() or uvs.size() != vertices.size():
+		return false
+	for vertex in vertices:
+		if not is_finite(vertex.x) or not is_finite(vertex.y) or not is_finite(vertex.z):
+			return false
+	for normal in normals:
+		if not is_finite(normal.x) or not is_finite(normal.y) or not is_finite(normal.z):
+			return false
+	for uv in uvs:
+		if not is_finite(uv.x) or not is_finite(uv.y):
+			return false
+	if indices.is_empty():
+		return vertices.size() % 3 == 0
+	if indices.size() % 3 != 0:
+		return false
+	for index in indices:
+		if index < 0 or index >= vertices.size():
+			return false
+	return true
+
 func _patch_payload_ready_for_key(key: Vector2i) -> bool:
 	var expected_render_step_mm := _terrain_patch_payload_render_step_mm(key)
 	_sync_patch_payload_road_generation()
@@ -2031,8 +2448,6 @@ func _terrain_patch_mesh_from_data(
 ) -> Mesh:
 	if _patch_uses_cdt_terrain_mesh(patch_data):
 		return _baked_terrain_patch_mesh(patch_data)
-	if not patch_data.has("terrain_cdt_status") and _patch_has_baked_terrain_mesh(patch_data):
-		return _baked_terrain_patch_mesh(patch_data)
 	return _patch_mesh(
 		int(patch_data["sample_width"]),
 		int(patch_data["sample_height"]),
@@ -2044,17 +2459,24 @@ func _terrain_patch_mesh_from_data(
 
 func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
 	# Failed CDT keeps diagnostic fields but must not replace the heightmap mesh with an empty bake.
-	if bool(patch_data.get("terrain_cdt_mesh_suppressed", false)):
+	if (
+		typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
+		or typeof(patch_data.get("terrain_cdt_contract_revision", null)) != TYPE_INT
+		or typeof(patch_data.get("terrain_cdt_mesh_suppressed", null)) != TYPE_BOOL
+		or bool(patch_data["terrain_cdt_mesh_suppressed"])
+	):
 		return false
 	return (
-		patch_data.has("terrain_cdt_status")
+		patch_data["terrain_cdt_status"] == "ok"
 		and _patch_has_current_cdt_contract(patch_data)
-		and not _patch_has_bad_refined_cdt_status(patch_data)
 		and _patch_has_baked_terrain_mesh(patch_data)
 	)
 
 func _patch_has_current_cdt_contract(patch_data: Dictionary) -> bool:
-	return int(patch_data.get("terrain_cdt_contract_revision", -1)) == TERRAIN_CDT_CONTRACT_REVISION
+	return (
+		typeof(patch_data.get("terrain_cdt_contract_revision", null)) == TYPE_INT
+		and int(patch_data["terrain_cdt_contract_revision"]) == TERRAIN_CDT_CONTRACT_REVISION
+	)
 
 func _patch_has_bad_refined_cdt_status(patch_data: Dictionary) -> bool:
 	var cdt_status := str(patch_data.get("terrain_cdt_status", ""))
@@ -2080,37 +2502,24 @@ func _last_renderable_engineered_patch_data(patch: Dictionary) -> Dictionary:
 func _engineered_patch_data_is_renderable(patch_data: Dictionary) -> bool:
 	if patch_data.is_empty():
 		return false
-	return _patch_uses_cdt_terrain_mesh(patch_data) or _patch_has_heightmap_render_fallback(
-		patch_data
+	return (
+		_engineered_patch_cdt_status_is_renderable(patch_data)
+		and _triangle_mesh_payload_is_valid(patch_data, "terrain_mesh", true)
+		and _triangle_mesh_payload_is_valid(
+			patch_data,
+			"terrain_retaining_wall_mesh",
+			false
+		)
 	)
 
-func _patch_has_heightmap_render_fallback(patch_data: Dictionary) -> bool:
-	var texture_width := int(patch_data.get("texture_width", 0))
-	var texture_height := int(patch_data.get("texture_height", 0))
-	var sample_width := int(patch_data.get("sample_width", 0))
-	var sample_height := int(patch_data.get("sample_height", 0))
-	var height_bytes: PackedByteArray = (
-		patch_data.get("height_bytes", PackedByteArray())
-		as PackedByteArray
-	)
-	return (
-		texture_width > 0
-		and texture_height > 0
-		and sample_width >= 2
-		and sample_height >= 2
-		and float(patch_data.get("world_size_x", 0.0)) > 0.0
-		and float(patch_data.get("world_size_z", 0.0)) > 0.0
-		and height_bytes.size() >= texture_width * texture_height * 4
-	)
+func _engineered_patch_cdt_status_is_renderable(patch_data: Dictionary) -> bool:
+	return _patch_uses_cdt_terrain_mesh(patch_data)
 
 func _terrain_patch_mesh_is_baked(patch_data: Dictionary) -> bool:
-	return (
-		_patch_uses_cdt_terrain_mesh(patch_data)
-		or (not patch_data.has("terrain_cdt_status") and _patch_has_baked_terrain_mesh(patch_data))
-	)
+	return _patch_uses_cdt_terrain_mesh(patch_data)
 
 func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
-	if not patch_data.has("terrain_mesh_vertices"):
+	if typeof(patch_data.get("terrain_mesh_vertices", null)) != TYPE_PACKED_VECTOR3_ARRAY:
 		return false
 	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
 	return vertices.size() >= 3
@@ -3097,25 +3506,37 @@ func _ensure_border_visuals() -> void:
 	border_bottom_cap_instance.material_override = border_bottom_cap_material
 
 func _rebuild_border_skirt() -> void:
-	_ensure_border_visuals()
-	border_loop_positions = simulation_node.get_terrain_border_loop()
-	if border_loop_positions.size() < 4:
-		border_skirt_instance.mesh = null
-		border_bottom_cap_instance.mesh = null
-		return
+	var stage := _stage_terrain_border_update()
+	if bool(stage.get("valid", false)):
+		_commit_terrain_border_stage(stage)
+
+func _stage_terrain_border_update() -> Dictionary:
+	var positions: PackedVector3Array = simulation_node.get_terrain_border_loop()
+	for position in positions:
+		if not is_finite(position.x) or not is_finite(position.y) or not is_finite(position.z):
+			return {"valid": false}
+	if positions.size() < 4:
+		return {
+			"valid": true,
+			"positions": positions,
+			"skirt_mesh": null,
+			"bottom_mesh": null,
+			"bottom_position": Vector3.ZERO,
+			"increment_revision": false,
+		}
 
 	var min_edge_y := INF
-	for position in border_loop_positions:
+	for position in positions:
 		min_edge_y = min(min_edge_y, position.y)
 
 	var bottom_y := min_edge_y - TERRAIN_BORDER_DEPTH_M
 	var surface_tool := SurfaceTool.new()
 	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var perimeter_u := 0.0
-	for index in range(border_loop_positions.size()):
-		var next_index := (index + 1) % border_loop_positions.size()
-		var top_a: Vector3 = border_loop_positions[index]
-		var top_b: Vector3 = border_loop_positions[next_index]
+	for index in range(positions.size()):
+		var next_index := (index + 1) % positions.size()
+		var top_a: Vector3 = positions[index]
+		var top_b: Vector3 = positions[next_index]
 		var bottom_a := Vector3(top_a.x, bottom_y, top_a.z)
 		var bottom_b := Vector3(top_b.x, bottom_y, top_b.z)
 		var segment_length := top_a.distance_to(top_b)
@@ -3123,14 +3544,30 @@ func _rebuild_border_skirt() -> void:
 		perimeter_u += segment_length
 
 	surface_tool.generate_tangents()
-	border_skirt_instance.mesh = surface_tool.commit()
-	border_skirt_instance.material_override = border_skirt_material
+	var skirt_mesh := surface_tool.commit()
+	if skirt_mesh == null:
+		return {"valid": false}
 	var bottom_cap := PlaneMesh.new()
 	bottom_cap.size = terrain_world_size
-	border_bottom_cap_instance.mesh = bottom_cap
-	border_bottom_cap_instance.position = Vector3(0.0, bottom_y, 0.0)
+	return {
+		"valid": true,
+		"positions": positions,
+		"skirt_mesh": skirt_mesh,
+		"bottom_mesh": bottom_cap,
+		"bottom_position": Vector3(0.0, bottom_y, 0.0),
+		"increment_revision": true,
+	}
+
+func _commit_terrain_border_stage(stage: Dictionary) -> void:
+	_ensure_border_visuals()
+	border_loop_positions = stage["positions"] as PackedVector3Array
+	border_skirt_instance.mesh = stage.get("skirt_mesh", null) as Mesh
+	border_skirt_instance.material_override = border_skirt_material
+	border_bottom_cap_instance.mesh = stage.get("bottom_mesh", null) as Mesh
+	border_bottom_cap_instance.position = stage["bottom_position"] as Vector3
 	border_bottom_cap_instance.material_override = border_bottom_cap_material
-	border_revision += 1
+	if bool(stage.get("increment_revision", false)):
+		border_revision += 1
 
 func _add_skirt_quad(
 	surface_tool: SurfaceTool,

@@ -80,10 +80,14 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   full-network `ArrayMesh`. Rust rebuilds only the changed surface/earthwork chunk union, emits its
   unique owners once, assigns each triangle to one centroid-owned chunk, retains distant chunk
   buffers by immutable `Arc`, and publishes accumulated upserts/removal tombstones until an exact
-  generation acknowledgement. Godot stages and swaps only those chunks after matching terrain is
-  visible; world replacement clears old road chunks before rebuilding terrain, then hydrates an
-  explicit full road snapshot. `./run.sh --benchmark-road-chunks` now replays fixed Rust generation
-  and Godot upload workloads across increasing resident-chunk counts. See [`roads.md`](roads.md).
+  generation acknowledgement. Godot preflights the complete dirty terrain batch, stages changed
+  road chunks as detached instances, and commits the matching terrain/road pair back-to-back; a
+  failed engineered CDT retains the complete previous pair without acknowledging the road revision.
+  World replacement clears old road chunks before rebuilding terrain, then hydrates an explicit
+  full road snapshot. The road grid now starts at the terrain world minimum instead of
+  making world zero a four-chunk corner, reducing a representative central edit to one chunk while
+  retaining O(1) key lookup. `./run.sh --benchmark-road-chunks` replays fixed Rust generation and
+  Godot upload workloads across increasing resident-chunk counts. See [`roads.md`](roads.md).
 - Explicit grain farms now follow the coal-mine style placement flow: the player places the farm
   building, draws a nearby field polygon, and the saved field site gates renewable `grain`
   production without consuming a map resource deposit. The committed field area scales both output

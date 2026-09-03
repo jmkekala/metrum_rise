@@ -58,9 +58,7 @@ fn test_core() -> SimCore {
         heightmap: TerrainSystem::from_world_config(&config),
         watermap: WaterSystem::from_world_config(&config),
         region_graph: RegionGraph::new(),
-        transit_network: TransitNetwork::new_with_surface_chunk_span(
-            config.terrain_render_chunk_span_m(),
-        ),
+        transit_network: TransitNetwork::new_for_world(&config),
         zoning: ZoningSystem::new(&config),
         pollution: PollutionSystem::new(&config),
         noise: NoiseSystem::new(&config),
@@ -151,6 +149,11 @@ fn test_core_uses_terrain_render_span_for_road_surface_chunks() {
         core.heightmap.chunk_span_m(),
         core.config.terrain_cell_m * core.heightmap.render_patch_interval_cells() as f32,
         "advertised render span must equal the physical terrain-patch interval span"
+    );
+    assert_eq!(
+        core.transit_network.road_surface.chunk_origin_m(),
+        core.config.terrain_world_origin_m(),
+        "road render chunks must start at the terrain world minimum"
     );
 }
 

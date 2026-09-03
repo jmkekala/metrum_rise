@@ -142,7 +142,11 @@ impl RoadSurfaceSystem {
             edge_class,
         ));
 
-        let mut preview_surface = RoadSurfaceSystem::new(self.chunk_span_m);
+        let mut preview_surface = RoadSurfaceSystem::new_with_chunk_grid(
+            self.chunk_span_m,
+            self.chunk_origin_x_m,
+            self.chunk_origin_z_m,
+        );
         preview_surface.node_validation_logging_enabled = false;
         preview_surface.compile_dirty_with_reason(
             &graph,
@@ -856,7 +860,11 @@ impl RoadSurfaceSystem {
             return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
         }
 
-        let mut validation_surface = RoadSurfaceSystem::new(self.chunk_span_m);
+        let mut validation_surface = RoadSurfaceSystem::new_with_chunk_grid(
+            self.chunk_span_m,
+            self.chunk_origin_x_m,
+            self.chunk_origin_z_m,
+        );
         validation_surface.node_validation_logging_enabled = false;
         validation_surface.compile_dirty_with_reason(&validation_graph, terrain, compile_reason);
 
@@ -1383,7 +1391,11 @@ impl RoadSurfaceSystem {
         validation_graph: &mut RegionGraph,
         new_edge_idx: usize,
     ) {
-        let mut network = TransitNetwork::new_with_surface_chunk_span(self.chunk_span_m);
+        let mut network = TransitNetwork::new_with_surface_chunk_grid(
+            self.chunk_span_m,
+            self.chunk_origin_x_m,
+            self.chunk_origin_z_m,
+        );
         let world_config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&world_config);
         let mut allocator = BuildingAllocator::new();

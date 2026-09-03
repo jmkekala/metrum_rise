@@ -136,8 +136,10 @@ impl RoadSurfaceSystem {
         world_z: f64,
     ) -> SurfaceChunkKey {
         (
-            (world_x / f64::from(self.chunk_span_m)).floor() as i32,
-            (world_z / f64::from(self.chunk_span_m)).floor() as i32,
+            ((world_x - f64::from(self.chunk_origin_x_m)) / f64::from(self.chunk_span_m)).floor()
+                as i32,
+            ((world_z - f64::from(self.chunk_origin_z_m)) / f64::from(self.chunk_span_m)).floor()
+                as i32,
         )
     }
 
@@ -146,8 +148,8 @@ impl RoadSurfaceSystem {
         chunk: SurfaceChunkKey,
     ) -> (RoadVec3, RoadVec3) {
         let chunk_span_m = f64::from(self.chunk_span_m);
-        let min_x = f64::from(chunk.0) * chunk_span_m;
-        let min_z = f64::from(chunk.1) * chunk_span_m;
+        let min_x = f64::from(self.chunk_origin_x_m) + f64::from(chunk.0) * chunk_span_m;
+        let min_z = f64::from(self.chunk_origin_z_m) + f64::from(chunk.1) * chunk_span_m;
         let max_x = min_x + chunk_span_m;
         let max_z = min_z + chunk_span_m;
         (

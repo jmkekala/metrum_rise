@@ -229,6 +229,10 @@ impl SimulationNode {
         snapshot.pending_road_mesh_chunks = Arc::clone(&core.pending_road_mesh_chunks);
         snapshot.road_mesh_full_replace = core.road_mesh_full_replace;
         snapshot.road_mesh_chunk_span_m = core.transit_network.road_surface.chunk_span_m();
+        let (road_chunk_origin_x_m, road_chunk_origin_z_m) =
+            core.transit_network.road_surface.chunk_origin_m();
+        snapshot.road_mesh_chunk_origin_x_m = road_chunk_origin_x_m;
+        snapshot.road_mesh_chunk_origin_z_m = road_chunk_origin_z_m;
         true
     }
 

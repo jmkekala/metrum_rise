@@ -2829,7 +2829,10 @@ mod tests {
         graph.rebuild_adjacency_list();
         graph.rebuild_intersection_clips();
 
-        let mut network = TransitNetwork::new_with_surface_chunk_span(16.0);
+        const CHUNK_ORIGIN_X_M: f32 = -8.0;
+        const CHUNK_ORIGIN_Z_M: f32 = -8.0;
+        let mut network =
+            TransitNetwork::new_with_surface_chunk_grid(16.0, CHUNK_ORIGIN_X_M, CHUNK_ORIGIN_Z_M);
         network.lane_system.rebuild(&mut graph);
         let global = network
             .try_generate_mesh_data(&graph, &terrain)
@@ -2859,7 +2862,11 @@ mod tests {
 
                 let mut chunk_triangles = Vec::new();
                 for (&chunk, mesh) in &chunks {
-                    let origin = Vector3::new(chunk.0 as f32 * 16.0, 0.0, chunk.1 as f32 * 16.0);
+                    let origin = Vector3::new(
+                        CHUNK_ORIGIN_X_M + chunk.0 as f32 * 16.0,
+                        0.0,
+                        CHUNK_ORIGIN_Z_M + chunk.1 as f32 * 16.0,
+                    );
                     chunk_triangles.extend(quantized_render_triangles(
                         &mesh.$vertices,
                         &mesh.$normals,
@@ -2913,6 +2920,65 @@ mod tests {
             concrete_normals,
             concrete_uvs,
             concrete_colors
+        );
+    }
+
+    #[test]
+    fn terrain_aligned_grid_reduces_a_central_local_road_from_four_chunks_to_one() {
+        let config = WorldConfig::editor_sandbox();
+        let terrain = TerrainSystem::from_world_config(&config);
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(Vector3::new(-16.0, 0.0, 0.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(16.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            west,
+            east,
+            graph.node(west).pos,
+            graph.node(east).pos,
+            7.0,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let mut zero_anchored_network =
+            TransitNetwork::new_with_surface_chunk_span(config.terrain_render_chunk_span_m());
+        zero_anchored_network.lane_system.rebuild(&mut graph);
+        zero_anchored_network
+            .road_surface
+            .compile_dirty(&graph, &terrain);
+        let zero_anchored_chunks = zero_anchored_network
+            .road_surface
+            .surface_chunk_cache()
+            .keys()
+            .chain(
+                zero_anchored_network
+                    .road_surface
+                    .earthwork_chunk_cache()
+                    .keys(),
+            )
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            zero_anchored_chunks.len(),
+            4,
+            "the regression fixture must reproduce the old world-zero four-way split"
+        );
+
+        let mut network = TransitNetwork::new_for_world(&config);
+        network.lane_system.rebuild(&mut graph);
+        network.road_surface.compile_dirty(&graph, &terrain);
+        let occupied_chunks = network
+            .road_surface
+            .surface_chunk_cache()
+            .keys()
+            .chain(network.road_surface.earthwork_chunk_cache().keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            occupied_chunks.len(),
+            1,
+            "a typical central edit must not fan out across world-zero chunk boundaries"
         );
     }
 

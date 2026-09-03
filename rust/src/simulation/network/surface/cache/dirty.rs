@@ -3,7 +3,7 @@
 use super::*;
 
 impl RoadSurfaceSystem {
-    /// Clears compiled caches and dirty tracking without changing the configured chunk span.
+    /// Clears compiled caches and dirty tracking without changing the configured render grid.
     pub fn clear(&mut self) {
         self.note_compile_invalidation();
         self.clear_dirty_tracking();
@@ -87,9 +87,29 @@ impl RoadSurfaceSystem {
         }
     }
 
-    /// Reconfigures the chunk span and clears all caches and dirty sets.
+    /// Reconfigures the chunk span, preserves the grid origin, and clears all cached state.
     pub fn set_chunk_span_m(&mut self, chunk_span_m: f32) {
+        self.set_chunk_grid(chunk_span_m, self.chunk_origin_x_m, self.chunk_origin_z_m);
+    }
+
+    /// Reconfigures the render grid and clears all caches and dirty sets.
+    pub fn set_chunk_grid(
+        &mut self,
+        chunk_span_m: f32,
+        chunk_origin_x_m: f32,
+        chunk_origin_z_m: f32,
+    ) {
         self.chunk_span_m = chunk_span_m.max(f32::EPSILON);
+        self.chunk_origin_x_m = if chunk_origin_x_m.is_finite() {
+            chunk_origin_x_m
+        } else {
+            0.0
+        };
+        self.chunk_origin_z_m = if chunk_origin_z_m.is_finite() {
+            chunk_origin_z_m
+        } else {
+            0.0
+        };
         self.clear();
     }
 

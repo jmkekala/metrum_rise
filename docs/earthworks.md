@@ -242,10 +242,11 @@ Deterministic seam contract:
     clipped patch rather than filling the failed window from raw terrain
   - a building-site loop cannot satisfy road clipping: a patch already owned by grounded roads must
     retain nonempty authoritative road sources and road loops on every refined generation
-  - CDT outputs whose ordinary terrain mesh has pathological face slope or triangle span are loud
-    diagnostic failures; the exporter omits only pathological ordinary terrain faces while keeping
-    the clipped baked patch mesh active, records the omitted count, and keeps the status/pathology
-    visible in logs. This containment is not a valid seam closure and must remain visible in logs
+  - the exporter may omit individual pathological ordinary terrain faces before final validation,
+    record the omitted count, and keep the remaining clipped baked patch active only when its final
+    status is `ok`. This containment is not a seam-closure fallback and remains visible in logs. If
+    the final output is still `pathological`, the complete engineered generation is non-renderable
+    and the renderer retains the previous terrain/road pair; raw terrain never replaces it
   - `Terminal`, `Bend`, and `JunctionN` visual node pieces resolve asphalt / sidewalk /
     outer-footprint ownership through `i_overlay` before Spade triangulation, so sharp-angle
     sidewalks shrink or split instead of overlapping asphalt

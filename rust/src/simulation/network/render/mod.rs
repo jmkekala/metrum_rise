@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 struct NetworkMeshChunkPartition {
     chunk_span_m: f32,
+    chunk_origin_x_m: f32,
+    chunk_origin_z_m: f32,
     target_chunks: BTreeSet<SurfaceChunkKey>,
     chunks: BTreeMap<SurfaceChunkKey, NetworkMeshData>,
 }
@@ -115,11 +117,15 @@ impl NetworkMeshData {
     /// Creates a triangle sink that routes geometry into the requested render chunks.
     pub(crate) fn new_chunk_partitioned(
         chunk_span_m: f32,
+        chunk_origin_x_m: f32,
+        chunk_origin_z_m: f32,
         target_chunks: BTreeSet<SurfaceChunkKey>,
     ) -> Self {
         let mut mesh = Self::new();
         mesh.chunk_partition = Some(NetworkMeshChunkPartition {
             chunk_span_m: chunk_span_m.max(f32::EPSILON),
+            chunk_origin_x_m,
+            chunk_origin_z_m,
             target_chunks,
             chunks: BTreeMap::new(),
         });

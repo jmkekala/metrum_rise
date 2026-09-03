@@ -39,7 +39,12 @@ pub(in crate::simulation::network::surface::tests) fn compile_committed_preview_
         },
     ));
 
-    let mut committed = RoadSurfaceSystem::new(surface.chunk_span_m());
+    let (chunk_origin_x_m, chunk_origin_z_m) = surface.chunk_origin_m();
+    let mut committed = RoadSurfaceSystem::new_with_chunk_grid(
+        surface.chunk_span_m(),
+        chunk_origin_x_m,
+        chunk_origin_z_m,
+    );
     committed.compile_dirty(&graph, terrain);
     let compiled_sections = committed
         .compiled_sections()

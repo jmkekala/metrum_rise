@@ -20,6 +20,7 @@ pub mod topology;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::pathing::flow_field::FlowFieldSystem;
 use graph::*;
@@ -115,6 +116,25 @@ impl TransitNetwork {
 
     /// Creates a new, empty transit network with the given road-surface chunk span in metres.
     pub fn new_with_surface_chunk_span(chunk_span_m: f32) -> Self {
+        Self::new_with_surface_chunk_grid(chunk_span_m, 0.0, 0.0)
+    }
+
+    /// Creates a new, empty transit network aligned to the runtime terrain render grid.
+    pub fn new_for_world(config: &WorldConfig) -> Self {
+        let (origin_x_m, origin_z_m) = config.terrain_world_origin_m();
+        Self::new_with_surface_chunk_grid(
+            config.terrain_render_chunk_span_m(),
+            origin_x_m,
+            origin_z_m,
+        )
+    }
+
+    /// Creates a new, empty transit network with an explicit road-surface render grid.
+    pub fn new_with_surface_chunk_grid(
+        chunk_span_m: f32,
+        chunk_origin_x_m: f32,
+        chunk_origin_z_m: f32,
+    ) -> Self {
         Self {
             cch_graph: CchGraph::new(0),
             cch_dirty_chunks: HashSet::new(),
@@ -124,7 +144,11 @@ impl TransitNetwork {
             bulk_dirty_edges: HashSet::new(),
             flow_fields: FlowFieldSystem::new(),
             frontage_delay_elapsed_s: 0.0,
-            road_surface: RoadSurfaceSystem::new(chunk_span_m),
+            road_surface: RoadSurfaceSystem::new_with_chunk_grid(
+                chunk_span_m,
+                chunk_origin_x_m,
+                chunk_origin_z_m,
+            ),
         }
     }
 

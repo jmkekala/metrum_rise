@@ -48,23 +48,25 @@ func _process(_delta: float) -> void:
 	if total_start_us == 0:
 		total_start_us = Time.get_ticks_usec()
 
-	# 1. Consume the dirty terrain patches prepared by the sim thread. NetworkRenderer must
-	# never trigger road-surface compilation from Godot's main thread.
+	# 1. Capture one network generation before its terrain state. A changed generation aborts
+	# before either renderer stages or commits resources.
 	var terrain_rebuild_ms := 0.0
+	var surface_generation := _current_road_surface_generation()
 	var dirty_terrain_patch_keys: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
 	var dirty_patch_pairs := int(dirty_terrain_patch_keys.size() / 2)
+	if _current_road_surface_generation() != surface_generation:
+		return
 
-	# 2. Redraw the terrain mesh once all dirty road-locked patches are ready. Road mesh publication
-	#    is intentionally gated behind this so the player never sees mixed road/terrain generations.
+	# 2. Validate the complete terrain batch without mutating scene resources. A bad engineered CDT
+	# keeps both the previous terrain batch and previous road generation visible.
 	var road_mesh_ms := 0.0
-	var surface_generation := _current_road_surface_generation()
 	var terrain_visuals_ms := 0.0
-	var terrain_visuals_ready := true
+	var prepared_terrain_update: Dictionary = {}
 	if dirty_patch_pairs > 0:
 		var terrain_visuals_start_us := Time.get_ticks_usec()
-		terrain_visuals_ready = terrain.update_terrain_visuals()
+		prepared_terrain_update = terrain.prepare_terrain_visual_update()
 		terrain_visuals_ms = float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
-	if not terrain_visuals_ready:
+	if dirty_patch_pairs > 0 and prepared_terrain_update.is_empty():
 		var pending_total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		if perf_enabled:
 			PerfDebug.record(
@@ -78,38 +80,63 @@ func _process(_delta: float) -> void:
 				}
 			)
 		return
+	if _current_road_surface_generation() != surface_generation:
+		return
 
-	# 3. Publish committed road geometry only after terrain accepted the matching generation. The
-	#    update still happens in the same frame as the terrain upload, so no intermediate cut/road
-	#    mismatch reaches the renderer.
+	# 3. Build and validate changed road chunks without replacing resident instances. Staging also
+	# rechecks the generation after potentially expensive ArrayMesh construction.
+	var road_mesh_staged := false
 	if _road_mesh_refreshed_surface_generation != surface_generation:
 		var road_mesh_start_us := Time.get_ticks_usec()
-		var rendered_generation: int = road_tool.update_main_mesh(surface_generation)
+		var staged_generation: int = road_tool.update_main_mesh(surface_generation, true)
+		if staged_generation != surface_generation:
+			return
+		road_mesh_ms = float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
+		road_mesh_staged = true
+	if _current_road_surface_generation() != surface_generation:
+		if road_mesh_staged:
+			road_tool.discard_staged_main_mesh_update()
+		return
+
+	# 4. Commit the already-validated terrain and road batches back-to-back. Godot cannot draw
+	# between these calls, so only complete generation pairs become visible.
+	if dirty_patch_pairs > 0:
+		var terrain_commit_start_us := Time.get_ticks_usec()
+		if not terrain.commit_prepared_terrain_visual_update(prepared_terrain_update):
+			if road_mesh_staged:
+				road_tool.discard_staged_main_mesh_update()
+			return
+		terrain_visuals_ms += float(Time.get_ticks_usec() - terrain_commit_start_us) / 1000.0
+	if road_mesh_staged:
+		var road_commit_start_us := Time.get_ticks_usec()
+		var rendered_generation: int = road_tool.commit_staged_main_mesh_update(surface_generation)
 		if rendered_generation != surface_generation:
 			return
-		road_tool.mark_network_topology_dirty()
-		road_mesh_ms = float(Time.get_ticks_usec() - road_mesh_start_us) / 1000.0
+		road_mesh_ms += float(Time.get_ticks_usec() - road_commit_start_us) / 1000.0
 		_road_mesh_refreshed_surface_generation = surface_generation
 	# rail_tool.update_main_mesh()  # add when RailTool exists
+
+	# 5. An exact acknowledgement is the commit fence for consumers that read live sim state. If a
+	# newer revision arrived, the complete older visual pair may remain visible while the new pair
+	# stays dirty, but dependent water/zoning work waits for that new revision.
+	if not simulation_node.acknowledge_network_render(surface_generation):
+		return
+	_road_mesh_refreshed_surface_generation = -1
+	road_tool.mark_network_topology_dirty()
 
 	var water_visuals_start_us := Time.get_ticks_usec()
 	if water and water.has_method("refresh_road_clipped_patches"):
 		water.refresh_road_clipped_patches(dirty_terrain_patch_keys)
 	var water_visuals_ms := float(Time.get_ticks_usec() - water_visuals_start_us) / 1000.0
 
-	# 4. Check whether any queued road endpoints are border connections.
+	# 6. Check whether any queued road endpoints are border connections.
 	# Must run after the road is in the graph so check_border_candidate() finds the node.
 	var border_checks_start_us := Time.get_ticks_usec()
 	road_tool.drain_pending_border_checks()
 	var border_checks_ms := float(Time.get_ticks_usec() - border_checks_start_us) / 1000.0
 
-	# 5. Road geometry changed → refresh no-build edge overlay geometry.
+	# 7. Road geometry changed → refresh no-build edge overlay geometry.
 	if zoning_overlay: zoning_overlay.mark_no_build_dirty()
-
-	# 6. Acknowledge only the exact road revision paired with the accepted terrain uploads. A newer
-	# revision remains dirty and retries this coordinated refresh on the next frame.
-	if terrain_visuals_ready and simulation_node.acknowledge_network_render(surface_generation):
-		_road_mesh_refreshed_surface_generation = -1
 
 	var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 	if perf_enabled:

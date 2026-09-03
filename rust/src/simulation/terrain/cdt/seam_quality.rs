@@ -457,7 +457,8 @@ fn terrain_cdt_segment_lies_on_source_edge(
     else {
         return false;
     };
-    (start_t - end_t).abs() > CDT_EPSILON_M
+    let source_length_m = edge_length_xz_m(source_edge.start, source_edge.end);
+    (start_t - end_t).abs() * source_length_m > CDT_EPSILON_M
 }
 
 fn merge_terrain_cdt_boundary_source(

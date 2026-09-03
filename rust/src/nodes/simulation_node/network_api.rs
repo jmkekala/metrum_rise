@@ -278,18 +278,23 @@ impl SimulationNode {
     /// A full snapshot contains every occupied chunk and costs `O(total chunks + total vertices)`.
     /// An incremental response contains only accumulated upserts and removal tombstones since the
     /// last exact-generation acknowledgement. Each response also identifies whether it replaces
-    /// all resident chunks and supplies the world-space chunk span used by its local vertices.
+    /// all resident chunks and supplies the world-space chunk span and origin used by its local
+    /// vertices.
     #[func]
     pub fn get_road_mesh_data(&self, full_snapshot: bool) -> VarDictionary {
         if full_snapshot {
             // A renderer rebuild is rare and necessarily uploads the whole network. Clone only
             // the Arc handles under the sim lock, then pack Godot arrays after releasing it.
-            let (chunks, generation, chunk_span_m) = {
+            let (chunks, generation, chunk_span_m, chunk_origin_x_m, chunk_origin_z_m) = {
                 let core = self.lock_core();
+                let (chunk_origin_x_m, chunk_origin_z_m) =
+                    core.transit_network.road_surface.chunk_origin_m();
                 (
                     core.cached_road_mesh_chunks.clone(),
                     core.cached_road_mesh_generation,
                     core.transit_network.road_surface.chunk_span_m(),
+                    chunk_origin_x_m,
+                    chunk_origin_z_m,
                 )
             };
             return SimCore::road_mesh_chunks_dict(
@@ -298,9 +303,19 @@ impl SimulationNode {
                 true,
                 generation,
                 chunk_span_m,
+                chunk_origin_x_m,
+                chunk_origin_z_m,
             );
         }
-        let (chunks, pending_chunks, full_replace, generation, chunk_span_m) = {
+        let (
+            chunks,
+            pending_chunks,
+            full_replace,
+            generation,
+            chunk_span_m,
+            chunk_origin_x_m,
+            chunk_origin_z_m,
+        ) = {
             let snapshot = self.snapshot.read().unwrap();
             (
                 Arc::clone(&snapshot.road_mesh_chunks),
@@ -308,6 +323,8 @@ impl SimulationNode {
                 snapshot.road_mesh_full_replace,
                 snapshot.network_generation,
                 snapshot.road_mesh_chunk_span_m,
+                snapshot.road_mesh_chunk_origin_x_m,
+                snapshot.road_mesh_chunk_origin_z_m,
             )
         };
         SimCore::road_mesh_chunks_dict(
@@ -316,6 +333,8 @@ impl SimulationNode {
             full_replace,
             generation,
             chunk_span_m,
+            chunk_origin_x_m,
+            chunk_origin_z_m,
         )
     }
 

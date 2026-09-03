@@ -114,6 +114,8 @@ impl SimCore {
         full_replace: bool,
         generation: u64,
         chunk_span_m: f32,
+        chunk_origin_x_m: f32,
+        chunk_origin_z_m: f32,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set(
@@ -122,6 +124,8 @@ impl SimCore {
         );
         dict.set("full_replace", full_replace);
         dict.set("chunk_span_m", chunk_span_m);
+        dict.set("chunk_origin_x_m", chunk_origin_x_m);
+        dict.set("chunk_origin_z_m", chunk_origin_z_m);
 
         let mut updates = VarArray::new();
         if full_replace {

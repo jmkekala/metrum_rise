@@ -60,6 +60,7 @@ pub(in crate::simulation::terrain::cdt) fn split_road_loop_segments_at_source_ve
     for index in 0..points.len() {
         let start = points[index];
         let end = points[(index + 1) % points.len()];
+        let segment_length_m = edge_length_xz_m(start, end);
         if split_points
             .last()
             .is_none_or(|last: &TerrainCdtVertex| !same_xz(*last, start))
@@ -73,12 +74,12 @@ pub(in crate::simulation::terrain::cdt) fn split_road_loop_segments_at_source_ve
             .filter(|candidate| !same_xz(*candidate, start) && !same_xz(*candidate, end))
             .filter_map(|candidate| {
                 source_sample_parameter_on_road_constraint(start, end, candidate).and_then(|t| {
-                    (t > CDT_EPSILON_M && t < 1.0 - CDT_EPSILON_M).then_some(
-                        TerrainCdtSourceVertexSplit {
+                    (t * segment_length_m > CDT_EPSILON_M
+                        && (1.0 - t) * segment_length_m > CDT_EPSILON_M)
+                        .then_some(TerrainCdtSourceVertexSplit {
                             t,
                             vertex: candidate,
-                        },
-                    )
+                        })
                 })
             })
             .collect::<Vec<_>>();

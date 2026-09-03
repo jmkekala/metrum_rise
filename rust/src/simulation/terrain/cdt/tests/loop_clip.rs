@@ -126,6 +126,205 @@ fn submillimetre_curved_edge_intersection_retains_exact_boundary_source() {
         .expect("the exact clipped source must cover every non-rail road constraint");
 }
 
+#[test]
+fn clipping_preserves_multiple_sources_that_partition_one_output_edge() {
+    let source_a = test_span_boundary_source_range(
+        93,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        15,
+        16,
+        10.0,
+        11.0,
+    );
+    let source_b = test_span_boundary_source_range(
+        93,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        16,
+        17,
+        11.0,
+        12.0,
+    );
+    let source_c = test_span_boundary_source_range(
+        93,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        17,
+        18,
+        12.0,
+        13.0,
+    );
+    let p0 = TerrainCdtVertex::new(3.0, 1.0, 3.0);
+    let p1 = TerrainCdtVertex::new(5.0, 1.0, 3.0);
+    let p2 = TerrainCdtVertex::new(7.0, 1.0, 3.0);
+    let p3 = TerrainCdtVertex::new(7.0, 1.0, 7.0);
+    let p4 = TerrainCdtVertex::new(3.0, 1.0, 7.0);
+    let road_loop = TerrainCdtRoadLoop::new_with_source_edges(
+        93,
+        0,
+        vec![p0, p2, p3, p4],
+        vec![
+            TerrainCdtRoadLoopSourceEdge {
+                start: p0,
+                end: p1,
+                source: source_a,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: p1,
+                end: p2,
+                source: source_b,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: p2,
+                end: p3,
+                source: source_c,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: p3,
+                end: p4,
+                source: source_c,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: p4,
+                end: p0,
+                source: source_c,
+            },
+        ],
+    );
+    let patch = TerrainCdtPatch::new(4.0, 0.0, 10.0, 10.0, [0.0; 4]);
+
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+
+    assert_eq!(clipped.len(), 1);
+    assert!(
+        clipped[0]
+            .source_edges
+            .iter()
+            .any(|edge| edge.source == source_a),
+        "the first source partition must survive a spanning clipped edge"
+    );
+    assert!(
+        clipped[0]
+            .source_edges
+            .iter()
+            .any(|edge| edge.source == source_b),
+        "the second source partition must survive a spanning clipped edge"
+    );
+    build_road_touched_terrain_patch(TerrainCdtInput::new(patch, clipped, Vec::new()))
+        .expect("source-partitioned clipped loops must retain every interior boundary source");
+}
+
+#[test]
+fn default_patch_scale_short_source_partition_preserves_final_provenance() {
+    let short_source = test_span_boundary_source_range(
+        94,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        15,
+        16,
+        10.0,
+        10.1,
+    );
+    let long_source = test_span_boundary_source_range(
+        94,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        16,
+        17,
+        10.1,
+        520.0,
+    );
+    let remaining_source = test_span_boundary_source_range(
+        94,
+        TerrainCdtRoadBandKind::Sidewalk,
+        5,
+        17,
+        18,
+        520.0,
+        540.0,
+    );
+    let point_contact_source = test_span_boundary_source_range(
+        94,
+        TerrainCdtRoadBandKind::Sidewalk,
+        6,
+        18,
+        19,
+        540.0,
+        541.0,
+    );
+    let bottom_left = TerrainCdtVertex::new(-1.0, 1.0, 100.0);
+    let short_end = TerrainCdtVertex::new(0.1, 1.0, 100.0);
+    let bottom_right = TerrainCdtVertex::new(511.0, 1.0, 100.0);
+    let top_right = TerrainCdtVertex::new(511.0, 1.0, 110.0);
+    let top_left = TerrainCdtVertex::new(-1.0, 1.0, 110.0);
+    let road_loop = TerrainCdtRoadLoop::new_with_source_edges(
+        94,
+        0,
+        vec![bottom_left, bottom_right, top_right, top_left],
+        vec![
+            TerrainCdtRoadLoopSourceEdge {
+                start: bottom_left,
+                end: short_end,
+                source: short_source,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: short_end,
+                end: bottom_right,
+                source: long_source,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: bottom_right,
+                end: top_right,
+                source: remaining_source,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: top_right,
+                end: top_left,
+                source: remaining_source,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: top_left,
+                end: bottom_left,
+                source: remaining_source,
+            },
+            TerrainCdtRoadLoopSourceEdge {
+                start: TerrainCdtVertex::new(250.0, 1.0, 99.0),
+                end: TerrainCdtVertex::new(250.0, 1.0, 100.0),
+                source: point_contact_source,
+            },
+        ],
+    );
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 510.0, 510.0, [0.0; 4]);
+
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+
+    assert_eq!(clipped.len(), 1);
+    assert!(
+        clipped[0]
+            .source_edges
+            .iter()
+            .any(|edge| edge.source == short_source),
+        "a 10 cm source partition must survive clipping against a 510 m patch edge"
+    );
+    assert!(
+        clipped[0]
+            .source_edges
+            .iter()
+            .all(|edge| edge.source != point_contact_source),
+        "a source touching the output boundary at only one point must not be inherited"
+    );
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(patch, clipped, Vec::new()))
+        .expect("metric source splitting must preserve a short source through final CDT output");
+    assert!(
+        mesh.emitted_faces
+            .iter()
+            .flat_map(|face| face.sources.iter())
+            .any(|source| *source == short_source),
+        "the short clipped source must remain attached to final CDT provenance"
+    );
+}
+
 fn disconnected_clip_test_loop() -> TerrainCdtRoadLoop {
     TerrainCdtRoadLoop::new(
         41,

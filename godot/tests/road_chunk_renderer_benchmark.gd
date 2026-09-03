@@ -22,6 +22,8 @@ const LARGE_LAYER_VERTEX_COUNTS := {
 const RESIDENT_CHUNK_COUNTS: Array[int] = [4, 64, 256, 1024, 4096]
 const AFFECTED_CHUNK_COUNTS: Array[int] = [0, 1, 4, 16]
 const CHUNK_SPAN_M := 510.0
+const CHUNK_ORIGIN_X_M := -10240.0
+const CHUNK_ORIGIN_Z_M := 5120.0
 const WARMUP_SAMPLES := 20
 const MEASURED_SAMPLES := 101
 const LARGE_VERTICES_PER_CHUNK := 8190
@@ -130,6 +132,12 @@ func _run_case(
 		_failures += 1
 		push_error("road chunk benchmark resident fixture has the wrong chunk count")
 		return
+	var fixture_key := _chunk_key(resident_chunks - 1)
+	var fixture_instance: MeshInstance3D = road_tool._road_chunk_instances[fixture_key]
+	if fixture_instance.position != _chunk_position(fixture_key):
+		_failures += 1
+		push_error("road chunk benchmark fixture has the wrong chunk origin placement")
+		return
 	await process_frame
 	RenderingServer.force_sync()
 
@@ -217,6 +225,8 @@ func _run_update(
 	if (
 		road_tool._road_mesh_generation != simulation.generation
 		or road_tool._road_chunk_span_m != CHUNK_SPAN_M
+		or road_tool._road_chunk_origin_x_m != CHUNK_ORIGIN_X_M
+		or road_tool._road_chunk_origin_z_m != CHUNK_ORIGIN_Z_M
 	):
 		_failures += 1
 		push_error("road chunk benchmark update committed incoherent metadata")
@@ -225,10 +235,18 @@ func _run_update(
 		_failures += 1
 		push_error("road chunk benchmark replaced an untouched sentinel")
 		return Vector2i(-1, -1)
+	if sentinel_instance.position != _chunk_position(sentinel_key):
+		_failures += 1
+		push_error("road chunk benchmark moved the untouched sentinel")
+		return Vector2i(-1, -1)
 	for key in previous_changed_instances:
 		if road_tool._road_chunk_instances[key] == previous_changed_instances[key]:
 			_failures += 1
 			push_error("road chunk benchmark did not replace a changed chunk")
+			return Vector2i(-1, -1)
+		if road_tool._road_chunk_instances[key].position != _chunk_position(key):
+			_failures += 1
+			push_error("road chunk benchmark placed a changed chunk at the wrong origin")
 			return Vector2i(-1, -1)
 	await process_frame
 	RenderingServer.force_sync()
@@ -239,6 +257,8 @@ func _batch(generation: int, full_replace: bool, chunks: Array) -> Dictionary:
 		"surface_generation": generation,
 		"full_replace": full_replace,
 		"chunk_span_m": CHUNK_SPAN_M,
+		"chunk_origin_x_m": CHUNK_ORIGIN_X_M,
+		"chunk_origin_z_m": CHUNK_ORIGIN_Z_M,
 		"chunks": chunks,
 	}
 
@@ -291,6 +311,13 @@ func _build_layer_arrays(vertex_counts: Dictionary) -> Dictionary:
 
 func _chunk_key(index: int) -> Vector2i:
 	return Vector2i(index % 16, index / 16)
+
+func _chunk_position(key: Vector2i) -> Vector3:
+	return Vector3(
+		CHUNK_ORIGIN_X_M + float(key.x) * CHUNK_SPAN_M,
+		0.0,
+		CHUNK_ORIGIN_Z_M + float(key.y) * CHUNK_SPAN_M
+	)
 
 func _layer_vertex_count(layer_arrays: Dictionary) -> int:
 	var count := 0

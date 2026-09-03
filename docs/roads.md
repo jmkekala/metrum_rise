@@ -430,18 +430,25 @@ Required bounds:
   explicit full reset
 - steady-state chunk rebuilds use sorted contributor lists; they must not scan every compiled node
   piece in the world
-- committed road rendering uses the same normalized render-chunk span as terrain and water. The
-  road surface grid remains anchored at world coordinate zero, while terrain patch keys start at
-  the world minimum; the shared span bounds update scale but does not make their keys or boundaries
-  interchangeable. A local edit rebuilds the sorted union of changed surface and earthwork chunks,
+- committed road rendering uses the same normalized render-chunk span and world-minimum origin as
+  terrain and water. This keeps ordinary central edits away from the world-zero four-chunk corner;
+  the target is one chunk for a contained edit and two when it crosses one boundary. Road keys can
+  extend outside the bounded terrain grid and remain a separate ownership domain even though their
+  in-world boundaries align. A local edit rebuilds the sorted union of changed surface and earthwork chunks,
   collects their unique owners once, and assigns each non-indexed triangle to exactly one
   deterministic XZ-centroid home chunk. Chunk vertices are stored relative to that chunk's origin;
   unchanged mesh buffers remain immutable and shared.
 - Rust accumulates changed chunk keys and removal tombstones until Godot acknowledges the exact
-  road generation. Godot stages every changed `ArrayMesh`, rejects stale generations before the
-  swap, and then replaces only those `MeshInstance3D` children after matching terrain is visible.
-  The bridge rejects malformed or non-finite layer arrays atomically, and a chunk-span change is
-  legal only in a full replacement so retained instances cannot use mixed coordinate grids.
+  road generation. Godot preflights every resident dirty terrain payload before mutating any patch,
+  stages every changed road `ArrayMesh` as a detached instance, rejects stale generations before
+  the swap, and commits the complete terrain/road pair back-to-back. Engineered terrain accepts
+  only a current-contract `ok` payload with structurally valid clipped baked buffers; this includes
+  an `ok` payload that reports already-omitted pathological faces. A missing, empty, failed,
+  conflicted, still-pathological, wrong-contract, or malformed engineered payload retains the
+  complete previous terrain/road pair and cannot acknowledge the current road generation. Raw
+  heightmap terrain is never an engineered-patch fallback.
+  The bridge rejects malformed or non-finite layer arrays atomically, and a chunk-span or grid-origin
+  change is legal only in a full replacement so retained instances cannot use mixed coordinate grids.
   World replacement clears old chunks before terrain rebuild and remains an explicit full-chunk
   replacement, including the empty-road case. A recreated renderer hydrates from a full snapshot
   even when the simulation has no pending dirty revision.
@@ -450,7 +457,8 @@ Required bounds:
   handles, never the full occupied-chunk map or unchanged vertex buffers. A renderer-requested full
   snapshot remains `O(total chunks + total vertices)` because it necessarily uploads the network.
 - `./run.sh --benchmark-road-chunks` is the reproducible scaling check. Its Rust fixture keeps one
-  32 m two-lane local road, its selected owners, target chunk, and emitted vertex signature fixed
+  central 32 m two-lane local road wholly inside one terrain-aligned chunk, with its selected owners,
+  target chunk, and emitted vertex signature fixed
   while occupied chunks rise through 1, 64, 256, and 1,024. `chunk_emit_only` isolates targeted
   generation, `full_network_emit` provides the former whole-network-work comparator, and
   `dirty_compile_plus_chunk_emit_diagnostic` separately exposes the known global stale-cache scans
@@ -666,6 +674,8 @@ Maintained coverage must continue to prove:
 - preview / commit parity
 - visible-world query precedence
 - terrain CDT preservation of road seam constraints
+- terrain-CDT clipping retains every positive-overlap source segment when one output edge spans
+  multiple source-owned boundary IDs
 - terrain-CDT grading envelope behavior for convex and concave roadbed footprints
 - rejection of terrain faces inside road-owned footprints
 - authored and imported DEM terrain agreement
@@ -674,8 +684,13 @@ Maintained coverage must continue to prove:
 - refined-CDT unchanged-tile reuse, changed-tile rebuild, old-coverage removal, deterministic shared
   tile seams, and stale-generation rejection
 - rendered mesh upload containing the same canonical raised-step intervals as the compiled surface
-- road render chunk partitioning preserves the complete global triangle multiset across positive
-  and negative chunk boundaries, with no duplicate triangle ownership
+- a missing, empty, failed, conflicted, still-pathological, wrong-contract, or malformed engineered
+  terrain payload prevents all sibling terrain uploads, road-chunk swaps, and network
+  acknowledgement for that generation; production-shaped Godot coverage exercises the real
+  prepare/stage/commit transaction, while `ok` contained output remains a baked clipped mesh
+- road render chunk partitioning preserves the complete global triangle multiset across shifted,
+  positive, and negative chunk boundaries, with no duplicate triangle ownership
+- the terrain-aligned road grid keeps a representative central local road in one render chunk
 - the deterministic road-chunk benchmark preserves identical local owner/output signatures at each
   Rust scale and identical changed payloads at each Godot resident-instance scale
 

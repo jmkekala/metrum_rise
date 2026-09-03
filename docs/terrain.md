@@ -798,6 +798,19 @@ Deterministic terrain-render rules:
   road clip query, or missing road ownership on a road-owned patch suppresses the complete new
   payload, stale jobs cannot publish, and the immutable last accepted generation remains visible
   and available for reuse until a complete replacement is accepted
+- Godot applies the same transaction boundary across every resident dirty patch in one visual
+  batch: it validates exact patch/generation/render-step identity and payload structure, builds
+  height textures plus terrain/retaining meshes into inactive resources, and swaps only after every
+  dirty payload is stageable. Terrain-only changes and road-coordinated changes use this same path;
+  no handled failure is acknowledgement-eligible. Standalone publication rechecks network dirtiness
+  and generation after staging, residency additions wait while network publication is pending, and
+  transient detached-resource build failures remain retryable in the same generation.
+- a statusless non-engineered payload may use the regular heightmap `PlaneMesh`. An engineered
+  payload is renderable only when its current-contract final status is `ok` and its clipped baked
+  buffers are structurally valid. A positive omitted-pathological-face count is accepted only when
+  the remaining final status is `ok`; `empty`, `failed`, `conflicted`, still-`pathological`, unknown,
+  wrong-contract, or malformed engineered output keeps the previous mesh and may not fall back to
+  raw terrain.
 - a road-locked patch selected through the grading-ray safety pad expands its clip-source query by
   that same render-step / terrain-cell pad; bridge-to-ground transitions cannot mark a neighboring
   patch as road-owned while querying just short of the responsible road seam
@@ -1302,7 +1315,8 @@ What is implemented now:
   inputs under the simulation lock, performs road/site grading and CDT work off-lock, and uses
   patch-local revisions with one physical in-flight build per patch/render-step
 - gameplay world-load refresh leaves terrain/water/network revisions dirty until the renderers
-  acknowledge the exact payloads and road mesh they actually uploaded
+  acknowledge the exact payloads and road mesh they actually uploaded; resident terrain batches
+  are prevalidated and staged as detached/inactive resources before an atomic scene swap
 - terrain and water patch residency plus speculative cache prewarm now use elapsed-time budgets
   with camera-prioritized patch order; water follows terrain's resident-set revision for the
   steady-state no-change path, and terrain/water mesh-LOD refreshes plus terrain-to-water texture

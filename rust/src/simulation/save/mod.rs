@@ -549,8 +549,7 @@ pub(crate) fn load_from_sqlite(
     resource_extraction.apply_work_area_scales(&mut allocator);
     agriculture.apply_work_area_scales(&mut allocator);
 
-    let mut transit_network =
-        TransitNetwork::new_with_surface_chunk_span(config.terrain_render_chunk_span_m());
+    let mut transit_network = TransitNetwork::new_for_world(&config);
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
     transit_network.lane_system.rebuild(&mut graph);
 

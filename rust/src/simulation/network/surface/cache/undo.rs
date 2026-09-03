@@ -42,6 +42,8 @@ impl RoadSurfaceSystem {
 
         Some(RoadSurfaceTopologyUndo {
             chunk_span_m_bits: self.chunk_span_m.to_bits(),
+            chunk_origin_x_m_bits: self.chunk_origin_x_m.to_bits(),
+            chunk_origin_z_m_bits: self.chunk_origin_z_m.to_bits(),
             edges,
             nodes,
         })
@@ -135,7 +137,11 @@ impl RoadSurfaceSystem {
         affected_edge_ids: &HashSet<usize>,
         affected_node_ids: &HashSet<u32>,
     ) -> bool {
-        if !self.compiled_once || undo.chunk_span_m_bits != self.chunk_span_m.to_bits() {
+        if !self.compiled_once
+            || undo.chunk_span_m_bits != self.chunk_span_m.to_bits()
+            || undo.chunk_origin_x_m_bits != self.chunk_origin_x_m.to_bits()
+            || undo.chunk_origin_z_m_bits != self.chunk_origin_z_m.to_bits()
+        {
             return false;
         }
 
