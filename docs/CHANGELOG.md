@@ -1,4 +1,4 @@
-# Changelog
+# Changelog - 27/08/2026
 
 Everything in this fork that is not upstream, against `cd85e11`.
 
@@ -674,3 +674,319 @@ A world at small-country scale. No parts of the 2.5D_engine have been implimente
 into the codebase. No seed generator exists yet, and no region is drawn to its
 environment. The largest world ever loaded is the imported `324 km2` Kuopio DEM.
 Tracked as `WORLD-04`, specified in [`terrain.md`](terrain.md).
+
+---
+
+# Changelog - 02/09/2026
+
+Everything below is new since the flattened fork commit and has not
+shipped anywhere. The section above is frozen at that push.
+
+42 commits, 2,045 files, the engine's own tree leaving the index as it
+became a mount rather than a copy.
+
+## The engine is mounted, not copied
+
+`godot/addons/` holds four directory junctions into the 2.5D_engine
+repo: `2.5D_engine`, `GOAT_bus`, `SPEECH_socket`, and `FILE_browser`.
+They are not files in this repository. The junction targets are
+gitignored, so this tree carries adapters, hooks, and renderer
+branches and no engine source at all.
+
+That shape is the license boundary as much as a convenience. The game
+is GPL-2.0; the engine components each carry a LICENSE.md marking them
+all rights reserved, outside that license, consumed across a call
+boundary, with SPEECH_socket and FILE_browser naming an intended MIT
+release once they are polished enough to merge cleanly. A clone needs
+the engine repo beside this one and a one-time junction step.
+
+Engine updates now land live. The previous arrangement was a copy that
+had to be re-synced by hand, and the sync before the junctions took
+three rounds against a source tree that was still being written.
+
+## The simulation boundary
+
+The Rust economy and the engine's evaluated fields keep their own
+ontologies and meet at two arrays and a tick boundary.
+
+### Down: batched sampling and a revisioned intake
+
+`engine_boundary.gd` samples any engine field at a batch of positions
+in one call. The array is `PackedFloat64Array`, not 32-bit: the
+engine's kernels and goldens are f64, and a 32-bit boundary truncated
+every sample, which the first drill caught by comparing bit patterns
+rather than values.
+
+`rust/src/simulation/engine_inputs.rs` is the intake, at the
+simulation layer so grid systems read it without upward dependencies.
+It holds the delivered arrays, the probe grid's world geometry, and a
+revision. Sampling is bilinear and returns `None` outside coverage,
+which is what keeps each consumer's own default the honest fallback
+rather than a silent zero.
+
+`EngineTick` delivers every 120 ticks on a probe grid aimed at the
+city: `engine_parcel_bounds` hands up the parcels' bounding box and
+the grid spans it plus a 200 m margin, with a 50 m spacing floor so a
+one-parcel city cannot collapse the grid, and a listener-centred
+layout before any city exists.
+
+### Up: the city's actions as measured rows
+
+`get_extractor_sites` exports every committed extraction site's world
+position and depletion. The tick harness aggregates them into
+hundred-metre deposit cells and writes the engine's own converted-grid
+format, signed 16-bit values with a JSON sidecar, which the engine's
+`heightmap_node` opens as measured ground truth.
+
+The drill runs the loop end to end: a mine extracts under time, the
+harness writes the grid, and the engine reads 15.0 units back where
+15.0 were extracted. The engine reads rasters north-up, latitude
+decreasing with row, which cost two wrong queries before the boundary
+spike's own fixture check named the convention; it is now recorded
+beside the writer.
+
+## What the sim consumes
+
+### Land value reads the engine
+
+`DesirabilitySystem::tick` takes the delivered desirability as its
+base wherever the probe covers, bilinear, with the flat 50 everywhere
+else. The snapshot is taken once before the parallel loop so no lock
+crosses it. No delivery means byte-identical old behaviour.
+
+Desirability itself is the engine's habitability node read as
+settlement suitability: the weighted mean of its per-biome scores
+(grassland and temperate found cities, arid and rainforest resist)
+normalised by their own mass, multiplied by buildability from the
+field's slope. The first version read a scalar `score` key that never
+existed, and every parcel scored 0.0 until a windowed run printed the
+mean and said so.
+
+### Extractor reserves read the engine
+
+A painted deposit cell is a measured row and wins outright. An
+unpainted cell falls back to the delivered coal channel through the
+same bilinear geometry, clamped so a hot channel cannot mint reserve
+past full richness, and outside coverage the reserve stays the zero it
+always was. The fallback is computed live at polygon-commit time and
+never baked into a save, so derived values cannot masquerade as
+authored ones.
+
+Iron and stone gained profiles (`iron_mine_basic`, `quarry_basic`),
+channel fractions, and an engine-only reserve walker for resources
+with no paint layer. Neither has a building asset in the pack yet, so
+they wait on the asset editor for bodies.
+
+### The director paces arrivals
+
+`border_openness` becomes the twelfth fiscal control, which is what
+lets the public policy setter accept it and gives the border the dial
+its presentation layer was already built around. The director's
+population multiplier drives it on the delivery cadence: build-up
+admits everyone, the peak saturates, the fade closes the gate, relax
+reopens it halfway. Frequency, never strength, which is the design law
+the director node itself states.
+
+## The world on the engine
+
+### The stored-height convention
+
+Stored terrain heights are real metres divided by the render
+exaggeration; the level tool divides by it and world Y multiplies it
+back. The ground fill and every byte the terrain source emits ignored
+that convention and wrote raw metres, which drew every hill twenty
+times too steep. Flat-zero worlds hid it because every convention
+agrees at zero.
+
+The three-world probe convicted it: flat zero placed a building, the
+engine-filled world rejected every placement with tie-in failures, and
+the same world placed first try on raw unleveled ground once the fill
+divided. Slopes are now their authored gentleness and the game's own
+budgets meet honest grades.
+
+### World scale and the band limit
+
+`WORLD_SCALE_M` is 1000 m per field unit, and `ground_m()` is THE
+ground: terrain, water, network, and physics all read it, so the scale
+cannot fork between them. The Rust `apply_engine_ground` takes the
+same scale from the shell for the same reason.
+
+The footprint is a band limit in field units, authored in metres, so
+it rides the same division. Passed raw it faded out every octave finer
+than half a kilometre and a 64 m patch measured flat. Every sampler
+now passes its own spacing as its band limit: the sim its 10 m cell,
+each render patch its texel step, because detail finer than the grid
+that reads it can only alias.
+
+Ore veins got the same treatment at 250 m per unit, authored game
+taste like the settlement weights. At raw metres a whole vein lived in
+every metre of rock, so the probe grid read noise and an extractor
+polygon averaged the ore away. Ten metres apart now reads the same
+body to four decimals; a kilometre of samples spreads 0.33.
+
+### Ground truth reconciliation
+
+`apply_engine_ground` derives every terrain sample still at the base
+elevation from the promoted fBm twin at that sample's world position,
+into both height buffers, running the same road-surface dirtying a
+sculpt runs. Sculpted samples stay as measured overrides and nothing
+pushes undo state, because derivation is not an edit. It runs once per
+world, re-applies on both game load paths, and never runs in the
+editors, where a filled cell would export as authored world data.
+
+The fill parallelises by row through rayon and widens its footprint to
+the terrain cell. Boot on the development box went 684 s to 353 s
+across those two changes plus the band limits. The remaining floor is
+per-texel GDScript patch evaluation, whose successor is the engine's
+compute path.
+
+### Deformation draws
+
+The renderer's engine branch draws the fine field plus the sim's
+deviation from its undeformed baseline. The baseline samples the
+ground on the sim's own cell lattice and interpolates to texels
+exactly as the sim's payload does, so the difference is deformation
+and nothing else: a sculpt draws its full depth where the sim holds
+it, untouched ground keeps octaves the sim grid cannot carry, and
+detection costs arithmetic only.
+
+Water carries the same law. `WaterPatchSnapshot` gained `ground_data`,
+the sim terrain heights on the exact samples its own loop walks,
+filled through a caller closure so the water system grows no terrain
+dependency. The shell's depth source composites that testimony, so a
+dug shore moves the shoreline.
+
+### The pixel posture
+
+`EngineTick` sets the viewport's 3D render scale to one art pixel per
+`pixel_size` screen pixels, read from the pixelate node's own config.
+It is SPEC 13.9's cheap end until the dial is built, and the largest
+performance lever the development box has.
+
+## Systems consuming the engine
+
+Weather at the listener, fire danger from Rothermel timings, tides
+breathing the water level through the orbital and sea-level nodes,
+hydrology and flood basins, minerals from strata environments and
+biomineral carbon accounting, physics contact from the field's own
+gradient, gait phase per stride, contagion, snowpack, vehicle
+rollover, cartography, and derived sound: acoustic modal profiles
+rendered by damped modal synthesis, so a material's voice is its
+composition and geometry rather than a sample.
+
+Minds are a roster of living instances on the finished mind contract:
+spawn, fixed-step tick, per-mind state, each carrying a certified
+creature and its drives. The policy table this once cached was removed
+upstream with the layer it certified, so the intake's policy channel
+came out end to end rather than staying a dead wire.
+
+## Proven in a rendered window
+
+`spike_engine_live.gd` runs the real Main scene windowed, the way the
+traffic spikes ran. Twenty-six checks, zero failures, in one boot: the
+dig drawn (sim height and centre pixels moving together), the coal
+loop banking 6,979.99 units from the delivered channel with the mine
+placing first try on raw filled terrain, five parcels zoned, the city
+exporting bounds and the re-aimed grid delivering whole, five family
+houses grown on delivered land value, an engine-derived strike playing
+through the game's audio, and 49 ms/frame sustained over 300 frames at
+speed five on a two-core A9.
+
+The growth precondition, learned by measurement: demand sits at
+(0, -1, -1) forever without an outside world, and the gate counts a
+Border node with any road edge attached. A sixty-metre disconnected
+stub at the map edge, designated through `check_border_candidate` and
+`set_border_connection`, lifted demand to 1.0 and grew five buildings.
+A living economy needs more than pressure, though: households,
+workers, and therefore production all waited on a connected border
+road.
+
+## Verification
+
+Twelve headless spikes cover the boundary, gateway, mesh source,
+terrain source, sound, systems, tides and minds and water, the
+director, weather and fire, vehicles, and two integration waves; all
+twelve green on the final tree. Headless probes cover placement
+discrimination, the save round trip, deposits upward, and the director
+consumer.
+
+Every spike appends one JSON entry per run to `godot/benchmarks.json`:
+verdict, wall time from process start, CPU model, cores, RAM, and
+Godot version, so any machine's numbers stand beside any other's.
+
+The parse gate (`gate_check.gd`) loads every adapter and drill as a
+fresh GDScript before any long launch, and caught three parse errors
+that would each have cost a twelve-minute boot.
+
+Screenshots go to a dated `screenshots/spikes_<range>/` folder named
+`spikeNN_<subject>[_pixelart_filter]_<W/100>x<H/100>.png`.
+
+## Found and recorded, not fixed
+
+A pre-existing frontage failure: on a flat world at a nonzero base
+elevation, with no engine involvement, placement rejects with "no
+nearby road frontage can fit this building". Flat-zero worlds mask it.
+Probed three ways and left for the author's ruling.
+
+A terrain process-loop deadlock against the state a stepped sim leaves
+behind: six reproductions, a renderer lineup that convicted Terrain by
+name, and a CPU sample reading 0.00 s over eight, a true lock rather
+than a grind. Headless with the same city survives, so it is
+render-path bound. The live spike fences it loudly and the diagnosis
+is tasked.
+
+Savegames saved from a filled world persist the derived cells, so that
+world's ground freezes at the fill-time field rather than re-deriving.
+Measured in the round-trip drill rather than assumed.
+
+## Process rules earned the hard way
+
+Every windowed launch embeds a log-stall watchdog that kills the
+process by name after five stalled minutes, because a frozen Godot
+never sends a completion signal and one overnight freeze cost six
+hours.
+
+Heavy compiles run at below-normal priority so the development box
+stays usable, and no two Godot processes run at once.
+
+## Every file touched
+
+Adapters, all new in `godot/scripts/core/`: `engine_boundary.gd`,
+`engine_terrain_source.gd`, `engine_water_source.gd`,
+`engine_network_source.gd`, `engine_mesh_source.gd`,
+`engine_physics_source.gd`, `engine_mineral_source.gd`,
+`engine_social_source.gd`, `engine_weather_source.gd`,
+`engine_fire_source.gd`, `engine_tide_source.gd`,
+`engine_hydrology_source.gd`, `engine_mind_source.gd`,
+`engine_director_source.gd`, `engine_sound_source.gd`,
+`engine_sound_player.gd`, `engine_ambience_source.gd`,
+`engine_gait_source.gd`, `engine_outbreak_source.gd`,
+`engine_snow_source.gd`, `engine_map_source.gd`,
+`engine_flora_source.gd`, `engine_vehicle_source.gd`,
+`engine_tick.gd`, `rust_gateway.gd`, `spike_stats.gd`.
+
+Renderer branches, each behind the workflow toggle with the Rust
+payload as fallback: `terrain.gd`, `water.gd`, `buildings.gd`,
+`agents.gd`, `network_tool.gd`, and `input_manager.gd` for the
+re-apply hook.
+
+Rust: `simulation/engine_inputs.rs` and `engine_twin/fbm.rs` are new;
+`grid/desirability.rs`, `resources.rs`, `extraction.rs`,
+`terrain/mod.rs`, `water/mod.rs`, `economy/fiscal.rs`,
+`nodes/sim/editing.rs`, `nodes/simulation_node/engine_api.rs`,
+`async_terrain/node_jobs.rs`, `variant_export/water.rs`, and
+`save/mod.rs` changed.
+
+Data: `economy/profiles.toml` gained two extractor profiles.
+
+Docs: `ENGINE_CONVERSION.md` is new and owns the whole conversion;
+`README2-ONBOARDING.md` gained the engine section and the standing
+rules.
+
+## Not built
+
+The actor path (creature, anatomy, and limb on gait) waits on the
+engine side. Raymarched terrain waits on the engine's compute path.
+The GPU twin does not yet share render load. Iron and stone extractors
+have no building assets. The in-game gym, zoo, and museum are queued
+behind the wiring.

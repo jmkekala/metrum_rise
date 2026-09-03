@@ -109,8 +109,20 @@ unsafe fn try_congestion_reroute(
             return;
         };
         if !reroute_is_worthwhile(current_cost, candidate_cost) {
+            // The car stays on a route it just priced against a cheaper one it
+            // declined. Both numbers are discarded here and recorded nowhere
+            // else, and this is the case a delay actually raises: the report
+            // has to say what the alternative would have cost.
+            crate::simulation::economy::agents::tick::traffic::report::record_reroute_rejected(
+                *slices.cur_n.get(i) as usize,
+                current_cost,
+                candidate_cost,
+            );
             return;
         }
+        crate::simulation::economy::agents::tick::traffic::report::record_reroute_taken(
+            *slices.cur_n.get(i) as usize,
+        );
 
         traffic_log!(
             "[CONGESTION_REROUTE] agent={} node={} current_cost={:.1} candidate_cost={:.1} old_len={} new_len={}",
@@ -150,10 +162,55 @@ unsafe fn try_congestion_reroute(
 ///
 /// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
 #[allow(clippy::too_many_arguments)]
+/// Whether a movement from `from_edge` to `to_edge` at `node_id` turns toward
+/// the near side of the road, the turn a driver may take against a red.
+///
+/// Read from the two edges' geometry at the shared node rather than from a
+/// connector, because the hold runs before a connector is chosen. The sign of
+/// the cross product separates the two turn directions; a movement running
+/// nearly straight through is not a turn at all and never qualifies.
+fn is_near_side_turn(graph: &RegionGraph, node_id: u32, from_edge: usize, to_edge: usize) -> bool {
+    // Heading of an edge at the node, pointing along the direction of travel:
+    // into the node for the approach, away from it for the departure.
+    let heading = |edge_id: usize, incoming: bool| -> Option<(f32, f32)> {
+        if edge_id >= graph.edge_count() {
+            return None;
+        }
+        let e = graph.edge(edge_id);
+        let g = &e.geometry;
+        if g.len() < 2 {
+            return None;
+        }
+        let at_end = e.end_node == node_id;
+        // The two geometry points nearest the node, ordered along travel.
+        let (a, b) = match (at_end, incoming) {
+            (true, true) => (g[g.len() - 2], g[g.len() - 1]),
+            (true, false) => (g[g.len() - 1], g[g.len() - 2]),
+            (false, true) => (g[1], g[0]),
+            (false, false) => (g[0], g[1]),
+        };
+        let (dx, dz) = (b.x - a.x, b.z - a.z);
+        let m = (dx * dx + dz * dz).sqrt();
+        if m < 1e-4 { None } else { Some((dx / m, dz / m)) }
+    };
+    let Some(approach) = heading(from_edge, true) else {
+        return false;
+    };
+    let Some(depart) = heading(to_edge, false) else {
+        return false;
+    };
+    let cross = approach.0 * depart.1 - approach.1 * depart.0;
+    // Right-hand traffic: a right turn crosses no oncoming stream, so its cross
+    // product is negative in this basis. Straight-through movements sit near
+    // zero and are excluded by the same threshold the conflict table uses.
+    cross < -0.5
+}
+
 unsafe fn hold_at_junction_control(
     i: usize,
     lane_id: usize,
     from_edge: usize,
+    to_edge: usize,
     node_id: u32,
     sim_time: f32,
     path_idx_before_lane_end: usize,
@@ -191,6 +248,10 @@ unsafe fn hold_at_junction_control(
                 transit_network,
                 slices,
             );
+            crate::simulation::economy::agents::tick::traffic::report::record_hold(
+                node_id as usize,
+                crate::simulation::economy::agents::tick::HoldCause::PrioritySign,
+            );
             traffic_log!(
                 "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} path_idx={}/{} reason=priority-delay",
                 i,
@@ -206,6 +267,16 @@ unsafe fn hold_at_junction_control(
         match control.entry_hold_s(from_edge, sim_time) {
             // Red or amber: no fixed duration, re-tested next tick.
             None => {
+                // A near-side turn is permitted against a red as a yield. The
+                // signal stops being the thing that holds it; the conflict
+                // table's precedence does, and that gate runs on entry and
+                // reads every crossing movement including the green street's
+                // through traffic. So this returns false to let the car reach
+                // the gate, never to let it go.
+                if is_near_side_turn(graph, node_id, from_edge, to_edge) {
+                    *s_release.get_mut(i) = f32::MIN;
+                    return false;
+                }
                 *s_release.get_mut(i) = f32::MIN;
                 hold_agent_at_stop_line(
                     i,
@@ -214,6 +285,15 @@ unsafe fn hold_at_junction_control(
                     remaining_dist,
                     transit_network,
                     slices,
+                );
+                crate::simulation::economy::agents::tick::traffic::report::record_hold(
+                    node_id as usize,
+                    crate::simulation::economy::agents::tick::HoldCause::SignalRed,
+                );
+                // Which approach is starving, which the per-node tally cannot
+                // say. A timed program reallocates green against this.
+                crate::simulation::economy::agents::tick::traffic::report::record_arm_hold(
+                    from_edge,
                 );
                 traffic_log!(
                     "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} path_idx={}/{} reason=signal-red",
@@ -241,6 +321,10 @@ unsafe fn hold_at_junction_control(
                     remaining_dist,
                     transit_network,
                     slices,
+                );
+                crate::simulation::economy::agents::tick::traffic::report::record_hold(
+                    node_id as usize,
+                    crate::simulation::economy::agents::tick::HoldCause::PrioritySign,
                 );
                 traffic_log!(
                     "[JUNCTION_WAIT] agent={} node={} lane={} from_edge={} path_idx={}/{} reason=priority-arrive",
@@ -391,6 +475,7 @@ pub(super) unsafe fn handle_lane_end(
                 i,
                 lane_id,
                 lane.edge_id,
+                best_e,
                 *s_cur_n.get(i),
                 sim_time,
                 path_idx_before_lane_end,

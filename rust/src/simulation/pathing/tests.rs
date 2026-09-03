@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/pathing/tests.rs
 //  module_name: tests
 //  version: 0.1.0
-//  description: Pathing regression tests covering slope cost
+//  description: Pathing regression tests covering slope cost, steep-slope
+//           avoidance, bidirectional walkways, and car U-turns.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [cch, graph]

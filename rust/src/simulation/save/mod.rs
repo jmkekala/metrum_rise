@@ -604,7 +604,7 @@ pub(crate) fn load_from_sqlite(
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
 
     let mut desirability = DesirabilitySystem::new(&config);
-    desirability.tick(&zoning, &pollution, &noise);
+    desirability.tick(&zoning, &pollution, &noise, &config);
 
     let treasury_row: (
         f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64,

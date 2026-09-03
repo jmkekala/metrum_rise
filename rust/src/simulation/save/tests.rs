@@ -6,6 +6,7 @@
 //  module_name: tests
 //  version: 0.1.0
 //  description: SQLite save and load round-trip test. Builds a populated
+//           simulation, writes it, reads it back, and compares.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [save, economy, allocator]

@@ -6,6 +6,7 @@
 //  module_name: test_ped_junction
 //  version: 0.1.0
 //  description: Pedestrian junction connection-count regressions on a
+//           built junction.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [graph, lanes]

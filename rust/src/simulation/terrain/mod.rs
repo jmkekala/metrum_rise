@@ -1,3 +1,25 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/terrain/mod.rs
+//  module_name: terrain
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Heightmap terrain for road grade, raycasting, and
+//           rendering. Two arrays: the player-sculpted source and the
+//           derived visual terrain. Untouched samples fill from the engine
+//           field in parallel by row, sculpted samples staying as measured
+//           overrides.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [config, sparse_chunk_grid, cdt, chunks]
+//  external_dependencies: [godot-rust]
+//  features: [heightmap, render-patches, engine-fill]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Heightmap terrain system used for road grade, raycasting, and rendering.
 //!
 //! Two height arrays are maintained: `source_data` (user-sculpted, never modified by roads)
@@ -158,6 +180,49 @@ impl TerrainSystem {
             self.data.set(x, y, value);
             self.mark_render_patches_for_grid_rect(x, x, y, y);
         }
+    }
+
+    /// Fills every untouched sample (still exactly at the given base
+    /// elevation) from a world-space field, into both buffers, leaving
+    /// sculpted samples as measured overrides. Returns how many samples
+    /// were filled. Evaluation runs in parallel by row; each sample is
+    /// a pure function of its world position, so order cannot matter.
+    pub(crate) fn fill_untouched_from_field(
+        &mut self,
+        base_elevation: f32,
+        field: &(dyn Fn(f32, f32) -> f32 + Sync),
+    ) -> usize {
+        use rayon::prelude::*;
+        let rows: Vec<Vec<(usize, f32)>> = (0..self.height)
+            .into_par_iter()
+            .map(|z| {
+                let mut row = Vec::new();
+                for x in 0..self.width {
+                    if self.source_data.get(x, z) != base_elevation {
+                        continue;
+                    }
+                    let (wx, wz) = self.grid_to_world_coords(x, z);
+                    let value = field(wx, wz);
+                    if value == base_elevation {
+                        continue;
+                    }
+                    row.push((x, value));
+                }
+                row
+            })
+            .collect();
+        let mut filled = 0usize;
+        for (z, row) in rows.into_iter().enumerate() {
+            for (x, value) in row {
+                self.source_data.set(x, z, value);
+                self.data.set(x, z, value);
+                filled += 1;
+            }
+        }
+        if filled > 0 {
+            self.mark_render_patches_for_grid_rect(0, self.width - 1, 0, self.height - 1);
+        }
+        filled
     }
 
     /// Gets the raw source height at a grid coordinate.
@@ -1027,6 +1092,26 @@ mod tests {
         assert!(hit.x.abs() < 1.0);
         assert!(hit.z.abs() < 1.0);
         assert!((hit.y - target.y).abs() < 1.0);
+    }
+
+    #[test]
+    fn fill_untouched_leaves_sculpted_overrides() {
+        let mut terrain = TerrainSystem::with_chunking(5, 5, 10.0, 4, 2.0);
+        terrain.set_height(1, 1, 7.0);
+
+        let filled = terrain.fill_untouched_from_field(2.0, &|wx, _wz| 5.0 + 0.001 * wx);
+
+        // Every sample fills except the one sculpted override.
+        assert_eq!(filled, 24);
+        assert_eq!(terrain.get_height(1, 1), 7.0);
+        // Grid (0,0) is world (-20,-20) on this 5x5, 10 m grid.
+        assert!((terrain.get_height(0, 0) - 4.98).abs() < 0.0001);
+        // Both buffers carry the fill, so visuals and grades agree.
+        assert!((terrain.sample_visual_height_world(-20.0, -20.0) - 4.98).abs() < 0.0001);
+
+        // A second application finds nothing left at the base elevation.
+        let refill = terrain.fill_untouched_from_field(2.0, &|wx, _wz| 5.0 + 0.001 * wx);
+        assert_eq!(refill, 0);
     }
 
     #[test]

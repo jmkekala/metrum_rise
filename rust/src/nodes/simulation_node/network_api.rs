@@ -483,6 +483,18 @@ impl SimulationNode {
         self.lock_core().get_junction_control_internal(node_id)
     }
 
+    /// Which junctions held cars this tick and why, worst first.
+    ///
+    /// Each row carries `node_id`, `total`, the dominant `cause` with its
+    /// `cause_label` and `cause_count`, and a `causes` map of code to count.
+    /// Causes: 0 signal, 1 priority sign, 2 gave way, 3 crossing traffic,
+    /// 4 connector busy, 5 exit jammed. `limit` of zero or less returns every
+    /// junction that held anyone.
+    #[func]
+    pub fn get_traffic_report(&self, limit: i32) -> VarArray {
+        self.lock_core().get_traffic_report_internal(limit)
+    }
+
     /// Aspect one arm shows at `sim_time`: 0 green, 1 amber, 2 red.
     #[func]
     pub fn get_junction_signal_aspect(&self, node_id: u32, edge_id: i32, sim_time: f32) -> u8 {

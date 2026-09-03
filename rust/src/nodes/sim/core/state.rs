@@ -1,3 +1,22 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: state.rs
+//  script_path: rust/src/nodes/sim/core/state.rs
+//  module_name: state
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: The simulation core state: every system the node wraps,
+//           and the tick that advances them in order.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [network, economy, zoning, terrain, water]
+//  external_dependencies: [godot-rust]
+//  features: [core-state, tick-order]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Authoritative simulation state and deterministic cadence transitions.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -665,7 +684,7 @@ impl SimCore {
         self.noise
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability
-            .tick(&self.zoning, &self.pollution, &self.noise);
+            .tick(&self.zoning, &self.pollution, &self.noise, &self.config);
         let service_funding_by_building = self.electricity_funding_by_building();
         let fiscal_revenue = self.households.daily_settlement_tick(
             &mut self.agents,

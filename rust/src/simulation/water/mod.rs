@@ -1,3 +1,24 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/water/mod.rs
+//  module_name: water
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Water runtime: flat authored still-water bodies as
+//           baseline depth above terrain. Patch snapshots carry the sim
+//           ground testimony on their own samples, so the shell can
+//           composite sculpts and earthworks into the drawn shoreline.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [config, sparse_chunk_grid, terrain]
+//  external_dependencies: [godot-rust]
+//  features: [baseline-depth, render-patches, ground-testimony]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Baseline water runtime for authored still-water bodies.
 //!
 //! Water is authored as deterministic lake and open-water fills. The runtime
@@ -44,6 +65,9 @@ pub(crate) struct WaterPatchSnapshot {
     pub world_size_z: f32,
     /// Row-major visible water depth samples including the border ring.
     pub depth_data: Vec<f32>,
+    /// Row-major sim terrain heights on the same samples, the ground
+    /// testimony a shoreline needs to follow sculpts and earthworks.
+    pub ground_data: Vec<f32>,
     /// Number of texture samples with visible water depth.
     pub depth_nonzero_count: usize,
 }
@@ -252,11 +276,14 @@ impl WaterSystem {
         self.dirty_render_patches.remove(&(patch_x, patch_z))
     }
 
-    /// Returns one visible-water render patch aligned to the terrain render grid.
+    /// Returns one visible-water render patch aligned to the terrain render
+    /// grid. The ground closure answers the sim terrain height at a sample,
+    /// so the snapshot carries the ground testimony on the same indices.
     pub(crate) fn visible_patch_snapshot(
         &self,
         patch_x: usize,
         patch_z: usize,
+        ground: &dyn Fn(usize, usize) -> f32,
     ) -> Option<WaterPatchSnapshot> {
         let (start_x, end_x, start_z, end_z) = self.render_patch_sample_bounds(patch_x, patch_z)?;
         let sample_width = end_x - start_x + 1;
@@ -264,6 +291,7 @@ impl WaterSystem {
         let texture_width = sample_width + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
         let texture_height = sample_height + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
         let mut depth_data = vec![0.0_f32; texture_width * texture_height];
+        let mut ground_data = vec![0.0_f32; texture_width * texture_height];
         let mut depth_nonzero_count = 0;
 
         for local_z in 0..texture_height {
@@ -278,6 +306,7 @@ impl WaterSystem {
                     depth_nonzero_count += 1;
                 }
                 depth_data[flat_idx] = depth;
+                ground_data[flat_idx] = ground(sample_x, sample_z);
             }
         }
 
@@ -298,6 +327,7 @@ impl WaterSystem {
             world_size_x,
             world_size_z,
             depth_data,
+            ground_data,
             depth_nonzero_count,
         })
     }
@@ -556,7 +586,7 @@ mod tests {
             .expect("baseline depth dimensions should match");
 
         let patch = water
-            .visible_patch_snapshot(1, 1)
+            .visible_patch_snapshot(1, 1, &|_, _| 0.0)
             .expect("patch (1,1) should exist on a 9x9 water grid");
 
         assert_eq!(patch.patch_x, 1);

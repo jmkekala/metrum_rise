@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/buildings/allocator/site/tests.rs
 //  module_name: tests
 //  version: 0.1.0
-//  description: Regression tests for building-site derivation, grading
+//  description: Regression tests for building-site derivation, grading,
+//           and site queries.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [site, surface, terrain]

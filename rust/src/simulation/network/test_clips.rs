@@ -5,7 +5,9 @@
 //  script_path: rust/src/simulation/network/test_clips.rs
 //  module_name: test_clips
 //  version: 0.1.0
-//  description: Tests for edge clipping at junctions and bends. A road
+//  description: Tests for edge clipping at junctions and bends, covering
+//           T junctions, acute and orthogonal angles, and the roadbed
+//           margin each clip rule uses.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [graph]

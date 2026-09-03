@@ -1265,9 +1265,6 @@ These rules must stay true as the terrain/world system grows:
 
 ## World Generation
 
-[BantedHam:] The section below details world generation as it will be implimented as
-I convert gdscript to rust.
-
 Two paths produce a world and both are supported: authored import from real
 elevation data, which is what the DEM / GeoTIFF pipeline serves and is the path
 the player can use for a sandbox game, and generation from a seed, which is what a
@@ -1284,7 +1281,6 @@ with enough coast and enough interior to hold every biome the country needs.
 Size is chosen so the whole biome range fits: tropical in the middle,
 high-elevation mountains with a short summer and a hard winter at one end, and
 blistering desert with towering dunes on the third, and everything between.
-Because the play area is that large, the range is achievable rather than aspirational.
 
 ### World extent
 
@@ -1293,25 +1289,22 @@ The country is `100,000 km2` of land, measured along the U as roughly
 `50,000` to `75,000 km2`, so a generated world is `150,000` to `175,000 km2`
 in total.
 
-Every biome is present except arctic. The mountains are tall and dense, with
-short summers and long winters, which is as cold as the setting goes.
+Every biome is present except arctic, and ther is a large volcano present at the center of the
+map. The mountains are tall and dense, with short summers and long winters, which is as cold as
+the setting goes.
 
-The old `20 km x 20 km` figure was a city-builder target. It survives as the
-fallback gameplay world in [`reference.md`](reference.md) and as the shape of the existing
-benchmark map nad all that is currently needed for testing and build. It is not the final
-world-size target and must not be treated as one.
+The old `20 km x 20 km` figure was a city-builder target. It survives as the fallback gameplay
+world in [`reference.md`](reference.md) and as the shape of the existing benchmark map, covering
+what testing and build currently need. The final world-size target is the country extent above.
 
 ### Real-scale slice validation
 
-Before the generator targets full country extent, one real-world-sized slice
-must be generated and driven, including curvature. Two things are proven
-there and nowhere else: that terrain, water, and road ownership hold at a
-scale where the horizon is a curve rather than a plane, and that the engine
-runs without the pixel-art shader.
-
-The pixel-art shader was a constraint of a development machine with no GPU.
-It is not a rendering requirement, and nothing in the terrain, water, or road
-contract may come to depend on it. The slice run is what demonstrates that.
+Before the generator targets full country extent, one real-world-sized slice must be generated and
+driven, including curvature. Two things are proven there and nowhere else: that terrain, water,
+and road ownership hold at a scale where the horizon curves, and that the engine runs well without
+the pixel-art shader. The pixel-art shader was a constraint of a development machine with no GPU.
+The renderer requires none of it, and nothing in the terrain, water, or road contract may come to
+depend on it.
 
 This work comes after the physical-layer port in [`simulation_layers.md`](simulation_layers.md),
 because the port changes what water and terrain mean before the slice is worth measuring.
@@ -1320,16 +1313,16 @@ The generator seeds a checklist before any terrain is evaluated and places:
 - Every biome
 - the inland sea and its islands
 - the 'U' shaped coastline
+- the volcano
 - the mountain ranges and the rain shadows behind them
 - the river outlets
 - one region of each difficulty class
 
-Those become constraints, and noise fills in around them. Everything required is
-therefore present by construction. What varies between seeds is where each piece
-sits, how big it is, how many of them there are, and what the land between looks
-like. Seeding a mountain range seeds a plate boundary and lets orogeny build the
-range. The rain shadow falls out of the weather reading that terrain rather than
-being painted.
+Those become constraints, and noise fills in around them, so everything required is
+present by construction. What varies between seeds is where each piece sits, how big
+it is, how many of them there are, and what the land between looks like. Seeding a
+mountain range seeds a plate boundary and lets orogeny build the range. The rain
+shadow falls out of the weather reading that terrain.
 
 Every seeded feature follows this rule: a constraint decides where, and the
 simulation decides what. A range placed directly as heightfield noise is a
@@ -1351,9 +1344,9 @@ them. That band is a land-region rule: an ocean region runs `8,000` to
 `15,000 km2`, two or three times a land region, because open water needs no
 subdivision and its islands are what give it content.
 
-Region size is dynamic and seed-derived rather than fixed. A region is drawn
-to its environment and is never square, unless the ground there is
-exceptionally flat with no natural feature to bind an edge to.
+Region size is dynamic and derived from the seed. A region is drawn to its
+environment, and comes out square only where the ground is flat enough to offer no
+natural feature to bind an edge to.
 
 A land region owns the coastal water along its shore, cutting off a kilometre
 or two out. Everything past that belongs to an ocean region.
@@ -1374,16 +1367,14 @@ are different jobs and both are needed: derivation produces a world that makes
 sense, and verification catches the seed where it made sense and was still
 unplayable.
 
-No single region, and no cluster of adjacent regions, holds every resource.
-That is what makes expansion mechanically necessary rather than merely new space
-to build in. The rule is stated in reach rather than radius: whatever a
-player can plausibly hold by the midpoint must still be missing several endgame resources.
-The player reaches out several times over a run to assemble what the endgame chains
-require, and no single push completes the set.
-- Basics touch nearly every region. Fertile land, game, and lumber are present in most
-  regions in some form, each with the tradeoff its biome implies. A boreal region
-  has lumber and a short growing season; a tropical one has neither problem but has
-  higher rates of disease and rot.
+No single region, and no cluster of adjacent regions, holds every resource, so
+expansion is a mechanical requirement beyond supplying new space to build in.
+Whatever a player can plausibly hold by the midpoint must still be missing several
+endgame resources, so every push leaves part of the set outstanding.
+- Basics touch nearly every region. Fertile land, game, and lumber are present in
+  most regions in some form, each with the tradeoff its biome implies. A boreal
+  region has lumber and a short growing season; a tropical one has neither problem
+  but has higher rates of disease and rot.
 - Hard regions pay better. Uranium, oil, and lithium sit where the living is
   difficult. The reward for solving a hostile region is a resource the
   comfortable regions do not have, which is why a player eventually leaves the
@@ -1394,9 +1385,9 @@ the terrain deformation the earthworks model already performs, and a mine is a
 building that does it continuously against a deposit that depletes.
 
 `earthworks.md` owns the cut and fill, and `economy.md` owns the extraction rate,
-the labor, and the freight out. What belongs here is that the deposit is a
-finite quantity in the ground with a position, a richness, and a depth, and that
-digging it out changes the terrain the same way any other excavation does.
+the labor, and the freight out. A deposit is a finite quantity in the ground with
+a position, a richness, and a depth, and digging it out changes the terrain the
+same way any other excavation does.
 
 Groundwater is a real resource with a real failure mode. It depletes when
 drawn faster than it recharges, so a desert city on an aquifer is viable until it
@@ -1416,27 +1407,24 @@ balloons carrying ground-penetrating radar, and take core samples, and the tile
 resolves from unknown to whatever is actually under it. A tile that holds nothing
 resolves to nothing, which is information too and costs the same to obtain.
 
-Surveyors are real agents, not a timer on a menu. A team is dispatched with a
-route: an ordered set of tiles, roughly a dozen or two at a time, which the player
-draws or lets the game plan. They drive it, taking roads where roads exist and going
-off-road where they must, so a region with no road in it is slower and more
-expensive to survey than one already opened up. That is the mechanic: the road
-network is what makes prospecting cheap, and the frontier stays expensive because
-it has no roads yet.
+Surveyors are real agents driving real routes. A team is dispatched with an ordered
+set of tiles, roughly a dozen or two at a time, which the player draws or lets the
+game plan. They drive it, taking roads where roads exist and going off-road where
+they must, so a region with no road in it is slower and more expensive to survey than
+one already opened up.
 
-A find is added to the player's view the moment it is made, not at the end of the
-route. A team halfway through a dozen tiles has already returned half its answers.
+A find is added to the player's view the moment it is made. A team halfway through a
+dozen tiles has already returned half its answers.
 
-The same team and the same equipment serve any subsurface question, so the survey
-is the mechanism for scientific work as well: locating archaeological sites before
-a dig rather than discovering them by accident during construction, which
-`narrative.md` owns as an event. A player who surveys ahead of expansion knows
-what is under the ground before committing to build on it.
+The same team and the same equipment serve any subsurface question, so the survey is
+the mechanism for scientific work as well: locating archaeological sites before a dig,
+which `narrative.md` owns as an event when construction turns one up by accident. A
+player who surveys ahead of expansion knows what is under the ground before committing
+to build on it.
 
 `economy.md` owns what a survey team costs to field and what its findings are
-worth. What belongs here is that a deposit carries a discovered state alongside
-its position, richness, and depth, and that the generator places it whether or not
-anyone has looked.
+worth. A deposit carries a discovered state alongside its position, richness, and
+depth, and the generator places it whether or not anyone has looked.
 
 ## Short Version
 

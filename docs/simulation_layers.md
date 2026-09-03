@@ -14,101 +14,132 @@ downstream decision in the project: everything built before it assumes the curre
 still-water fills and absent fire, so the longer it waits the more code is written
 against assumptions it invalidates.
 
-## The shared field is the floor
+## The shared field
 
-Wind, water, and fire are one combined field, not three systems that call each
-other. They read and write shared per-cell state, so their interactions are
-consequences rather than special cases. A fire's spread rate reads the wind
-blowing over it and the moisture in what it is burning. Rain wets fuel, so
-weather days ago changes how a fire behaves today. Water flows downhill over
-real terrain, and where it pools is where it pools. A firestorm generates its
-own wind, because the fire writes to the same field the wind reads. None of
-that is scripted.
+Wind, water, fire, time, materials, agents, everything the simulation governs is one combined field.
+They read and write shared per-cell state, so their interactions are consequences of that shared state.
+A fire's spread rate reads the wind blowing over it and the moisture and fuel in what it is burning.
+Rain wets fuel, so weather days ago changes how a fire behaves today. Water flows downhill over real
+terrain, and where it pools is where it pools. A firestorm generates its own wind, because the fire
+writes to the same field the wind reads. Minerals and resources populate certain areas of the map
+because the conditions of that world seed made it so. Every phenomenon emerges from general laws
+reading fields, and the world instantiates no named events.
 
-Anything bundled into a named event is wrong. A phenomenon emerges from general
-laws reading fields; it is never a thing the world instantiates.
+Water means real water that flows. This repository currently has authored still-water fills with a
+surface shader. Real flow produces rivers that run where the terrain sends them, flooding that is
+the water arriving somewhere, groundwater with a stock that depletes when drawn and recharges
+through rain and snowmelt, and canals that work because they hold water.
+ 
+Fire does not exist in this repository at all; there is a vehicle enum variant and a UI label. A
+real fire has a fuel bed, a rate that reads weather and moisture, and a spread that reads what is
+next to it. The fire keeps burning while the engine is in traffic, and it spreads to the next
+building while it waits, which is what response time in `services.md` is measured against.
 
-Water means real water that flows, not authored still-water fills with a
-surface shader, which is what this repository has today. What follows from real
-flow: rivers that run where the terrain sends them, flooding that is the water
-going somewhere rather than a triggered event, groundwater with a stock that
-depletes when drawn, and recharges through rain and snowmelt, and canals that
-work because they are water rather than because they are painted.
+Minerals are owned by `terrain.md`. Deposits derive from how the rock formed, and extraction is
+the terrain deformation the earthworks model already performs. Digging is terrain deformation,
+and the dirt that comes out has to go somewhere.
 
-Fire does not exist in this repository at all; there is a vehicle enum variant
-and a UI label. A real fire has a fuel bed, a rate that reads weather and
-moisture, and a spread that reads what is next to it. The fire keeps burning
-while the engine is in traffic, and it spreads to the next building rather than
-waiting, which is what response time in `services.md` is measured against.
+Flora means every tree is distinct, with cheap fractal grass and particles so ground cover is
+dense without hand placement. Vegetation is a layer the other systems read: fuel to a fire, shade
+and evaporation to the weather, roots holding soil against erosion, and amenity value to a
+household. All of this traditionally tanges from individually to collectively very expensive, but
+when riding a shared substrate and field, every sytem feeds and compliments one another recursively
+from the ground up from a floor of 10 physical constants that everything else is built in layers on
+top of. The result is a simulation where level of achievable complexity is a boundary of the games
+own scope, not the engines ability to achieve these levels of fidelity. A sun is a real sun,
+burning real hydrogen for free, never being expensive because no one is looking inside the sun.
+Sound that is a consequnce of interaction, weather that is a concequence of its environment,
+behavior that is a concequence of real decisions, and planets with real scope and diversity.
 
-Minerals are owned by `terrain.md`. Deposits derive from how the rock formed
-rather than from a table, and extraction is the terrain deformation the
-earthworks model already performs. Excavation is not a separate system: digging
-is terrain deformation, and the dirt that comes out has to go somewhere, which
-is what makes a cut-and-fill decision real.
+## Disasters and natural events
 
-Flora means trees that are all different rather than a handful of meshes
-repeated, with cheap fractal grass and particles so ground cover is dense
-without being placed by hand. Vegetation is a layer the other systems read: it
-is fuel to a fire, shade and evaporation to the weather, roots holding soil
-against erosion, and amenity value to a household. Fauna means real animals,
-which makes hunting and fishing real activities rather than a resource yield
-per tile: a population that can be depleted, that moves, and that responds to
-the habitat the flora layer describes.
+Each disaster is an ordinary reading of a field that already exists. A flood is water on terrain,
+a storm is weather, a wildfire is the fire layer meeting the flora layer, and volcanoes and
+earthquake reads the tectonic layer that placed the mountains.
 
-Disasters are simply a special-case event system. Each is an ordinary reading
-of a field that already exists: a flood is water on terrain, a storm is weather,
-a wildfire is the fire layer meeting the flora layer, an earthquake reads the
-tectonic layer that placed the mountains.
+## Fauna
+
+Animals get the same minds the sims get. They are agents reading the shared field, so a live
+population can be depleted, moves, and responds to the habitat the flora layer describes. Hunting
+and fishing run against that population, and overproduction or dar crop rotation decisions will
+deplete natural resources.
+
+What wildlife does in a city is not bounded by what the simulation forbids, and the allowed
+behaviours are not enumerated in advance. Because of the shared field, rats will naturally reach
+food waste and carry disease into the health system, raccoons dig through, and bears come into
+rural settlements where the habitat meets the buildings. The limits of these interactions
+therefore must be set by the game itslef through the engine's authoring layer.
+
+Invasive species follow from the same machinery. A species that arrives and finds a habitat with
+no check on it spreads, because spread is population against habitat.
+
+### Environmental impact
+
+The player's construction changes the habitat the fauna layer reads. Clearing forest, draining
+wetland, damming a river, polluting water, and paving over a range all move the population that
+lived there.
+
+A city that destroys a predator's range gets more of whatever that predator ate, stimulating the
+pest control industry. A river polluted upstream has fewer fish downstream, so fishing stops
+paying. Waste left reachable feeds a population that carries disease into the `services.md`
+health system.
+
+No environmental score computes any of this. The population reads the habitat and the habitat
+reads what the player built thriugh the shared field, and live simulation is then aggegated back
+into the statistics and figures the player reads, and a perceptive player will also notice the
+visual cues.
+
+### Wildlife crossings
+
+A highway, a rail line, or a canal cut through habitat leaves the population on either side
+unable to reach the other, and the animals that try are roadkill. A crossing costs money to
+build and maintain, occupies land at both approaches, and spans a corridor whose width sets its
+span. Placement decides whether it works: one on the route animals already take carries them,
+and one sited where the player found room does not.
+
+
+The player builds wildlife bridges over highways, rail, and canals, and the crossing reconnects
+the two sides for the fauna layer. Animals route across because the crossing is habitat
+continuous with what they already use, with no separate pathing directing them. A reconnected
+range holds a population a severed one cannot. Predators reach prey across the cut, so pest
+pressure on the far side stays where it was. Collisions fall where the crossing carries the
+traffic that was crossing at grade.
 
 ## Agents and their minds
 
-Sims have more of their own mind than the genre gives them. The layer to port is
-the one built on a real neural network, with the director running sims as
-agents. The hard constraint from this repository: determinism is the default.
-Given the same save, inputs, and tick sequence the simulation produces the same
-result, and the existing worker-selection model explicitly rejects RNG-driven
-choice. Any neural variant has to stay deterministic or it does not land.
+Sims have more of their own mind than the genre gives them. The layer exists and is built on a
+real neural network as `connectome_node.gd`, with the director running sims as agents. They have 
+their own goals, motivations, desires, and a sufficiently disgruntled population riots, triggered
+by a real incident between real agents. Every agent is genuine and the director watches them, so
+media companies report events that actually happened. A day-night cycle long enough for sims to
+approximate their lives is what makes rush hour, nightlife, and shift work exist. This is once
+again made possible by the shared field, and the hashed lod that runs the background cheaply.
 
-What that buys: a sufficiently disgruntled population riots, and the trigger is
-a real incident between real agents rather than a meter crossing a line. The
-news is real, because every agent is genuine and the director watches them, so
-media companies can report events that actually happened rather than the canned
-feedback the genre uses. And a day-night cycle long enough for sims to
-approximate their lives is what makes rush hour, nightlife, and shift work
-exist at all.
-
-The detailed social simulation is a port target. It does not exist in this
-repository, where crime, education, and parks are all deferred modifiers that
-nothing reads. `services.md` owns crime and the rule that keeps it out of a
-death spiral, `narrative.md` owns the political layer, and `economy.md` owns
-the money.
+The detailed social simulation is a port target from 2.5D_edgine. It does not exist in this
+repository, where crime, education, and parks are all deferred modifiers that nothing reads.
+`services.md` owns crime and the rule that keeps it out of a death spiral, `narrative.md` owns the
+political layer, and `economy.md` owns the money.
 
 ## What the world is made of
 
-Buildings are not swapped in when a timer expires. Procedurally generated
-buildings actually scaffold and go up with cranes, so a construction site is a
-visible stage of the building rather than a placeholder mesh. Pipes and power
-are real networks in the ground and on poles, so the utility layer in
-`services.md` is a topology rather than a coverage radius.
+Procedurally generated buildings scaffold and go up with cranes, so a construction site is a visible
+stage of the building. Pipes and power are real networks in the ground and on poles, so the utility
+layer in `services.md` is a topology.
 
-A building is not one zone type. Retail at the ground floor, offices above,
-apartments above that, and a bar in the cellar reached from the alley are the
-same building, and each part is its own economic unit. A side door into a
-converted cellar is a real business with a real address on a service way, which
-is the alley content in `zoning.md`.
+A building can carry several zone types at once. Retail at the ground floor, a bar in the cellar,
+offices above, then apartments above that, and each part is its own economic unit. A side door into
+a converted cellar is a real business with a real address on a service way, the alley content in
+`zoning.md`.
 
-## Scale, and how it stays affordable
+## Scale
 
-The target is 20,000,000 agents, and what makes that reachable is that only
-what is being looked at is simulated live. Distant agents are a hashed summary
-rather than a running state machine, reconstituted when attention arrives. The
-fractal and hashed level-of-detail method is the load-bearing piece of the port:
-without it, real-sized cities with real-sized industry and individually tracked
-agents are not affordable at any agent count worth having.
+The target is **at least** 20,000,000 agents, reachable because only what is being looked at is
+simulated live. Distant agents are a hashed summary, reconstituted when attention arrives. The
+fractal and hashed level-of-detail method is the load-bearing piece of the port: without it,
+real-sized cities with real-sized industry and individually tracked agents exceed the budget at
+any agent count worth having without significant development.
 
-A save is seed, delta, and tick with a content-version stamp, not a dump of
-world state; the world regenerates from the record. Two things follow. An
-authored save survives a base change, because the edits replay onto the new
-generator. And undo is replay: the edits are an ordered log, so undo truncates
-the log and regenerates rather than restoring a snapshot.
+A save is seed, delta, and tick with a content-version stamp; the world regenerates from that
+record. An authored save survives a base change, because the edits replay onto the new generator.
+Undo is replay: the edits are an ordered log, so undo truncates the log and regenerates the
+world.

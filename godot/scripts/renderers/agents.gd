@@ -9,6 +9,7 @@ extends Node3D
 
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const EngineMeshSource := preload("res://scripts/core/engine_mesh_source.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -86,6 +87,30 @@ func _ready():
 		print("  ", _pedestrian_debug_mode_description(_pedestrian_vat_debug_mode))
 
 	for p_type in person_meshes:
+		# [C] Engine mesh workflow, same toggle: agents take frozen evaluated
+		# forms instead of authored GLTFs. The frozen form is static and
+		# carries no VAT walk, so it registers with a plain material; the
+		# engine actor path replaces this when it lands, and authored meshes
+		# remain the fallback either way.
+		if EngineMeshSource.enabled():
+			var frozen := EngineMeshSource.frozen_mesh_for("agent:%s" % p_type, 0)
+			if frozen != null:
+				var frozen_mmi := MultiMeshInstance3D.new()
+				var frozen_mm := MultiMesh.new()
+				frozen_mm.transform_format = MultiMesh.TRANSFORM_3D
+				frozen_mm.use_colors = false
+				frozen_mm.use_custom_data = true
+				frozen_mm.instance_count = 0
+				frozen_mm.mesh = frozen
+				frozen_mmi.multimesh = frozen_mm
+				SceneLightingConfig.apply_shadow_policy(
+					frozen_mmi,
+					SceneLightingConfig.SHADOW_DYNAMIC_CASTER,
+					"walkers"
+				)
+				add_child(frozen_mmi)
+				walker_mmis[p_type] = frozen_mmi
+				continue
 		var gltf_doc   := GLTFDocument.new()
 		var gltf_state := GLTFState.new()
 		var err := gltf_doc.append_from_file(person_meshes[p_type], gltf_state)

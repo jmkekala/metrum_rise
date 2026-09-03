@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/economy/logistics/tests.rs
 //  module_name: tests
 //  version: 0.1.0
-//  description: Shipment and freight regression tests. The logistics_tick
+//  description: Shipment and freight regression tests, covering the
+//           logistics tick and carrier arrival and return.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [logistics, allocator, network]

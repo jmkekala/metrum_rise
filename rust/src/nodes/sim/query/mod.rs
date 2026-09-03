@@ -5,7 +5,8 @@
 //  script_path: rust/src/nodes/sim/query/mod.rs
 //  module_name: query
 //  version: 0.1.0
-//  description: Read-only spatial and state inspection for the sim node
+//  description: Read-only spatial and state inspection for the sim node,
+//           split into query sub-modules.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph]

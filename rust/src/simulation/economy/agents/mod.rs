@@ -1,3 +1,22 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: mod.rs
+//  script_path: rust/src/simulation/economy/agents/mod.rs
+//  module_name: agents
+//  version: 0.1.0
+//  description: The agent system: its SoA data layout, the transit state
+//           machine's constants, the trip-plan and vehicle flag bits, and
+//           the submodules that move agents through a tick.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: [transit-states, trip-plan-flags, transit-modes]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-29
+// ========================================================================
+
 //! Agent simulation: data layout, activity states, and lifecycle management.
 
 mod building_refs;
@@ -78,6 +97,13 @@ pub const ACCESS_PATH_FROM_FLOW_FIELD: u8 = 0x04;
 pub const ACCESS_IMMIGRATION_ORIGIN: u8 = 0x08;
 /// Trip-plan bit: the network leg ends at a border freight terminal instead of a building ingress.
 pub const ACCESS_FREIGHT_BORDER_DESTINATION: u8 = 0x10;
+/// Vehicle bit: this agent is a responder running lights, so traffic ahead of it
+/// yields and signals it approaches may be preempted.
+///
+/// Set for the duration of a call rather than for the life of the vehicle: a
+/// fire engine returning to station is ordinary traffic and yields like anything
+/// else, which is why this is a state bit and not a vehicle type.
+pub const ACCESS_RESPONDING: u8 = 0x20;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).

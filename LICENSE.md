@@ -1,18 +1,46 @@
-METRUM RISE - Open Source City Building Game
+**METRUM RISE** - Open Source City Building Game
 
-This program is free software; you can redistribute it and/or
-modify it under the terms of the GNU General Public License version 2 (GPL-2.0)
-as published by the Free Software Foundation.
+This program is **free software**; you can redistribute it and/or modify it under
+the terms of the **GNU General Public License version 2** (GPL-2.0) as published by
+the Free Software Foundation.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+This program is distributed in the hope that it will be useful, but **WITHOUT ANY**
+**WARRANTY**; without even the implied warranty of **MERCHANTABILITY** or **FITNESS FOR**
+**ANY PARTICULAR PURPOSE**. See the **GNU General Public License for more details.**
 
 You should have received a copy of the GNU General Public License, version 2
-along with this program; if not, see
-<https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html>.
+along with this program; if not, see:
+- [https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html).
 
+---
+
+## 2.5D_engine LICENSE
+
+**terms**
+
+- **Canonical work** implies the original authors original publicly shared source
+  repository for a project, work of art, or assembled body of work.
+
+**LICENSE:**
+
+This program and all of its individual components (2.5D_engine, SPEECH_socket,
+FILE_browser, GOAT_bus) are private property and all rights are reserved. It is
+not licensed under the **GPL-2.0** that covers the **METRUM RISE** game, or under **any**
+**other** public license. **METRUM RISE** consumes it across a call boundary as a
+mounted addon; mounting grants **no rights** to the engine's source. jmkekala's repo
+for the [**METRUM RISE**](https://www.github.com/jmkekala/metrum_rise) project is considered the **canonical work**, and no other fork
+or work may use **2.5D_engine** for anything other that the explicit purpose of
+contributing to the **canonical work**. Developers of **METRUM RISE** may, upon request,
+be granted access to the proprietary repo for 2.5D_engine for the exclusive
+development of of **canonical work** of **METRUM RISE**.
+
+- Terms for the engine will be published by the author; until then the legal
+  default holds: no grant beyond what the above written permission gives.
+- This program is distributed **WITHOUT ANY WARRANTY**; without even the implied
+  warranty of **MERCHANTABILITY** or **FITNESS FOR ANY PARTICULAR PURPOSE**.
+
+
+---
 
 GNU General Public License
 ==========================

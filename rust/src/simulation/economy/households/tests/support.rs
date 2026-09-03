@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/economy/households/tests/support.rs
 //  module_name: support
 //  version: 0.1.0
-//  description: Shared household test fixtures: buildings, networks
+//  description: Shared household test fixtures: buildings, networks,
+//           and replenishment.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [households, definitions]

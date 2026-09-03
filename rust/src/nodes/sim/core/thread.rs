@@ -120,6 +120,60 @@ fn publish_road_tool_snapshots(
         .expect("road query snapshot lock poisoned") = query_snapshot;
 }
 
+// ========================================================================
+// SIGNALS ANSWERING FLOW
+// ========================================================================
+
+/// Runs each signaled junction's timing behavior against measured demand.
+///
+/// The demand is how many cars each signal held on each approach over the last
+/// window, which the movement pass records as it holds them.
+///
+/// What a junction does with that depends on the equipment it stands for. A
+/// fixed timer ignores it, which is the point: a green wave only holds while
+/// every signal on the corridor keeps the same cycle. An actuated signal rests
+/// on the main road and serves a side arm when one is detected. An adaptive one
+/// reallocates green in proportion to the queues.
+fn retime_signals(
+    graph: &mut crate::simulation::network::graph::RegionGraph,
+    holds: &crate::simulation::economy::agents::tick::HoldAccumulator,
+    sim_time: f32,
+) {
+    use crate::simulation::network::graph::{JunctionControl, SignalTiming};
+
+    for node_id in 0..graph.node_count() {
+        let JunctionControl::Signal(program) = graph.node_control_mut(node_id as u32) else {
+            continue;
+        };
+
+        // An expired claim is dropped here rather than inside `aspect_at`, so
+        // reading a signal stays a pure function of the clock.
+        program.expire_preemption(sim_time);
+
+        // A junction currently claimed by an emergency vehicle is left alone:
+        // retiming it would be rewriting the program underneath a hold that is
+        // about to end anyway.
+        if program.preempt.is_some() {
+            continue;
+        }
+
+        match program.timing {
+            SignalTiming::Fixed => {}
+            SignalTiming::Actuated => {
+                program.actuate_for_demand(|edge_id| holds.arm_hold_count(edge_id));
+            }
+            SignalTiming::Adaptive => {
+                program.retime_for_demand(|edge_id| holds.arm_hold_count(edge_id));
+            }
+        }
+    }
+
+    // Start the next window. Arm demand accumulates across ticks precisely so
+    // this reads a minute of evidence rather than one frame of it, so the
+    // consumer clears it rather than the per-tick reset.
+    holds.clear_arm_demand();
+}
+
 fn crash_summary_from_core(core: &SimCore) -> CrashSimSnapshot {
     CrashSimSnapshot {
         day_index: core.time.day_index,
@@ -173,6 +227,10 @@ pub(crate) fn run_sim_thread(
     const TARGET_DT: f64 = 1.0 / 60.0;
     let target = Duration::from_micros(16_667); // ~60 Hz
     let mut recycled_snapshot = RenderSnapshot::default();
+    // The minute signals were last retimed against, so it happens once a minute
+    // rather than once a tick. `u16::MAX` is never a real minute of day, so the
+    // first tick always retimes.
+    let mut last_retime_minute: u16 = u16::MAX;
 
     loop {
         let frame_start = Instant::now();
@@ -544,6 +602,22 @@ pub(crate) fn run_sim_thread(
                         c.time.minute_of_day,
                     );
                 });
+
+                // Let signals answer the demand the pass just measured.
+                //
+                // On the minute rather than the tick: a cycle is tens of
+                // seconds, so a program adjusted sixty times a second would be
+                // reacting to noise inside a single phase, and a player would
+                // see timings twitch rather than settle.
+                if core.time.minute_of_day != last_retime_minute {
+                    last_retime_minute = core.time.minute_of_day;
+                    record_crash_phase_for_core(&core, "signal retime");
+                    run_sim_phase("signal retime", || {
+                        let c = &mut *core;
+                        let now = c.agents.sim_time;
+                        retime_signals(&mut c.region_graph, &c.agents.junction_holds, now);
+                    });
+                }
 
                 core.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
                 agent_ms = core.last_agent_tick_us as f64 / 1000.0;

@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/buildings/frontage.rs
 //  module_name: frontage
 //  version: 0.1.0
-//  description: Frontage roles, which are what make an alley an alley. A
+//  description: Frontage roles, which are what make an alley an alley. What
+//           a frontage is for, and which edges may carry which kind.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [simulation/network/types.rs]

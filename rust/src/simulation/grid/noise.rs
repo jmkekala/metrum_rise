@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/grid/noise.rs
 //  module_name: noise
 //  version: 0.1.0
-//  description: Grid-based noise emission and diffusion. Vehicles above a
+//  description: Grid-based noise emission and diffusion from traffic and
+//           buildings.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [data_grid, graph, allocator]

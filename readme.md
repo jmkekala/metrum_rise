@@ -1,8 +1,12 @@
 # METRUM RISE
 
 ## Description
-Open Source (GPLv2) city building game build with Godot game engine and Rust programming language.
-License: [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+Open Source (GPLv2) city building game build with Godot game engine and Rust programming
+language.
+- **License:** [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+
+Closed source physics, graphical, and sumation engine; 2.5D_engine, distributed to METRUM
+RISE developers upon request for the exclusive purpose of the development of METRUM RISE.
 
 ## Requirements
 - Godot (4.x)
@@ -36,6 +40,19 @@ Loads of bugs: less of the old ones, probably more new ones.
 
 ## Credits
 
+### Developers
+
+#### Lead
+
+- [jmkekala](https://www.github.com/jmkekala)
+	-
+	- [@MietoK on YouTube](https://www.youtube.com/@MietoK)
+
+#### Others
+
+- [BantedHam](https://www.github.com/BantedHam)
+
+
 ### Kuopio map:
 Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey
 of Finland Topographic Database/ Date: 19.04.2026)
@@ -61,6 +78,13 @@ They are at the "screenshots" folder.
 - [First attempt to make a t-junction](/screenshots/t-junction.png)
 
 
-## Video
-45 min video about this buggy game on how it looks on release
+## Videos
+
+**Shout-out by [Easily Distracted Games](https://www.youtube.com/@easilydistractedgames), runs 5:51-7:15**
+- [These New & Upcoming Modern City Builders Look Insane!](https://youtu.be/maKrOClAxgA)
+
+**45 minute video about this buggy game on how it looks currently**
 - [Metrum Rise - Open Source City Building Game](https://youtu.be/QtjniXLWW9M)
+
+**30 minute video about progress that has been made, and bugs**
+- [Metrum Rise - Gameplay - 08/2026](https://youtu.be/ms_MAdVKa-8)

@@ -1,3 +1,23 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: node_jobs.rs
+//  script_path: rust/src/nodes/simulation_node/async_terrain/node_jobs.rs
+//  module_name: node_jobs
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Async terrain and water payload jobs: the worker side of
+//           patch assembly, including the ground testimony water patches
+//           carry for the shell composite.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [terrain, water, road_surface]
+//  external_dependencies: [godot-rust]
+//  features: [async-payloads, patch-jobs]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! `SimulationNode` helpers for async terrain and water jobs.
 
 use super::super::*;
@@ -535,9 +555,11 @@ impl SimulationNode {
         {
             return None;
         }
-        let patch = core
-            .watermap
-            .visible_patch_snapshot(request.key.patch_x, request.key.patch_z)?;
+        let patch = core.watermap.visible_patch_snapshot(
+            request.key.patch_x,
+            request.key.patch_z,
+            &|x, z| core.heightmap.get_height(x, z),
+        )?;
         let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,
             patch.world_origin_x,
@@ -546,6 +568,7 @@ impl SimulationNode {
             patch.world_origin_z + patch.world_size_z,
         );
         let depth_bytes = Self::f32_bytes_vec(&patch.depth_data);
+        let ground_bytes = Self::f32_bytes_vec(&patch.ground_data);
         Some(WaterPatchPayload {
             key: request.key,
             request_id: request.request_id,
@@ -553,6 +576,7 @@ impl SimulationNode {
             surface_generation: request.surface_generation,
             patch,
             depth_bytes,
+            ground_bytes,
             road_clip_query,
         })
     }
@@ -570,7 +594,9 @@ impl SimulationNode {
         {
             return None;
         }
-        let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z)?;
+        let patch = core.watermap.visible_patch_snapshot(patch_x, patch_z, &|x, z| {
+            core.heightmap.get_height(x, z)
+        })?;
         let road_clip_query = Self::road_clip_loop_query_for_bounds(
             core,
             patch.world_origin_x,

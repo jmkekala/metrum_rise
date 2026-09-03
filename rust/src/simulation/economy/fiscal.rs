@@ -231,7 +231,7 @@ impl CityFiscalPolicy {
     }
 
     /// Returns stable UI control metadata for every live fiscal policy field.
-    pub(crate) fn controls(self) -> [FiscalPolicyControl; 11] {
+    pub(crate) fn controls(self) -> [FiscalPolicyControl; 12] {
         [
             FiscalPolicyControl::new(
                 POLICY_UNEMPLOYMENT_BENEFIT,
@@ -341,6 +341,20 @@ impl CityFiscalPolicy {
                 self.property_tax_level_multiplier,
                 PROPERTY_TAX_MULTIPLIER_MIN,
                 PROPERTY_TAX_MULTIPLIER_MAX,
+                0.05,
+            ),
+            // Border openness always had a set_value arm and an impact
+            // mapping; surfacing it as a control is what makes the
+            // public policy setter accept it and gives the border the
+            // dial its presentation layer was built around.
+            FiscalPolicyControl::new(
+                POLICY_BORDER_OPENNESS,
+                "Border openness",
+                "Border",
+                FiscalPolicyUnit::Multiplier,
+                self.border_openness,
+                BORDER_OPENNESS_MIN,
+                BORDER_OPENNESS_MAX,
                 0.05,
             ),
         ]

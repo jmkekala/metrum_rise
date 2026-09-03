@@ -1,3 +1,22 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: lane_change.rs
+//  script_path: rust/src/simulation/economy/agents/tick/traffic/lane_change.rs
+//  module_name: lane_change
+//  version: 0.1.0
+//  description: Which lane a car should be in: the next step toward a
+//           planned detach lane, the turn pocket for its upcoming
+//           movement, and the conservative overtake and return rules.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: [lane-change-targets, turn-pockets, conservative-overtaking]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-28
+// ========================================================================
+
 //! Lane-change and conservative overtaking helper rules.
 
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
@@ -176,6 +195,77 @@ pub(in crate::simulation::economy::agents::tick) fn planned_detach_distance_on_c
     planned_detach_lane_d - lane_d
 }
 
+/// Returns the lane a car should be in to make `movement` at the far node.
+///
+/// A turn pocket is a lane that permits one movement, opening part way along
+/// the edge. Without this a turning car sits in the through lane to the stop
+/// line, and everything behind it waits on a movement it does not share, which
+/// is the whole reason a real street widens as it approaches a junction.
+///
+/// Returns `None` when the current lane already permits the movement and no
+/// pocket is better, which is the ordinary case and costs one field read. A
+/// pocket that has not opened yet at `lane_d` is not offered, because a car
+/// cannot move into a lane that does not exist there.
+pub(in crate::simulation::economy::agents::tick) fn turn_lane_target(
+    current_lane_id: usize,
+    movement: u8,
+    lane_d: f32,
+    transit_network: &TransitNetwork,
+) -> Option<usize> {
+    let lanes = &transit_network.lane_system.lanes;
+    let current = lanes.get(current_lane_id)?;
+    if current.edge_id == usize::MAX || current.lane_type != LaneType::Vehicle {
+        return None;
+    }
+
+    // Already in a lane that permits it and is not a general-purpose lane a
+    // pocket would serve better: nothing to do. An unrestricted lane still
+    // looks for a pocket, because that is exactly the case this exists for.
+    if !current.turns.is_unrestricted() && current.turns.allows(movement) {
+        return None;
+    }
+
+    let t = if current.length > 1e-3 {
+        (lane_d / current.length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    // The closest lane that names this movement and exists here. Closest by
+    // lane index, so a car crosses as few lanes as it has to; a two-lane move
+    // still resolves one lane at a time through `lane_change_target_toward`.
+    let mut best: Option<(i8, usize)> = None;
+    for &lid in transit_network
+        .lane_system
+        .edge_lanes
+        .get(&current.edge_id)?
+        .iter()
+    {
+        let Some(lane) = lanes.get(lid) else { continue };
+        if lane.is_fwd != current.is_fwd
+            || lane.lane_type != LaneType::Vehicle
+            || lane.turns.is_unrestricted()
+            || !lane.turns.allows(movement)
+        {
+            continue;
+        }
+        // The pocket has to exist where the car is, or it cannot enter it.
+        if t < lane.extent.0 || t > lane.extent.1 {
+            continue;
+        }
+        let dist = (lane.lane_idx - current.lane_idx).abs();
+        if best.is_none_or(|(d, _)| dist < d) {
+            best = Some((dist, lid));
+        }
+    }
+
+    let (_, target) = best?;
+    if target == current_lane_id {
+        return None;
+    }
+    lane_change_target_toward(current_lane_id, target, transit_network)
+}
+
 /// Returns the next lane-change target required to reach the planned detach lane.
 pub(in crate::simulation::economy::agents::tick) fn planned_lane_change_target(
     current_lane_id: usize,
@@ -188,4 +278,98 @@ pub(in crate::simulation::economy::agents::tick) fn planned_lane_change_target(
         return None;
     }
     lane_change_target_toward(current_lane_id, planned_detach_lane_id, transit_network)
+}
+
+// ========================================================================
+// TESTS
+// ========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::TurnSet;
+    use crate::simulation::network::lanes::Lane;
+
+    /// One forward road lane on edge 0, with a turn set and an extent.
+    fn road_lane(lane_idx: i8, turns: u8, extent: (f32, f32)) -> Lane {
+        Lane {
+            edge_id: 0,
+            is_fwd: true,
+            lane_idx,
+            length: 100.0,
+            lane_type: LaneType::Vehicle,
+            turns: TurnSet(turns),
+            extent,
+            ..Default::default()
+        }
+    }
+
+    /// A network of `lanes`, all on edge 0.
+    fn network(lanes: Vec<Lane>) -> TransitNetwork {
+        let mut n = TransitNetwork::new();
+        let ids: Vec<usize> = (0..lanes.len()).collect();
+        n.lane_system.lanes = lanes;
+        n.lane_system.edge_lanes.insert(0, ids);
+        n
+    }
+
+    #[test]
+    fn a_through_lane_with_no_pocket_stays_put() {
+        // Nothing names the movement, so there is nowhere better to be. The
+        // ordinary case, and it must not churn lanes looking for one.
+        let net = network(vec![road_lane(0, 0, (0.0, 1.0))]);
+        assert_eq!(turn_lane_target(0, TurnSet::RIGHT, 50.0, &net), None);
+    }
+
+    #[test]
+    fn a_car_turning_right_moves_into_the_right_pocket() {
+        let net = network(vec![
+            road_lane(0, 0, (0.0, 1.0)),
+            road_lane(1, TurnSet::RIGHT, (0.75, 1.0)),
+        ]);
+        // Past the pocket's opening, so it exists here.
+        assert_eq!(turn_lane_target(0, TurnSet::RIGHT, 80.0, &net), Some(1));
+    }
+
+    #[test]
+    fn a_pocket_that_has_not_opened_yet_is_not_offered() {
+        // The pocket runs the last quarter of the edge. A car at 10 m cannot
+        // move into a lane that does not exist there, and offering it would
+        // steer the car into the verge.
+        let net = network(vec![
+            road_lane(0, 0, (0.0, 1.0)),
+            road_lane(1, TurnSet::RIGHT, (0.75, 1.0)),
+        ]);
+        assert_eq!(turn_lane_target(0, TurnSet::RIGHT, 10.0, &net), None);
+    }
+
+    #[test]
+    fn a_car_already_in_a_lane_permitting_the_movement_stays() {
+        let net = network(vec![
+            road_lane(0, 0, (0.0, 1.0)),
+            road_lane(1, TurnSet::RIGHT, (0.0, 1.0)),
+        ]);
+        assert_eq!(turn_lane_target(1, TurnSet::RIGHT, 80.0, &net), None);
+    }
+
+    #[test]
+    fn the_nearest_pocket_naming_the_movement_wins() {
+        // Two right pockets, one adjacent and one two lanes out. The car
+        // crosses as few lanes as it has to.
+        let net = network(vec![
+            road_lane(0, 0, (0.0, 1.0)),
+            road_lane(1, TurnSet::RIGHT, (0.0, 1.0)),
+            road_lane(2, TurnSet::RIGHT, (0.0, 1.0)),
+        ]);
+        assert_eq!(turn_lane_target(0, TurnSet::RIGHT, 80.0, &net), Some(1));
+    }
+
+    #[test]
+    fn a_left_pocket_is_not_offered_to_a_right_turn() {
+        let net = network(vec![
+            road_lane(0, 0, (0.0, 1.0)),
+            road_lane(1, TurnSet::LEFT, (0.0, 1.0)),
+        ]);
+        assert_eq!(turn_lane_target(0, TurnSet::RIGHT, 80.0, &net), None);
+    }
 }

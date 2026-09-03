@@ -1,8 +1,56 @@
 # Metrum Rise — Reference
 
-Stable lookup tables for architecture constants, runtime vocabulary, memory budgets, and data formats. Update this file when specs change. For current status see [`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
+Stable lookup tables for architecture constants, runtime vocabulary, memory budgets,
+and data formats. Update this file when specs change. For current status see
+[`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
 
-Terminology note: this file mirrors durable code-facing names on purpose. When subsystem specs use broader gameplay terms such as `build site`, this reference may still show names such as `lot_width_cells` until the underlying runtime data model changes.
+Terminology note: this file mirrors durable code-facing names on purpose. When
+subsystem specs use broader gameplay terms such as `build site`, this reference may
+still show names such as `lot_width_cells` until the underlying runtime data model
+changes.
+
+---
+
+## Prior Art
+
+The bar to match or beat, per subject. Each entry names what specifically is being
+measured against, so a claim that something is good enough has something to test.
+The owning subsystem doc holds the design; this table is the index.
+
+| Subject | Reference | What to match or beat | Owning doc |
+|---|---|---|---|
+| Industry chains | Cities: Skylines 1, Industries DLC | Granularity of the production chain and the player's control over it | [`economy.md`](economy.md) |
+| Parks and leisure | Cities: Skylines 1, Parks DLC | Park composition and the tycoon loop over it | [`economy.md`](economy.md) |
+| Lane-based road building | Cities: Skylines 2 | Building roads by lane, and splitting lanes off a road realistically | [`roads.md`](roads.md) |
+| Gridless lots | Manor Lords | Burgage plots. The standing best in class | [`zoning.md`](zoning.md) |
+| Simulation depth | Workers and Resources: Soviet Republic | The most recent shipped title of this set, well regarded and undissected here so far | [`economy.md`](economy.md), [`demand.md`](demand.md) |
+| Building editor fidelity | Tiny Glade, Miniopolis | Per-building authoring granularity | [`asset_editor.md`](asset_editor.md) |
+| Modern city-builder design problems | James Simonson, [@jamessimo](https://www.youtube.com/@jamessimo) | Long-form devlogs on the problems that plague the genre, at lecture depth. His ambition matches this project's | Cross-cutting |
+| Scale served | Cities: Masterplan, [citymasterplan.com](https://citymasterplan.com) | The closest competitor on this axis. They claim 1:1 scale for every building, power plant, airport, vehicle, and car | [`terrain.md`](terrain.md), [`project.md`](project.md) |
+| Watch list | Citystate: Metropolis, [citystategame.com](https://citystategame.com) | Not enough material published yet. Revisit as it appears | Cross-cutting |
+
+Mods are worth noting, many players have taken it upon themsleves to fill the gaps
+left in Cites: Skylines 1/2. Where a C:SL mod exceeds the base game on one
+of these subjects, the mod is the bar.
+- Traffic Manger: President Edition
+- Network Multitool
+- Precision Engineering
+- Node Controller Renewal
+- Intersection Marking Tool
+- Imporved Public transit
+- Realistic Population
+
+Workers and Resources: Soviet Republic has not been studied in any capacity yet.
+That is a gap.
+
+Cities: Masterplan is the closest competitor. The 1:1 claim is theirs and
+unverified here. They post micro peeks and talk with their community on Discord
+at [discord.gg/ctPqgMsvU](https://discord.gg/ctPqgMsvU), which is where new
+material lands first.
+
+The building editor takes from Tiny Glade and Miniopolis together, and the final
+shape depends on what is worth keeping from each. Wherever one appears as an
+influence, the other appears beside it.
 
 ---
 

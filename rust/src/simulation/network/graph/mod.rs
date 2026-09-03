@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/network/graph/mod.rs
 //  module_name: graph
 //  version: 0.1.0
-//  description: Road network graph module root. Re-exports the node, edge
+//  description: Road network graph module root. Re-exports the node, edge,
+//           and spatial indexing types the rest of the tree builds on.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [data, lane_spec]
@@ -38,7 +39,8 @@ pub mod spatial;
 
 pub(crate) use data::RegionGraphUndoDelta;
 pub use control::{
-    JunctionControl, PrioritySign, SignalAspect, SignalPhase, SignalProgram,
+    JunctionControl, Preemption, PrioritySign, SignalAspect, SignalPhase, SignalProgram,
+    SignalTiming,
 };
 pub use data::{Edge, Node, RegionGraph, verify_intersection_geometry};
 pub use lane_spec::{

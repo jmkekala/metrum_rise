@@ -6,6 +6,7 @@
 //  module_name: tests
 //  version: 0.1.0
 //  description: Junction endpoint profile rebuild and connectivity
+//           regression tests.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [rebuild, data]

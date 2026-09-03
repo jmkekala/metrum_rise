@@ -21,6 +21,7 @@ const PART_KEY_SEP := "|part:"
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const EngineMeshSource := preload("res://scripts/core/engine_mesh_source.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var zoning_overlay = $"../ZoningOverlay"
@@ -194,6 +195,13 @@ func _setup_deserted_multimesh_for_asset_part(asset_id: String, part_index: int,
 func _load_mesh_for_asset_part(asset_id: String, part_index: int) -> Mesh:
 	if asset_id == "broken:error":
 		return null
+	# [C] Engine mesh workflow, behind its toggle: geometry frozen from the
+	# 2.5D engine's evaluated fields replaces the pack file. Packs stay the
+	# fallback whenever the toggle is off or the freeze returns nothing.
+	if EngineMeshSource.enabled():
+		var frozen := EngineMeshSource.frozen_mesh_for(asset_id, part_index)
+		if frozen != null:
+			return frozen
 	# Ask Rust for the native path to the LOD0 file for this asset part.
 	var native_path: String = simulation_node.get_building_mesh_part_lod0_native_path(asset_id, part_index)
 	if native_path.is_empty():

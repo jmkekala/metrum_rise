@@ -5,7 +5,9 @@
 //  script_path: rust/src/simulation/network/graph/lane_spec.rs
 //  module_name: lane_spec
 //  version: 0.1.0
-//  description: Per-lane identity for a road edge. An edge described its
+//  description: Per-lane identity for a road edge. Two lane counts cannot
+//           express a bus lane, a turn pocket, or a varying width, so
+//           each lane carries its own type, width, and turns.
 //  kind: module
 //  spec: docs/roads.md
 //  internal_dependencies: [config, simulation/network/types.rs]

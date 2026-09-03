@@ -6,6 +6,7 @@
 //  module_name: tests
 //  version: 0.1.0
 //  description: Regression tests for SimCore state: treasury and daily
+//           budget behavior, snapshots, and demand cadence.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [economy, network, assets]

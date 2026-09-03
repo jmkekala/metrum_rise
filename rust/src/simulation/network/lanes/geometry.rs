@@ -5,17 +5,20 @@
 //  script_path: rust/src/simulation/network/lanes/geometry.rs
 //  module_name: geometry
 //  version: 0.1.0
-//  description: 
+//  description: Lane centerline geometry: cumulative distances along a
+//           polyline, trimming a lane back from a junction, building one
+//           lane's offset centerline, and an edge's half width.
 //  kind: module
-//  spec: none
-//  internal_dependencies: []
-//  external_dependencies: []
-//  features: []
+//  spec: docs/roads.md
+//  internal_dependencies: [simulation/network/graph/data.rs,
+//           simulation/network/lanes/mod.rs]
+//  external_dependencies: [godot]
+//  features: [cumulative-distance, lane-offset, road-half-width]
 //  api_version: metrum-v1.0.0
 //  last_updated: 2026-08-27
 // ========================================================================
 
-use super::super::graph::Edge;
+use super::super::graph::{Edge, TurnSet};
 use super::super::types::TransitType;
 use super::{Lane, LaneType};
 use crate::config;
@@ -77,6 +80,12 @@ pub fn build_one_lane(
     lane_idx: i8,
     lane_type: LaneType,
     lane_offset: f32,
+    // What the authored band permits and where it exists. A travel lane passes
+    // an empty set and the full extent; a turn pocket is the reason this is a
+    // parameter at all, because a pocket that arrives without its turn set is
+    // an ordinary short lane no router can tell apart.
+    turns: TurnSet,
+    extent: (f32, f32),
 ) {
     let pts = &edge.physical_geometry;
     let mut geometry = Vec::with_capacity(pts.len());
@@ -171,6 +180,8 @@ pub fn build_one_lane(
         crosswalk_marking: None,
         next_lanes: Vec::new(),
         node_id: usize::MAX,
+        turns,
+        extent,
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
     edge_lane_indices.push(new_lane_id);

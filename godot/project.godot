@@ -1,27 +1,49 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
 config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
 config/name="Metrum Rise"
-config/features=PackedStringArray("4.x", "Forward Plus")
 run/main_scene="res://scenes/Router.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [autoload]
 
 LaunchState="*res://scripts/core/launch_state.gd"
+EngineTick="*res://scripts/core/engine_tick.gd"
+GoatBusSystem="*uid://bvq8j2x3m4n5p"
+SpeechSocket="*res://addons/SPEECH_socket/SpeechSocket.tscn"
+ManualOverrideGlobal="*res://addons/2.5D_engine/core/wrappers/manual_override_node.gd"
+EventBus="*res://addons/2.5D_engine/core/wrappers/event_bus_node.gd"
 
 [display]
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
-window/size/initial_screen=0
-window/stretch/mode="disabled"
+
+[dotnet]
+
+project/assembly_name="Metrum Rise"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/FILE_browser/plugin.cfg", "res://addons/GOAT_bus/plugin.cfg", "res://addons/SPEECH_socket/plugin.cfg", "res://addons/2.5D_engine/plugin.cfg")
 
 [rendering]
 
-environment/defaults/default_clear_color=Color(0.53, 0.74, 0.92, 1)
-environment/defaults/default_environment="res://default_environment.tres"
+textures/vram_compression/import_etc2_astc=true
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
-renderer/rendering_method="forward_plus"
-textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0.53, 0.74, 0.92, 1)
+environment/defaults/default_environment="res://default_environment.tres"

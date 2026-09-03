@@ -30,6 +30,7 @@ pub(crate) mod agriculture;
 pub mod buildings;
 pub mod core;
 pub mod economy;
+pub mod engine_inputs;
 pub(crate) mod extraction;
 pub mod grid;
 pub mod network;

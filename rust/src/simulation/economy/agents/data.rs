@@ -188,6 +188,12 @@ pub struct AgentSystem {
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: AtomicU32,
+    /// Why cars were held at each junction this tick.
+    ///
+    /// A congestion heatmap says where traffic is bad. This says what held it
+    /// there, which is the question a player asks next and the one a report has
+    /// to answer. Written from the parallel movement pass, read after it joins.
+    pub junction_holds: crate::simulation::economy::agents::tick::HoldAccumulator,
     /// Retained per-lane traffic occupancy snapshot for IDM gap lookup and lane entry checks.
     /// Indexed by lane ID; each entry is `(lane_distance, agent_idx)` sorted ascending by dist.
     ///
@@ -258,6 +264,11 @@ impl Clone for AgentSystem {
             agents: self.agents.clone(),
             sim_time: self.sim_time,
             pathfind_count: AtomicU32::new(self.pathfind_count.load(Ordering::Relaxed)),
+            // Per-tick scratch, rebuilt at the next tick start like the lane
+            // buckets beside it. A clone is a snapshot for save or undo, and
+            // carrying a half-filled tally into one would report holds that
+            // belong to a tick the clone never ran.
+            junction_holds: Default::default(),
             lane_buckets: Vec::new(),
             lane_is_dirty: Vec::new(),
             dirty_lanes: Vec::new(),
@@ -311,6 +322,7 @@ impl AgentSystem {
             agents: AgentVec::new(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
+            junction_holds: Default::default(),
             lane_buckets: Vec::new(),
             lane_is_dirty: Vec::new(),
             dirty_lanes: Vec::new(),

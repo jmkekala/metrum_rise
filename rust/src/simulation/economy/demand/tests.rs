@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/economy/demand/tests.rs
 //  module_name: tests
 //  version: 0.1.0
-//  description: Demand system regression tests: spawn need credit
+//  description: Demand system regression tests: spawn need credit and
+//           the zone and utility profiles that drive it.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [demand, households, zoning]

@@ -5,12 +5,15 @@
 //  script_path: rust/src/simulation/network/lanes/vehicle_junctions.rs
 //  module_name: vehicle_junctions
 //  version: 0.1.0
-//  description: 
+//  description: Builds the vehicle connector lanes across a junction, one
+//           per permitted turn, curving each between its approach and
+//           departure lane at a step count set by the chord distance.
 //  kind: module
-//  spec: none
-//  internal_dependencies: []
-//  external_dependencies: []
-//  features: []
+//  spec: docs/roads.md
+//  internal_dependencies: [simulation/network/graph/data.rs,
+//           simulation/network/lanes/mod.rs]
+//  external_dependencies: [godot]
+//  features: [vehicle-connectors, curve-stepping, junction-span]
 //  api_version: metrum-v1.0.0
 //  last_updated: 2026-08-27
 // ========================================================================
@@ -216,6 +219,7 @@ pub fn build_vehicle_connections_at_node(
                 crosswalk_marking: None,
                 next_lanes: vec![out_lid],
                 node_id,
+                ..Default::default()
             });
             node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);

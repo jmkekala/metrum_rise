@@ -21,6 +21,14 @@ use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
 
+/// Speed at or below which a car counts as stopped rather than crawling.
+///
+/// Not zero: a car easing forward in a slow queue reads as a small positive
+/// speed and is still clearing the mouth, so treating only exact zero as
+/// stopped would let a crawling queue block a junction it is in fact emptying.
+/// Below this it is standing still and the space behind it is not opening up.
+pub(in crate::simulation::economy::agents::tick) const STOPPED_SPEED_MS: f32 = 0.5;
+
 // ========================================================================
 // ENTRY OUTCOME
 // ========================================================================
@@ -97,9 +105,14 @@ pub(in crate::simulation::economy::agents::tick) fn conflicting_movements_clear(
     lane_id: usize,
     lane_system: &crate::simulation::network::lanes::LaneSystem,
     lane_buckets: &[Vec<(f32, usize)>],
+    // Speed of an agent by index, for the exit test below. A closure rather
+    // than a slice because the two callers reach the speed column by different
+    // routes, and neither should have to reshape itself around this.
+    speed_of: impl Fn(usize) -> f32,
 ) -> bool {
     for &other in lane_system.conflicting_lanes(node_id, lane_id) {
         if lane_buckets.get(other).is_some_and(|b| !b.is_empty()) {
+            super::report::record_hold(node_id, super::report::HoldCause::Conflict);
             return false;
         }
     }
@@ -119,30 +132,57 @@ pub(in crate::simulation::economy::agents::tick) fn conflicting_movements_clear(
             .get(other)
             .is_some_and(|b| b.first().is_some_and(|&(d, _)| d < CAR_LENGTH))
         {
+            super::report::record_hold(node_id, super::report::HoldCause::ConnectorBusy);
             return false;
         }
     }
 
-    // Do not enter a junction that is standing full. A connector leads onto a
-    // road lane, and a car entering a lane already jammed to its mouth ends up
-    // stopped inside the box.
+    // Give way to the movements that outrank this one.
     //
-    // The test is one car length at the mouth, not the full following distance
-    // `lane_entry_slot_clear` demands. Requiring that larger gap deadlocks the
-    // junction: the head car on each approach waits for an exit that ordinary
-    // moving traffic keeps occupied, so no queue ever advances and the front of
-    // every line sits still. One length is enough room to land in; whether the
-    // car ahead is moving is left to car-following once inside.
+    // The checks above are symmetric: each bars a movement while another car
+    // holds contested ground, so whichever car arrives first goes. That is
+    // wrong wherever one movement has the better claim. A right turn on green
+    // and the through traffic crossing it both read an empty box on the same
+    // tick and both entered, which is the collision.
+    //
+    // A movement gives way while any higher-ranked movement it crosses is
+    // occupied, and unlike the mutual bar this reads the whole connector rather
+    // than its mouth: a through car anywhere on its path is committed and
+    // closing, and a turn must not cut in front of it. Through traffic yields
+    // to nothing, so its own list is empty and it pays nothing for this.
+    for &other in lane_system.yielding_lanes(node_id, lane_id) {
+        if lane_buckets.get(other).is_some_and(|b| !b.is_empty()) {
+            super::report::record_hold(node_id, super::report::HoldCause::Yielded);
+            return false;
+        }
+    }
+
+    // Do not enter a junction this car cannot clear. A connector leads onto a
+    // road lane, and a car that enters while the exit is backed up ends up
+    // stopped inside the box, where it blocks every crossing movement. That is
+    // gridlock, and it is what strands an emergency vehicle behind traffic that
+    // would move over if it had anywhere to go.
+    //
+    // The discriminator is whether the exit queue is MOVING, not how large the
+    // gap is. Demanding the full following distance was tried and deadlocked
+    // every junction: ordinary moving traffic keeps the mouth occupied, so no
+    // queue ever advanced and the front of every line sat still. A moving queue
+    // is one this car can follow into; a stopped one is a wall.
+    //
+    // So a car may enter behind a car that is rolling, however close, and may
+    // not enter behind one that has stopped within a length of the mouth. That
+    // is the rule a driver uses at a yellow box.
     if let Some(exit_lane) = lane_system
         .lanes
         .get(lane_id)
         .and_then(|l| l.next_lanes.first().copied())
     {
-        let exit_jammed = lane_buckets
+        let exit_blocked = lane_buckets
             .get(exit_lane)
             .and_then(|b| b.first().copied())
-            .is_some_and(|(d, _)| d < CAR_LENGTH);
-        if exit_jammed {
+            .is_some_and(|(d, agent)| d < CAR_LENGTH && speed_of(agent) <= STOPPED_SPEED_MS);
+        if exit_blocked {
+            super::report::record_hold(node_id, super::report::HoldCause::ExitJammed);
             return false;
         }
     }
@@ -216,6 +256,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
     lane_system: Option<&crate::simulation::network::lanes::LaneSystem>,
+    speed_of: impl Fn(usize) -> f32,
 ) -> ConnectorEntry {
     if candidate_connectors.is_empty() {
         return if any_routing_valid {
@@ -253,7 +294,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
                 .map(|l| l.node_id)
                 .unwrap_or(usize::MAX);
             node_id == usize::MAX
-                || conflicting_movements_clear(node_id, lane_id, system, lane_buckets)
+                || conflicting_movements_clear(node_id, lane_id, system, lane_buckets, &speed_of)
         });
         if candidate_connectors.is_empty() {
             crate::traffic_log!(

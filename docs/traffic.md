@@ -162,11 +162,10 @@ approach bearing because a cross junction splits one street into two edges; move
 of one approach lane are a diverge and only contest the mouth; movements into one exit are
 a merge governed by gap acceptance.
 
-Two rules that are load-bearing and were each learned by breaking them. A car already
-inside a connector is committed and must never be held, or it strands mid-box and blocks
-every crossing movement. And the exit test asks whether the exit is jammed, not whether it
-is empty: demanding an empty mouth deadlocks the junction, because the head car on each
-approach waits for an exit that ordinary moving traffic keeps occupied.
+Two load-bearing rules, each learned by breaking it. A car already inside a connector is committed
+and must never be held, or it strands mid-box and blocks every crossing movement. The exit test
+asks whether the exit is jammed: demanding an empty mouth deadlocks the junction, because the
+head car on each approach waits for an exit that ordinary moving traffic keeps occupied.
 
 Right turns still collide. The table can say a path is occupied but not who had the better
 claim, which needs turn lanes and a stated precedence. Tracked as `TURN-01`.
@@ -353,22 +352,10 @@ gap in this document and the one most reference games in this genre get wrong.
 It is now closed, and the rest of this section records what the loop is and why
 it has the shape it does.
 
-In Cities: Skylines a vehicle selects its entire route, lanes included, before
-departing. Per the Paradox wiki the calculation "takes no account of other
-traffic", and a vehicle "will not change its planned path, or even its planned
-lanes, if it encounters traffic". Vehicles that gridlock are teleported back to
-their origin.
-
-The consequence is that congestion cannot influence routing, so the traffic
-model has no negative feedback, so the traffic problem the game is about does
-not exist inside the game's own simulation. Players compensate with what they
-call lane mathematics, which is a workaround for a missing loop rather than a
-skill the game intended.
-
-The loop is closed. Congestion is measured per tick as observed speed against
-the limit, committed to `Edge.current_congestion`, and priced into the router's
-metric as `base_cost * (1.0 + current_congestion)`. What was missing was the
-vehicle's side: a car holding a valid path never asked the question again.
+Congestion is measured per tick as observed speed against the limit, committed
+to `Edge.current_congestion`, and priced into the router's metric as
+`base_cost * (1.0 + current_congestion)`. What was missing was the vehicle's
+side: a car holding a valid path never asked the question again.
 
 - Routing reads observed conditions, built. Congestion aggregation runs in
   `lane_buckets/congestion.rs` and the contraction hierarchy customizes against
@@ -382,14 +369,84 @@ vehicle's side: a car holding a valid path never asked the question again.
   remainder to be taken, and a vehicle reconsiders at most every 15 seconds.
   Without the margin two near-equal routes trade vehicles back and forth every
   time they are compared, which is worse than the jam.
-- Despawning is not a congestion solution. It can be made available but must **never** be made load bearing. Removing a stuck vehicle hides
-  the failure the player needs to see. A jam that clears itself by deletion
-  teaches nothing and breaks immersion.
+- Despawning solves nothing about congestion. It can be made available and must
+  **never** be made load bearing. Removing a stuck vehicle hides the failure the
+  player needs to see. A jam that clears itself by deletion teaches nothing and
+  breaks immersion.
 
 Every simulated quantity needs a view that answers *'why'* this number, not
 merely 'what' it is. A system a player cannot inspect is one they cannot learn,
 and a system they cannot learn reads as random and does not make for a fun
 simulation game.
+
+### Not blocking the box
+
+THe current target is for a car to not enter a junction it cannot clear. Entering and then
+stopping inside the box blocks every crossing movement, producing gridlock and stranding
+emergency vehicles behind traffic that has nowhere to go. This does happen in real life, but
+should be a target for a 'hard mode' if one ships.
+
+The test is whether the exit queue is MOVING, and gap size does not enter it. A moving queue is
+one this car can follow into; a stopped one is a wall. A car may enter behind a rolling car
+however close it is, and may not enter behind one that has stopped within a length of the mouth.
+
+Demanding the full following distance was tried and deadlocked every junction: ordinary moving
+traffic keeps the mouth occupied, so no queue advanced and the front of every line sat still. Any
+fix that only widens the gap reintroduces that.
+
+Stopped means below 0.5 m/s. A car easing forward in a slow queue reads as a small positive speed
+and is still clearing the mouth, so treating only zero as stopped would let a crawling queue block
+a junction it is emptying.
+
+### Yielding to a responder
+
+A responder running lights claims the road ahead of it. Cars within reach move toward the outside
+of the carriageway and slow, then resume once the whole vehicle is past.
+
+Cars slow and keep moving unless they can pull over completely. A car halted in a live lane is an
+obstacle. The lane change goes through the ordinary machinery, so it still respects gaps and still
+refuses when there is no room. When there is nowhere for traffic to go, the car holds and the
+responder waits until traffic clears. Responders can route around traffic by using the sidewalk or
+medians if physically able. A signal preemption gives a responder a green, and a green is not a
+clear road. Cars boxed in by the queue ahead of them cannot move over, and a responder stuck behind
+them is the city's road layout failing.
+
+### Hold accounting
+
+A congestion heatmap says where traffic is bad. It cannot say what held it there.
+
+Every hold is now counted against the junction that caused it, under one of six causes: a red or
+amber signal, a priority sign's arrival delay, giving way to a movement with the better claim, a
+crossing movement holding the box, the connector being occupied or claimed, and the exit lane
+jammed to its mouth. The fourteen reason codes in the debug log stay as they are; several of them
+distinguish code paths.
+
+`Yielded` is deliberately separate from `Conflict`. A car that gave way could have gone if it had
+outranked the other movement, so the fix is a protected phase or a turn lane; a car held by a
+crossing movement is waiting on capacity. Merging them is the wrong remedy.
+
+The tally is thread-local during the parallel movement pass and merged after it joins, so
+recording a hold costs one relaxed atomic increment. It is sized at tick start from the node
+count; a junction created during the tick goes uncounted until the next one, which avoids a lock
+in the movement path. Junctions that held nobody are omitted, so a quiet city reports nothing,
+and the rest sort heaviest first with the dominant cause named.
+
+`get_traffic_report(limit)` returns the ranked junctions, and the report window in
+`godot/scripts/ui/traffic_report.gd` shows them, opened with `T`. Each entry leads with the
+dominant cause, since the heatmap already showed the count. It refreshes on the hour boundary
+while open, so the steady cost is one query an hour.
+
+The router already prices the remaining route and the best alternative at every junction a car
+passes, and used to discard both the moment it decided. A car that priced a way around and stayed
+because the detour missed the 15% margin left no trace anywhere. Both costs are now kept per
+junction, so the report reads "this route 120 s, best alternative 110 s", which says whether a
+way around exists or whether every route out is equally bad.
+
+The sums accumulate as integer hundredths. A float sum built across several threads in
+nondeterministic order is not reproducible, and a route cost is seconds, so hundredths carry more
+precision than a report showing whole seconds can use. A non-finite cost is dropped: an
+unreachable route prices as infinite, and one of those makes every mean at that junction
+meaningless.
 
 ## Performance Contract
 

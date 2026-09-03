@@ -314,147 +314,196 @@ generation.
 
 ## 11. Build Granularity
 
-The player chooses how much of the work they do themselves, per area, at any
-time. Four levels, and none of them is the intended one.
+The player chooses how much of the work they do themselves, per area, at any time. Four levels, all
+equally valid:
 
-- Draw a site. Mark the footprint where a building will go up, and let it be
-  built there.
-- Plop a building. Place an individual structure exactly where it goes.
-- Zone and let it fill. Draw roads, zone the land, and let demand buy the
-  lots. This is the mode the system above already implements.
-- Sublet a chunk. Zone a block of land to a third-party developer and let
-  them build it. A player who wants to could sublet most of an entire city,
-  althought it is likely not a good idea.
+- **Draw a site:** Mark the footprint component of where a building will go up, and let it be built
+  there.
+- **Plop a building:** Place an individual structure.
+- **Zone and let it fill:** Draw roads, zone the land, and let demand buy the lots.
+- **Sublet a chunk:** Zone a block of land to a third-party developer and let them build it. A player
+  who wants to could sublet most of an entire city, although that is likely a poor idea.
 
-The first three are stepped levels of granularity of placement authority. The
-fourth is a different kind of thing and needs proper management or it is a free
-skip-the-game button.
+The first three are stepped levels of placement authority. The fourth needs proper management to
+avoid becoming a free skip-the-game button.
+
+These levels apply to industrial and freight sites as well as to buildings that fill a lot. A
+player composing a terminal out of rail spurs, warehouses, docks, and truck bays uses the same
+draw, plop, and zone authority as anyone laying out a neighborhood. [`transit.md`](transit.md)
+owns what those pieces are, including the airport classes built the same way.
+
+The same stepping applies one level down, to the repeated pieces inside a site. Parking stalls,
+loading bays, aircraft stands, storage racks, container stacks, and tank rows are many identical
+pieces filling a drawn area. The player draws the area, chooses spacing and orientation, and the
+area fills. Hand-placing each piece stays available.
+
+The fill produces ordinary placed pieces. Each one can be moved, rotated, or deleted afterward.
+
+### Who authors the building
+
+The game generates the building from its own rules and the player's conditions: the district
+style from section 11, the economic level of the building, and the site conditions on the lot. A
+player painting sites never authors a structure directly.
+
+Plopping lets the player cycle through candidates in the UI before placing, and the generator
+produced every candidate.
+
+Authoring a building part by part, at the level Tiny Glade and Miniopolis give their players,
+happens in the editor reached from the main menu, outside a running city.
+[`asset_editor.md`](asset_editor.md) owns it.
 
 A development contract trades attention for money and control:
 
-- The developer takes a cut. Income and resources from that area are reduced
-  for the life of the contract, because someone else is profiting from the land.
-- The player cannot build there while the contract runs, or pays a heavy
-  penalty for breaking it. Handing over a district means handing it over.
-- The developer builds to their own standard. They optimise for their margin,
-  so the density, the mix, and the quality are theirs to choose. A subletted
-  district will not look like one the player laid out, its grid might not match
-  the cities layout, and it may not serve the city the way the player would have.
-- Contracts have a term. Land comes back eventually, and what comes back is
-  whatever the developer left, which the player then owns and maintains.
-- A subletted area still counts as yours for every obligation. Its traffic,
-  its services, its waste, and its unrest are the city's problem even while its
-  profit is not.
+- The developer takes a cut. Income and resources from that area are reduced for the life of the
+  contract, because someone else is profiting from the land.
+- The player cannot build there while the contract runs, or pays a heavy penalty for breaking it.
+  Handing over a district means handing it over.
+- The developer builds to their own standard. They optimise for their margin, so the density, the
+  mix, and the quality are theirs to choose. A subletted district looks like the developer laid it
+  out, its grid may miss the city's layout, and it may serve the city poorly.
+- Contracts have a term. Land comes back eventually, carrying whatever the developer left, which
+  the player then owns and maintains.
+- A subletted area still counts as the player's for every obligation. Its traffic, its services,
+  its waste, and its unrest are the city's problem while its profit goes elsewhere.
 
-The intended use is to allow a player to manage growth without going into the level
-of obsessive detail other players enjoy. The tradeoff should feel like a decision
-about attention and playstyle rather than a shortcut.
+The intended use is to let a player manage growth without the obsessive detail other players
+enjoy, trading attention over even zoning for a cost.
 
-The city builder grid players complain about is not a style choice. It follows from
-zoning implemented as square cells, which forces every lot into a rectangle from a
-small set of sizes, which forces every neighborhood into a chequerboard whatever roads
-were drawn around it. The method is published: Vanegas, Kelly, and Weber, *Procedural*
-*Generation of Parcels in Urban Modeling*. A block is subdivided from its own boundary,
-so a curved street yields wedge-shaped lots, an irregular block yields irregular
-parcels, and nothing quantises to a cell.
+The city builder grid players complain about follows from zoning implemented as square cells,
+which forces every lot into a rectangle from a small set of sizes and every neighborhood into a
+checkerboard whatever roads were drawn around it. The method is published: Vanegas, Kelly, and
+Weber, [Procedural Generation of Parcels in Urban Modeling](https://www.cs.purdue.edu/cgvlab/www/resources/papers/Vanegas-Eurographics-2012-Procedural_Generation_of_Parcels_in_Urban_Modeling.pdf). A block is subdivided from its own
+boundary, so a curved street yields wedge-shaped lots, an irregular block yields irregular
+parcels, and nothing quantises to a cell. Parcels meet each other and meet the street with no
+leftover gaps, and a neighborhood's shape follows the roads that made it.
 
-The result is seamless and gridless: parcels meet each other and meet the
-street with no leftover gaps, and a neighborhood's shape follows the roads that
-made it.
+Urban density on a curved street means conjoined rowhouses with wider backs than fronts. The
+parcels are wedges, the buildings share party walls, and the frontage stays continuous around the
+curve. Procedurally generated buildings are the only thing that make gridless parcels work, and
+are a top priority once the engine layer has been fully adopted and adapted.
 
-Two real places fix the range, and a generator that cannot reach both ends is
-not general enough:
-- The Royal Crescent at Bath: Formal, planned in one act, uniform and identical
-  frontage on a deliberate curve, with every parcel owning a distinct back.
-- A favela: Nothing platted, parcels of every size and shape, buildings
-  meeting at whatever angle the ground and their own structure allowed, circulation
-  emerging as the gaps between what got built.
+Real places fix the scale, and the generator must reach both ends:
+- [The Italianate style rowhouses of Baltimore, MD:](https://baltimoreheritage.org/bbotw-italianate-rowhouses/) Almost completley uniform, very little
+  difference between each building if any at all.
+- [The Royal Crescent at Bath:](https://en.wikipedia.org/wiki/Royal_Crescent) Formal, planned in one act, uniform and identical frontage on a
+  deliberate curve, with every parcel owning a distinct back-end.
+- [The Back Bay rowhouses in Boston:](https://commons.wikimedia.org/wiki/File:1975_BackBay_Boston_4725870095.jpg) Mostly-uniform, with every building having its
+  own distinct variations.
+- [A Brazilian favela:](https://en.wikipedia.org/wiki/Favelas_in_the_city_of_Rio_de_Janeiro) Nothing platted, parcels of every size and shape, buildings meeting at whatever angle
+  the ground and their own structure allowed, incuding underneath and on top of one another,
+  circulation emerging as the gaps between what got built. This will only define extremely poor
+  areas with very lax building regulations, nearly impossible for the player to reach unless they
+  distinctly plan a district that way, or the shape of the bigger automatically generated homeless
+  camps.
 
-Procedurally generated buildings are what make gridless parcels work, because a
-lot that changes shape needs a building that changes with it.
+Brazilian-style favelas must be reachable as real generator output, with the parcel geometry and
+building placement producing them. An informal-settlement texture painted over ordinary lots does
+not qualify.
 
-Urban density on a curved street means conjoined rowhouses with wider backs
-than fronts. The parcels are wedges, the buildings share party walls, and the
-frontage stays continuous around the curve. That is the Royal Crescent case,
-and it is unreachable for any generator that starts from squares or straight
-edges without curves.
+Gridless still permits grids. The generator draws continuous parcels first, and may draw a grid
+inside one of them where the content or block calls for it: a cookie-cutter subdivision,
+Brooklyn-style urban density, or the open regular layout that docks, power and water facilities,
+industrial plants, and complex factories use.
 
-Gridless does not mean never gridded. The generator draws seamless parcels
-first, and may draw a grid inside one of them where that is what the content
-calls for: a cookie-cutter subdivision, Brooklyn-style urban density, or the
-open regular layout that docks, industrial plants, power and water facilities,
-and complex factories actually use. The grid becomes a tool the generator
-reaches for rather than the frame everything is forced into.
+### Drawing a lot by hand
 
-Brazilian-style favelas must be reachable, as a result the generator can
-produce rather than an informal-settlement texture painted over ordinary lots.
+In Manor Lords, parcels (known as Burgage Plots) are divided using a flexible, dynamic four-point
+construction system. Instead of rigid, pre-sized grids, four unique points appear on the map to
+draw custom shapes. The game then calculates the dimensions of the area and slices it into
+individual residential parcels. The first two points clicked define the Frontage, and third and
+fourth clicks stretch the plot backward setting the Depth.
+
+The player draws individual lot boundaries directly, at the granularity Manor Lords gives its
+burgage plots: drag out a shape against the street and the parcel takes it. This is the
+per-parcel level of the placement authority above, below drawing a site and above plopping one
+building.
+
+The generator and the hand-drawn case produce the same kind of parcel. A drawn lot carries the
+same frontage attachment, the same road provenance, and the same occupancy record as a generated
+one, so the building generator fills it the way it fills any other irregular parcel.
+
+Site conditions fill an awkward shape. The player sets them per lot and the generator solves
+against them:
+
+- Wall to wall, so the building meets its neighbors with no gap.
+- A courtyard in the leftover pocket.
+- An accessory dwelling on the site.
+- Parking on site, with a size and a position.
+
+They make the strips and wedges between streets and existing lots usable. An irregular remnant
+that no standard footprint fits takes a wall-to-wall building with the odd corner given over to
+a courtyard.
+
+### Rezoning part of a building
+
+A zone applies to part of a building, down to one floor or one unit. A medium-density
+residential block sells its ground floor to a commercial tenant, and only that floor changes
+zone.
+
+The facade of the changed part follows its new use, and the rest of the building is untouched.
+How far it goes depends on the building: a historical structure gets signage and little else,
+and an ordinary one takes a full remodel and renovation of that floor.
+
+Plopping into part of a building is the same operation with the player choosing the tenant.
+Select the building, select the part, and the menu preview shows that part alone as it would be
+generated. This places the alley-facing businesses in section 12: a cellar speakeasy, a club
+that feeds from the alleyway, and any commercial, office, or industrial front on the back of a
+building that is not a secondary frontage for the pre-existing resident.
+
+Rezoning without plopping produces the same result and picks the tenant itself. Painting a
+partial rezone is deferred.
 
 A district is a painted area within a city or region holding at least these things:
 - Architectural style; what the generator builds inside the boundary. This is
   how a city gets an old quarter, a colonial waterfront, and a glass financial
-  district that read as different places rather than one texture.
-- Local policy; rules that apply inside the boundary and not outside it,
-  including the frontage permissions that decide what an alley fills up with.
-- Ownership of it's services; first responders, civil services, and educational
-  facilities first serve and are paid for by their own districts, which affects how
-  well funded each districts services are. Emergency services still respond across
-  districs boundaries, but they prioritze their own citizens first, so if multiple
-  incidents are occuring at once emergency services will first answer within their
-  own district.
+  district that each read as their own place.
+- Local policy; rules that apply inside the boundary only, including the frontage permissions that
+  decide what an alley fills up with.
+- Ownership of its services; first responders, civil services, and educational facilities serve and
+  are paid for by their own districts first, which affects how well funded each district's services
+  are. Emergency services still respond across district boundaries, and they prioritize their own
+  citizens, so with multiple simultaneous incidents they answer within their own district first.
 
 ## 12. Alleys
 
-Alleys are a first class part of a city. Trash collection and deliveries run
-through them in large cities and small towns alike, every block's back end is
-different, and they are used constantly. The genre moslty overlooks them entirely.
+Alleys are a first class part of a city. Trash collection and deliveries can often run through
+them in large cities and small towns alike, every block's back end is different, and they are used
+constantly. The genre mostly overlooks them entirely.
 
-A street is drawn first and its buildings follow it. Lots are cut against the
-road, frontages align to it, and the result is regular because the road was.
+A street is drawn first and building sites follow it. Lots are cut against the road and frontages
+align to it, so the result is as regular as the road.
 
-An alley is the opposite. It is what is left over after buildings fill a
-block from its edges, so its shape is dictated by their footprints rather than
-the other way round. Drawing the alley first and hanging buildings off it
-produces the uniform corridor that reads as fake.
+An alley inverts that order. It is what is left over after buildings fill a block from its edges,
+so their footprints dictate its shape. The generator fills a block from its street edges with
+buildings of differing footprints, takes the alley as the negative space that remains, then places
+whatever fits in the wider pockets. That produces varying width, irregular paths, and an uneven
+entrance count, all unauthored. 
 
 What follows from that inversion:
 
-- Alleys are not one width. A slot wide enough for a single vehicle in one
-  place, a stretch wide enough for a parking court or a garden in another, on
-  the same alley, and their width determines what uses are available to it.
-- Width varies along a single alley, because the buildings either side vary
-  along it. A constant-width alley is the tell that a machine drew it.
-- The back ends of buildings do not line up. They vary widely, and the
-  jagged interior line that produces is the thing worth rendering.
-- Entrance count varies by block. Two, three, four or more, and the path
-  between them is rarely direct.
-- The leftover space holds things. An accessory dwelling, a clubhouse, an ADU, a
-  back office, a parking court, or a garden, and in a large block several at
-  once.
+- Alley width varies along a single alley, because the buildings either side vary along it. A slot
+  wide enough for a single vehicle in one place, a stretch wide enough for a parking court or a
+  garden in another, and the width determines what uses are available. A constant-width alley behind
+  a diverse city block is immersion breaking unless planned or seeminyl intentional.
+- The back ends of buildings vary widely, producing a jagged interior line.
+- Entrance count varies by block and are generated in the space between buildings as they zone in.
+  There could be two, three, or more, and the path between them is often not direct.
+- The leftover space can hold things. An accessory dwelling, a clubhouse, an ADU, a back office, a
+  parking court, or a garden, and depending on the zoning, in a large block several at once.
 
-The generator fills a block from its street edges with buildings of differing
-footprints, takes the alley as the negative space that remains, then places
-whatever fits in the wider pockets. That produces varying width, irregular
-paths, and an uneven entrance count without any of those being authored. A
-city where every alley holds a garden is a possible outcome of that placement
-rather than a special mode.
 
-When a parcel is deep enough that the building cannot naturally meet the alley
-at the back, the leftover ground between the two is not waste. It is the site
-that produces:
+
+The generative rule: the gap between a building's footprint and its service frontage is a site.
+Small gap, nothing happens. Large gap holds:
 - courtyard gardens, private or shared between abutting parcels
-- businesses fronting the alley itself rather than the street: bars,
-  baristas, accessory offices, reached from the interior of the block
+- businesses fronting the alley itself: bars, baristas, and accessory offices, reached from the
+  interior of the block
 
-The generative rule: the gap between a building's footprint and its service
-frontage is a site. Small gap, nothing happens. Large gap, and the game has
-somewhere to put a courtyard or a second business, so the emergent alley takes
-its content from parcel geometry rather than from a table of decorations.
-
-The wide uniform back alley running between two rows of linear houses is the
-Miami and Kingman pattern, and it is not a degenerate case to avoid. It is
-what a subdivision platted in one act produces, and the generator should make
-these readily, without jitter added to disguise their regularity, because
-the regularity is the truth about how they were made.
+The wide uniform back alley running between two rows of linear houses is the Miami and Kingman
+pattern, and it is a valid target. Drawing the alley yourself can produce a uniform corridor, or it
+can be set as a target for that block/district/develepment. It is what a subdivision platted in one
+act produces, and the generator should make these readily, without jitter added to disguise their
+regularity.
 
 What that neighborhood looks like:
 - detached garages opening onto the alley, with the pedestrian route from
@@ -462,11 +511,11 @@ What that neighborhood looks like:
 - accessory dwellings bordering the alley
 - highly efficient garbage collection, because the run is straight and off the
   main roads entirely
-- less crime than urbal alleys, because the alley is residential, overlooked, and
-  constantly used by the people who live on it
-- few/no businesses, because it is a residential block
+- less crime than urban alleys, because the alley is residential, overlooked, and constantly used by
+  the people who live on it
+- few or no businesses, because it is a residential block
 
-All three are supported and none is the intended one:
+All three are supported and equally valid:
 
 1. Emergent. Blocks fill in and the interior left over is the alley.
 2. Rule-set. The player states the pattern a district should follow, such
@@ -475,60 +524,45 @@ All three are supported and none is the intended one:
 3. Drawn. The player draws the centerline through the middle of the block
    and the buildings grow to fill the gaps around it.
 
-- Width gates four separate things, not one: fire access, waste collection,
-  whether dwellings are legal, and how many vehicles fit.
-- Block size and era decide whether a block has an alley at all. Small
-  blocks never needed them.
-- The network degrades two different ways: vacation, where a segment
-  returns to private ownership and can turn a through-alley blind, and
-  maintenance decay, where it still exists in law and rots anyway.
-- Alley frontage is a legal state. A policy toggle for whether alleys may
-  host dwellings, or commerce, reproduces observed history rather than
-  inventing a mechanic. This belongs to district policy in section 11.3.
-- Alley waste collection is slower and more popular. It is a
-  street-appearance benefit bought with an operating-cost penalty, and it wins
-  politically anyway.
-- Danger is a function of being empty and permeable, and lighting does not
-  fix it. Occupancy does. That gives four player levers with four
-  evidence-backed outcomes, one of which should visibly fail.
-- Alleys get cheaper relative to front-loading as lots get narrower, which
-  is exactly the density regime where they historically appear.
+- Width gates four separate things: fire access, waste collection, whether dwellings are legal, and
+  how many vehicles fit.
+- Block size, local polict, and player will decide whether a block has an alley at all. Some blocks
+  may not have them.
+- The network degrades two ways: vacation, where a segment returns to private ownership and can
+  turn a through-alley blind, and maintenance decay, where it still exists in law and rots anyway.
+- Alley frontage is a legal state. A policy toggle for whether alleys may host dwellings, or
+  commerce, reproduces observed history. This belongs to district policy in section 11.
+- Services and waste collection are slower in irregular alleys and faster in straigh-wide: a
+  street-appearance benefit bought with an operating-cost penalty.
+- Crime is a result of emptiness. Occupancy and use fixes, lighting does not.
+- Alleys get cheaper relative to front-loading as lots get narrower, which is the historical
+  density regime.
 
-In the Florida case the canal fills the same role as the alley, but for boats
-and jet skis. A house has water behind it the way another house has an alley
-behind it, and the `Water` frontage role records exactly that.
-
-See section 12 for why that frontage prices as recreation rather than transit.
+Canals can fill some of the same roles as the alley for small watercraft. The `Water` frontage role
+below records it.
 
 ## 13. Water Frontage
 
-A parcel may front navigable water, and the `Water` frontage role in
-`building_allocator.md` records that the water is reachable from here.
+A parcel may front navigable water, and the `Water` frontage role in `building_allocator.md`
+records that the water is reachable from here.
 
-Canal frontage is overwhelmingly recreational and amenity value, and it prices
-into land value on those terms. In the Florida case a house on a canal has a
-boat behind it, the boat goes out at weekends, possibly to the corner store,
-and the household commutes by road like everyone else unless the canal is the best
-option. very few people take a watercraft to work. It is possible but unlikely,
-because they would have to dock and transfer. The realistic uses are recreation
-and the short local errand.
+Canal frontage is overwhelmingly recreational in amenity value, and it prices into land value
+under those conditions. In Florida, a house on a canal might have a boat behind it, or it even
+might be on stilts with canal access underneath it. The boat goes out at weekends, possibly to
+the corner store, and the household otherwise commutes by road unless the canal beats the
+alternatives. Very few people take a watercraft to work because they would likely have to dock
+and transfer to another mode of transportation.
 
-The role deliberately says only that the water is reachable and leaves whether
-anybody uses it to the trip planner comparing costs. In an ordinary
-Florida-shaped city that planner answers no for commuting and yes for leisure,
-which is the correct result rather than a failure of the transit model.
-
-Working canals exist and stay buildable: freight on water, a canal district that
-genuinely moves goods. That is a deliberate build, not the default reading of a
-house with water behind it.
+The role states that the water is reachable and leaves usage to the trip planner comparing costs.
+In an ordinary Florida-shaped city that planner answers no for most commuting and yes for leisure.
+Gondolas ride these canals like a taxi, and shipping commercial goods by canal is possible with
+wider canals that would commonly be found in residential areas and downtown.
 
 ## 14. Parking Supply
 
-There is space in this simulation to account for real parking, and to make the
-player face the tradeoff rather than have a number satisfy it. Parking is not
-natively a per-building attribute, excepting intentional parking lots. A vehicle
-occupies a physical space, and the player chooses how to supply those spaces.
-No option wins outright:
+Parking lots, garges, and underground parking can be zoned, plopped, or drawn just like buildings. 
+Parking is a land or street use, with intentional parking stalls as a per-building exception. The
+player chooses how to supply the spaces, and every option carries a cost:
 
 | Supply | Cost | Land | What it costs you |
 |---|---|---|---|
@@ -538,5 +572,5 @@ No option wins outright:
 | Curbside lane | Lowest | Road width | Competes with travel lanes and loading; the `Parking` lane kind in `roads.md` |
 | Alley parking court | Low | Block interior | What the back of the block was historically for |
 
-Land against money against appearance. Demand for these spaces is owned by
-`traffic.md`; this document owns the supply as a land use.
+The player trades land, money, and appearance against each other. Demand for these spaces is owned
+by `traffic.md`; this document owns the supply as a land use.

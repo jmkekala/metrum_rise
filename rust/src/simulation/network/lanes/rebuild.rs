@@ -6,6 +6,7 @@
 //  module_name: rebuild
 //  version: 0.1.0
 //  description: Rebuilds all physical lane geometry and junction
+//           connections, whole or incrementally for changed edges.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, geometry]
@@ -15,7 +16,7 @@
 //  last_updated: 2026-08-24
 // ========================================================================
 
-use super::super::graph::{LaneDirection, RegionGraph};
+use super::super::graph::{LaneDirection, RegionGraph, TurnSet};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
 use super::pedestrian_junctions::build_pedestrian_connections_at_node;
@@ -46,7 +47,12 @@ impl LaneSystem {
             let mut edge_lane_indices = Vec::new();
 
             // Helper to build a lane (using the one from geometry module for consistency)
-            let mut build_lane = |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32| {
+            let mut build_lane_spec = |is_fwd: bool,
+                                       l_idx: i8,
+                                       l_type: LaneType,
+                                       l_off: f32,
+                                       turns: TurnSet,
+                                       extent: (f32, f32)| {
                 build_one_lane(
                     &mut self.lanes,
                     &mut lane_map,
@@ -57,6 +63,8 @@ impl LaneSystem {
                     l_idx,
                     l_type,
                     l_off,
+                    turns,
+                    extent,
                 );
             };
 
@@ -85,7 +93,14 @@ impl LaneSystem {
                     continue;
                 }
                 if let Some(offset) = layout.centre_offset(band) {
-                    build_lane(true, fwd_seen, LaneType::Vehicle, offset * side_mul);
+                    build_lane_spec(
+                        true,
+                        fwd_seen,
+                        LaneType::Vehicle,
+                        offset * side_mul,
+                        lane.turns,
+                        (lane.range.start, lane.range.end),
+                    );
                     fwd_seen += 1;
                 }
             }
@@ -95,7 +110,14 @@ impl LaneSystem {
                     continue;
                 }
                 if let Some(offset) = layout.centre_offset(band) {
-                    build_lane(false, -bkw_seen - 1, LaneType::Vehicle, offset * side_mul);
+                    build_lane_spec(
+                        false,
+                        -bkw_seen - 1,
+                        LaneType::Vehicle,
+                        offset * side_mul,
+                        lane.turns,
+                        (lane.range.start, lane.range.end),
+                    );
                     bkw_seen += 1;
                 }
             }
@@ -104,18 +126,18 @@ impl LaneSystem {
             if (edge.allowed_types & TransitFlags::FOOT) != 0 {
                 if edge.primary_type == TransitType::Foot {
                     // Dedicated Footpath: center lane
-                    build_lane(true, 0, LaneType::Foot, 0.0);
-                    build_lane(false, 0, LaneType::Foot, 0.0);
+                    build_lane_spec(true, 0, LaneType::Foot, 0.0, TurnSet(0), (0.0, 1.0));
+                    build_lane_spec(false, 0, LaneType::Foot, 0.0, TurnSet(0), (0.0, 1.0));
                 } else {
                     // Left Sidewalk (idx 100)
                     let left_offset = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_lane(true, 100, LaneType::Foot, left_offset);
-                    build_lane(false, 100, LaneType::Foot, left_offset);
+                    build_lane_spec(true, 100, LaneType::Foot, left_offset, TurnSet(0), (0.0, 1.0));
+                    build_lane_spec(false, 100, LaneType::Foot, left_offset, TurnSet(0), (0.0, 1.0));
 
                     // Right Sidewalk (idx -100)
                     let right_offset = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_lane(true, -100, LaneType::Foot, right_offset);
-                    build_lane(false, -100, LaneType::Foot, right_offset);
+                    build_lane_spec(true, -100, LaneType::Foot, right_offset, TurnSet(0), (0.0, 1.0));
+                    build_lane_spec(false, -100, LaneType::Foot, right_offset, TurnSet(0), (0.0, 1.0));
                 }
             }
 
@@ -272,6 +294,8 @@ impl LaneSystem {
                         fwd_seen,
                         LaneType::Vehicle,
                         offset * side_mul,
+                        lane.turns,
+                        (lane.range.start, lane.range.end),
                     );
                     fwd_seen += 1;
                 }
@@ -292,6 +316,8 @@ impl LaneSystem {
                         -bkw_seen - 1,
                         LaneType::Vehicle,
                         offset * side_mul,
+                        lane.turns,
+                        (lane.range.start, lane.range.end),
                     );
                     bkw_seen += 1;
                 }
@@ -309,6 +335,8 @@ impl LaneSystem {
                         0,
                         LaneType::Foot,
                         0.0,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                     build_one_lane(
                         &mut self.lanes,
@@ -320,6 +348,8 @@ impl LaneSystem {
                         0,
                         LaneType::Foot,
                         0.0,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                 } else {
                     let left_off = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
@@ -333,6 +363,8 @@ impl LaneSystem {
                         100,
                         LaneType::Foot,
                         left_off,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                     build_one_lane(
                         &mut self.lanes,
@@ -344,6 +376,8 @@ impl LaneSystem {
                         100,
                         LaneType::Foot,
                         left_off,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                     let right_off = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
                     build_one_lane(
@@ -356,6 +390,8 @@ impl LaneSystem {
                         -100,
                         LaneType::Foot,
                         right_off,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                     build_one_lane(
                         &mut self.lanes,
@@ -367,6 +403,8 @@ impl LaneSystem {
                         -100,
                         LaneType::Foot,
                         right_off,
+                        TurnSet(0),
+                        (0.0, 1.0),
                     );
                 }
             }

@@ -6,6 +6,7 @@
 //  module_name: data
 //  version: 0.1.0
 //  description: Node, Edge, and RegionGraph, the authoritative road
+//           network data structures and their spatial index.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [types, lane_spec]

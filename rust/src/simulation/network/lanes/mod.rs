@@ -21,7 +21,7 @@
 use godot::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{RegionGraph, TurnSet};
 use crate::simulation::network::surface::{CURB_STEP_HEIGHT_M, RoadSurfaceSystem};
 use crate::simulation::network::types::TransitType;
 use crate::simulation::terrain::TerrainSystem;
@@ -93,6 +93,18 @@ pub struct Lane {
     pub next_lanes: Vec<usize>,
     /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
     pub node_id: usize,
+    /// Which movements this lane permits at the node it ends on.
+    ///
+    /// Carried down from the authored `LaneSpec`. An ordinary travel lane
+    /// permits everything and is left empty, which reads as no restriction; a
+    /// turn pocket permits one movement, and that is what makes it a pocket
+    /// rather than a lane that happens to be short.
+    pub turns: TurnSet,
+    /// The fraction of the edge this lane exists over, as `(start, end)`.
+    ///
+    /// `(0.0, 1.0)` for a lane running the whole edge. A turn pocket opens part
+    /// way along, so a car has to be past its start before it can move into it.
+    pub extent: (f32, f32),
 }
 
 impl Default for Lane {
@@ -110,6 +122,11 @@ impl Default for Lane {
             crosswalk_marking: None,
             next_lanes: Vec::new(),
             node_id: usize::MAX,
+            // Empty permits everything: an ordinary lane restricts nothing, and
+            // a default that restricted movements would strand every car built
+            // before pockets existed.
+            turns: TurnSet(0),
+            extent: (0.0, 1.0),
         }
     }
 }
@@ -201,6 +218,15 @@ impl LaneSystem {
         self.node_conflicts
             .get(&node_id)
             .map(|c| c.co_entrants(lane_id))
+            .unwrap_or(&[])
+    }
+
+    /// Movements `lane_id` must give way to at `node_id`.
+    #[inline]
+    pub fn yielding_lanes(&self, node_id: usize, lane_id: usize) -> &[usize] {
+        self.node_conflicts
+            .get(&node_id)
+            .map(|c| c.yields_to(lane_id))
             .unwrap_or(&[])
     }
 

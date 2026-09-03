@@ -5,7 +5,10 @@
 //  script_path: rust/src/simulation/region/mod.rs
 //  module_name: region
 //  version: 0.1.0
-//  description: The regional tier, as types only. Scaffold: nothing ticks
+//  description: The regional tier, cities as data points in a shared pool.
+//           Types only: they record the funding model economy.md
+//           specifies so the shape is settled before anything depends
+//           on it.
 //  kind: module
 //  spec: docs/economy.md
 //  internal_dependencies: []

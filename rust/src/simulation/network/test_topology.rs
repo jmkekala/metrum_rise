@@ -6,6 +6,8 @@
 //  module_name: test_topology
 //  version: 0.1.0
 //  description: Topology edit regressions: adding roads, splitting edges
+//           near an end, and intersections at shallow, orthogonal, and
+//           extreme angles.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [network, allocator, zoning]

@@ -6,6 +6,8 @@
 //  module_name: editing
 //  version: 0.1.0
 //  description: All mutating operations the player can drive on the
+//           simulation: road placement, terrain sculpting, zoning, and
+//           edge editing.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [core, surface, buildings]
@@ -27,6 +29,7 @@ use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::buildings::allocator::{
     ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
+use crate::simulation::economy::agents::tick::HoldCause;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
@@ -672,6 +675,61 @@ impl SimCore {
             .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.mark_terrain_authoring_payload_bounds(pos, radius);
         self.finish_terrain_authoring_edit_internal();
+    }
+
+    /// Derives untouched terrain from the engine ground field: every
+    /// sample still at the base elevation gets the same evaluation the
+    /// renderer draws, and sculpted samples stay as measured overrides.
+    /// Not undoable; this is world derivation, not an edit. Returns how
+    /// many samples were filled.
+    pub fn apply_engine_ground_internal(
+        &mut self,
+        footprint: f64,
+        t: f64,
+        seed: i64,
+        amplitude: f64,
+        scale: f64,
+    ) -> usize {
+        if scale <= 0.0 || !scale.is_finite() {
+            return 0;
+        }
+        let base = self.config.terrain_base_elevation_m;
+        // The footprint is a band limit in field units, authored in
+        // metres like the coordinates, so it rides the same division;
+        // raw it fades out every octave finer than the scale itself.
+        // The sim widens it to its own cell size: detail finer than the
+        // terrain grid cannot land on the terrain grid, it can only
+        // alias, and skipping those octaves is most of the fill's cost.
+        // Stored units are real metres over the render exaggeration,
+        // the same convention the level tool and DEM imports obey;
+        // writing raw metres drew every hill twenty times too steep.
+        let sim_footprint = footprint.max(f64::from(self.config.terrain_cell_m));
+        let stored_scale = f64::from(crate::config::HEIGHT_SCALE);
+        let filled = self
+            .heightmap
+            .fill_untouched_from_field(base, &|wx, wz| {
+                (crate::engine_twin::fbm::evaluate(
+                    f64::from(wx) / scale,
+                    0.0,
+                    f64::from(wz) / scale,
+                    sim_footprint / scale,
+                    t,
+                    seed,
+                ) * amplitude
+                    / stored_scale) as f32
+            });
+        if filled == 0 {
+            return 0;
+        }
+        let radius = 0.5 * self.config.width_m.hypot(self.config.height_m);
+        self.transit_network.mark_surface_dirty_for_terrain_edit(
+            &self.region_graph,
+            Vector2::ZERO,
+            radius,
+        );
+        self.mark_terrain_authoring_payload_bounds(Vector2::ZERO, radius);
+        self.finish_terrain_authoring_edit_internal();
+        filled
     }
 
     /// Applies one batched terrain sculpt step without running deferred rebuild work yet.
@@ -1752,6 +1810,61 @@ impl SimCore {
                 }
                 out.set("phases", phases);
             }
+        }
+        out
+    }
+
+    /// The traffic report: which junctions held cars this tick, and why.
+    ///
+    /// A congestion heatmap says where traffic is bad. This says what held it
+    /// there, which is the question a player asks next.
+    ///
+    /// Returns an array of dictionaries, worst junction first, each carrying
+    /// `node_id`, `total`, the dominant `cause` and `cause_label`, and a
+    /// `causes` map from cause code to count. Junctions that held nobody are
+    /// omitted, so a city with free-flowing traffic reports an empty array
+    /// rather than a row of zeroes per node.
+    ///
+    /// `limit` caps the rows returned; zero or less means every junction that
+    /// held anyone. The tally covers the last completed movement pass.
+    pub fn get_traffic_report_internal(&self, limit: i32) -> VarArray {
+        let mut out = VarArray::new();
+        let ranked = self.agents.junction_holds.collect();
+        let take = if limit > 0 {
+            (limit as usize).min(ranked.len())
+        } else {
+            ranked.len()
+        };
+        for &(node_id, holds) in ranked.iter().take(take) {
+            let mut row = VarDictionary::new();
+            row.set("node_id", node_id as i64);
+            row.set("total", holds.total() as i64);
+            if let Some((cause, n)) = holds.dominant() {
+                row.set("cause", cause as i64);
+                row.set("cause_label", cause.label());
+                row.set("cause_count", n as i64);
+            }
+            let mut causes = VarDictionary::new();
+            for cause in HoldCause::ALL {
+                let n = holds.count(cause);
+                if n > 0 {
+                    causes.set(cause as i64, n as i64);
+                }
+            }
+            row.set("causes", causes);
+
+            // What rerouting decided here. `reroute_declined` is the number a
+            // delay actually raises: cars that priced a way around and stayed,
+            // with the two costs they compared, so the report can say what the
+            // alternative would have cost rather than only that one existed.
+            let rr = self.agents.junction_holds.reroutes_at(node_id);
+            row.set("reroute_taken", rr.taken as i64);
+            row.set("reroute_declined", rr.rejected as i64);
+            if let (Some(cur), Some(alt)) = (rr.mean_current_cost(), rr.mean_candidate_cost()) {
+                row.set("route_cost_s", cur);
+                row.set("alternative_cost_s", alt);
+            }
+            out.push(&row.to_variant());
         }
         out
     }

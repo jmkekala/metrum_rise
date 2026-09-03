@@ -6,6 +6,7 @@
 //  module_name: candidate
 //  version: 0.1.0
 //  description: Scores candidate trip plans and builds the exact path for
+//           building-origin trips.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, lanes, allocator]

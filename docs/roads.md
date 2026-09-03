@@ -112,10 +112,10 @@ For every road-owned top surface:
 - render triangles and query triangles use the same compiled ownership
 
 The band model supports carriageway, curb/shoulder, sidewalk, and no-sidewalk profiles, and the
-carriageway is now subdivided into the ordered bands of the edge's lane layout rather than emitted as
-one slab split at the centerline. Medians, parking lanes, and cycle tracks are explicit ordered bands,
-as required; tram reservations remain reserved until rail exists. Richer shoulders must be added the
-same way, never as special-case render offsets.
+carriageway is now subdivided into the ordered bands of the edge's lane layout. The former single
+slab split at the centerline is gone. Medians, parking lanes, and cycle tracks are explicit
+ordered bands; tram reservations remain reserved until rail exists. Richer shoulders must be
+added the same way, never as special-case render offsets.
 
 Band width comes from each lane's own `width_m`. A wide truck lane, a narrow cycle track, or a
 median widens the roadbed by exactly what it occupies. A built median is emitted at curb height and
@@ -138,21 +138,20 @@ Each `LaneSpec` carries:
 - `turns`: which movements it permits at the far node
 - `range`: the fractions of the edge over which it exists
 
-Road roles are mode bits on a band rather than new road types:
+Road roles are mode bits on a band. The road type stays the same:
 
 | Role | What it admits |
 |---|---|
-| Bus-only lane | Buses, and not private cars |
+| Bus-only lane | Buses, excluding private cars |
 | Part-time bus lane | Buses always, cars outside the hours it is in force |
-| Cycle track | Bicycles; painted or separated is width and marking, not a kind |
+| Cycle track | Bicycles; painted or separated is a matter of width and marking |
 | Pedestrian street | Foot and cycles, plus waste collection, buses and trams, and emergency |
 | Truck route | Freight, for the corridors near ports and industry |
 | Tram reservation | Rail vehicles; reserved until rail exists, see `transit.md` |
 
-The pedestrian case proves the model. It is not a footpath: it is a street with private vehicles
-withheld, so deliveries still arrive, the garbage truck still runs, a tram may still pass, and an
-ambulance is never blocked. Modeling it as a path throws all of that away and starves the businesses
-on it.
+A pedestrian street is a street with private vehicles withheld, so deliveries still arrive, the
+garbage truck still runs, a tram may still pass, and an ambulance is never blocked. Modeling it
+as a footpath throws all of that away and starves the businesses on it.
 
 - Lane offsets accumulate real widths. The offset of a band is the running sum of the widths before
   it, plus half its own, less half the carriageway. The former `(index + 0.5) * LANE_WIDTH` held only
@@ -164,17 +163,20 @@ on it.
   backward lanes from -1. Bands carrying no traffic take width and receive no lane index.
 - A mode question has a mode-specific answer. `fwd_count` is the car answer; `count_for_mode` is
   the general one, and a road with a bus lane returns a larger number to a bus than to a car.
-- A restriction is a permission on the lane, not a different object. A pedestrianised street keeps
-  its lanes, its width, its address, and its deliveries; only its mode bits change. A walkway is an edge 
-  with no carriageway at all, which is a different thing. Emergency and service vehicle may still
-  traverse pedestrian streets.
+- A restriction is a permission on the lane. A pedestrianised street keeps its lanes, its width,
+  its address, and its deliveries; only its mode bits change. A walkway is a separate object, an
+  edge with no carriageway. Emergency and service vehicles may still traverse pedestrian streets.
+- A wildlife crossing is not a road class. It spans a corridor and joins no road nodes, carrying
+  habitat over a highway, a rail line, or a canal. [`simulation_layers.md`](simulation_layers.md)
+  owns it. What `roads.md` owes it is clearance over the span, the same as any structure above a
+  carriageway.
 - A turn pocket is a lane with a partial range. It is absent at the start of the edge and live at
   the node, so it widens the carriageway where the queue forms and nowhere else. `asphalt_width` is
   the widest the road ever gets, which the roadbed must reserve; `asphalt_width_at` is what it is at
   a given point, and the two differ exactly where a pocket opens.
-- Asymmetry is ordinary, not a rounding error. Two lanes one way and one the other is a legal
-  road. The carriageway is centred on its own alignment whatever the split, because the sidewalks
-  were always placed at plus and minus half the asphalt width and the lanes have to agree with them.
+- Two lanes one way and one the other is a legal road. The carriageway is centred on its own
+  alignment whatever the split, because the sidewalks were always placed at plus and minus half
+  the asphalt width and the lanes have to agree with them.
 - A reversible lane belongs to neither count. A two-way left-turn lane is entered from both
   sides, so `fwd_count` and `bkw_count` deliberately do not sum to the lane total. A tidal lane
   changes which count it joins when its direction flips, and its geometry does not move when it
@@ -184,14 +186,13 @@ on it.
   narrowing again immediately after. Any consumer reading a single lane count for a whole edge is
   reading something that does not exist.
 
-A parking band carries the angle it is marked at, the angle sets both
-how deep the band is and how many cars fit along a meter of curb. Parallel is
-2.5 m deep at 6.0 m per car; forty-five is 4.8 m deep at 3.5 m per car; ninety
-is 5.5 m deep at 2.7 m per car. Angling trades roadway depth for curb frontage.
+A parking band carries the angle it is marked at. The angle sets both how deep the band is and how
+many cars fit along a meter of curb. Parallel is 2.5 m deep at 6.0 m per car; forty-five is 4.8 m
+deep at 3.5 m per car; ninety is 5.5 m deep at 2.7 m per car. Angling trades roadway depth for curb
+frontage.
 
-`parking_spaces_along` is what a parking supply model reads. The same width of
-street holds very different numbers of cars depending on how the bays are
-marked, so the count comes from the angle rather than from the area.
+`parking_spaces_along` is what a parking supply model reads. The same width of street holds very
+different numbers of cars depending on how the bays are marked.
 
 A verge is a planted strip or a run of planters between carriageway and
 sidewalk. It carries nothing, takes width like a median, and sits at curb
@@ -215,14 +216,12 @@ still a requirement.
   a node carrying any explicit connection blocks every turn not listed, and a
   node carrying none stays open. The `LaneLayout` ordering gives every band the
   stable identity a connector names.
-- Priority signs, built. Main, yield, or stop per approach arm, held on
-  `Node.control`. An arm nobody assigned yields rather than assuming priority,
-  and a stop pays its halt once on arrival rather than on every tick it waits.
-- Timed traffic lights, built. An ordered phase list with green, amber, and a
-  cycle offset so neighboring junctions on a corridor can be progressed into a
-  green wave. A program that cannot cycle shows green, because a signal must not
-  deadlock the junction it controls. Switching driven by measured flow against
-  wait time is not built; the cycle is fixed.
+- Priority signs, built. Main, yield, or stop per approach arm, held on `Node.control`. An unassigned
+  arm yields, and a stop pays its halt once on arrival, covering every tick it then waits.
+- Timed traffic lights, built. An ordered phase list with green, amber, and a cycle offset so
+  neighboring junctions on a corridor can be progressed into a green wave. A program that cannot
+  cycle shows green, keeping the junction it controls moving. The cycle is fixed; switching
+  driven by measured flow against wait time remains unbuilt.
 
 Both are reachable from GDScript: `set_junction_priority`,
 `add_junction_signal_phase`, `set_junction_signal_offset`,
@@ -239,19 +238,44 @@ directions of one street run together the way a signal phase does; movements out
 of one approach lane are a diverge and only contest the mouth; movements into one
 exit are a merge.
 
-Turning lanes and a turn hierarchy are the next thing, and right turns still
-collide without them. The table can say a path is occupied but not who had the
-better claim. That needs dedicated turn lanes, so a turning car queues out of the
-through lane, and a stated precedence: through beats turning, protected beats
-permissive.
+Turn precedence, built. The table said two paths cross but not which driver
+waits, so two movements were peers and whichever car arrived first went. A right
+turn on green and the through traffic crossing it both read an empty box on the
+same tick and both entered.
+
+Each movement now carries a rank read from its own geometry: through where entry and exit
+headings sit within thirty degrees, permissive otherwise. Protected exists for a turn its own
+phase shields and is unreachable until signal programs carry protected arrows, because a
+two-phase program greens a street's turns alongside its through traffic. A movement gives way
+while any higher-ranked movement it crosses is occupied, and equal ranks record nothing, so the
+signal alone separates two through movements.
+
+That yield table is asymmetric where `conflicts` is a mutual bar, so it carries the pairs
+`conflicts` deliberately omits: a left turn and the oncoming through movement run in one phase
+and neither may be held out of the box, but the turning driver is still the one who waits.
+
+Right turn on red is permitted as a yield. The signal stops holding a near-side
+turn and precedence holds it instead, against every crossing movement including
+the green street's through traffic.
+
+Turn lanes, built. `with_turn_pockets` built the geometry and nothing drove into
+it: the authored `turns` and `range` were dropped when a `LaneSpec` became a
+runtime lane, so a pocket was a short lane no router could tell apart from any
+other. The runtime lane now carries both, threaded through both lane builders,
+because the full rebuild and the incremental one diverging is exactly the defect
+that once dropped every median and pocket the moment a road was split.
+
+A car reads its own path to classify the movement it is about to make, then takes
+the nearest lane naming that movement. A pocket that has not opened yet at the
+car's position is not offered, because steering into a lane that does not exist
+there puts the car in the verge. The move ranks below reaching a destination
+frontage and above a discretionary overtake.
 - Junction restrictions, each independently settable per arm: U-turns, lane
   changing inside the junction, entering a blocked junction, and pedestrian
   crossing.
-- Speed limits per lane, not per road. A lane is the unit everything else here
-  is expressed in.
-- Vehicle restrictions per lane, applied as a routing penalty rather than a
-  hard gate. A ban has to be taken seriously without making the network
-  unsolvable.
+- Speed limits per lane. A lane is the unit everything else here is expressed in.
+- Vehicle restrictions per lane, applied as a routing penalty. A ban has to be
+  taken seriously while the network stays solvable, which a hard gate would prevent.
 
 A large interchange is one logical intersection made of many physical nodes, and
 the player must be able to treat it as a single object: signal it as one, set its
@@ -261,11 +285,10 @@ any individual movement inside it. A player who wants to adjust one left turn in
 9 way intersection with 2 opposing roundabouts should not have to reason about
 which internal node carries it.
 
-Junction markings are stored against node and segment topology rather than as
-placed objects, so they redraw themselves when an intersection is moved or
-reshaped and they cost nothing against object budgets. A lane connector and the
-arrow painted on the road describe the same intent, and drawing them from one
-source is what stops the paint disagreeing with the routing.
+Junction markings are stored against node and segment topology, so they redraw themselves when an
+intersection is moved or reshaped and they cost nothing against object budgets. A lane connector
+and the arrow painted on the road describe the same intent, and drawing them from one source is
+what stops the paint disagreeing with the routing.
 
 ## Pedestrian Junction Crossings
 

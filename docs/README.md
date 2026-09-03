@@ -10,7 +10,7 @@ New here? Start with [`README2-ONBOARDING.md`](README2-ONBOARDING.md).
 |------|------|
 | [`project.md`](project.md) | Current dashboard: shipped status, current focus, recent changes, and links to the owning docs. |
 | [`roadmap.md`](roadmap.md) | Active tracked work, stable IDs, validated bugs, and later priorities. |
-| [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
+| [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, vocabulary, and the prior-art index of what each subject is measured against. |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
 | [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, and traffic debug. |
 | [`economy.md`](economy.md) | Economy and freight design/spec. |
@@ -26,14 +26,15 @@ New here? Start with [`README2-ONBOARDING.md`](README2-ONBOARDING.md).
 | [`narrative.md`](narrative.md) | Setting, the arc from first town to space launch, the political layer, tone, and the events that carry them. |
 | [`region.md`](region.md) | The regional tier: tiles, founding and the blessing, expansion, the density law, settlements that grow themselves, incorporation, and national parks. |
 | [`services.md`](services.md) | Emergency response, health, education, civic amenity, the utility networks, crime and policing, and border patrol. Coverage and response; `economy.md` owns their money. |
-| [`transit.md`](transit.md) | Public transport modes, why tram/subway/train are one rail network, and freight that travels visibly. Nothing built yet. |
+| [`transit.md`](transit.md) | Public transport modes, why tram/subway/train are one rail network, freight that travels visibly, and the three airport classes. Nothing built yet. |
 | [`simulation_layers.md`](simulation_layers.md) | The physical and living layers being ported: the shared wind/water/fire field, minerals, flora, fauna, agent minds, disasters, and how 20M agents stay affordable. |
+| [`in_engine_docs.md`](in_engine_docs.md) | The gym, zoo, and museum: why a registry generates the documentation, and what has to exist before they can be built here. |
 
 ## What This Contribution Changed
 
 Every document below was written or edited as part of the design and lane work
 described in the root [`readme.md`](../readme.md). Lines added by that work carry
-a `` or `[C]` marker until they have been reviewed; the markers are a
+a `[Claude]` or `[C]` marker until they have been reviewed; the markers are a
 review aid and are removed once a section is accepted.
 
 ### New documents
@@ -43,16 +44,16 @@ review aid and are removed once a section is accepted.
 | [`narrative.md`](narrative.md) | The technical docs said nothing about theme, setting, story, or tone. A search for any of those returned no design statement. |
 | [`region.md`](region.md) | The regional tier had no home: founding, expansion, the density law, incorporation, and national parks were homeless. |
 | [`services.md`](services.md) | Services were one line naming `always_on_service`. Nothing owned how a service reaches the people it serves. |
-| [`transit.md`](transit.md) | The transit modes existed only in design notes. Records that tram, subway, and train are one rail network before three systems get built. |
+| [`transit.md`](transit.md) | The transit modes existed only in design notes. |
 | [`simulation_layers.md`](simulation_layers.md) | The physical and living layers being ported from an external engine, and the ordering: the shared field first, because everything rides on it. |
 
 ### Documents extended
 
 | File | What was added |
 |------|----------------|
-| [`roads.md`](roads.md) | The lane model: an edge is an ordered cross-section rather than two counts. Intersection control at mod-level granularity, road roles, and three forbidden regressions naming the formulas that must not return. |
-| [`zoning.md`](zoning.md) | Alleys entire, build granularity including subletting, gridless parcels, districts, water frontage, and parking supply. |
-| [`terrain.md`](terrain.md) | World generation, where the checklist seeds the generator rather than auditing it, and mineral deposits derived from how the rock formed. |
+| [`roads.md`](roads.md) | The lane model: an edge is an ordered cross-section, replacing the two stored counts. Intersection control at mod-level granularity, road roles, and three forbidden regressions naming the formulas that must not return. |
+| [`zoning.md`](zoning.md) | Alleys entire, build granularity including subletting and site-piece fill, gridless parcels, districts, water frontage, and parking supply. |
+| [`terrain.md`](terrain.md) | World generation, where the checklist seeds the generator before terrain is evaluated, and mineral deposits derived from how the rock formed. |
 | [`economy.md`](economy.md) | The industry scaffold, the tycoon layers, the two money pools, and foreign capital. |
 | [`traffic.md`](traffic.md) | Routing feedback: congestion has to reach the router, or the traffic problem does not exist inside the simulation. |
 | [`ui.md`](ui.md) | The road builder as a cross-section editor, post-placement editing, and the tilt-shift camera. |
@@ -70,8 +71,9 @@ review aid and are removed once a section is accepted.
 | [`CLAUDE.md`](../CLAUDE.md) | The scale target, in both the overview and the performance section, which disagreed with each other. `AGENTS.md` is a symlink to it. |
 | `UPSTREAM_ISSUE_crash_rs.md` | A report that `rust/src/debug/crash.rs` was missing and the crate did not build. Upstream supplied the real file in `87059cb`, so this is now answered. |
 
-Three documents were touched only by the upstream merge and carry no changes
-from this work: `demand.md`, `reference.md`, and `roadmap.md`.
+Two documents were touched only by the upstream merge and carry no changes from this work:
+`demand.md` and `reference.md`. [`roadmap.md`](roadmap.md) carries the tracked entries this work
+added.
 
 ## Working Rules
 

@@ -8,3 +8,26 @@ logs/
 
 # Build and test logs
 rust/*.log
+
+# Godot import artifacts generated from the tracked benchmark CSV.
+godot/benchmark_results.*.translation
+godot/benchmark_results.csv.import
+
+# The engine and its components mount by junction from the 2.5D_engine
+# repo; metrum tracks adapters and hooks only, never engine files. The
+# junction targets live in ../2.5D_engine/2.5D_engine/addons/.
+godot/addons/2.5D_engine
+godot/addons/GOAT_bus
+godot/addons/SPEECH_socket
+godot/addons/FILE_browser
+# Every root-level godot log is session scratch.
+godot/*.log
+
+# Windowed spikes write shots into screenshots/, never the root.
+/shot_*.png
+
+# The flatten helper is a local tool, not part of the game.
+/flatten_for_fork.sh
+
+# Cygwin crash dumps from the shell, never part of the game.
+*.stackdump

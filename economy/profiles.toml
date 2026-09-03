@@ -212,6 +212,58 @@ inputs = []
 resource = "coal"
 units_per_day = 120.0
 
+# [C] Iron and stone extractors mirror the coal mine's structure so the
+# engine's delivered mineral channels have consumers; rates and prices
+# are placeholders awaiting the author's balance pass, and no building
+# asset ships for either yet (recorded in ENGINE_CONVERSION.md).
+[[profiles]]
+id = "iron_mine_basic"
+display_name = "Iron Mine"
+kind = "extractor"
+description = "Deposit-backed iron mine extracting ore into on-site inventory for OWA export."
+worker_capacity = 6
+base_rate_units_per_day = 90.0
+wage_min_currency_per_day = 85.0
+wage_max_currency_per_day = 105.0
+unit_price_currency = 12.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 30.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+inputs = []
+
+[[profiles.outputs]]
+resource = "iron"
+units_per_day = 90.0
+
+[[profiles]]
+id = "quarry_basic"
+display_name = "Quarry"
+kind = "extractor"
+description = "Deposit-backed stone quarry cutting building stone into on-site inventory for OWA export."
+worker_capacity = 5
+base_rate_units_per_day = 150.0
+wage_min_currency_per_day = 75.0
+wage_max_currency_per_day = 95.0
+unit_price_currency = 5.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 50.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+inputs = []
+
+[[profiles.outputs]]
+resource = "stone"
+units_per_day = 150.0
+
 [[profiles]]
 id = "power_plant_basic"
 display_name = "Power Plant"

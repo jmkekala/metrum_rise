@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://dm8hyva6h5hlp"]
 
-[ext_resource type="Script" path="res://scripts/core/launch_router.gd" id="1_router"]
+[ext_resource type="Script" uid="uid://dyvqt6f4ulut4" path="res://scripts/core/launch_router.gd" id="1_router"]
 
-[node name="Router" type="Node"]
+[node name="Router" type="Node" unique_id=522637918]
 script = ExtResource("1_router")

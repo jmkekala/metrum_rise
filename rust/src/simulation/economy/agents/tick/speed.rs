@@ -148,6 +148,7 @@ impl AgentSystem {
                                                 connector_id,
                                                 &transit_network.lane_system,
                                                 buckets,
+                                                |a| *s_speed_idm.get(a),
                                             );
                                         if clear {
                                             connector_turn_speed(connector)

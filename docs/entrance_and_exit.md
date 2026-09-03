@@ -742,14 +742,13 @@ At 1,000,000 fully simulated agents, the added raw field cost is approximately:
 
 Total: about 29 MB plus normal `Vec` overhead.
 
-The 20,000,000-agent world target does not multiply this by twenty. The full-FSM
-agents inside the active area of interest are the only ones tracked, agents at
-distance run at a coarser aggregate fidelity and do not carry them. What this
-budget bounds is the size of that active set.
+The 20,000,000-agent world target does not multiply this by twenty. Only the
+full-FSM agents inside the active area of interest carry these fields; agents at
+distance run at a coarser aggregate fidelity. This budget bounds the size of that
+active set.
 
-This is still cheap compared to the cost of keeping ambiguous access state and
-rebuilding it in the hot path every tick, and there is arguably a lot of room
-left for optimizations, as none have been explored yet. 
+That is cheaper than keeping ambiguous access state and rebuilding it in the hot
+path every tick. No optimizations have been explored yet.
 
 ##### Save/load and lifecycle impact
 

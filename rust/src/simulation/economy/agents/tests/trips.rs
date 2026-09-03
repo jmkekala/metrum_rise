@@ -6,6 +6,8 @@
 //  module_name: trips
 //  version: 0.1.0
 //  description: Trip planning, access, and arrival lifecycle tests. Covers
+//           departure selection, egress and ingress queueing, mode
+//           choice, and the agent state machine.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [agents, network, allocator]

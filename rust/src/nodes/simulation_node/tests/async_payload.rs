@@ -6,6 +6,7 @@
 //  module_name: async_payload
 //  version: 0.1.0
 //  description: Tests for the asynchronous terrain and water patch payload
+//           crossing the simulation-node bridge.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [async_terrain]

@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/zoning/tests/helpers.rs
 //  module_name: helpers
 //  version: 0.1.0
-//  description: Shared fixtures for the zoning tests: straight road spans
+//  description: Shared fixtures for the zoning tests: straight road spans,
+//           vertical roads, and quarter-arc curves.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [graph, zoning]

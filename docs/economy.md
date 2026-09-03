@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Metrum Rise needs an economy model that is believable enough to make sense, abstract enough
+Metrum Rise needs an economic model that is believable enough to make sense, abstract enough
 to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of
 hardcoded constants in Rust, and it also cannot depend on unbounded per-resident shopping
 behavior that explodes pathfinding and logistics cost. The baseline household-supply loop may
@@ -13,8 +13,8 @@ This document defines a building-centric economy with the following design goals
 - support a closed production and distribution loop that feels believable to the player
 - preserve the 20,000,000-agent performance target through aggregation and bounded runtime
   rules
-- keep the simulation understandable, so cause and effect are visible rather than hidden
-  behind opaque formulas
+- keep the simulation understandable, so cause and effect stay visible through the formulas that
+  produce them
 - stay fun and easy to use, avoiding mandatory micromanagement and per-agent shopping chores
 - give developers a visual tool for balancing and validating economic relationships without
   hand-editing numbers in files
@@ -32,8 +32,8 @@ Agents still matter, but mostly in three roles:
 - households that consume from shared household supplies
 - optional low-frequency leisure or shopping travelers
 
-This keeps the hot path building-to-building instead of turning every essential good into an
-individual errand.
+This keeps the hot path building-to-building, so an essential good moves in bulk and never becomes
+one errand per agent.
 
 ### 2. Household essentials are replenished periodically, not bought daily by individual agents
 
@@ -70,11 +70,11 @@ This creates the intended feedback loop:
 
 ### 4. Balancing and validation are visual; persistence is data-driven
 
-Developers should use a tool, not raw text files, to balance production chains, controllers, and
-developer-authored scenario rules.
+Developers should balance production chains, controllers, and developer-authored scenario rules
+through a tool. Editing raw text files is the fallback.
 
-Persisted data files still exist for save/load, export, version control, and modding, but they are
-outputs of the economy tool rather than the primary authoring surface.
+Persisted data files still exist for save/load, export, version control, and modding, as outputs
+of the economy tool.
 
 Player-facing fiscal controls such as tax sliders and household transfer levels are a separate
 gameplay policy layer. Baseline income tax, household VAT, business profit tax, daily property
@@ -155,6 +155,10 @@ Authoring units should follow this scale:
 - supply reserve: `days of supply`
 - wages and operating costs: `currency/day` or `currency/workday`
 - prices: `currency/unit`
+
+The national currency is the Metrum, sharing the country's name. It takes a custom glyph, still
+to be drawn. Authored data and formulas keep the generic `currency` unit; the name and glyph are
+a display concern for the UI layer.
 
 ### Demand Handoff
 
@@ -258,10 +262,10 @@ This keeps authored data readable and avoids unrealistic one-frame mass departur
 makes clear that freight timing should not be forced into the same daytime pattern as office
 or school travel.
 
-For `v0.1`, freight timing should usually be modeled as a soft preference profile rather than a
-strict accept/reject delivery window. A night-preferred or early-morning-preferred site should
-still be able to receive freight outside its preferred period, but with less favorable congestion,
-priority, or operating-cost characteristics.
+For `v0.1`, freight timing should usually be modeled as a soft preference profile. A
+night-preferred or early-morning-preferred site should still receive freight outside its preferred
+period, at worse congestion, priority, or operating cost. A strict accept/reject delivery window
+stays out of this pass.
 
 ### Stable offsets and departure planning
 
@@ -283,7 +287,7 @@ So the clock defines when an arrival is desired, while routing and traffic deter
 departure must happen.
 
 For `v0.1`, `reliability_buffer_minutes` is an authored constant on the relevant schedule or
-trip-purpose profile rather than a dynamic variance model.
+trip-purpose profile. A dynamic variance model is later work.
 
 Recommended first-pass seed values:
 
@@ -294,13 +298,13 @@ Recommended first-pass seed values:
 
 Implementation note:
 
-- `estimated_travel_time` should be treated as a cached or periodically refreshed planning
-  estimate, not as a mandatory fresh path query for every agent on every tick
+- `estimated_travel_time` should be treated as a cached or periodically refreshed planning estimate.
+  A fresh path query for every agent on every tick is forbidden.
 - exact destination travel should reuse the existing `CCH` pathfinding layer
 - shared-destination travel should reuse existing flow-field routing where that already fits
   the destination type
 - any per-agent planning state such as cached commute estimate, planned departure, or lateness
-  should live in the existing agent SoA layout rather than in a parallel economy-only data structure
+  lives in the existing agent SoA layout. A parallel economy-only structure is forbidden.
 
 The economy must not introduce a second routing stack. It should build on the pathing and
 agent-storage systems the project already has.
@@ -321,8 +325,7 @@ windows. It should not create a separate special-purpose rush-hour clock.
 
 ### Rush hour emerges from overlapping windows
 
-Rush hour belongs to the operational clock, but it should be represented as overlapping authored windows
-rather than as a hardcoded flag.
+Rush hour belongs to the operational clock, represented as overlapping authored windows.
 
 It should emerge from synchronized or semi-synchronized departure and arrival windows for:
 
@@ -378,8 +381,8 @@ Households own the money used for essentials.
 - household replenishment purchases are paid from that shared budget
 - household-side utility charges such as residential `power`, `water`, and sewage service may also draw
   from that shared budget in `v0.1`
-- those household utility charges are service payments to the utility operator rather than automatic city
-  revenue by default
+- those household utility charges are service payments to the utility operator; by default they
+  generate no city revenue
 - basic consumption should not require one separate wallet transaction per resident
 
 ### Buildings
@@ -395,9 +398,9 @@ Buildings own the money used for production and operations.
   operating cost in `v0.1`
 - utility-producing or utility-processing buildings are normal economic operators that earn
   service revenue from those utility charges
-- city-owned service buildings are the municipal exception: their wages and placement costs are
-  paid by the city treasury, and their local utility fees deposit into the treasury rather than
-  into the building operating budget
+- city-owned service buildings are the municipal exception: their wages and placement costs are paid
+  by the city treasury, and their local utility fees deposit into that same treasury, leaving the
+  building operating budget untouched
 - producers buy or reserve required inputs through the building-level economy
 
 This gives the simulation a readable money loop without requiring every essential purchase to be
@@ -1796,15 +1799,19 @@ Where:
   in the current `v0.1` throughput multiplier
 - `controller_factor` is a bounded multiplier from allowed controller effects
 
-This keeps the first pass linear and readable. Hard minimum-staff step functions are not part of the baseline formula; if they are ever added later, they should be explicit profile-side rules rather than hidden default behavior.
+This keeps the first pass linear and readable. Hard minimum-staff step functions are not part of
+the baseline formula; if they are ever added later, they should be explicit profile-side rules
+rather than hidden default behavior.
 
-This gives the player a meaningful connection between zoning, staffing, transit, and output without requiring arbitrary micromanagement.
+This gives the player a meaningful connection between zoning, staffing, transit, and output without
+requiring arbitrary micromanagement.
 
 ## Logistics Model
 
 ### Shipment units
 
-The simulation should create shipments at the building or terminal level, not one tiny packet per household resident. In `v0.1`, the only terminal-like freight gateways are `OWA` border terminals.
+The simulation should create shipments at the building or terminal level, not one tiny packet per
+household resident. In `v0.1`, the only terminal-like freight gateways are `OWA` border terminals.
 
 Each shipment should minimally contain:
 
@@ -1816,6 +1823,33 @@ Each shipment should minimally contain:
 - assigned carrier class
 - status (`Queued`, `InTransit`, `Returning`, `Fulfilled`, `Failed`, or `Expired`)
 - active carrier agent id when dispatched
+
+The two-case endpoint is a `v0.1` limit. A freight terminal in [`transit.md`](transit.md) is a
+site the player composes from rail spurs, docks, warehouses, and truck bays, and its load points
+are placed pieces. The ordinary arrangement is many buildings to one load point: a warehouse
+district served by a spur down the middle of two rows, where the district together ships enough to
+justify track that no single tenant would. An endpoint restricted to a building or a border node
+cannot express that.
+
+A load point therefore becomes a third endpoint kind that buildings attach to within a site, and
+a shipment may terminate at one without naming a building. Inventory stays owned by a building
+and may be held at an attached load point. The transaction still credits on physical arrival,
+so a carrier that reaches a shared spur has arrived while the goods still have the yard to cross.
+
+Many-to-one attachment carries the consequences. One rail arrival may hold goods for several
+tenants, so the load settles against more than one buyer's reservation. A load point has finite
+capacity, and tenants compete for it, which bounds how many buildings one spur can serve.
+
+Loading at a spur or dock improves both throughput and per-unit cost, because the goods never
+touch a truck, never use the road, and move in rail-car or barge quantities. The final mile stops
+existing, and no modifier awards either effect.
+
+The limits are equally physical. Track and yard cost money to build and maintain, they occupy
+land, and a train runs only where track goes. An isolated site fails that arithmetic on its own
+volume; a warehouse district clears it.
+
+Open question: how the cost of shared infrastructure divides among the tenants using it. The
+physics does not answer ownership or billing.
 
 ### Carrier classes
 
@@ -2295,10 +2329,9 @@ are first class and they actually run, somewhat like a tycoon game or the CSL1
 industries expansion but refined past the aggregate level abstraction they use.
 - Nightlife. Bars, clubs, music venues, and the cellar and side-entrance
   businesses that alley frontage makes possible.
-- Tourism and gambling. Visitors arrive through the transport network, stay
-  somewhere, spend, and leave. A gambling economy is a strong attractor with a
-  strong downside, and both should be visible rather than collapsed into a single
-  desirability number.
+- Tourism and gambling. Visitors arrive through the transport network, stay somewhere,
+  spend, and leave. A gambling economy is a strong attractor with a strong downside, and
+  both stay visible as separate readings.
 - Amusement parks. Laid out by the player, with rides, paths, and throughput. The tycoon
   loop is intact: capacity against demand, price against satisfaction, upkeep against age,
   but rendered simply enough that how well a park is doing is never more than a few data
@@ -2316,14 +2349,14 @@ is an economic hole in a real place.
 
 Prospecting is a cost center with its own payroll and vehicles, and it runs before
 any extraction industry can exist. `terrain.md` owns what a survey reveals and how
-a deposit is hidden until then. What belongs here is the money.
+a deposit is hidden until then. This document owns the money.
 
 A team is a staffed unit like any other service: a headcount, wages, and fleet vehicles.
-Fielding one is a standing cost whether or not it finds anything, and a tile that
-resolves to nothing costs exactly what a tile holding uranium costs, and is necessary
-to discover late game deposits. Cost scales with reach rather than distance alone.
-A team routed over existing roads is cheap and fast; the same tiles reached off-road
-cost more in time, fuel, and wear.
+Fielding one is a standing cost whether or not it finds anything, and a tile that resolves
+to nothing costs exactly what a tile holding uranium costs. Late-game deposits cannot be
+reached without it. Cost scales with reach, folding in terrain and road access alongside
+distance. A team routed over existing roads is cheap and fast; the same tiles reached off-
+road cost more in time, fuel, and wear.
 
 The strategic shape this produces: a player who surveys early spends money before
 having a use for the answers, and a player who does not survey builds an industrial
@@ -2331,15 +2364,14 @@ chain toward a deposit they have not confirmed and may need to import. The endga
 chains need resources no single region holds, so at some point the question stops
 being whether to prospect and becomes where.
 
-The same teams serve scientific work at the same cost, which is how a player looks
-for archaeological sites deliberately rather than hitting one during construction.
-`narrative.md` owns what happens once a site is found.
+The same teams serve scientific work at the same cost, which is how a player searches for
+archaeological sites deliberately, ahead of the construction accident. `narrative.md` owns what
+happens once a site is found.
 
 ## Two Money Pools
 
-There are only ever two pools, and the second one is not touchable when the
-game starts. What the player holds changes it lense twice, and each change unlocked
-by progression.
+There are only ever two pools, and the second stays locked when the game starts.
+What the player holds changes twice, each change unlocked by progression.
 
 At the start there is one city and the player holds its budget. Taxes are paid
 upward to the region, which the player does not control and does not see the
@@ -2352,13 +2384,12 @@ accumulated sum should be nearly be what is needed for a good start to founding 
 second city. The player can now fund and place regional assets freely up the the
 unincorporated population limit.
 
-From here the region is the level of abstraction. Cities are data points inside
-the regional pool rather than pools of their own. A city is budgeted and reported
-individually, but the regional budget is shared. Unlocking a second region creates
-the national/federal pool, and this is the only time a new pool appears. Regional
-taxes now flow to it (the player gains the ability to control these rates), along
-with the responsibilities that outgrew a region: power, border patrol, and the rest
-of what a country runs rather than a place.
+From here the region is the level of abstraction. Cities are data points inside the regional pool,
+holding no pool of their own. A city is budgeted and reported individually, and the regional budget
+is shared. Unlocking a second region creates the national pool, the only time a new pool appears.
+Regional taxes now flow to it, with the player gaining control of those rates, along with the
+responsibilities that outgrew a region: power, border patrol, and the rest of what a country runs
+for itself as a whole.
 
 The regional pool does not go away when the national one arrives. It becomes a
 pile of city budgets, still one pool, still holding each city as a separate data
@@ -2388,12 +2419,10 @@ attractive ones. A young country short of capital is exactly the counterparty a 
 designed for. The player who takes every early offer gets a fast start and a country whose
 industry belongs to somebody else.
 
-The mechanical requirement: a bad deal must look good at the time it is offered. An offer
-flagged as predatory is not a decision, it is a warning label. What makes it fair is that the
-terms are legible if the player reads them, not that the game refuses to let them be taken.
-
-The narrative framing of these offers, and the companies that make them, is owned
-by `narrative.md`.
+The mechanical requirement: a bad deal must look overly enticing at the time it is offered.
+An offer blatantly flagged as predatory functions as a warning label. The terms stay legible,
+and the game still lets the player take the deal. The narrative framing of these offers, and
+the companies that make them, is owned by `narrative.md`.
 
 ## Example Chain
 

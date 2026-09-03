@@ -163,7 +163,7 @@ gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The 
 tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
 shell so the submenu stack can read as one cluster while the actual toolbar row still matches
 the clock / city-status / RCI strip height.
-Script: `scripts/ui/main_ui.gd` (current — stays here).
+Script: `scripts/ui/main_ui.gd` (current, stays here).
 
 The toolbar is the primary tool-selection surface. It is always visible during gameplay.
 
@@ -606,30 +606,30 @@ Camera ownership rules:
 These are the concrete changes needed to move from current state to the target paradigm.
 They are tracked in the roadmap under `CODE-02` scope.
 
-1. Add `UIStyle` — completed. `scripts/ui/ui_style.gd` now owns the shared color,
+1. Add `UIStyle`: completed. `scripts/ui/ui_style.gd` now owns the shared color,
    radius, padding constants and common `StyleBoxFlat` factory helpers.
 
-2. Add top menu — completed. `scripts/ui/top_menu.gd` is instantiated from each scene
+2. Add top menu: completed. `scripts/ui/top_menu.gd` is instantiated from each scene
    root (`Main`, `AssetEditor`, `EconomyEditor`) and remains separate from `main_ui.gd`.
    Gameplay File/View/City/Tools/Help actions are wired, editor scenes expose reduced
    File/editor-action menus, and the City/Help windows currently use placeholder content
    where full data windows are not yet implemented.
 
-3. Migrate selection-driven properties to `Window`s — completed for the Building
+3. Migrate selection-driven properties to `Window`s: completed for the Building
    Inspector (`scripts/ui/building_inspector.gd`) and Road Properties
    (`scripts/ui/road_properties_window.gd`). Both now use Godot's built-in title bar, drag
    behavior, and close button while preserving the existing selection/edit APIs underneath.
 
-4. Add City / Economy / Demand windows — still pending. The top menu currently opens
+4. Add City / Economy / Demand windows: still pending. The top menu currently opens
    inline placeholder windows from `scripts/ui/top_menu.gd`; replace those one at a time
    with dedicated `Window`-based scripts when the live data views are implemented.
 
-5. Reorganise `scripts/` into subdirectories — completed. New UI work starts from the
+5. Reorganise `scripts/` into subdirectories: completed. New UI work starts from the
    `scripts/ui/` subtree and follows the current layout documented above.
 
 ## Editing Tools
 
-The player draws a road and then edits its cross-section. That is the interface.
+The player draws a road and then edits its cross-section.
 
 `LaneLayout` already carries everything the editor needs to expose: per-band
 kind, direction, width, permitted modes, marking, turn set, and longitudinal
@@ -646,8 +646,7 @@ What the editor must reach:
 - A selection model. Marquee select, filter by type, and step through objects
   overlapping under the cursor.
 - An undo stack over world edits. 
-- Height as an independently authored value, not derived from terrain at plop
-  time.
+- Height as an independently authored value, held across terrain edits after plop time.
 - Alignment operations across a selection: align heights, align to terrain,
   align to a line, align to a slope, mirror.
 - Export and import of a selection

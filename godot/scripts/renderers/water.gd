@@ -10,6 +10,7 @@ extends Node3D
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const EngineWaterSource := preload("res://scripts/core/engine_water_source.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -1423,6 +1424,13 @@ func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dic
 	return {}
 
 func _water_patch_depth_bytes(patch_data: Dictionary) -> PackedByteArray:
+	# [C] Engine mesh workflow, same toggle as terrain: depth evaluated
+	# from the same field the ground uses, so water sits in the field's own
+	# basins. The Rust payload stays the fallback.
+	if EngineWaterSource.enabled():
+		var evaluated := EngineWaterSource.depth_bytes(patch_data)
+		if not evaluated.is_empty():
+			return evaluated
 	var depth_bytes: PackedByteArray = (
 		patch_data.get("depth_bytes", PackedByteArray())
 		as PackedByteArray

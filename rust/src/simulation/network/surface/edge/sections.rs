@@ -6,6 +6,7 @@
 //  module_name: sections
 //  version: 0.1.0
 //  description: Samples cross-section stations along an edge centerline
+//           and selects the longitudinal height at each.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, backend]

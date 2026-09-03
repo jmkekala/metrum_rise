@@ -1,4 +1,26 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: tick.rs
+//  script_path: rust/src/simulation/economy/agents/tick.rs
+//  module_name: tick
+//  version: 0.1.0
+//  description: The per-tick agent loop: the transit state machine, the
+//           parallel movement pass, and the submodules it dispatches to.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: [transit-state-machine, movement-dispatch, hold-accounting]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-28
+// ========================================================================
+
 //! Main simulation loop for agents: transit state machine and movement.
+
+// ========================================================================
+// SUBMODULES
+// ========================================================================
 
 mod access;
 mod claims;
@@ -15,6 +37,16 @@ mod slices;
 mod speed;
 mod traffic;
 
+// ========================================================================
+// RE-EXPORTS
+// ========================================================================
+
+/// Why cars were held at each junction, for the traffic report.
+///
+/// Re-exported because the tally lives on `AgentSystem` and the UI reads it,
+/// while the rest of `traffic` stays private to the tick.
+pub use traffic::report::{HoldAccumulator, HoldCause, JunctionHolds};
+
 use super::data::AgentSystem;
 use super::{
     MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING,
@@ -25,6 +57,10 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
 
+// ========================================================================
+// STATIONARY DETECTION
+// ========================================================================
+
 const TRAFFIC_DEBUG_STATIONARY_EPS_M: f32 = 0.02;
 const TRAFFIC_DEBUG_STATIONARY_AFTER_S: f32 = 3.0;
 const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
@@ -33,6 +69,10 @@ pub(crate) use planning::{
     BuiltTripPlan, building_origin_trip_is_feasible, estimate_building_origin_trip_minutes,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
+
+// ========================================================================
+// THE TICK
+// ========================================================================
 
 impl AgentSystem {
     /// Advances the agent simulation by `delta` seconds.
@@ -151,6 +191,10 @@ impl AgentSystem {
         }
     }
 }
+
+// ========================================================================
+// DEBUG LABELS
+// ========================================================================
 
 fn transit_label(transit: u8) -> &'static str {
     match transit {

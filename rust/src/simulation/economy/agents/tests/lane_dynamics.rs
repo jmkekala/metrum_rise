@@ -6,6 +6,7 @@
 //  module_name: lane_dynamics
 //  version: 0.1.0
 //  description: Lane bucket occupancy, frontage delay, and steady-state
+//           congestion tests.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [agents, lanes]

@@ -1,3 +1,25 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: resources.rs
+//  script_path: rust/src/simulation/resources.rs
+//  module_name: resources
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Authored deposit layers, stored as sparse terrain-aligned
+//           grids the world editor paints cheaply. Reserve walking honours
+//           measured over derived: a painted cell wins, an unpainted cell
+//           falls back to the delivered engine channel, and outside
+//           coverage the reserve stays zero.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [config, sparse_chunk_grid, engine_inputs]
+//  external_dependencies: [godot-rust]
+//  features: [deposit-grids, painting, reserve-walking]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Authored natural-resource deposit layers.
 //!
 //! Resource deposits are map-authored data, not building/runtime economy state.
@@ -6,6 +28,7 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+use crate::simulation::engine_inputs::EngineInputs;
 use godot::prelude::Vector2;
 
 /// Resource id used by authored coal deposits and the economy catalog.
@@ -106,11 +129,15 @@ impl ResourceDepositSystem {
     ///
     /// Richness is sampled at authored resource grid points and converted through
     /// `units_per_full_richness_m2`, so a full-richness 10 m cell contributes
-    /// `10 * 10 * units_per_full_richness_m2` units.
+    /// `10 * 10 * units_per_full_richness_m2` units. A painted cell is a
+    /// measured row and wins outright; an unpainted cell falls back to the
+    /// delivered engine coal channel, and outside engine coverage it stays
+    /// the zero it always was.
     pub(crate) fn coal_reserve_units_for_polygon(
         &self,
         polygon: &[Vector2],
         units_per_full_richness_m2: f32,
+        engine: &EngineInputs,
     ) -> f32 {
         if polygon.len() < 3
             || units_per_full_richness_m2 <= 0.0
@@ -128,17 +155,65 @@ impl ResourceDepositSystem {
         let mut reserve_units = 0.0f32;
         for z in min_z..=max_z {
             for x in min_x..=max_x {
-                let richness = self.coal_richness.get(x, z);
-                if richness == 0 {
-                    continue;
-                }
                 let world_pos = self.grid_to_world_pos(x, z);
                 if !point_in_polygon(world_pos, polygon) {
                     continue;
                 }
-                reserve_units += cell_area
-                    * (f32::from(richness) / f32::from(RESOURCE_RICHNESS_MAX))
-                    * units_per_full_richness_m2;
+                let richness = self.coal_richness.get(x, z);
+                let fraction = if richness > 0 {
+                    f32::from(richness) / f32::from(RESOURCE_RICHNESS_MAX)
+                } else {
+                    match engine
+                        .coal_fraction(f64::from(world_pos.x), f64::from(world_pos.y))
+                    {
+                        Some(fraction) => fraction as f32,
+                        None => continue,
+                    }
+                };
+                if fraction <= 0.0 {
+                    continue;
+                }
+                reserve_units += cell_area * fraction * units_per_full_richness_m2;
+            }
+        }
+        reserve_units
+    }
+
+    /// Computes reserve units for a resource with no authored paint
+    /// layer: the delivered engine channel is the only testimony, walked
+    /// on the same grid geometry as coal, zero outside coverage.
+    pub(crate) fn engine_reserve_units_for_polygon(
+        &self,
+        polygon: &[Vector2],
+        units_per_full_richness_m2: f32,
+        fraction: &dyn Fn(f64, f64) -> Option<f64>,
+    ) -> f32 {
+        if polygon.len() < 3
+            || units_per_full_richness_m2 <= 0.0
+            || !units_per_full_richness_m2.is_finite()
+            || self.width == 0
+            || self.height == 0
+        {
+            return 0.0;
+        }
+        let Some((min_x, max_x, min_z, max_z)) = self.polygon_grid_bounds(polygon) else {
+            return 0.0;
+        };
+        let cell_area = self.cell_size_m * self.cell_size_m;
+        let mut reserve_units = 0.0f32;
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                let world_pos = self.grid_to_world_pos(x, z);
+                if !point_in_polygon(world_pos, polygon) {
+                    continue;
+                }
+                let Some(f) = fraction(f64::from(world_pos.x), f64::from(world_pos.y)) else {
+                    continue;
+                };
+                if f <= 0.0 {
+                    continue;
+                }
+                reserve_units += cell_area * f as f32 * units_per_full_richness_m2;
             }
         }
         reserve_units
@@ -323,6 +398,82 @@ mod tests {
 
         assert!(deposits.erase_coal_circle_world(0.0, 0.0, 10.0));
         assert_eq!(deposits.coal_richness_at(5, 5), 0);
+    }
+
+    #[test]
+    fn coal_reserve_painted_overrides_engine_fallback() {
+        let config = WorldConfig::new(40.0, 40.0, 10.0, 10.0)
+            .with_terrain_resolution(10.0)
+            .with_chunking(20.0, 0.0);
+        let mut deposits = ResourceDepositSystem::from_world_config(&config);
+        // The delivered coal channel: a constant 0.5 fraction covering the
+        // whole 40 m world. Built directly, no global store, no test races.
+        let engine = EngineInputs {
+            coal: vec![0.5, 0.5, 0.5, 0.5],
+            origin_x: -20.0,
+            origin_z: -20.0,
+            spacing: 40.0,
+            side: 2,
+            ..EngineInputs::default()
+        };
+        let polygon = vec![
+            Vector2::new(-5.0, -5.0),
+            Vector2::new(15.0, -5.0),
+            Vector2::new(15.0, 5.0),
+            Vector2::new(-5.0, 5.0),
+        ];
+
+        // No delivery, nothing painted: the reserve is the old zero.
+        let empty = deposits.coal_reserve_units_for_polygon(
+            &polygon,
+            2.0,
+            &EngineInputs::default(),
+        );
+        assert_eq!(empty, 0.0);
+
+        // Unpainted cells read the engine: two 10 m cells inside the
+        // polygon at 0.5 fraction and 2 units per full-richness m2.
+        let derived = deposits.coal_reserve_units_for_polygon(&polygon, 2.0, &engine);
+        assert!((derived - 200.0).abs() <= 0.001);
+
+        // Painting one cell to full richness is a measured row: that cell
+        // reads 1.0 while its unpainted neighbour still reads the engine.
+        deposits.set_coal_richness_at(2, 2, RESOURCE_RICHNESS_MAX);
+        let mixed = deposits.coal_reserve_units_for_polygon(&polygon, 2.0, &engine);
+        assert!((mixed - 300.0).abs() <= 0.001);
+    }
+
+    #[test]
+    fn engine_only_reserve_reads_the_delivered_channel() {
+        let config = WorldConfig::new(40.0, 40.0, 10.0, 10.0)
+            .with_terrain_resolution(10.0)
+            .with_chunking(20.0, 0.0);
+        let deposits = ResourceDepositSystem::from_world_config(&config);
+        let engine = EngineInputs {
+            iron: vec![0.5, 0.5, 0.5, 0.5],
+            origin_x: -20.0,
+            origin_z: -20.0,
+            spacing: 40.0,
+            side: 2,
+            ..EngineInputs::default()
+        };
+        let polygon = vec![
+            Vector2::new(-5.0, -5.0),
+            Vector2::new(15.0, -5.0),
+            Vector2::new(15.0, 5.0),
+            Vector2::new(-5.0, 5.0),
+        ];
+        // Two 10 m cells inside the polygon at 0.5 fraction and 4
+        // units per full-richness square metre.
+        let reserve = deposits.engine_reserve_units_for_polygon(&polygon, 4.0, &|x, z| {
+            engine.iron_fraction(x, z)
+        });
+        assert!((reserve - 400.0).abs() <= 0.001);
+        // No delivery, no reserve: coverage refusal is the fallback.
+        let empty = deposits.engine_reserve_units_for_polygon(&polygon, 4.0, &|x, z| {
+            EngineInputs::default().iron_fraction(x, z)
+        });
+        assert_eq!(empty, 0.0);
     }
 
     #[test]

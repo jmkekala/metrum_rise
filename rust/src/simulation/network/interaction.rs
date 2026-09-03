@@ -6,6 +6,8 @@
 //  module_name: interaction
 //  version: 0.1.0
 //  description: Snapping and projection between world positions and the
+//           road network: closest node, closest edge, and geometric
+//           intersections.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph]

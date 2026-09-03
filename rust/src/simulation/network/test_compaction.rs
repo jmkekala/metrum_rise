@@ -6,6 +6,8 @@
 //  module_name: test_compaction
 //  version: 0.1.0
 //  description: Tests that edge compaction remaps every holder of an edge
+//           index, and that pathing rebuild skips deleted edges when no
+//           compaction has run.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [network, agents, allocator, zoning]

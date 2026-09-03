@@ -6,6 +6,8 @@
 //  module_name: reroute
 //  version: 0.1.0
 //  description: En-route rerouting against observed congestion. A route
+//           chosen at departure is a prediction, and without revision a
+//           jam cannot influence the traffic feeding it.
 //  kind: module
 //  spec: docs/traffic.md
 //  internal_dependencies: [simulation/network/graph/data.rs]

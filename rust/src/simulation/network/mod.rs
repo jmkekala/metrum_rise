@@ -6,6 +6,8 @@
 //  module_name: network
 //  version: 0.1.0
 //  description: Road network module root and the TransitNetwork entry
+//           point for road edits, which manages the routing hierarchy
+//           and coordinates updates to the graph.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, cch, flow_field, surface]

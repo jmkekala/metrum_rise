@@ -112,7 +112,7 @@ pub(super) unsafe fn handle_network_movement(
             }
 
             lane_id =
-                prepare_lane_change_and_overtake(i, lane_id, lane_buckets, transit_network, slices);
+                prepare_lane_change_and_overtake(i, lane_id, lane_buckets, transit_network, graph, slices);
 
             let lane = &transit_network.lane_system.lanes[lane_id];
             let dist_to_end = lane.length - *s_lane_d.get(i);

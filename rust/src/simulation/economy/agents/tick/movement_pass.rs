@@ -20,6 +20,7 @@
 use super::claims::LaneClaimContext;
 use super::runtime::dispatch_agents;
 use super::slices::{MovementSlices, RawSlice};
+use super::traffic::report;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::economy::definitions::{
@@ -45,6 +46,13 @@ impl AgentSystem {
         n: usize,
     ) {
         self.prepare_claim_serial_agents(allocator, transit_network, graph, delta, n);
+
+        // Size the hold tally before any worker can write to it. Growing it
+        // during the pass would need a lock, so a junction added this tick goes
+        // uncounted until the next one rather than blocking the movement of
+        // every car in the city.
+        self.junction_holds
+            .resize(graph.node_count(), graph.edge_count());
 
         let slices = MovementSlices {
             home: RawSlice::new(&mut self.agents.home_building),
@@ -112,26 +120,33 @@ impl AgentSystem {
         let economy_catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
+        // Published per agent rather than once around the dispatch, because the
+        // work is spread across rayon threads and the tally is thread-local:
+        // publishing on the calling thread would leave every worker unpublished
+        // and every hold uncounted. Setting a cell costs a pointer write.
+        let junction_holds = &self.junction_holds;
         dispatch_agents(n, |i| unsafe {
             if self.claim_serial_agents[i] {
                 return;
             }
-            Self::process_agent_movement(
-                i,
-                delta,
-                sim_time,
-                day_index,
-                minute_of_day,
-                allocator,
-                transit_network,
-                graph,
-                &self.pathfind_count,
-                lane_buckets,
-                &lane_claims,
-                &economy_tuning.operational_clock,
-                &economy_catalog,
-                &slices,
-            );
+            report::with_accumulator(junction_holds, || {
+                Self::process_agent_movement(
+                    i,
+                    delta,
+                    sim_time,
+                    day_index,
+                    minute_of_day,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &self.pathfind_count,
+                    lane_buckets,
+                    &lane_claims,
+                    &economy_tuning.operational_clock,
+                    &economy_catalog,
+                    &slices,
+                );
+            });
         });
 
         for i in 0..n {

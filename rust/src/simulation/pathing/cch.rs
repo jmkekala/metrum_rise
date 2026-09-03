@@ -6,6 +6,8 @@
 //  module_name: cch
 //  version: 0.1.0
 //  description: Customizable Contraction Hierarchy routing, the primary
+//           engine for agents: fast queries with O(E) metric
+//           customization for dynamic traffic.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, types]

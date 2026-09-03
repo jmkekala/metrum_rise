@@ -18,6 +18,7 @@ use godot::prelude::*;
 pub mod assets;
 pub mod config;
 pub mod debug;
+pub mod engine_twin;
 pub mod nodes;
 pub mod simulation;
 pub mod utils;

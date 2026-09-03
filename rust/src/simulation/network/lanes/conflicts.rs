@@ -5,7 +5,9 @@
 //  script_path: rust/src/simulation/network/lanes/conflicts.rs
 //  module_name: conflicts
 //  version: 0.1.0
-//  description: Which connector movements through a junction cross each
+//  description: Which connector movements through a junction conflict with
+//           each other. Two connectors whose paths cross are separate
+//           lanes, so nothing tests one against the other without this.
 //  kind: module
 //  spec: docs/roads.md
 //  internal_dependencies: [simulation/network/lanes/mod.rs, config]
@@ -67,6 +69,7 @@ const SHARED_ENDPOINT_M: f32 = 0.5;
 pub struct JunctionConflicts {
     conflicts: HashMap<usize, Vec<usize>>,
     co_entrants: HashMap<usize, Vec<usize>>,
+    yields_to: HashMap<usize, Vec<usize>>,
 }
 
 impl JunctionConflicts {
@@ -91,10 +94,29 @@ impl JunctionConflicts {
             .unwrap_or(&[])
     }
 
+    /// Movements `lane_id` must give way to.
+    ///
+    /// Asymmetric, and that is the point. `conflicts` is a mutual bar: neither
+    /// car enters while the other is inside. This is one-directional, so a
+    /// permissive turn waits for the through traffic it crosses while the
+    /// through traffic waits for nothing.
+    ///
+    /// It carries the pairs `conflicts` deliberately omits. Two movements on
+    /// one street run in the same signal phase, so neither may be held out of
+    /// the junction, but a left turn still crosses the oncoming lane and the
+    /// turning driver is the one who waits.
+    #[inline]
+    pub fn yields_to(&self, lane_id: usize) -> &[usize] {
+        self.yields_to
+            .get(&lane_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Whether any conflicting movement exists for `lane_id`.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.conflicts.is_empty() && self.co_entrants.is_empty()
+        self.conflicts.is_empty() && self.co_entrants.is_empty() && self.yields_to.is_empty()
     }
 
     /// Number of lanes carrying at least one conflict.
@@ -184,6 +206,65 @@ fn polyline_min_dist_xz(a: &[godot::prelude::Vector3], b: &[godot::prelude::Vect
 }
 
 // ========================================================================
+// MOVEMENT RANK
+// ========================================================================
+
+/// What a movement is, ordered by who gives way to whom.
+///
+/// Precedence is what the conflict table alone cannot express. A table says two
+/// paths cross; it does not say which driver waits. Without that, two movements
+/// are peers and whichever car arrives first goes, which is how a right turn on
+/// green and the through traffic beside it both entered the box and met in it.
+///
+/// Higher ranks hold their line. Lower ranks give way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MovementRank {
+    /// A turn taken on a gap the driver judged: left across oncoming, right on
+    /// green, right on red. Gives way to everything it crosses.
+    Permissive = 0,
+    /// A turn its own signal phase protects, so nothing it crosses is running.
+    ///
+    /// A two-phase program never produces one, because a phase that greens a
+    /// street greens both its directions and the turns off it together. This
+    /// rank exists so a protected arrow has somewhere to land when signal
+    /// programs gain one, and until then it is unreachable by construction.
+    Protected = 1,
+    /// Straight through the junction. Gives way to nothing, because a driver
+    /// holding a lane at speed is the movement everything else reads.
+    Through = 2,
+}
+
+/// Sine of the angle between entry and exit heading, signed.
+///
+/// Zero is straight ahead. The sign separates the two turn directions, and the
+/// magnitude says how sharp the turn is; a connector that barely bends is a
+/// through movement whatever the geometry rounds to.
+fn turn_cross(l: &Lane) -> Option<f32> {
+    let (entry, exit) = entry_exit_bearings(l)?;
+    Some(entry.0 * exit.1 - entry.1 * exit.0)
+}
+
+/// How straight a connector must run to count as through traffic.
+///
+/// `sin 30 degrees`. A junction connector curves even when it goes straight
+/// across, because it joins two lane centrelines that need not be collinear, so
+/// the test cannot be exact. Thirty degrees admits that curvature and still
+/// separates a genuine turn, which at a four-way is near ninety.
+const THROUGH_MAX_SIN: f32 = 0.5;
+
+/// The rank of one movement, read from its own geometry.
+///
+/// Signal state is not consulted. A movement's rank is a property of where it
+/// goes, and the one rank that depends on a phase, `Protected`, is unreachable
+/// until programs carry protected arrows.
+pub fn movement_rank(l: &Lane) -> MovementRank {
+    match turn_cross(l) {
+        Some(c) if c.abs() < THROUGH_MAX_SIN => MovementRank::Through,
+        _ => MovementRank::Permissive,
+    }
+}
+
+// ========================================================================
 // STREET GROUPING
 // ========================================================================
 
@@ -269,6 +350,19 @@ fn shares_end(a: &Lane, b: &Lane) -> bool {
 pub fn build_junction_conflicts(connector_lane_ids: &[usize], lanes: &[Lane]) -> JunctionConflicts {
     let mut conflicts: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut co_entrants: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut yields_to: HashMap<usize, Vec<usize>> = HashMap::new();
+
+    // Record that the lower-ranked of two crossing movements gives way. Equal
+    // ranks record nothing: two through movements are separated by the signal,
+    // and two permissive turns are peers whose own buckets already bar them.
+    let mut note_yield = |la: usize, a: &Lane, lb: usize, b: &Lane| {
+        let (ra, rb) = (movement_rank(a), movement_rank(b));
+        match ra.cmp(&rb) {
+            std::cmp::Ordering::Less => yields_to.entry(la).or_default().push(lb),
+            std::cmp::Ordering::Greater => yields_to.entry(lb).or_default().push(la),
+            std::cmp::Ordering::Equal => {}
+        }
+    };
 
     for (i, &la) in connector_lane_ids.iter().enumerate() {
         let Some(a) = lanes.get(la) else { continue };
@@ -298,6 +392,13 @@ pub fn build_junction_conflicts(connector_lane_ids: &[usize], lanes: &[Lane]) ->
             // street leave the junction on opposite headings, and a movement
             // between them stays on that street whichever way it runs.
             if same_street(a, b) {
+                // Neither may be held out of the box, but their paths can still
+                // cross: a left turn cuts the oncoming through lane, and both
+                // are green together. Nothing enforced that, so the turn drove
+                // into traffic. Rank decides it instead, and the turn waits.
+                if polyline_min_dist_xz(&a.geometry, &b.geometry) < CONFLICT_CLEARANCE_M {
+                    note_yield(la, a, lb, b);
+                }
                 continue;
             }
 
@@ -310,6 +411,10 @@ pub fn build_junction_conflicts(connector_lane_ids: &[usize], lanes: &[Lane]) ->
             if polyline_min_dist_xz(&a.geometry, &b.geometry) < CONFLICT_CLEARANCE_M {
                 conflicts.entry(la).or_default().push(lb);
                 conflicts.entry(lb).or_default().push(la);
+                // A mutual bar stops two cars sharing the box, but says nothing
+                // about who goes when both arrive at once. Rank breaks that tie
+                // so a right turn no longer races the through traffic it cuts.
+                note_yield(la, a, lb, b);
             }
         }
     }
@@ -322,10 +427,15 @@ pub fn build_junction_conflicts(connector_lane_ids: &[usize], lanes: &[Lane]) ->
         v.sort_unstable();
         v.dedup();
     }
+    for v in yields_to.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
 
     JunctionConflicts {
         conflicts,
         co_entrants,
+        yields_to,
     }
 }
 
@@ -470,5 +580,74 @@ mod tests {
         assert!(c.is_empty());
         assert_eq!(c.len(), 0);
         assert!(c.conflicting(7).is_empty());
+    }
+
+    #[test]
+    fn a_straight_connector_is_through_and_a_bent_one_is_a_turn() {
+        // A junction connector curves even going straight across, because it
+        // joins two centrelines that need not be collinear. The classifier has
+        // to admit that curvature and still call a real turn a turn.
+        let straight = connector(vec![v(-10.0, 0.0), v(0.0, 0.3), v(10.0, 0.0)]);
+        let turn = connector(vec![v(0.0, -10.0), v(0.0, 0.0), v(-10.0, 1.5)]);
+        assert_eq!(movement_rank(&straight), MovementRank::Through);
+        assert_eq!(movement_rank(&turn), MovementRank::Permissive);
+    }
+
+    #[test]
+    fn through_traffic_outranks_a_turn() {
+        assert!(MovementRank::Through > MovementRank::Permissive);
+        assert!(MovementRank::Protected > MovementRank::Permissive);
+    }
+
+    #[test]
+    fn a_left_turn_yields_to_the_oncoming_it_crosses() {
+        // The defect this exists to fix. Both movements are on one street, so
+        // one signal phase runs them together and neither may be held out of
+        // the junction. Their paths still cross, and without precedence both
+        // read an empty box and drove into each other.
+        let left = connector(vec![v(1.5, -10.0), v(1.5, 0.0), v(-10.0, 1.5)]);
+        let oncoming = connector(vec![v(-1.5, 10.0), v(-1.5, -10.0)]);
+        let lanes = vec![left, oncoming];
+        let c = build_junction_conflicts(&[0, 1], &lanes);
+
+        // Still not a mutual bar: a signal runs them in the same phase.
+        assert!(c.conflicting(0).is_empty());
+        assert!(c.conflicting(1).is_empty());
+
+        // But the turn gives way, and the through traffic does not.
+        assert_eq!(c.yields_to(0), &[1], "the left turn must give way");
+        assert!(
+            c.yields_to(1).is_empty(),
+            "through traffic yields to nothing"
+        );
+    }
+
+    #[test]
+    fn a_turn_yields_to_the_crossing_street_it_conflicts_with() {
+        // A crossing pair is already a mutual bar, so neither enters while the
+        // other is inside. Precedence decides the case the bar cannot: both
+        // arriving on the same tick, both reading an empty box.
+        let turning = connector(vec![v(1.5, -10.0), v(1.5, 0.0), v(-10.0, 1.5)]);
+        let crossing = connector(vec![v(-10.0, -1.5), v(10.0, -1.5)]);
+        let lanes = vec![turning, crossing];
+        let c = build_junction_conflicts(&[0, 1], &lanes);
+        assert_eq!(c.conflicting(0), &[1]);
+        assert_eq!(c.yields_to(0), &[1]);
+        assert!(c.yields_to(1).is_empty());
+    }
+
+    #[test]
+    fn two_through_movements_do_not_yield_to_each_other() {
+        // Equal rank, so nothing is recorded and the signal keeps separating
+        // them. Recording a yield here would make one street wait forever on
+        // the other with no phase able to release it.
+        let lanes = vec![
+            connector(vec![v(-10.0, 0.0), v(10.0, 0.0)]),
+            connector(vec![v(0.0, -10.0), v(0.0, 10.0)]),
+        ];
+        let c = build_junction_conflicts(&[0, 1], &lanes);
+        assert_eq!(c.conflicting(0), &[1], "still a mutual bar");
+        assert!(c.yields_to(0).is_empty());
+        assert!(c.yields_to(1).is_empty());
     }
 }

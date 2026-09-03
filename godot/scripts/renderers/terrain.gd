@@ -18,6 +18,7 @@ const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
+const EngineTerrainSource := preload("res://scripts/core/engine_terrain_source.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
 const TERRAIN_COAL_ALBEDO_PATH := "res://assets/textures/general/coal/dark_rock_diff_2k.jpg"
@@ -800,11 +801,24 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	var inner_offset_z := float(patch_data["inner_offset_z"])
 	var patch_resources: Dictionary = _acquire_terrain_patch_resources()
 	var height_image: Image = patch_resources["height_image"] as Image
+	# [C] Engine mesh workflow, same toggle as buildings: patch heights
+	# evaluated from the 2.5D engine's field instead of the Rust payload,
+	# with the payload as fallback whenever the toggle is off or the
+	# evaluation returns nothing.
+	var patch_height_bytes := _terrain_patch_height_bytes(patch_data)
+	if EngineTerrainSource.enabled():
+		# [C] The composite: the fine field with the sim's measured
+		# deformation on it, so sculpts and earthworks draw where the
+		# sim holds them; the Rust payload is the sim's testimony.
+		var evaluated := EngineTerrainSource.composite_bytes(
+			patch_data, patch_height_bytes)
+		if not evaluated.is_empty():
+			patch_height_bytes = evaluated
 	var height_texture: ImageTexture = _upload_terrain_patch_height_texture(
 		patch_resources,
 		texture_width,
 		texture_height,
-		_terrain_patch_height_bytes(patch_data)
+		patch_height_bytes
 	)
 	var patch_mesh: Mesh
 	var patch_center_x := world_origin_x + world_size_x * 0.5

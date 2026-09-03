@@ -4,25 +4,47 @@
 
 Metrum Rise needs a dedicated asset-authoring tool for first-party content and modders. The tool lets creators import and validate game-ready assets without starting a live city simulation. It remains consistent with the performance constraints of the main game: the importer can do expensive offline work, but the shipped runtime assets must be cheap to load and render.
 
-The editor is not a replacement for Blender or other DCC tools. It is a constrained packaging, validation, preview, and metadata-authoring tool that turns external art assets into Metrum Rise content packs.
+The editor is a full authoring suite, and packaging and validation are two of the things it does.
+The 2.5D_engine underneath it carries procedural building tools at Tiny Glade's per-building
+granularity, where a handle is a config key and a building is one derivation, so widening a front
+reseats its bays and the windows re-derive into them.
+
+Tiny Glade and Miniopolis are the fidelity bar together. The final shape depends on what is
+worth keeping from each, and from whatever else reaches that level. [`reference.md`](reference.md) holds the
+prior-art index.
+
+Importing geometry stays available on the traditional terms. A creator models in Blender and
+uploads the result, and that asset is static: it carries no procedural handles, and the creator
+rigs it and supplies its metadata by hand, as the current pipeline requires.
+
+The editor is reached from the main menu and is a separate mode from a running city. Gameplay
+placement never authors a structure: the generator builds from district style, economic level,
+and site conditions, and plopping only lets the player cycle candidates it produced.
+[`zoning.md`](zoning.md) owns that split.
 
 ## Document Conventions
 
-This document is standalone. It is written to be usable by another engineer or another AI without prior conversational context.
+This document is standalone. It is written to be usable by another engineer or another AI
+without prior conversational context.
 
 Interpretation rules:
 
-- Sections outside `Later / Ecosystem Extensions` are the active v1 specification unless a section explicitly says otherwise.
-- `Current repository state` means descriptive information about the present codebase, not a v1 requirement.
-- `Later / Ecosystem Extensions` means non-blocking future design material that does not gate the first implementation pass.
+- Sections outside `Later / Ecosystem Extensions` are the active v1 specification unless a
+  section explicitly says otherwise.
+- `Current repository state` means descriptive information about the present codebase, not
+  a v1 requirement.
+- `Later / Ecosystem Extensions` means non-blocking future design material that does not gate
+  the first implementation pass.
 - `must` means required for the v1 contract.
 - `may` means allowed but optional.
 
 Terminology note:
 
-- `lot_width_cells` and `lot_depth_cells` are authored building footprint dimensions in zoning cells; they do not imply a cadastral parcel system.
+- `lot_width_cells` and `lot_depth_cells` are authored building footprint dimensions in zoning
+  cells; they do not imply a cadastral parcel system.
 - `plot` in this document means an editor preview footprint or buildable rectangle.
-- `category` in this document means asset-catalog grouping unless a section explicitly talks about `zone_type`.
+- `category` in this document means asset-catalog grouping unless a section explicitly talks]
+  about `zone_type`.
 
 ## V1 Design Constraints
 
@@ -2178,7 +2200,7 @@ Warnings:
   both Rust and the editor UI.
 - Add a pack registry and enable-disable list.
 - Add runtime loading that reads manifests, not hardcoded directory assumptions.
-- Redesign zoning storage so plot size is bounded by painted area, not by a fixed global
+- Redesign zoning storage so painted area bounds plot size, replacing the fixed global
   `ZONING_DEPTH`.
 
 ### Phase 1: Building Importer
@@ -2189,12 +2211,13 @@ Warnings:
 - Hook building metadata into the existing variant and footprint systems.
 - Replace fixed-depth zoning assumptions in storage, obstruction passes, rendering, and
   spawning so authored lot dimensions and runtime lot dimensions agree.
-- Fix stale runtime `3x3` assumptions and building scale handling so authored lot dimensions and
-  rendered dimensions agree.
+- Fix stale runtime `3x3` assumptions and building scale handling so authored lot dimensions
+  and rendered dimensions agree.
 
 ### Phase 2: Prop And Vehicle Importer
 
-- Add explicit prop placement authoring using the v1 `snap_mode` and `terrain_behavior` contract.
+- Add explicit prop placement authoring using the v1 `snap_mode` and `terrain_behavior`
+  contract.
 - Add vehicle-class templates and lane-scale preview scenes.
 - Support static meshes, color variants, thumbnails, pack membership, and import-time vehicle
   orientation normalization.
@@ -2224,8 +2247,8 @@ canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class 
 schemas, and the minimum preview-scene interactions required to author each asset class.
 Export manifest files directly into the pack output folder next to the asset files.
 
-For buildings specifically, plot size is required asset metadata from day one. `3x3` remains
-only a default preset, not a design limit, and fixed `ZONING_DEPTH` is retired in favor of
+For buildings specifically, plot size is required asset metadata from day one. `3x3`
+remains a default preset and caps nothing, and fixed `ZONING_DEPTH` is retired for
 dynamic per-edge zoning extents. Compatibility metadata, redirect handling, workspaces,
-cross-pack sharing, signing, and similar ecosystem features stay in the later section until
-the base importer actually exists.
+cross-pack sharing, signing, and similar ecosystem features stay in the later section
+until the base importer exists.

@@ -1,3 +1,24 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: simulation_node.rs
+//  script_path: rust/src/nodes/simulation_node.rs
+//  module_name: simulation_node
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: The Godot boundary class: every method Godot may call,
+//           split across api modules by domain. Owns the render snapshot
+//           and the lock discipline that keeps the sim thread and the main
+//           thread from touching the core at once.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [sim, async_terrain, variant_export]
+//  external_dependencies: [godot-rust]
+//  features: [gdextension, api-surface, snapshot]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! dedicated background thread. The render thread reads only from a
 //! `RenderSnapshot` that the sim thread writes after each tick.
 //!
@@ -170,6 +191,7 @@ use std::time::Instant;
 mod asset_api;
 mod async_terrain;
 mod economy_api;
+mod engine_api;
 mod network_api;
 mod system_api;
 mod terrain_api;

@@ -5,7 +5,9 @@
 //  script_path: rust/src/simulation/pathing/flow_field.rs
 //  module_name: flow_field
 //  version: 0.1.0
-//  description: Multi-source reverse Dijkstra per zone type, answering
+//  description: Multi-source reverse Dijkstra per zone type, answering in
+//           O(1) which node to move to next from any node to reach the
+//           nearest building of a given zone type.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, zoning]

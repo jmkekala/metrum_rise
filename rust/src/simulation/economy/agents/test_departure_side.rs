@@ -6,6 +6,7 @@
 //  module_name: test_departure_side
 //  version: 0.1.0
 //  description: Tests that an agent leaving a building picks the sidewalk
+//           lane matching the building's side of the edge.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [agents, network, cch]

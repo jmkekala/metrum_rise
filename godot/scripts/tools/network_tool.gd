@@ -11,6 +11,7 @@ class_name NetworkTool
 
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+const EngineNetworkSource := preload("res://scripts/core/engine_network_source.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -520,6 +521,11 @@ func _append_road_surface(
 	):
 		return false
 	var vertices: PackedVector3Array = chunk_data[vertices_key]
+	# [C] Engine mesh workflow, same toggle: road decks conform to the
+	# evaluated ground the terrain source draws, Rust heights untouched as
+	# the fallback when the toggle is off.
+	if EngineNetworkSource.enabled():
+		vertices = EngineNetworkSource.conform_heights(vertices)
 	var normals: PackedVector3Array = chunk_data[normals_key]
 	var colors: PackedColorArray = chunk_data[colors_key]
 	var uvs: PackedVector2Array = chunk_data[uvs_key]

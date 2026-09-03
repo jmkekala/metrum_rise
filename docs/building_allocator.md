@@ -331,9 +331,8 @@ Recommended ownership split:
 A building used to hold only one `edge_idx`, meaning it only has one 'street', and every
 consequence the genre gets wrong about alleys followed.
 
-`simulation/buildings/frontage.rs` now carries the types. A frontage says what it is
-for now, not how wide the road is because an alley is not necessarily just a narrow road,
-it is a second frontage on the far side of the parcel.
+`simulation/buildings/frontage.rs` now carries the types. A frontage states what it is for, and
+road width has no bearing on it. An alley is a second frontage on the far side of the parcel.
 
 | Role | What it is |
 |---|---|
@@ -356,13 +355,13 @@ Without that rule an alley is a thin street, the allocator fills it with houses
 facing the wrong way.
 
 `FrontageRole` defaults to `Primary` and `EdgeFrontageClass` to `Street`, which
-together reproduce exactly the behavior every building had before roles
-existed. An unknown ordinal from a newer or corrupted save degrades to the same
-pair rather than dropping a building off the network.
+together reproduce exactly the behavior every building had before roles existed.
+An unknown ordinal from a newer or corrupted save degrades to that same pair,
+keeping the building on the network.
 
 `MAX_FRONTAGES` is 3: one address, one service side, one water edge. A fixed
-array rather than a `Vec` because the allocator rebuilds every entrance on a
-dirty flag.
+array holds them, because the allocator rebuilds every entrance on a dirty flag
+and a `Vec` would allocate on that path.
 
 `Edge` carries its `EdgeFrontageClass`, so an edge can declare itself a service
 way, and every path that assigns an address checks `can_address()` before it
@@ -376,6 +375,5 @@ an alley, and the buildings would arrive later by another path.
 
 - `BuildingEntrance` still carries a single anchor; widening it to the fixed set
   lets a building hold all three frontages at once.
-- Freight is not yet routed to the service frontage in preference to the
-  address, so a delivery still arrives at the front door even where a service
-  way exists. 
+- Freight still routes to the address. Preferring the service frontage remains
+  unbuilt, so a delivery arrives at the front door even where a service way exists.

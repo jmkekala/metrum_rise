@@ -1,3 +1,23 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: water.rs
+//  script_path: rust/src/nodes/sim/render/water.rs
+//  module_name: render_water
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Water render payload assembly: patch meshes, depth
+//           textures, and the road clipping that keeps water out of the
+//           carriageway.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [water, network, terrain]
+//  external_dependencies: [godot-rust]
+//  features: [water-render, road-clip]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Water patch mesh generation and cache helpers for the Godot renderer.
 
 use crate::nodes::sim::core::SimCore;
@@ -966,6 +986,7 @@ mod tests {
     use super::*;
 
     fn test_patch(depth_data: Vec<f32>, depth_nonzero_count: usize) -> WaterPatchSnapshot {
+        let ground_data = vec![0.0; depth_data.len()];
         WaterPatchSnapshot {
             patch_x: 2,
             patch_z: 3,
@@ -980,6 +1001,7 @@ mod tests {
             world_size_x: 20.0,
             world_size_z: 20.0,
             depth_data,
+            ground_data,
             depth_nonzero_count,
         }
     }

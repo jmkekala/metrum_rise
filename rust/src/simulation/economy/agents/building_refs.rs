@@ -6,6 +6,7 @@
 //  module_name: building_refs
 //  version: 0.1.0
 //  description: The agent side of the agent-to-building link: schedule
+//           references into the building allocator's indices.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [allocator, graph, households]

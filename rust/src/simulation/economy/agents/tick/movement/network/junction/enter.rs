@@ -87,6 +87,9 @@ pub(super) unsafe fn enter_next_edge_connector(
             );
         }
 
+        // Whether the car at the exit mouth is moving, which decides if this
+        // junction can be cleared or only entered and blocked.
+        let speed_of = |agent: usize| *slices.speed.get(agent);
         let connector_entry = claim_connector_to_edge(
             i,
             lane_id,
@@ -95,6 +98,7 @@ pub(super) unsafe fn enter_next_edge_connector(
             transit_network,
             lane_buckets,
             lane_claims,
+            speed_of,
         );
 
         match connector_entry {
@@ -229,6 +233,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
             ));
         }
 
+        let speed_of = |agent: usize| *slices.speed.get(agent);
         let connector_entry = claim_connector_to_lane(
             i,
             lane_id,
@@ -237,6 +242,7 @@ pub(super) unsafe fn enter_detach_lane_connector(
             transit_network,
             lane_buckets,
             lane_claims,
+            speed_of,
         );
 
         match connector_entry {
@@ -467,6 +473,7 @@ fn claim_connector_to_edge(
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
+    speed_of: impl Fn(usize) -> f32,
 ) -> ConnectorEntry {
     VALID_CONNS.with(|v| {
         let mut connector_candidates = v.borrow_mut();
@@ -484,6 +491,7 @@ fn claim_connector_to_edge(
             lane_buckets,
             lane_claims,
             Some(&transit_network.lane_system),
+            &speed_of,
         )
     })
 }
@@ -496,6 +504,7 @@ fn claim_connector_to_lane(
     transit_network: &TransitNetwork,
     lane_buckets: &[Vec<(f32, usize)>],
     lane_claims: &LaneClaimContext<'_>,
+    speed_of: impl Fn(usize) -> f32,
 ) -> ConnectorEntry {
     VALID_CONNS.with(|v| {
         let mut connector_candidates = v.borrow_mut();
@@ -513,6 +522,7 @@ fn claim_connector_to_lane(
             lane_buckets,
             lane_claims,
             Some(&transit_network.lane_system),
+            &speed_of,
         )
     })
 }

@@ -6,6 +6,7 @@
 //  module_name: border
 //  version: 0.1.0
 //  description: The four border states and what each one looks like on the
+//           ground: the line, the checkpoint, and what stands beside it.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [simulation/economy/fiscal.rs]

@@ -1,3 +1,22 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: water.rs
+//  script_path: rust/src/nodes/simulation_node/variant_export/water.rs
+//  module_name: variant_water
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Water payloads as Godot dictionaries: depth bytes, ground
+//           bytes, geometry, and the road clip query the renderer needs.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [async_terrain, water]
+//  external_dependencies: [godot-rust]
+//  features: [variant-export, water-payload]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Water patch, water mesh, and authored-water variant export helpers.
 
 use super::super::*;
@@ -55,6 +74,12 @@ impl SimulationNode {
         dict.set(
             "depth_bytes",
             PackedByteArray::from_iter(payload.depth_bytes.iter().copied()),
+        );
+        // The sim's ground testimony on the same samples, so the shell's
+        // water depth can composite sculpts and earthworks like terrain.
+        dict.set(
+            "ground_bytes",
+            PackedByteArray::from_iter(payload.ground_bytes.iter().copied()),
         );
         dict.set(
             "source_generation",

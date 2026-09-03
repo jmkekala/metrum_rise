@@ -6,6 +6,7 @@
 //  module_name: tests
 //  version: 0.1.0
 //  description: Regression tests for the Godot simulation-node bridge and
+//           the calls that cross it.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [simulation_node, terrain]

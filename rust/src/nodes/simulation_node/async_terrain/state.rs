@@ -1,3 +1,23 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: state.rs
+//  script_path: rust/src/nodes/simulation_node/async_terrain/state.rs
+//  module_name: async_state
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Async terrain job state: request keys, payload structs,
+//           and the generation bookkeeping that keeps a renderer from
+//           consuming a stale patch.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [terrain, water]
+//  external_dependencies: [godot-rust]
+//  features: [job-state, generations]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Async terrain and water request state types.
 
 use super::super::*;
@@ -195,6 +215,7 @@ pub(in crate::nodes::simulation_node) struct WaterPatchPayload {
     pub(in crate::nodes::simulation_node) surface_generation: u64,
     pub(in crate::nodes::simulation_node) patch: WaterPatchSnapshot,
     pub(in crate::nodes::simulation_node) depth_bytes: Vec<u8>,
+    pub(in crate::nodes::simulation_node) ground_bytes: Vec<u8>,
     pub(in crate::nodes::simulation_node) road_clip_query: RoadClipLoopQuery,
 }
 

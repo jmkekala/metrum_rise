@@ -6,6 +6,7 @@
 //  module_name: support
 //  version: 0.1.0
 //  description: Shared fixtures for the agent movement tests: asset
+//           registration and network builders.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [agents, network, assets]

@@ -1,3 +1,27 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: extraction.rs
+//  script_path: rust/src/simulation/extraction.rs
+//  module_name: extraction
+//  version: 0.2.0
+//  author: [BantedHam]
+//  description: Resource extraction sites owned by explicit industry
+//           buildings: the polygon a player draws, the reserve snapshot
+//           taken when it commits, and the depletion counter. Reserves
+//           read painted deposit cells as measured rows over the delivered
+//           engine channels, with an engine-only walker for iron and
+//           stone.
+//  kind: module
+//  spec: none
+//  internal_dependencies: [allocator, definitions, resources,
+//           engine_inputs]
+//  external_dependencies: [godot-rust]
+//  features: [extraction-sites, reserves, engine-channels]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-09-02
+// ========================================================================
+
 //! Resource extraction sites owned by explicit industry buildings.
 //!
 //! Authored deposit grids describe where resources exist. Extraction sites are
@@ -21,6 +45,11 @@ use godot::prelude::Vector2;
 pub(crate) const EXTRACTOR_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
 /// Coal units contributed by one square metre of full-richness authored deposit.
 pub(crate) const COAL_UNITS_PER_FULL_RICHNESS_M2: f32 = 6.0;
+/// Iron and stone yields per square metre of full richness; placeholders
+/// mirroring coal's order of magnitude, awaiting the author's balance
+/// pass alongside their profiles.
+pub(crate) const IRON_UNITS_PER_FULL_RICHNESS_M2: f32 = 4.0;
+pub(crate) const STONE_UNITS_PER_FULL_RICHNESS_M2: f32 = 10.0;
 
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 const MIN_EXTRACTOR_POLYGON_AREA_M2: f32 = 1.0;
@@ -292,11 +321,27 @@ fn reserve_units_for_resource(
     deposits: &ResourceDepositSystem,
     polygon_world: &[Vector2],
 ) -> Result<f32, String> {
+    // One snapshot per commit, so the reserve is one delivery's
+    // coherent view of the engine channels.
+    let engine = crate::simulation::engine_inputs::snapshot();
     match resource_id {
-        COAL_RESOURCE_ID => {
-            Ok(deposits
-                .coal_reserve_units_for_polygon(polygon_world, COAL_UNITS_PER_FULL_RICHNESS_M2))
-        }
+        COAL_RESOURCE_ID => Ok(deposits.coal_reserve_units_for_polygon(
+            polygon_world,
+            COAL_UNITS_PER_FULL_RICHNESS_M2,
+            &engine,
+        )),
+        // Iron and stone have no authored paint layer; the delivered
+        // engine channel is the only testimony, zero outside coverage.
+        "iron" => Ok(deposits.engine_reserve_units_for_polygon(
+            polygon_world,
+            IRON_UNITS_PER_FULL_RICHNESS_M2,
+            &|x, z| engine.iron_fraction(x, z),
+        )),
+        "stone" => Ok(deposits.engine_reserve_units_for_polygon(
+            polygon_world,
+            STONE_UNITS_PER_FULL_RICHNESS_M2,
+            &|x, z| engine.stone_fraction(x, z),
+        )),
         other => Err(format!(
             "resource extractor deposits for '{other}' are not implemented yet"
         )),
@@ -524,7 +569,11 @@ mod tests {
             Vector2::new(-5.0, 5.0),
         ];
 
-        let reserve = deposits.coal_reserve_units_for_polygon(&polygon, 2.0);
+        let reserve = deposits.coal_reserve_units_for_polygon(
+            &polygon,
+            2.0,
+            &crate::simulation::engine_inputs::EngineInputs::default(),
+        );
 
         assert!((reserve - 300.0).abs() <= 0.001);
     }

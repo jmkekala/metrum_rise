@@ -1,3 +1,21 @@
+// ========================================================================
+//  MANIFEST
+// ========================================================================
+//  script_name: pedestrian_junctions.rs
+//  script_path: rust/src/simulation/network/lanes/pedestrian_junctions.rs
+//  module_name: pedestrian_junctions
+//  version: 0.1.0
+//  description: Pedestrian connection lanes at a junction, and the
+//           crossing geometry rendered for them.
+//  kind: module
+//  spec: none
+//  internal_dependencies: []
+//  external_dependencies: []
+//  features: [pedestrian-connectors, crosswalk-geometry]
+//  api_version: metrum-v1.0.0
+//  last_updated: 2026-08-28
+// ========================================================================
+
 //! Authoritative pedestrian junction routes and rendered-crossing geometry.
 
 use super::super::graph::RegionGraph;
@@ -243,6 +261,9 @@ fn append_pedestrian_connection(
         crosswalk_marking,
         next_lanes: vec![end.out_id],
         node_id,
+        // A connector permits exactly the movement its geometry describes,
+        // which `movement_rank` reads directly, so it carries no authored set.
+        ..Default::default()
     });
     node_lanes.entry(node_id).or_default().push(connection_id);
     lanes[start.in_id].next_lanes.push(connection_id);
@@ -380,6 +401,9 @@ fn append_stationary_pedestrian_connection(
         crosswalk_marking: None,
         next_lanes: vec![mouth.out_id],
         node_id,
+        // A connector permits exactly the movement its geometry describes,
+        // which `movement_rank` reads directly, so it carries no authored set.
+        ..Default::default()
     });
     node_lanes.entry(node_id).or_default().push(connection_id);
     lanes[mouth.in_id].next_lanes.push(connection_id);

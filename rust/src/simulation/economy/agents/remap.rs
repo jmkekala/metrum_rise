@@ -5,7 +5,8 @@
 //  script_path: rust/src/simulation/economy/agents/remap.rs
 //  module_name: remap
 //  version: 0.1.0
-//  description: Repairs agent-held indices after the graph, lanes
+//  description: Repairs agent-held indices after the graph, lanes,
+//           buildings, or households are remapped.
 //  kind: module
 //  spec: none
 //  internal_dependencies: [graph, lanes, allocator]

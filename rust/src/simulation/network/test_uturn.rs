@@ -6,6 +6,7 @@
 //  module_name: test_uturn
 //  version: 0.1.0
 //  description: Tests that U-turn lane connections are not generated where
+//           another way through exists, and are allowed at a dead end.
 //  kind: test
 //  spec: none
 //  internal_dependencies: [graph, lanes]
