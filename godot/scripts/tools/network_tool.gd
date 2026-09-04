@@ -39,6 +39,8 @@ var _surface_debug_refresh_elapsed: float = 0.0
 var _surface_probe_refresh_elapsed: float = 0.0
 var _last_world_mouse_pos: Vector3 = Vector3.ZERO
 var _has_last_world_mouse_pos: bool = false
+var _scripted_pointer_enabled: bool = false
+var _scripted_pointer_position: Vector3 = Vector3.ZERO
 var _node_visuals_dirty: bool = true
 var _node_visuals_visible: bool = false
 
@@ -165,7 +167,7 @@ func _setup_visuals():
 
 func _process(delta):
 	if active:
-		var pos = get_world_mouse_pos()
+		var pos = _scripted_pointer_position if _scripted_pointer_enabled else get_world_mouse_pos()
 		_last_world_mouse_pos = pos
 		_has_last_world_mouse_pos = true
 		if cursor_mesh:
@@ -186,6 +188,13 @@ func _process(delta):
 			_node_visuals_visible = false
 		if surface_debug_mesh:
 			surface_debug_mesh.visible = false
+
+func set_scripted_pointer(enabled: bool, world_position: Vector3 = Vector3.ZERO) -> void:
+	_scripted_pointer_enabled = enabled
+	_scripted_pointer_position = world_position
+	if enabled:
+		_last_world_mouse_pos = world_position
+		_has_last_world_mouse_pos = true
 
 func _update_node_visuals():
 	if not simulation_node: return

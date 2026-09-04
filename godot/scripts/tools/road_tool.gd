@@ -151,6 +151,8 @@ func _road_debug_is_enabled() -> bool:
 	return false
 
 func _snap_to_roads_enabled() -> bool:
+	if _scripted_pointer_enabled:
+		return true
 	return not Input.is_key_pressed(KEY_SHIFT)
 
 func _update_lanes_label():
@@ -168,6 +170,8 @@ func adjust_altitude(delta: float):
 	_queue_preview_update()
 
 func _unhandled_input(event):
+	if _scripted_pointer_enabled:
+		return
 	if active and event is InputEventMouseMotion:
 		_queue_preview_update()
 
@@ -182,6 +186,8 @@ func _unhandled_input(event):
 
 
 func _handle_click():
+	if _scripted_pointer_enabled:
+		return
 	var total_start_us := Time.get_ticks_usec()
 	var state_before: int = current_state
 	var mouse_start_us := Time.get_ticks_usec()
@@ -544,7 +550,7 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 		if angle_deg < 0.0: angle_deg += 360.0
 		if angle_deg >= 180.0: angle_deg -= 180.0
 
-	var snap_str := " [angle]" if (active and Input.is_key_pressed(KEY_SHIFT)) else ""
+	var snap_str := " [angle]" if (active and not _snap_to_roads_enabled()) else ""
 	var build_cost := float(preview.get("build_cost", 0.0))
 	if bool(preview.get("is_pending", false)):
 		_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
@@ -600,7 +606,7 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 		_:
 			return "Road cannot be placed"
 
-func _commit_segment(end_pos):
+func _commit_segment(end_pos: Vector3) -> bool:
 	var total_start_us := Time.get_ticks_usec()
 
 	var baked_start_us := Time.get_ticks_usec()
@@ -690,6 +696,7 @@ func _commit_segment(end_pos):
 				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 			]
 		)
+	return committed
 
 func cancel_road():
 	current_state = State.IDLE
@@ -805,7 +812,7 @@ func get_world_mouse_pos() -> Vector3:
 		current_state,
 		start_pos,
 		control_pos,
-		Input.is_key_pressed(KEY_SHIFT),
+		not _snap_to_roads_enabled(),
 		_start_tangent_angle,
 		_ghost_enabled,
 		MAP_BORDER_SNAP_DIST_M,

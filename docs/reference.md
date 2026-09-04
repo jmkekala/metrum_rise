@@ -74,6 +74,59 @@ The type vocabulary for current and planned transport modes lives in `simulation
 | Idle SoA scan cost | `AgentSystem::tick/idle_scaling/*` | Measures idle/no-trip scan overhead. |
 | Access egress | `AgentSystem::tick_access/access_egress_car/*` | Measures the live `ACCESS_EGRESS` car path using a real entrance cache and lane handoff. |
 | Access ingress | `AgentSystem::tick_access/access_ingress_car/*` | Measures the live `ACCESS_INGRESS` car path using a real entrance cache and lane detach/door approach. |
+| Deterministic road chunks | `./run.sh --benchmark-road-chunks` | Measures isolated Rust road generation plus CPU-side Godot chunk upload scaling. |
+| Windowed gameplay roads | `./run.sh --profile-gameplay-roads` | Samply capture of Kuopio load plus production RoadTool preview/commit and renderer settlement for bends, T-junctions, and four-way junctions. |
+| Headless gameplay roads | `./run.sh --profile-gameplay-roads-headless` | The same deterministic workload with Godot's headless renderer, isolating CPU work from the display/GPU path. |
+
+The gameplay-road commands always build the release library, load
+`maps/processed/Kuopio/kuopio_324km2_10m.sqlite`, run one warmup and three measured repetitions of
+each topology, verify the resulting node degree, and exit. Each segment uses the real interactive
+fast preview, delayed asynchronous compiled preview, full commit validation, simulation-thread
+mutation, local surface/CDT rebuild, Godot `ArrayMesh` staging, terrain/road acknowledgement, and
+water refresh path. The camera follows each fixture and all foreground renderer queues must remain
+empty for five frames before a measurement ends; speculative prewarming and ready payload caches
+are reported but are not commit fences. Gameplay input and polled camera controls are disabled for
+the run. Each scripted commit must produce exactly one newer network generation; any concurrent
+mutation fails the run and is recorded with its expected and actual generations. Fixture centers
+default to a `640 m` cadence, avoiding repeated near-alignment with the `510 m` terrain-patch grid
+while retaining varied Kuopio terrain. A rejected refined-terrain generation fails immediately and
+records the patch, surface generation, CDT status, and error. The launch wrapper also requires the
+metrics document to contain `"success": true`, because Samply can return zero after a recorded Godot
+child exits nonzero.
+
+The fixed default is a 12-fixture benchmark, not an exhaustive terrain sweep. Increasing the
+repetition count extends the fixture layout and can intentionally encounter additional correctness
+sites tracked by `ROAD-06`; such a run fails promptly and is not a valid performance sample. Setting
+the fixture spacing to `520` reproduces the original failing site.
+
+Artifacts are timestamped under the ignored `benchmark-results/` directory: the Samply
+`.profile.json.gz`, its presymbolicated `.syms.json` sidecar, a `.metrics.json` file with phase
+timestamps and per-topology p50/p95 timings, and the Godot log. Open a capture with
+`samply load benchmark-results/<capture>.profile.json.gz`. Phase entries use Unix milliseconds;
+subtract the profile's `meta.startTime` to select the corresponding interval in Samply. The wrapper
+rejects missing or invalid compressed profiles and missing symbol sidecars. The windowed capture is
+the primary real-gameplay CPU profile; the headless capture is the comparison that removes
+display/GPU-driver work but retains CPU-side mesh construction and scene mutation. Neither command
+profiles physical GPU execution. Do not treat the difference between their wall-clock timings as
+GPU cost: windowed and headless modes also have different frame pacing. Compare their CPU stacks and
+phase timings as separate workloads.
+
+The stable controls are:
+
+- `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` and
+  `METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS`
+- `METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC` for each renderer/generation settle fence
+- `METRUM_GAMEPLAY_BENCHMARK_FIXTURE_SPACING_M` for the deterministic fixture-center cadence
+  (default `640`; `520` reproduces the original terrain-CDT case tracked as `ROAD-06`)
+- `METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE` for Samply's Hz rate (default `1000`)
+- `METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH` to intentionally profile another authored world
+- `METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR`, or the individual
+  `METRUM_GAMEPLAY_BENCHMARK_PROFILE_PATH`, `METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH`, and
+  `METRUM_GAMEPLAY_BENCHMARK_LOG_PATH` overrides
+
+Linux requires `kernel.perf_event_paranoid <= 1`; the wrapper checks this before recording. Release
+builds retain line/debug symbols, and Samply's presymbolication sidecar keeps the capture readable
+away from the build machine.
 
 Benchmark-history rule:
 

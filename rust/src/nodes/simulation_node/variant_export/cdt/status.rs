@@ -15,6 +15,20 @@ impl SimulationNode {
         );
         if let Some(error_label) = Self::cached_refined_cdt_failure_label(cached) {
             Self::append_empty_cdt_failure(dict, error_label, include_debug);
+            if error_label == "terrain_cdt_constraint_conflicts" {
+                let successful_windows = cached
+                    .windows
+                    .iter()
+                    .filter_map(|window| {
+                        window
+                            .mesh_result
+                            .as_ref()
+                            .ok()
+                            .map(|mesh| (window.as_ref(), mesh))
+                    })
+                    .collect::<Vec<_>>();
+                Self::append_cdt_stats(dict, Self::aggregate_cdt_window_stats(&successful_windows));
+            }
             return;
         }
         if cached.input_road_loops == 0 {

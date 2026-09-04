@@ -361,6 +361,45 @@ func get_resident_patch_keys() -> Array[Vector2i]:
 		keys.append(key)
 	return keys
 
+func get_pending_render_work_counts() -> Dictionary:
+	return {
+		"payload_requested": patch_payload_requested.size(),
+		"payload_ready": patch_payload_ready.size(),
+		"pending_ack": int(pending_water_ack_states.size() / 3),
+		"prewarm": patch_prewarm_queue.size(),
+		"height_rebind": height_texture_rebind_queue.size(),
+		"terrain_binding": terrain_patch_binding_queue.size(),
+		"mesh_refresh": mesh_refresh_queue.size(),
+		"mesh_requested": mesh_refresh_requested_lod.size(),
+		"mesh_pending": mesh_pending_lod.size(),
+		"mesh_apply": mesh_apply_queue.size(),
+		"lod_refresh": patch_lod_refresh_queue.size(),
+		"ready_backlog": _water_mesh_ready_backlog_estimate,
+		"residency_mutation": 1 if _water_residency_pending_mutations else 0,
+	}
+
+func has_pending_render_work(include_background_cache: bool = true) -> bool:
+	return (
+		not patch_payload_requested.is_empty()
+		or not pending_water_ack_states.is_empty()
+		or not height_texture_rebind_queue.is_empty()
+		or not terrain_patch_binding_queue.is_empty()
+		or not mesh_refresh_queue.is_empty()
+		or not mesh_refresh_requested_lod.is_empty()
+		or not mesh_pending_lod.is_empty()
+		or not mesh_apply_queue.is_empty()
+		or not patch_lod_refresh_queue.is_empty()
+		or _water_mesh_ready_backlog_estimate > 0
+		or _water_residency_pending_mutations
+		or (
+			include_background_cache
+			and (
+				not patch_payload_ready.is_empty()
+				or not patch_prewarm_queue.is_empty()
+			)
+		)
+	)
+
 func get_water_patch_texture_binding(key: Vector2i) -> Dictionary:
 	if not patches.has(key) or not resident_patch_lookup.has(key):
 		return {}

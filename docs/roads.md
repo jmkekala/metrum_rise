@@ -471,6 +471,28 @@ Required bounds:
   wall-clock comparisons are made between release runs on the same machine rather than encoded as
   test thresholds. `./run.sh --benchmark-road-chunk-upload` runs the Godot half without inheriting
   thermal/boost state from Criterion.
+- `./run.sh --profile-gameplay-roads` is the primary end-to-end CPU profile. It loads the authored
+  Kuopio world in a release window, moves the gameplay camera between deterministic sites, and
+  drives the production RoadTool through delayed compiled preview and commit for bends,
+  T-junctions, and four-way junctions. A measured commit ends only after its newer network
+  generation is acknowledged and foreground terrain, road, water, border-check, ghost-guide, and
+  residency queues have settled; speculative prewarming and ready payload caches are not commit
+  fences, and node degree is then a correctness gate. The accompanying JSON records phase
+  wall-clock timestamps and p50/p95 preview, commit, and complete-fixture timings next to the Samply
+  capture. The harness disables gameplay input for the entire run and requires each scripted road
+  commit to advance the network generation exactly once; an unexpected external mutation aborts
+  the capture instead of contaminating later fixtures. Fixture centers use a `640 m` cadence so the
+  independent `180 m` workloads do not repeatedly align with the `510 m` terrain-patch grid; the
+  former `520 m` cadence exposed the tracked `ROAD-06` terrain-CDT correctness bug rather than a
+  stable profiling sample. The fixed default contains 12 fixtures; increasing its repetition count
+  extends the layout and can expose additional `ROAD-06` sites, which are correctness failures rather
+  than profiling samples. A rejected refined-terrain generation is reported immediately with its
+  patch, generation, CDT status, and error instead of waiting for the general timeout. Failure
+  cleanup cancels the active road preview before the process exits, and the wrapper validates the
+  metrics document because Samply may not propagate the recorded Godot process's nonzero status.
+  `./run.sh --profile-gameplay-roads-headless` replays exactly the same workload through Godot's
+  headless renderer as the CPU-only comparator. See
+  [`reference.md`](reference.md) for artifact names, controls, and interpretation.
 - centroid ownership makes these chunks deterministic update/upload batches. A triangle may extend
   beyond its home chunk, so this contract does not yet authorize independent chunk streaming or
   residency; Godot derives each instance AABB from its actual vertices for normal scene culling

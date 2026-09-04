@@ -5,6 +5,7 @@
 extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
+const GameplayRoadBenchmark = preload("res://scripts/benchmarks/gameplay_road_benchmark.gd")
 const WORLDS_DIR := "user://worlds"
 
 @onready var input_manager = $InputManager
@@ -13,6 +14,11 @@ func _ready() -> void:
 	if _handle_pending_launch_request():
 		return
 	_attach_top_menu()
+	if _gameplay_road_benchmark_requested():
+		var benchmark := GameplayRoadBenchmark.new()
+		benchmark.name = "GameplayRoadBenchmark"
+		add_child(benchmark)
+		benchmark.call_deferred("run")
 
 func _attach_top_menu() -> void:
 	if has_node("TopMenu"):
@@ -112,4 +118,12 @@ func _apply_launch_request(request: Dictionary) -> void:
 
 func _should_allow_direct_gameplay_boot() -> bool:
 	var args := OS.get_cmdline_user_args()
-	return "--benchmark" in args or "--generate-benchmark" in args or "--huge-map" in args
+	return (
+		"--benchmark" in args
+		or "--generate-benchmark" in args
+		or "--huge-map" in args
+		or "--gameplay-road-benchmark" in args
+	)
+
+func _gameplay_road_benchmark_requested() -> bool:
+	return "--gameplay-road-benchmark" in OS.get_cmdline_user_args()

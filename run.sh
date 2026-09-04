@@ -7,6 +7,10 @@
 #                        Run deterministic Rust generation and Godot upload benchmarks
 #   --benchmark-road-chunk-upload
 #                        Run only the deterministic Godot upload benchmark
+#   --profile-gameplay-roads
+#                        Profile the windowed Kuopio road-building workload with Samply
+#   --profile-gameplay-roads-headless
+#                        Profile the same workload with Godot's CPU-only headless renderer
 #
 # Debug modes:
 #   --debug              General debug logging (stdout)
@@ -75,6 +79,7 @@ RELEASE=0
 TEST=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
+GAMEPLAY_ROAD_PROFILE_MODE=""
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
@@ -181,6 +186,12 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--benchmark-road-chunk-upload" ]; then
         ROAD_CHUNK_UPLOAD_BENCHMARK=1
+        RELEASE=1
+    elif [ "$arg" = "--profile-gameplay-roads" ]; then
+        GAMEPLAY_ROAD_PROFILE_MODE="windowed"
+        RELEASE=1
+    elif [ "$arg" = "--profile-gameplay-roads-headless" ]; then
+        GAMEPLAY_ROAD_PROFILE_MODE="headless"
         RELEASE=1
     elif [[ "$arg" == --visuals=* ]]; then
         VISUAL_DEBUG=1
@@ -398,6 +409,10 @@ if [ -z "${METRUM_CRASH_LOG_DIR:-}" ]; then
     export METRUM_CRASH_LOG_DIR="$PROJECT_ROOT/logs"
 fi
 
+if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ] && [ -z "${METRUM_CRASH_DIAGNOSTICS+x}" ]; then
+    export METRUM_CRASH_DIAGNOSTICS=0
+fi
+
 if [ $RELEASE -eq 1 ] && [ -z "${METRUM_CRASH_DIAGNOSTICS+x}" ]; then
     export METRUM_CRASH_DIAGNOSTICS=1
 fi
@@ -553,6 +568,87 @@ mkdir -p ../godot/.godot
 printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cfg
 
 repair_godot_import_cache_if_needed
+
+if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
+    if ! command -v samply >/dev/null 2>&1; then
+        echo "Error: samply is not installed or not on PATH." >&2
+        exit 2
+    fi
+    if [ -r /proc/sys/kernel/perf_event_paranoid ]; then
+        PERF_EVENT_PARANOID="$(< /proc/sys/kernel/perf_event_paranoid)"
+        if [ "$PERF_EVENT_PARANOID" -gt 1 ]; then
+            echo "Error: kernel.perf_event_paranoid=$PERF_EVENT_PARANOID; Samply needs 1 or lower." >&2
+            exit 2
+        fi
+    fi
+
+    GAMEPLAY_RESULTS_DIR="${METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR:-$PROJECT_ROOT/benchmark-results}"
+    GAMEPLAY_RUN_ID="${METRUM_GAMEPLAY_BENCHMARK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+    GAMEPLAY_BASE="$GAMEPLAY_RESULTS_DIR/gameplay-roads-$GAMEPLAY_ROAD_PROFILE_MODE-$GAMEPLAY_RUN_ID"
+    GAMEPLAY_PROFILE_PATH="${METRUM_GAMEPLAY_BENCHMARK_PROFILE_PATH:-$GAMEPLAY_BASE.profile.json.gz}"
+    GAMEPLAY_SYMBOLS_PATH="${GAMEPLAY_PROFILE_PATH%.gz}.syms.json"
+    GAMEPLAY_METRICS_PATH="${METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH:-$GAMEPLAY_BASE.metrics.json}"
+    GAMEPLAY_LOG_PATH="${METRUM_GAMEPLAY_BENCHMARK_LOG_PATH:-$GAMEPLAY_BASE.godot.log}"
+    GAMEPLAY_WORLD_PATH="${METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH:-$PROJECT_ROOT/maps/processed/Kuopio/kuopio_324km2_10m.sqlite}"
+    GAMEPLAY_SAMPLE_RATE="${METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE:-1000}"
+
+    if [ ! -f "$GAMEPLAY_WORLD_PATH" ]; then
+        echo "Error: Kuopio world definition not found at $GAMEPLAY_WORLD_PATH" >&2
+        exit 2
+    fi
+    mkdir -p "$GAMEPLAY_RESULTS_DIR" "$(dirname "$GAMEPLAY_PROFILE_PATH")" "$(dirname "$GAMEPLAY_METRICS_PATH")" "$(dirname "$GAMEPLAY_LOG_PATH")"
+    export METRUM_GAMEPLAY_BENCHMARK_MODE="$GAMEPLAY_ROAD_PROFILE_MODE"
+    export METRUM_GAMEPLAY_BENCHMARK_RUN_ID="$GAMEPLAY_RUN_ID"
+    export METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH="$GAMEPLAY_WORLD_PATH"
+    export METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH="$GAMEPLAY_METRICS_PATH"
+    # Samply may return success even when the recorded child exits nonzero. Empty the target first so
+    # only a metrics document produced by this invocation can authorize a successful wrapper exit.
+    : > "$GAMEPLAY_METRICS_PATH"
+
+    echo "Profiling deterministic $GAMEPLAY_ROAD_PROFILE_MODE gameplay road workload..."
+    echo "  World:   $GAMEPLAY_WORLD_PATH"
+    echo "  Profile: $GAMEPLAY_PROFILE_PATH"
+    echo "  Metrics: $GAMEPLAY_METRICS_PATH"
+    echo "  Log:     $GAMEPLAY_LOG_PATH"
+    cd "$GODOT_DIR"
+    if [ "$GAMEPLAY_ROAD_PROFILE_MODE" = "headless" ]; then
+        samply record \
+            --rate "$GAMEPLAY_SAMPLE_RATE" \
+            --save-only \
+            --unstable-presymbolicate \
+            --profile-name "Metrum Rise gameplay roads (headless)" \
+            --output "$GAMEPLAY_PROFILE_PATH" \
+            godot --headless --path "$GODOT_DIR" --log-file "$GAMEPLAY_LOG_PATH" \
+            -- --gameplay-road-benchmark
+    else
+        samply record \
+            --rate "$GAMEPLAY_SAMPLE_RATE" \
+            --save-only \
+            --unstable-presymbolicate \
+            --profile-name "Metrum Rise gameplay roads (windowed)" \
+            --output "$GAMEPLAY_PROFILE_PATH" \
+            godot --windowed --resolution 1920x1080 --path "$GODOT_DIR" \
+            --log-file "$GAMEPLAY_LOG_PATH" -- --gameplay-road-benchmark
+    fi
+    PROFILE_STATUS=$?
+    if [ $PROFILE_STATUS -eq 0 ]; then
+        if [ ! -s "$GAMEPLAY_PROFILE_PATH" ] || ! gzip -t "$GAMEPLAY_PROFILE_PATH" 2>/dev/null; then
+            echo "Error: Samply did not produce a readable profile at $GAMEPLAY_PROFILE_PATH" >&2
+            PROFILE_STATUS=1
+        elif [ ! -s "$GAMEPLAY_SYMBOLS_PATH" ]; then
+            echo "Error: Samply did not produce symbol data at $GAMEPLAY_SYMBOLS_PATH" >&2
+            PROFILE_STATUS=1
+        fi
+    fi
+    if [ $PROFILE_STATUS -eq 0 ]; then
+        if ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$GAMEPLAY_METRICS_PATH"; then
+            echo "Error: gameplay benchmark did not report success in $GAMEPLAY_METRICS_PATH" >&2
+            PROFILE_STATUS=1
+        fi
+    fi
+    echo "Gameplay road profile finished with status $PROFILE_STATUS."
+    exit $PROFILE_STATUS
+fi
 
 if [ $ROAD_CHUNK_UPLOAD_BENCHMARK -eq 1 ]; then
     echo "Running deterministic Godot road-chunk upload benchmark..."
