@@ -43,6 +43,7 @@ pub(super) struct NodeRailIncrementalCache {
 pub(crate) struct NodeRailReuseStatus {
     pub(crate) rail_topology_reused: bool,
     pub(crate) ownership_reuse_safe: bool,
+    pub(crate) arrangement_reuse_safe: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,6 +131,19 @@ impl NodeRailContourSet {
         let base_topology = NodeRailTopologyKey::from_rails(input, &base);
 
         if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+            && crate::debug::category_enabled("road")
+            && let Some(previous_topology) = previous.and_then(|cache| cache.base_topology.as_ref())
+            && previous_topology != &base_topology
+        {
+            crate::debug_log!(
+                "road",
+                "node_rail_topology_cache_miss node={} mismatch={}",
+                input.node_id,
+                previous_topology.first_mismatch(&base_topology)
+            );
+        }
+
+        if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
             && let Some(previous) = previous
             && previous.base_topology.as_ref() == Some(&base_topology)
             && let Some(previous_rails) = previous.rails.as_ref()
@@ -139,8 +153,9 @@ impl NodeRailContourSet {
             if previous.final_topology.as_ref() == Some(&final_topology)
                 && rails.source_carriers == previous_rails.source_carriers
             {
-                let ownership_reuse_safe =
-                    has_exact_uniform_height_translation(previous_rails, &rails);
+                let exact_height_translation_mm =
+                    exact_uniform_height_translation_mm(previous_rails, &rails);
+                let arrangement_reuse_safe = exact_height_values_match(previous_rails, &rails);
                 profile.contours = rails.contours.len();
                 profile.constraints = rails.constraints.len();
                 profile.validation_constraints = rails.constraints.len();
@@ -161,11 +176,43 @@ impl NodeRailContourSet {
                     profile,
                     NodeRailReuseStatus {
                         rail_topology_reused: true,
-                        ownership_reuse_safe,
+                        ownership_reuse_safe: exact_height_translation_mm.is_some(),
+                        arrangement_reuse_safe,
                     },
                     cache,
                 ));
             }
+        }
+
+        if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
+            && crate::debug::category_enabled("road")
+            && let Some(previous) = previous
+            && previous.base_topology.as_ref() == Some(&base_topology)
+        {
+            let rejection = match previous.rails.as_ref() {
+                None => "missing_cached_rails",
+                Some(previous_rails) => {
+                    match project_cached_topology_onto_fresh_base(&base, previous_rails) {
+                        None => "height_projection",
+                        Some(rails) => {
+                            let final_topology = NodeRailTopologyKey::from_rails(input, &rails);
+                            if previous.final_topology.as_ref() != Some(&final_topology) {
+                                "final_topology"
+                            } else if rails.source_carriers != previous_rails.source_carriers {
+                                "source_carriers"
+                            } else {
+                                "unknown"
+                            }
+                        }
+                    }
+                }
+            };
+            crate::debug_log!(
+                "road",
+                "node_rail_topology_replay_rejected node={} reason={}",
+                input.node_id,
+                rejection
+            );
         }
 
         let (rails, profile, incremental) = Self::finish_base_with_profile(
@@ -196,6 +243,28 @@ impl NodeRailTopologyCache {
 }
 
 impl NodeRailTopologyKey {
+    fn first_mismatch(&self, other: &Self) -> &'static str {
+        if self.piece_kind != other.piece_kind {
+            "piece_kind"
+        } else if self.ordered_mouth_sides != other.ordered_mouth_sides {
+            "ordered_mouth_sides"
+        } else if self.contours != other.contours {
+            "contours"
+        } else if self.constraints != other.constraints {
+            "constraints"
+        } else if self.side_join_gaps != other.side_join_gaps {
+            "side_join_gaps"
+        } else if self.corner_trims != other.corner_trims {
+            "corner_trims"
+        } else if self.height_carrier_paths != other.height_carrier_paths {
+            "height_carrier_paths"
+        } else if self.height_carrier_points != other.height_carrier_points {
+            "height_carrier_points"
+        } else {
+            "unknown"
+        }
+    }
+
     fn from_rails(input: &NodeArrangementInput, rails: &NodeRailContourSet) -> Self {
         Self {
             piece_kind: rails.piece_kind,
@@ -328,13 +397,13 @@ impl NodeRailHeightCarrierPathTopology {
     }
 }
 
-fn has_exact_uniform_height_translation(
+fn exact_uniform_height_translation_mm(
     previous: &NodeRailContourSet,
     current: &NodeRailContourSet,
-) -> bool {
+) -> Option<i64> {
     let mut translation_mm = None;
     if previous.contours.len() != current.contours.len() {
-        return false;
+        return None;
     }
     for (previous_contour, current_contour) in previous.contours.iter().zip(&current.contours) {
         match (
@@ -348,16 +417,16 @@ fn has_exact_uniform_height_translation(
                     current_points,
                     &mut translation_mm,
                 ) {
-                    return false;
+                    return None;
                 }
             }
-            _ => return false,
+            _ => return None,
         }
     }
 
     if previous.height_carrier_paths_by_source.len() != current.height_carrier_paths_by_source.len()
     {
-        return false;
+        return None;
     }
     for ((previous_source, previous_paths), (current_source, current_paths)) in previous
         .height_carrier_paths_by_source
@@ -365,7 +434,7 @@ fn has_exact_uniform_height_translation(
         .zip(&current.height_carrier_paths_by_source)
     {
         if previous_source != current_source || previous_paths.len() != current_paths.len() {
-            return false;
+            return None;
         }
         for (previous_path, current_path) in previous_paths.iter().zip(current_paths) {
             if !include_uniform_height_translation(
@@ -377,7 +446,7 @@ fn has_exact_uniform_height_translation(
                 &current_path.end_path_world,
                 &mut translation_mm,
             ) {
-                return false;
+                return None;
             }
         }
     }
@@ -385,7 +454,7 @@ fn has_exact_uniform_height_translation(
     if previous.height_carrier_points_by_source.len()
         != current.height_carrier_points_by_source.len()
     {
-        return false;
+        return None;
     }
     for ((previous_source, previous_points), (current_source, current_points)) in previous
         .height_carrier_points_by_source
@@ -399,10 +468,78 @@ fn has_exact_uniform_height_translation(
                 &mut translation_mm,
             )
         {
-            return false;
+            return None;
         }
     }
-    true
+    Some(translation_mm.unwrap_or(0))
+}
+
+fn exact_height_values_match(previous: &NodeRailContourSet, current: &NodeRailContourSet) -> bool {
+    previous.contours.len() == current.contours.len()
+        && previous
+            .contours
+            .iter()
+            .zip(&current.contours)
+            .all(|(previous, current)| {
+                exact_optional_point_heights_match(
+                    previous.height_points_world.as_deref(),
+                    current.height_points_world.as_deref(),
+                )
+            })
+        && previous.height_carrier_paths_by_source.len()
+            == current.height_carrier_paths_by_source.len()
+        && previous
+            .height_carrier_paths_by_source
+            .iter()
+            .zip(&current.height_carrier_paths_by_source)
+            .all(
+                |((previous_source, previous_paths), (current_source, current_paths))| {
+                    previous_source == current_source
+                        && previous_paths.len() == current_paths.len()
+                        && previous_paths.iter().zip(current_paths).all(
+                            |(previous_path, current_path)| {
+                                exact_point_heights_match(
+                                    &previous_path.start_path_world,
+                                    &current_path.start_path_world,
+                                ) && exact_point_heights_match(
+                                    &previous_path.end_path_world,
+                                    &current_path.end_path_world,
+                                )
+                            },
+                        )
+                },
+            )
+        && previous.height_carrier_points_by_source.len()
+            == current.height_carrier_points_by_source.len()
+        && previous
+            .height_carrier_points_by_source
+            .iter()
+            .zip(&current.height_carrier_points_by_source)
+            .all(
+                |((previous_source, previous_points), (current_source, current_points))| {
+                    previous_source == current_source
+                        && exact_point_heights_match(previous_points, current_points)
+                },
+            )
+}
+
+fn exact_optional_point_heights_match(
+    previous: Option<&[RoadVec3]>,
+    current: Option<&[RoadVec3]>,
+) -> bool {
+    match (previous, current) {
+        (None, None) => true,
+        (Some(previous), Some(current)) => exact_point_heights_match(previous, current),
+        _ => false,
+    }
+}
+
+fn exact_point_heights_match(previous: &[RoadVec3], current: &[RoadVec3]) -> bool {
+    previous.len() == current.len()
+        && previous
+            .iter()
+            .zip(current)
+            .all(|(previous, current)| previous.y.to_bits() == current.y.to_bits())
 }
 
 fn include_uniform_height_translation(

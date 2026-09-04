@@ -73,8 +73,19 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
 
     let mut regions = Vec::new();
     let mut claimed_shapes = Vec::new();
+    let groups = owned_domain_groups(domains)?;
+    let prepared_constraints = PreparedRailConstraints::new(rail_constraints);
+    let mut applicable_constraints = BTreeMap::new();
+    for group in &groups {
+        applicable_constraints
+            .entry(group.owner)
+            .or_insert_with(|| prepared_constraints.applicable_indices(group.owner));
+    }
 
-    for group in owned_domain_groups(domains)? {
+    for group in groups {
+        let group_constraint_indices = applicable_constraints
+            .get(&group.owner)
+            .expect("owned domain group constraint index must be prepared");
         let domain_contours = group
             .domains
             .iter()
@@ -91,17 +102,21 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
         let mut group_claimed_shapes = Vec::new();
         for shape in &domain_shapes {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
-            if owned_shape_is_discardable_numeric_dust(
-                shape,
+            let prepared_shape = PreparedOwnedShape::new(shape);
+            if prepared_constraints.shape_is_discardable_numeric_dust(
+                &prepared_shape,
                 area_m2,
-                group.owner,
-                rail_constraints,
+                group_constraint_indices,
             ) {
                 group_claimed_shapes.push(shape.clone());
                 continue;
             }
-            let seam_constraints =
-                seam_constraints_for_shape(shape, group.owner, rail_constraints, overlap_mode);
+            let seam_constraints = prepared_constraints.seam_constraints_for_shape(
+                &prepared_shape,
+                group.owner,
+                group_constraint_indices,
+                overlap_mode,
+            );
             if residual_kind.requires_explicit_profile_seam_rail()
                 && !region_has_explicit_profile_seam_rail(&seam_constraints, rail_constraints)
             {

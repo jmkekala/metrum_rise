@@ -63,6 +63,49 @@ fn assert_node_export_sources_bind_current_tables(piece: &RoadSurfaceVisualNodeP
 }
 
 #[test]
+fn exact_node_local_topology_rebinds_attached_arrangement_identity() {
+    let (graph, center, _, _) = flat_four_way_junction();
+    let terrain = flat_terrain(128, 128);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let input = surface
+        .compiled_visual_node_inputs
+        .get(&center)
+        .expect("cold four-way compilation must retain its node input")
+        .clone();
+    let topology = surface
+        .compiled_visual_node_topologies
+        .get(&center)
+        .expect("cold four-way compilation must retain its attached arrangement")
+        .clone();
+    let rebound_node_id = center + 100;
+
+    let reused = surface
+        .compile_visual_node_piece_with_earthwork_boundaries(
+            &graph,
+            &terrain,
+            rebound_node_id,
+            &input,
+            Some(topology.as_ref()),
+        )
+        .expect("node-local topology must rebind to the authoritative node id");
+    let cold = surface
+        .compile_visual_node_piece_with_earthwork_boundaries(
+            &graph,
+            &terrain,
+            rebound_node_id,
+            &input,
+            None,
+        )
+        .expect("independent rebound cold compile must succeed");
+
+    assert!(reused.rail_topology_reused);
+    assert!(reused.ownership_reused);
+    assert_eq!(reused.piece, cold.piece);
+    assert_eq!(reused.earthwork_boundaries, cold.earthwork_boundaries);
+}
+
+#[test]
 fn exact_node_export_rebuild_reuses_semantic_products_and_matches_cold() {
     let (graph, center, _, _) = flat_four_way_junction();
     let terrain = flat_terrain(128, 128);

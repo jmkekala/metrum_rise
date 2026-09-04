@@ -112,6 +112,20 @@ pub(crate) struct NodeArrangement {
         BTreeMap<NodeArrangementVertexContextKey, NodeArrangementVertexId>,
 }
 
+impl NodeArrangement {
+    /// Clones an identical arrangement while rebinding graph-local node identity.
+    pub(in crate::simulation::network::surface::node) fn clone_with_node_identity(
+        &self,
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+    ) -> Self {
+        let mut arrangement = self.clone();
+        arrangement.node_id = node_id;
+        arrangement.piece_kind = piece_kind;
+        arrangement
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct NodeArrangementBuildProfile {
     pub(crate) total_ms: f64,

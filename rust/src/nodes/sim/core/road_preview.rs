@@ -7,7 +7,9 @@ use super::state::SimCore;
 use crate::debug_log;
 use crate::nodes::sim::road_tool::{RoadGhostSnapIndex, validate_road_candidate_against_water};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::{RoadPreviewValidation, RoadSurfaceSystem};
+use crate::simulation::network::surface::{
+    RoadPreviewTopologyReuse, RoadPreviewValidation, RoadSurfaceSystem,
+};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 
@@ -22,6 +24,7 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
+    topology_reuse: Option<RoadPreviewTopologyReuse>,
 }
 
 /// Exact road validation that can be reused while its source generation and inputs still match.
@@ -33,6 +36,7 @@ pub(crate) struct RoadPreviewValidationCertificate {
     snap_to_existing_roads: bool,
     prepared_points: Vec<godot::prelude::Vector3>,
     validation: RoadPreviewValidation,
+    topology_reuse: Option<RoadPreviewTopologyReuse>,
 }
 
 impl RoadPreviewSnapshot {
@@ -45,6 +49,7 @@ impl RoadPreviewSnapshot {
             snap_to_existing_roads: self.snap_to_existing_roads,
             prepared_points: self.prepared_points.clone(),
             validation: self.validation.clone(),
+            topology_reuse: self.topology_reuse.clone(),
         })
     }
 }
@@ -65,6 +70,11 @@ impl RoadPreviewValidationCertificate {
             && self.snap_to_existing_roads == snap_to_existing_roads
             && self.prepared_points == prepared_points)
             .then_some(&self.validation)
+    }
+
+    /// Clones preview-produced topology after `validation_for` accepted the exact certificate.
+    pub(crate) fn topology_reuse(&self) -> Option<RoadPreviewTopologyReuse> {
+        self.topology_reuse.clone()
     }
 }
 
@@ -208,26 +218,16 @@ pub(crate) fn compile_road_preview_from_context(
     );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let mut preview = if request.snap_to_existing_roads {
-        preview_surface.compile_preview_surface_mesh_only_with_existing_surface(
+    let (mut preview, topology_reuse) = preview_surface
+        .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
             &request.points,
             fwd_lanes,
             bkw_lanes,
             context.terrain.as_ref(),
             context.region_graph.as_ref(),
             context.road_surface.as_ref(),
-        )
-    } else {
-        preview_surface.compile_preview_surface_mesh_only_with_existing_surface_snap(
-            &request.points,
-            fwd_lanes,
-            bkw_lanes,
-            context.terrain.as_ref(),
-            context.region_graph.as_ref(),
-            context.road_surface.as_ref(),
-            false,
-        )
-    };
+            request.snap_to_existing_roads,
+        );
     preview.validation = validate_road_candidate_against_water(
         preview.edge_class,
         &preview.prepared_points,
@@ -243,6 +243,9 @@ pub(crate) fn compile_road_preview_from_context(
         preview.validation.invalid_reason = "stale_surface_generation";
         preview.is_valid = false;
     }
+    let topology_reuse = (preview.is_valid && generation_matches)
+        .then_some(topology_reuse)
+        .flatten();
 
     RoadPreviewSnapshot {
         request_id: request.request_id,
@@ -256,6 +259,7 @@ pub(crate) fn compile_road_preview_from_context(
         surface_vertices: preview.surface_vertices,
         validation: preview.validation,
         is_valid: preview.is_valid,
+        topology_reuse,
     }
 }
 
@@ -277,6 +281,7 @@ mod tests {
             surface_vertices: Vec::new(),
             validation: RoadPreviewValidation::valid(0.0),
             is_valid: true,
+            topology_reuse: None,
         };
         let certificate = snapshot
             .validation_certificate()

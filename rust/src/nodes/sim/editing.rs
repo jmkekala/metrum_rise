@@ -14,7 +14,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::network::surface::{
-    RoadExtensionReprofile, RoadSurfaceCompileReason, RoadSurfaceSystem,
+    RoadExtensionReprofile, RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
 use crate::traffic_log;
 use godot::prelude::*;
@@ -27,12 +27,14 @@ const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
 
 /// Result of a road placement attempt after synchronous input validation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct RoadAddOutcome {
     /// True when topology was mutated and the command must run road finalization.
     pub(crate) committed: bool,
     /// Deferred treasury charge for the committed physical road length.
     pub(crate) build_cost: f64,
+    /// Preview-produced canonical topology offered only after exact certificate validation.
+    pub(crate) preview_topology_reuse: Option<RoadPreviewTopologyReuse>,
 }
 
 impl RoadAddOutcome {
@@ -40,6 +42,7 @@ impl RoadAddOutcome {
         Self {
             committed: false,
             build_cost: 0.0,
+            preview_topology_reuse: None,
         }
     }
 }
@@ -952,6 +955,7 @@ impl SimCore {
             fast_validation,
         );
         let mut validation = fast_validation.clone();
+        let mut preview_topology_reuse = None;
         if validation.is_valid {
             let certified_validation = validation_certificate.and_then(|certificate| {
                 certificate.validation_for(
@@ -964,6 +968,8 @@ impl SimCore {
             });
             if let Some(certified_validation) = certified_validation {
                 validation = certified_validation.clone();
+                preview_topology_reuse = validation_certificate
+                    .and_then(RoadPreviewValidationCertificate::topology_reuse);
             } else {
                 let full_validation_start = Instant::now();
                 let new_edge_validation = self
@@ -1130,6 +1136,7 @@ impl SimCore {
         RoadAddOutcome {
             committed: true,
             build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
+            preview_topology_reuse,
         }
     }
 

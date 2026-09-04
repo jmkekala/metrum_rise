@@ -38,6 +38,7 @@ fn junction_topology_reuse_uses_node_local_mouth_identity() {
         reuse_status.ownership_reuse_safe,
         "an edge-id-only remap preserves every ownership predicate"
     );
+    assert!(reuse_status.arrangement_reuse_safe);
     assert_eq!(reused.side_join_gaps, cold.side_join_gaps);
     assert!(!reused.side_join_gaps.is_empty());
     assert!(

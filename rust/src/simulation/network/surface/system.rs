@@ -1,5 +1,7 @@
 //! Road-surface system state, dirty rebuild orchestration, and shared ordering helpers.
 
+use super::backend::godot_vec3_to_road;
+use super::keys::SurfaceXzKey;
 use super::{
     CompiledNodeKind, NodeCanonicalTopologyCache, NodeOwnedRegion, NodeVisualCompileResult,
     PARALLEL_NODE_COMPILE_MIN_ITEMS, PARALLEL_SURFACE_COMPILE_MIN_ITEMS,
@@ -46,6 +48,8 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_visual_node_earthwork_boundaries:
         HashMap<u32, Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>>,
     pub(crate) compiled_visual_node_topologies: HashMap<u32, Arc<NodeCanonicalTopologyCache>>,
+    pub(in crate::simulation::network::surface) pending_preview_topology_reuse:
+        Option<RoadPreviewTopologyReuse>,
     pub(crate) surface_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
     pub(crate) surface_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
     pub(crate) earthwork_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
@@ -66,6 +70,48 @@ pub struct RoadSurfaceSystem {
     pub(crate) last_reused_node_topology_count: usize,
     pub(crate) last_reused_node_height_topology_count: usize,
     pub(crate) last_reused_node_ownership_topology_count: usize,
+}
+
+/// Exact preview-produced node topology candidates for one matching authoritative commit.
+#[derive(Clone)]
+pub(crate) struct RoadPreviewTopologyReuse {
+    nodes: Vec<RoadPreviewNodeTopologyReuse>,
+}
+
+#[derive(Clone)]
+struct RoadPreviewNodeTopologyReuse {
+    position_xz: SurfaceXzKey,
+    kind: RoadSurfaceVisualNodePieceKind,
+    mouth_count: usize,
+    topology: Arc<NodeCanonicalTopologyCache>,
+}
+
+impl std::fmt::Debug for RoadPreviewTopologyReuse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoadPreviewTopologyReuse")
+            .field("node_count", &self.nodes.len())
+            .finish()
+    }
+}
+
+impl RoadPreviewTopologyReuse {
+    fn topology_for(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        input: &RoadSurfaceVisualNodeCompileInput,
+    ) -> Option<&Arc<NodeCanonicalTopologyCache>> {
+        let position_xz = SurfaceXzKey::from_world_xz(godot_vec3_to_road(graph.node(node_id).pos));
+        self.nodes
+            .iter()
+            .find(|candidate| {
+                candidate.position_xz == position_xz
+                    && candidate.kind == input.kind
+                    && candidate.mouth_count == input.mouths.len()
+            })
+            .map(|candidate| &candidate.topology)
+    }
 }
 
 /// Runtime caller category attached to road-surface compile timing logs.
@@ -140,6 +186,7 @@ impl RoadSurfaceSystem {
             compiled_visual_node_inputs: HashMap::new(),
             compiled_visual_node_earthwork_boundaries: HashMap::new(),
             compiled_visual_node_topologies: HashMap::new(),
+            pending_preview_topology_reuse: None,
             surface_span_chunks: HashMap::new(),
             surface_node_chunks: HashMap::new(),
             earthwork_span_chunks: HashMap::new(),
@@ -171,6 +218,39 @@ impl RoadSurfaceSystem {
     /// Returns the world-space minimum corner from which road chunk keys are measured.
     pub fn chunk_origin_m(&self) -> (f32, f32) {
         (self.chunk_origin_x_m, self.chunk_origin_z_m)
+    }
+
+    /// Captures reusable canonical node topology for the requested compiled validation nodes.
+    pub(crate) fn preview_topology_reuse_for_nodes(
+        &self,
+        graph: &RegionGraph,
+        node_ids: &[u32],
+    ) -> Option<RoadPreviewTopologyReuse> {
+        let nodes = node_ids
+            .iter()
+            .filter_map(|&node_id| {
+                let node_id = graph.get_valid_node(node_id);
+                let input = self.compiled_visual_node_inputs.get(&node_id)?;
+                let topology = self.compiled_visual_node_topologies.get(&node_id)?;
+                Some(RoadPreviewNodeTopologyReuse {
+                    position_xz: SurfaceXzKey::from_world_xz(godot_vec3_to_road(
+                        graph.node(node_id).pos,
+                    )),
+                    kind: input.kind,
+                    mouth_count: input.mouths.len(),
+                    topology: Arc::clone(topology),
+                })
+            })
+            .collect::<Vec<_>>();
+        (!nodes.is_empty()).then_some(RoadPreviewTopologyReuse { nodes })
+    }
+
+    /// Offers exact preview topology to the next dirty compile; canonical base keys still verify it.
+    pub(crate) fn enqueue_preview_topology_reuse(
+        &mut self,
+        topology_reuse: RoadPreviewTopologyReuse,
+    ) {
+        self.pending_preview_topology_reuse = Some(topology_reuse);
     }
 
     /// Returns the set of edge ids that need road-surface recompilation.
@@ -260,6 +340,7 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         reason: RoadSurfaceCompileReason,
     ) {
+        let preview_topology_reuse = self.pending_preview_topology_reuse.take();
         if self.compile_generation_is_latched() {
             return;
         }
@@ -280,6 +361,13 @@ impl RoadSurfaceSystem {
 
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
+        if road_debug && let Some(reuse) = preview_topology_reuse.as_ref() {
+            crate::debug_log!(
+                "road",
+                "preview_topology_reuse_offered nodes={}",
+                reuse.nodes.len()
+            );
+        }
         let dirty_edge_count = self.dirty_edges.len();
         let dirty_node_count = self.dirty_nodes.len();
         let dirty_surface_chunk_count = self.dirty_surface_chunks.len();
@@ -487,15 +575,29 @@ impl RoadSurfaceSystem {
             let (result, topology_reused) = if let Some(result) = reused_result.flatten() {
                 (Some(result), true)
             } else {
+                let previous_topology = preview_topology_reuse
+                    .as_ref()
+                    .and_then(|reuse| reuse.topology_for(graph, node_id.0, &node_id.1))
+                    .or_else(|| self.compiled_visual_node_topologies.get(&node_id.0));
+                if road_debug {
+                    crate::debug_log!(
+                        "road",
+                        "preview_topology_reuse_candidate node={} kind={:?} mouths={} matched={}",
+                        node_id.0,
+                        node_id.1.kind,
+                        node_id.1.mouths.len(),
+                        preview_topology_reuse.as_ref().is_some_and(|reuse| reuse
+                            .topology_for(graph, node_id.0, &node_id.1)
+                            .is_some())
+                    );
+                }
                 (
                     staging.compile_visual_node_piece_with_earthwork_boundaries(
                         graph,
                         terrain,
                         node_id.0,
                         &node_id.1,
-                        self.compiled_visual_node_topologies
-                            .get(&node_id.0)
-                            .map(Arc::as_ref),
+                        previous_topology.map(Arc::as_ref),
                     ),
                     false,
                 )

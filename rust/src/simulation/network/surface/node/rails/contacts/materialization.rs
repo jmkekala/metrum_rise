@@ -1,12 +1,12 @@
 //! Materialization of source-authorized generated rail contacts.
 
 use super::geometry::{
-    generated_contact_edges_from_overlay_intersection,
+    GeneratedOverlayShapeKeys, generated_contact_edges_from_overlay_intersection,
     generated_contact_edges_from_overlay_shape_intersection,
-    generated_contact_edges_from_source_edges_inside_shape_intersection,
+    generated_contact_edges_from_source_edges_inside_shape_key_intersection,
     generated_contact_edges_inside_contour, generated_contact_points_from_contour_intersections,
     generated_contour_contains_key, generated_contour_overlay_shapes,
-    generated_overlay_shapes_directed_edges,
+    generated_overlay_shape_keys_directed_edges, generated_overlay_shapes_keys,
 };
 use super::source_authority::{
     GeneratedSameBandContactConstraint, NodeSourceAuthorizedContactCache,
@@ -91,6 +91,8 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         Option<NodeOverlayShapes>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shape_edges:
         Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shape_keys:
+        GeneratedOverlayShapeKeys,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) authority_key:
         Option<GeneratedContactAuthorityKey>,
     min_x: i64,
@@ -143,10 +145,11 @@ impl GeneratedContactContourSummary {
         let overlay_shapes = include_overlay_shapes
             .then(|| generated_contour_overlay_shapes(contour))
             .flatten();
-        let overlay_shape_edges = overlay_shapes
+        let overlay_shape_keys = overlay_shapes
             .as_ref()
-            .map(generated_overlay_shapes_directed_edges)
+            .map(generated_overlay_shapes_keys)
             .unwrap_or_default();
+        let overlay_shape_edges = generated_overlay_shape_keys_directed_edges(&overlay_shape_keys);
         let owner = contour.owner;
         let kind = generated_contour_band_kind(contour);
         let authority_key = owner
@@ -169,6 +172,7 @@ impl GeneratedContactContourSummary {
             edges,
             overlay_shapes,
             overlay_shape_edges,
+            overlay_shape_keys,
             authority_key,
             min_x,
             min_z,

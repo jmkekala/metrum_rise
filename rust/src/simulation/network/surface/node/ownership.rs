@@ -314,6 +314,20 @@ impl RoadSurfaceSystem {
 }
 
 impl NodeBooleanOwnership {
+    /// Clones topology-identical ownership while rebinding graph-local node identity.
+    pub(super) fn clone_with_node_identity(
+        &self,
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+    ) -> Self {
+        let mut ownership = self.clone();
+        ownership.node_id = node_id;
+        ownership.piece_kind = piece_kind;
+        ownership.owned_region_arrangement.node_id = node_id;
+        ownership.owned_region_arrangement.piece_kind = piece_kind;
+        ownership
+    }
+
     pub(crate) fn from_rails(
         rails: &NodeRailContourSet,
     ) -> Result<Self, NodeBooleanOwnershipError> {

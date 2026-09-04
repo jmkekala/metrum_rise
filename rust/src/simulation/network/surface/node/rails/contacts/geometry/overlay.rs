@@ -5,6 +5,9 @@ use super::super::{
     NodeRailPointKey, RoadSurfaceSystem, SurfaceXzKey,
 };
 
+pub(in crate::simulation::network::surface::node::rails::contacts) type GeneratedOverlayShapeKeys =
+    Vec<Vec<Vec<NodeRailPointKey>>>;
+
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contour_overlay_shapes(
     contour: &NodeGeneratedContour,
 ) -> Option<NodeOverlayShapes> {
@@ -21,15 +24,23 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
         .collect()
 }
 
-pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_overlay_shapes_directed_edges(
+pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_overlay_shapes_keys(
     shapes: &NodeOverlayShapes,
+) -> GeneratedOverlayShapeKeys {
+    shapes
+        .iter()
+        .map(|shape| shape.iter().map(generated_overlay_contour_keys).collect())
+        .collect()
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_overlay_shape_keys_directed_edges(
+    shapes: &GeneratedOverlayShapeKeys,
 ) -> Vec<GeneratedContourDirectedEdge> {
     let mut edges = Vec::new();
     for contour in shapes.iter().flat_map(|shape| shape.iter()) {
-        let keys = generated_overlay_contour_keys(contour);
-        for index in 0..keys.len() {
-            let start = keys[index];
-            let end = keys[(index + 1) % keys.len()];
+        for index in 0..contour.len() {
+            let start = contour[index];
+            let end = contour[(index + 1) % contour.len()];
             if start != end {
                 edges.push(GeneratedContourDirectedEdge { start, end });
             }

@@ -388,7 +388,13 @@ allowed only when the compiled surface topology can actually represent them.
 The exact async preview is also a validation certificate for its matching commit. Godot may reuse
 it only for identical road points, lanes, snap mode, and current surface generation; the simulation
 thread independently checks the prepared points and the same generation before skipping its exact
-candidate replay. Any mismatch takes the full validator path.
+candidate replay. The accepted certificate also carries immutable node-topology candidates from
+the validation surface. Commit compilation matches them by quantized world position, piece kind,
+and mouth count, then independently requires exact canonical node-local rail topology. Exact rail
+height values additionally permit boolean ownership and the already validated, triangulated
+arrangement to be rebound from preview-local node IDs to authoritative node IDs. Any metadata,
+topology, carrier, source-authority, or exact-height mismatch takes the full deterministic compiler
+path.
 `surface_geometry_invalid` is a roadbed-footprint failure, not a centerline-only curve failure; road
 debug logs must include the failed required split spans or nodes with their lengths, clips, lane
 counts, and endpoints.
@@ -613,6 +619,12 @@ Final-step misses use compact edge keys, edge-relevant authority fingerprints, a
 world-aligned segment-tile index, so changed work compares only changed edges with spatially
 overlapping compatible boundary candidates; negative and duplicate global pair keys are not
 materialized.
+Matching preview/commit junctions now also retain the final attached arrangement. Reuse first
+rebuilds the bounded base rails and checks the complete node-local rail key and source-carrier
+registry; boolean ownership is reusable only under an exact uniform canonical-mm translation, and
+the attached arrangement is reusable only when every carrier height has identical floating-point
+bits. This skips repeat height-field construction, arrangement noding/conflict validation,
+triangulation, triangulation validation, and face attachment without making raw graph IDs semantic.
 Complete cached top-face, boundary, and assembled node-export buffers remain later work.
 
 A remote crossing may replace one half-edge incident to an older junction while creating another

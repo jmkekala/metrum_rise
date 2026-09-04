@@ -1,5 +1,6 @@
 //! Shared source-authority contact data.
 
+use super::super::geometry::GeneratedOverlayShapeKeys;
 use super::super::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, NodeBandOwner,
     NodeGeneratedContourClaimPriority, NodeOverlayShapes, NodeRailConstraint,
@@ -91,6 +92,10 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shapes:
         NodeOverlayShapes,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_edges:
+        Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_keys:
+        GeneratedOverlayShapeKeys,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) contour_edges:
         Vec<GeneratedContourDirectedEdge>,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_x: i64,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) min_z: i64,

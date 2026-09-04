@@ -898,17 +898,14 @@ fn generated_raised_step_contact_edges_from_authority(
     source_edges: &[GeneratedContourDirectedEdge],
 ) -> (Vec<GeneratedContourEdgeKey>, bool) {
     if !source_edges.is_empty() {
-        if let (Some(left_shapes), Some(right_shapes)) = (
-            left_summary.overlay_shapes.as_ref(),
-            right_summary.overlay_shapes.as_ref(),
-        ) {
+        if left_summary.overlay_shapes.is_some() && right_summary.overlay_shapes.is_some() {
             return (
-                generated_contact_edges_from_source_edges_inside_shape_intersection(
+                generated_contact_edges_from_source_edges_inside_shape_key_intersection(
                     source_edges,
                     &left_summary.overlay_shape_edges,
-                    left_shapes,
+                    &left_summary.overlay_shape_keys,
                     &right_summary.overlay_shape_edges,
-                    right_shapes,
+                    &right_summary.overlay_shape_keys,
                 ),
                 false,
             );

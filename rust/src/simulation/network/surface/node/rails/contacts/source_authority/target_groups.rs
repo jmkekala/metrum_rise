@@ -1,8 +1,9 @@
 //! Source-authorized generated-contact target grouping.
 
 use super::super::geometry::{
-    generated_directed_edge_segments_inside_shape_edges, generated_overlay_contour,
-    generated_overlay_shapes_directed_edges, generated_shape_boundary_segments_on_source_edge,
+    GeneratedOverlayShapeKeys, generated_directed_edge_segments_inside_shape_keys,
+    generated_overlay_contour, generated_overlay_shape_keys_directed_edges,
+    generated_overlay_shapes_keys, generated_shape_boundary_segments_on_source_edge,
 };
 use super::super::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
@@ -27,39 +28,36 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         Arc<[usize]>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) struct SourceAuthorizedTargetGroupPairGeometry
+{
+    group_overlap_edges: Vec<GeneratedContourEdgeKey>,
+    intersection_shape_edges: Vec<GeneratedContourDirectedEdge>,
+    intersection_shape_keys: GeneratedOverlayShapeKeys,
+}
+
 pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn collect_source_authorized_exact_group_pair_overlap_contacts(
     source_constraint: &RaisedStepSourceConstraint<'_>,
-    contours: &[NodeGeneratedContour],
-    left_group: &SourceAuthorizedTargetGroupView,
-    right_group: &SourceAuthorizedTargetGroupView,
+    geometry: &SourceAuthorizedTargetGroupPairGeometry,
     contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
 ) {
     let [left_owner, right_owner] = source_constraint.source.owners;
-    if left_group.geometry.key.owner != left_owner
-        || right_group.geometry.key.owner != right_owner
-        || source_constraint.bounds_disjoint_group(&left_group.geometry)
-        || source_constraint.bounds_disjoint_group(&right_group.geometry)
+    for edge in geometry
+        .group_overlap_edges
+        .iter()
+        .copied()
+        .filter(|edge| {
+            generated_constraint_contains_key_segment(
+                source_constraint.constraint,
+                edge.start,
+                edge.end,
+            )
+        })
+        .chain(source_authorized_source_edges_inside_group_intersection(
+            source_constraint,
+            geometry,
+        ))
     {
-        return;
-    }
-    for edge in source_authorized_group_edges_inside_group(
-        source_constraint,
-        left_group,
-        right_group,
-        contours,
-    )
-    .into_iter()
-    .chain(source_authorized_group_edges_inside_group(
-        source_constraint,
-        right_group,
-        left_group,
-        contours,
-    ))
-    .chain(source_authorized_source_edges_inside_group_intersection(
-        source_constraint,
-        &left_group.geometry,
-        &right_group.geometry,
-    )) {
         for (start, end) in source_authorized_contact_segments(edge, true) {
             contacts.insert(GeneratedSameBandContactConstraint {
                 kind: NodeRailConstraintKind::RaisedStepContact,
@@ -84,7 +82,14 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         .map(|index| generated_overlay_contour(&contours[*index]))
         .collect::<Vec<_>>();
     let shapes = RoadSurfaceSystem::overlay_union_contours(&overlay_contours)?;
-    let shape_edges = generated_overlay_shapes_directed_edges(&shapes);
+    let shape_keys = generated_overlay_shapes_keys(&shapes);
+    let shape_edges = generated_overlay_shape_keys_directed_edges(&shape_keys);
+    let mut contour_edges = contour_indices
+        .iter()
+        .flat_map(|index| generated_contour_directed_edges(&contours[*index]))
+        .collect::<Vec<_>>();
+    contour_edges.sort_unstable();
+    contour_edges.dedup();
     let (min_x, min_z, max_x, max_z) = source_authorized_group_bounds(&shape_edges);
     Some(SourceAuthorizedTargetGroup {
         key,
@@ -92,6 +97,8 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
         // SourceAuthorizedTargetGroupView rather than cached with the geometry.
         contour_indices: Vec::new(),
         shape_edges,
+        shape_keys,
+        contour_edges,
         shapes,
         min_x,
         min_z,
@@ -101,82 +108,93 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
 }
 
 fn source_authorized_group_edges_inside_group(
-    source_constraint: &RaisedStepSourceConstraint<'_>,
     edge_group: &SourceAuthorizedTargetGroupView,
     containing_group: &SourceAuthorizedTargetGroupView,
-    contours: &[NodeGeneratedContour],
 ) -> Vec<GeneratedContourEdgeKey> {
-    if source_constraint.bounds_disjoint_group(&edge_group.geometry)
-        || source_constraint.bounds_disjoint_group(&containing_group.geometry)
+    if edge_group
+        .geometry
+        .bounds_disjoint_group(&containing_group.geometry)
     {
         return Vec::new();
     }
-    let mut edges = BTreeSet::new();
-    for contour_index in edge_group.contour_indices.iter() {
-        let Some(contour) = contours.get(*contour_index) else {
+    let mut edges = Vec::new();
+    for &contour_edge in &edge_group.geometry.contour_edges {
+        if containing_group.geometry.bounds_disjoint_edge(contour_edge) {
             continue;
-        };
-        for contour_edge in generated_contour_directed_edges(contour) {
-            if containing_group.geometry.bounds_disjoint_edge(contour_edge) {
-                continue;
-            }
-            let mut candidate_edges = generated_directed_edge_segments_inside_shape_edges(
-                contour_edge,
-                &containing_group.geometry.shape_edges,
-                &containing_group.geometry.shapes,
-            )
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-            candidate_edges.extend(generated_shape_boundary_segments_on_source_edge(
-                contour_edge,
-                &containing_group.geometry.shape_edges,
-            ));
-            for edge in candidate_edges {
-                if generated_constraint_contains_key_segment(
-                    source_constraint.constraint,
-                    edge.start,
-                    edge.end,
-                ) {
-                    edges.insert(edge);
-                }
-            }
         }
+        edges.extend(generated_directed_edge_segments_inside_shape_keys(
+            contour_edge,
+            &containing_group.geometry.shape_edges,
+            &containing_group.geometry.shape_keys,
+        ));
+        edges.extend(generated_shape_boundary_segments_on_source_edge(
+            contour_edge,
+            &containing_group.geometry.shape_edges,
+        ));
     }
-    edges.into_iter().collect()
+    edges.sort_unstable();
+    edges.dedup();
+    edges
 }
 
 fn source_authorized_source_edges_inside_group_intersection(
     source_constraint: &RaisedStepSourceConstraint<'_>,
-    left_group: &SourceAuthorizedTargetGroup,
-    right_group: &SourceAuthorizedTargetGroup,
+    geometry: &SourceAuthorizedTargetGroupPairGeometry,
 ) -> Vec<GeneratedContourEdgeKey> {
-    if left_group.bounds_disjoint_group(right_group)
-        || source_constraint.bounds_disjoint_group(left_group)
-        || source_constraint.bounds_disjoint_group(right_group)
-    {
+    if geometry.intersection_shape_keys.is_empty() {
         return Vec::new();
     }
-    let Some(intersection_shapes) = RoadSurfaceSystem::overlay_binary_shapes(
-        &left_group.shapes,
-        &right_group.shapes,
-        OverlayRule::Intersect,
-    ) else {
-        return Vec::new();
-    };
-    let intersection_edges = generated_overlay_shapes_directed_edges(&intersection_shapes);
-    let mut edges = BTreeSet::new();
+    let mut edges = Vec::new();
     for source_edge in &source_constraint.edges {
-        edges.extend(generated_directed_edge_segments_inside_shape_edges(
+        edges.extend(generated_directed_edge_segments_inside_shape_keys(
             *source_edge,
-            &intersection_edges,
-            &intersection_shapes,
+            &geometry.intersection_shape_edges,
+            &geometry.intersection_shape_keys,
         ));
         edges.extend(generated_shape_boundary_segments_on_source_edge(
             *source_edge,
-            &intersection_edges,
+            &geometry.intersection_shape_edges,
         ));
     }
-    edges.into_iter().collect()
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn source_authorized_target_group_pair_geometry(
+    left_group: &SourceAuthorizedTargetGroupView,
+    right_group: &SourceAuthorizedTargetGroupView,
+) -> SourceAuthorizedTargetGroupPairGeometry {
+    if left_group
+        .geometry
+        .bounds_disjoint_group(&right_group.geometry)
+    {
+        return SourceAuthorizedTargetGroupPairGeometry::default();
+    }
+    let mut group_overlap_edges =
+        source_authorized_group_edges_inside_group(left_group, right_group);
+    group_overlap_edges.extend(source_authorized_group_edges_inside_group(
+        right_group,
+        left_group,
+    ));
+    group_overlap_edges.sort_unstable();
+    group_overlap_edges.dedup();
+
+    let intersection_shape_keys = RoadSurfaceSystem::overlay_binary_shapes(
+        &left_group.geometry.shapes,
+        &right_group.geometry.shapes,
+        OverlayRule::Intersect,
+    )
+    .as_ref()
+    .map(generated_overlay_shapes_keys)
+    .unwrap_or_default();
+    let intersection_shape_edges =
+        generated_overlay_shape_keys_directed_edges(&intersection_shape_keys);
+    SourceAuthorizedTargetGroupPairGeometry {
+        group_overlap_edges,
+        intersection_shape_edges,
+        intersection_shape_keys,
+    }
 }
 
 pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) fn source_authorized_raised_step_target_pairs(

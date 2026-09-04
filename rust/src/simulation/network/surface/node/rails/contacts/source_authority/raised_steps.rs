@@ -1,7 +1,7 @@
 //! Source-authorized raised-step contact collection.
 
 use super::super::geometry::{
-    generated_contour_boundary_contains_key, generated_directed_edge_segments_inside_shape_edges,
+    generated_contour_boundary_contains_key, generated_directed_edge_segments_inside_shape_keys,
     generated_shape_boundary_segments_on_source_edge,
 };
 use super::super::{
@@ -13,9 +13,11 @@ use super::super::{
     quantized_proper_segment_intersection, road_point_key,
 };
 use super::target_groups::{
-    SourceAuthorizedTargetGroupView, collect_source_authorized_exact_group_pair_overlap_contacts,
+    SourceAuthorizedTargetGroupPairGeometry, SourceAuthorizedTargetGroupView,
+    collect_source_authorized_exact_group_pair_overlap_contacts,
     source_authorized_contact_segments, source_authorized_raised_step_target_pairs,
     source_authorized_target_claim_priorities, source_authorized_target_group,
+    source_authorized_target_group_pair_geometry,
 };
 use super::types::{
     GeneratedRaisedStepEndpointSource, GeneratedSameBandContactConstraint,
@@ -65,6 +67,12 @@ struct RaisedStepSourceGroupPairContributorKey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct RaisedStepTargetGroupPairContributorKey {
+    left_group: Arc<RaisedStepTargetGroupContributorKey>,
+    right_group: Arc<RaisedStepTargetGroupContributorKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct RaisedStepSourcePairContributorKey {
     left: Arc<RaisedStepSourceContributorKey>,
     right: Arc<RaisedStepSourceContributorKey>,
@@ -106,6 +114,10 @@ pub(in crate::simulation::network::surface::node::rails) struct NodeSourceAuthor
     source_group_pair_contacts: BTreeMap<
         RaisedStepSourceGroupPairContributorKey,
         Arc<[GeneratedSameBandContactConstraint]>,
+    >,
+    target_group_pair_geometry: BTreeMap<
+        RaisedStepTargetGroupPairContributorKey,
+        Arc<SourceAuthorizedTargetGroupPairGeometry>,
     >,
     source_pair_points: BTreeMap<RaisedStepSourcePairContributorKey, Arc<[NodeRailPointKey]>>,
     materialized_sources: BTreeSet<Arc<RaisedStepSourceContributorKey>>,
@@ -411,6 +423,18 @@ impl RaisedStepSourceGroupPairContributorKey {
     }
 }
 
+impl RaisedStepTargetGroupPairContributorKey {
+    fn new(
+        left_group: &Arc<RaisedStepTargetGroupContributorKey>,
+        right_group: &Arc<RaisedStepTargetGroupContributorKey>,
+    ) -> Self {
+        Self {
+            left_group: Arc::clone(left_group),
+            right_group: Arc::clone(right_group),
+        }
+    }
+}
+
 impl RaisedStepSourcePairContributorKey {
     fn from_sources(
         left: &Arc<RaisedStepSourceContributorKey>,
@@ -654,7 +678,30 @@ fn collect_source_group_contacts_with_reuse(
                     continue;
                 }
                 stats.source_cache_misses += 1;
-                source_group_pair_misses.push((key, source_constraint, left_index, right_index));
+                let geometry_key =
+                    RaisedStepTargetGroupPairContributorKey::new(&left_group.key, &right_group.key);
+                let geometry = current
+                    .target_group_pair_geometry
+                    .get(&geometry_key)
+                    .cloned()
+                    .or_else(|| {
+                        previous.and_then(|previous| {
+                            previous
+                                .target_group_pair_geometry
+                                .get(&geometry_key)
+                                .cloned()
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        Arc::new(source_authorized_target_group_pair_geometry(
+                            &left_group.view,
+                            &right_group.view,
+                        ))
+                    });
+                current
+                    .target_group_pair_geometry
+                    .insert(geometry_key, Arc::clone(&geometry));
+                source_group_pair_misses.push((key, source_constraint, geometry));
             }
         }
     }
@@ -662,14 +709,12 @@ fn collect_source_group_contacts_with_reuse(
         if source_group_pair_misses.len() >= SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD {
             source_group_pair_misses
                 .par_iter()
-                .map(|(key, source_constraint, left_index, right_index)| {
+                .map(|(key, source_constraint, geometry)| {
                     (
                         key.clone(),
                         collect_source_authorized_contacts_for_source_group_pair(
-                            contours,
                             source_constraint,
-                            &target_groups[*left_index],
-                            &target_groups[*right_index],
+                            geometry,
                         ),
                     )
                 })
@@ -677,14 +722,12 @@ fn collect_source_group_contacts_with_reuse(
         } else {
             source_group_pair_misses
                 .iter()
-                .map(|(key, source_constraint, left_index, right_index)| {
+                .map(|(key, source_constraint, geometry)| {
                     (
                         key.clone(),
                         collect_source_authorized_contacts_for_source_group_pair(
-                            contours,
                             source_constraint,
-                            &target_groups[*left_index],
-                            &target_groups[*right_index],
+                            geometry,
                         ),
                     )
                 })
@@ -720,17 +763,17 @@ fn collect_source_authorized_contacts_for_source_group(
             if target_group.view.geometry.bounds_disjoint_edge(source_edge) {
                 continue;
             }
-            let mut source_edges = generated_directed_edge_segments_inside_shape_edges(
+            let mut source_edges = generated_directed_edge_segments_inside_shape_keys(
                 source_edge,
                 &target_group.view.geometry.shape_edges,
-                &target_group.view.geometry.shapes,
-            )
-            .into_iter()
-            .collect::<BTreeSet<_>>();
+                &target_group.view.geometry.shape_keys,
+            );
             source_edges.extend(generated_shape_boundary_segments_on_source_edge(
                 source_edge,
                 &target_group.view.geometry.shape_edges,
             ));
+            source_edges.sort_unstable();
+            source_edges.dedup();
             for edge in source_edges {
                 for (owner, opposite_owner, include_edge) in &target_contacts {
                     for (start, end) in source_authorized_contact_segments(edge, *include_edge) {
@@ -762,17 +805,13 @@ fn collect_source_authorized_contacts_for_source_group(
 }
 
 fn collect_source_authorized_contacts_for_source_group_pair(
-    contours: &[NodeGeneratedContour],
     source_constraint: &RaisedStepSourceConstraint<'_>,
-    left_group: &RaisedStepTargetGroupContributor,
-    right_group: &RaisedStepTargetGroupContributor,
+    geometry: &SourceAuthorizedTargetGroupPairGeometry,
 ) -> BTreeSet<GeneratedSameBandContactConstraint> {
     let mut contacts = BTreeSet::new();
     collect_source_authorized_exact_group_pair_overlap_contacts(
         source_constraint,
-        contours,
-        &left_group.view,
-        &right_group.view,
+        geometry,
         &mut contacts,
     );
     contacts

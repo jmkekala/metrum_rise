@@ -49,8 +49,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   and raised-step spans/faces with current-generation index rebinding; final-step misses use
   compact edge-local authority keys and spatially indexed compatible overlap candidates. Exact
   async road-preview validation now follows the matching commit across both the Godot and simulation
-  thread boundaries, guarded by generation and complete input equality. Fresh release gameplay
-  measurements pass; complete assembled node export buffers remain.
+  thread boundaries, guarded by generation and complete input equality. That certificate now also
+  carries immutable node-topology candidates: an exact node-local rail match reuses contact output,
+  exact height identity reuses boolean ownership and the validated triangulated arrangement, and
+  every mismatch takes the cold compiler path. Fresh release gameplay measurements pass; complete
+  assembled node export buffers remain.
 - `ROAD-06`: a deterministic Kuopio T-junction can pass RoadTool validation but produce
   incompatible-height road-owned terrain-CDT constraints after the authoritative graph mutation.
   Atomic rendering correctly retains the prior complete generation, but the graph then remains
@@ -93,11 +96,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   presymbolicated profile plus phase/timing JSON under `benchmark-results/`. The default `640 m`
   site cadence avoids repeatedly aligning its fixed 12 fixtures with the `510 m` terrain grid; the
   exact old `520 m` reproduction and failures found by extending the layout remain tracked by
-  `ROAD-06`. The first optimization pass removed duplicate exact preview/commit validation. On the
-  same headless three-repetition workload, total runtime fell from `14.28 s` to `12.73 s`; fixture
-  p95 fell from `687/832/988 ms` to `635/696/790 ms` for bend/T/four-way respectively. The remaining
-  dominant road-edit work is canonical node surface compilation, especially source-authority and
-  raised-step contact construction. See
+  `ROAD-06`. The optimization passes removed duplicate exact preview/commit validation, cached
+  target-group geometry and quantized ownership predicates, and handed exact preview-produced
+  junction rail/ownership/arrangement topology to the matching commit. On the same headless
+  three-repetition workload, total runtime fell from `14.28 s` to `11.36 s`; fixture p95 fell from
+  `687/832/988 ms` to `544/606/675 ms` for bend/T/four-way, while commit p95 fell from
+  `229/328/463 ms` to `154/178/203 ms`. Instrumented four-way commit compilation replays the
+  junction rail stage in about `2.8 ms` and skips the prior height/arrangement/triangulation block;
+  road-triggered terrain regeneration, road-mesh precompute, and terrain visual refresh are now the
+  dominant end-to-end boundary. The matching windowed workload also passes: total runtime fell
+  from `24.72 s` to `21.36 s`, four-way fixture p95 from `1,134 ms` to `823 ms`, and four-way commit
+  p95 from `517 ms` to `244 ms`. See
   [`roads.md`](roads.md) and [`reference.md`](reference.md).
 - Committed roads now render as deterministic terrain-span-sized meshes instead of one
   full-network `ArrayMesh`. Rust rebuilds only the changed surface/earthwork chunk union, emits its

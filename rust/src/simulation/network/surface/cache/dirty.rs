@@ -13,6 +13,7 @@ impl RoadSurfaceSystem {
         self.compiled_visual_node_inputs.clear();
         self.compiled_visual_node_earthwork_boundaries.clear();
         self.compiled_visual_node_topologies.clear();
+        self.pending_preview_topology_reuse = None;
         self.clear_piece_chunk_coverage();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();

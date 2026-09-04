@@ -213,8 +213,17 @@ impl RoadSurfaceSystem {
             let Some(previous_ownership) = previous_topology.ownership.as_ref() else {
                 return None;
             };
+            let ownership = if previous_ownership.node_id == input.node_id
+                && previous_ownership.piece_kind == input.piece_kind
+            {
+                Arc::clone(previous_ownership)
+            } else {
+                Arc::new(
+                    previous_ownership.clone_with_node_identity(input.node_id, input.piece_kind),
+                )
+            };
             (
-                Arc::clone(previous_ownership),
+                ownership,
                 Arc::clone(&previous_topology.ownership_incremental),
                 ownership::NodeOwnershipReuseStats::default(),
             )
@@ -252,91 +261,136 @@ impl RoadSurfaceSystem {
         }
         let ownership_diag_ms = elapsed_ms(ownership_diag_start);
 
-        let heights_start = road_debug.then(Instant::now);
-        let heights =
-            match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
-                Ok(heights) => heights,
-                Err(error) => {
-                    let report =
-                        NodeValidationReport::from_height_field_error(node_id, kind, &error)
-                            .with_height_failure_context(&rails, &ownership);
-                    self.log_node_validation_report(&report);
-                    return None;
-                }
-            };
-        let heights_ms = elapsed_ms(heights_start);
+        let cached_arrangement = reuse_status
+            .arrangement_reuse_safe
+            .then(|| previous_topology.and_then(|topology| topology.arrangement.as_ref()))
+            .flatten()
+            .map(|arrangement| arrangement.clone_with_node_identity(node_id, kind));
+        let (
+            arrangement,
+            explicit_vertical_step_segments,
+            arrangement_profile,
+            heights_ms,
+            arrangement_ms,
+            arrangement_diag_ms,
+            triangulation_ms,
+            triangulation_validation_ms,
+            attach_profile,
+            attach_ms,
+        ) = if let Some(arrangement) = cached_arrangement {
+            let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+            (
+                arrangement,
+                explicit_vertical_step_segments,
+                arrangement::NodeArrangementBuildProfile::default(),
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                arrangement::NodeArrangementAttachProfile::default(),
+                0.0,
+            )
+        } else {
+            let heights_start = road_debug.then(Instant::now);
+            let heights =
+                match Self::build_node_height_solution_from_ownership(&input, &rails, &ownership) {
+                    Ok(heights) => heights,
+                    Err(error) => {
+                        let report =
+                            NodeValidationReport::from_height_field_error(node_id, kind, &error)
+                                .with_height_failure_context(&rails, &ownership);
+                        self.log_node_validation_report(&report);
+                        return None;
+                    }
+                };
+            let heights_ms = elapsed_ms(heights_start);
 
-        let arrangement_start = road_debug.then(Instant::now);
-        let (mut arrangement, arrangement_profile, precomputed_explicit_steps) =
-            match NodeArrangement::from_height_solution_with_profile(&heights, road_debug) {
-                Ok(result) => result,
-                Err(error) => {
-                    self.log_node_validation_report(&NodeValidationReport::from_arrangement_error(
-                        node_id, kind, &error,
-                    ));
-                    return None;
-                }
-            };
-        let arrangement_ms = elapsed_ms(arrangement_start);
+            let arrangement_start = road_debug.then(Instant::now);
+            let (mut arrangement, arrangement_profile, precomputed_explicit_steps) =
+                match NodeArrangement::from_height_solution_with_profile(&heights, road_debug) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.log_node_validation_report(
+                            &NodeValidationReport::from_arrangement_error(node_id, kind, &error),
+                        );
+                        return None;
+                    }
+                };
+            let arrangement_ms = elapsed_ms(arrangement_start);
 
-        let arrangement_diag_start = road_debug.then(Instant::now);
-        if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
-            self.log_node_validation_report(&report);
-            return None;
-        }
-        let arrangement_diag_ms = elapsed_ms(arrangement_diag_start);
-
-        let triangulation_start = road_debug.then(Instant::now);
-        let triangulation = match precomputed_explicit_steps.as_deref() {
-            Some(explicit_steps) => {
-                Self::build_node_triangulation_from_arrangement_with_explicit_steps(
-                    &arrangement,
-                    explicit_steps,
-                )
-            }
-            None => Self::build_node_triangulation_from_arrangement(&arrangement),
-        };
-        let triangulation = match triangulation {
-            Ok(triangulation) => triangulation,
-            Err(error) => {
-                self.log_node_validation_report(&NodeValidationReport::from_triangulation_error(
-                    node_id, kind, &error,
-                ));
+            let arrangement_diag_start = road_debug.then(Instant::now);
+            if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
+                self.log_node_validation_report(&report);
                 return None;
             }
-        };
-        let triangulation_ms = elapsed_ms(triangulation_start);
+            let arrangement_diag_ms = elapsed_ms(arrangement_diag_start);
 
-        let triangulation_validation_start = road_debug.then(Instant::now);
-        match Self::validate_node_triangulation_solution(&triangulation) {
-            Ok(report) => self.log_node_validation_report(&report),
-            Err(error) => {
-                self.log_node_validation_report(&error.report);
-                if error.report.has_blocking_diagnostics() {
-                    return None;
+            let triangulation_start = road_debug.then(Instant::now);
+            let triangulation = match precomputed_explicit_steps.as_deref() {
+                Some(explicit_steps) => {
+                    Self::build_node_triangulation_from_arrangement_with_explicit_steps(
+                        &arrangement,
+                        explicit_steps,
+                    )
                 }
-            }
-        }
-        let triangulation_validation_ms = elapsed_ms(triangulation_validation_start);
-
-        let attach_start = road_debug.then(Instant::now);
-        let attach_profile =
-            match arrangement.attach_triangulation_with_profile(&triangulation, road_debug) {
-                Ok(profile) => profile,
+                None => Self::build_node_triangulation_from_arrangement(&arrangement),
+            };
+            let triangulation = match triangulation {
+                Ok(triangulation) => triangulation,
                 Err(error) => {
-                    self.log_node_validation_report(&NodeValidationReport::from_arrangement_error(
-                        node_id, kind, &error,
-                    ));
+                    self.log_node_validation_report(
+                        &NodeValidationReport::from_triangulation_error(node_id, kind, &error),
+                    );
                     return None;
                 }
             };
-        let attach_ms = elapsed_ms(attach_start);
+            let triangulation_ms = elapsed_ms(triangulation_start);
+
+            let triangulation_validation_start = road_debug.then(Instant::now);
+            match Self::validate_node_triangulation_solution(&triangulation) {
+                Ok(report) => self.log_node_validation_report(&report),
+                Err(error) => {
+                    self.log_node_validation_report(&error.report);
+                    if error.report.has_blocking_diagnostics() {
+                        return None;
+                    }
+                }
+            }
+            let triangulation_validation_ms = elapsed_ms(triangulation_validation_start);
+
+            let attach_start = road_debug.then(Instant::now);
+            let attach_profile =
+                match arrangement.attach_triangulation_with_profile(&triangulation, road_debug) {
+                    Ok(profile) => profile,
+                    Err(error) => {
+                        self.log_node_validation_report(
+                            &NodeValidationReport::from_arrangement_error(node_id, kind, &error),
+                        );
+                        return None;
+                    }
+                };
+            let attach_ms = elapsed_ms(attach_start);
+            let explicit_vertical_step_segments = triangulation.explicit_vertical_step_segments;
+            (
+                arrangement,
+                explicit_vertical_step_segments,
+                arrangement_profile,
+                heights_ms,
+                arrangement_ms,
+                arrangement_diag_ms,
+                triangulation_ms,
+                triangulation_validation_ms,
+                attach_profile,
+                attach_ms,
+            )
+        };
 
         let export_start = road_debug.then(Instant::now);
         match Self::node_surface_regions_from_arrangement_with_profile_and_incremental_reuse(
             &arrangement,
             &ownership.footprint_shapes,
-            &triangulation.explicit_vertical_step_segments,
+            &explicit_vertical_step_segments,
             road_debug,
             previous_topology.map(|topology| topology.export_incremental.as_ref()),
         ) {
@@ -560,6 +614,7 @@ impl RoadSurfaceSystem {
                             rail_topology.into_incremental_only()
                         },
                         ownership: retain_whole_topology.then_some(ownership),
+                        arrangement: retain_whole_topology.then(|| Arc::new(arrangement)),
                         ownership_incremental,
                         export_incremental: Arc::new(export_incremental),
                     }),

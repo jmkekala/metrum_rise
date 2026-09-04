@@ -13,6 +13,7 @@ mod smoothness;
 pub(crate) struct NodeCanonicalTopologyCache {
     rail_topology: rails::NodeRailTopologyCache,
     ownership: Option<Arc<ownership::NodeBooleanOwnership>>,
+    arrangement: Option<Arc<arrangement::NodeArrangement>>,
     ownership_incremental: Arc<ownership::NodeOwnershipIncrementalCache>,
     export_incremental: Arc<export::NodeExportIncrementalCache>,
 }

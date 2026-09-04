@@ -1,10 +1,10 @@
 //! Exact quantized point-in-contour predicates for generated contact geometry.
 
 use super::super::{
-    NodeGeneratedContour, NodeOverlayShapes, NodeRailPointKey, generated_contour_directed_edges,
+    NodeGeneratedContour, NodeRailPointKey, generated_contour_directed_edges,
     generated_contour_keys, generated_point_key_lies_on_segment,
 };
-use super::overlay::generated_overlay_contour_keys;
+use super::overlay::GeneratedOverlayShapeKeys;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GeneratedPointContourLocation {
@@ -51,22 +51,20 @@ fn doubled_point_inside_or_on_generated_keys(
         != GeneratedPointContourLocation::Outside
 }
 
-pub(super) fn doubled_point_inside_or_on_overlay_shapes(
+pub(super) fn doubled_point_inside_or_on_overlay_shape_keys(
     point_x2: i128,
     point_z2: i128,
-    shapes: &NodeOverlayShapes,
+    shapes: &GeneratedOverlayShapeKeys,
 ) -> bool {
     shapes.iter().any(|shape| {
         let Some((outer, holes)) = shape.split_first() else {
             return false;
         };
-        let outer_keys = generated_overlay_contour_keys(outer);
-        match doubled_point_location_in_generated_keys(point_x2, point_z2, &outer_keys) {
+        match doubled_point_location_in_generated_keys(point_x2, point_z2, outer) {
             GeneratedPointContourLocation::Outside => false,
             GeneratedPointContourLocation::Boundary => true,
             GeneratedPointContourLocation::Inside => holes.iter().all(|hole| {
-                let hole_keys = generated_overlay_contour_keys(hole);
-                doubled_point_location_in_generated_keys(point_x2, point_z2, &hole_keys)
+                doubled_point_location_in_generated_keys(point_x2, point_z2, hole)
                     != GeneratedPointContourLocation::Inside
             }),
         }

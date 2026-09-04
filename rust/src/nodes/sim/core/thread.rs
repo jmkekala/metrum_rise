@@ -250,7 +250,7 @@ pub(crate) fn run_sim_thread(
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
                         record_crash_phase_for_core(&c, "add road internal");
-                        let road_add = c.add_road_internal_with_snap_and_validation(
+                        let mut road_add = c.add_road_internal_with_snap_and_validation(
                             points,
                             fwd_lanes,
                             bkw_lanes,
@@ -330,6 +330,11 @@ pub(crate) fn run_sim_thread(
                             );
                             debug_log!("road", "{}", msg);
                             c.last_road_timing = msg;
+                            if let Some(topology_reuse) = road_add.preview_topology_reuse.take() {
+                                c.transit_network
+                                    .road_surface
+                                    .enqueue_preview_topology_reuse(topology_reuse);
+                            }
                         } else {
                             c.transit_network.bulk_load = false;
                         }

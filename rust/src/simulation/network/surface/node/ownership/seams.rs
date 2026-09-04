@@ -32,7 +32,10 @@ impl ConstraintOverlapMode {
     }
 }
 
-pub(super) use extraction::{owned_shape_is_discardable_numeric_dust, seam_constraints_for_shape};
+pub(super) use extraction::{
+    PreparedOwnedShape, PreparedRailConstraints, owned_shape_is_discardable_numeric_dust,
+    seam_constraints_for_shape,
+};
 #[cfg(test)]
 pub(super) use materialization::materialize_noded_region_seam_constraints;
 pub(super) use materialization::{
