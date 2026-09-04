@@ -1564,7 +1564,8 @@ impl RoadSurfaceSystem {
 }
 
 impl RoadPreviewValidation {
-    fn valid(max_grade: f32) -> Self {
+    /// Creates a successful validation result with the measured maximum grade.
+    pub(crate) fn valid(max_grade: f32) -> Self {
         Self {
             is_valid: true,
             invalid_reason: PREVIEW_VALID_REASON,

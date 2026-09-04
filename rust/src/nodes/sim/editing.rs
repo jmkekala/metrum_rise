@@ -3,8 +3,8 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, SERVICE_BUILD_COST_PER_LOT_CELL,
-    SimCore,
+    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadPreviewValidationCertificate,
+    SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::buildings::allocator::{
@@ -904,6 +904,24 @@ impl SimCore {
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
     ) -> RoadAddOutcome {
+        self.add_road_internal_with_snap_and_validation(
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+            None,
+        )
+    }
+
+    /// Adds a road while reusing an exact preview only when its authoritative inputs still match.
+    pub(crate) fn add_road_internal_with_snap_and_validation(
+        &mut self,
+        points: Vec<godot::prelude::Vector3>,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        snap_to_existing_roads: bool,
+        validation_certificate: Option<&RoadPreviewValidationCertificate>,
+    ) -> RoadAddOutcome {
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
@@ -935,70 +953,83 @@ impl SimCore {
         );
         let mut validation = fast_validation.clone();
         if validation.is_valid {
-            let full_validation_start = Instant::now();
-            let new_edge_validation = self
-                .transit_network
-                .road_surface
-                .validate_prepared_road_surface(
+            let certified_validation = validation_certificate.and_then(|certificate| {
+                certificate.validation_for(
+                    self.road_tool_surface_generation,
                     &prepared_input.points,
+                    fwd_lanes_u8,
+                    bkw_lanes_u8,
+                    snap_to_existing_roads,
+                )
+            });
+            if let Some(certified_validation) = certified_validation {
+                validation = certified_validation.clone();
+            } else {
+                let full_validation_start = Instant::now();
+                let new_edge_validation = self
+                    .transit_network
+                    .road_surface
+                    .validate_prepared_road_surface(
+                        &prepared_input.points,
+                        prepared_input.class,
+                        fwd_lanes_u8,
+                        bkw_lanes_u8,
+                        &self.heightmap,
+                    );
+                let full_validation = self
+                    .transit_network
+                    .road_surface
+                    .validate_prepared_road_input_against_graph_with_compile_reason(
+                        &prepared_input,
+                        fwd_lanes_u8,
+                        bkw_lanes_u8,
+                        &self.heightmap,
+                        &self.region_graph,
+                        new_edge_validation,
+                        RoadSurfaceCompileReason::CommitValidator,
+                    );
+                let full_validation = validate_road_candidate_against_water(
                     prepared_input.class,
+                    &prepared_input.points,
                     fwd_lanes_u8,
                     bkw_lanes_u8,
-                    &self.heightmap,
+                    &self.watermap,
+                    full_validation,
                 );
-            let full_validation = self
-                .transit_network
-                .road_surface
-                .validate_prepared_road_input_against_graph_with_compile_reason(
-                    &prepared_input,
-                    fwd_lanes_u8,
-                    bkw_lanes_u8,
-                    &self.heightmap,
-                    &self.region_graph,
-                    new_edge_validation,
-                    RoadSurfaceCompileReason::CommitValidator,
-                );
-            let full_validation = validate_road_candidate_against_water(
-                prepared_input.class,
-                &prepared_input.points,
-                fwd_lanes_u8,
-                bkw_lanes_u8,
-                &self.watermap,
-                full_validation,
-            );
-            let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
-            if full_validation.is_valid != fast_validation.is_valid
-                || full_validation.invalid_reason != fast_validation.invalid_reason
-            {
-                debug_log!(
-                    "road",
-                    "road_commit_validation_contract_mismatch prepared_points={} fwd_lanes={} bkw_lanes={} fast_valid={} fast_reason={} full_valid={} full_reason={} fast_endpoint_snap=({},{}) full_endpoint_snap=({},{}) full_validation_ms={:.3}",
-                    fixed_points.len(),
-                    fwd_lanes_u8,
-                    bkw_lanes_u8,
-                    fast_validation.is_valid,
-                    fast_validation.invalid_reason,
-                    full_validation.is_valid,
-                    full_validation.invalid_reason,
-                    fast_validation.start_endpoint_snapped_node_id,
-                    fast_validation.end_endpoint_snapped_node_id,
-                    full_validation.start_endpoint_snapped_node_id,
-                    full_validation.end_endpoint_snapped_node_id,
-                    full_validation_ms
-                );
-            } else if Self::road_commit_full_validation_debug_enabled() {
-                debug_log!(
-                    "road",
-                    "road_commit_full_validation_debug prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} full_validation_ms={:.3}",
-                    fixed_points.len(),
-                    fwd_lanes_u8,
-                    bkw_lanes_u8,
-                    full_validation.is_valid,
-                    full_validation.invalid_reason,
-                    full_validation_ms
-                );
+                let full_validation_ms = full_validation_start.elapsed().as_secs_f64() * 1000.0;
+                if full_validation.is_valid != fast_validation.is_valid
+                    || full_validation.invalid_reason != fast_validation.invalid_reason
+                {
+                    debug_log!(
+                        "road",
+                        "road_commit_validation_contract_mismatch prepared_points={} fwd_lanes={} bkw_lanes={} fast_valid={} fast_reason={} full_valid={} full_reason={} fast_endpoint_snap=({},{}) full_endpoint_snap=({},{}) full_validation_ms={:.3}",
+                        fixed_points.len(),
+                        fwd_lanes_u8,
+                        bkw_lanes_u8,
+                        fast_validation.is_valid,
+                        fast_validation.invalid_reason,
+                        full_validation.is_valid,
+                        full_validation.invalid_reason,
+                        fast_validation.start_endpoint_snapped_node_id,
+                        fast_validation.end_endpoint_snapped_node_id,
+                        full_validation.start_endpoint_snapped_node_id,
+                        full_validation.end_endpoint_snapped_node_id,
+                        full_validation_ms
+                    );
+                } else if Self::road_commit_full_validation_debug_enabled() {
+                    debug_log!(
+                        "road",
+                        "road_commit_full_validation_debug prepared_points={} fwd_lanes={} bkw_lanes={} valid={} reason={} full_validation_ms={:.3}",
+                        fixed_points.len(),
+                        fwd_lanes_u8,
+                        bkw_lanes_u8,
+                        full_validation.is_valid,
+                        full_validation.invalid_reason,
+                        full_validation_ms
+                    );
+                }
+                validation = full_validation;
             }
-            validation = full_validation;
         }
         if !validation.is_valid {
             debug_log!(

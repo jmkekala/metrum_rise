@@ -385,6 +385,10 @@ candidate's local post-split topology before acceptance, including interior cros
 road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /
 `Bend` / `JunctionN` pieces is rejected before it reaches the live graph; tight switchbacks are
 allowed only when the compiled surface topology can actually represent them.
+The exact async preview is also a validation certificate for its matching commit. Godot may reuse
+it only for identical road points, lanes, snap mode, and current surface generation; the simulation
+thread independently checks the prepared points and the same generation before skipping its exact
+candidate replay. Any mismatch takes the full validator path.
 `surface_geometry_invalid` is a roadbed-footprint failure, not a centerline-only curve failure; road
 debug logs must include the failed required split spans or nodes with their lengths, clips, lane
 counts, and endpoints.

@@ -372,6 +372,14 @@ func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
 			"invalid_reason": "surface_geometry_invalid"
 		}
 
+	var exact_preview := _cached_preview_surface_for_points(points)
+	if (
+		not exact_preview.is_empty()
+		and _preview_surface_generation_is_current(exact_preview)
+	):
+		_remember_candidate_validation(points, exact_preview)
+		return exact_preview
+
 	var validation_variant = simulation_node.validate_road_candidate_for_commit_with_snap(
 		points,
 		fwd_lanes,

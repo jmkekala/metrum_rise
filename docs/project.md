@@ -47,8 +47,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   while water-only query revisions retain valid unchanged road clipping. Semantic node export now
   reuses final explicit-step topology, exact-XZ height-conflict cohorts, top-boundary contributors,
   and raised-step spans/faces with current-generation index rebinding; final-step misses use
-  compact edge-local authority keys and spatially indexed compatible overlap candidates. Complete
-  assembled node export buffers and fresh release gameplay measurements remain.
+  compact edge-local authority keys and spatially indexed compatible overlap candidates. Exact
+  async road-preview validation now follows the matching commit across both the Godot and simulation
+  thread boundaries, guarded by generation and complete input equality. Fresh release gameplay
+  measurements pass; complete assembled node export buffers remain.
 - `ROAD-06`: a deterministic Kuopio T-junction can pass RoadTool validation but produce
   incompatible-height road-owned terrain-CDT constraints after the authoritative graph mutation.
   Atomic rendering correctly retains the prior complete generation, but the graph then remains
@@ -91,7 +93,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   presymbolicated profile plus phase/timing JSON under `benchmark-results/`. The default `640 m`
   site cadence avoids repeatedly aligning its fixed 12 fixtures with the `510 m` terrain grid; the
   exact old `520 m` reproduction and failures found by extending the layout remain tracked by
-  `ROAD-06`. See
+  `ROAD-06`. The first optimization pass removed duplicate exact preview/commit validation. On the
+  same headless three-repetition workload, total runtime fell from `14.28 s` to `12.73 s`; fixture
+  p95 fell from `687/832/988 ms` to `635/696/790 ms` for bend/T/four-way respectively. The remaining
+  dominant road-edit work is canonical node surface compilation, especially source-authority and
+  raised-step contact construction. See
   [`roads.md`](roads.md) and [`reference.md`](reference.md).
 - Committed roads now render as deterministic terrain-span-sized meshes instead of one
   full-network `ArrayMesh`. Rust rebuilds only the changed surface/earthwork chunk union, emits its

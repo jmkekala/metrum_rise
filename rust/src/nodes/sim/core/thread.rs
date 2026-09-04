@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use super::road_preview::{
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
+    RoadPreviewValidationCertificate, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
+    road_tool_snapshots_from_core,
 };
 use super::snapshot::RenderSnapshot;
 use super::state::{BulkRoadGeometryFinalize, SimCore};
@@ -49,6 +50,8 @@ pub(crate) enum SimCommand {
         bkw_lanes: i32,
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
+        /// Successful exact preview tied to the same immutable road-surface generation.
+        validation_certificate: Option<RoadPreviewValidationCertificate>,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -215,6 +218,7 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
+                    validation_certificate,
                 }) => {
                     commands_processed += 1;
                     add_road_commands += 1;
@@ -246,11 +250,12 @@ pub(crate) fn run_sim_thread(
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
                         record_crash_phase_for_core(&c, "add road internal");
-                        let road_add = c.add_road_internal_with_snap(
+                        let road_add = c.add_road_internal_with_snap_and_validation(
                             points,
                             fwd_lanes,
                             bkw_lanes,
                             snap_to_existing_roads,
+                            validation_certificate.as_ref(),
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
                         let finalize_start = Instant::now();

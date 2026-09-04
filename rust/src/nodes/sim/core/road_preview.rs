@@ -15,10 +15,57 @@ use crate::simulation::water::WaterSystem;
 pub(crate) struct RoadPreviewSnapshot {
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+    snap_to_existing_roads: bool,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
+}
+
+/// Exact road validation that can be reused while its source generation and inputs still match.
+#[derive(Clone, Debug)]
+pub(crate) struct RoadPreviewValidationCertificate {
+    surface_generation: u64,
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+    snap_to_existing_roads: bool,
+    prepared_points: Vec<godot::prelude::Vector3>,
+    validation: RoadPreviewValidation,
+}
+
+impl RoadPreviewSnapshot {
+    /// Copies a successful exact preview into a certificate for the authoritative commit path.
+    pub(crate) fn validation_certificate(&self) -> Option<RoadPreviewValidationCertificate> {
+        (self.is_valid && self.surface_generation > 0).then(|| RoadPreviewValidationCertificate {
+            surface_generation: self.surface_generation,
+            fwd_lanes: self.fwd_lanes,
+            bkw_lanes: self.bkw_lanes,
+            snap_to_existing_roads: self.snap_to_existing_roads,
+            prepared_points: self.prepared_points.clone(),
+            validation: self.validation.clone(),
+        })
+    }
+}
+
+impl RoadPreviewValidationCertificate {
+    /// Returns the cached validation only when every authoritative input remains identical.
+    pub(crate) fn validation_for(
+        &self,
+        surface_generation: u64,
+        prepared_points: &[godot::prelude::Vector3],
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        snap_to_existing_roads: bool,
+    ) -> Option<&RoadPreviewValidation> {
+        (self.surface_generation == surface_generation
+            && self.fwd_lanes == fwd_lanes
+            && self.bkw_lanes == bkw_lanes
+            && self.snap_to_existing_roads == snap_to_existing_roads
+            && self.prepared_points == prepared_points)
+            .then_some(&self.validation)
+    }
 }
 
 #[derive(Clone)]
@@ -202,9 +249,69 @@ pub(crate) fn compile_road_preview_from_context(
         surface_generation: generation_matches
             .then_some(context.surface_generation)
             .unwrap_or(0),
+        fwd_lanes,
+        bkw_lanes,
+        snap_to_existing_roads: request.snap_to_existing_roads,
         prepared_points: preview.prepared_points,
         surface_vertices: preview.surface_vertices,
         validation: preview.validation,
         is_valid: preview.is_valid,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn validation_certificate_requires_exact_generation_and_inputs() {
+        let points = vec![Vector3::ZERO, Vector3::new(8.0, 0.0, 0.0)];
+        let snapshot = RoadPreviewSnapshot {
+            request_id: 7,
+            surface_generation: 11,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+            prepared_points: points.clone(),
+            surface_vertices: Vec::new(),
+            validation: RoadPreviewValidation::valid(0.0),
+            is_valid: true,
+        };
+        let certificate = snapshot
+            .validation_certificate()
+            .expect("valid preview should produce a certificate");
+
+        assert!(
+            certificate
+                .validation_for(11, &points, 1, 1, true)
+                .is_some()
+        );
+        assert!(
+            certificate
+                .validation_for(12, &points, 1, 1, true)
+                .is_none()
+        );
+        assert!(
+            certificate
+                .validation_for(
+                    11,
+                    &[Vector3::ZERO, Vector3::new(9.0, 0.0, 0.0)],
+                    1,
+                    1,
+                    true
+                )
+                .is_none()
+        );
+        assert!(
+            certificate
+                .validation_for(11, &points, 2, 1, true)
+                .is_none()
+        );
+        assert!(
+            certificate
+                .validation_for(11, &points, 1, 1, false)
+                .is_none()
+        );
     }
 }
