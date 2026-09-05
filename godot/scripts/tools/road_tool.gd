@@ -2,8 +2,8 @@
 
 ## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
-## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,
-## angle snapping (Shift, 15° steps, no road snap), distance + angle HUD label, and SimCity-style ghost guide
+## Extends NetworkTool. Adds: Rust-compiled roadbed preview, angle snapping (Shift, 15° steps,
+## no road snap), distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
 ## Commits via NetworkTool.add_road() on left-click after Rust graph-aware commit validation;
 ## cheap validation remains hover feedback and async road-surface previews remain visual feedback.
@@ -62,7 +62,6 @@ var _candidate_cache_fwd_lanes: int = -1
 var _candidate_cache_bkw_lanes: int = -1
 var _candidate_cache_snap_to_roads: bool = true
 var _candidate_cache_surface_generation: int = -1
-var _curve_shape_valid: bool = true
 var _last_snap_to_roads_enabled: bool = true
 
 const ROAD_PROFILE_SLOW_MS := 50.0
@@ -282,7 +281,6 @@ func _refresh_preview_curve() -> PackedVector3Array:
 	
 	current_path.curve.clear_points()
 	is_valid = true
-	_curve_shape_valid = true
 	
 	match current_state:
 		State.SETTING_CONTROL:
@@ -301,12 +299,6 @@ func _refresh_preview_curve() -> PackedVector3Array:
 				else:
 					var t_start = (control_pos - start_pos)
 					var t_end = (mouse_pos - control_pos) # Direction of the second half
-					
-					# Curvature Guard: Check angle between 'in' and 'out' tangents
-					if t_start.length() > 0.1 and t_end.length() > 0.1:
-						var angle = t_start.angle_to(t_end)
-						if angle > PI * 0.5: # 90 degrees
-							_curve_shape_valid = false
 					
 					current_path.curve.add_point(start_pos, Vector3.ZERO, t_start)
 					current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
@@ -333,11 +325,6 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		return {
 			"is_valid": false,
 			"invalid_reason": "too_short"
-		}
-	if not _curve_shape_valid:
-		return {
-			"is_valid": false,
-			"invalid_reason": "surface_geometry_invalid"
 		}
 	if (
 		not _candidate_cache_validation.is_empty()
@@ -367,11 +354,6 @@ func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		return {
 			"is_valid": false,
 			"invalid_reason": "too_short"
-		}
-	if not _curve_shape_valid:
-		return {
-			"is_valid": false,
-			"invalid_reason": "surface_geometry_invalid"
 		}
 
 	var exact_preview := _cached_preview_surface_for_points(points)
@@ -591,10 +573,6 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 func _preview_invalid_text(preview: Dictionary) -> String:
 	var reason := String(preview.get("invalid_reason", ""))
 	match reason:
-		"too_steep":
-			var max_grade := float(preview.get("max_grade", 0.0)) * 100.0
-			var allowed_grade := float(preview.get("allowed_grade", 0.0)) * 100.0
-			return "Too steep %.0f%% / %.0f%%" % [max_grade, allowed_grade]
 		"bridge_clearance":
 			return "Bridge clearance %.1f m / %.1f m" % [
 				float(preview.get("clearance_m", 0.0)),
@@ -608,7 +586,9 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 		"water_requires_bridge":
 			return "Water crossing requires a bridge"
 		"surface_geometry_invalid":
-			return "Roadbed footprint too tight"
+			return "Road surface compilation failed"
+		"same_node_connection":
+			return "Road endpoints connect to the same junction"
 		"too_short":
 			return "Road too short"
 		"validation_unavailable":

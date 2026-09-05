@@ -342,6 +342,76 @@ fn non_road_owner_regions_require_explicit_profile_seam_rails() {
 }
 
 #[test]
+fn same_band_peer_propagates_profile_authority_to_canonical_fragment() {
+    let anchored_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 11);
+    let fragment_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+    let mut anchored_region = test_owned_region(
+        RoadSurfaceBandKind::Sidewalk,
+        anchored_owner,
+        vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    );
+    anchored_region
+        .seam_constraints
+        .push(NodeRegionSeamConstraint {
+            constraint_index: 7,
+            seam_source: NodeSeamSource::SidewalkOuter { owner_index: 11 },
+            owner: Some(anchored_owner),
+            opposite_owner: None,
+            constrains_shared_height: false,
+            is_material_transition: false,
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 0.0),
+        });
+    let mut fragment_region = test_owned_region(
+        RoadSurfaceBandKind::Sidewalk,
+        fragment_owner,
+        vec![[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0]],
+    );
+    fragment_region
+        .seam_constraints
+        .push(NodeRegionSeamConstraint {
+            constraint_index: 8,
+            seam_source: NodeSeamSource::SidewalkOuter { owner_index: 0 },
+            owner: Some(fragment_owner),
+            opposite_owner: Some(anchored_owner),
+            constrains_shared_height: false,
+            is_material_transition: false,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        });
+    let rail_constraints = vec![
+        NodeRailConstraint {
+            constraint_index: 7,
+            kind: NodeRailConstraintKind::SpanHandoff {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            source_mouth_order_index: 11,
+            source_band_index: Some(11),
+            source_boundary_index: None,
+            owner: Some(anchored_owner),
+            opposite_owner: None,
+            points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(1.0, 0.0)],
+        },
+        NodeRailConstraint {
+            constraint_index: 8,
+            kind: NodeRailConstraintKind::FullRoadbedContour,
+            source_mouth_order_index: 0,
+            source_band_index: Some(0),
+            source_boundary_index: None,
+            owner: Some(fragment_owner),
+            opposite_owner: Some(anchored_owner),
+            points_xz: vec![RoadVec2::new(1.0, 0.0), RoadVec2::new(1.0, 1.0)],
+        },
+    ];
+
+    validate_non_road_regions_have_explicit_profile_seam_rails(
+        &[anchored_region, fragment_region],
+        &rail_constraints,
+    )
+    .expect("same-band canonical fragments must inherit connected profile authority");
+}
+
+#[test]
 fn side_join_non_road_authority_claims_before_mouth_band_carriers() {
     let mut rails = contour_set();
     let mut side_join = rails

@@ -3,6 +3,7 @@
 //! Junction dirty-recompile cache tests.
 
 use super::*;
+use crate::simulation::network::RoadSurfaceCompileReason;
 
 fn flat_four_way_junction() -> (RegionGraph, u32, Vec<u32>, Vec<usize>) {
     let mut graph = RegionGraph::new();
@@ -609,6 +610,54 @@ fn failed_initial_node_compile_publishes_nothing_until_newer_invalidation() {
             .kind,
         RoadSurfaceVisualNodePieceKind::JunctionN
     );
+}
+
+#[test]
+fn preview_validation_retains_exact_artifacts_outside_a_failed_context_node() {
+    let (mut graph, center, endpoints, edge_ids) = flat_four_way_junction();
+    let terrain = flat_terrain(192, 192);
+    set_four_way_endpoint_heights(
+        &mut graph,
+        center,
+        &endpoints,
+        &edge_ids,
+        [80.0, -80.0, 64.0, -64.0],
+    );
+    let candidate_start = graph.add_node(Vector3::new(-24.0, 0.0, -120.0), NodeType::Junction);
+    let candidate_end = graph.add_node(Vector3::new(24.0, 0.0, -120.0), NodeType::Junction);
+    let candidate_edge = graph.add_edge(test_edge(
+        candidate_start,
+        candidate_end,
+        vec![
+            graph.node(candidate_start).pos,
+            graph.node(candidate_end).pos,
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.retain_partial_validation_artifacts = true;
+    surface.compile_dirty_with_reason(&graph, &terrain, RoadSurfaceCompileReason::CommitValidator);
+
+    assert_eq!(surface.last_failed_node_ids, vec![center]);
+    assert!(
+        surface
+            .compiled_visual_span_pieces
+            .contains_key(&candidate_edge),
+        "a failed context node must not erase an independently successful candidate span"
+    );
+    for node_id in [candidate_start, candidate_end] {
+        assert!(
+            surface.compiled_visual_node_pieces.contains_key(&node_id),
+            "candidate terminal {node_id} must remain available to the exact required-set check"
+        );
+    }
+    assert!(!surface.compiled_visual_node_pieces.contains_key(&center));
 }
 
 #[test]

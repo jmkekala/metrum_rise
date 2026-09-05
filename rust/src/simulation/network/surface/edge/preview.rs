@@ -25,6 +25,7 @@ const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
 const PREVIEW_TUNNEL_CLEARANCE_REASON: &str = "tunnel_clearance";
 const PREVIEW_SURFACE_GEOMETRY_REASON: &str = "surface_geometry_invalid";
+const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
@@ -38,11 +39,11 @@ pub struct RoadPreviewValidation {
     pub invalid_reason: &'static str,
     /// Largest compiled centerline grade seen in the preview.
     pub max_grade: f32,
-    /// Player-facing centerline grade limit for standard roads.
+    /// Standard-road profile-solver grade target retained for diagnostics.
     pub allowed_grade: f32,
-    /// Start station of the steepest invalid span, in meters along the road.
+    /// Start station of the steepest measured span, in meters along the road.
     pub offending_span_start_m: f32,
-    /// End station of the steepest invalid span, in meters along the road.
+    /// End station of the steepest measured span, in meters along the road.
     pub offending_span_end_m: f32,
     /// Horizontal length of the steepest span, in metres.
     pub offending_span_run_m: f32,
@@ -500,7 +501,7 @@ impl RoadSurfaceSystem {
             &prepared_input.points,
             terrain,
         );
-        Self::record_preview_endpoint_snap_debug_with_extension(
+        let endpoint_existing = Self::record_preview_endpoint_snap_debug_with_extension(
             &mut validation,
             &prepared_input.points,
             existing_graph,
@@ -511,13 +512,7 @@ impl RoadSurfaceSystem {
             return validation;
         }
 
-        self.validate_candidate_endpoint_geometry_fast(
-            &prepared_input.points,
-            existing_graph,
-            prepared_input.extension.as_ref(),
-            prepared_input.endpoint_snap_enabled,
-            validation,
-        )
+        self.validate_candidate_endpoint_geometry_fast(endpoint_existing, validation)
     }
 
     fn fast_prepared_profile_validation(
@@ -600,33 +595,12 @@ impl RoadSurfaceSystem {
 
     fn validate_candidate_endpoint_geometry_fast(
         &self,
-        prepared_points: &[Vector3],
-        existing_graph: &RegionGraph,
-        extension: Option<&RoadExtensionReprofile>,
-        endpoint_snap_enabled: bool,
+        endpoint_existing: (Option<u32>, Option<u32>),
         validation: RoadPreviewValidation,
     ) -> RoadPreviewValidation {
-        let Some(first) = prepared_points.first().copied() else {
-            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
-        };
-        let Some(last) = prepared_points.last().copied() else {
-            return validation.with_invalid_reason(PREVIEW_TOO_SHORT_REASON);
-        };
-
-        let start_existing = Self::validation_endpoint_existing_node(
-            first,
-            existing_graph,
-            extension,
-            endpoint_snap_enabled,
-        );
-        let end_existing = Self::validation_endpoint_existing_node(
-            last,
-            existing_graph,
-            extension,
-            endpoint_snap_enabled,
-        );
+        let (start_existing, end_existing) = endpoint_existing;
         if start_existing.is_some() && start_existing == end_existing {
-            return validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON);
+            return validation.with_invalid_reason(PREVIEW_SAME_NODE_REASON);
         }
 
         validation
@@ -653,26 +627,27 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
-    ) {
+    ) -> (Option<u32>, Option<u32>) {
         let (Some(start), Some(end)) = (prepared_points.first(), prepared_points.last()) else {
-            return;
+            return (None, None);
         };
-        validation.start_endpoint_snapped_node_id = Self::validation_endpoint_existing_node(
+        let start_existing = Self::validation_endpoint_existing_node(
             *start,
             existing_graph,
             extension,
             endpoint_snap_enabled,
-        )
-        .map(Self::debug_node_id)
-        .unwrap_or(-1);
-        validation.end_endpoint_snapped_node_id = Self::validation_endpoint_existing_node(
+        );
+        let end_existing = Self::validation_endpoint_existing_node(
             *end,
             existing_graph,
             extension,
             endpoint_snap_enabled,
-        )
-        .map(Self::debug_node_id)
-        .unwrap_or(-1);
+        );
+        validation.start_endpoint_snapped_node_id =
+            start_existing.map(Self::debug_node_id).unwrap_or(-1);
+        validation.end_endpoint_snapped_node_id =
+            end_existing.map(Self::debug_node_id).unwrap_or(-1);
+        (start_existing, end_existing)
     }
 
     fn debug_node_id(node_id: u32) -> i32 {
@@ -909,15 +884,22 @@ impl RoadSurfaceSystem {
         compile_reason: RoadSurfaceCompileReason,
     ) -> (RoadPreviewValidation, Option<RoadPreviewTopologyReuse>) {
         let mut validation = validation;
-        Self::record_preview_endpoint_snap_debug_with_extension(
-            &mut validation,
-            prepared_points,
-            existing_graph,
-            extension,
-            endpoint_snap_enabled,
-        );
+        let (start_existing, end_existing) =
+            Self::record_preview_endpoint_snap_debug_with_extension(
+                &mut validation,
+                prepared_points,
+                existing_graph,
+                extension,
+                endpoint_snap_enabled,
+            );
         if !validation.is_valid || prepared_points.len() < 2 {
             return (validation, None);
+        }
+        if start_existing.is_some() && start_existing == end_existing {
+            return (
+                validation.with_invalid_reason(PREVIEW_SAME_NODE_REASON),
+                None,
+            );
         }
 
         let Some((validation_graph, new_edge_idx, required_edge_ids, required_node_ids)) = self
@@ -955,6 +937,9 @@ impl RoadSurfaceSystem {
         // This transient compiler exists specifically to hand exact topology to the matching
         // authoritative commit. Committed terminal/bend caches are downgraded again after replay.
         validation_surface.retain_complete_node_topology_for_replay = true;
+        // The validation graph is a bounded excerpt. Preserve successful artifacts so failures
+        // on synthetic frontier nodes can be separated from missing candidate-owned surfaces.
+        validation_surface.retain_partial_validation_artifacts = true;
         validation_surface.compile_dirty_with_reason(&validation_graph, terrain, compile_reason);
 
         if let Some(failure) = Self::explicit_surface_validation_failure(
@@ -981,6 +966,7 @@ impl RoadSurfaceSystem {
                         new_edge_idx,
                         &required_edge_ids,
                         &missing_required_node_ids,
+                        &required_node_ids,
                         compile_reason,
                     );
                 }
@@ -1051,6 +1037,7 @@ impl RoadSurfaceSystem {
                 new_edge_idx,
                 &required_edge_ids,
                 &missing_required_node_ids,
+                &required_node_ids,
                 compile_reason,
             );
             return (
@@ -1076,54 +1063,28 @@ impl RoadSurfaceSystem {
         required_node_ids: &[u32],
     ) -> Option<SurfaceValidationFailure> {
         if !validation_surface.last_failed_span_ids.is_empty() {
-            return Some(SurfaceValidationFailure::MissingSpans(
-                Self::required_or_all_failed_span_ids(
-                    &validation_surface.last_failed_span_ids,
-                    required_edge_ids,
-                ),
-            ));
+            let required_failures = validation_surface
+                .last_failed_span_ids
+                .iter()
+                .copied()
+                .filter(|edge_idx| required_edge_ids.binary_search(edge_idx).is_ok())
+                .collect::<Vec<_>>();
+            if !required_failures.is_empty() {
+                return Some(SurfaceValidationFailure::MissingSpans(required_failures));
+            }
         }
         if !validation_surface.last_failed_node_ids.is_empty() {
-            return Some(SurfaceValidationFailure::MissingNodes(
-                Self::required_or_all_failed_node_ids(
-                    &validation_surface.last_failed_node_ids,
-                    required_node_ids,
-                ),
-            ));
+            let required_failures = validation_surface
+                .last_failed_node_ids
+                .iter()
+                .copied()
+                .filter(|node_id| required_node_ids.binary_search(node_id).is_ok())
+                .collect::<Vec<_>>();
+            if !required_failures.is_empty() {
+                return Some(SurfaceValidationFailure::MissingNodes(required_failures));
+            }
         }
         None
-    }
-
-    fn required_or_all_failed_span_ids(
-        failed_span_ids: &[usize],
-        required_edge_ids: &[usize],
-    ) -> Vec<usize> {
-        let required_failures = failed_span_ids
-            .iter()
-            .copied()
-            .filter(|edge_idx| required_edge_ids.binary_search(edge_idx).is_ok())
-            .collect::<Vec<_>>();
-        if required_failures.is_empty() {
-            failed_span_ids.to_vec()
-        } else {
-            required_failures
-        }
-    }
-
-    fn required_or_all_failed_node_ids(
-        failed_node_ids: &[u32],
-        required_node_ids: &[u32],
-    ) -> Vec<u32> {
-        let required_failures = failed_node_ids
-            .iter()
-            .copied()
-            .filter(|node_id| required_node_ids.binary_search(node_id).is_ok())
-            .collect::<Vec<_>>();
-        if required_failures.is_empty() {
-            failed_node_ids.to_vec()
-        } else {
-            required_failures
-        }
     }
 
     fn log_surface_validation_missing_spans(
@@ -1170,6 +1131,7 @@ impl RoadSurfaceSystem {
         new_edge_idx: usize,
         required_edge_ids: &[usize],
         missing_node_ids: &[u32],
+        required_node_ids: &[u32],
         compile_reason: RoadSurfaceCompileReason,
     ) {
         if !crate::debug::category_enabled("road") {
@@ -1185,7 +1147,7 @@ impl RoadSurfaceSystem {
         };
         crate::debug_log!(
             "road",
-            "road_candidate_surface_geometry_failed cause=missing_nodes compile_reason={} new_edge={} graph_edges={} graph_nodes={} required_edges={:?} missing_nodes={:?} compiler_failed_nodes={:?} surface_failure={}",
+            "road_candidate_surface_geometry_failed cause=missing_nodes compile_reason={} new_edge={} graph_edges={} graph_nodes={} required_edges={:?} missing_nodes={:?} compiler_failed_nodes={:?} required_nodes={:?} surface_failure={}",
             compile_reason.as_str(),
             new_edge_idx,
             validation_graph.edge_count(),
@@ -1193,6 +1155,7 @@ impl RoadSurfaceSystem {
             required_edge_ids,
             missing_node_ids,
             failed_node_ids,
+            required_node_ids,
             failure_label
         );
         for &node_id in failed_node_ids.iter().take(8) {
@@ -1736,19 +1699,37 @@ mod tests {
     }
 
     #[test]
-    fn explicit_surface_validation_failure_keeps_context_failure_when_required_set_misses() {
+    fn road_log_frontier_bend_failure_does_not_reject_candidate_surface() {
         let mut validation_surface = RoadSurfaceSystem::new(16.0);
-        validation_surface.last_failed_node_ids = vec![12];
+        // road.log: local edge 9 was valid, while the cold local compile saw copied node 0 as
+        // an incomplete two-mouth bend. The authored road snapped to authoritative node 3, which
+        // mapped to another local node; local node 0 was context.
+        validation_surface.last_failed_node_ids = vec![0];
 
         let failure = RoadSurfaceSystem::explicit_surface_validation_failure(
             &validation_surface,
-            &[7, 8],
+            &[9],
+            &[2, 8],
+        );
+
+        assert_eq!(failure, None);
+    }
+
+    #[test]
+    fn explicit_surface_validation_failure_still_reports_required_span_after_context_node() {
+        let mut validation_surface = RoadSurfaceSystem::new(16.0);
+        validation_surface.last_failed_span_ids = vec![3, 12];
+        validation_surface.last_failed_node_ids = vec![20];
+
+        let failure = RoadSurfaceSystem::explicit_surface_validation_failure(
+            &validation_surface,
+            &[7, 12],
             &[4, 9],
         );
 
         assert_eq!(
             failure,
-            Some(SurfaceValidationFailure::MissingNodes(vec![12]))
+            Some(SurfaceValidationFailure::MissingSpans(vec![12]))
         );
     }
 }

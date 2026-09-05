@@ -54,10 +54,47 @@ pub(in crate::simulation::network::surface::node::ownership) fn validate_non_roa
     regions: &[NodeBooleanOwnedRegion],
     rail_constraints: &[NodeRailConstraint],
 ) -> Result<(), NodeBooleanOwnershipError> {
+    let mut anchored_owners = regions
+        .iter()
+        .filter(|region| {
+            band_kind_requires_explicit_profile_seam_rail(region.kind)
+                && region_has_explicit_profile_seam_rail(&region.seam_constraints, rail_constraints)
+        })
+        .map(|region| region.owner)
+        .collect::<std::collections::BTreeSet<_>>();
+    // Canonical cleanup can split one valid band domain into owner fragments. A fragment keeps
+    // profile authority through same-material ownership seams connected to an explicit rail;
+    // cross-material seams never grant that authority.
+    let mut same_band_peers = BTreeMap::<NodeBandOwner, Vec<NodeBandOwner>>::new();
+    for seam in regions.iter().flat_map(|region| &region.seam_constraints) {
+        let (Some(owner), Some(peer)) = (seam.owner, seam.opposite_owner) else {
+            continue;
+        };
+        if owner.kind() != peer.kind()
+            || !band_kind_requires_explicit_profile_seam_rail(owner.kind())
+        {
+            continue;
+        }
+        same_band_peers.entry(owner).or_default().push(peer);
+        same_band_peers.entry(peer).or_default().push(owner);
+    }
+    let mut frontier = anchored_owners.iter().copied().collect::<Vec<_>>();
+    let mut frontier_index = 0;
+    while let Some(owner) = frontier.get(frontier_index).copied() {
+        frontier_index += 1;
+        let Some(peers) = same_band_peers.get(&owner) else {
+            continue;
+        };
+        for peer in peers {
+            if anchored_owners.insert(*peer) {
+                frontier.push(*peer);
+            }
+        }
+    }
     let mut missing_by_kind = BTreeMap::<RoadSurfaceBandKind, (usize, f32)>::new();
     for region in regions {
         if !band_kind_requires_explicit_profile_seam_rail(region.kind)
-            || region_has_explicit_profile_seam_rail(&region.seam_constraints, rail_constraints)
+            || anchored_owners.contains(&region.owner)
         {
             continue;
         }

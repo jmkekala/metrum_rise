@@ -3,7 +3,9 @@
 //! Temporary road preview regression tests.
 
 use super::*;
-use crate::simulation::network::surface::RoadSurfaceCompileReason;
+use crate::simulation::network::surface::{
+    PreparedRoadInput, RoadExtensionReprofile, RoadSurfaceCompileReason,
+};
 
 #[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
@@ -583,6 +585,166 @@ fn preview_accepts_connected_bend_when_surface_geometry_compiles() {
         validation.is_valid,
         "ordinary connected bends must remain placeable: {validation:?}"
     );
+}
+
+fn translated_logged_road_points(points_json: &str, offset: Vector3) -> Vec<Vector3> {
+    road_points_from_json(points_json)
+        .into_iter()
+        .map(|point| point + offset)
+        .collect()
+}
+
+#[test]
+fn logged_ordinary_terminal_continuation_remains_placeable() {
+    let terrain = TerrainSystem::with_chunking(320, 180, 1.0, 8, 5.0);
+    let mut graph = RegionGraph::new();
+    let offset = Vector3::new(-40.0, -138.0, 60.0);
+    let existing_points = translated_logged_road_points(
+        include_str!("data/logged_terminal_continuation_existing.json"),
+        offset,
+    );
+    let candidate_points = translated_logged_road_points(
+        include_str!("data/logged_terminal_continuation_candidate.json"),
+        offset,
+    );
+    let start = graph.add_node(existing_points[0], NodeType::Junction);
+    let bend = graph.add_node(*existing_points.last().unwrap(), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        bend,
+        existing_points.clone(),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    let prepared_input = PreparedRoadInput {
+        points: candidate_points.clone(),
+        validation_points: candidate_points,
+        class: EdgeClass::Standard,
+        endpoint_snap_enabled: true,
+        extension: Some(RoadExtensionReprofile {
+            snapped_node_id: bend,
+            existing_edge_idx: 0,
+            existing_points,
+            snapped_node_pos: graph.node(bend).pos,
+        }),
+    };
+    let surface = RoadSurfaceSystem::new(16.0);
+    let new_edge_validation = surface.validate_prepared_road_surface(
+        &prepared_input.points,
+        prepared_input.class,
+        1,
+        1,
+        &terrain,
+    );
+    let validation = surface.validate_prepared_road_input_against_graph_with_compile_reason(
+        &prepared_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+        new_edge_validation,
+        RoadSurfaceCompileReason::CommitValidator,
+    );
+
+    assert!(
+        validation.is_valid,
+        "ordinary logged terminal continuation must compile a complete surface: {validation:?}"
+    );
+}
+
+#[test]
+fn logged_orthogonal_t_junction_remains_placeable() {
+    let terrain = TerrainSystem::with_chunking(320, 240, 1.0, 8, 5.0);
+    let mut graph = RegionGraph::new();
+    let offset = Vector3::new(-60.0, -138.0, 60.0);
+    let main_points = translated_logged_road_points(
+        include_str!("data/logged_orthogonal_t_existing.json"),
+        offset,
+    );
+    let candidate_points = translated_logged_road_points(
+        include_str!("data/logged_orthogonal_t_candidate.json"),
+        offset,
+    );
+    let start = graph.add_node(main_points[0], NodeType::Junction);
+    let end = graph.add_node(*main_points.last().unwrap(), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        main_points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let surface = RoadSurfaceSystem::new(16.0);
+    let candidate_input = PreparedRoadInput {
+        points: candidate_points.clone(),
+        validation_points: candidate_points,
+        class: EdgeClass::Standard,
+        endpoint_snap_enabled: true,
+        extension: None,
+    };
+    let new_edge_validation = surface.validate_prepared_road_surface(
+        &candidate_input.points,
+        candidate_input.class,
+        1,
+        1,
+        &terrain,
+    );
+    let validation = surface.validate_prepared_road_input_against_graph_with_compile_reason(
+        &candidate_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+        new_edge_validation,
+        RoadSurfaceCompileReason::CommitValidator,
+    );
+
+    assert!(
+        validation.is_valid,
+        "ordinary logged orthogonal T-junction must compile a complete surface: {validation:?}"
+    );
+}
+
+#[test]
+fn candidate_with_both_endpoints_snapped_to_one_node_stays_rejected() {
+    let terrain = flat_terrain(64, 64);
+    let mut graph = RegionGraph::new();
+    graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let candidate_points = vec![Vector3::new(-1.5, 0.0, 0.0), Vector3::new(1.5, 0.0, 0.0)];
+    let prepared_input = PreparedRoadInput {
+        points: candidate_points.clone(),
+        validation_points: candidate_points,
+        class: EdgeClass::Standard,
+        endpoint_snap_enabled: true,
+        extension: None,
+    };
+    let surface = RoadSurfaceSystem::new(16.0);
+    let fast =
+        surface.validate_prepared_road_candidate_fast(&prepared_input, 1, 1, &terrain, &graph);
+    let initial = surface.validate_prepared_road_surface(
+        &prepared_input.points,
+        prepared_input.class,
+        1,
+        1,
+        &terrain,
+    );
+    let exact = surface.validate_prepared_road_input_against_graph_with_compile_reason(
+        &prepared_input,
+        1,
+        1,
+        &terrain,
+        &graph,
+        initial,
+        RoadSurfaceCompileReason::CommitValidator,
+    );
+
+    assert_eq!(fast.invalid_reason, "same_node_connection");
+    assert_eq!(exact.invalid_reason, "same_node_connection");
 }
 
 #[test]

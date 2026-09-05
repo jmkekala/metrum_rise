@@ -46,6 +46,8 @@ pub struct RoadSurfaceSystem {
     pub(crate) dirty_query_chunks: HashSet<SurfaceChunkKey>,
     pub(crate) node_validation_logging_enabled: bool,
     pub(in crate::simulation::network::surface) retain_complete_node_topology_for_replay: bool,
+    /// Keeps successful pieces from a transient bounded validation compile for required-set checks.
+    pub(in crate::simulation::network::surface) retain_partial_validation_artifacts: bool,
     pub(crate) compiled_sections: HashMap<usize, Arc<Vec<RoadSurfaceSection>>>,
     pub(crate) compiled_visual_span_pieces: HashMap<usize, Arc<RoadSurfaceVisualSpanPiece>>,
     pub(crate) compiled_visual_node_pieces: HashMap<u32, Arc<RoadSurfaceVisualNodePiece>>,
@@ -342,6 +344,7 @@ impl RoadSurfaceSystem {
             dirty_query_chunks: HashSet::new(),
             node_validation_logging_enabled: true,
             retain_complete_node_topology_for_replay: false,
+            retain_partial_validation_artifacts: false,
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
@@ -1121,13 +1124,20 @@ impl RoadSurfaceSystem {
     ) {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
+        // Preview validators compile bounded graph excerpts. Frontier nodes in those excerpts can
+        // be intentionally incomplete, so retain successful artifacts for the exact required-set
+        // checks instead of making one unrelated frontier failure erase the entire staging result.
+        // Authoritative compiles remain atomic.
+        let allow_partial_validation_result = self.retain_partial_validation_artifacts;
+        let mut partial_failure_label = None;
 
         let edge_start = road_debug.then(Instant::now);
         let edge_ids = self.all_surface_edge_ids(graph);
         let edge_ms = elapsed_ms(edge_start);
 
-        // Build the first published generation in isolation. Initial compilation is not allowed to
-        // expose a subset of spans or nodes merely because one owner failed to materialize.
+        // Build the first generation in isolation. Authoritative initial compilation is not
+        // allowed to expose a subset of spans or nodes merely because one owner failed to
+        // materialize; the explicit validation-only mode retains partial artifacts for inspection.
         let staging_start = road_debug.then(Instant::now);
         let mut staging = RoadSurfaceSystem::new_with_chunk_grid(
             self.chunk_span_m,
@@ -1137,6 +1147,7 @@ impl RoadSurfaceSystem {
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
         staging.retain_complete_node_topology_for_replay =
             self.retain_complete_node_topology_for_replay;
+        staging.retain_partial_validation_artifacts = self.retain_partial_validation_artifacts;
         let staging_ms = elapsed_ms(staging_start);
 
         let sections_start = road_debug.then(Instant::now);
@@ -1186,7 +1197,10 @@ impl RoadSurfaceSystem {
                     elapsed_ms(total_start)
                 );
             }
-            return;
+            if !allow_partial_validation_result {
+                return;
+            }
+            partial_failure_label = Some(failure_label);
         }
 
         let nodes_start = road_debug.then(Instant::now);
@@ -1259,7 +1273,12 @@ impl RoadSurfaceSystem {
                     elapsed_ms(total_start)
                 );
             }
-            return;
+            if !allow_partial_validation_result {
+                return;
+            }
+            if partial_failure_label.is_none() {
+                partial_failure_label = Some(failure_label);
+            }
         }
         for (node_id, input, visual_piece) in node_results {
             staging.apply_node_compile_result_with_earthwork_boundaries(
@@ -1302,10 +1321,17 @@ impl RoadSurfaceSystem {
         staging.last_rebuilt_query_chunks = rebuilt_query_chunks;
         staging.compiled_once = true;
         staging.compile_invalidation_generation = self.compile_invalidation_generation;
-        staging.failed_compile_generation = None;
-        staging.last_compile_failure_label = None;
-        staging.last_failed_span_ids.clear();
-        staging.last_failed_node_ids.clear();
+        if let Some(failure_label) = partial_failure_label {
+            staging.failed_compile_generation = Some(self.compile_invalidation_generation);
+            staging.last_compile_failure_label = Some(failure_label);
+            staging.last_failed_span_ids = failed_span_ids;
+            staging.last_failed_node_ids = failed_node_ids;
+        } else {
+            staging.failed_compile_generation = None;
+            staging.last_compile_failure_label = None;
+            staging.last_failed_span_ids.clear();
+            staging.last_failed_node_ids.clear();
+        }
         staging.clear_dirty_tracking();
         *self = staging;
 

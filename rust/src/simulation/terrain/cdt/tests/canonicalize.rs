@@ -100,6 +100,46 @@ fn cdt_splits_loop_segments_through_source_vertices_before_source_mapping() {
 }
 
 #[test]
+fn cdt_keeps_source_for_submillimeter_boundary_across_identity_cells() {
+    let p0 = TerrainCdtVertex::new(3.0004, 1.0, 3.0);
+    let p1 = TerrainCdtVertex::new(3.0006, 1.0, 3.0);
+    let p2 = TerrainCdtVertex::new(7.0, 1.0, 3.0);
+    let p3 = TerrainCdtVertex::new(7.0, 1.0, 7.0);
+    let p4 = TerrainCdtVertex::new(3.0004, 1.0, 7.0);
+    let vertices = vec![p0, p1, p2, p3, p4];
+    let source_edges = vertices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+            start,
+            end: vertices[(index + 1) % vertices.len()],
+            source: TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+                stable_piece_id: 921,
+                local_loop_index: 0,
+                local_edge_index: u32::try_from(index).unwrap(),
+            },
+        })
+        .collect();
+    let input = TerrainCdtInput::new(
+        TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+        vec![TerrainCdtRoadLoop::new_with_source_edges(
+            921,
+            0,
+            vertices,
+            source_edges,
+        )],
+        Vec::new(),
+    );
+
+    let mesh = build_road_touched_terrain_patch(input)
+        .expect("distinct CDT vertices must retain road ownership even when less than 1 mm apart");
+
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.merged_subbudget_seam_edges, 1);
+}
+
+#[test]
 fn cdt_rejects_unsourced_road_boundary_constraints() {
     let source = test_node_boundary_source(91, TerrainCdtRoadBandKind::Sidewalk, 2);
     let road = vec![

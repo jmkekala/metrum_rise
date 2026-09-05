@@ -449,18 +449,19 @@ fn terrain_cdt_segment_lies_on_source_edge(
     if !segment_bounds_overlap(start, end, source_edge.start, source_edge.end) {
         return false;
     }
-    let Some(start_t) =
-        source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, start)
-    else {
+    if source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, start)
+        .is_none()
+    {
         return false;
-    };
-    let Some(end_t) =
-        source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, end)
-    else {
+    }
+    if source_sample_parameter_on_road_constraint(source_edge.start, source_edge.end, end).is_none()
+    {
         return false;
-    };
-    let source_length_m = edge_length_xz_m(source_edge.start, source_edge.end);
-    (start_t - end_t).abs() * source_length_m > CDT_EPSILON_M
+    }
+    // Distinct 1 mm identity cells can be separated by less than 1 mm across a rounding
+    // boundary. Both endpoints lying on the source is sufficient; seam hardening owns the
+    // separate decision to merge or retain such a short sourced edge.
+    true
 }
 
 fn merge_terrain_cdt_boundary_source(

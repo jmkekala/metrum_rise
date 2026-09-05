@@ -368,10 +368,11 @@ Standard-road input keeps the player's authored XZ alignment, then prepares its 
 before graph commit or preview compilation: long spans are densified every few metres, samples are
 grounded against source terrain or existing visible road support, true endpoints and road
 connections are hard pins, and a bounded vertical-profile solve keeps the road near terrain while
-respecting road grade / curvature limits. The dense solved profile is stored on
-`physical_geometry`; section compilation, terrain clips, and earthworks interpolate that stored
-profile instead of drawing a straight vertical line between sparse endpoints. Earthworks own only
-the remaining local cut/fill around that solved roadbed.
+targeting smooth grade and curvature changes. These profile targets shape generated geometry and
+remain available as diagnostics; they are not player-facing placement limits. The dense solved
+profile is stored on `physical_geometry`; section compilation, terrain clips, and earthworks
+interpolate that stored profile instead of drawing a straight vertical line between sparse
+endpoints. Earthworks own only the remaining local cut/fill around that solved roadbed.
 When a road is extended from a degree-1 standard-road terminal, preview and commit solve the
 existing terminal edge plus the new edge as one vertical corridor; the shared terminal becomes an
 internal profile point, while the far old endpoint, far new endpoint, and true junctions stay pinned.
@@ -379,6 +380,12 @@ When the same edit runs from a degree-1 elevated bridge terminal down to source 
 profile remains `Bridge` and forms a structural ramp across the full approach. It may enter the
 ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
 and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
+
+Player-facing placement rules are limited to structural impossibilities: roads shorter than `2 m`,
+standard roadbeds crossing authored water without bridge mode, bridge/tunnel clearance failures,
+and endpoints that resolve to an impossible same-node connection. There is no hard centerline-grade
+or curve-angle rejection. Same-node rejection uses the distinct `same_node_connection` reason; it
+is not reported as a compiler failure.
 
 Placement validity also includes local road-surface compileability. A preview or commit replays the
 candidate's local post-split topology before acceptance, including interior crossings against nearby
@@ -395,9 +402,18 @@ height values additionally permit boolean ownership and the already validated, t
 arrangement to be rebound from preview-local node IDs to authoritative node IDs. Any metadata,
 topology, carrier, source-authority, or exact-height mismatch takes the full deterministic compiler
 path.
-`surface_geometry_invalid` is a roadbed-footprint failure, not a centerline-only curve failure; road
-debug logs must include the failed required split spans or nodes with their lengths, clips, lane
-counts, and endpoints.
+`surface_geometry_invalid` is an exact surface-compiler integrity failure, never a curve-angle or
+grade policy. An ordinary continuation or T-junction producing it is a compiler bug. Road debug logs
+must include the failed required split spans or nodes with their lengths, clips, lane counts, and
+endpoints. Bounded validation graphs can also contain unchanged frontier/context nodes that are not
+part of the candidate's required topology. Their cold-compile failures do not reject the candidate:
+the transient compiler retains each successful artifact, and the gate independently requires every
+candidate-owned span and changed endpoint node piece to exist. Authoritative simulation and render
+compiles remain transactional, so placement cannot publish a road whose required surface is missing.
+Terrain CDT boundary ownership follows the same `1 mm` canonical vertex identity as its constraint
+graph: a junction seam may be physically shorter than `1 mm` while still joining two distinct
+canonical cells, and it retains its source until seam hardening deterministically merges or accepts
+it. Truly unsourced road boundaries still fail the coordinated terrain/road upload.
 
 Authored water is part of the same placement contract. A `Standard` candidate is rejected with the
 stable `water_requires_bridge` reason when its complete roadbed footprint overlaps visible baseline

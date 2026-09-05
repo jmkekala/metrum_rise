@@ -86,6 +86,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Road placement no longer applies the Godot-only 90-degree spline guard or exposes the dead
+  `Too steep` rejection; standard-road grade targets now shape and diagnose the generated profile
+  without acting as player limits. Exact surface compilation remains a transactional integrity gate.
+  Two logged ordinary continuation/T-junction regressions now compile reliably because canonical
+  same-material band fragments retain profile authority across their ownership seams, while
+  genuinely unanchored bands remain rejected. Bounded candidate validation also retains successful
+  required artifacts when an unchanged excerpt-frontier node fails its cold context compile, rather
+  than misreporting that unrelated failure as a road rejection. Terrain CDT source recovery now
+  also preserves ownership for junction boundary edges shorter than `1 mm` when their endpoints
+  occupy distinct canonical cells, preventing a successful commit from being hidden by the atomic
+  terrain/road upload guard. See [`roads.md`](roads.md).
 - Release Samply workflows now exercise actual gameplay road placement on the authored Kuopio map.
   `./run.sh --profile-gameplay-roads` records the windowed path and
   `./run.sh --profile-gameplay-roads-headless` records the CPU-only comparison. Both use identical
