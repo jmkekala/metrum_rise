@@ -499,8 +499,10 @@ Required bounds:
   thermal/boost state from Criterion.
 - `./run.sh --profile-gameplay-roads` is the primary end-to-end CPU profile. It loads the authored
   Kuopio world in a release window, moves the gameplay camera between deterministic sites, and
-  drives the production RoadTool through delayed compiled preview and commit for bends,
-  T-junctions, and four-way junctions. A measured commit ends only after its newer network
+  drives the production RoadTool through delayed compiled preview and commit for a controlled
+  matrix. Orthogonal two-lane bend, T, and four-way cases are the baselines; oblique T, mixed-width
+  four-way, curved bend, close double-T, and chunk-corner four-way cases each vary one named
+  complexity axis. A measured commit ends only after its newer network
   generation is acknowledged and foreground terrain, road, water, border-check, ghost-guide, and
   residency queues have settled; speculative prewarming and ready payload caches are not commit
   fences, and node degree is then a correctness gate. The accompanying JSON records phase
@@ -510,9 +512,12 @@ Required bounds:
   the capture instead of contaminating later fixtures. Fixture centers use a `640 m` cadence so the
   independent `180 m` workloads do not repeatedly align with the `510 m` terrain-patch grid; the
   former `520 m` cadence exposed the tracked `ROAD-06` terrain-CDT correctness bug rather than a
-  stable profiling sample. The fixed default contains 12 fixtures; increasing its repetition count
-  extends the layout and can expose additional `ROAD-06` sites, which are correctness failures rather
-  than profiling samples. A rejected refined-terrain generation is reported immediately with its
+  stable profiling sample. The fixed controlled default contains 32 fixtures: one warmup and three
+  measured repetitions of eight cases. It reloads the authored world between cycles so each case
+  repeats at the same site against a clean network instead of mixing layout cost with accumulated
+  network size or new terrain. The `baseline` matrix retains the former growing site sweep; increasing
+  its repetition count can expose additional correctness sites, which are failures rather than
+  profiling samples. A rejected refined-terrain generation is reported immediately with its
   patch, generation, CDT status, and error instead of waiting for the general timeout. Failure
   cleanup cancels the active road preview before the process exits, and the wrapper validates the
   metrics document because Samply may not propagate the recorded Godot process's nonzero status.

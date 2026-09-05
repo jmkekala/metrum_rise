@@ -75,12 +75,15 @@ The type vocabulary for current and planned transport modes lives in `simulation
 | Access egress | `AgentSystem::tick_access/access_egress_car/*` | Measures the live `ACCESS_EGRESS` car path using a real entrance cache and lane handoff. |
 | Access ingress | `AgentSystem::tick_access/access_ingress_car/*` | Measures the live `ACCESS_INGRESS` car path using a real entrance cache and lane detach/door approach. |
 | Deterministic road chunks | `./run.sh --benchmark-road-chunks` | Measures isolated Rust road generation plus CPU-side Godot chunk upload scaling. |
-| Windowed gameplay roads | `./run.sh --profile-gameplay-roads` | Samply capture of Kuopio load plus production RoadTool preview/commit and renderer settlement for bends, T-junctions, and four-way junctions. |
+| Windowed gameplay roads | `./run.sh --profile-gameplay-roads` | Samply capture of Kuopio load plus production RoadTool preview/commit and renderer settlement for the controlled road-layout matrix. |
 | Headless gameplay roads | `./run.sh --profile-gameplay-roads-headless` | The same deterministic workload with Godot's headless renderer, isolating CPU work from the display/GPU path. |
 
 The gameplay-road commands always build the release library, load
 `maps/processed/Kuopio/kuopio_324km2_10m.sqlite`, run one warmup and three measured repetitions of
-each topology, verify the resulting node degree, and exit. Each segment uses the real interactive
+each selected case, verify every expected node degree, and exit. The default `controlled` matrix has
+orthogonal two-lane bend, T, and four-way baselines plus oblique T, mixed eight-/two-lane four-way,
+curved bend, close double-T, and chunk-corner four-way cases. Each non-baseline case names exactly one
+complexity axis and its comparison baseline. Each segment uses the real interactive
 fast preview, delayed asynchronous compiled preview, full commit validation, simulation-thread
 mutation, local surface/CDT rebuild, Godot `ArrayMesh` staging, terrain/road acknowledgement, and
 water refresh path. The camera follows each fixture and all foreground renderer queues must remain
@@ -94,14 +97,17 @@ records the patch, surface generation, CDT status, and error. The launch wrapper
 metrics document to contain `"success": true`, because Samply can return zero after a recorded Godot
 child exits nonzero.
 
-The fixed default is a 12-fixture benchmark, not an exhaustive terrain sweep. Increasing the
-repetition count extends the fixture layout and can intentionally encounter additional correctness
-sites tracked by `ROAD-06`; such a run fails promptly and is not a valid performance sample. Setting
-the fixture spacing to `520` reproduces the original failing site.
+The fixed controlled default is a 32-fixture benchmark, not an exhaustive terrain sweep. It reloads
+the authored world between its warmup and measured cycles, so every case repeats at the same site and
+clean-network state. `METRUM_GAMEPLAY_BENCHMARK_MATRIX=baseline` selects the former three-case,
+12-fixture growing-network/site-sweep workload. Increasing baseline repetitions can encounter
+additional correctness sites and fails promptly if it does. Setting the baseline matrix and fixture
+spacing to `520` reproduces the original failing site.
 
 Artifacts are timestamped under the ignored `benchmark-results/` directory: the Samply
 `.profile.json.gz`, its presymbolicated `.syms.json` sidecar, a `.metrics.json` file with phase
-timestamps and per-topology p50/p95 timings, and the Godot log. Open a capture with
+timestamps, per-case p50/p95 timings, matrix descriptors, and p50 ratios against each case's named
+baseline, plus the Godot log. Open a capture with
 `samply load benchmark-results/<capture>.profile.json.gz`. Phase entries use Unix milliseconds;
 subtract the profile's `meta.startTime` to select the corresponding interval in Samply. The wrapper
 rejects missing or invalid compressed profiles and missing symbol sidecars. The windowed capture is
@@ -113,11 +119,13 @@ phase timings as separate workloads.
 
 The stable controls are:
 
+- `METRUM_GAMEPLAY_BENCHMARK_MATRIX` selects `controlled` (default) or `baseline`
 - `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` and
   `METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS`
 - `METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC` for each renderer/generation settle fence
 - `METRUM_GAMEPLAY_BENCHMARK_FIXTURE_SPACING_M` for the deterministic fixture-center cadence
-  (default `640`; `520` reproduces the original terrain-CDT case tracked as `ROAD-06`)
+  (default `640`; use the `baseline` matrix with `520` to reproduce the original terrain-CDT case
+  tracked as `ROAD-06`)
 - `METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE` for Samply's Hz rate (default `1000`)
 - `METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH` to intentionally profile another authored world
 - `METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR`, or the individual

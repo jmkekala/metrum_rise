@@ -3,7 +3,7 @@
 ## Deterministic end-to-end road-building profiler workload for Samply captures.
 ##
 ## Loads a real authored world, drives the production RoadTool preview and commit paths, waits for
-## the matching terrain/road/water render work to settle, and verifies bend, T, and four-way nodes.
+## the matching terrain/road/water render work to settle, and verifies a controlled layout matrix.
 ## The harness is only attached when `--gameplay-road-benchmark` is passed on the command line.
 extends Node
 
@@ -16,6 +16,8 @@ const DEFAULT_FIXTURE_SPACING_M := 640
 const FIXTURE_MARGIN_M := 260.0
 const CAMERA_RADIUS_M := 190.0
 const IDLE_STABLE_FRAMES := 5
+const MATRIX_SCHEMA_VERSION := 1
+const DEFAULT_MATRIX_NAME := "controlled"
 
 var simulation_node: Node
 var terrain: Node
@@ -28,6 +30,7 @@ var mode := "windowed"
 var world_path := ""
 var results_path := ""
 var run_id := ""
+var matrix_name := DEFAULT_MATRIX_NAME
 var repetitions := 3
 var warmup_repetitions := 1
 var settle_timeout_sec := 180.0
@@ -43,12 +46,16 @@ func _ready() -> void:
 func run() -> void:
 	_resolve_configuration()
 	_resolve_nodes()
+	var fixture_definitions := _fixture_definitions()
 	_metrics = {
-		"schema_version": 1,
+		"schema_version": 2,
 		"benchmark": BENCHMARK_NAME,
 		"mode": mode,
 		"run_id": run_id,
 		"world_path": world_path,
+		"matrix_name": matrix_name,
+		"matrix_schema_version": MATRIX_SCHEMA_VERSION,
+		"matrix_cases": _fixture_descriptors(fixture_definitions),
 		"repetitions": repetitions,
 		"warmup_repetitions": warmup_repetitions,
 		"fixture_spacing_m": fixture_spacing_m,
@@ -60,6 +67,9 @@ func run() -> void:
 
 	if not _nodes_are_ready():
 		_fail("main scene benchmark dependencies are unavailable")
+		return
+	if fixture_definitions.is_empty():
+		_fail("unknown gameplay road benchmark matrix: %s" % matrix_name)
 		return
 	if not FileAccess.file_exists(world_path):
 		_fail("Kuopio world definition not found: %s" % world_path)
@@ -99,9 +109,10 @@ func run() -> void:
 		_fail("world render work did not settle", load_wait)
 		return
 
-	var fixture_count := (repetitions + warmup_repetitions) * 3
+	var workload := _fixture_workload(fixture_definitions)
+	var fixture_count := workload.size()
 	var selection_phase := _phase_begin("fixture_selection", {"requested": fixture_count})
-	var anchors := _select_fixture_anchors(fixture_count)
+	var anchors := _select_fixture_anchors(workload)
 	_phase_end(selection_phase, {"selected": anchors.size()})
 	if anchors.size() < fixture_count:
 		_fail(
@@ -113,41 +124,34 @@ func run() -> void:
 	input_manager._cancel_active_tool()
 	input_manager.current_tool = input_manager.Tool.ROAD
 	input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
-	road_tool.draw_mode = 0
-	road_tool.fwd_lanes = 1
-	road_tool.bkw_lanes = 1
-
-	var anchor_index := 0
-	for warmup_index in range(warmup_repetitions):
-		for topology in ["bend", "t_junction", "four_way"]:
-			var warmup_result: Dictionary = await _run_fixture(
-				topology,
-				warmup_index,
-				true,
-				anchors[anchor_index]
-			)
-			anchor_index += 1
-			_metrics.fixtures.append(warmup_result)
-			if not bool(warmup_result.get("ok", false)):
-				_fail("warmup fixture failed", warmup_result)
+	var active_cycle_index := -1
+	for workload_index in range(workload.size()):
+		var entry: Dictionary = workload[workload_index]
+		var cycle_index: int = entry["cycle_index"]
+		if (
+			matrix_name == DEFAULT_MATRIX_NAME
+			and active_cycle_index >= 0
+			and cycle_index != active_cycle_index
+		):
+			var reload_result: Dictionary = await _reload_world_for_matrix_cycle(entry)
+			if not bool(reload_result.get("ok", false)):
+				_fail("world reload between matrix cycles failed", reload_result)
 				return
-
-	for repetition in range(repetitions):
-		for topology in ["bend", "t_junction", "four_way"]:
-			var fixture_result: Dictionary = await _run_fixture(
-				topology,
-				repetition,
-				false,
-				anchors[anchor_index]
-			)
-			anchor_index += 1
-			_metrics.fixtures.append(fixture_result)
-			if not bool(fixture_result.get("ok", false)):
-				_fail("measured fixture failed", fixture_result)
-				return
+		active_cycle_index = cycle_index
+		var fixture_result: Dictionary = await _run_fixture(
+			entry["fixture"] as Dictionary,
+			int(entry["repetition"]),
+			bool(entry["warmup"]),
+			anchors[workload_index]
+		)
+		_metrics.fixtures.append(fixture_result)
+		if not bool(fixture_result.get("ok", false)):
+			var fixture_kind := "warmup" if bool(entry["warmup"]) else "measured"
+			_fail("%s fixture failed" % fixture_kind, fixture_result)
+			return
 
 	_stop_scripted_tool()
-	_metrics["summary"] = _build_summary()
+	_metrics["summary"] = _build_summary(fixture_definitions)
 	_metrics["success"] = true
 	_metrics["finished_unix_ms"] = _unix_time_ms()
 	if not _write_metrics():
@@ -171,6 +175,10 @@ func _resolve_configuration() -> void:
 		"METRUM_GAMEPLAY_BENCHMARK_RUN_ID",
 		str(int(Time.get_unix_time_from_system()))
 	)
+	matrix_name = _environment_or(
+		"METRUM_GAMEPLAY_BENCHMARK_MATRIX",
+		DEFAULT_MATRIX_NAME
+	).to_lower()
 	repetitions = _environment_int("METRUM_GAMEPLAY_BENCHMARK_REPETITIONS", 3, 1)
 	warmup_repetitions = _environment_int(
 		"METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS",
@@ -209,45 +217,306 @@ func _nodes_are_ready() -> bool:
 		and camera != null
 	)
 
-func _select_fixture_anchors(required_count: int) -> Array[Vector2]:
+func _reload_world_for_matrix_cycle(entry: Dictionary) -> Dictionary:
+	var identity := {
+		"cycle_index": entry["cycle_index"],
+		"repetition": entry["repetition"],
+		"warmup": entry["warmup"],
+	}
+	var reload_phase := _phase_begin("world_reload", identity)
+	_stop_scripted_tool()
+	var load_call_start_us := Time.get_ticks_usec()
+	var loaded: bool = input_manager.menu_load_world_definition(world_path)
+	var load_call_ms := _elapsed_ms(load_call_start_us)
+	if not loaded:
+		var load_failure := identity.duplicate(true)
+		load_failure["ok"] = false
+		load_failure["load_call_ms"] = load_call_ms
+		_phase_end(reload_phase, load_failure)
+		return load_failure
+	var load_wait: Dictionary = await _wait_for_idle(settle_timeout_sec)
+	var result := identity.duplicate(true)
+	result["ok"] = bool(load_wait.get("ok", false))
+	result["load_call_ms"] = load_call_ms
+	result["settle_ms"] = float(load_wait.get("elapsed_ms", 0.0))
+	result["network_generation"] = simulation_node.get_network_render_generation()
+	if not result.ok:
+		result["wait"] = load_wait
+	_phase_end(reload_phase, result)
+	if result.ok:
+		input_manager.current_tool = input_manager.Tool.ROAD
+		input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
+	return result
+
+func _fixture_definitions() -> Array[Dictionary]:
+	var baselines: Array[Dictionary] = [
+		{
+			"case_id": "bend_90_2l",
+			"topology": "bend",
+			"complexity_axis": "baseline",
+			"baseline_case": "",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2.ZERO),
+				_straight_segment(Vector2.ZERO, Vector2(0.0, 90.0)),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 2)],
+		},
+		{
+			"case_id": "t_90_2l",
+			"topology": "t_junction",
+			"complexity_axis": "baseline",
+			"baseline_case": "",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0)),
+				_straight_segment(Vector2(0.0, 90.0), Vector2.ZERO),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 3)],
+		},
+		{
+			"case_id": "four_way_90_2l",
+			"topology": "four_way",
+			"complexity_axis": "baseline",
+			"baseline_case": "",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0)),
+				_straight_segment(Vector2(0.0, -90.0), Vector2(0.0, 90.0)),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 4)],
+		},
+	]
+	if matrix_name == "baseline":
+		return baselines
+	if matrix_name != DEFAULT_MATRIX_NAME:
+		return []
+
+	var definitions := baselines.duplicate(true) as Array[Dictionary]
+	definitions.append_array([
+		{
+			"case_id": "t_oblique_55deg_2l",
+			"topology": "t_junction",
+			"complexity_axis": "approach_angle",
+			"baseline_case": "t_90_2l",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0)),
+				_straight_segment(_polar_offset(90.0, 55.0), Vector2.ZERO),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 3)],
+		},
+		{
+			"case_id": "four_way_mixed_8l_2l",
+			"topology": "four_way",
+			"complexity_axis": "lane_width",
+			"baseline_case": "four_way_90_2l",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0), 4, 4),
+				_straight_segment(Vector2(0.0, -90.0), Vector2(0.0, 90.0)),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 4)],
+		},
+		{
+			"case_id": "bend_curved_2l",
+			"topology": "bend",
+			"complexity_axis": "spline_curvature",
+			"baseline_case": "bend_90_2l",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2.ZERO),
+				_spline_segment(
+					Vector2.ZERO,
+					Vector2(0.0, 90.0),
+					Vector2(12.0, 45.0)
+				),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 2)],
+		},
+		{
+			"case_id": "double_t_close_2l",
+			"topology": "junction_cluster",
+			"complexity_axis": "local_density",
+			"baseline_case": "t_90_2l",
+			"anchor_alignment": "free",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0)),
+				_straight_segment(Vector2(-32.0, 70.0), Vector2(-32.0, 0.0)),
+				_straight_segment(Vector2(32.0, -70.0), Vector2(32.0, 0.0)),
+			],
+			"junctions": [
+				_junction_check(Vector2(-32.0, 0.0), 3),
+				_junction_check(Vector2(32.0, 0.0), 3),
+			],
+		},
+		{
+			"case_id": "four_way_chunk_corner_2l",
+			"topology": "four_way",
+			"complexity_axis": "chunk_alignment",
+			"baseline_case": "four_way_90_2l",
+			"anchor_alignment": "chunk_corner",
+			"segments": [
+				_straight_segment(Vector2(-90.0, 0.0), Vector2(90.0, 0.0)),
+				_straight_segment(Vector2(0.0, -90.0), Vector2(0.0, 90.0)),
+			],
+			"junctions": [_junction_check(Vector2.ZERO, 4)],
+		},
+	])
+	return definitions
+
+func _straight_segment(
+	start_offset: Vector2,
+	end_offset: Vector2,
+	fwd_lanes: int = 1,
+	bkw_lanes: int = 1
+) -> Dictionary:
+	return {
+		"draw_mode": 0,
+		"start_offset": start_offset,
+		"end_offset": end_offset,
+		"fwd_lanes": fwd_lanes,
+		"bkw_lanes": bkw_lanes,
+	}
+
+func _spline_segment(
+	start_offset: Vector2,
+	end_offset: Vector2,
+	control_offset: Vector2,
+	fwd_lanes: int = 1,
+	bkw_lanes: int = 1
+) -> Dictionary:
+	return {
+		"draw_mode": 1,
+		"start_offset": start_offset,
+		"end_offset": end_offset,
+		"control_offset": control_offset,
+		"fwd_lanes": fwd_lanes,
+		"bkw_lanes": bkw_lanes,
+	}
+
+func _junction_check(offset: Vector2, expected_degree: int) -> Dictionary:
+	return {"offset": offset, "expected_degree": expected_degree}
+
+func _polar_offset(radius_m: float, angle_degrees: float) -> Vector2:
+	var angle_radians := deg_to_rad(angle_degrees)
+	return Vector2(cos(angle_radians), sin(angle_radians)) * radius_m
+
+func _fixture_workload(fixture_definitions: Array[Dictionary]) -> Array[Dictionary]:
+	var workload: Array[Dictionary] = []
+	var cycle_index := 0
+	for warmup_index in range(warmup_repetitions):
+		for fixture in fixture_definitions:
+			workload.append({
+				"fixture": fixture,
+				"repetition": warmup_index,
+				"warmup": true,
+				"cycle_index": cycle_index,
+			})
+		cycle_index += 1
+	for repetition in range(repetitions):
+		for fixture in fixture_definitions:
+			workload.append({
+				"fixture": fixture,
+				"repetition": repetition,
+				"warmup": false,
+				"cycle_index": cycle_index,
+			})
+		cycle_index += 1
+	return workload
+
+func _select_fixture_anchors(workload: Array[Dictionary]) -> Array[Vector2]:
 	var anchors: Array[Vector2] = []
 	var world_size: Vector2 = simulation_node.get_terrain_world_size()
 	var half_width := world_size.x * 0.5 - FIXTURE_MARGIN_M
 	var half_depth := world_size.y * 0.5 - FIXTURE_MARGIN_M
+	var used_anchors: Dictionary = {}
+	var active_cycle_index := -1
+	for entry in workload:
+		var cycle_index: int = entry["cycle_index"]
+		if (
+			matrix_name == DEFAULT_MATRIX_NAME
+			and active_cycle_index >= 0
+			and cycle_index != active_cycle_index
+		):
+			used_anchors.clear()
+		active_cycle_index = cycle_index
+		var fixture: Dictionary = entry["fixture"]
+		var anchor_result := _find_fixture_anchor(
+			fixture,
+			used_anchors,
+			half_width,
+			half_depth
+		)
+		if not bool(anchor_result.get("ok", false)):
+			return anchors
+		var anchor: Vector2 = anchor_result["anchor"]
+		anchors.append(anchor)
+		used_anchors[anchor] = true
+	return anchors
+
+func _find_fixture_anchor(
+	fixture: Dictionary,
+	used_anchors: Dictionary,
+	half_width: float,
+	half_depth: float
+) -> Dictionary:
 	for ring in range(0, 20):
 		for grid_z in range(-ring, ring + 1):
 			for grid_x in range(-ring, ring + 1):
 				if maxi(absi(grid_x), absi(grid_z)) != ring:
 					continue
-				var anchor := Vector2(
+				var raw_anchor := Vector2(
 					float(grid_x) * fixture_spacing_m,
 					float(grid_z) * fixture_spacing_m
 				)
-				if absf(anchor.x) + ROAD_HALF_SPAN_M > half_width:
+				var anchor := _align_fixture_anchor(raw_anchor, fixture)
+				if used_anchors.has(anchor):
 					continue
-				if absf(anchor.y) + ROAD_HALF_SPAN_M > half_depth:
+				if not _fixture_fits_world(anchor, fixture, half_width, half_depth):
 					continue
-				if not _anchor_supports_all_topologies(anchor):
+				if not _anchor_supports_fixture(anchor, fixture):
 					continue
-				anchors.append(anchor)
-				if anchors.size() >= required_count:
-					return anchors
-	return anchors
+				return {"ok": true, "anchor": anchor}
+	return {"ok": false}
 
-func _anchor_supports_all_topologies(anchor: Vector2) -> bool:
-	var left := anchor + Vector2(-ROAD_HALF_SPAN_M, 0.0)
-	var right := anchor + Vector2(ROAD_HALF_SPAN_M, 0.0)
-	var down := anchor + Vector2(0.0, -ROAD_HALF_SPAN_M)
-	var up := anchor + Vector2(0.0, ROAD_HALF_SPAN_M)
-	for endpoints in [[left, anchor], [anchor, up], [left, right], [down, up]]:
-		var points := PackedVector3Array([
-			_surface_point(endpoints[0]),
-			_surface_point(endpoints[1]),
-		])
+func _align_fixture_anchor(anchor: Vector2, fixture: Dictionary) -> Vector2:
+	if fixture.get("anchor_alignment", "free") != "chunk_corner":
+		return anchor
+	var chunk_span_m: float = road_tool._road_chunk_span_m
+	if chunk_span_m <= 0.0:
+		return anchor
+	return Vector2(
+		road_tool._road_chunk_origin_x_m
+			+ round((anchor.x - road_tool._road_chunk_origin_x_m) / chunk_span_m) * chunk_span_m,
+		road_tool._road_chunk_origin_z_m
+			+ round((anchor.y - road_tool._road_chunk_origin_z_m) / chunk_span_m) * chunk_span_m
+	)
+
+func _fixture_fits_world(
+	anchor: Vector2,
+	fixture: Dictionary,
+	half_width: float,
+	half_depth: float
+) -> bool:
+	for segment_variant in fixture["segments"]:
+		var segment: Dictionary = segment_variant
+		for field in ["start_offset", "end_offset", "control_offset"]:
+			if not segment.has(field):
+				continue
+			var point: Vector2 = anchor + segment[field]
+			if absf(point.x) > half_width or absf(point.y) > half_depth:
+				return false
+	return true
+
+func _anchor_supports_fixture(anchor: Vector2, fixture: Dictionary) -> bool:
+	for segment_variant in fixture["segments"]:
+		var segment: Dictionary = segment_variant
+		var points := _segment_surface_points(anchor, segment)
 		var validation_variant = simulation_node.validate_road_candidate_with_snap(
 			points,
-			1,
-			1,
+			int(segment["fwd_lanes"]),
+			int(segment["bkw_lanes"]),
 			true
 		)
 		if not validation_variant is Dictionary:
@@ -256,14 +525,39 @@ func _anchor_supports_all_topologies(anchor: Vector2) -> bool:
 			return false
 	return true
 
+func _segment_surface_points(anchor: Vector2, segment: Dictionary) -> PackedVector3Array:
+	var start_pos := _surface_point(anchor + segment["start_offset"])
+	var end_pos := _surface_point(anchor + segment["end_offset"])
+	var curve := Curve3D.new()
+	curve.bake_interval = 0.5
+	curve.up_vector_enabled = false
+	if int(segment["draw_mode"]) == 0:
+		curve.add_point(start_pos)
+		curve.add_point(end_pos)
+	else:
+		var control_pos := _surface_point(anchor + segment["control_offset"])
+		var start_tangent := control_pos - start_pos
+		var end_tangent := end_pos - control_pos
+		curve.add_point(start_pos, Vector3.ZERO, start_tangent)
+		curve.add_point(end_pos, -end_tangent, Vector3.ZERO)
+	var previous_draw_mode: int = road_tool.draw_mode
+	road_tool.draw_mode = int(segment["draw_mode"])
+	var points: PackedVector3Array = road_tool._road_surface_points_from_curve(curve)
+	road_tool.draw_mode = previous_draw_mode
+	return points
+
 func _run_fixture(
-	topology: String,
+	fixture_definition: Dictionary,
 	repetition: int,
 	is_warmup: bool,
 	anchor: Vector2
 ) -> Dictionary:
 	var identity := {
-		"topology": topology,
+		"case_id": fixture_definition["case_id"],
+		"topology": fixture_definition["topology"],
+		"complexity_axis": fixture_definition["complexity_axis"],
+		"baseline_case": fixture_definition["baseline_case"],
+		"anchor_alignment": fixture_definition["anchor_alignment"],
 		"repetition": repetition,
 		"warmup": is_warmup,
 		"anchor_x": anchor.x,
@@ -287,16 +581,15 @@ func _run_fixture(
 	var fixture_start_us := Time.get_ticks_usec()
 	var fixture := identity.duplicate(true)
 	fixture["segments"] = []
-	var segments := _topology_segments(topology, anchor)
+	var segments: Array = fixture_definition["segments"]
 	for segment_index in range(segments.size()):
-		var endpoints: Array = segments[segment_index]
 		var segment_result: Dictionary = await _run_segment(
-			topology,
+			fixture_definition,
 			repetition,
 			is_warmup,
 			segment_index,
-			endpoints[0],
-			endpoints[1]
+			anchor,
+			segments[segment_index]
 		)
 		fixture.segments.append(segment_result)
 		if not bool(segment_result.get("ok", false)):
@@ -306,51 +599,67 @@ func _run_fixture(
 			_phase_end(fixture_phase, {"ok": false, "error": fixture.error})
 			return fixture
 
-	var junction_point := _surface_point(anchor)
-	var junction_id: int = simulation_node.get_closest_node(junction_point, 8.0)
-	var actual_degree := (
-		int(simulation_node.get_node_connection_count(junction_id)) if junction_id >= 0 else -1
-	)
-	var expected_degree := _expected_junction_degree(topology)
-	fixture["junction_node_id"] = junction_id
-	fixture["junction_degree"] = actual_degree
-	fixture["expected_junction_degree"] = expected_degree
+	var junction_results: Array[Dictionary] = []
+	var junctions_match := true
+	for junction_variant in fixture_definition["junctions"]:
+		var junction: Dictionary = junction_variant
+		var junction_offset: Vector2 = junction["offset"]
+		var junction_point := _surface_point(anchor + junction_offset)
+		var junction_id: int = simulation_node.get_closest_node(junction_point, 8.0)
+		var actual_degree := (
+			int(simulation_node.get_node_connection_count(junction_id)) if junction_id >= 0 else -1
+		)
+		var expected_degree: int = junction["expected_degree"]
+		var junction_matches := junction_id >= 0 and actual_degree == expected_degree
+		junction_results.append({
+			"offset": [junction_offset.x, junction_offset.y],
+			"node_id": junction_id,
+			"degree": actual_degree,
+			"expected_degree": expected_degree,
+			"ok": junction_matches,
+		})
+		junctions_match = junctions_match and junction_matches
+	fixture["junctions"] = junction_results
 	fixture["total_ms"] = _elapsed_ms(fixture_start_us)
-	fixture["ok"] = junction_id >= 0 and actual_degree == expected_degree
+	fixture["ok"] = junctions_match
 	if not fixture.ok:
-		fixture["error"] = "junction degree mismatch: expected %d, got %d" % [
-			expected_degree,
-			actual_degree,
-		]
+		fixture["error"] = "one or more junction degree checks failed"
 	_phase_end(
 		fixture_phase,
 		{
 			"ok": fixture.ok,
 			"total_ms": fixture.total_ms,
-			"junction_degree": actual_degree,
+			"junctions": junction_results,
 		}
 	)
 	return fixture
 
 func _run_segment(
-	topology: String,
+	fixture_definition: Dictionary,
 	repetition: int,
 	is_warmup: bool,
 	segment_index: int,
-	start_xz: Vector2,
-	end_xz: Vector2
+	anchor: Vector2,
+	segment: Dictionary
 ) -> Dictionary:
+	var start_xz: Vector2 = anchor + segment["start_offset"]
+	var end_xz: Vector2 = anchor + segment["end_offset"]
 	var identity := {
-		"topology": topology,
+		"case_id": fixture_definition["case_id"],
+		"topology": fixture_definition["topology"],
 		"repetition": repetition,
 		"warmup": is_warmup,
 		"segment": segment_index,
 	}
 	var start_pos := _surface_point(start_xz)
 	var end_pos := _surface_point(end_xz)
+	var prepared_points := _segment_surface_points(anchor, segment)
+	var draw_mode: int = segment["draw_mode"]
+	var fwd_lanes: int = segment["fwd_lanes"]
+	var bkw_lanes: int = segment["bkw_lanes"]
 	var preview_phase := _phase_begin("road_preview", identity)
 	var preview_start_us := Time.get_ticks_usec()
-	_begin_scripted_road(start_pos, end_pos)
+	_begin_scripted_road(anchor, segment, start_pos, end_pos)
 	var preview_wait: Dictionary = await _wait_for_preview(settle_timeout_sec)
 	var preview_ms := _elapsed_ms(preview_start_us)
 	_phase_end(
@@ -390,6 +699,11 @@ func _run_segment(
 	var commit_ms := _elapsed_ms(commit_start_us)
 	var result := {
 		"ok": bool(settle.get("ok", false)),
+		"draw_mode": "spline" if draw_mode == 1 else "straight",
+		"fwd_lanes": fwd_lanes,
+		"bkw_lanes": bkw_lanes,
+		"surface_point_count": prepared_points.size(),
+		"surface_length_m": _polyline_length(prepared_points),
 		"preview_ms": preview_ms,
 		"commit_dispatch_ms": dispatch_ms,
 		"commit_ms": commit_ms,
@@ -417,14 +731,23 @@ func _run_segment(
 	)
 	return result
 
-func _begin_scripted_road(start_pos: Vector3, end_pos: Vector3) -> void:
+func _begin_scripted_road(
+	anchor: Vector2,
+	segment: Dictionary,
+	start_pos: Vector3,
+	end_pos: Vector3
+) -> void:
 	road_tool.cancel_road()
 	road_tool.active = true
-	road_tool.draw_mode = 0
-	road_tool.fwd_lanes = 1
-	road_tool.bkw_lanes = 1
+	road_tool.draw_mode = int(segment["draw_mode"])
+	road_tool.fwd_lanes = int(segment["fwd_lanes"])
+	road_tool.bkw_lanes = int(segment["bkw_lanes"])
 	road_tool.start_pos = start_pos
-	road_tool.control_pos = start_pos
+	road_tool.control_pos = (
+		_surface_point(anchor + segment["control_offset"])
+		if segment.has("control_offset")
+		else start_pos
+	)
 	road_tool.current_state = RoadToolScript.State.SETTING_END
 	road_tool.set_scripted_pointer(true, end_pos)
 	road_tool.current_path = Path3D.new()
@@ -557,30 +880,6 @@ func _pending_work_snapshot() -> Dictionary:
 		"water": water.get_pending_render_work_counts(),
 	}
 
-func _topology_segments(topology: String, anchor: Vector2) -> Array:
-	var left := anchor + Vector2(-ROAD_HALF_SPAN_M, 0.0)
-	var right := anchor + Vector2(ROAD_HALF_SPAN_M, 0.0)
-	var down := anchor + Vector2(0.0, -ROAD_HALF_SPAN_M)
-	var up := anchor + Vector2(0.0, ROAD_HALF_SPAN_M)
-	match topology:
-		"bend":
-			return [[left, anchor], [anchor, up]]
-		"t_junction":
-			return [[left, right], [up, anchor]]
-		"four_way":
-			return [[left, right], [down, up]]
-	return []
-
-func _expected_junction_degree(topology: String) -> int:
-	match topology:
-		"bend":
-			return 2
-		"t_junction":
-			return 3
-		"four_way":
-			return 4
-	return -1
-
 func _surface_point(position: Vector2) -> Vector3:
 	return Vector3(
 		position.x,
@@ -588,28 +887,100 @@ func _surface_point(position: Vector2) -> Vector3:
 		position.y
 	)
 
-func _build_summary() -> Dictionary:
-	var summary := {}
-	for topology in ["bend", "t_junction", "four_way"]:
+func _build_summary(fixture_definitions: Array[Dictionary]) -> Dictionary:
+	var cases := {}
+	for fixture_definition in fixture_definitions:
+		var case_id: String = fixture_definition["case_id"]
 		var preview_values: Array[float] = []
 		var commit_values: Array[float] = []
 		var total_values: Array[float] = []
 		for fixture_variant in _metrics.fixtures:
 			var fixture: Dictionary = fixture_variant
-			if bool(fixture.get("warmup", false)) or fixture.get("topology", "") != topology:
+			if bool(fixture.get("warmup", false)) or fixture.get("case_id", "") != case_id:
 				continue
 			total_values.append(float(fixture.get("total_ms", 0.0)))
 			for segment_variant in fixture.get("segments", []):
 				var segment: Dictionary = segment_variant
 				preview_values.append(float(segment.get("preview_ms", 0.0)))
 				commit_values.append(float(segment.get("commit_ms", 0.0)))
-		summary[topology] = {
+		cases[case_id] = {
+			"topology": fixture_definition["topology"],
+			"complexity_axis": fixture_definition["complexity_axis"],
+			"baseline_case": fixture_definition["baseline_case"],
 			"fixture_count": total_values.size(),
 			"preview_ms": _distribution(preview_values),
 			"commit_ms": _distribution(commit_values),
 			"fixture_total_ms": _distribution(total_values),
 		}
-	return summary
+
+	var comparisons := {}
+	for fixture_definition in fixture_definitions:
+		var case_id: String = fixture_definition["case_id"]
+		var baseline_case: String = fixture_definition["baseline_case"]
+		if baseline_case.is_empty() or not cases.has(baseline_case):
+			continue
+		var current: Dictionary = cases[case_id]
+		var baseline: Dictionary = cases[baseline_case]
+		comparisons[case_id] = {
+			"baseline_case": baseline_case,
+			"preview_p50_ratio": _distribution_ratio(current, baseline, "preview_ms"),
+			"commit_p50_ratio": _distribution_ratio(current, baseline, "commit_ms"),
+			"fixture_total_p50_ratio": _distribution_ratio(
+				current,
+				baseline,
+				"fixture_total_ms"
+			),
+		}
+	return {"cases": cases, "comparisons": comparisons}
+
+func _distribution_ratio(current: Dictionary, baseline: Dictionary, field: String) -> float:
+	var baseline_p50 := float((baseline[field] as Dictionary).get("p50", 0.0))
+	if baseline_p50 <= 0.0:
+		return 0.0
+	return float((current[field] as Dictionary).get("p50", 0.0)) / baseline_p50
+
+func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dictionary]:
+	var descriptors: Array[Dictionary] = []
+	for fixture in fixture_definitions:
+		var segments: Array[Dictionary] = []
+		for segment_variant in fixture["segments"]:
+			var segment: Dictionary = segment_variant
+			var descriptor := {
+				"draw_mode": "spline" if int(segment["draw_mode"]) == 1 else "straight",
+				"start_offset": _vector2_array(segment["start_offset"]),
+				"end_offset": _vector2_array(segment["end_offset"]),
+				"fwd_lanes": segment["fwd_lanes"],
+				"bkw_lanes": segment["bkw_lanes"],
+			}
+			if segment.has("control_offset"):
+				descriptor["control_offset"] = _vector2_array(segment["control_offset"])
+			segments.append(descriptor)
+		var junctions: Array[Dictionary] = []
+		for junction_variant in fixture["junctions"]:
+			var junction: Dictionary = junction_variant
+			junctions.append({
+				"offset": _vector2_array(junction["offset"]),
+				"expected_degree": junction["expected_degree"],
+			})
+		descriptors.append({
+			"case_id": fixture["case_id"],
+			"topology": fixture["topology"],
+			"complexity_axis": fixture["complexity_axis"],
+			"baseline_case": fixture["baseline_case"],
+			"anchor_alignment": fixture["anchor_alignment"],
+			"segments": segments,
+			"junctions": junctions,
+		})
+	return descriptors
+
+func _vector2_array(value: Vector2) -> Array[float]:
+	return [value.x, value.y]
+
+func _polyline_length(points: PackedVector3Array) -> float:
+	var length_m := 0.0
+	for index in range(1, points.size()):
+		length_m += points[index - 1].distance_to(points[index])
+	return length_m
 
 func _distribution(values: Array[float]) -> Dictionary:
 	if values.is_empty():
