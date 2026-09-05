@@ -72,7 +72,7 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for region in &piece.span_owned_regions {
+        for region in piece.span_owned_regions.iter() {
             Self::visit_visual_polygon_triangles(&region.polygon, visitor);
         }
     }
@@ -97,7 +97,7 @@ impl RoadSurfaceSystem {
     ) where
         F: FnMut([RoadVec3; 3]),
     {
-        for region in &piece.span_earthwork_support_regions {
+        for region in piece.span_earthwork_support_regions.iter() {
             Self::visit_visual_polygon_triangles(&region.polygon, visitor);
         }
     }

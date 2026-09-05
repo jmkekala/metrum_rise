@@ -7,6 +7,13 @@ use super::grade::{
 use super::model::*;
 use super::seams::*;
 use super::*;
+use std::time::Instant;
+
+fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn build_node_height_solution_from_ownership(
@@ -32,18 +39,45 @@ impl NodeHeightSolution {
         rails: Option<&NodeRailContourSet>,
         ownership: &NodeBooleanOwnership,
     ) -> Result<Self, NodeHeightFieldError> {
+        let road_debug = crate::debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
         validate_input_ownership_pair(input, ownership)?;
+
+        let fields_start = road_debug.then(Instant::now);
         let mut fields = height_fields_by_source_for_ownership(input, rails, Some(ownership))?;
-        register_owned_region_contour_support(&mut fields, ownership)?;
-        let resolved_authority = pre_height_field_completeness_gate(ownership, &fields)?;
+        let fields_ms = elapsed_profile_ms(fields_start);
+        // Ownership regions are already canonical and immutable at this stage. Their completeness
+        // points feed both support registration and authority resolution, so compute the sorted
+        // exact point sets once instead of rebuilding a tree for every region in both passes.
+        let completeness_start = road_debug.then(Instant::now);
+        let completeness_points = ownership
+            .owned_regions
+            .iter()
+            .map(pre_height_completeness_points)
+            .collect::<Vec<_>>();
+        let completeness_ms = elapsed_profile_ms(completeness_start);
+        let register_start = road_debug.then(Instant::now);
+        register_owned_region_contour_support_with_points(
+            &mut fields,
+            ownership,
+            &completeness_points,
+        )?;
+        let register_ms = elapsed_profile_ms(register_start);
+        let authority_start = road_debug.then(Instant::now);
+        let resolved_authority =
+            pre_height_field_completeness_gate(ownership, &fields, &completeness_points)?;
+        let authority_ms = elapsed_profile_ms(authority_start);
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
 
+        let regions_start = road_debug.then(Instant::now);
         for region in &ownership.owned_regions {
             let region = heighted_region(region, &fields, Some(&resolved_authority))?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
         }
+        let regions_ms = elapsed_profile_ms(regions_start);
+        let normalization_start = road_debug.then(Instant::now);
         match ownership.piece_kind {
             RoadSurfaceVisualNodePieceKind::JunctionN => {
                 apply_junctionn_height_authority_normalization(&mut regions)?;
@@ -53,8 +87,45 @@ impl NodeHeightSolution {
             }
             RoadSurfaceVisualNodePieceKind::Terminal => {}
         }
+        let normalization_ms = elapsed_profile_ms(normalization_start);
+        let seam_validation_start = road_debug.then(Instant::now);
         validate_explicit_material_seam_heights(&regions)?;
+        let seam_validation_ms = elapsed_profile_ms(seam_validation_start);
+        let source_validation_start = road_debug.then(Instant::now);
         validate_shared_source_height_agreement(&regions)?;
+        let source_validation_ms = elapsed_profile_ms(source_validation_start);
+
+        if road_debug {
+            let total_ms = elapsed_profile_ms(total_start);
+            if total_ms >= 2.0 {
+                let completeness_point_count =
+                    completeness_points.iter().map(Vec::len).sum::<usize>();
+                let patch_count = fields
+                    .values()
+                    .map(|field| field.patches.len())
+                    .sum::<usize>();
+                crate::debug_log!(
+                    "road",
+                    "node_height_build_detail node={} kind={:?} fields={} patches={} ownership_regions={} completeness_points={} output_regions={} fields_ms={:.3} completeness_ms={:.3} register_ms={:.3} authority_ms={:.3} regions_ms={:.3} normalization_ms={:.3} seam_validation_ms={:.3} source_validation_ms={:.3} total_ms={:.3}",
+                    ownership.node_id,
+                    ownership.piece_kind,
+                    fields.len(),
+                    patch_count,
+                    ownership.owned_regions.len(),
+                    completeness_point_count,
+                    regions.len(),
+                    fields_ms,
+                    completeness_ms,
+                    register_ms,
+                    authority_ms,
+                    regions_ms,
+                    normalization_ms,
+                    seam_validation_ms,
+                    source_validation_ms,
+                    total_ms,
+                );
+            }
+        }
 
         Ok(Self {
             node_id: ownership.node_id,
@@ -67,15 +138,22 @@ impl NodeHeightSolution {
 fn pre_height_field_completeness_gate(
     ownership: &NodeBooleanOwnership,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    completeness_points: &[Vec<RoadVec2>],
 ) -> Result<NodeResolvedHeightAuthorityMap, NodeHeightFieldError> {
-    NodeResolvedHeightAuthorityMap::from_ownership(ownership, fields)
+    NodeResolvedHeightAuthorityMap::from_ownership_with_points(
+        ownership,
+        fields,
+        completeness_points,
+    )
 }
 
-pub(super) fn register_owned_region_contour_support(
+fn register_owned_region_contour_support_with_points(
     fields: &mut BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
     ownership: &NodeBooleanOwnership,
+    completeness_points: &[Vec<RoadVec2>],
 ) -> Result<(), NodeHeightFieldError> {
-    for region in &ownership.owned_regions {
+    debug_assert_eq!(ownership.owned_regions.len(), completeness_points.len());
+    for (region, region_points) in ownership.owned_regions.iter().zip(completeness_points) {
         let band_index =
             region
                 .source_band_index
@@ -103,7 +181,7 @@ pub(super) fn register_owned_region_contour_support(
                 source_kind: field.kind,
             });
         }
-        for point_xz in pre_height_completeness_points(region) {
+        for &point_xz in region_points {
             field.register_contour_edge_support(region.owner, region.claim_priority, point_xz);
             field.register_owned_region_source_handoff(
                 region.owner,

@@ -10,8 +10,7 @@ use super::super::segments::{
 };
 use super::seams::{
     NodeRegionSeamConstraint, owners_for_material_seam_constraint, seam_constraint_covers_edge,
-    seam_constraint_covers_key, seam_constraint_matches_owner_pair,
-    seam_constraint_opposite_owner_for_edge_owner,
+    seam_constraint_matches_owner_pair, seam_constraint_opposite_owner_for_edge_owner,
 };
 use super::{
     NodeArrangement, NodeArrangementEdge, NodeArrangementKey, NodeBandOwner, NodeOwnedRegionId,

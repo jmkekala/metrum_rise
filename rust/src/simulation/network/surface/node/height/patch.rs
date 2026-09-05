@@ -311,38 +311,38 @@ impl NodeBandHeightPatch {
         point_xz: RoadVec2,
         triangles: &[NodeBandHeightTriangle],
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
-        let mut candidates = Vec::new();
+        let mut candidate = None;
         for triangle in triangles {
             if let Some(height_m) = triangle.height_at(point_xz) {
-                candidates.push(height_m);
+                let height_mm = quantize_m(height_m);
+                if let Some((first_height_m, first_height_mm)) = candidate {
+                    if height_mm != first_height_mm {
+                        let key = NodeHeightPointKey::from_point(point_xz);
+                        return Err(NodeHeightFieldError::SourceHeightFieldConflict {
+                            mouth_order_index: id.mouth_order_index(),
+                            band_index: id.band_index(),
+                            source_kind,
+                            height_field_id: id,
+                            owner: self.authority.owner,
+                            existing_authority: self.authority.source(),
+                            incoming_authority: self.authority.source(),
+                            point_x_mm: key.x_mm(),
+                            point_z_mm: key.z_mm(),
+                            existing_height_mm: first_height_mm,
+                            incoming_height_mm: height_mm,
+                        });
+                    }
+                    candidate = Some((first_height_m, first_height_mm));
+                } else {
+                    candidate = Some((height_m, height_mm));
+                }
             }
         }
-        if candidates.is_empty() {
+        let Some((first_height_m, _)) = candidate else {
             return Ok(NodeHeightPatchEvaluation::Outside(
                 self.outside_field_error(id, source_kind, point_xz, "triangle", f64::NAN),
             ));
-        }
-        let first_height_m = candidates[0];
-        let first_height_mm = quantize_m(first_height_m);
-        for height_m in candidates.iter().copied().skip(1) {
-            let height_mm = quantize_m(height_m);
-            if height_mm != first_height_mm {
-                let key = NodeHeightPointKey::from_point(point_xz);
-                return Err(NodeHeightFieldError::SourceHeightFieldConflict {
-                    mouth_order_index: id.mouth_order_index(),
-                    band_index: id.band_index(),
-                    source_kind,
-                    height_field_id: id,
-                    owner: self.authority.owner,
-                    existing_authority: self.authority.source(),
-                    incoming_authority: self.authority.source(),
-                    point_x_mm: key.x_mm(),
-                    point_z_mm: key.z_mm(),
-                    existing_height_mm: first_height_mm,
-                    incoming_height_mm: height_mm,
-                });
-            }
-        }
+        };
         Ok(NodeHeightPatchEvaluation::Inside(first_height_m))
     }
 

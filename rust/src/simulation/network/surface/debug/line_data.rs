@@ -20,7 +20,7 @@ impl RoadSurfaceSystem {
             let Some(sections) = self.compiled_sections.get(&edge_idx) else {
                 continue;
             };
-            for section in sections {
+            for section in sections.iter() {
                 let profile = self.section_profile_world_points(section);
                 if let (Some(first), Some(last)) = (profile.first(), profile.last()) {
                     data.section_lines.push(backend::road_vec3_to_godot(*first));

@@ -17,9 +17,16 @@ impl RoadSurfaceSystem {
         self.clear_piece_chunk_coverage();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();
+        let mut terrain_grading_cache = self
+            .terrain_grading_cache
+            .lock()
+            .expect("road terrain grading cache lock poisoned");
+        terrain_grading_cache.span_loops.clear();
+        terrain_grading_cache.node_loops.clear();
         self.last_rebuilt_surface_chunks.clear();
         self.last_rebuilt_terrain_chunks.clear();
         self.last_rebuilt_query_chunks.clear();
+        self.last_reused_span_topology_count = 0;
         self.last_reused_node_topology_count = 0;
         self.last_reused_node_height_topology_count = 0;
         self.last_reused_node_ownership_topology_count = 0;

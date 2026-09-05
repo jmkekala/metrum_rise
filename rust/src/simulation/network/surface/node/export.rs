@@ -178,6 +178,34 @@ impl RoadSurfaceSystem {
         ),
         NodeBoundaryExportError,
     > {
+        Self::node_surface_regions_from_arrangement_with_profile_and_incremental_reuse_for_identity(
+            arrangement.node_id(),
+            arrangement.piece_kind(),
+            arrangement,
+            ownership_footprint_shapes,
+            base_explicit_vertical_step_segments,
+            profile_enabled,
+            previous,
+        )
+    }
+
+    pub(in crate::simulation::network::surface::node) fn node_surface_regions_from_arrangement_with_profile_and_incremental_reuse_for_identity(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        arrangement: &NodeArrangement,
+        ownership_footprint_shapes: &super::NodeOverlayShapes,
+        base_explicit_vertical_step_segments: &[arrangement::NodeExplicitVerticalStepSegment],
+        profile_enabled: bool,
+        previous: Option<&NodeExportIncrementalCache>,
+    ) -> Result<
+        (
+            super::NodeSurfaceRegionResult,
+            NodeExportProfile,
+            NodeExportIncrementalCache,
+            NodeExportReuseStats,
+        ),
+        NodeBoundaryExportError,
+    > {
         let total_start = profile_enabled.then(Instant::now);
         let mut profile = NodeExportProfile {
             arrangement_faces: arrangement.faces().len(),
@@ -250,8 +278,8 @@ impl RoadSurfaceSystem {
         profile.sorting_ms += elapsed_profile_ms(sorting_start);
         let boundary_sources_start = profile_enabled.then(Instant::now);
         let mut boundary_export_sources = NodeFootprintBoundaryExportSources::from_owned_regions(
-            arrangement.node_id(),
-            arrangement.piece_kind(),
+            node_id,
+            piece_kind,
             &owned_regions,
             &node_top_surface_sources,
             &node_grade_authorities,
@@ -323,8 +351,8 @@ impl RoadSurfaceSystem {
         let earthwork_boundary_start = profile_enabled.then(Instant::now);
         let mut earthwork_boundary_segments =
             node_earthwork_boundary_segments_from_footprint_loops(
-                arrangement.node_id(),
-                arrangement.piece_kind(),
+                node_id,
+                piece_kind,
                 &footprint_boundary_point_loops,
                 &boundary_export_sources,
             )?;

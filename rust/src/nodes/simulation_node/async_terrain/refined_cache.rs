@@ -238,7 +238,7 @@ impl SimCore {
             {
                 self.refined_terrain_patch_cache.remove(&key);
             }
-            let previous = self.refined_terrain_patch_cache.get(&key);
+            let previous = self.refined_terrain_patch_cache.get(&key).cloned();
             let sites = self.allocator.terrain_site_snapshot_for_world_bounds(
                 base_patch.world_origin_x - patch_query_margin_m,
                 base_patch.world_origin_z - patch_query_margin_m,
@@ -255,7 +255,7 @@ impl SimCore {
                     graph: &self.region_graph,
                     road_surface: &self.transit_network.road_surface,
                 }),
-                previous.map(Arc::as_ref),
+                previous.as_deref(),
             );
             let requires_road_clipping = SimulationNode::road_clip_query_requires_road_clipping(
                 &road_clip_query,
@@ -265,6 +265,7 @@ impl SimCore {
                 key,
                 surface_generation,
                 patch: base_patch,
+                previous_patch: previous,
                 windows: window_plan.windows,
                 reused_windows: window_plan.reused_windows,
                 input_clip_loop_count: window_plan.represented_road_loop_count,
@@ -465,6 +466,21 @@ impl SimCore {
                     .iter()
                     .copied()
                     .collect::<BTreeSet<_>>();
+                let reusable_mesh_buffers = input.previous_patch.as_ref().and_then(|previous| {
+                    (previous.contract_revision == TERRAIN_CDT_CONTRACT_REVISION
+                        && previous.key == input.key
+                        && previous.patch == input.patch
+                        && previous.windows.len() == windows.len()
+                        && previous
+                            .windows
+                            .iter()
+                            .zip(&windows)
+                            .all(|(left, right)| Arc::ptr_eq(left, right)))
+                    .then(|| previous.mesh_buffers.as_ref())
+                    .flatten()
+                    .filter(|buffers| buffers.variant_payload_valid)
+                    .cloned()
+                });
                 let clip_manifest_error_label = (road_clip_fingerprints
                     != expected_road_clip_fingerprints
                     || site_clip_fingerprints != expected_site_clip_fingerprints)
@@ -523,25 +539,27 @@ impl SimCore {
                 if entry.input_road_loops > 0
                     && SimulationNode::cached_refined_cdt_failure_label(&entry).is_none()
                 {
-                    let successful_windows = entry
-                        .windows
-                        .iter()
-                        .filter_map(|window| {
-                            window
-                                .mesh_result
-                                .as_ref()
-                                .ok()
-                                .map(|mesh| (window.as_ref(), mesh))
-                        })
-                        .collect::<Vec<_>>();
-                    debug_assert_eq!(successful_windows.len(), entry.windows.len());
-                    entry.mesh_buffers = Some(Arc::new(
-                        SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
-                            &entry.patch,
-                            &successful_windows,
-                            (entry.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
-                        ),
-                    ));
+                    entry.mesh_buffers = reusable_mesh_buffers.or_else(|| {
+                        let successful_windows = entry
+                            .windows
+                            .iter()
+                            .filter_map(|window| {
+                                window
+                                    .mesh_result
+                                    .as_ref()
+                                    .ok()
+                                    .map(|mesh| (window.as_ref(), mesh))
+                            })
+                            .collect::<Vec<_>>();
+                        debug_assert_eq!(successful_windows.len(), entry.windows.len());
+                        Some(Arc::new(
+                            SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+                                &entry.patch,
+                                &successful_windows,
+                                (entry.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
+                            ),
+                        ))
+                    });
                 }
                 Arc::new(entry)
             })

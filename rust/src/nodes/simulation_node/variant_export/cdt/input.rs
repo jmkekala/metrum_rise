@@ -1,14 +1,15 @@
 //! Terrain CDT input, windowing, fingerprint, and sampling helpers.
 
 use super::super::super::*;
+use crate::simulation::core::round_f64_to_i64;
 use crate::simulation::terrain::cdt::{
     TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
     clip_terrain_cdt_road_loop_to_patch, clip_terrain_cdt_segment_to_patch,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 const TERRAIN_CDT_MIN_WINDOW_EXTENT_M: f32 = 0.001;
-// Two 32 m road-query cells per CDT tile keeps the production 2 m grid at only 1,089 samples.
+// Two 32 m road-query cells per CDT tile bound each independently cached road rebuild.
 const TERRAIN_CDT_TILE_SPAN_MM: i64 = 64_000;
 const TERRAIN_CDT_TILE_HALO_M: f32 = 64.0;
 pub(in crate::nodes::simulation_node) const TERRAIN_CDT_TILE_NEIGHBORS: [(i64, i64); 4] =
@@ -105,7 +106,7 @@ impl SimulationNode {
             };
             let mut guide_samples = Vec::new();
             let mut guide_constraints = Vec::new();
-            let mut sample_keys = BTreeMap::new();
+            let mut sample_keys = HashSet::new();
             RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
                 terrain,
                 std::slice::from_ref(road_loop),
@@ -320,13 +321,12 @@ impl SimulationNode {
             })
             .collect::<BTreeMap<_, _>>();
 
-        let mut tile_queries = rebuild_tiles
-            .iter()
-            .copied()
-            .collect::<Vec<_>>()
+        // Neighboring dirty tiles have heavily overlapping query halos. Union their road
+        // footprints once, then distribute exact grading influence back to each tile.
+        let mut group_queries = Self::terrain_cdt_connected_tile_groups(&rebuild_tiles)
             .into_par_iter()
-            .filter_map(|tile_id| {
-                let bounds = Self::terrain_cdt_tile_bounds(patch, tile_id)?;
+            .filter_map(|tile_ids| {
+                let bounds = Self::terrain_cdt_tile_group_bounds(patch, &tile_ids)?;
                 let query = Self::road_clip_loop_query_for_snapshot(
                     graph,
                     road_surface,
@@ -353,14 +353,9 @@ impl SimulationNode {
                             std::slice::from_ref(&road_loop),
                             safe_render_step_m,
                         )?;
-                        if !Self::terrain_cdt_tile_ids_for_bounds(patch, influence_bounds)
-                            .contains(&tile_id)
-                        {
-                            return None;
-                        }
                         let mut guide_samples = Vec::new();
                         let mut guide_constraints = Vec::new();
-                        let mut sample_keys = BTreeMap::new();
+                        let mut sample_keys = HashSet::new();
                         RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
                             terrain,
                             std::slice::from_ref(&road_loop),
@@ -377,33 +372,49 @@ impl SimulationNode {
                         })
                     })
                     .collect::<Vec<_>>();
-                Some((tile_id, contributors, query_counts))
+                Some((tile_ids, contributors, query_counts))
             })
             .collect::<Vec<_>>();
-        tile_queries.sort_by_key(|(tile_id, _, _)| *tile_id);
+        group_queries.sort_by_key(|(tile_ids, _, _)| tile_ids.first().copied());
 
-        let mut contributors_by_tile =
-            BTreeMap::<TerrainCdtTileId, Vec<TerrainCdtTileContributor>>::new();
+        let mut contributors = Vec::new();
+        let mut contributor_indices_by_tile = BTreeMap::<TerrainCdtTileId, Vec<usize>>::new();
         let mut source_count = 0usize;
         let mut road_source_count = 0usize;
         let mut road_loop_count = 0usize;
         let mut site_loop_count = 0usize;
         let mut represented_road_loop_count = 0usize;
         let mut clip_error_label = None;
-        for (tile_id, contributors, query_counts) in tile_queries {
+        for (tile_ids, group_contributors, query_counts) in group_queries {
             source_count = source_count.saturating_add(query_counts.0);
             road_source_count = road_source_count.saturating_add(query_counts.1);
             road_loop_count = road_loop_count.saturating_add(query_counts.2);
             site_loop_count = site_loop_count.saturating_add(query_counts.3);
             clip_error_label = clip_error_label.or(query_counts.4);
-            represented_road_loop_count =
-                represented_road_loop_count.saturating_add(contributors.len());
-            contributors_by_tile.insert(tile_id, contributors);
+            for contributor in group_contributors {
+                let affected_tiles =
+                    Self::terrain_cdt_tile_ids_for_bounds(patch, contributor.influence_bounds)
+                        .into_iter()
+                        .filter(|tile_id| tile_ids.binary_search(tile_id).is_ok())
+                        .collect::<Vec<_>>();
+                if affected_tiles.is_empty() {
+                    continue;
+                }
+                let contributor_index = contributors.len();
+                contributors.push(contributor);
+                represented_road_loop_count = represented_road_loop_count.saturating_add(1);
+                for tile_id in affected_tiles {
+                    contributor_indices_by_tile
+                        .entry(tile_id)
+                        .or_default()
+                        .push(contributor_index);
+                }
+            }
         }
 
-        let current_contributor_tiles = contributors_by_tile
+        let current_contributor_tiles = contributor_indices_by_tile
             .iter()
-            .filter_map(|(&tile_id, contributors)| (!contributors.is_empty()).then_some(tile_id))
+            .filter_map(|(&tile_id, indices)| (!indices.is_empty()).then_some(tile_id))
             .collect::<BTreeSet<_>>();
         let retained_previous_contributor_tiles = previous_by_tile
             .iter()
@@ -440,8 +451,9 @@ impl SimulationNode {
 
         let mut windows = Vec::with_capacity(included_rebuild_tiles.len());
         for tile_id in included_rebuild_tiles {
-            let contributors = contributors_by_tile.remove(&tile_id).unwrap_or_default();
-            let contributor_indices = (0..contributors.len()).collect::<Vec<_>>();
+            let contributor_indices = contributor_indices_by_tile
+                .remove(&tile_id)
+                .unwrap_or_default();
             if let Some(window) = Self::terrain_cdt_planned_window_for_tile(
                 terrain,
                 patch,
@@ -500,6 +512,56 @@ impl SimulationNode {
                 clip_error_label,
             },
         )
+    }
+
+    fn terrain_cdt_connected_tile_groups(
+        tile_ids: &BTreeSet<TerrainCdtTileId>,
+    ) -> Vec<Vec<TerrainCdtTileId>> {
+        let mut remaining = tile_ids.clone();
+        let mut groups = Vec::new();
+        while let Some(seed) = remaining.pop_first() {
+            let mut pending = vec![seed];
+            let mut group = Vec::new();
+            while let Some(tile_id) = pending.pop() {
+                group.push(tile_id);
+                for offset_z in -1..=1 {
+                    for offset_x in -1..=1 {
+                        if offset_x == 0 && offset_z == 0 {
+                            continue;
+                        }
+                        let neighbor = TerrainCdtTileId {
+                            x: tile_id.x + offset_x,
+                            z: tile_id.z + offset_z,
+                        };
+                        if remaining.remove(&neighbor) {
+                            pending.push(neighbor);
+                        }
+                    }
+                }
+            }
+            group.sort_unstable();
+            groups.push(group);
+        }
+        groups
+    }
+
+    fn terrain_cdt_tile_group_bounds(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        tile_ids: &[TerrainCdtTileId],
+    ) -> Option<(f32, f32, f32, f32)> {
+        let mut bounds: Option<(f32, f32, f32, f32)> = None;
+        for &tile_id in tile_ids {
+            let tile = Self::terrain_cdt_tile_bounds(patch, tile_id)?;
+            bounds = Some(bounds.map_or(tile, |current| {
+                (
+                    current.0.min(tile.0),
+                    current.1.min(tile.1),
+                    current.2.max(tile.2),
+                    current.3.max(tile.3),
+                )
+            }));
+        }
+        bounds
     }
 
     fn terrain_cdt_reusable_previous(
@@ -621,7 +683,7 @@ impl SimulationNode {
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let mut guide_samples = Vec::new();
         let mut guide_constraints = Vec::new();
-        let mut sample_keys = BTreeMap::new();
+        let mut sample_keys = HashSet::new();
         RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
             terrain,
             road_loops,
@@ -664,16 +726,17 @@ impl SimulationNode {
             .iter()
             .map(|sample| {
                 (
-                    (
-                        (sample.vertex.x * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-                        (sample.vertex.z * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-                    ),
-                    (),
+                    round_f64_to_i64(sample.vertex.x * TERRAIN_CDT_SAMPLE_KEY_SCALE),
+                    round_f64_to_i64(sample.vertex.z * TERRAIN_CDT_SAMPLE_KEY_SCALE),
                 )
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<HashSet<_>>();
+        // The roadbed guides and window sides retain render-step detail. The background grid only
+        // carries the source terrain, so sampling it more densely than the terrain patch adds no
+        // information and multiplies CDT insertion and face-classification work.
+        let background_step_m = Self::regular_terrain_mesh_step_m(patch).max(safe_render_step_m);
         let grid_step_m =
-            Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, safe_render_step_m);
+            Self::terrain_cdt_grid_sample_step_m(min_x, min_z, max_x, max_z, background_step_m);
         if let Some(site_grading) = site_grading {
             site_grading.append_guides(
                 terrain,
@@ -987,7 +1050,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn quantize_cdt_coord_mm(value: f64) -> i64 {
-        (value * 1000.0).round() as i64
+        round_f64_to_i64(value * 1000.0)
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_input_fingerprint(
@@ -1424,7 +1487,7 @@ impl SimulationNode {
         max_z: f32,
         step_m: f32,
         source_samples: &mut Vec<TerrainCdtVertex>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let safe_step_m = step_m.max(f32::EPSILON);
         let patch_min_x = patch.world_origin_x;
@@ -1467,7 +1530,7 @@ impl SimulationNode {
         max_z: f32,
         step_m: f32,
         source_samples: &mut Vec<TerrainCdtVertex>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let safe_step_m = step_m.max(f32::EPSILON);
         let xs = Self::terrain_cdt_axis_samples(min_x, max_x, safe_step_m);
@@ -1511,13 +1574,13 @@ impl SimulationNode {
         world_x: f32,
         world_z: f32,
         source_samples: &mut Vec<TerrainCdtVertex>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let key = (
-            (f64::from(world_x) * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-            (f64::from(world_z) * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+            round_f64_to_i64(f64::from(world_x) * TERRAIN_CDT_SAMPLE_KEY_SCALE),
+            round_f64_to_i64(f64::from(world_z) * TERRAIN_CDT_SAMPLE_KEY_SCALE),
         );
-        if sample_keys.insert(key, ()).is_some() {
+        if !sample_keys.insert(key) {
             return;
         }
         source_samples.push(TerrainCdtVertex::new(

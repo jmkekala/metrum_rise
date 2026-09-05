@@ -1,6 +1,7 @@
 //! Source-owned roadbed grading-envelope generation for terrain CDT inputs.
 
 use super::*;
+use crate::simulation::core::round_f64_to_i64;
 
 const TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const TERRAIN_CDT_GRADING_RING_MULTIPLIERS: [f32; 4] = [1.0, 2.0, 4.0, 8.0];
@@ -77,7 +78,7 @@ impl RoadSurfaceSystem {
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
         tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let safe_step_m = render_step_m.max(f32::EPSILON);
         let max_distance_m =
@@ -523,13 +524,13 @@ impl RoadSurfaceSystem {
     fn push_terrain_cdt_grading_guide_sample(
         vertex: TerrainCdtVertex,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         if !vertex.x.is_finite() || !vertex.z.is_finite() || !vertex.height_m.is_finite() {
             return;
         }
         let key = Self::terrain_cdt_grading_sample_key(vertex.x, vertex.z);
-        if sample_keys.insert(key, ()).is_some() {
+        if !sample_keys.insert(key) {
             return;
         }
         tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });
@@ -559,8 +560,8 @@ impl RoadSurfaceSystem {
 
     fn terrain_cdt_grading_sample_key(x: f64, z: f64) -> (i64, i64) {
         (
-            (x * TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE).round() as i64,
-            (z * TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE).round() as i64,
+            round_f64_to_i64(x * TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE),
+            round_f64_to_i64(z * TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE),
         )
     }
 }

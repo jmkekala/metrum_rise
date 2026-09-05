@@ -6,7 +6,8 @@ use super::super::{
     RoadSurfaceEarthworkSupportPolicy, RoadSurfaceSpanRegionRole, RoadSurfaceSystem,
     RoadSurfaceTerrainClipContourRole, RoadSurfaceTerrainClipExport,
     RoadSurfaceTerrainClipExportError, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipLoopTopology, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceTerrainClipLoopTopology, RoadSurfaceTerrainLoopGradingCacheEntry,
+    RoadSurfaceVisualNodePieceKind,
     backend::RoadVec3,
     earthwork::EARTHWORK_MAX_MARGIN_M,
     keys::{SurfaceHeightMmKey, SurfaceXzKey},
@@ -22,9 +23,8 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtVertex,
 };
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
-use std::collections::BTreeMap;
-#[cfg(test)]
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 mod grading;
 mod loops;

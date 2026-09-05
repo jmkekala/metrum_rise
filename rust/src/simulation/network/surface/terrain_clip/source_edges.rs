@@ -2,29 +2,106 @@
 
 use super::super::backend::RoadVec3;
 use super::super::{
-    NodeOverlayPoint, RoadSurfaceSystem,
-    keys::{SurfaceHeightMmKey, SurfaceXzSegmentKey},
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayPoint, RoadSurfaceSystem,
+    indices::{SurfaceKeyBounds, SurfaceKeyTile},
+    keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey, SurfaceXzSegmentKey},
 };
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::*;
 use std::collections::BTreeMap;
 
+#[derive(Default)]
+pub(super) struct TerrainClipSourceEdgeIndex {
+    edge_indices_by_tile: BTreeMap<SurfaceKeyTile, Vec<usize>>,
+}
+
+impl TerrainClipSourceEdgeIndex {
+    pub(super) fn new(source_edges: &[TerrainClipSourceEdge]) -> Self {
+        let mut index = Self::default();
+        let padding_keys = terrain_clip_source_edge_index_padding_keys();
+        for (edge_index, edge) in source_edges.iter().enumerate() {
+            let bounds = SurfaceKeyBounds::from_segment(
+                RoadSurfaceSystem::terrain_clip_world_key(edge.start),
+                RoadSurfaceSystem::terrain_clip_world_key(edge.end),
+            )
+            .expanded(padding_keys);
+            SurfaceKeyTile::for_each_in_bounds(bounds, |tile| {
+                index
+                    .edge_indices_by_tile
+                    .entry(tile)
+                    .or_default()
+                    .push(edge_index);
+            });
+        }
+        index
+    }
+
+    pub(super) fn candidates_for_segment(
+        &self,
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Vec<TerrainClipSourceEdge> {
+        let bounds = SurfaceKeyBounds::from_segment(
+            RoadSurfaceSystem::terrain_clip_overlay_key(start),
+            RoadSurfaceSystem::terrain_clip_overlay_key(end),
+        );
+        let mut edge_indices = Vec::new();
+        SurfaceKeyTile::for_each_in_bounds(bounds, |tile| {
+            if let Some(indices) = self.edge_indices_by_tile.get(&tile) {
+                edge_indices.extend_from_slice(indices);
+            }
+        });
+        edge_indices.sort_unstable();
+        edge_indices.dedup();
+        let padding_keys = terrain_clip_source_edge_index_padding_keys();
+        edge_indices
+            .into_iter()
+            .filter_map(|edge_index| source_edges.get(edge_index).copied())
+            .filter(|edge| {
+                SurfaceKeyBounds::from_segment(
+                    RoadSurfaceSystem::terrain_clip_world_key(edge.start),
+                    RoadSurfaceSystem::terrain_clip_world_key(edge.end),
+                )
+                .expanded(padding_keys)
+                .overlaps(bounds)
+            })
+            .collect()
+    }
+}
+
+fn terrain_clip_source_edge_index_padding_keys() -> i64 {
+    (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).ceil() as i64
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn terrain_clip_source_edges_from_boundary_loops(
-        boundary_loops: &[RoadSurfaceTerrainClipLoop],
+        boundary_loops: &[&RoadSurfaceTerrainClipLoop],
     ) -> Vec<TerrainClipSourceEdge> {
         let mut edges = Vec::new();
-        for (source_index, boundary_loop) in boundary_loops.iter().enumerate() {
+        for (source_index, &boundary_loop) in boundary_loops.iter().enumerate() {
+            let mut canonical_loop_points = BTreeMap::new();
+            for &point in &boundary_loop.points_world {
+                canonical_loop_points
+                    .entry((
+                        Self::terrain_clip_world_key(point),
+                        Self::overlay_height_key(point.y),
+                    ))
+                    .or_insert(point);
+            }
             for (edge_index, source_edge) in boundary_loop.source_edges.iter().copied().enumerate()
             {
-                let start = Self::terrain_clip_canonical_loop_point(
-                    source_edge.start,
-                    &boundary_loop.points_world,
-                );
-                let end = Self::terrain_clip_canonical_loop_point(
-                    source_edge.end,
-                    &boundary_loop.points_world,
-                );
+                let canonical_point = |point: RoadVec3| {
+                    canonical_loop_points
+                        .get(&(
+                            Self::terrain_clip_world_key(point),
+                            Self::overlay_height_key(point.y),
+                        ))
+                        .copied()
+                        .unwrap_or(point)
+                };
+                let start = canonical_point(source_edge.start);
+                let end = canonical_point(source_edge.end);
                 if Self::terrain_clip_world_key(start) == Self::terrain_clip_world_key(end) {
                     continue;
                 }
@@ -42,7 +119,7 @@ impl RoadSurfaceSystem {
         // solved-height seam endpoint after boundary-loop representation cleanup.
         Self::canonicalize_terrain_clip_source_endpoint_groups(&mut edges);
 
-        edges.sort_by_key(|edge| {
+        edges.sort_by_cached_key(|edge| {
             let start_key = Self::terrain_clip_world_key(edge.start);
             let end_key = Self::terrain_clip_world_key(edge.end);
             let edge_key = SurfaceXzSegmentKey::new(start_key, end_key);
@@ -60,48 +137,28 @@ impl RoadSurfaceSystem {
     }
 
     fn canonicalize_terrain_clip_source_endpoint_groups(edges: &mut [TerrainClipSourceEdge]) {
-        let mut groups: Vec<Vec<TerrainClipSourceEndpointKey>> = Vec::new();
+        let mut endpoint_counts = BTreeMap::<TerrainClipSourceEndpointKey, usize>::new();
         for point in edges.iter().flat_map(|edge| [edge.start, edge.end]) {
             let point_key = Self::terrain_clip_source_endpoint_key(point);
-            if let Some(group) = groups.iter_mut().find(|group| {
-                group.iter().any(|candidate| {
-                    Self::terrain_clip_source_endpoint_keys_match(*candidate, point_key)
-                })
-            }) {
-                group.push(point_key);
-            } else {
-                groups.push(vec![point_key]);
-            }
-        }
-
-        let mut replacements = BTreeMap::new();
-        for group in groups {
-            if group.len() < 2 {
-                continue;
-            }
-            for key in group {
-                replacements.insert(key, terrain_clip_point_from_source_endpoint_key(key));
-            }
+            *endpoint_counts.entry(point_key).or_default() += 1;
         }
 
         for edge in edges {
-            if let Some(point) =
-                replacements.get(&Self::terrain_clip_source_endpoint_key(edge.start))
+            let start_key = Self::terrain_clip_source_endpoint_key(edge.start);
+            if endpoint_counts
+                .get(&start_key)
+                .is_some_and(|count| *count >= 2)
             {
-                edge.start = *point;
+                edge.start = terrain_clip_point_from_source_endpoint_key(start_key);
             }
-            if let Some(point) = replacements.get(&Self::terrain_clip_source_endpoint_key(edge.end))
+            let end_key = Self::terrain_clip_source_endpoint_key(edge.end);
+            if endpoint_counts
+                .get(&end_key)
+                .is_some_and(|count| *count >= 2)
             {
-                edge.end = *point;
+                edge.end = terrain_clip_point_from_source_endpoint_key(end_key);
             }
         }
-    }
-
-    fn terrain_clip_source_endpoint_keys_match(
-        a: TerrainClipSourceEndpointKey,
-        b: TerrainClipSourceEndpointKey,
-    ) -> bool {
-        a == b
     }
 
     fn terrain_clip_source_endpoint_key(point: RoadVec3) -> TerrainClipSourceEndpointKey {
@@ -111,17 +168,6 @@ impl RoadSurfaceSystem {
             z_key: key.z_key(),
             height_mm: SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
         }
-    }
-
-    fn terrain_clip_canonical_loop_point(point: RoadVec3, loop_points: &[RoadVec3]) -> RoadVec3 {
-        loop_points
-            .iter()
-            .copied()
-            .find(|candidate| {
-                Self::terrain_clip_world_key(*candidate) == Self::terrain_clip_world_key(point)
-                    && Self::overlay_height_key(candidate.y) == Self::overlay_height_key(point.y)
-            })
-            .unwrap_or(point)
     }
 
     fn terrain_clip_endpoint_samples(

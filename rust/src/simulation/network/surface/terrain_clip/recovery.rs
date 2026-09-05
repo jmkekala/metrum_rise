@@ -50,15 +50,35 @@ impl RoadSurfaceSystem {
             return TerrainClipSegmentPointRecovery::Degenerate;
         }
 
-        let mut samples = Vec::new();
+        let samples = Self::terrain_clip_prepared_sources_on_segment(start, end, source_edges);
+        Self::terrain_clip_segment_points_from_prepared_sources(start, end, &samples)
+    }
+
+    pub(super) fn terrain_clip_prepared_sources_on_segment(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Vec<TerrainClipPreparedSource> {
+        let mut samples = Vec::with_capacity(source_edges.len());
         for &source_edge in source_edges {
             if let Some(interval) =
                 Self::terrain_clip_source_interval_on_segment(start, end, source_edge)
             {
-                samples.push(interval);
+                samples.push(TerrainClipPreparedSource {
+                    edge: source_edge,
+                    interval,
+                });
             }
         }
-        Self::terrain_clip_top_envelope_points_from_interval_coverage(start, end, samples)
+        samples
+    }
+
+    pub(super) fn terrain_clip_segment_points_from_prepared_sources(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        sources: &[TerrainClipPreparedSource],
+    ) -> TerrainClipSegmentPointRecovery {
+        Self::terrain_clip_top_envelope_points_from_prepared_sources(start, end, sources)
     }
 
     pub(super) fn terrain_clip_source_chain_points_from_source_edges(

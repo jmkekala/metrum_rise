@@ -200,7 +200,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_no_unfaced_
     let mut top_edges = Vec::new();
     let mut face_lower_edges = Vec::new();
     for span_piece in surface.compiled_visual_span_pieces().values() {
-        for region in &span_piece.span_owned_regions {
+        for region in span_piece.span_owned_regions.iter() {
             top_edges.extend(test_polygon_top_boundary_edges(
                 region.owner.kind,
                 region.owner.source_band_index,

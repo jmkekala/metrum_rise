@@ -36,4 +36,4 @@ use edges::{
     noded_owned_region_contour_with_point_index,
     noded_owned_region_contour_with_rail_paths_and_point_index,
 };
-use rail_paths::rail_path_points_between;
+use rail_paths::{PreparedRailPaths, rail_path_points_between_into};

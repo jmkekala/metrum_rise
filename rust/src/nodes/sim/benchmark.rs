@@ -1,9 +1,8 @@
 //! Benchmarking and performance profiling for simulation.
 
-use godot::prelude::*;
-extern crate chrono;
 use crate::nodes::sim::core::SimCore;
 use crate::nodes::simulation_node::SimulationNode;
+use godot::prelude::*;
 use std::time::Instant;
 
 /// Reads the resident set size of this process in megabytes from `/proc/self/status`.

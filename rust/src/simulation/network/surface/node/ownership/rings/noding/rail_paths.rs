@@ -1,63 +1,170 @@
 //! Rail-path assisted edge noding helpers.
 
 use super::*;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::ops::Range;
 
-pub(super) fn rail_path_points_between(
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-    rail_paths: &[Vec<NodeOwnershipPointKey>],
-) -> Option<Vec<NodeOwnershipPointKey>> {
-    if start == end {
-        return None;
-    }
-    let mut best = None;
-    for points in rail_paths {
-        for start_index in points
-            .iter()
-            .enumerate()
-            .filter_map(|(index, point)| (*point == start).then_some(index))
-        {
-            for end_index in start_index + 1..points.len() {
-                if points[end_index] != end {
-                    continue;
-                }
-                let mut candidate = points[start_index..=end_index].to_vec();
-                dedup_consecutive_ownership_keys(&mut candidate);
-                retain_best_rail_path_candidate(&mut best, candidate);
-            }
-        }
-        for end_index in points
-            .iter()
-            .enumerate()
-            .filter_map(|(index, point)| (*point == end).then_some(index))
-        {
-            for start_index in end_index + 1..points.len() {
-                if points[start_index] != start {
-                    continue;
-                }
-                let mut candidate = points[end_index..=start_index].to_vec();
-                candidate.reverse();
-                dedup_consecutive_ownership_keys(&mut candidate);
-                retain_best_rail_path_candidate(&mut best, candidate);
-            }
-        }
-    }
-    best
+pub(super) struct PreparedRailPaths<'a> {
+    paths: &'a [Vec<NodeOwnershipPointKey>],
+    path_has_consecutive_duplicates: Vec<bool>,
+    occurrences: Vec<(NodeOwnershipPointKey, usize, usize)>,
+    occurrence_ranges: HashMap<NodeOwnershipPointKey, Range<usize>>,
 }
 
-fn retain_best_rail_path_candidate(
-    best: &mut Option<Vec<NodeOwnershipPointKey>>,
-    candidate: Vec<NodeOwnershipPointKey>,
-) {
-    if !rail_path_candidate_can_node_owned_edge(&candidate) {
-        return;
+impl<'a> PreparedRailPaths<'a> {
+    pub(super) fn new(paths: &'a [Vec<NodeOwnershipPointKey>]) -> Self {
+        let occurrence_capacity = paths
+            .iter()
+            .filter(|points| points.len() >= 3)
+            .map(Vec::len)
+            .sum();
+        let mut occurrences = Vec::with_capacity(occurrence_capacity);
+        let mut path_has_consecutive_duplicates = vec![false; paths.len()];
+        for (path_index, points) in paths.iter().enumerate() {
+            if points.len() < 3 {
+                continue;
+            }
+            path_has_consecutive_duplicates[path_index] =
+                points.windows(2).any(|pair| pair[0] == pair[1]);
+            occurrences.extend(
+                points
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(point_index, point)| (point, path_index, point_index)),
+            );
+        }
+        occurrences.sort_unstable();
+        let mut occurrence_ranges = HashMap::new();
+        let mut start = 0;
+        while start < occurrences.len() {
+            let point = occurrences[start].0;
+            let end = start
+                + occurrences[start..].partition_point(|(candidate, _, _)| *candidate == point);
+            occurrence_ranges.insert(point, start..end);
+            start = end;
+        }
+        Self {
+            paths,
+            path_has_consecutive_duplicates,
+            occurrences,
+            occurrence_ranges,
+        }
     }
-    let should_replace = best.as_ref().is_none_or(|best| {
-        candidate.len() > best.len() || (candidate.len() == best.len() && candidate < *best)
-    });
-    if should_replace {
-        *best = Some(candidate);
+
+    fn occurrences_for(
+        &self,
+        point: NodeOwnershipPointKey,
+    ) -> &[(NodeOwnershipPointKey, usize, usize)] {
+        self.occurrence_ranges
+            .get(&point)
+            .map(|range| &self.occurrences[range.clone()])
+            .unwrap_or(&[])
     }
+}
+
+pub(super) fn rail_path_points_between_into(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    rail_paths: &PreparedRailPaths<'_>,
+    best: &mut Vec<NodeOwnershipPointKey>,
+    candidate: &mut Vec<NodeOwnershipPointKey>,
+) -> bool {
+    best.clear();
+    candidate.clear();
+    if start == end {
+        return false;
+    }
+    let mut found = false;
+    let start_occurrences = rail_paths.occurrences_for(start);
+    if start_occurrences.is_empty() {
+        return false;
+    }
+    let end_occurrences = rail_paths.occurrences_for(end);
+    let (mut start_offset, mut end_offset) = (0, 0);
+    while start_offset < start_occurrences.len() && end_offset < end_occurrences.len() {
+        let start_path_index = start_occurrences[start_offset].1;
+        let end_path_index = end_occurrences[end_offset].1;
+        match start_path_index.cmp(&end_path_index) {
+            Ordering::Less => {
+                start_offset += 1;
+            }
+            Ordering::Greater => {
+                end_offset += 1;
+            }
+            Ordering::Equal => {
+                let start_group_end = start_offset
+                    + start_occurrences[start_offset..]
+                        .partition_point(|(_, path_index, _)| *path_index == start_path_index);
+                let end_group_end = end_offset
+                    + end_occurrences[end_offset..]
+                        .partition_point(|(_, path_index, _)| *path_index == end_path_index);
+                for &(_, _, start_index) in &start_occurrences[start_offset..start_group_end] {
+                    for &(_, _, end_index) in &end_occurrences[end_offset..end_group_end] {
+                        if start_index.abs_diff(end_index) <= 1 {
+                            continue;
+                        }
+                        let points = &rail_paths.paths[start_path_index];
+                        let path_slice = if start_index < end_index {
+                            &points[start_index..=end_index]
+                        } else {
+                            &points[end_index..=start_index]
+                        };
+                        if !rail_paths.path_has_consecutive_duplicates[start_path_index] {
+                            if !rail_path_candidate_can_node_owned_edge(path_slice) {
+                                continue;
+                            }
+                            let candidate_len = path_slice.len();
+                            let lexicographically_before_best = if start_index < end_index {
+                                path_slice < best.as_slice()
+                            } else {
+                                path_slice
+                                    .iter()
+                                    .rev()
+                                    .copied()
+                                    .cmp(best.iter().copied())
+                                    .is_lt()
+                            };
+                            let should_replace = !found
+                                || candidate_len > best.len()
+                                || (candidate_len == best.len() && lexicographically_before_best);
+                            if should_replace {
+                                best.clear();
+                                if start_index < end_index {
+                                    best.extend_from_slice(path_slice);
+                                } else {
+                                    best.extend(path_slice.iter().rev().copied());
+                                }
+                                found = true;
+                            }
+                            continue;
+                        }
+                        candidate.clear();
+                        if start_index < end_index {
+                            candidate.extend_from_slice(path_slice);
+                        } else {
+                            candidate.extend(path_slice.iter().rev().copied());
+                        }
+                        dedup_consecutive_ownership_keys(candidate);
+                        if !rail_path_candidate_can_node_owned_edge(candidate) {
+                            continue;
+                        }
+                        let should_replace = !found
+                            || candidate.len() > best.len()
+                            || (candidate.len() == best.len() && candidate < best);
+                        if should_replace {
+                            std::mem::swap(best, candidate);
+                            found = true;
+                        }
+                    }
+                }
+                start_offset = start_group_end;
+                end_offset = end_group_end;
+            }
+        }
+    }
+    found
 }
 
 fn rail_path_candidate_can_node_owned_edge(candidate: &[NodeOwnershipPointKey]) -> bool {
@@ -84,12 +191,29 @@ fn dedup_consecutive_ownership_keys(points: &mut Vec<NodeOwnershipPointKey>) {
 mod tests {
     use super::*;
 
+    fn prepared_path_points_between(
+        start: NodeOwnershipPointKey,
+        end: NodeOwnershipPointKey,
+        paths: &[Vec<NodeOwnershipPointKey>],
+    ) -> Option<Vec<NodeOwnershipPointKey>> {
+        let mut points = Vec::new();
+        let mut candidate = Vec::new();
+        rail_path_points_between_into(
+            start,
+            end,
+            &PreparedRailPaths::new(paths),
+            &mut points,
+            &mut candidate,
+        )
+        .then_some(points)
+    }
+
     #[test]
     pub(super) fn rail_path_points_between_preserves_multiple_interior_source_vertices() {
         let path = vec![(0, 0), (1, 0), (2, 0), (3, 0)];
 
         assert_eq!(
-            rail_path_points_between((0, 0), (3, 0), &[path]),
+            prepared_path_points_between((0, 0), (3, 0), &[path]),
             Some(vec![(0, 0), (1, 0), (2, 0), (3, 0)])
         );
     }
@@ -101,7 +225,7 @@ mod tests {
         let lexicographic = vec![(0, 0), (1, -1), (2, 0), (4, 0)];
 
         assert_eq!(
-            rail_path_points_between((0, 0), (4, 0), &[short, long, lexicographic]),
+            prepared_path_points_between((0, 0), (4, 0), &[short, long, lexicographic]),
             Some(vec![(0, 0), (1, 0), (2, 0), (4, 0)])
         );
     }
@@ -112,7 +236,7 @@ mod tests {
         let direct = vec![(0, 0), (2, 0), (4, 0)];
 
         assert_eq!(
-            rail_path_points_between((0, 0), (4, 0), &[detour, direct]),
+            prepared_path_points_between((0, 0), (4, 0), &[detour, direct]),
             Some(vec![(0, 0), (2, 0), (4, 0)])
         );
     }

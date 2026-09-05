@@ -11,6 +11,7 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 pub(in crate::simulation::network::surface::node::rails) use candidates::{
     NodeContactNodingPairCache, NodeContactNodingReuseStats,
@@ -32,9 +33,53 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
     previous_cache: Option<&NodeContactNodingPairCache>,
     current_cache: &mut NodeContactNodingPairCache,
 ) -> Result<NodeContactNodingReuseStats, NodeRailGenerationError> {
+    node_generated_contact_contours_with_reuse_mode(
+        contours,
+        constraints,
+        previous_cache,
+        current_cache,
+        true,
+    )
+}
+
+/// Nodes contacts with pair-local reuse but defers final-component cache construction.
+pub(in crate::simulation::network::surface::node::rails) fn node_generated_contact_contours_with_pair_reuse(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    previous_cache: Option<&NodeContactNodingPairCache>,
+    current_cache: &mut NodeContactNodingPairCache,
+) -> Result<NodeContactNodingReuseStats, NodeRailGenerationError> {
+    node_generated_contact_contours_with_reuse_mode(
+        contours,
+        constraints,
+        previous_cache,
+        current_cache,
+        false,
+    )
+}
+
+fn node_generated_contact_contours_with_reuse_mode(
+    contours: &mut [NodeGeneratedContour],
+    constraints: &mut [NodeRailConstraint],
+    previous_cache: Option<&NodeContactNodingPairCache>,
+    current_cache: &mut NodeContactNodingPairCache,
+    reuse_final_components: bool,
+) -> Result<NodeContactNodingReuseStats, NodeRailGenerationError> {
+    let profile_enabled = crate::debug::category_enabled("road");
+    let total_start = profile_enabled.then(Instant::now);
     current_cache.begin_noding_call();
-    let component_plans =
-        candidates::generated_contact_noding_component_plans(contours, constraints);
+    let preparation_start = profile_enabled.then(Instant::now);
+    let initial_preparation = candidates::prepare_contact_noding_pass(contours, constraints);
+    let preparation_ms = preparation_start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
+    let component_start = profile_enabled.then(Instant::now);
+    let component_plans = reuse_final_components
+        .then(|| candidates::generated_contact_noding_component_plans(&initial_preparation))
+        .unwrap_or_default();
+    let component_ms = component_start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0);
     let mut stats = NodeContactNodingReuseStats::default();
     let mut all_components_reused = true;
     for plan in &component_plans {
@@ -61,21 +106,30 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
             .component_entries
             .insert(plan.key.clone(), cached);
     }
-    if all_components_reused {
+    if reuse_final_components && all_components_reused {
         return Ok(stats);
     }
 
     let max_passes = contours.len().saturating_mul(contours.len()).max(1) * 4;
     let mut previous_candidates = None;
+    let mut preparation = initial_preparation;
     let mut attempted_insertions = BTreeSet::<(usize, NodeRailPointKey)>::new();
+    let mut candidate_ms = 0.0;
+    let mut insertion_ms = 0.0;
+    let mut refresh_ms = 0.0;
+    let mut pass_count = 0;
     for _ in 0..max_passes {
+        pass_count += 1;
+        let candidate_start = profile_enabled.then(Instant::now);
         let (mut candidates, pass_stats) =
-            candidates::generated_contact_contour_noding_candidates_with_reuse(
-                contours,
-                constraints,
+            candidates::generated_contact_contour_noding_candidates_from_preparation_with_reuse(
+                &preparation,
                 previous_cache,
                 current_cache,
             );
+        candidate_ms += candidate_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         stats.merge(pass_stats);
         candidates.retain(|(contour_index, _, insert_key)| {
             !attempted_insertions.contains(&(*contour_index, *insert_key))
@@ -91,12 +145,49 @@ pub(in crate::simulation::network::surface::node::rails) fn node_generated_conta
                 .iter()
                 .map(|(contour_index, _, insert_key)| (*contour_index, *insert_key)),
         );
+        let insertion_start = profile_enabled.then(Instant::now);
         if !insertion::insert_contact_noding_candidates(contours, constraints, &candidates)? {
             break;
         }
+        insertion_ms += insertion_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let refresh_start = profile_enabled.then(Instant::now);
+        candidates::refresh_contact_noding_pass(&mut preparation, contours, &candidates);
+        refresh_ms += refresh_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         previous_candidates = Some(candidates);
     }
-    retain_contact_noding_component_outputs(contours, constraints, &component_plans, current_cache);
+    if reuse_final_components {
+        retain_contact_noding_component_outputs(
+            contours,
+            constraints,
+            &component_plans,
+            current_cache,
+        );
+    }
+    if let Some(total_start) = total_start {
+        let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+        if total_ms >= 0.5 {
+            crate::debug_log!(
+                "road",
+                "contact_noding_detail contours={} constraints={} final_components={} passes={} pair_hits={} pair_misses={} preparation_ms={:.3} component_ms={:.3} candidate_ms={:.3} insertion_ms={:.3} refresh_ms={:.3} total_ms={:.3}",
+                contours.len(),
+                constraints.len(),
+                reuse_final_components,
+                pass_count,
+                stats.pair_cache_hits,
+                stats.pair_cache_misses,
+                preparation_ms,
+                component_ms,
+                candidate_ms,
+                insertion_ms,
+                refresh_ms,
+                total_ms,
+            );
+        }
+    }
     Ok(stats)
 }
 

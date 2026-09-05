@@ -14,8 +14,43 @@ fn visual_polygon_builder_preserves_skinny_closure_geometry() {
 
     assert!(
         !polygon.triangles_world.is_empty(),
-        "curb closure polygons must keep renderable CDT triangles"
+        "curb closure polygons must keep renderable triangles"
     );
+}
+
+#[test]
+fn visual_polygon_builder_triangulates_convex_quads_as_a_fan() {
+    let points = vec![
+        backend::RoadVec3::new(0.0, 0.0, 0.0),
+        backend::RoadVec3::new(4.0, 0.0, 0.0),
+        backend::RoadVec3::new(3.0, 0.0, 2.0),
+        backend::RoadVec3::new(0.0, 0.0, 2.0),
+    ];
+    let polygon = RoadSurfaceSystem::make_visual_polygon(points.clone())
+        .expect("convex earthwork-style quads must remain renderable");
+
+    assert_eq!(polygon.points_world, points);
+    assert_eq!(
+        polygon.triangles_world,
+        vec![
+            [points[0], points[1], points[2]],
+            [points[0], points[2], points[3]],
+        ]
+    );
+}
+
+#[test]
+fn visual_polygon_builder_keeps_concave_polygon_coverage() {
+    let polygon = RoadSurfaceSystem::make_visual_polygon(vec![
+        backend::RoadVec3::new(0.0, 0.0, 0.0),
+        backend::RoadVec3::new(4.0, 0.0, 0.0),
+        backend::RoadVec3::new(2.0, 0.0, 1.0),
+        backend::RoadVec3::new(4.0, 0.0, 2.0),
+        backend::RoadVec3::new(0.0, 0.0, 2.0),
+    ])
+    .expect("concave polygons must fall back to constrained triangulation");
+
+    assert_eq!(polygon.triangles_world.len(), 3);
 }
 
 #[test]
@@ -32,6 +67,139 @@ fn preview_matches_committed_sections_on_flat_terrain() {
     assert_eq!(preview.compiled_sections, committed_sections);
     assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
     assert_preview_vertices_use_solved_section_height_keys(&preview);
+}
+
+#[test]
+fn exact_preview_replays_terminal_topology_into_commit() {
+    let terrain = flat_terrain(64, 64);
+    let mut graph = RegionGraph::new();
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let raw_points = vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
+
+    let (preview, topology_reuse) = surface
+        .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+            &raw_points,
+            1,
+            1,
+            &terrain,
+            &graph,
+            &surface,
+            true,
+        );
+    assert!(preview.is_valid);
+    let topology_reuse = topology_reuse.expect("exact preview should retain terminal topology");
+
+    let start = graph.add_node(preview.prepared_points[0], NodeType::Junction);
+    let end = graph.add_node(*preview.prepared_points.last().unwrap(), NodeType::Junction);
+    let edge_idx = graph.add_edge(crate::simulation::network::build_surface_edge(
+        start,
+        end,
+        preview.prepared_points,
+        1,
+        1,
+        preview.edge_class,
+    ));
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    surface.mark_edge_dirty(&graph, edge_idx);
+    surface.mark_node_dirty(&graph, start);
+    surface.mark_node_dirty(&graph, end);
+    surface.enqueue_preview_topology_reuse(topology_reuse);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert_eq!(surface.last_reused_node_height_topology_count, 2);
+    assert_eq!(surface.last_reused_node_ownership_topology_count, 2);
+    for node_id in [start, end] {
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&node_id)
+            .expect("committed terminal piece must exist");
+        assert_eq!(piece.node_id, node_id);
+        for face in &piece.render_earthwork_faces {
+            match face.source {
+                RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                    node_id: source_node_id,
+                    ..
+                }
+                | RoadSurfaceEarthworkFaceSource::NodeSameMaterialBoundaryHandoff {
+                    node_id: source_node_id,
+                    ..
+                } => assert_eq!(source_node_id, node_id),
+                RoadSurfaceEarthworkFaceSource::SpanSupportBoundary { .. } => {
+                    panic!("node earthwork must retain node-scoped provenance")
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_preview_captures_all_nodes_on_adjacent_dirty_spans() {
+    let terrain = flat_terrain(96, 96);
+    let mut graph = RegionGraph::new();
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    let first_start = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+    let first_edge = graph.add_edge(crate::simulation::network::build_surface_edge(
+        first_start,
+        bend,
+        vec![graph.node(first_start).pos, graph.node(bend).pos],
+        1,
+        1,
+        EdgeClass::Standard,
+    ));
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    surface.compile_dirty(&graph, &terrain);
+
+    let raw_points = vec![graph.node(bend).pos, Vector3::new(20.0, 0.0, 32.0)];
+    let (preview, topology_reuse) = surface
+        .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+            &raw_points,
+            1,
+            1,
+            &terrain,
+            &graph,
+            &surface,
+            true,
+        );
+    assert!(preview.is_valid);
+    let topology_reuse = topology_reuse.expect("exact preview should retain local node artifacts");
+    assert_eq!(topology_reuse.span_count(), 2);
+    assert_eq!(topology_reuse.node_count(), 3);
+
+    let second_end = graph.add_node(*preview.prepared_points.last().unwrap(), NodeType::Junction);
+    let second_edge = graph.add_edge(crate::simulation::network::build_surface_edge(
+        bend,
+        second_end,
+        preview.prepared_points,
+        1,
+        1,
+        preview.edge_class,
+    ));
+    graph.rebuild_adjacency_list();
+    let affected_nodes = HashSet::from([first_start, bend, second_end]);
+    let mut affected_edges = HashSet::from([first_edge, second_edge]);
+    affected_edges
+        .extend(graph.solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges));
+    affected_edges.extend(
+        graph.regrade_junction_endpoint_profiles_for_nodes(&affected_nodes, &affected_edges),
+    );
+    graph.rebuild_intersection_clips();
+    for edge_idx in [first_edge, second_edge] {
+        surface.mark_edge_dirty(&graph, edge_idx);
+    }
+    for node_id in [first_start, bend, second_end] {
+        surface.mark_node_dirty(&graph, node_id);
+    }
+    surface.enqueue_preview_topology_reuse(topology_reuse);
+    surface.compile_dirty(&graph, &terrain);
+
+    assert!(surface.last_reused_span_topology_count >= 1);
+    assert!(surface.last_reused_node_topology_count >= 1);
+    assert!(surface.last_reused_node_height_topology_count >= 1);
+    assert!(surface.last_reused_node_ownership_topology_count >= 1);
 }
 
 #[test]

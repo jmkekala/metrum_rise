@@ -41,11 +41,37 @@ impl RoadSurfaceSystem {
             return None;
         };
         points_world.rotate_left(start_index);
-        let triangles_world = Self::triangulate_constrained_polygon_xz(&points_world)?;
-        Some(RoadSurfaceVisualPolygon {
+        let triangles_world = if Self::polygon_is_convex_xz(&points_world) {
+            Self::triangulate_fan_polygon_xz(&points_world)?
+        } else {
+            Self::triangulate_constrained_polygon_xz(&points_world)?
+        };
+        Some(RoadSurfaceVisualPolygon::from_parts(
             points_world,
             triangles_world,
-        })
+        ))
+    }
+
+    fn polygon_is_convex_xz(points_world: &[RoadVec3]) -> bool {
+        if points_world.len() < 3 {
+            return false;
+        }
+        let mut winding_sign = 0_i8;
+        for index in 0..points_world.len() {
+            let a = points_world[index];
+            let b = points_world[(index + 1) % points_world.len()];
+            let c = points_world[(index + 2) % points_world.len()];
+            let cross = (b.x - a.x) * (c.z - b.z) - (b.z - a.z) * (c.x - b.x);
+            if cross.abs() <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
+                continue;
+            }
+            let sign = if cross > 0.0 { 1 } else { -1 };
+            if winding_sign != 0 && winding_sign != sign {
+                return false;
+            }
+            winding_sign = sign;
+        }
+        winding_sign != 0
     }
 
     pub(in crate::simulation::network::surface) fn make_boundary_loop_polygon(
@@ -84,10 +110,10 @@ impl RoadSurfaceSystem {
                 .then(a.y.total_cmp(&b.y))
         })?;
         points_world.rotate_left(start_index);
-        Some(RoadSurfaceVisualPolygon {
+        Some(RoadSurfaceVisualPolygon::from_parts(
             points_world,
-            triangles_world: Vec::new(),
-        })
+            Vec::new(),
+        ))
     }
 
     pub(in crate::simulation::network::surface) fn make_visual_strip_polygon(
@@ -109,10 +135,10 @@ impl RoadSurfaceSystem {
             return None;
         }
         let triangles_world = Self::triangulate_fan_polygon_xz(&points_world)?;
-        Some(RoadSurfaceVisualPolygon {
+        Some(RoadSurfaceVisualPolygon::from_parts(
             points_world,
             triangles_world,
-        })
+        ))
     }
 
     pub(in crate::simulation::network::surface) fn make_vertical_quad_polygon(
@@ -144,9 +170,9 @@ impl RoadSurfaceSystem {
         if triangles_world.is_empty() {
             return None;
         }
-        Some(RoadSurfaceVisualPolygon {
-            points_world: points_world.into_iter().collect(),
+        Some(RoadSurfaceVisualPolygon::from_parts(
+            points_world.into_iter().collect(),
             triangles_world,
-        })
+        ))
     }
 }

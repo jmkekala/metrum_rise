@@ -194,9 +194,10 @@ fn assert_all_spans_compile_but_junction_fails(
 ) {
     let mut staging = RoadSurfaceSystem::new(16.0);
     for &edge_idx in edge_ids {
-        staging
-            .compiled_sections
-            .insert(edge_idx, staging.compile_edge_sections(graph, edge_idx));
+        staging.compiled_sections.insert(
+            edge_idx,
+            std::sync::Arc::new(staging.compile_edge_sections(graph, edge_idx)),
+        );
     }
     for &edge_idx in edge_ids {
         let piece = staging

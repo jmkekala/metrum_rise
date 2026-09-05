@@ -4,7 +4,7 @@ use super::*;
 use crate::simulation::network::surface::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, keys::SURFACE_XZ_KEY_SCALE,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_owned_region_rings(
     regions: &mut [NodeBooleanOwnedRegion],
@@ -258,6 +258,16 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
         preserved_points.sort_unstable();
         preserved_points.dedup();
     }
+    let preserved_points_by_mm = canonicalize_source_height_numeric_dust.then(|| {
+        let mut points_by_mm = HashMap::<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>::new();
+        for &point in &preserved_points {
+            points_by_mm
+                .entry(ownership_mm_key(point))
+                .or_default()
+                .push(point);
+        }
+        points_by_mm
+    });
     let authority_points = if let Some(source_height_points) = source_height_points {
         source_height_points.as_slice()
     } else if has_source_carrier {
@@ -270,6 +280,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
         if let Some(point) = region_noding_point_for_owner_source(
             region.owner,
             &preserved_points,
+            preserved_points_by_mm.as_ref(),
             point,
             rail_points,
             canonicalize_source_height_numeric_dust,
@@ -284,6 +295,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             if let Some(point) = region_noding_point_for_owner_source(
                 region.owner,
                 &preserved_points,
+                preserved_points_by_mm.as_ref(),
                 point,
                 rail_points,
                 canonicalize_source_height_numeric_dust,
@@ -304,7 +316,7 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
     } else {
         &[]
     };
-
+    let prepared_owner_paths = PreparedRailPaths::new(owner_paths);
     for contour in &mut region.shape {
         canonicalize_owned_region_contour_to_owner_source_points(
             contour,
@@ -314,12 +326,13 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
             uses_generated_join_or_cap,
             allow_source_carrier_key_adoption,
             canonicalize_source_height_numeric_dust,
+            preserved_points_by_mm.as_ref(),
             rail_points,
         )?;
         *contour = noded_owned_region_contour_with_rail_paths_and_point_index(
             contour,
             &source_point_index,
-            owner_paths,
+            &prepared_owner_paths,
             region.claim_priority == NodeGeneratedContourClaimPriority::JoinOrCap,
         );
     }
@@ -329,6 +342,9 @@ fn canonicalize_owned_region_ring_with_rail_point_set(
 fn region_noding_point_for_owner_source(
     owner: NodeBandOwner,
     preserved_source_points: &[NodeOwnershipPointKey],
+    preserved_source_points_by_mm: Option<
+        &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+    >,
     point: NodeOwnershipPointKey,
     rail_points: &NodeRailCanonicalPointSet,
     canonicalize_source_height_numeric_dust: bool,
@@ -337,8 +353,8 @@ fn region_noding_point_for_owner_source(
         return Ok(Some(point));
     }
     if canonicalize_source_height_numeric_dust
-        && let Some(point) =
-            unique_preserved_source_numeric_dust_point(preserved_source_points, point)
+        && let Some(points_by_mm) = preserved_source_points_by_mm
+        && let Some(point) = unique_preserved_source_numeric_dust_point(points_by_mm, point)
     {
         return Ok(Some(point));
     }
@@ -374,14 +390,14 @@ fn canonical_source_height_numeric_dust_points(
 }
 
 fn unique_preserved_source_numeric_dust_point(
-    preserved_source_points: &[NodeOwnershipPointKey],
+    preserved_source_points_by_mm: &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
     point: NodeOwnershipPointKey,
 ) -> Option<NodeOwnershipPointKey> {
     let point_mm = ownership_mm_key(point);
-    let mut candidates = preserved_source_points
+    let mut candidates = preserved_source_points_by_mm
+        .get(&point_mm)?
         .iter()
         .copied()
-        .filter(|candidate| ownership_mm_key(*candidate) == point_mm)
         .filter(|candidate| source_points_are_numeric_dust_duplicates(*candidate, point));
     let first = candidates.next()?;
     candidates.next().is_none().then_some(first)
@@ -409,6 +425,9 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
     uses_generated_join_or_cap: bool,
     allow_source_carrier_key_adoption: bool,
     canonicalize_source_height_numeric_dust: bool,
+    preserved_source_points_by_mm: Option<
+        &HashMap<NodeOwnershipPointKey, Vec<NodeOwnershipPointKey>>,
+    >,
     rail_points: &NodeRailCanonicalPointSet,
 ) -> Result<(), NodeBooleanOwnershipError> {
     for point in contour.iter_mut() {
@@ -421,6 +440,7 @@ fn canonicalize_owned_region_contour_to_owner_source_points(
                 && let Some(canonical) = region_noding_point_for_owner_source(
                     owner,
                     source_points,
+                    preserved_source_points_by_mm,
                     key,
                     rail_points,
                     canonicalize_source_height_numeric_dust,

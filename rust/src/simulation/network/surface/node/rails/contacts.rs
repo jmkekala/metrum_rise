@@ -29,12 +29,14 @@ use super::constraints::{
     generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
 };
 use super::contours::height_for_key_on_generated_edge;
-use super::geometry::{quantized_proper_segment_intersection, road_point_from_key, road_point_key};
+use super::geometry::{
+    append_quantized_segment_contact_points, quantized_proper_segment_intersection,
+    road_point_from_key, road_point_key,
+};
 use super::owners::generated_contour_band_kind;
 use super::topology::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, NodeRailPointKey,
     generated_contour_directed_edges, generated_contour_keys, set_generated_contour_from_keys,
-    shared_generated_contour_points,
 };
 use super::{
     NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose,
@@ -54,7 +56,8 @@ pub(super) use materialization::{
 };
 pub(super) use noding::{
     NodeContactNodingPairCache, NodeContactNodingReuseStats,
-    node_generated_contact_contours_with_reuse, node_generated_contact_source_constraints,
+    node_generated_contact_contours_with_pair_reuse, node_generated_contact_contours_with_reuse,
+    node_generated_contact_source_constraints,
     node_generated_contact_sources_from_contour_backed_contacts,
 };
 pub(super) use shared_height::synchronize_shared_height_contact_vertices;

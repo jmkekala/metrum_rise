@@ -2,6 +2,7 @@
 
 use super::super::super::*;
 use super::types::*;
+use crate::simulation::core::round_f64_to_i64;
 
 mod regular;
 
@@ -206,7 +207,8 @@ impl SimulationNode {
             &cdt_windows,
         );
         Self::reconcile_terrain_mesh_duplicate_normals(&mut terrain_buffers);
-        CachedRefinedTerrainMeshBuffers {
+        let mut buffers = CachedRefinedTerrainMeshBuffers {
+            variant_payload_valid: false,
             terrain_vertices: terrain_buffers.vertices,
             terrain_normals: terrain_buffers.normals,
             terrain_normal_sum_lengths: Vec::new(),
@@ -229,7 +231,10 @@ impl SimulationNode {
             retaining_max_face_y_delta_m: retaining_buffers.max_face_y_delta_m,
             retaining_max_face_slope_ratio: retaining_buffers.max_face_slope_ratio,
             retaining_longest_triangle_edge_m: retaining_buffers.longest_triangle_edge_m,
-        }
+        };
+        buffers.variant_payload_valid =
+            Self::cached_refined_terrain_mesh_buffers_are_valid(&buffers);
+        buffers
     }
 
     fn reserve_cached_refined_window_mesh_buffers(
@@ -300,6 +305,8 @@ impl SimulationNode {
             Self::append_terrain_cdt_mesh_side_samples(bounds, &mesh.vertices);
         }
         CachedRefinedTerrainMeshBuffers {
+            // Window buffers are never exported directly; the composed patch validates once.
+            variant_payload_valid: false,
             terrain_vertices: terrain_buffers.vertices,
             terrain_normals: terrain_buffers.normals,
             terrain_normal_sum_lengths: terrain_buffers.normal_sum_lengths,
@@ -407,6 +414,10 @@ impl SimulationNode {
     ) -> TerrainCdtMeshBufferSummary {
         let summary = Self::cached_refined_terrain_mesh_buffer_summary(buffers);
         dict.set(
+            "terrain_mesh_payload_validated",
+            buffers.variant_payload_valid,
+        );
+        dict.set(
             "terrain_cdt_emitted_faces",
             i64::try_from(buffers.terrain_emitted_faces).unwrap_or(0),
         );
@@ -488,6 +499,54 @@ impl SimulationNode {
             PackedInt32Array::from_iter(buffers.retaining_indices.iter().copied()),
         );
         summary
+    }
+
+    fn cached_refined_terrain_mesh_buffers_are_valid(
+        buffers: &CachedRefinedTerrainMeshBuffers,
+    ) -> bool {
+        Self::triangle_mesh_buffers_are_valid(
+            &buffers.terrain_vertices,
+            &buffers.terrain_normals,
+            &buffers.terrain_uvs,
+            &buffers.terrain_indices,
+            true,
+        ) && Self::triangle_mesh_buffers_are_valid(
+            &buffers.retaining_vertices,
+            &buffers.retaining_normals,
+            &buffers.retaining_uvs,
+            &buffers.retaining_indices,
+            false,
+        )
+    }
+
+    pub(in crate::nodes::simulation_node) fn triangle_mesh_buffers_are_valid(
+        vertices: &[Vector3],
+        normals: &[Vector3],
+        uvs: &[Vector2],
+        indices: &[i32],
+        required: bool,
+    ) -> bool {
+        if vertices.is_empty() {
+            return !required && normals.is_empty() && uvs.is_empty() && indices.is_empty();
+        }
+        if vertices.len() < 3
+            || normals.len() != vertices.len()
+            || uvs.len() != vertices.len()
+            || (indices.is_empty() && vertices.len() % 3 != 0)
+            || (!indices.is_empty() && indices.len() % 3 != 0)
+        {
+            return false;
+        }
+        vertices
+            .iter()
+            .all(|vertex| vertex.x.is_finite() && vertex.y.is_finite() && vertex.z.is_finite())
+            && normals
+                .iter()
+                .all(|normal| normal.x.is_finite() && normal.y.is_finite() && normal.z.is_finite())
+            && uvs.iter().all(|uv| uv.x.is_finite() && uv.y.is_finite())
+            && indices
+                .iter()
+                .all(|&index| index >= 0 && (index as usize) < vertices.len())
     }
 
     fn append_cdt_mesh_buffer_export(
@@ -834,9 +893,9 @@ impl SimulationNode {
         }
         let vertex_key = |vertex: Vector3| {
             (
-                (f64::from(vertex.x) * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-                (f64::from(vertex.y) * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
-                (f64::from(vertex.z) * TERRAIN_CDT_SAMPLE_KEY_SCALE).round() as i64,
+                round_f64_to_i64(f64::from(vertex.x) * TERRAIN_CDT_SAMPLE_KEY_SCALE),
+                round_f64_to_i64(f64::from(vertex.y) * TERRAIN_CDT_SAMPLE_KEY_SCALE),
+                round_f64_to_i64(f64::from(vertex.z) * TERRAIN_CDT_SAMPLE_KEY_SCALE),
             )
         };
         let mut normal_sums =

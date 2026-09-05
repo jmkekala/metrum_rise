@@ -41,7 +41,7 @@ pub(in crate::simulation::network::surface::tests) fn measure_max_footprint_over
     };
 
     let sections = surface.compiled_sections().get(&edge_idx).unwrap();
-    for section in sections {
+    for section in sections.iter() {
         for lateral_offset_m in footprint_sample_offsets(section) {
             let Some(road_height_m) = section_height_at_lateral_offset(section, lateral_offset_m)
             else {

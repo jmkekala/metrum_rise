@@ -49,6 +49,8 @@ pub(crate) struct RefinedTerrainPatchBuildInput {
     pub(crate) surface_generation: u64,
     /// Base visual terrain patch snapshot.
     pub(crate) patch: TerrainPatchSnapshot,
+    /// Previous complete patch used for exact final-buffer identity reuse.
+    pub(crate) previous_patch: Option<Arc<CachedRefinedTerrainPatch>>,
     /// Local CDT windows assembled from source terrain samples and road footprint loops.
     pub(crate) windows: Vec<RefinedTerrainCdtWindowBuildInput>,
     /// Previous compiled windows carried directly without rebuilding their inputs.
@@ -140,6 +142,8 @@ pub(crate) struct CachedRefinedTerrainCdtWindow {
 /// Production mesh arrays prepared off-thread for one fixed window or a complete render patch.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CachedRefinedTerrainMeshBuffers {
+    /// True when every exported vector is finite and every triangle index is in bounds.
+    pub(crate) variant_payload_valid: bool,
     /// Ordinary terrain vertices in render-patch-local coordinates.
     pub(crate) terrain_vertices: Vec<Vector3>,
     /// Ordinary terrain vertex normals.

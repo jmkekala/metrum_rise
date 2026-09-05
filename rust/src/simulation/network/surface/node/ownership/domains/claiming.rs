@@ -1,17 +1,22 @@
 //! Boolean domain claiming and owned-region extraction.
 
+use super::super::reuse::NodeOwnershipBuildReuseContext;
 use super::*;
 
 pub(in crate::simulation::network::surface::node::ownership) fn split_non_road_regions(
     non_road_shapes: &NodeOverlayShapes,
     rails: &NodeRailContourSet,
+    prepared_constraints: &PreparedRailConstraints<'_>,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
-    split_non_road_regions_by_band_order(non_road_shapes, rails)
+    split_non_road_regions_by_band_order(non_road_shapes, rails, prepared_constraints, reuse)
 }
 
 fn split_non_road_regions_by_band_order(
     non_road_shapes: &NodeOverlayShapes,
     rails: &NodeRailContourSet,
+    prepared_constraints: &PreparedRailConstraints<'_>,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     let mut regions = Vec::new();
     let mut claimed_shapes = Vec::new();
@@ -42,8 +47,10 @@ fn split_non_road_regions_by_band_order(
             &kind_target,
             &kind_domains,
             &rails.constraints,
+            prepared_constraints,
             ResidualKind::Band(kind),
             ConstraintOverlapMode::for_piece_kind(rails.piece_kind),
+            reuse,
         )?;
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &kind_result.claimed_shapes, "claim_union")?;
@@ -61,8 +68,10 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
     target_shapes: &NodeOverlayShapes,
     domains: &[&NodeGeneratedContour],
     rail_constraints: &[NodeRailConstraint],
+    prepared_constraints: &PreparedRailConstraints<'_>,
     residual_kind: ResidualKind,
     overlap_mode: ConstraintOverlapMode,
+    reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     if target_shapes.is_empty() {
         return Ok(OwnedDomainResult {
@@ -74,18 +83,23 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
     let mut regions = Vec::new();
     let mut claimed_shapes = Vec::new();
     let groups = owned_domain_groups(domains)?;
-    let prepared_constraints = PreparedRailConstraints::new(rail_constraints);
     let mut applicable_constraints = BTreeMap::new();
     for group in &groups {
         applicable_constraints
             .entry(group.owner)
-            .or_insert_with(|| prepared_constraints.applicable_indices(group.owner));
+            .or_insert_with(|| prepared_constraints.applicable_constraints(group.owner));
     }
+    let mut constraint_query_scratch = PreparedRailConstraintQueryScratch::default();
 
     for group in groups {
         let group_constraint_indices = applicable_constraints
             .get(&group.owner)
             .expect("owned domain group constraint index must be prepared");
+        let group_applicable_constraints = group_constraint_indices
+            .indices()
+            .iter()
+            .map(|&index| &rail_constraints[index])
+            .collect::<Vec<_>>();
         let domain_contours = group
             .domains
             .iter()
@@ -107,23 +121,12 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
                 &prepared_shape,
                 area_m2,
                 group_constraint_indices,
+                &mut constraint_query_scratch,
             ) {
                 group_claimed_shapes.push(shape.clone());
                 continue;
             }
-            let seam_constraints = prepared_constraints.seam_constraints_for_shape(
-                &prepared_shape,
-                group.owner,
-                group_constraint_indices,
-                overlap_mode,
-            );
-            if residual_kind.requires_explicit_profile_seam_rail()
-                && !region_has_explicit_profile_seam_rail(&seam_constraints, rail_constraints)
-            {
-                continue;
-            }
-            group_claimed_shapes.push(shape.clone());
-            regions.push(NodeBooleanOwnedRegion {
+            let mut region = NodeBooleanOwnedRegion {
                 kind: group.kind,
                 owner: group.owner,
                 claim_priority: group.claim_priority,
@@ -131,8 +134,32 @@ pub(in crate::simulation::network::surface::node::ownership) fn owned_regions_fr
                 source_band_index: group.source_band_index,
                 shape: shape.clone(),
                 area_m2,
-                seam_constraints,
-            });
+                seam_constraints: Vec::new(),
+            };
+            region.seam_constraints = reuse.extracted_region_seams(
+                &region,
+                overlap_mode,
+                &group_applicable_constraints,
+                || {
+                    prepared_constraints.seam_constraints_for_shape(
+                        &prepared_shape,
+                        group.owner,
+                        group_constraint_indices,
+                        overlap_mode,
+                        &mut constraint_query_scratch,
+                    )
+                },
+            );
+            if residual_kind.requires_explicit_profile_seam_rail()
+                && !region_has_explicit_profile_seam_rail(
+                    &region.seam_constraints,
+                    rail_constraints,
+                )
+            {
+                continue;
+            }
+            group_claimed_shapes.push(shape.clone());
+            regions.push(region);
         }
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &group_claimed_shapes, "domain_claim_union")?;

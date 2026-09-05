@@ -1,9 +1,9 @@
 //! Terrain-clip output edge sourcing.
 
 use super::super::{
-    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, backend::RoadVec3, earthwork::RoadSurfaceEarthworkFaceSource,
-    keys::SurfaceHeightMmKey,
+    NodeFootprintBoundarySegmentSource, NodeFootprintBoundaryVertexSource, NodeOverlayPoint,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind, backend::RoadVec3,
+    earthwork::RoadSurfaceEarthworkFaceSource, keys::SurfaceHeightMmKey,
 };
 use super::heights::interval_height_at;
 use super::model::*;
@@ -43,6 +43,93 @@ impl RoadSurfaceSystem {
             );
         }
         Ok(())
+    }
+
+    pub(super) fn append_terrain_clip_prepared_segment_points(
+        out: &mut Vec<RoadSurfaceTerrainClipSourceEdge>,
+        mut points: Vec<RoadVec3>,
+        segment_start: NodeOverlayPoint,
+        segment_end: NodeOverlayPoint,
+        prepared_sources: &[TerrainClipPreparedSource],
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<(), TerrainClipOutputSourceError> {
+        Self::dedup_terrain_clip_top_envelope_points(&mut points);
+        let mut start_t = points.first().and_then(|point| {
+            Self::overlay_line_parameter([point.x, point.z], segment_start, segment_end)
+        });
+        for segment in points.windows(2) {
+            let start = segment[0];
+            let end = segment[1];
+            let end_t = Self::overlay_line_parameter([end.x, end.z], segment_start, segment_end);
+            if Self::world_points_same_for_boundary(start, end)
+                || Self::canonical_numeric_dust_boundary_point(start, end).is_some()
+            {
+                start_t = end_t;
+                continue;
+            }
+            let source = match (start_t, end_t) {
+                (Some(start_t), Some(end_t)) => {
+                    Self::terrain_clip_output_source_for_prepared_points(
+                        start,
+                        end,
+                        start_t,
+                        end_t,
+                        prepared_sources,
+                        source_edges,
+                    )?
+                }
+                _ => Self::terrain_clip_output_source_for_points(start, end, source_edges)?,
+            };
+            Self::append_terrain_clip_source_edge(
+                out,
+                RoadSurfaceTerrainClipSourceEdge {
+                    start,
+                    end,
+                    kind: source.kind,
+                    source: source.source,
+                },
+            );
+            start_t = end_t;
+        }
+        Ok(())
+    }
+
+    fn terrain_clip_output_source_for_prepared_points(
+        start: RoadVec3,
+        end: RoadVec3,
+        start_t: f64,
+        end_t: f64,
+        prepared_sources: &[TerrainClipPreparedSource],
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Result<TerrainClipSourceEdge, TerrainClipOutputSourceError> {
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_source_for_prepared_segment(
+                start,
+                end,
+                start_t,
+                end_t,
+                prepared_sources,
+            ),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_source_for_endpoint_segment(start, end, source_edges),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        if let Some(source) = Self::terrain_clip_output_source_result(
+            Self::terrain_clip_output_dust_connector_source(start, end, source_edges),
+            start,
+            end,
+        )? {
+            return Ok(source);
+        }
+        Err(TerrainClipOutputSourceError::Missing { start, end })
     }
 
     fn terrain_clip_output_source_for_points(
@@ -173,6 +260,30 @@ impl RoadSurfaceSystem {
         Self::unique_terrain_clip_output_source(candidates, "covered_segment", Some((start, end)))
     }
 
+    fn terrain_clip_output_source_for_prepared_segment(
+        start: RoadVec3,
+        end: RoadVec3,
+        start_t: f64,
+        end_t: f64,
+        prepared_sources: &[TerrainClipPreparedSource],
+    ) -> TerrainClipOutputSourceSelection {
+        let coverage_start_t = start_t.min(end_t);
+        let coverage_end_t = start_t.max(end_t);
+        let mut candidates = Vec::with_capacity(prepared_sources.len());
+        for prepared in prepared_sources {
+            let interval = prepared.interval;
+            if !Self::terrain_clip_interval_covers(interval, coverage_start_t, coverage_end_t) {
+                continue;
+            }
+            if Self::overlay_heights_equal(interval_height_at(interval, start_t), start.y)
+                && Self::overlay_heights_equal(interval_height_at(interval, end_t), end.y)
+            {
+                candidates.push(prepared.edge);
+            }
+        }
+        Self::unique_terrain_clip_output_source(candidates, "covered_segment", Some((start, end)))
+    }
+
     fn terrain_clip_output_source_for_endpoint_segment(
         start: RoadVec3,
         end: RoadVec3,
@@ -253,15 +364,13 @@ impl RoadSurfaceSystem {
             return TerrainClipOutputSourceSelection::Missing;
         }
         candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        let visible_candidates = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.kind != RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
-            .collect::<Vec<_>>();
-        let provenance_candidates = if visible_candidates.is_empty() {
+        let visible_count = candidates.partition_point(|candidate| {
+            candidate.kind != RoadSurfaceTerrainClipEdgeKind::SpanHandoff
+        });
+        let provenance_candidates = if visible_count == 0 {
             candidates.as_slice()
         } else {
-            visible_candidates.as_slice()
+            &candidates[..visible_count]
         };
         let first = provenance_candidates[0];
         if !provenance_candidates
@@ -322,24 +431,22 @@ impl RoadSurfaceSystem {
         start: RoadVec3,
         end: RoadVec3,
     ) -> Option<TerrainClipSourceEdge> {
-        let mut span_candidates = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
-            .collect::<Vec<_>>();
-        if span_candidates.is_empty() || span_candidates.len() != candidates.len() {
+        if candidates.is_empty()
+            || !candidates
+                .iter()
+                .all(|candidate| candidate.kind == RoadSurfaceTerrainClipEdgeKind::SpanHandoff)
+        {
             return None;
         }
 
-        let first_key = Self::span_handoff_boundary_match_key(span_candidates[0].source)?;
-        if !span_candidates.iter().copied().all(|candidate| {
+        let first_key = Self::span_handoff_boundary_match_key(candidates[0].source)?;
+        if !candidates.iter().copied().all(|candidate| {
             Self::span_handoff_boundary_match_key(candidate.source) == Some(first_key)
         }) {
             return None;
         }
 
-        span_candidates.sort_by(|a, b| terrain_clip_source_edge_ordering(*a, *b));
-        let first = span_candidates[0];
+        let first = candidates[0];
         Some(TerrainClipSourceEdge {
             start,
             end,

@@ -1,6 +1,9 @@
 //! Visible-surface sampling, raycast, and section-range queries.
 
-use super::super::{RoadSurfaceSection, RoadSurfaceSystem, SurfaceChunkKey};
+use super::super::{
+    RoadLaneSurfaceQuery, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTriangleQueryIndex,
+    SurfaceChunkKey,
+};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use crate::simulation::network::types::EdgeClass;
@@ -10,6 +13,47 @@ use godot::prelude::Vector3;
 const SAMPLE_EPSILON_M: f64 = 0.001;
 
 impl RoadSurfaceSystem {
+    /// Resolves immutable owner-local acceleration data once for all samples of one lane.
+    pub(crate) fn lane_owner_surface_query<'a>(
+        &'a self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_id: usize,
+        node_id: usize,
+        carriageway_only: bool,
+    ) -> RoadLaneSurfaceQuery<'a> {
+        let edge_id = (edge_id < graph.edge_count()).then_some(edge_id);
+        let mut node_ids = [u32::MAX; 2];
+        let node_count = if let Some(edge_id) = edge_id {
+            let edge = graph.edge(edge_id);
+            node_ids[0] = graph.get_valid_node(edge.start_node);
+            node_ids[1] = graph.get_valid_node(edge.end_node);
+            usize::from(node_ids[0] != node_ids[1]) + 1
+        } else if node_id < graph.node_count() {
+            node_ids[0] = graph.get_valid_node(node_id as u32);
+            1
+        } else {
+            0
+        };
+        let mut node_indices = [None; 2];
+        for (target, &node_id) in node_indices.iter_mut().zip(&node_ids[..node_count]) {
+            if self.node_uses_visible_surface(graph, terrain, node_id) {
+                *target = self
+                    .compiled_visual_node_pieces
+                    .get(&node_id)
+                    .map(|piece| piece.surface_query.as_ref());
+            }
+        }
+        RoadLaneSurfaceQuery {
+            node_indices,
+            node_count,
+            span_index: edge_id
+                .and_then(|edge_id| self.compiled_visual_span_pieces.get(&edge_id))
+                .map(|piece| piece.surface_query.as_ref()),
+            carriageway_only,
+        }
+    }
+
     pub(crate) fn sample_visible_surface_height(
         &self,
         graph: &RegionGraph,
@@ -169,7 +213,7 @@ impl RoadSurfaceSystem {
         best_height_m
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn raycast_visible_surface(
         &self,
         graph: &RegionGraph,
@@ -343,6 +387,43 @@ impl RoadSurfaceSystem {
     }
 }
 
+impl RoadLaneSurfaceQuery<'_> {
+    /// Samples the highest matching owner surface without graph or hash-map traversal.
+    pub(crate) fn sample_height(&self, world_x: f32, world_z: f32) -> Option<f32> {
+        let point = RoadVec2::new(f64::from(world_x), f64::from(world_z));
+        let mut surface_height_m = None;
+        for index in self.node_indices[..self.node_count].iter().flatten() {
+            if let Some(height_m) = index.sample_height(point, self.carriageway_only) {
+                keep_max_height(&mut surface_height_m, height_m);
+            }
+        }
+        if let Some(index) = self.span_index
+            && let Some(height_m) = index.sample_height(point, self.carriageway_only)
+        {
+            keep_max_height(&mut surface_height_m, height_m);
+        }
+        surface_height_m
+    }
+}
+
+impl RoadSurfaceTriangleQueryIndex {
+    fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
+        let mut surface_height_m = None;
+        for &triangle_idx in self.cell_triangle_indices(point) {
+            let indexed = self.triangles[triangle_idx as usize];
+            if carriageway_only && !indexed.carriageway {
+                continue;
+            }
+            if let Some(height_m) =
+                RoadSurfaceSystem::triangle_height_at_xz(indexed.triangle, point)
+            {
+                keep_max_height(&mut surface_height_m, height_m);
+            }
+        }
+        surface_height_m
+    }
+}
+
 fn ray_xz_interval_for_bounds(
     ray_origin: RoadVec3,
     ray_dir: RoadVec3,
@@ -416,7 +497,7 @@ fn update_closest_ray_hit(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 fn closest_ray_hit(
     ray_origin: Vector3,
     ray_dir: Vector3,
@@ -443,22 +524,39 @@ fn road_triangle_barycentric_weights_xz(
     triangle: [RoadVec3; 3],
     point: RoadVec2,
 ) -> Option<(f64, f64, f64)> {
+    let min_x = triangle[0].x.min(triangle[1].x).min(triangle[2].x) - SAMPLE_EPSILON_M;
+    let max_x = triangle[0].x.max(triangle[1].x).max(triangle[2].x) + SAMPLE_EPSILON_M;
+    let min_z = triangle[0].z.min(triangle[1].z).min(triangle[2].z) - SAMPLE_EPSILON_M;
+    let max_z = triangle[0].z.max(triangle[1].z).max(triangle[2].z) + SAMPLE_EPSILON_M;
+    if point.x < min_x || point.x > max_x || point.y < min_z || point.y > max_z {
+        return None;
+    }
+
     let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
         - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
     if area.abs() <= SAMPLE_EPSILON_M {
         return None;
     }
 
-    let w0 = ((triangle[1].x - point.x) * (triangle[2].z - point.y)
-        - (triangle[1].z - point.y) * (triangle[2].x - point.x))
-        / area;
-    let w1 = ((triangle[2].x - point.x) * (triangle[0].z - point.y)
-        - (triangle[2].z - point.y) * (triangle[0].x - point.x))
-        / area;
-    let w2 = 1.0 - w0 - w1;
-    if w0 < -SAMPLE_EPSILON_M || w1 < -SAMPLE_EPSILON_M || w2 < -SAMPLE_EPSILON_M {
+    let numerator_w0 = (triangle[1].x - point.x) * (triangle[2].z - point.y)
+        - (triangle[1].z - point.y) * (triangle[2].x - point.x);
+    let numerator_w1 = (triangle[2].x - point.x) * (triangle[0].z - point.y)
+        - (triangle[2].z - point.y) * (triangle[0].x - point.x);
+    let numerator_w2 = area - numerator_w0 - numerator_w1;
+    let outside = if area > 0.0 {
+        let tolerance = -SAMPLE_EPSILON_M * area;
+        numerator_w0 < tolerance || numerator_w1 < tolerance || numerator_w2 < tolerance
+    } else {
+        let tolerance = -SAMPLE_EPSILON_M * area;
+        numerator_w0 > tolerance || numerator_w1 > tolerance || numerator_w2 > tolerance
+    };
+    if outside {
         return None;
     }
+    let inverse_area = area.recip();
+    let w0 = numerator_w0 * inverse_area;
+    let w1 = numerator_w1 * inverse_area;
+    let w2 = numerator_w2 * inverse_area;
     Some((w0, w1, w2))
 }
 

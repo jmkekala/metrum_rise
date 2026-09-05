@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 
 pub(super) fn apply_junctionn_same_material_shared_edge_height_normalization(
     regions: &mut [NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
 ) -> Result<(), NodeHeightFieldError> {
-    let candidates_by_edge = collect_same_material_shared_edge_height_candidates(regions);
+    let candidates_by_edge =
+        collect_same_material_shared_edge_height_candidates(regions, constraint_indices);
     let agreement = resolve_same_material_shared_edge_height_agreement(candidates_by_edge)?;
     apply_same_material_shared_edge_height_agreement(regions, &agreement);
     Ok(())
@@ -14,11 +16,13 @@ pub(super) fn apply_junctionn_same_material_shared_edge_height_normalization(
 
 fn collect_same_material_shared_edge_height_candidates(
     regions: &[NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
 ) -> BTreeMap<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>> {
     let mut candidates_by_edge =
         BTreeMap::<SameMaterialSharedEdgeKey, Vec<SameMaterialSharedEdgeCandidate>>::new();
 
-    for region in regions {
+    for (region_index, region) in regions.iter().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         for contour in &region.shape {
             if contour.len() < 2 {
                 continue;
@@ -30,6 +34,7 @@ fn collect_same_material_shared_edge_height_candidates(
                     region.kind,
                     region.owner,
                     &region.seam_constraints,
+                    constraint_index,
                     start,
                     end,
                 ) else {

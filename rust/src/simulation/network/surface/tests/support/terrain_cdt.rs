@@ -26,7 +26,7 @@ pub(in crate::simulation::network::surface::tests) fn terrain_cdt_input_for_boun
     let mut source_samples = Vec::new();
     let mut tie_in_guide_samples = Vec::new();
     let mut tie_in_guide_constraints = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         terrain,
         &road_loops,
@@ -61,13 +61,13 @@ fn push_test_terrain_cdt_source_sample(
     x: f32,
     z: f32,
     source_samples: &mut Vec<TerrainCdtVertex>,
-    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    sample_keys: &mut HashSet<(i64, i64)>,
 ) {
     let key = (
         (f64::from(x) * 1000.0).round() as i64,
         (f64::from(z) * 1000.0).round() as i64,
     );
-    if sample_keys.insert(key, ()).is_some() {
+    if !sample_keys.insert(key) {
         return;
     }
     source_samples.push(TerrainCdtVertex::new(

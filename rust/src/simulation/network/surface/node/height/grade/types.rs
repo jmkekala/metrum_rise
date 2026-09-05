@@ -116,12 +116,14 @@ pub(super) struct SameMaterialSharedEdgeHeightAgreement {
 }
 
 pub(super) struct SameMaterialVertexHeightGroups {
-    pub(super) contexts_by_key:
-        BTreeMap<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightContext>>,
-    pub(super) candidates_by_key:
-        BTreeMap<SameMaterialVertexHeightSupportKey, Vec<SameMaterialVertexHeightCandidate>>,
-    pub(super) selected_by_key:
-        BTreeMap<SameMaterialVertexHeightSupportKey, SameMaterialVertexHeightCandidate>,
+    pub(super) by_key: BTreeMap<SameMaterialVertexHeightSupportKey, SameMaterialVertexHeightGroup>,
+}
+
+pub(super) struct SameMaterialVertexHeightGroup {
+    pub(super) contexts: Vec<SameMaterialVertexHeightContext>,
+    pub(super) candidates: Vec<SameMaterialVertexHeightCandidate>,
+    pub(super) selected: SameMaterialVertexHeightCandidate,
+    pub(super) occurrences: Vec<(usize, usize, usize)>,
 }
 
 impl NodeGradeVertexAuthority {

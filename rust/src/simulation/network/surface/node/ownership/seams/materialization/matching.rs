@@ -175,18 +175,20 @@ fn owners_form_sidewalk_footpath_contact(
     )
 }
 
-pub(super) fn owned_edge_lies_on_rail_constraint(
+pub(super) fn owned_edge_lies_on_prepared_rail_constraint(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
     constraint: &NodeRailConstraint,
+    constraint_points: &[NodeOwnershipPointKey],
+    intervals: &mut Vec<(i128, i128)>,
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> bool {
-    if start == end || constraint.points_xz.len() < 2 {
+    if start == end || constraint_points.len() < 2 {
         return false;
     }
-    if edge_lies_on_single_constraint_segment(start, end, constraint) {
+    if edge_lies_on_single_constraint_segment_with_points(start, end, constraint_points) {
         return true;
     }
     if matches!(constraint.kind, NodeRailConstraintKind::BandContour { .. }) {
@@ -194,7 +196,12 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
             constraint,
             owner,
             opposite_owner,
-        ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+        ) && edge_lies_on_constraint_polyline_on_overlay_grid(
+            start,
+            end,
+            constraint_points,
+            intervals,
+        );
     }
     let exact_owner_pair =
         rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner);
@@ -202,13 +209,18 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
         && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
         && constraint.kind == NodeRailConstraintKind::RaisedStepContact
         && !raised_step_contact_requires_exact_constraint_span(owner, opposite_owner)
-        && edge_lies_inside_single_constraint_segment_dust_envelope(start, end, constraint)
+        && edge_lies_inside_single_constraint_segment_dust_envelope(start, end, constraint_points)
     {
         return true;
     }
     if materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner) {
         if exact_owner_pair && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN {
-            return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+            return edge_lies_on_constraint_polyline_on_overlay_grid(
+                start,
+                end,
+                constraint_points,
+                intervals,
+            );
         }
         if !exact_owner_pair
             || (constraint.source_boundary_index.is_some()
@@ -221,31 +233,41 @@ pub(super) fn owned_edge_lies_on_rail_constraint(
         && exact_owner_pair
         && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
     {
-        return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+        return edge_lies_on_constraint_polyline_on_overlay_grid(
+            start,
+            end,
+            constraint_points,
+            intervals,
+        );
     }
     if constraint.kind == NodeRailConstraintKind::RaisedStepContact
         && piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
         && !materialized_edge_requires_exact_constraint_span(constraint, owner, opposite_owner)
     {
-        return edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint);
+        return edge_lies_on_constraint_polyline_on_overlay_grid(
+            start,
+            end,
+            constraint_points,
+            intervals,
+        );
     }
     matches!(
         piece_kind,
         RoadSurfaceVisualNodePieceKind::Bend | RoadSurfaceVisualNodePieceKind::Terminal
-    ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+    ) && edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint_points, intervals)
 }
 
 fn edge_lies_inside_single_constraint_segment_dust_envelope(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
-    constraint: &NodeRailConstraint,
+    constraint_points: &[NodeOwnershipPointKey],
 ) -> bool {
     if edge_start == edge_end {
         return false;
     }
-    constraint.points_xz.windows(2).any(|segment| {
-        let segment_start = ownership_key_from_road_point(segment[0]);
-        let segment_end = ownership_key_from_road_point(segment[1]);
+    constraint_points.windows(2).any(|segment| {
+        let segment_start = segment[0];
+        let segment_end = segment[1];
         segment_start != segment_end
             && point_is_inside_constraint_segment_dust_envelope(
                 edge_start,
@@ -264,6 +286,34 @@ fn edge_lies_inside_single_constraint_segment_dust_envelope(
                 segment_end,
             )
     })
+}
+
+#[cfg(test)]
+fn owned_edge_lies_on_rail_constraint(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> bool {
+    let constraint_points = constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(ownership_key_from_road_point)
+        .collect::<Vec<_>>();
+    let mut intervals = Vec::new();
+    owned_edge_lies_on_prepared_rail_constraint(
+        start,
+        end,
+        constraint,
+        &constraint_points,
+        &mut intervals,
+        owner,
+        opposite_owner,
+        piece_kind,
+    )
 }
 
 fn edge_is_longitudinal_to_constraint_segment(

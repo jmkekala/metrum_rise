@@ -1,6 +1,6 @@
 //! Canonical input ordering, clipping, vertex insertion, and stage assembly.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::*;
 
@@ -34,13 +34,37 @@ pub(super) struct CanonicalTerrainCdtRoadLoop {
     pub(super) min_z: f64,
     pub(super) max_x: f64,
     pub(super) max_z: f64,
+    pub(super) min_height_m: f32,
+    pub(super) max_height_m: f32,
+    pub(super) sourced_edges: Vec<CanonicalTerrainCdtSourcedEdge>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CanonicalTerrainCdtSourcedEdge {
+    pub(super) start_x: f64,
+    pub(super) start_z: f64,
+    pub(super) start_height_m: f32,
+    pub(super) delta_x: f64,
+    pub(super) delta_z: f64,
+    pub(super) delta_height_m: f32,
+    pub(super) length_squared_m: f64,
+    pub(super) min_x: f64,
+    pub(super) min_z: f64,
+    pub(super) max_x: f64,
+    pub(super) max_z: f64,
+    pub(super) source: TerrainCdtRoadBoundarySource,
 }
 
 pub(super) fn canonicalize_input(
     mut input: TerrainCdtInput,
 ) -> Result<CanonicalTerrainCdtInput, TerrainCdtError> {
-    let mut vertices = Vec::new();
-    let mut vertex_lookup = BTreeMap::new();
+    let expected_vertex_count = 4usize
+        .saturating_add(input.source_samples.len())
+        .saturating_add(input.tie_in_guide_samples.len())
+        .saturating_add(input.tie_in_guide_constraints.len().saturating_mul(2));
+    let mut vertices = Vec::with_capacity(expected_vertex_count);
+    // Iteration order is never observed; canonical input ordering determines stable vertex IDs.
+    let mut vertex_lookup = HashMap::with_capacity(expected_vertex_count);
     let mut road_vertex_heights = BTreeMap::new();
     let mut constraint_set = BTreeSet::new();
     let mut road_constraint_edges = Vec::new();
@@ -124,6 +148,16 @@ pub(super) fn canonicalize_input(
                 &mut road_constraint_sources,
             )?;
             let loop_bounds = terrain_cdt_loop_bounds(&points);
+            let (min_height_m, max_height_m) = points.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(min_height_m, max_height_m), point| {
+                    (
+                        min_height_m.min(point.height_m),
+                        max_height_m.max(point.height_m),
+                    )
+                },
+            );
+            let sourced_edges = canonical_terrain_cdt_sourced_edges(&points, &edge_sources);
             road_loops.push(CanonicalTerrainCdtRoadLoop {
                 footprint_group_id: road_loop.footprint_group_id,
                 is_hole: road_loop.is_hole,
@@ -131,6 +165,9 @@ pub(super) fn canonicalize_input(
                 min_z: loop_bounds.min_z,
                 max_x: loop_bounds.max_x,
                 max_z: loop_bounds.max_z,
+                min_height_m,
+                max_height_m,
+                sourced_edges,
                 vertices: points,
                 edge_sources,
             });
@@ -139,7 +176,7 @@ pub(super) fn canonicalize_input(
 
     input
         .tie_in_guide_samples
-        .sort_by_key(|sample| terrain_cdt_vertex_key(sample.vertex));
+        .sort_by_cached_key(|sample| terrain_cdt_vertex_key(sample.vertex));
     for sample in input.tie_in_guide_samples {
         let vertex = sample.vertex;
         if !tie_in_guide_vertex_is_valid(vertex, input.patch, &road_loops) {
@@ -148,12 +185,14 @@ pub(super) fn canonicalize_input(
         insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
     }
 
-    input.tie_in_guide_constraints.sort_by_key(|constraint| {
-        (
-            terrain_cdt_vertex_key(constraint.start),
-            terrain_cdt_vertex_key(constraint.end),
-        )
-    });
+    input
+        .tie_in_guide_constraints
+        .sort_by_cached_key(|constraint| {
+            (
+                terrain_cdt_vertex_key(constraint.start),
+                terrain_cdt_vertex_key(constraint.end),
+            )
+        });
     for constraint in input.tie_in_guide_constraints {
         if !tie_in_guide_vertex_is_valid(constraint.start, input.patch, &road_loops)
             || !tie_in_guide_vertex_is_valid(constraint.end, input.patch, &road_loops)
@@ -168,7 +207,7 @@ pub(super) fn canonicalize_input(
 
     input
         .source_samples
-        .sort_by_key(|sample| terrain_cdt_vertex_key(*sample));
+        .sort_by_cached_key(|sample| terrain_cdt_vertex_key(*sample));
     for sample in input.source_samples {
         if !patch_contains(sample, input.patch) {
             continue;
@@ -242,6 +281,41 @@ pub(super) fn canonicalize_input(
     })
 }
 
+fn canonical_terrain_cdt_sourced_edges(
+    vertices: &[TerrainCdtVertex],
+    edge_sources: &[Option<TerrainCdtRoadBoundarySource>],
+) -> Vec<CanonicalTerrainCdtSourcedEdge> {
+    if vertices.len() < 2 {
+        return Vec::new();
+    }
+    edge_sources
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            let source = source?;
+            let start = vertices[index];
+            let end = vertices[(index + 1) % vertices.len()];
+            let delta_x = end.x - start.x;
+            let delta_z = end.z - start.z;
+            Some(CanonicalTerrainCdtSourcedEdge {
+                start_x: start.x,
+                start_z: start.z,
+                start_height_m: start.height_m,
+                delta_x,
+                delta_z,
+                delta_height_m: end.height_m - start.height_m,
+                length_squared_m: delta_x * delta_x + delta_z * delta_z,
+                min_x: start.x.min(end.x),
+                min_z: start.z.min(end.z),
+                max_x: start.x.max(end.x),
+                max_z: start.z.max(end.z),
+                source,
+            })
+        })
+        .collect()
+}
+
 fn tie_in_guide_vertex_is_valid(
     vertex: TerrainCdtVertex,
     patch: TerrainCdtPatch,
@@ -261,7 +335,7 @@ pub(super) struct TerrainCdtRoadVertexHeight {
 pub(super) fn insert_vertex(
     vertex: TerrainCdtVertex,
     vertices: &mut Vec<TerrainCdtVertex>,
-    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    vertex_lookup: &mut HashMap<(i64, i64), usize>,
 ) -> usize {
     let key = terrain_cdt_vertex_xz_key(vertex);
     if let Some(index) = vertex_lookup.get(&key) {
@@ -277,7 +351,7 @@ fn insert_road_vertex(
     vertex: TerrainCdtVertex,
     site_owned_only: bool,
     vertices: &mut Vec<TerrainCdtVertex>,
-    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    vertex_lookup: &mut HashMap<(i64, i64), usize>,
     road_vertex_heights: &mut BTreeMap<(i64, i64), TerrainCdtRoadVertexHeight>,
 ) -> Result<usize, TerrainCdtError> {
     let key = terrain_cdt_vertex_xz_key(vertex);

@@ -1,12 +1,9 @@
 //! Source-authorized raised-step contact collection.
 
-use super::super::geometry::{
-    generated_contour_boundary_contains_key, generated_directed_edge_segments_inside_shape_keys,
-    generated_shape_boundary_segments_on_source_edge,
-};
+use super::super::geometry::append_generated_directed_edge_segments_inside_shape_keys;
 use super::super::{
-    GeneratedContourDirectedEdge, GeneratedRaisedStepOwnerPair, NodeBandOwner,
-    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,
+    GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
+    NodeBandOwner, NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeRailConstraint,
     NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceVisualNodePieceKind,
     generated_constraint_directed_edges, generated_constraint_touches_key,
     generated_contour_band_kind, generated_contour_keys, generated_point_key_lies_on_segment,
@@ -15,9 +12,9 @@ use super::super::{
 use super::target_groups::{
     SourceAuthorizedTargetGroupPairGeometry, SourceAuthorizedTargetGroupView,
     collect_source_authorized_exact_group_pair_overlap_contacts,
-    source_authorized_contact_segments, source_authorized_raised_step_target_pairs,
-    source_authorized_target_claim_priorities, source_authorized_target_group,
-    source_authorized_target_group_pair_geometry,
+    source_authorized_contact_segments, source_authorized_raised_step_target_pair_exists,
+    source_authorized_raised_step_target_pairs, source_authorized_target_claim_priorities,
+    source_authorized_target_group, source_authorized_target_group_pair_geometry,
 };
 use super::types::{
     GeneratedRaisedStepEndpointSource, GeneratedSameBandContactConstraint,
@@ -27,10 +24,19 @@ use super::types::{
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
-const SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD: usize = 64;
-const SOURCE_AUTHORITY_PARALLEL_PAIR_THRESHOLD: usize = 64;
+// Per-node source contributions below these bounds are too small to amortize waking and joining
+// the global Rayon pool. Pathological high-degree nodes still retain the parallel path.
+const SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD: usize = 1024;
+const SOURCE_AUTHORITY_PARALLEL_PAIR_THRESHOLD: usize = 1024;
 const SOURCE_AUTHORITY_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
+
+fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
+    start
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(0.0)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct RaisedStepTargetContourContributorKey {
@@ -45,6 +51,7 @@ struct RaisedStepTargetGroupContributorKey {
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct RaisedStepSourceContributorKey {
+    fingerprint: u64,
     source_mouth_order_index: usize,
     source_band_index: Option<usize>,
     owners: [NodeBandOwner; 2],
@@ -83,6 +90,7 @@ struct RaisedStepTargetGroupContributor {
     key: Arc<RaisedStepTargetGroupContributorKey>,
     view: SourceAuthorizedTargetGroupView,
     effective_owner_priority: Option<NodeGeneratedContourClaimPriority>,
+    newly_materialized: bool,
 }
 
 type RaisedStepSourceEntry = (Arc<RaisedStepSourceContributorKey>, usize);
@@ -136,63 +144,67 @@ pub(in crate::simulation::network::surface::node::rails) fn collect_source_autho
     piece_kind: RoadSurfaceVisualNodePieceKind,
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
-    contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+    contacts: &mut Vec<GeneratedSameBandContactConstraint>,
     previous: Option<&NodeSourceAuthorizedContactCache>,
     current: &mut NodeSourceAuthorizedContactCache,
 ) -> SourceAuthorizedContactReuseStats {
+    let profile_enabled = crate::debug::category_enabled("road");
+    let total_start = profile_enabled.then(Instant::now);
+    let contacts_before = contacts.len();
     let mut stats = SourceAuthorizedContactReuseStats::default();
+    let authority_start = profile_enabled.then(Instant::now);
     let source_authority = RaisedStepSourceAuthority::from_constraints(constraints);
+    let authority_ms = elapsed_profile_ms(authority_start);
+    let target_groups_start = profile_enabled.then(Instant::now);
     let claim_priorities = source_authorized_target_claim_priorities(contours);
-    let materialized_target_group_keys = current
-        .target_group_geometry
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
     let target_groups =
         target_groups_with_reuse(contours, &claim_priorities, previous, current, &mut stats);
-    let unmaterialized_target_group_keys = target_groups
-        .iter()
-        .map(|group| Arc::clone(&group.key))
-        .filter(|key| !materialized_target_group_keys.contains(key))
-        .collect::<BTreeSet<_>>();
+    let target_groups_ms = elapsed_profile_ms(target_groups_start);
+    let source_index_start = profile_enabled.then(Instant::now);
     let source_entries = deduplicated_source_entries(source_authority.constraints());
     let source_spatial_index =
         RaisedStepSourceSpatialIndex::new(source_authority.constraints(), &source_entries);
     let target_group_spatial_index = RaisedStepTargetGroupSpatialIndex::new(&target_groups);
-    let unmaterialized_source_keys = source_entries
+    let unmaterialized_sources = source_entries
         .iter()
-        .map(|(key, _)| Arc::clone(key))
-        .filter(|key| !current.materialized_sources.contains(key))
-        .collect::<BTreeSet<_>>();
+        .map(|(key, _)| !current.materialized_sources.contains(key))
+        .collect::<Vec<_>>();
+    let source_index_ms = elapsed_profile_ms(source_index_start);
+    let source_group_start = profile_enabled.then(Instant::now);
     collect_source_group_contacts_with_reuse(
         piece_kind,
-        contours,
         source_authority.constraints(),
         &source_entries,
-        &unmaterialized_source_keys,
+        &unmaterialized_sources,
         &target_group_spatial_index,
         &target_groups,
-        &unmaterialized_target_group_keys,
         previous,
         current,
         contacts,
         &mut stats,
     );
+    let source_group_ms = elapsed_profile_ms(source_group_start);
 
+    let contact_points_start = profile_enabled.then(Instant::now);
     let contact_points = generated_raised_step_source_contact_points_with_reuse(
         source_authority.constraints(),
         &source_entries,
         &source_spatial_index,
-        &unmaterialized_source_keys,
+        &unmaterialized_sources,
         previous,
         current,
         &mut stats,
     );
-    for (point, sources) in source_authority.sources_by_contact_points(
+    let contact_points_ms = elapsed_profile_ms(contact_points_start);
+    let sources_by_point_start = profile_enabled.then(Instant::now);
+    let sources_by_contact_point = source_authority.sources_by_contact_points(
         &contact_points,
         &source_entries,
         &source_spatial_index,
-    ) {
+    );
+    let sources_by_point_ms = elapsed_profile_ms(sources_by_point_start);
+    let emission_start = profile_enabled.then(Instant::now);
+    for (point, sources) in sources_by_contact_point {
         for left_index in 0..sources.len() {
             for right_index in left_index + 1..sources.len() {
                 let (source_mouth_order_index, source_band_index) =
@@ -203,7 +215,7 @@ pub(in crate::simulation::network::surface::node::rails) fn collect_source_autho
                         else {
                             continue;
                         };
-                        contacts.insert(GeneratedSameBandContactConstraint {
+                        contacts.push(GeneratedSameBandContactConstraint {
                             kind: NodeRailConstraintKind::RaisedStepContact,
                             owner: pair.owner,
                             opposite_owner: pair.opposite_owner,
@@ -217,29 +229,107 @@ pub(in crate::simulation::network::surface::node::rails) fn collect_source_autho
             }
         }
     }
+    contacts.sort_unstable();
+    contacts.dedup();
+    let emission_ms = elapsed_profile_ms(emission_start);
+    let source_constraint_count = source_authority.constraints().len();
+    let source_entry_count = source_entries.len();
+    let target_group_count = target_groups.len();
+    let contact_point_count = contact_points.len();
     current
         .materialized_sources
         .extend(source_entries.into_iter().map(|(key, _)| key));
+    if profile_enabled {
+        let total_ms = elapsed_profile_ms(total_start);
+        if total_ms >= 1.0 {
+            crate::debug_log!(
+                "road",
+                "source_authorized_contacts_detail contours={} constraints={} source_constraints={} source_entries={} new_sources={} target_groups={} new_target_groups={} contact_points={} contacts_added={} source_cache_hits={} source_cache_misses={} source_pair_cache_hits={} source_pair_cache_misses={} authority_ms={:.3} target_groups_ms={:.3} source_index_ms={:.3} source_group_ms={:.3} contact_points_ms={:.3} sources_by_point_ms={:.3} emission_ms={:.3} total_ms={:.3}",
+                contours.len(),
+                constraints.len(),
+                source_constraint_count,
+                source_entry_count,
+                unmaterialized_sources.iter().filter(|&&new| new).count(),
+                target_group_count,
+                target_groups
+                    .iter()
+                    .filter(|group| group.newly_materialized)
+                    .count(),
+                contact_point_count,
+                contacts.len().saturating_sub(contacts_before),
+                stats.source_cache_hits,
+                stats.source_cache_misses,
+                stats.source_pair_cache_hits,
+                stats.source_pair_cache_misses,
+                authority_ms,
+                target_groups_ms,
+                source_index_ms,
+                source_group_ms,
+                contact_points_ms,
+                sources_by_point_ms,
+                emission_ms,
+                total_ms,
+            );
+        }
+    }
     stats
 }
 
 impl RaisedStepSourceContributorKey {
     fn from_source(source_constraint: &RaisedStepSourceConstraint<'_>) -> Self {
+        let ordered_points_xz = source_constraint
+            .constraint
+            .points_xz
+            .iter()
+            .copied()
+            .map(road_point_key)
+            .collect::<Vec<_>>();
         Self {
+            fingerprint: raised_step_source_fingerprint(
+                source_constraint.source.source_mouth_order_index,
+                source_constraint.source.source_band_index,
+                source_constraint.source.owners,
+                &ordered_points_xz,
+            ),
             source_mouth_order_index: source_constraint.source.source_mouth_order_index,
             source_band_index: source_constraint.source.source_band_index,
             owners: source_constraint.source.owners,
-            ordered_points_xz: Arc::from(
-                source_constraint
-                    .constraint
-                    .points_xz
-                    .iter()
-                    .copied()
-                    .map(road_point_key)
-                    .collect::<Vec<_>>(),
-            ),
+            ordered_points_xz: Arc::from(ordered_points_xz),
         }
     }
+}
+
+fn raised_step_source_fingerprint(
+    source_mouth_order_index: usize,
+    source_band_index: Option<usize>,
+    owners: [NodeBandOwner; 2],
+    ordered_points_xz: &[NodeRailPointKey],
+) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut fingerprint = FNV_OFFSET;
+    let mut mix = |value: u64| {
+        fingerprint ^= value;
+        fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
+    };
+    mix(source_mouth_order_index as u64);
+    match source_band_index {
+        Some(index) => {
+            mix(1);
+            mix(index as u64);
+        }
+        None => mix(0),
+    }
+    for owner in owners {
+        mix(owner.kind() as u64);
+        mix(owner.owner_index() as u64);
+    }
+    mix(ordered_points_xz.len() as u64);
+    for &(x, z) in ordered_points_xz {
+        mix(x as u64);
+        mix(z as u64);
+    }
+    fingerprint
 }
 
 fn deduplicated_source_entries(
@@ -301,14 +391,17 @@ impl RaisedStepSourceSpatialIndex {
         &self,
         source_constraints: &[RaisedStepSourceConstraint<'_>],
         source_entries: &[RaisedStepSourceEntry],
-        unmaterialized_source_keys: &BTreeSet<Arc<RaisedStepSourceContributorKey>>,
+        unmaterialized_sources: &[bool],
     ) -> Vec<(usize, usize)> {
-        let mut pairs = BTreeSet::new();
-        for (left_entry_index, (left_key, left_source_index)) in source_entries.iter().enumerate() {
-            if !unmaterialized_source_keys.contains(left_key) {
+        let mut pairs = Vec::new();
+        for (left_entry_index, (_, left_source_index)) in source_entries.iter().enumerate() {
+            if !unmaterialized_sources[left_entry_index] {
                 continue;
             }
             let left = &source_constraints[*left_source_index];
+            if left.edges.is_empty() {
+                continue;
+            }
             for_source_authority_tiles(left.min_x, left.min_z, left.max_x, left.max_z, 0, |tile| {
                 let Some(candidate_indices) = self.source_indices_by_tile.get(&tile) else {
                     return;
@@ -317,23 +410,22 @@ impl RaisedStepSourceSpatialIndex {
                     if left_entry_index == right_entry_index {
                         continue;
                     }
+                    let right = &source_constraints[source_entries[right_entry_index].1];
+                    if right.edges.is_empty() || left.bounds_disjoint_source(right) {
+                        continue;
+                    }
                     let pair = if left_entry_index < right_entry_index {
                         (left_entry_index, right_entry_index)
                     } else {
                         (right_entry_index, left_entry_index)
                     };
-                    pairs.insert(pair);
+                    pairs.push(pair);
                 }
             });
         }
+        pairs.sort_unstable();
+        pairs.dedup();
         pairs
-            .into_iter()
-            .filter(|&(left_entry_index, right_entry_index)| {
-                let left = &source_constraints[source_entries[left_entry_index].1];
-                let right = &source_constraints[source_entries[right_entry_index].1];
-                !left.bounds_disjoint_source(right)
-            })
-            .collect()
     }
 }
 
@@ -360,8 +452,12 @@ impl RaisedStepTargetGroupSpatialIndex {
         index
     }
 
-    fn candidate_group_indices(&self, source: &RaisedStepSourceConstraint<'_>) -> Vec<usize> {
-        let mut candidates = Vec::new();
+    fn append_candidate_group_indices(
+        &self,
+        source: &RaisedStepSourceConstraint<'_>,
+        candidates: &mut Vec<usize>,
+    ) {
+        candidates.clear();
         for_source_authority_tiles(
             source.min_x,
             source.min_z,
@@ -376,7 +472,6 @@ impl RaisedStepTargetGroupSpatialIndex {
         );
         candidates.sort_unstable();
         candidates.dedup();
-        candidates
     }
 }
 
@@ -491,18 +586,16 @@ fn target_groups_with_reuse(
                 key: group_key,
                 ordered_contours: Arc::from(contour_keys),
             });
-            let cached_geometry = current
-                .target_group_geometry
-                .get(&contributor_key)
-                .cloned()
-                .or_else(|| {
-                    previous.and_then(|previous| {
-                        previous
-                            .target_group_geometry
-                            .get(&contributor_key)
-                            .cloned()
-                    })
-                });
+            let current_geometry = current.target_group_geometry.get(&contributor_key).cloned();
+            let newly_materialized = current_geometry.is_none();
+            let cached_geometry = current_geometry.or_else(|| {
+                previous.and_then(|previous| {
+                    previous
+                        .target_group_geometry
+                        .get(&contributor_key)
+                        .cloned()
+                })
+            });
             let geometry = if let Some(cached_geometry) = cached_geometry {
                 stats.target_group_cache_hits += 1;
                 cached_geometry
@@ -512,18 +605,13 @@ fn target_groups_with_reuse(
             current
                 .target_group_geometry
                 .insert(Arc::clone(&contributor_key), geometry.clone());
-            debug_assert!(
-                geometry
-                    .as_ref()
-                    .is_none_or(|geometry| geometry.contour_indices.is_empty())
-            );
             Some(RaisedStepTargetGroupContributor {
                 key: contributor_key,
                 view: SourceAuthorizedTargetGroupView {
                     geometry: geometry?,
-                    contour_indices: Arc::from(contour_indices),
                 },
                 effective_owner_priority: claim_priorities.get(&group_key.owner).copied(),
+                newly_materialized,
             })
         })
         .collect()
@@ -531,36 +619,54 @@ fn target_groups_with_reuse(
 
 fn collect_source_group_contacts_with_reuse(
     piece_kind: RoadSurfaceVisualNodePieceKind,
-    contours: &[NodeGeneratedContour],
     source_constraints: &[RaisedStepSourceConstraint<'_>],
     source_entries: &[RaisedStepSourceEntry],
-    unmaterialized_source_keys: &BTreeSet<Arc<RaisedStepSourceContributorKey>>,
+    unmaterialized_sources: &[bool],
     target_group_spatial_index: &RaisedStepTargetGroupSpatialIndex,
     target_groups: &[RaisedStepTargetGroupContributor],
-    unmaterialized_target_group_keys: &BTreeSet<Arc<RaisedStepTargetGroupContributorKey>>,
     previous: Option<&NodeSourceAuthorizedContactCache>,
     current: &mut NodeSourceAuthorizedContactCache,
-    contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+    contacts: &mut Vec<GeneratedSameBandContactConstraint>,
     stats: &mut SourceAuthorizedContactReuseStats,
 ) {
+    let has_unmaterialized_target_groups =
+        target_groups.iter().any(|group| group.newly_materialized);
+    let mut candidate_group_offsets = Vec::with_capacity(source_entries.len() + 1);
+    let mut candidate_group_indices = Vec::new();
+    let mut candidate_group_scratch = Vec::new();
+    candidate_group_offsets.push(0);
+    for (source_entry_index, (_, source_index)) in source_entries.iter().enumerate() {
+        if unmaterialized_sources[source_entry_index] || has_unmaterialized_target_groups {
+            let source_constraint = &source_constraints[*source_index];
+            target_group_spatial_index
+                .append_candidate_group_indices(source_constraint, &mut candidate_group_scratch);
+            candidate_group_indices.extend(candidate_group_scratch.iter().copied().filter(
+                |&group_index| {
+                    !source_constraint
+                        .bounds_disjoint_group(&target_groups[group_index].view.geometry)
+                },
+            ));
+        }
+        candidate_group_offsets.push(candidate_group_indices.len());
+    }
+    let candidate_groups_for_source = |source_entry_index: usize| {
+        &candidate_group_indices[candidate_group_offsets[source_entry_index]
+            ..candidate_group_offsets[source_entry_index + 1]]
+    };
     let mut source_group_misses = Vec::new();
-    for (source_key, source_index) in source_entries {
-        let source_is_unmaterialized = unmaterialized_source_keys.contains(source_key);
-        if !source_is_unmaterialized && unmaterialized_target_group_keys.is_empty() {
+    for (source_entry_index, (source_key, source_index)) in source_entries.iter().enumerate() {
+        let source_is_unmaterialized = unmaterialized_sources[source_entry_index];
+        if !source_is_unmaterialized && !has_unmaterialized_target_groups {
             continue;
         }
         let source_constraint = &source_constraints[*source_index];
-        for group_index in target_group_spatial_index
-            .candidate_group_indices(source_constraint)
-            .into_iter()
-            .filter(|&group_index| {
-                !source_constraint.bounds_disjoint_group(&target_groups[group_index].view.geometry)
-            })
-        {
+        for &group_index in candidate_groups_for_source(source_entry_index) {
             let target_group = &target_groups[group_index];
-            if !source_is_unmaterialized
-                && !unmaterialized_target_group_keys.contains(&target_group.key)
+            if !source_authorized_source_group_can_emit(piece_kind, source_constraint, target_group)
             {
+                continue;
+            }
+            if !source_is_unmaterialized && !target_group.newly_materialized {
                 continue;
             }
             let key = RaisedStepSourceGroupContributorKey {
@@ -592,68 +698,75 @@ fn collect_source_group_contacts_with_reuse(
         if source_group_misses.len() >= SOURCE_AUTHORITY_PARALLEL_SOURCE_THRESHOLD {
             source_group_misses
                 .par_iter()
-                .map(|(key, source_constraint, group_index)| {
-                    (
-                        key.clone(),
-                        collect_source_authorized_contacts_for_source_group(
-                            piece_kind,
-                            contours,
-                            source_constraint,
-                            &target_groups[*group_index],
-                        ),
-                    )
-                })
+                .map_init(
+                    SourceContactGeometryScratch::default,
+                    |scratch, (key, source_constraint, group_index)| {
+                        (
+                            key.clone(),
+                            collect_source_authorized_contacts_for_source_group(
+                                piece_kind,
+                                source_constraint,
+                                &target_groups[*group_index],
+                                None,
+                                scratch,
+                            ),
+                        )
+                    },
+                )
                 .collect::<Vec<_>>()
         } else {
-            source_group_misses
-                .iter()
-                .map(|(key, source_constraint, group_index)| {
-                    (
-                        key.clone(),
-                        collect_source_authorized_contacts_for_source_group(
-                            piece_kind,
-                            contours,
-                            source_constraint,
-                            &target_groups[*group_index],
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>()
+            let mut edge_clip_cache = BTreeMap::new();
+            let mut geometry_scratch = SourceContactGeometryScratch::default();
+            let mut computed = Vec::with_capacity(source_group_misses.len());
+            for (key, source_constraint, group_index) in &source_group_misses {
+                computed.push((
+                    key.clone(),
+                    collect_source_authorized_contacts_for_source_group(
+                        piece_kind,
+                        source_constraint,
+                        &target_groups[*group_index],
+                        Some((&mut edge_clip_cache, *group_index)),
+                        &mut geometry_scratch,
+                    ),
+                ));
+            }
+            computed
         };
     for (key, computed) in computed_source_group_contacts {
-        let computed = Arc::<[GeneratedSameBandContactConstraint]>::from(
-            computed.into_iter().collect::<Vec<_>>(),
-        );
+        let computed = Arc::<[GeneratedSameBandContactConstraint]>::from(computed);
         contacts.extend(computed.iter().copied());
         current.source_group_contacts.insert(key, computed);
     }
 
     let mut source_group_pair_misses = Vec::new();
-    for (source_key, source_index) in source_entries {
-        let source_is_unmaterialized = unmaterialized_source_keys.contains(source_key);
-        if !source_is_unmaterialized && unmaterialized_target_group_keys.is_empty() {
+    for (source_entry_index, (source_key, source_index)) in source_entries.iter().enumerate() {
+        let source_is_unmaterialized = unmaterialized_sources[source_entry_index];
+        if !source_is_unmaterialized && !has_unmaterialized_target_groups {
             continue;
         }
         let source_constraint = &source_constraints[*source_index];
+        if source_constraint.edges.is_empty() {
+            continue;
+        }
         let [left_owner, right_owner] = source_constraint.source.owners;
-        let candidate_group_indices = target_group_spatial_index
-            .candidate_group_indices(source_constraint)
-            .into_iter()
-            .filter(|&group_index| {
-                !source_constraint.bounds_disjoint_group(&target_groups[group_index].view.geometry)
+        let source_candidate_group_indices = candidate_groups_for_source(source_entry_index);
+        for &left_index in source_candidate_group_indices
+            .iter()
+            .filter(|&&group_index| {
+                target_groups[group_index].view.geometry.key.owner == left_owner
             })
-            .collect::<Vec<_>>();
-        for &left_index in candidate_group_indices.iter().filter(|&&group_index| {
-            target_groups[group_index].view.geometry.key.owner == left_owner
-        }) {
+        {
             let left_group = &target_groups[left_index];
-            for &right_index in candidate_group_indices.iter().filter(|&&group_index| {
-                target_groups[group_index].view.geometry.key.owner == right_owner
-            }) {
+            for &right_index in source_candidate_group_indices
+                .iter()
+                .filter(|&&group_index| {
+                    target_groups[group_index].view.geometry.key.owner == right_owner
+                })
+            {
                 let right_group = &target_groups[right_index];
                 if !source_is_unmaterialized
-                    && !unmaterialized_target_group_keys.contains(&left_group.key)
-                    && !unmaterialized_target_group_keys.contains(&right_group.key)
+                    && !left_group.newly_materialized
+                    && !right_group.newly_materialized
                 {
                     continue;
                 }
@@ -734,28 +847,82 @@ fn collect_source_group_contacts_with_reuse(
                 .collect::<Vec<_>>()
         };
     for (key, computed) in computed_source_group_pair_contacts {
-        let computed = Arc::<[GeneratedSameBandContactConstraint]>::from(
-            computed.into_iter().collect::<Vec<_>>(),
-        );
+        let computed = Arc::<[GeneratedSameBandContactConstraint]>::from(computed);
         contacts.extend(computed.iter().copied());
         current.source_group_pair_contacts.insert(key, computed);
     }
 }
 
-fn collect_source_authorized_contacts_for_source_group(
+fn source_authorized_source_group_can_emit(
     piece_kind: RoadSurfaceVisualNodePieceKind,
-    contours: &[NodeGeneratedContour],
     source_constraint: &RaisedStepSourceConstraint<'_>,
     target_group: &RaisedStepTargetGroupContributor,
-) -> BTreeSet<GeneratedSameBandContactConstraint> {
-    let mut contacts = BTreeSet::new();
+) -> bool {
+    if !source_constraint.edges.is_empty()
+        && source_authorized_raised_step_target_pair_exists(
+            piece_kind,
+            target_group.effective_owner_priority,
+            source_constraint.source,
+            target_group.view.geometry.key,
+        )
+        && source_constraint
+            .edges
+            .iter()
+            .any(|edge| !target_group.view.geometry.bounds_disjoint_edge(*edge))
+    {
+        return true;
+    }
+    if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN
+        || target_group.view.geometry.key.claim_priority
+            != NodeGeneratedContourClaimPriority::MouthBand
+        || target_group.effective_owner_priority
+            != Some(target_group.view.geometry.key.claim_priority)
+    {
+        return false;
+    }
+    let target_owner = target_group.view.geometry.key.owner;
+    if source_constraint.source.owners.contains(&target_owner) {
+        return false;
+    }
+    let has_eligible_owner_handoff =
+        (0..source_constraint.source.owners.len()).any(|replaced_owner_index| {
+            let replaced_owner = source_constraint.source.owners[replaced_owner_index];
+            let retained_owner = source_constraint.source.owners[1 - replaced_owner_index];
+            target_owner != replaced_owner
+                && target_owner.kind() == replaced_owner.kind()
+                && GeneratedRaisedStepOwnerPair::new(retained_owner, target_owner).is_some()
+        });
+    has_eligible_owner_handoff
+        && generated_constraint_endpoint_keys(source_constraint.constraint)
+            .into_iter()
+            .flatten()
+            .any(|point| target_group_contains_boundary_key(&target_group.view, point))
+}
+
+#[derive(Default)]
+struct SourceContactGeometryScratch {
+    clipped_edges: Vec<GeneratedContourEdgeKey>,
+    split_keys: Vec<NodeRailPointKey>,
+}
+
+fn collect_source_authorized_contacts_for_source_group(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    source_constraint: &RaisedStepSourceConstraint<'_>,
+    target_group: &RaisedStepTargetGroupContributor,
+    mut edge_clip_cache: Option<(
+        &mut BTreeMap<(usize, GeneratedContourEdgeKey), Vec<GeneratedContourEdgeKey>>,
+        usize,
+    )>,
+    geometry_scratch: &mut SourceContactGeometryScratch,
+) -> Vec<GeneratedSameBandContactConstraint> {
+    let mut contacts = Vec::new();
     let target_contacts = source_authorized_raised_step_target_pairs(
         piece_kind,
         target_group.effective_owner_priority,
         source_constraint.source,
         target_group.view.geometry.key,
     );
-    if !target_contacts.is_empty()
+    if target_contacts.iter().any(Option::is_some)
         && !source_constraint.bounds_disjoint_group(&target_group.view.geometry)
     {
         for source_edge in &source_constraint.edges {
@@ -763,21 +930,44 @@ fn collect_source_authorized_contacts_for_source_group(
             if target_group.view.geometry.bounds_disjoint_edge(source_edge) {
                 continue;
             }
-            let mut source_edges = generated_directed_edge_segments_inside_shape_keys(
-                source_edge,
-                &target_group.view.geometry.shape_edges,
-                &target_group.view.geometry.shape_keys,
-            );
-            source_edges.extend(generated_shape_boundary_segments_on_source_edge(
-                source_edge,
-                &target_group.view.geometry.shape_edges,
-            ));
-            source_edges.sort_unstable();
-            source_edges.dedup();
-            for edge in source_edges {
-                for (owner, opposite_owner, include_edge) in &target_contacts {
-                    for (start, end) in source_authorized_contact_segments(edge, *include_edge) {
-                        contacts.insert(GeneratedSameBandContactConstraint {
+            let source_edges = if let Some((cache, group_index)) = edge_clip_cache.as_mut() {
+                cache
+                    .entry((
+                        *group_index,
+                        GeneratedContourEdgeKey::new(source_edge.start, source_edge.end),
+                    ))
+                    .or_insert_with(|| {
+                        let mut edges = Vec::new();
+                        append_generated_directed_edge_segments_inside_shape_keys(
+                            source_edge,
+                            &target_group.view.geometry.shape_edges_by_min_x,
+                            &target_group.view.geometry.shape_edges_by_min_z,
+                            &target_group.view.geometry.shape_keys,
+                            &mut edges,
+                            &mut geometry_scratch.split_keys,
+                        );
+                        edges
+                    })
+                    .as_slice()
+            } else {
+                geometry_scratch.clipped_edges.clear();
+                append_generated_directed_edge_segments_inside_shape_keys(
+                    source_edge,
+                    &target_group.view.geometry.shape_edges_by_min_x,
+                    &target_group.view.geometry.shape_edges_by_min_z,
+                    &target_group.view.geometry.shape_keys,
+                    &mut geometry_scratch.clipped_edges,
+                    &mut geometry_scratch.split_keys,
+                );
+                &geometry_scratch.clipped_edges
+            };
+            for &edge in source_edges {
+                for (owner, opposite_owner, include_edge) in target_contacts.iter().flatten() {
+                    for (start, end) in source_authorized_contact_segments(edge, *include_edge)
+                        .into_iter()
+                        .flatten()
+                    {
+                        contacts.push(GeneratedSameBandContactConstraint {
                             kind: NodeRailConstraintKind::RaisedStepContact,
                             owner: *owner,
                             opposite_owner: *opposite_owner,
@@ -795,40 +985,45 @@ fn collect_source_authorized_contacts_for_source_group(
     }
     collect_junctionn_source_authorized_mouth_band_endpoint_handoffs_for_group(
         piece_kind,
-        contours,
         source_constraint,
         &target_group.view,
         target_group.effective_owner_priority,
         &mut contacts,
     );
+    contacts.sort_unstable();
+    contacts.dedup();
     contacts
 }
 
 fn collect_source_authorized_contacts_for_source_group_pair(
     source_constraint: &RaisedStepSourceConstraint<'_>,
     geometry: &SourceAuthorizedTargetGroupPairGeometry,
-) -> BTreeSet<GeneratedSameBandContactConstraint> {
-    let mut contacts = BTreeSet::new();
+) -> Vec<GeneratedSameBandContactConstraint> {
+    let mut contacts = Vec::new();
     collect_source_authorized_exact_group_pair_overlap_contacts(
         source_constraint,
         geometry,
         &mut contacts,
     );
+    contacts.sort_unstable();
+    contacts.dedup();
     contacts
 }
 
 fn collect_junctionn_source_authorized_mouth_band_endpoint_handoffs_for_group(
     piece_kind: RoadSurfaceVisualNodePieceKind,
-    contours: &[NodeGeneratedContour],
     source_constraint: &RaisedStepSourceConstraint<'_>,
     target_group: &SourceAuthorizedTargetGroupView,
     effective_owner_priority: Option<NodeGeneratedContourClaimPriority>,
-    contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+    contacts: &mut Vec<GeneratedSameBandContactConstraint>,
 ) {
     if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN {
         return;
     }
-    for point in generated_constraint_endpoint_keys(source_constraint.constraint) {
+    for point in generated_constraint_endpoint_keys(source_constraint.constraint)
+        .into_iter()
+        .flatten()
+    {
         for replaced_owner_index in 0..source_constraint.source.owners.len() {
             let replaced_owner = source_constraint.source.owners[replaced_owner_index];
             let retained_owner = source_constraint.source.owners[1 - replaced_owner_index];
@@ -839,14 +1034,14 @@ fn collect_junctionn_source_authorized_mouth_band_endpoint_handoffs_for_group(
                 || target_group.geometry.key.claim_priority
                     != NodeGeneratedContourClaimPriority::MouthBand
                 || effective_owner_priority != Some(target_group.geometry.key.claim_priority)
-                || !target_group_contains_boundary_key(contours, target_group, point)
+                || !target_group_contains_boundary_key(target_group, point)
             {
                 continue;
             }
             let Some(pair) = GeneratedRaisedStepOwnerPair::new(retained_owner, target_owner) else {
                 continue;
             };
-            contacts.insert(GeneratedSameBandContactConstraint {
+            contacts.push(GeneratedSameBandContactConstraint {
                 kind: NodeRailConstraintKind::RaisedStepContact,
                 owner: pair.owner,
                 opposite_owner: pair.opposite_owner,
@@ -860,15 +1055,14 @@ fn collect_junctionn_source_authorized_mouth_band_endpoint_handoffs_for_group(
 }
 
 fn target_group_contains_boundary_key(
-    contours: &[NodeGeneratedContour],
     target_group: &SourceAuthorizedTargetGroupView,
     point: NodeRailPointKey,
 ) -> bool {
-    target_group.contour_indices.iter().any(|contour_index| {
-        contours
-            .get(*contour_index)
-            .is_some_and(|contour| generated_contour_boundary_contains_key(contour, point))
-    })
+    target_group
+        .geometry
+        .contour_edges
+        .iter()
+        .any(|edge| generated_point_key_lies_on_segment(point, edge.start, edge.end))
 }
 
 fn deterministic_contact_source_name(
@@ -959,17 +1153,21 @@ fn generated_raised_step_source_contact_points_with_reuse(
     source_constraints: &[RaisedStepSourceConstraint<'_>],
     source_entries: &[RaisedStepSourceEntry],
     source_spatial_index: &RaisedStepSourceSpatialIndex,
-    unmaterialized_source_keys: &BTreeSet<Arc<RaisedStepSourceContributorKey>>,
+    unmaterialized_sources: &[bool],
     previous: Option<&NodeSourceAuthorizedContactCache>,
     current: &mut NodeSourceAuthorizedContactCache,
     stats: &mut SourceAuthorizedContactReuseStats,
 ) -> BTreeSet<NodeRailPointKey> {
     let mut points = source_entries
         .iter()
-        .filter(|(key, _)| unmaterialized_source_keys.contains(key))
+        .enumerate()
+        .filter(|(source_entry_index, _)| unmaterialized_sources[*source_entry_index])
+        .map(|(_, entry)| entry)
         .map(|(_, source_index)| &source_constraints[*source_index])
         .flat_map(|source_constraint| {
             generated_constraint_endpoint_keys(source_constraint.constraint)
+                .into_iter()
+                .flatten()
         })
         .collect::<BTreeSet<_>>();
     let mut cached_points = Vec::new();
@@ -977,7 +1175,7 @@ fn generated_raised_step_source_contact_points_with_reuse(
     for (left_entry_index, right_entry_index) in source_spatial_index.candidate_pairs(
         source_constraints,
         source_entries,
-        unmaterialized_source_keys,
+        unmaterialized_sources,
     ) {
         let (left_key, left_source_index) = &source_entries[left_entry_index];
         let (right_key, right_source_index) = &source_entries[right_entry_index];
@@ -1101,17 +1299,22 @@ fn generated_raised_step_endpoint_source(
     })
 }
 
-fn generated_constraint_endpoint_keys(constraint: &NodeRailConstraint) -> Vec<NodeRailPointKey> {
-    let mut points = Vec::new();
-    if let Some(point) = constraint.points_xz.first().copied() {
-        points.push(road_point_key(point));
+fn generated_constraint_endpoint_keys(
+    constraint: &NodeRailConstraint,
+) -> [Option<NodeRailPointKey>; 2] {
+    let Some(first) = constraint.points_xz.first().copied().map(road_point_key) else {
+        return [None, None];
+    };
+    let Some(last) = constraint.points_xz.last().copied().map(road_point_key) else {
+        return [Some(first), None];
+    };
+    if first == last {
+        [Some(first), None]
+    } else if first < last {
+        [Some(first), Some(last)]
+    } else {
+        [Some(last), Some(first)]
     }
-    if let Some(point) = constraint.points_xz.last().copied() {
-        points.push(road_point_key(point));
-    }
-    points.sort_unstable();
-    points.dedup();
-    points
 }
 
 #[cfg(test)]
@@ -1152,11 +1355,11 @@ mod tests {
         constraints: &[NodeRailConstraint],
         previous: Option<&NodeSourceAuthorizedContactCache>,
     ) -> (
-        BTreeSet<GeneratedSameBandContactConstraint>,
+        Vec<GeneratedSameBandContactConstraint>,
         NodeSourceAuthorizedContactCache,
         SourceAuthorizedContactReuseStats,
     ) {
-        let mut contacts = BTreeSet::new();
+        let mut contacts = Vec::new();
         let mut current = NodeSourceAuthorizedContactCache::default();
         let stats = collect_source_authorized_raised_step_contacts_with_reuse(
             RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -1238,10 +1441,7 @@ mod tests {
         let entries = deduplicated_source_entries(source_authority.constraints());
         let spatial_index =
             RaisedStepSourceSpatialIndex::new(source_authority.constraints(), &entries);
-        let unmaterialized = entries
-            .iter()
-            .map(|(key, _)| Arc::clone(key))
-            .collect::<BTreeSet<_>>();
+        let unmaterialized = vec![true; entries.len()];
         let mut current = NodeSourceAuthorizedContactCache::default();
         let mut stats = SourceAuthorizedContactReuseStats::default();
         let points = generated_raised_step_source_contact_points_with_reuse(
@@ -1293,10 +1493,7 @@ mod tests {
         let entries = deduplicated_source_entries(source_authority.constraints());
         let spatial_index =
             RaisedStepSourceSpatialIndex::new(source_authority.constraints(), &entries);
-        let unmaterialized = entries
-            .iter()
-            .map(|(key, _)| Arc::clone(key))
-            .collect::<BTreeSet<_>>();
+        let unmaterialized = vec![true; entries.len()];
 
         let pairs = spatial_index.candidate_pairs(
             source_authority.constraints(),

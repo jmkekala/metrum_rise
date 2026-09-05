@@ -61,3 +61,26 @@ pub(crate) struct RoadSurfaceVisualNodeCompileInput {
     pub(crate) mouths: Vec<OrderedIncidentPieceMouth>,
     pub(crate) mouth_edge_classes: Vec<EdgeClass>,
 }
+
+impl RoadSurfaceVisualNodeCompileInput {
+    /// Compares exact solved geometry while ignoring graph-local edge identifiers.
+    pub(in crate::simulation::network::surface) fn topology_eq_ignoring_edge_identity(
+        &self,
+        other: &Self,
+    ) -> bool {
+        self.kind == other.kind
+            && self.mouth_edge_classes == other.mouth_edge_classes
+            && self.mouths.len() == other.mouths.len()
+            && self.mouths.iter().zip(&other.mouths).all(|(a, b)| {
+                a.profile == b.profile
+                    && a.endpoint_profile == b.endpoint_profile
+                    && a.boundary_paths_world == b.boundary_paths_world
+                    && a.band_start_paths_world == b.band_start_paths_world
+                    && a.band_end_paths_world == b.band_end_paths_world
+                    && a.uses_explicit_band_domain_paths == b.uses_explicit_band_domain_paths
+                    && a.direction_angle_ccw == b.direction_angle_ccw
+                    && a.direction_xz == b.direction_xz
+                    && a.side == b.side
+            })
+    }
+}

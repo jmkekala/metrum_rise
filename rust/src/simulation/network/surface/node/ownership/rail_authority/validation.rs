@@ -31,12 +31,13 @@ pub(in crate::simulation::network::surface::node::ownership) fn validate_owned_r
 
 pub(in crate::simulation::network::surface::node::ownership) fn constraint_authority_owners(
     constraint: &NodeRailConstraint,
-) -> Vec<NodeBandOwner> {
-    let mut owners = [constraint.owner, constraint.opposite_owner]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    owners.sort_unstable();
-    owners.dedup();
-    owners
+) -> impl Iterator<Item = NodeBandOwner> {
+    let owners = match (constraint.owner, constraint.opposite_owner) {
+        (None, None) => [None, None],
+        (Some(owner), None) | (None, Some(owner)) => [Some(owner), None],
+        (Some(left), Some(right)) if left == right => [Some(left), None],
+        (Some(left), Some(right)) if left < right => [Some(left), Some(right)],
+        (Some(left), Some(right)) => [Some(right), Some(left)],
+    };
+    owners.into_iter().flatten()
 }

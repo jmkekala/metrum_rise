@@ -15,9 +15,11 @@ use super::{
     },
 };
 use crate::simulation::network::{
-    surface::band_semantics::ordered_raised_step_kinds, types::EdgeClass,
+    surface::{RoadSurfaceTriangleQueryIndex, band_semantics::ordered_raised_step_kinds},
+    types::EdgeClass,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceVerticalFaceSource {
@@ -126,6 +128,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub(crate) raised_step_face_sources: Vec<RoadSurfaceVerticalFaceSource>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(in crate::simulation::network::surface) surface_query: Arc<RoadSurfaceTriangleQueryIndex>,
     pub(crate) explicit_vertical_step_segments: Vec<arrangement::NodeExplicitVerticalStepSegment>,
     pub(crate) node_grade_authorities: Vec<NodeGradeVertexAuthority>,
     pub(crate) node_top_surface_sources: Vec<NodeTopSurfacePolygonSource>,

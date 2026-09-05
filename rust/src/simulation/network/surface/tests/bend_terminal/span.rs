@@ -68,6 +68,13 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         span_piece.span_owned_regions.len(),
         "grounded standard span support regions should cover the same solved band-owned footprint as the visible span"
     );
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &span_piece.span_owned_regions,
+            &span_piece.span_earthwork_support_regions
+        ),
+        "identical grounded visible/earthwork ranges must share one immutable region solve"
+    );
     for role in [
         RoadSurfaceSpanRegionRole::Asphalt,
         RoadSurfaceSpanRegionRole::CurbOrShoulder,

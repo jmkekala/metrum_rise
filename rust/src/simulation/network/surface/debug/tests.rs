@@ -2,15 +2,13 @@
 
 use super::*;
 use crate::simulation::network::surface::{
-    IncidentMouthBand, NodeOwnedRegion, RoadSurfaceVisualNodePieceKind,
+    IncidentMouthBand, NodeOwnedRegion, RoadSurfaceTriangleQueryIndex,
+    RoadSurfaceVisualNodePieceKind,
     backend::{RoadVec2, RoadVec3},
 };
 
 fn polygon(points_world: Vec<RoadVec3>) -> RoadSurfaceVisualPolygon {
-    RoadSurfaceVisualPolygon {
-        points_world,
-        triangles_world: Vec::new(),
-    }
+    RoadSurfaceVisualPolygon::from_parts(points_world, Vec::new())
 }
 
 fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
@@ -24,6 +22,7 @@ fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
         raised_step_face_polygons: Vec::new(),
         raised_step_face_sources: Vec::new(),
         sidewalk_surface_polygons: Vec::new(),
+        surface_query: std::sync::Arc::new(RoadSurfaceTriangleQueryIndex::default()),
         explicit_vertical_step_segments: Vec::new(),
         node_grade_authorities: Vec::new(),
         node_top_surface_sources: Vec::new(),

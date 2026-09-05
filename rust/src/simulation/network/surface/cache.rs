@@ -59,13 +59,13 @@ pub(crate) struct RoadSurfaceTopologyUndo {
 
 struct RoadSurfaceEdgeTopologyUndo {
     edge_idx: usize,
-    sections: Option<Vec<RoadSurfaceSection>>,
-    span_piece: Option<RoadSurfaceVisualSpanPiece>,
+    sections: Option<Arc<Vec<RoadSurfaceSection>>>,
+    span_piece: Option<Arc<RoadSurfaceVisualSpanPiece>>,
 }
 
 struct RoadSurfaceNodeTopologyUndo {
     node_id: u32,
-    piece: Option<RoadSurfaceVisualNodePiece>,
+    piece: Option<Arc<RoadSurfaceVisualNodePiece>>,
     input: Option<RoadSurfaceVisualNodeCompileInput>,
     earthwork_boundaries: Option<Arc<Vec<Vec<super::RoadSurfaceEarthworkBoundarySegment>>>>,
     topology: Option<Arc<NodeCanonicalTopologyCache>>,

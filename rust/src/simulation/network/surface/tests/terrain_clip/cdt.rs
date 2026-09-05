@@ -384,7 +384,7 @@ fn terrain_cdt_grading_envelope_constrains_single_convex_footprint() {
     );
     let mut guide_samples = Vec::new();
     let mut guide_constraints = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
 
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
@@ -422,7 +422,7 @@ fn terrain_cdt_grading_envelope_leaves_concave_junction_rails_unconstrained() {
     );
     let mut guide_samples = Vec::new();
     let mut guide_constraints = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
 
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
@@ -471,7 +471,7 @@ fn terrain_cdt_grading_envelope_leaves_hole_footprint_sets_unconstrained() {
     );
     let mut guide_samples = Vec::new();
     let mut guide_constraints = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
 
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
@@ -516,7 +516,7 @@ fn terrain_cdt_grading_envelope_ignores_building_site_loops() {
     );
     let mut road_only_samples = Vec::new();
     let mut road_only_constraints = Vec::new();
-    let mut road_only_keys = BTreeMap::new();
+    let mut road_only_keys = HashSet::new();
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
         &[road_loop.clone()],
@@ -528,7 +528,7 @@ fn terrain_cdt_grading_envelope_ignores_building_site_loops() {
 
     let mut mixed_samples = Vec::new();
     let mut mixed_constraints = Vec::new();
-    let mut mixed_keys = BTreeMap::new();
+    let mut mixed_keys = HashSet::new();
     RoadSurfaceSystem::append_terrain_cdt_roadbed_grading_envelope(
         &terrain,
         &[road_loop, site_loop],

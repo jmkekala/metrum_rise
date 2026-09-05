@@ -1,11 +1,11 @@
 //! Point-contact constraint emission for generated rail contact materialization.
 
 use super::super::authority::{
-    GeneratedContactAuthorityIndex, generated_material_authority_points_on_counterpart_contour,
+    GeneratedContactAuthorityIndex,
+    append_generated_material_authority_points_on_counterpart_contour,
     generated_material_point_contact_authority,
 };
 use super::super::*;
-use std::collections::BTreeSet;
 
 fn insert_generated_material_point_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
@@ -65,11 +65,7 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
     current: &mut NodeSourceAuthorizedContactCache,
 ) -> (usize, SourceAuthorizedContactReuseStats) {
     let before_len = constraints.len();
-    let mut existing = constraints
-        .iter()
-        .filter_map(generated_same_band_contact_constraint_key)
-        .collect::<BTreeSet<_>>();
-    let mut contacts = BTreeSet::<GeneratedSameBandContactConstraint>::new();
+    let mut contacts = Vec::<GeneratedSameBandContactConstraint>::new();
     let source_constraints = super::source_authority_constraints_for_generated_contacts(
         constraints,
         source_constraint_count,
@@ -83,10 +79,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_source_author
         current,
     );
 
+    super::retain_new_sorted_generated_contacts(&mut contacts, constraints);
     for contact in contacts {
-        if !existing.insert(contact.key()) {
-            continue;
-        }
         constraints.push(NodeRailConstraint {
             constraint_index: constraints.len(),
             kind: contact.kind,
@@ -112,138 +106,98 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_mat
     let authority_index = GeneratedContactAuthorityIndex::new(constraints);
     let summaries = generated_contact_contour_summaries(contours);
     let mut stats = GeneratedContactEmissionStats::default();
-    let mut contact_points = BTreeSet::<GeneratedSameBandContactConstraint>::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            stats.pair_tests += 1;
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let left_summary = &summaries[left_index];
-            let right_summary = &summaries[right_index];
-            let Some(left_owner) = left_summary.owner else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let Some(right_owner) = right_summary.owner else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            if left_owner == right_owner {
-                stats.kind_rejected += 1;
-                continue;
-            }
-            let Some(left_kind) = left_summary.kind else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            let Some(right_kind) = right_summary.kind else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            if left_kind == right_kind {
-                stats.kind_rejected += 1;
-                continue;
-            }
-            let Some(contact_kind) =
-                generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
-            else {
-                stats.kind_rejected += 1;
-                continue;
-            };
-            if left_summary.aabb_disjoint(right_summary) {
-                stats.aabb_rejected += 1;
-                continue;
-            }
-            stats.processed_pairs += 1;
-            let mut points = shared_sorted_keys(&left_summary.keys, &right_summary.keys);
-            points.extend(generated_contact_points_from_contour_intersections(
-                left, right,
-            ));
-            points.extend(generated_material_authority_points_on_counterpart_contour(
+    stats.pair_tests = summaries
+        .len()
+        .saturating_mul(summaries.len().saturating_sub(1))
+        / 2;
+    let candidate_pairs = generated_contact_candidate_pair_indices(&summaries);
+    stats.candidate_pairs = candidate_pairs.len();
+    let mut contact_points = Vec::<GeneratedSameBandContactConstraint>::new();
+    let mut points = Vec::new();
+    for (left_index, right_index) in candidate_pairs {
+        let left_summary = &summaries[left_index];
+        let right_summary = &summaries[right_index];
+        let Some(left_owner) = left_summary.owner else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        let Some(right_owner) = right_summary.owner else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        if left_owner == right_owner {
+            stats.kind_rejected += 1;
+            continue;
+        }
+        let Some(left_kind) = left_summary.kind else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        let Some(right_kind) = right_summary.kind else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        if left_kind == right_kind {
+            stats.kind_rejected += 1;
+            continue;
+        }
+        let Some(contact_kind) =
+            generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
+        else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
+            stats.kind_rejected += 1;
+            continue;
+        };
+        if left_summary.aabb_disjoint(right_summary) {
+            stats.aabb_rejected += 1;
+            continue;
+        }
+        stats.processed_pairs += 1;
+        points.clear();
+        append_shared_sorted_keys(&left_summary.keys, &right_summary.keys, &mut points);
+        append_generated_contact_points_from_summary_intersections(
+            left_summary,
+            right_summary,
+            &mut points,
+        );
+        append_generated_material_authority_points_on_counterpart_contour(
+            contact_kind,
+            left_summary,
+            right_summary,
+            left_owner,
+            right_owner,
+            &authority_index,
+            &mut points,
+        );
+        points.sort_unstable();
+        points.dedup();
+        for &point in &points {
+            let Some(contact_source) = generated_material_point_contact_authority(
                 contact_kind,
-                left,
-                left_summary,
-                right,
-                right_summary,
                 left_owner,
                 right_owner,
+                point,
                 &authority_index,
-            ));
-            points.extend(left_summary.keys.iter().copied().filter(|point| {
-                generated_material_point_contact_authority(
-                    contact_kind,
-                    left_owner,
-                    right_owner,
-                    *point,
-                    &authority_index,
-                )
-                .is_some_and(|authority| {
-                    authority.owner == Some(right_owner)
-                        || authority.opposite_owner == Some(right_owner)
-                        || owners_match_unordered(
-                            authority.owner,
-                            authority.opposite_owner,
-                            left_owner,
-                            right_owner,
-                        )
-                })
-            }));
-            points.extend(right_summary.keys.iter().copied().filter(|point| {
-                generated_material_point_contact_authority(
-                    contact_kind,
-                    left_owner,
-                    right_owner,
-                    *point,
-                    &authority_index,
-                )
-                .is_some_and(|authority| {
-                    authority.owner == Some(left_owner)
-                        || authority.opposite_owner == Some(left_owner)
-                        || owners_match_unordered(
-                            authority.owner,
-                            authority.opposite_owner,
-                            left_owner,
-                            right_owner,
-                        )
-                })
-            }));
-            points.sort_unstable();
-            points.dedup();
-            for point in points {
-                let Some(contact_source) = generated_material_point_contact_authority(
-                    contact_kind,
-                    left_owner,
-                    right_owner,
-                    point,
-                    &authority_index,
-                ) else {
-                    continue;
-                };
-                let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
-                    continue;
-                };
-                contact_points.insert(GeneratedSameBandContactConstraint {
-                    kind: contact_kind,
-                    owner: pair.owner,
-                    opposite_owner: pair.opposite_owner,
-                    start: point,
-                    end: point,
-                    source_mouth_order_index: contact_source.source_mouth_order_index,
-                    source_band_index: contact_source.source_band_index,
-                });
-            }
+            ) else {
+                continue;
+            };
+            contact_points.push(GeneratedSameBandContactConstraint {
+                kind: contact_kind,
+                owner: pair.owner,
+                opposite_owner: pair.opposite_owner,
+                start: point,
+                end: point,
+                source_mouth_order_index: contact_source.source_mouth_order_index,
+                source_band_index: contact_source.source_band_index,
+            });
         }
     }
 
-    let mut existing = constraints
-        .iter()
-        .filter_map(generated_same_band_contact_constraint_key)
-        .collect::<BTreeSet<_>>();
+    super::retain_new_generated_contacts(&mut contact_points, constraints);
     for contact in contact_points {
-        let key = contact.key();
-        if !existing.insert(key) {
-            continue;
-        }
         insert_generated_material_point_constraint(
             constraints,
             contact.kind,

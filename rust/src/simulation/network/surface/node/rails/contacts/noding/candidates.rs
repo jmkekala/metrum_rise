@@ -2,19 +2,21 @@
 
 use super::super::super::NodeGeneratedContourKind;
 use super::super::materialization::{
-    GeneratedContactAuthorityIndex, generated_contact_point_has_explicit_roles,
+    GeneratedContactAuthorityIndex, GeneratedContactAuthorityPointQuery,
 };
 use super::super::source_authority::generated_raised_step_contact_kind_for_owners;
 use super::super::{
-    GeneratedContourDirectedEdge, NodeGeneratedContour, NodeGeneratedContourClaimPriority,
-    NodeGeneratedContourPurpose, NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey,
-    RoadSurfaceBandKind, generated_contour_band_kind, generated_contour_directed_edges,
+    GeneratedContourDirectedEdge, GeneratedRaisedStepOwnerPair, NodeGeneratedContour,
+    NodeGeneratedContourClaimPriority, NodeGeneratedContourPurpose, NodeRailConstraint,
+    NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind, generated_contour_band_kind,
     generated_contour_keys, generated_point_key_lies_on_segment,
     quantized_proper_segment_intersection, road_point_key,
 };
 use super::ContactNodingCandidate;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 const CONTACT_NODING_BOUNDS_MARGIN_KEYS: i64 = 4096;
@@ -24,8 +26,8 @@ const CONTACT_NODING_PARALLEL_PAIR_THRESHOLD: usize = 32;
 /// Immutable pair-local candidate outputs reusable across contact-noding passes and generations.
 #[derive(Clone, Debug, Default)]
 pub(in crate::simulation::network::surface::node::rails) struct NodeContactNodingPairCache {
-    entries: BTreeMap<ContactNodingPairKey, Arc<[ContactNodingPairCandidate]>>,
-    active_pair_keys: BTreeSet<ContactNodingPairKey>,
+    entries: HashMap<ContactNodingPairKey, Arc<[ContactNodingPairCandidate]>>,
+    active_pair_keys: HashSet<ContactNodingPairKey>,
     pub(super) component_entries:
         BTreeMap<ContactNodingComponentKey, Arc<ContactNodingComponentOutput>>,
 }
@@ -61,7 +63,7 @@ struct ContactNodingPairCandidate {
     insert_key: NodeRailPointKey,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct ContactNodingContourContributorKey {
     kind: NodeGeneratedContourKind,
     purpose: NodeGeneratedContourPurpose,
@@ -73,7 +75,7 @@ struct ContactNodingContourContributorKey {
     ordered_points_xz: Arc<[NodeRailPointKey]>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct ContactNodingConstraintFingerprint {
     kind: NodeRailConstraintKind,
     source_mouth_order_index: usize,
@@ -105,7 +107,7 @@ pub(super) struct ContactNodingComponentOutput {
     pair_entries: Arc<[ContactNodingPairCacheEntry]>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct ContactNodingPairKey {
     left: Arc<ContactNodingContourContributorKey>,
     right: Arc<ContactNodingContourContributorKey>,
@@ -155,6 +157,14 @@ struct ContactNodingPairWork {
     key: ContactNodingPairKey,
 }
 
+pub(super) struct ContactNodingPreparation {
+    summaries: Vec<ContactNodingContourSummary>,
+    pair_indices: Vec<(usize, usize)>,
+    pair_role_constraints: Vec<Arc<[ContactNodingConstraintFingerprint]>>,
+    role_constraint_index: Arc<ContactNodingRoleConstraintIndex>,
+    authority_index: Arc<GeneratedContactAuthorityIndex>,
+}
+
 impl NodeContactNodingPairCache {
     pub(super) fn begin_noding_call(&mut self) {
         self.active_pair_keys.clear();
@@ -173,7 +183,8 @@ impl NodeContactNodingPairCache {
         &self,
         selectors: &[ContactNodingBandConstraintSelector],
     ) -> Arc<[ContactNodingPairCacheEntry]> {
-        self.active_pair_keys
+        let mut entries = self
+            .active_pair_keys
             .iter()
             .filter(|key| {
                 key.left
@@ -192,7 +203,9 @@ impl NodeContactNodingPairCache {
                         candidates: Arc::clone(candidates),
                     })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        Arc::from(entries)
     }
 
     pub(super) fn component_output(
@@ -256,21 +269,89 @@ impl ContactNodingComponentPlan {
     }
 }
 
-pub(super) fn generated_contact_noding_component_plans(
+pub(super) fn prepare_contact_noding_pass(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
-) -> Vec<ContactNodingComponentPlan> {
+) -> ContactNodingPreparation {
     let summaries = contours
         .iter()
         .map(ContactNodingContourSummary::from_contour)
         .collect::<Vec<_>>();
-    let pair_indices = contact_noding_candidate_pair_indices(&summaries);
+    let authority_index = Arc::new(GeneratedContactAuthorityIndex::new(constraints));
+    let pair_indices = contact_noding_candidate_pair_indices(&summaries)
+        .into_iter()
+        .filter(|&(left_index, right_index)| {
+            contact_noding_pair_has_authority(
+                &summaries[left_index],
+                &summaries[right_index],
+                &authority_index,
+            )
+        })
+        .collect::<Vec<_>>();
+    let role_constraint_index = Arc::new(ContactNodingRoleConstraintIndex::new(constraints));
+    // Contact noding only inserts points on existing edges, so pair bounds cannot
+    // expand and the set of touching role constraints is invariant across passes.
+    let pair_role_constraints = pair_indices
+        .iter()
+        .map(|&(left_index, right_index)| {
+            contact_noding_role_constraint_fingerprint(
+                &summaries[left_index],
+                &summaries[right_index],
+                &role_constraint_index,
+            )
+        })
+        .collect();
+    ContactNodingPreparation {
+        summaries,
+        pair_indices,
+        pair_role_constraints,
+        role_constraint_index,
+        authority_index,
+    }
+}
+
+pub(super) fn refresh_contact_noding_pass(
+    preparation: &mut ContactNodingPreparation,
+    contours: &[NodeGeneratedContour],
+    inserted_candidates: &[ContactNodingCandidate],
+) {
+    let mut previous_index = None;
+    for &(contour_index, _, _) in inserted_candidates {
+        if previous_index == Some(contour_index) {
+            continue;
+        }
+        previous_index = Some(contour_index);
+        let Some(contour) = contours.get(contour_index) else {
+            continue;
+        };
+        let Some(summary) = preparation.summaries.get_mut(contour_index) else {
+            continue;
+        };
+        let refreshed = ContactNodingContourSummary::from_contour(contour);
+        debug_assert!(
+            !summary.bounds_valid()
+                || !refreshed.bounds_valid()
+                || (refreshed.min_x >= summary.min_x
+                    && refreshed.min_z >= summary.min_z
+                    && refreshed.max_x <= summary.max_x
+                    && refreshed.max_z <= summary.max_z),
+            "contact noding must not expand contour bounds"
+        );
+        *summary = refreshed;
+    }
+}
+
+pub(super) fn generated_contact_noding_component_plans(
+    preparation: &ContactNodingPreparation,
+) -> Vec<ContactNodingComponentPlan> {
+    let summaries = &preparation.summaries;
+    let pair_indices = &preparation.pair_indices;
     if pair_indices.is_empty() {
         return Vec::new();
     }
 
     let mut parents = (0..summaries.len()).collect::<Vec<_>>();
-    for &(left_index, right_index) in &pair_indices {
+    for &(left_index, right_index) in pair_indices {
         union_component_members(&mut parents, left_index, right_index);
     }
     let mut first_index_by_selector = BTreeMap::<ContactNodingBandConstraintSelector, usize>::new();
@@ -286,7 +367,7 @@ pub(super) fn generated_contact_noding_component_plans(
     let mut indices_by_root = BTreeMap::<usize, Vec<usize>>::new();
     let mut pairs_by_scope_by_root =
         BTreeMap::<usize, BTreeMap<ContactNodingConstraintScope, Vec<(usize, usize)>>>::new();
-    for &(left_index, right_index) in &pair_indices {
+    for &(left_index, right_index) in pair_indices {
         let root = component_root(&mut parents, left_index);
         let Some(scope) =
             contact_noding_constraint_scope(&summaries[left_index], &summaries[right_index])
@@ -307,7 +388,6 @@ pub(super) fn generated_contact_noding_component_plans(
         }
     }
 
-    let role_constraint_index = ContactNodingRoleConstraintIndex::new(constraints);
     let mut plans = indices_by_root
         .into_iter()
         .map(|(root, mut contour_indices)| {
@@ -328,7 +408,7 @@ pub(super) fn generated_contact_noding_component_plans(
                 .map(
                     |(scope, pair_indices)| ContactNodingComponentRoleFingerprint {
                         scope,
-                        constraints: role_constraint_index.fingerprint_for_pairs(
+                        constraints: preparation.role_constraint_index.fingerprint_for_pairs(
                             scope,
                             pair_indices
                                 .iter()
@@ -381,32 +461,43 @@ fn union_component_members(parents: &mut [usize], left: usize, right: usize) {
     parents[upper] = lower;
 }
 
+#[cfg(test)]
 pub(super) fn generated_contact_contour_noding_candidates_with_reuse(
     contours: &[NodeGeneratedContour],
     constraints: &[NodeRailConstraint],
     previous_cache: Option<&NodeContactNodingPairCache>,
     current_cache: &mut NodeContactNodingPairCache,
 ) -> (Vec<ContactNodingCandidate>, NodeContactNodingReuseStats) {
-    let summaries = contours
+    let preparation = prepare_contact_noding_pass(contours, constraints);
+    generated_contact_contour_noding_candidates_from_preparation_with_reuse(
+        &preparation,
+        previous_cache,
+        current_cache,
+    )
+}
+
+pub(super) fn generated_contact_contour_noding_candidates_from_preparation_with_reuse(
+    preparation: &ContactNodingPreparation,
+    previous_cache: Option<&NodeContactNodingPairCache>,
+    current_cache: &mut NodeContactNodingPairCache,
+) -> (Vec<ContactNodingCandidate>, NodeContactNodingReuseStats) {
+    let summaries = &preparation.summaries;
+    let pair_work = preparation
+        .pair_indices
         .iter()
-        .map(ContactNodingContourSummary::from_contour)
-        .collect::<Vec<_>>();
-    let role_constraint_index = ContactNodingRoleConstraintIndex::new(constraints);
-    let pair_work = contact_noding_candidate_pair_indices(&summaries)
-        .into_iter()
-        .map(|(left_index, right_index)| ContactNodingPairWork {
-            left_index,
-            right_index,
-            key: ContactNodingPairKey {
-                left: Arc::clone(&summaries[left_index].contributor_key),
-                right: Arc::clone(&summaries[right_index].contributor_key),
-                role_constraints: contact_noding_role_constraint_fingerprint(
-                    &summaries[left_index],
-                    &summaries[right_index],
-                    &role_constraint_index,
-                ),
+        .copied()
+        .enumerate()
+        .map(
+            |(pair_index, (left_index, right_index))| ContactNodingPairWork {
+                left_index,
+                right_index,
+                key: ContactNodingPairKey {
+                    left: Arc::clone(&summaries[left_index].contributor_key),
+                    right: Arc::clone(&summaries[right_index].contributor_key),
+                    role_constraints: Arc::clone(&preparation.pair_role_constraints[pair_index]),
+                },
             },
-        })
+        )
         .collect::<Vec<_>>();
 
     let mut stats = NodeContactNodingReuseStats::default();
@@ -433,18 +524,14 @@ pub(super) fn generated_contact_contour_noding_candidates_with_reuse(
     }
 
     if !miss_indices.is_empty() {
-        let authority_index = GeneratedContactAuthorityIndex::new(constraints);
         let compute_miss = |pair_index: &usize| {
             let work = &pair_work[*pair_index];
             (
                 *pair_index,
                 generated_contact_noding_candidates_for_pair(
-                    &contours[work.left_index],
                     &summaries[work.left_index],
-                    &contours[work.right_index],
                     &summaries[work.right_index],
-                    constraints,
-                    &authority_index,
+                    &preparation.authority_index,
                 ),
             )
         };
@@ -483,71 +570,52 @@ pub(super) fn generated_contact_contour_noding_candidates_with_reuse(
 }
 
 fn generated_contact_noding_candidates_for_pair(
-    left: &NodeGeneratedContour,
     left_summary: &ContactNodingContourSummary,
-    right: &NodeGeneratedContour,
     right_summary: &ContactNodingContourSummary,
-    constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
 ) -> Arc<[ContactNodingPairCandidate]> {
+    let Some(owner_pair) = left_summary
+        .owner
+        .zip(right_summary.owner)
+        .and_then(|(left, right)| GeneratedRaisedStepOwnerPair::new(left, right))
+    else {
+        return Arc::from([]);
+    };
+    let authority_query = authority_index.point_query(owner_pair.owner, owner_pair.opposite_owner);
     let mut candidates = Vec::new();
-    candidates.extend(
-        generated_contact_point_on_edge_noding_candidates(
-            left,
-            &left_summary.keys,
-            right,
-            &right_summary.keys,
-            constraints,
-            authority_index,
-        )
-        .into_iter()
-        .map(|(edge, insert_key)| ContactNodingPairCandidate {
-            side: ContactNodingPairSide::Left,
-            edge,
-            insert_key,
-        }),
+    append_generated_contact_point_on_edge_noding_candidates(
+        left_summary,
+        right_summary,
+        &authority_query,
+        ContactNodingPairSide::Left,
+        &mut candidates,
     );
-    candidates.extend(
-        generated_contact_point_on_edge_noding_candidates(
-            right,
-            &right_summary.keys,
-            left,
-            &left_summary.keys,
-            constraints,
-            authority_index,
-        )
-        .into_iter()
-        .map(|(edge, insert_key)| ContactNodingPairCandidate {
-            side: ContactNodingPairSide::Right,
-            edge,
-            insert_key,
-        }),
+    append_generated_contact_point_on_edge_noding_candidates(
+        right_summary,
+        left_summary,
+        &authority_query,
+        ContactNodingPairSide::Right,
+        &mut candidates,
     );
-    candidates.extend(
-        generated_contact_edge_intersection_noding_candidates(
-            left,
-            &left_summary.keys,
-            right,
-            &right_summary.keys,
-            constraints,
-            authority_index,
-        )
-        .into_iter()
-        .flat_map(|(left_edge, right_edge, insert_key)| {
-            [
-                ContactNodingPairCandidate {
-                    side: ContactNodingPairSide::Left,
-                    edge: left_edge,
-                    insert_key,
-                },
-                ContactNodingPairCandidate {
-                    side: ContactNodingPairSide::Right,
-                    edge: right_edge,
-                    insert_key,
-                },
-            ]
-        }),
-    );
+    if left_summary.edges.len() <= right_summary.edges.len() {
+        append_generated_contact_edge_intersection_noding_candidates(
+            left_summary,
+            right_summary,
+            &authority_query,
+            ContactNodingPairSide::Left,
+            ContactNodingPairSide::Right,
+            &mut candidates,
+        );
+    } else {
+        append_generated_contact_edge_intersection_noding_candidates(
+            right_summary,
+            left_summary,
+            &authority_query,
+            ContactNodingPairSide::Right,
+            ContactNodingPairSide::Left,
+            &mut candidates,
+        );
+    }
     candidates.sort_unstable();
     candidates.dedup();
     Arc::from(candidates)
@@ -561,7 +629,7 @@ fn contact_noding_role_constraint_fingerprint(
     let Some(scope) = contact_noding_constraint_scope(left, right) else {
         return Arc::from([]);
     };
-    constraint_index.fingerprint_for_pairs(scope, std::iter::once((left, right)))
+    constraint_index.fingerprint_for_pair(scope, left, right)
 }
 
 fn contact_noding_constraint_scope(
@@ -693,55 +761,85 @@ impl ContactNodingRoleConstraintIndex {
         >,
     ) -> Arc<[ContactNodingConstraintFingerprint]> {
         let pairs = pairs.into_iter().collect::<Vec<_>>();
-        let mut summary_indices = match scope {
+        let mut fingerprint = Vec::new();
+        self.visit_summary_indices_for_scope(scope, |index| {
+            let Some(summary) = self.summaries.get(index) else {
+                return;
+            };
+            if pairs
+                .iter()
+                .any(|(left, right)| summary.bounds_touch_pair(left, right))
+            {
+                fingerprint.push(summary.fingerprint.clone());
+            }
+        });
+        fingerprint.sort_unstable();
+        fingerprint.dedup();
+        Arc::from(fingerprint)
+    }
+
+    fn fingerprint_for_pair(
+        &self,
+        scope: ContactNodingConstraintScope,
+        left: &ContactNodingContourSummary,
+        right: &ContactNodingContourSummary,
+    ) -> Arc<[ContactNodingConstraintFingerprint]> {
+        let mut fingerprint = Vec::new();
+        self.visit_summary_indices_for_scope(scope, |index| {
+            let Some(summary) = self.summaries.get(index) else {
+                return;
+            };
+            if summary.bounds_touch_pair(left, right) {
+                fingerprint.push(summary.fingerprint.clone());
+            }
+        });
+        fingerprint.sort_unstable();
+        fingerprint.dedup();
+        Arc::from(fingerprint)
+    }
+
+    fn visit_summary_indices_for_scope(
+        &self,
+        scope: ContactNodingConstraintScope,
+        mut visit: impl FnMut(usize),
+    ) {
+        match scope {
             ContactNodingConstraintScope::RaisedStep {
                 lower_owner,
                 upper_owner,
-            } => self
-                .raised_by_owner_pair
-                .get(&ordered_owner_pair(lower_owner, upper_owner))
-                .cloned()
-                .unwrap_or_default(),
+            } => {
+                if let Some(indices) = self
+                    .raised_by_owner_pair
+                    .get(&ordered_owner_pair(lower_owner, upper_owner))
+                {
+                    indices.iter().copied().for_each(&mut visit);
+                }
+            }
             ContactNodingConstraintScope::SameBand {
                 kind,
                 lower_owner,
                 upper_owner,
             } => {
-                let mut indices = Vec::new();
                 if let Some(owner_indices) = self.raised_by_owner.get(&lower_owner) {
-                    indices.extend_from_slice(owner_indices);
+                    owner_indices.iter().copied().for_each(&mut visit);
                 }
                 if let Some(owner_indices) = self.raised_by_owner.get(&upper_owner) {
-                    indices.extend_from_slice(owner_indices);
+                    owner_indices.iter().copied().for_each(&mut visit);
                 }
                 if kind == RoadSurfaceBandKind::Sidewalk {
-                    indices.extend_from_slice(&self.sidewalk_seams_global);
+                    self.sidewalk_seams_global
+                        .iter()
+                        .copied()
+                        .for_each(&mut visit);
                     if let Some(owner_indices) = self.sidewalk_seams_by_owner.get(&lower_owner) {
-                        indices.extend_from_slice(owner_indices);
+                        owner_indices.iter().copied().for_each(&mut visit);
                     }
                     if let Some(owner_indices) = self.sidewalk_seams_by_owner.get(&upper_owner) {
-                        indices.extend_from_slice(owner_indices);
+                        owner_indices.iter().copied().for_each(&mut visit);
                     }
                 }
-                indices
             }
-        };
-        summary_indices.sort_unstable();
-        summary_indices.dedup();
-
-        let mut fingerprint = summary_indices
-            .into_iter()
-            .filter_map(|index| self.summaries.get(index))
-            .filter(|summary| {
-                pairs
-                    .iter()
-                    .any(|(left, right)| summary.bounds_touch_pair(left, right))
-            })
-            .map(|summary| summary.fingerprint.clone())
-            .collect::<Vec<_>>();
-        fingerprint.sort_unstable();
-        fingerprint.dedup();
-        Arc::from(fingerprint)
+        }
     }
 }
 
@@ -825,12 +923,25 @@ fn contact_noding_candidate_pair_indices(
         if summary.owner.is_none() || !summary.bounds_valid() {
             continue;
         }
-        for tile in ContactNodingCandidateTile::tiles_for_summary(summary) {
-            indices_by_tile.entry(tile).or_default().push(summary_index);
+        let min_tile_x = (summary.min_x - CONTACT_NODING_BOUNDS_MARGIN_KEYS)
+            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
+        let max_tile_x = (summary.max_x + CONTACT_NODING_BOUNDS_MARGIN_KEYS)
+            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
+        let min_tile_z = (summary.min_z - CONTACT_NODING_BOUNDS_MARGIN_KEYS)
+            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
+        let max_tile_z = (summary.max_z + CONTACT_NODING_BOUNDS_MARGIN_KEYS)
+            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
+        for x in min_tile_x..=max_tile_x {
+            for z in min_tile_z..=max_tile_z {
+                indices_by_tile
+                    .entry(ContactNodingCandidateTile { x, z })
+                    .or_default()
+                    .push(summary_index);
+            }
         }
     }
 
-    let mut tile_pairs = BTreeSet::<(usize, usize)>::new();
+    let mut tile_pairs = Vec::<(usize, usize)>::new();
     for indices in indices_by_tile.values() {
         for left_position in 0..indices.len() {
             for right_index in indices.iter().copied().skip(left_position + 1) {
@@ -840,11 +951,12 @@ fn contact_noding_candidate_pair_indices(
                 } else {
                     (right_index, left_index)
                 };
-                tile_pairs.insert(pair);
+                tile_pairs.push(pair);
             }
         }
     }
-
+    tile_pairs.sort_unstable();
+    tile_pairs.dedup();
     tile_pairs
         .into_iter()
         .filter(|(left_index, right_index)| {
@@ -858,18 +970,58 @@ struct ContactNodingContourSummary {
     kind: Option<RoadSurfaceBandKind>,
     contributor_key: Arc<ContactNodingContourContributorKey>,
     keys: Vec<NodeRailPointKey>,
+    edges: Vec<PreparedContactNodingEdge>,
+    edges_by_min_x: Vec<PreparedContactNodingEdge>,
+    edges_by_min_z: Vec<PreparedContactNodingEdge>,
     min_x: i64,
     min_z: i64,
     max_x: i64,
     max_z: i64,
 }
 
+#[derive(Clone, Copy)]
+struct PreparedContactNodingEdge {
+    edge: GeneratedContourDirectedEdge,
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+}
+
+impl PreparedContactNodingEdge {
+    fn new(edge: GeneratedContourDirectedEdge) -> Self {
+        Self {
+            edge,
+            min_x: edge.start.0.min(edge.end.0),
+            min_z: edge.start.1.min(edge.end.1),
+            max_x: edge.start.0.max(edge.end.0),
+            max_z: edge.start.1.max(edge.end.1),
+        }
+    }
+}
+
 impl ContactNodingContourSummary {
     fn from_contour(contour: &NodeGeneratedContour) -> Self {
         let ordered_keys = generated_contour_keys(contour);
+        let edges = (0..ordered_keys.len())
+            .filter_map(|index| {
+                let start = ordered_keys[index];
+                let end = ordered_keys[(index + 1) % ordered_keys.len()];
+                (start != end).then_some(GeneratedContourDirectedEdge { start, end })
+            })
+            .map(PreparedContactNodingEdge::new)
+            .collect::<Vec<_>>();
         let mut keys = ordered_keys.clone();
         keys.sort_unstable();
         keys.dedup();
+        let mut edges_by_min_x = edges.clone();
+        edges_by_min_x.sort_unstable_by_key(|edge| {
+            (edge.min_x, edge.max_x, edge.min_z, edge.max_z, edge.edge)
+        });
+        let mut edges_by_min_z = edges.clone();
+        edges_by_min_z.sort_unstable_by_key(|edge| {
+            (edge.min_z, edge.max_z, edge.min_x, edge.max_x, edge.edge)
+        });
         let (mut min_x, mut min_z) = (i64::MAX, i64::MAX);
         let (mut max_x, mut max_z) = (i64::MIN, i64::MIN);
         for key in &keys {
@@ -901,6 +1053,9 @@ impl ContactNodingContourSummary {
                 ordered_points_xz: Arc::from(ordered_keys),
             }),
             keys,
+            edges,
+            edges_by_min_x,
+            edges_by_min_z,
             min_x,
             min_z,
             max_x,
@@ -910,6 +1065,10 @@ impl ContactNodingContourSummary {
 
     fn bounds_valid(&self) -> bool {
         self.min_x <= self.max_x && self.min_z <= self.max_z
+    }
+
+    fn bounds(&self) -> (i64, i64, i64, i64) {
+        (self.min_x, self.min_z, self.max_x, self.max_z)
     }
 
     fn band_constraint_selector(&self) -> Option<ContactNodingBandConstraintSelector> {
@@ -930,26 +1089,6 @@ struct ContactNodingCandidateTile {
     z: i64,
 }
 
-impl ContactNodingCandidateTile {
-    fn tiles_for_summary(summary: &ContactNodingContourSummary) -> Vec<Self> {
-        let min_tile_x = (summary.min_x - CONTACT_NODING_BOUNDS_MARGIN_KEYS)
-            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
-        let max_tile_x = (summary.max_x + CONTACT_NODING_BOUNDS_MARGIN_KEYS)
-            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
-        let min_tile_z = (summary.min_z - CONTACT_NODING_BOUNDS_MARGIN_KEYS)
-            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
-        let max_tile_z = (summary.max_z + CONTACT_NODING_BOUNDS_MARGIN_KEYS)
-            .div_euclid(CONTACT_NODING_CANDIDATE_TILE_KEYS);
-        let mut tiles = Vec::new();
-        for x in min_tile_x..=max_tile_x {
-            for z in min_tile_z..=max_tile_z {
-                tiles.push(Self { x, z });
-            }
-        }
-        tiles
-    }
-}
-
 fn contact_noding_summaries_can_contact(
     left: &ContactNodingContourSummary,
     right: &ContactNodingContourSummary,
@@ -966,50 +1105,141 @@ fn contact_noding_summaries_can_contact(
     generated_raised_step_contact_kind_for_owners(left_owner, right_owner).is_some()
 }
 
-fn generated_contact_point_on_edge_noding_candidates(
-    edge_contour: &NodeGeneratedContour,
-    edge_keys: &[NodeRailPointKey],
-    point_contour: &NodeGeneratedContour,
-    point_keys: &[NodeRailPointKey],
-    constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
-) -> Vec<(GeneratedContourDirectedEdge, NodeRailPointKey)> {
-    let mut candidates = Vec::new();
-    for edge in generated_contour_directed_edges(edge_contour) {
-        for point_key in point_keys.iter().copied() {
-            if edge_keys.binary_search(&point_key).is_ok()
+fn contact_noding_pair_has_authority(
+    left: &ContactNodingContourSummary,
+    right: &ContactNodingContourSummary,
+    authority_index: &GeneratedContactAuthorityIndex,
+) -> bool {
+    let Some(owner_pair) = left
+        .owner
+        .zip(right.owner)
+        .and_then(|(left_owner, right_owner)| {
+            GeneratedRaisedStepOwnerPair::new(left_owner, right_owner)
+        })
+    else {
+        return false;
+    };
+    authority_index.has_constraints_touching_bounds(
+        NodeRailConstraintKind::RaisedStepContact,
+        owner_pair.owner,
+        owner_pair.opposite_owner,
+        left.bounds(),
+        right.bounds(),
+    )
+}
+
+fn append_generated_contact_point_on_edge_noding_candidates(
+    edge_summary: &ContactNodingContourSummary,
+    point_summary: &ContactNodingContourSummary,
+    authority_query: &GeneratedContactAuthorityPointQuery<'_>,
+    side: ContactNodingPairSide,
+    candidates: &mut Vec<ContactNodingPairCandidate>,
+) {
+    // Query edges from each unique point. This halves the binary range probes
+    // and, more importantly, evaluates point-local vertex/authority predicates
+    // once instead of once for every candidate edge.
+    let point_first = point_summary
+        .keys
+        .partition_point(|point| point.0 < edge_summary.min_x);
+    let point_last = point_first
+        + point_summary.keys[point_first..].partition_point(|point| point.0 <= edge_summary.max_x);
+    let points = &point_summary.keys[point_first..point_last];
+    let Some(&first_point) = points.first() else {
+        return;
+    };
+    let mut existing_key_index = edge_summary
+        .keys
+        .partition_point(|edge_point| *edge_point < first_point);
+    let mut x_last = edge_summary
+        .edges_by_min_x
+        .partition_point(|edge| edge.min_x <= first_point.0);
+    'points: for &point_key in points {
+        while existing_key_index < edge_summary.keys.len()
+            && edge_summary.keys[existing_key_index] < point_key
+        {
+            existing_key_index += 1;
+        }
+        if edge_summary.keys.get(existing_key_index) == Some(&point_key) {
+            continue;
+        }
+        while x_last < edge_summary.edges_by_min_x.len()
+            && edge_summary.edges_by_min_x[x_last].min_x <= point_key.0
+        {
+            x_last += 1;
+        }
+        if point_key.1 < edge_summary.min_z || edge_summary.max_z < point_key.1 {
+            continue;
+        }
+        let z_last = edge_summary
+            .edges_by_min_z
+            .partition_point(|edge| edge.min_z <= point_key.1);
+        let (edges, use_x) = if x_last <= z_last {
+            (&edge_summary.edges_by_min_x[..x_last], true)
+        } else {
+            (&edge_summary.edges_by_min_z[..z_last], false)
+        };
+        for prepared_edge in edges {
+            let bounds_contain = if use_x {
+                point_key.0 <= prepared_edge.max_x
+                    && prepared_edge.min_z <= point_key.1
+                    && point_key.1 <= prepared_edge.max_z
+            } else {
+                point_key.1 <= prepared_edge.max_z
+                    && prepared_edge.min_x <= point_key.0
+                    && point_key.0 <= prepared_edge.max_x
+            };
+            let edge = prepared_edge.edge;
+            if !bounds_contain
                 || !generated_point_key_lies_on_segment(point_key, edge.start, edge.end)
-                || !generated_contact_noding_point_has_explicit_roles(
-                    edge_contour,
-                    point_contour,
-                    constraints,
-                    authority_index,
-                    point_key,
-                )
             {
                 continue;
             }
-            candidates.push((edge, point_key));
+            if !authority_query.has_explicit_roles(point_key) {
+                continue 'points;
+            }
+            candidates.push(ContactNodingPairCandidate {
+                side,
+                edge,
+                insert_key: point_key,
+            });
         }
     }
-    candidates
 }
 
-fn generated_contact_edge_intersection_noding_candidates(
-    left: &NodeGeneratedContour,
-    left_keys: &[NodeRailPointKey],
-    right: &NodeGeneratedContour,
-    right_keys: &[NodeRailPointKey],
-    constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
-) -> Vec<(
-    GeneratedContourDirectedEdge,
-    GeneratedContourDirectedEdge,
-    NodeRailPointKey,
-)> {
-    let mut candidates = Vec::new();
-    for left_edge in generated_contour_directed_edges(left) {
-        for right_edge in generated_contour_directed_edges(right) {
+fn append_generated_contact_edge_intersection_noding_candidates(
+    outer_summary: &ContactNodingContourSummary,
+    inner_summary: &ContactNodingContourSummary,
+    authority_query: &GeneratedContactAuthorityPointQuery<'_>,
+    outer_side: ContactNodingPairSide,
+    inner_side: ContactNodingPairSide,
+    candidates: &mut Vec<ContactNodingPairCandidate>,
+) {
+    for prepared_left_edge in &outer_summary.edges {
+        let left_edge = prepared_left_edge.edge;
+        let left_min_x = prepared_left_edge.min_x;
+        let left_max_x = prepared_left_edge.max_x;
+        let left_min_z = prepared_left_edge.min_z;
+        let left_max_z = prepared_left_edge.max_z;
+        let x_last = inner_summary
+            .edges_by_min_x
+            .partition_point(|edge| edge.min_x <= left_max_x);
+        let z_last = inner_summary
+            .edges_by_min_z
+            .partition_point(|edge| edge.min_z <= left_max_z);
+        let right_edges = if x_last <= z_last {
+            &inner_summary.edges_by_min_x[..x_last]
+        } else {
+            &inner_summary.edges_by_min_z[..z_last]
+        };
+        for prepared_right_edge in right_edges {
+            if prepared_right_edge.max_x < left_min_x
+                || left_max_x < prepared_right_edge.min_x
+                || prepared_right_edge.max_z < left_min_z
+                || left_max_z < prepared_right_edge.min_z
+            {
+                continue;
+            }
+            let right_edge = prepared_right_edge.edge;
             let Some(intersection) = quantized_proper_segment_intersection(
                 left_edge.start,
                 left_edge.end,
@@ -1018,59 +1248,28 @@ fn generated_contact_edge_intersection_noding_candidates(
             ) else {
                 continue;
             };
-            if left_keys.binary_search(&intersection).is_ok()
-                && right_keys.binary_search(&intersection).is_ok()
+            if outer_summary.keys.binary_search(&intersection).is_ok()
+                && inner_summary.keys.binary_search(&intersection).is_ok()
             {
                 continue;
             }
-            if !generated_contact_noding_point_has_explicit_roles(
-                left,
-                right,
-                constraints,
-                authority_index,
-                intersection,
-            ) {
+            if !authority_query.has_explicit_roles(intersection) {
                 continue;
             }
-            candidates.push((left_edge, right_edge, intersection));
+            candidates.extend([
+                ContactNodingPairCandidate {
+                    side: outer_side,
+                    edge: left_edge,
+                    insert_key: intersection,
+                },
+                ContactNodingPairCandidate {
+                    side: inner_side,
+                    edge: right_edge,
+                    insert_key: intersection,
+                },
+            ]);
         }
     }
-    candidates
-}
-
-fn generated_contact_noding_point_has_explicit_roles(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
-    point: NodeRailPointKey,
-) -> bool {
-    let Some(left_kind) = generated_contour_band_kind(left) else {
-        return false;
-    };
-    let Some(right_kind) = generated_contour_band_kind(right) else {
-        return false;
-    };
-    let Some(left_owner) = left.owner else {
-        return false;
-    };
-    let Some(right_owner) = right.owner else {
-        return false;
-    };
-    let Some(contact_kind) = generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
-    else {
-        return false;
-    };
-    generated_contact_point_has_explicit_roles(
-        left_kind,
-        right_kind,
-        left,
-        right,
-        constraints,
-        authority_index,
-        point,
-        contact_kind,
-    )
 }
 
 #[cfg(test)]

@@ -22,9 +22,19 @@ impl NodeArrangement {
         BTreeSet<NodeExplicitVerticalStepSegment>,
         BTreeSet<NodeExplicitVerticalStepSegment>,
     ) {
+        let profile_enabled = crate::debug::category_enabled("road");
+        let total_start = profile_enabled.then(std::time::Instant::now);
+        let index_start = profile_enabled.then(std::time::Instant::now);
+        let constraint_index = ExplicitStepConstraintIndex::new(self);
+        let index_ms = index_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let source_start = profile_enabled.then(std::time::Instant::now);
         let mut segments = BTreeSet::new();
         for edge in &self.edges {
-            let Some(opposite_owner) = self.edge_explicit_vertical_step_opposite_owner(edge) else {
+            let Some(opposite_owner) =
+                self.edge_explicit_vertical_step_opposite_owner(edge, &constraint_index)
+            else {
                 continue;
             };
             let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
@@ -39,16 +49,45 @@ impl NodeArrangement {
                 segments.insert(segment);
             }
         }
+        let source_ms = source_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         let source_segments = segments.clone();
+        let exposed_start = profile_enabled.then(std::time::Instant::now);
         self.extend_exposed_owned_raised_step_overlap_segments(&mut segments);
+        let exposed_ms = exposed_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         let mut derived_overlap_segments = segments
             .difference(&source_segments)
             .copied()
             .collect::<BTreeSet<_>>();
+        let final_boundary_start = profile_enabled.then(std::time::Instant::now);
         let final_boundary_segments =
             self.authorized_final_boundary_raised_step_overlap_segments(&segments);
+        let final_boundary_ms = final_boundary_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
         derived_overlap_segments.extend(final_boundary_segments.iter().copied());
         segments.extend(final_boundary_segments.iter().copied());
+        if profile_enabled {
+            crate::debug_log!(
+                "road",
+                "node_explicit_step_detail node={} edges={} source_steps={} derived_steps={} final_boundary_steps={} index_ms={:.3} source_ms={:.3} exposed_ms={:.3} final_boundary_ms={:.3} total_ms={:.3}",
+                self.node_id,
+                self.edges.len(),
+                source_segments.len(),
+                derived_overlap_segments.len(),
+                final_boundary_segments.len(),
+                index_ms,
+                source_ms,
+                exposed_ms,
+                final_boundary_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0),
+            );
+        }
         (segments, derived_overlap_segments)
     }
 
@@ -56,11 +95,56 @@ impl NodeArrangement {
         &self,
         segments: &mut BTreeSet<NodeExplicitVerticalStepSegment>,
     ) {
-        for left_index in 0..self.edges.len() {
-            for right_edge in self.edges.iter().skip(left_index + 1) {
-                let left_edge = &self.edges[left_index];
+        let mut candidates = self
+            .edges
+            .iter()
+            .filter(|edge| edge.exposed_boundary)
+            .filter_map(|edge| {
+                let rank = raised_step_band_rank(edge.owner.kind())?;
+                let geometry = self.arrangement_edge_geometry(edge)?;
+                Some(ExposedRaisedStepEdge {
+                    edge,
+                    geometry,
+                    rank,
+                    min_x: geometry.start.x_key.min(geometry.end.x_key),
+                    min_z: geometry.start.z_key.min(geometry.end.z_key),
+                    max_x: geometry.start.x_key.max(geometry.end.x_key),
+                    max_z: geometry.start.z_key.max(geometry.end.z_key),
+                })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|candidate| {
+            (
+                candidate.min_x,
+                candidate.min_z,
+                candidate.max_x,
+                candidate.max_z,
+                candidate.edge.owner,
+                candidate.geometry.start,
+                candidate.geometry.end,
+            )
+        });
+
+        // Exact sweep-line broad phase: positive segment overlap requires overlapping AABBs.
+        // Sorting by min X lets us stop each inner scan once that necessary condition fails.
+        for left_index in 0..candidates.len() {
+            let left = candidates[left_index];
+            for &right in candidates.iter().skip(left_index + 1) {
+                if right.min_x > left.max_x {
+                    break;
+                }
+                if right.min_z > left.max_z
+                    || right.max_z < left.min_z
+                    || left.rank == right.rank
+                    || !raised_step_kinds_can_contact(
+                        left.edge.owner.kind(),
+                        right.edge.owner.kind(),
+                    )
+                {
+                    continue;
+                }
                 if let Some(segment) =
-                    self.exposed_owned_raised_step_overlap_segment(left_edge, right_edge)
+                    self.exposed_owned_raised_step_overlap_segment_from_candidates(left, right)
                 {
                     segments.insert(segment);
                 }
@@ -68,30 +152,16 @@ impl NodeArrangement {
         }
     }
 
-    fn exposed_owned_raised_step_overlap_segment(
+    fn exposed_owned_raised_step_overlap_segment_from_candidates(
         &self,
-        left_edge: &NodeArrangementEdge,
-        right_edge: &NodeArrangementEdge,
+        left: ExposedRaisedStepEdge<'_>,
+        right: ExposedRaisedStepEdge<'_>,
     ) -> Option<NodeExplicitVerticalStepSegment> {
-        if !left_edge.exposed_boundary || !right_edge.exposed_boundary {
-            return None;
-        }
-        if !raised_step_kinds_can_contact(left_edge.owner.kind(), right_edge.owner.kind()) {
-            return None;
-        }
-        let left_rank = raised_step_band_rank(left_edge.owner.kind())?;
-        let right_rank = raised_step_band_rank(right_edge.owner.kind())?;
-        if left_rank == right_rank {
-            return None;
-        }
-
-        let left = self.arrangement_edge_geometry(left_edge)?;
-        let right = self.arrangement_edge_geometry(right_edge)?;
-        let (start, end) = arrangement_edge_overlap_segment(left, right)?;
-        let (lower_edge, lower, raised_edge, raised) = if left_rank < right_rank {
-            (left_edge, left, right_edge, right)
+        let (start, end) = arrangement_edge_overlap_segment(left.geometry, right.geometry)?;
+        let (lower_edge, lower, raised_edge, raised) = if left.rank < right.rank {
+            (left.edge, left.geometry, right.edge, right.geometry)
         } else {
-            (right_edge, right, left_edge, left)
+            (right.edge, right.geometry, left.edge, left.geometry)
         };
         if !arrangement_edges_have_positive_raised_step_delta(lower, raised, start, end) {
             return None;
@@ -333,9 +403,29 @@ impl NodeArrangement {
         })
     }
 
+    fn edge_has_owner_pair_source_constraint_for_opposite_indexed(
+        &self,
+        edge: &NodeArrangementEdge,
+        opposite_owner: NodeBandOwner,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
+    ) -> bool {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        constraint_index.for_edge(edge).any(|constraint| {
+            seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
+                && seam_constraint_authorizes_explicit_height_split(constraint)
+                && seam_constraint_covers_edge(constraint, start, end)
+        })
+    }
+
     fn edge_explicit_vertical_step_opposite_owner(
         &self,
         edge: &NodeArrangementEdge,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Option<NodeBandOwner> {
         if edge.constrains_shared_height {
             if let Some(opposite_owner) = edge.opposite_owner
@@ -344,9 +434,11 @@ impl NodeArrangement {
                 && (self.edge_has_owner_pair_endpoint_source_constraints_for_opposite(
                     edge,
                     opposite_owner,
+                    constraint_index,
                 ) || self.edge_has_distributed_endpoint_source_constraints_for_opposite(
                     edge,
                     opposite_owner,
+                    constraint_index,
                 ))
             {
                 return Some(opposite_owner);
@@ -358,18 +450,26 @@ impl NodeArrangement {
             let mut candidates = BTreeSet::new();
             if let Some(opposite_owner) = edge.opposite_owner {
                 if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
-                    && self.edge_has_owner_pair_source_constraint_for_opposite(edge, opposite_owner)
+                    && self.edge_has_owner_pair_source_constraint_for_opposite_indexed(
+                        edge,
+                        opposite_owner,
+                        constraint_index,
+                    )
                 {
                     return Some(opposite_owner);
                 }
                 if owners_form_explicit_vertical_step_pair(edge.owner, opposite_owner)
-                    && self.edge_has_material_endpoint_path_for_opposite(edge, opposite_owner)
+                    && self.edge_has_material_endpoint_path_for_opposite(
+                        edge,
+                        opposite_owner,
+                        constraint_index,
+                    )
                 {
                     return Some(opposite_owner);
                 }
             }
             candidates.extend(
-                self.edge_source_constraint_opposite_owners(edge)
+                self.edge_source_constraint_opposite_owners(edge, constraint_index)
                     .into_iter()
                     .filter(|opposite_owner| {
                         owners_form_explicit_vertical_step_pair(edge.owner, *opposite_owner)
@@ -381,7 +481,7 @@ impl NodeArrangement {
                 return Some(candidates[0]);
             } else if edge.exposed_boundary
                 && let Some(opposite_owner) =
-                    self.edge_selected_source_constraint_opposite_owner(edge)
+                    self.edge_selected_source_constraint_opposite_owner(edge, constraint_index)
             {
                 return Some(opposite_owner);
             }
@@ -392,6 +492,7 @@ impl NodeArrangement {
                 && self.edge_has_owner_pair_endpoint_source_constraints_for_opposite(
                     edge,
                     opposite_owner,
+                    constraint_index,
                 )
             {
                 return Some(opposite_owner);
@@ -400,6 +501,7 @@ impl NodeArrangement {
                 && self.edge_has_distributed_material_transition_point_sources_for_opposite(
                     edge,
                     opposite_owner,
+                    constraint_index,
                 )
             {
                 return Some(opposite_owner);
@@ -408,18 +510,21 @@ impl NodeArrangement {
                 && self.edge_has_distributed_endpoint_source_constraints_for_opposite(
                     edge,
                     opposite_owner,
+                    constraint_index,
                 )
             {
                 return Some(opposite_owner);
             }
         }
-        let endpoint_path_candidates = self.edge_endpoint_material_path_step_opposite_owners(edge);
+        let endpoint_path_candidates =
+            self.edge_endpoint_material_path_step_opposite_owners(edge, constraint_index);
         if let Some(opposite_owner) =
             select_endpoint_path_step_opposite_owner(edge.owner, &endpoint_path_candidates)
         {
             return Some(opposite_owner);
         }
-        let endpoint_candidates = self.edge_endpoint_source_constraint_opposite_owners(edge);
+        let endpoint_candidates =
+            self.edge_endpoint_source_constraint_opposite_owners(edge, constraint_index);
         if endpoint_candidates.len() == 1
             && owners_form_explicit_vertical_step_pair(edge.owner, endpoint_candidates[0])
         {
@@ -431,6 +536,7 @@ impl NodeArrangement {
     fn edge_selected_source_constraint_opposite_owner(
         &self,
         edge: &NodeArrangementEdge,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Option<NodeBandOwner> {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return None;
@@ -438,16 +544,10 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return None;
         };
-        let mut constraints = self
-            .regions
-            .iter()
-            .flat_map(|region| region.seam_constraints.iter())
+        let mut constraints = constraint_index
+            .for_edge(edge)
             .filter(|constraint| seam_constraint_authorizes_explicit_height_split(constraint))
-            .filter(|constraint| {
-                edge.source_constraint_indices
-                    .contains(&constraint.constraint_index)
-                    && seam_constraint_covers_edge(constraint, start, end)
-            })
+            .filter(|constraint| seam_constraint_covers_edge(constraint, start, end))
             .collect::<Vec<_>>();
         constraints
             .sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
@@ -463,6 +563,7 @@ impl NodeArrangement {
     fn edge_source_constraint_opposite_owners(
         &self,
         edge: &NodeArrangementEdge,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Vec<NodeBandOwner> {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return Vec::new();
@@ -470,16 +571,10 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return Vec::new();
         };
-        let mut owners = self
-            .regions
-            .iter()
-            .flat_map(|region| region.seam_constraints.iter())
+        let mut owners = constraint_index
+            .for_edge(edge)
             .filter(|constraint| seam_constraint_authorizes_explicit_height_split(constraint))
-            .filter(|constraint| {
-                edge.source_constraint_indices
-                    .contains(&constraint.constraint_index)
-                    && seam_constraint_covers_edge(constraint, start, end)
-            })
+            .filter(|constraint| seam_constraint_covers_edge(constraint, start, end))
             .filter_map(|constraint| {
                 seam_constraint_opposite_owner_for_edge_owner(constraint, edge.owner)
             })
@@ -492,6 +587,7 @@ impl NodeArrangement {
     fn edge_endpoint_source_constraint_opposite_owners(
         &self,
         edge: &NodeArrangementEdge,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Vec<NodeBandOwner> {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return Vec::new();
@@ -499,8 +595,10 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return Vec::new();
         };
-        let start_owners = self.endpoint_source_constraint_opposite_owners(edge.owner, start);
-        let end_owners = self.endpoint_source_constraint_opposite_owners(edge.owner, end);
+        let start_owners =
+            self.endpoint_source_constraint_opposite_owners(edge.owner, start, constraint_index);
+        let end_owners =
+            self.endpoint_source_constraint_opposite_owners(edge.owner, end, constraint_index);
         let mut owners = start_owners
             .into_iter()
             .filter(|owner| end_owners.contains(owner))
@@ -514,13 +612,13 @@ impl NodeArrangement {
         &self,
         owner: NodeBandOwner,
         key: NodeArrangementKey,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Vec<NodeBandOwner> {
-        let mut owners = self
-            .regions
+        let mut owners = constraint_index
+            .at_key(key)
             .iter()
-            .flat_map(|region| region.seam_constraints.iter())
+            .map(|indexed| indexed.constraint)
             .filter(|constraint| seam_constraint_authorizes_explicit_height_split(constraint))
-            .filter(|constraint| seam_constraint_covers_key(constraint, key))
             .filter_map(|constraint| {
                 seam_constraint_opposite_owner_for_edge_owner(constraint, owner)
             })
@@ -534,6 +632,7 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
         opposite_owner: NodeBandOwner,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return false;
@@ -541,18 +640,22 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return false;
         };
-        self.regions.iter().any(|region| {
-            let has_start = region.seam_constraints.iter().any(|constraint| {
-                seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
-                    && seam_constraint_authorizes_explicit_height_split(constraint)
-                    && seam_constraint_covers_key(constraint, start)
-            });
-            let has_end = region.seam_constraints.iter().any(|constraint| {
-                seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
-                    && seam_constraint_authorizes_explicit_height_split(constraint)
-                    && seam_constraint_covers_key(constraint, end)
-            });
-            has_start && has_end
+        constraint_index.at_key(start).iter().any(|start_indexed| {
+            let constraint = start_indexed.constraint;
+            if !(seam_constraint_matches_owner_pair(constraint, edge.owner, opposite_owner)
+                && seam_constraint_authorizes_explicit_height_split(constraint))
+            {
+                return false;
+            }
+            constraint_index.at_key(end).iter().any(|end_indexed| {
+                end_indexed.region_index == start_indexed.region_index
+                    && seam_constraint_matches_owner_pair(
+                        end_indexed.constraint,
+                        edge.owner,
+                        opposite_owner,
+                    )
+                    && seam_constraint_authorizes_explicit_height_split(end_indexed.constraint)
+            })
         })
     }
 
@@ -560,6 +663,7 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
         opposite_owner: NodeBandOwner,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return false;
@@ -567,10 +671,10 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return false;
         };
-        self.endpoint_source_constraint_opposite_owners(edge.owner, start)
+        self.endpoint_source_constraint_opposite_owners(edge.owner, start, constraint_index)
             .contains(&opposite_owner)
             && self
-                .endpoint_source_constraint_opposite_owners(edge.owner, end)
+                .endpoint_source_constraint_opposite_owners(edge.owner, end, constraint_index)
                 .contains(&opposite_owner)
     }
 
@@ -578,6 +682,7 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
         opposite_owner: NodeBandOwner,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return false;
@@ -589,10 +694,12 @@ impl NodeArrangement {
             edge.owner,
             opposite_owner,
             start,
+            constraint_index,
         ) && self.owner_pair_has_material_transition_point_sources_at_key(
             edge.owner,
             opposite_owner,
             end,
+            constraint_index,
         )
     }
 
@@ -600,6 +707,7 @@ impl NodeArrangement {
         &self,
         edge: &NodeArrangementEdge,
         opposite_owner: NodeBandOwner,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return false;
@@ -607,20 +715,14 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return false;
         };
-        self.has_explicit_material_seam_endpoint_path_at_key_between(
-            start,
-            &[edge.owner],
-            &[opposite_owner],
-        ) && self.has_explicit_material_seam_endpoint_path_at_key_between(
-            end,
-            &[edge.owner],
-            &[opposite_owner],
-        )
+        constraint_index.has_material_endpoint_path(start, edge.owner, opposite_owner)
+            && constraint_index.has_material_endpoint_path(end, edge.owner, opposite_owner)
     }
 
     fn edge_endpoint_material_path_step_opposite_owners(
         &self,
         edge: &NodeArrangementEdge,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Vec<NodeBandOwner> {
         let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
             return Vec::new();
@@ -628,8 +730,10 @@ impl NodeArrangement {
         let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
             return Vec::new();
         };
-        let start_owners = self.material_endpoint_path_step_opposite_owners(edge.owner, start);
-        let end_owners = self.material_endpoint_path_step_opposite_owners(edge.owner, end);
+        let start_owners =
+            self.material_endpoint_path_step_opposite_owners(edge.owner, start, constraint_index);
+        let end_owners =
+            self.material_endpoint_path_step_opposite_owners(edge.owner, end, constraint_index);
         let mut owners = start_owners
             .into_iter()
             .filter(|owner| end_owners.contains(owner))
@@ -643,31 +747,19 @@ impl NodeArrangement {
         &self,
         owner: NodeBandOwner,
         key: NodeArrangementKey,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> Vec<NodeBandOwner> {
-        let mut owners = self
-            .regions
+        let mut owners = constraint_index
+            .at_key(key)
             .iter()
-            .flat_map(|region| {
-                region
-                    .seam_constraints
-                    .iter()
-                    .filter(move |constraint| {
-                        constraint.is_material_transition
-                            && !constraint.constrains_shared_height
-                            && seam_constraint_covers_key(constraint, key)
-                    })
-                    .flat_map(move |constraint| {
-                        owners_for_material_seam_constraint(constraint, region.owner)
-                    })
+            .filter(|indexed| !indexed.constraint.constrains_shared_height)
+            .flat_map(|indexed| {
+                owners_for_material_seam_constraint(indexed.constraint, indexed.region_owner)
             })
             .filter(|candidate| {
                 *candidate != owner
                     && owners_form_explicit_vertical_step_pair(owner, *candidate)
-                    && self.has_explicit_material_seam_endpoint_path_at_key_between(
-                        key,
-                        &[owner],
-                        &[*candidate],
-                    )
+                    && constraint_index.has_material_endpoint_path(key, owner, *candidate)
             })
             .collect::<Vec<_>>();
         owners.sort_unstable();
@@ -680,16 +772,33 @@ impl NodeArrangement {
         owner: NodeBandOwner,
         opposite_owner: NodeBandOwner,
         key: NodeArrangementKey,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
-        self.owner_has_material_transition_source_at_key(owner, opposite_owner, key, false)
-            && self.owner_has_material_transition_source_at_key(opposite_owner, owner, key, false)
-            && (self.owner_has_material_transition_source_at_key(owner, opposite_owner, key, true)
-                || self.owner_has_material_transition_source_at_key(
-                    opposite_owner,
-                    owner,
-                    key,
-                    true,
-                ))
+        self.owner_has_material_transition_source_at_key(
+            owner,
+            opposite_owner,
+            key,
+            false,
+            constraint_index,
+        ) && self.owner_has_material_transition_source_at_key(
+            opposite_owner,
+            owner,
+            key,
+            false,
+            constraint_index,
+        ) && (self.owner_has_material_transition_source_at_key(
+            owner,
+            opposite_owner,
+            key,
+            true,
+            constraint_index,
+        ) || self.owner_has_material_transition_source_at_key(
+            opposite_owner,
+            owner,
+            key,
+            true,
+            constraint_index,
+        ))
     }
 
     fn owner_has_material_transition_source_at_key(
@@ -698,12 +807,14 @@ impl NodeArrangement {
         opposite_owner: NodeBandOwner,
         key: NodeArrangementKey,
         require_height_split: bool,
+        constraint_index: &ExplicitStepConstraintIndex<'_>,
     ) -> bool {
-        self.regions
+        constraint_index
+            .at_key(key)
             .iter()
-            .filter(|region| region.owner == owner)
-            .flat_map(|region| region.seam_constraints.iter())
-            .any(|constraint| {
+            .filter(|indexed| indexed.region_owner == owner)
+            .any(|indexed| {
+                let constraint = indexed.constraint;
                 constraint.is_material_transition
                     && (!require_height_split || !constraint.constrains_shared_height)
                     && super::super::build::seam_constraint_can_source_region_owner_for_pair(
@@ -711,9 +822,208 @@ impl NodeArrangement {
                         owner,
                         opposite_owner,
                     )
-                    && seam_constraint_covers_key(constraint, key)
             })
     }
+}
+
+struct ExplicitStepConstraintIndex<'a> {
+    constraints_by_index: Vec<Vec<&'a NodeRegionSeamConstraint>>,
+    constraints_by_key: BTreeMap<NodeArrangementKey, Vec<ExplicitStepIndexedConstraint<'a>>>,
+    material_endpoint_adjacency_by_key:
+        BTreeMap<NodeArrangementKey, BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>>>,
+}
+
+impl<'a> ExplicitStepConstraintIndex<'a> {
+    fn new(arrangement: &'a NodeArrangement) -> Self {
+        let constraint_count = arrangement
+            .regions
+            .iter()
+            .flat_map(|region| region.seam_constraints.iter())
+            .map(|constraint| constraint.constraint_index)
+            .max()
+            .map_or(0, |max_index| max_index + 1);
+        let mut constraints_by_index = vec![Vec::new(); constraint_count];
+        for constraint in arrangement
+            .regions
+            .iter()
+            .flat_map(|region| region.seam_constraints.iter())
+        {
+            constraints_by_index[constraint.constraint_index].push(constraint);
+        }
+        let relevant_keys = arrangement
+            .vertices
+            .iter()
+            .map(|vertex| vertex.key)
+            .collect::<BTreeSet<_>>();
+        let relevant_key_index = ExplicitStepRelevantKeyIndex::new(&relevant_keys);
+        let mut constraints_by_key =
+            BTreeMap::<NodeArrangementKey, Vec<ExplicitStepIndexedConstraint<'_>>>::new();
+        for (region_index, region) in arrangement.regions.iter().enumerate() {
+            for constraint in &region.seam_constraints {
+                if !constraint.is_material_transition {
+                    continue;
+                }
+                let indexed = ExplicitStepIndexedConstraint {
+                    region_index,
+                    region_owner: region.owner,
+                    constraint,
+                };
+                relevant_key_index.for_each_key_on_segment(
+                    NodeArrangementKey::from_point(constraint.start_xz),
+                    NodeArrangementKey::from_point(constraint.end_xz),
+                    |key| constraints_by_key.entry(key).or_default().push(indexed),
+                );
+            }
+        }
+        let material_endpoint_adjacency_by_key = constraints_by_key
+            .iter()
+            .filter_map(|(&key, constraints)| {
+                let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
+                for indexed in constraints {
+                    let constraint = indexed.constraint;
+                    if constraint.constrains_shared_height {
+                        continue;
+                    }
+                    let entry = owners_by_constraint
+                        .entry(constraint.constraint_index)
+                        .or_default();
+                    for owner in
+                        owners_for_material_seam_constraint(constraint, indexed.region_owner)
+                    {
+                        if let Err(insert_at) = entry.binary_search(&owner) {
+                            entry.insert(insert_at, owner);
+                        }
+                    }
+                }
+                let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
+                for owners in owners_by_constraint.into_values() {
+                    for left_index in 0..owners.len() {
+                        for right_index in left_index + 1..owners.len() {
+                            let left = owners[left_index];
+                            let right = owners[right_index];
+                            adjacency.entry(left).or_default().insert(right);
+                            adjacency.entry(right).or_default().insert(left);
+                        }
+                    }
+                }
+                (!adjacency.is_empty()).then_some((key, adjacency))
+            })
+            .collect();
+        Self {
+            constraints_by_index,
+            constraints_by_key,
+            material_endpoint_adjacency_by_key,
+        }
+    }
+
+    fn for_edge<'b>(
+        &'b self,
+        edge: &'b NodeArrangementEdge,
+    ) -> impl Iterator<Item = &'a NodeRegionSeamConstraint> + 'b
+    where
+        'a: 'b,
+    {
+        edge.source_constraint_indices.iter().flat_map(|&index| {
+            self.constraints_by_index
+                .get(index)
+                .into_iter()
+                .flat_map(|constraints| constraints.iter().copied())
+        })
+    }
+
+    fn at_key(&self, key: NodeArrangementKey) -> &[ExplicitStepIndexedConstraint<'a>] {
+        self.constraints_by_key
+            .get(&key)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn has_material_endpoint_path(
+        &self,
+        key: NodeArrangementKey,
+        left_owner: NodeBandOwner,
+        right_owner: NodeBandOwner,
+    ) -> bool {
+        let Some(adjacency) = self.material_endpoint_adjacency_by_key.get(&key) else {
+            return false;
+        };
+        let mut visited = BTreeSet::new();
+        let mut pending = vec![left_owner];
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) {
+                continue;
+            }
+            if owner == right_owner {
+                return true;
+            }
+            if let Some(neighbors) = adjacency.get(&owner) {
+                pending.extend(neighbors.iter().copied());
+            }
+        }
+        false
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExplicitStepIndexedConstraint<'a> {
+    region_index: usize,
+    region_owner: NodeBandOwner,
+    constraint: &'a NodeRegionSeamConstraint,
+}
+
+struct ExplicitStepRelevantKeyIndex {
+    by_x: Vec<NodeArrangementKey>,
+    by_z: Vec<NodeArrangementKey>,
+}
+
+impl ExplicitStepRelevantKeyIndex {
+    fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
+        let mut by_x = keys.iter().copied().collect::<Vec<_>>();
+        by_x.sort_unstable_by_key(|key| (key.x_key, key.z_key));
+        let mut by_z = keys.iter().copied().collect::<Vec<_>>();
+        by_z.sort_unstable_by_key(|key| (key.z_key, key.x_key));
+        Self { by_x, by_z }
+    }
+
+    fn for_each_key_on_segment(
+        &self,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+        mut visit: impl FnMut(NodeArrangementKey),
+    ) {
+        let x_span = start.x_key.abs_diff(end.x_key);
+        let z_span = start.z_key.abs_diff(end.z_key);
+        let (keys, start_axis, end_axis, axis_value): (
+            &[NodeArrangementKey],
+            i64,
+            i64,
+            fn(NodeArrangementKey) -> i64,
+        ) = if x_span >= z_span {
+            (&self.by_x, start.x_key, end.x_key, |key| key.x_key)
+        } else {
+            (&self.by_z, start.z_key, end.z_key, |key| key.z_key)
+        };
+        let min_axis = start_axis.min(end_axis);
+        let max_axis = start_axis.max(end_axis);
+        let first = keys.partition_point(|key| axis_value(*key) < min_axis);
+        let after_last = keys.partition_point(|key| axis_value(*key) <= max_axis);
+        for &key in &keys[first..after_last] {
+            if key.lies_on_segment(start, end) {
+                visit(key);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExposedRaisedStepEdge<'a> {
+    edge: &'a NodeArrangementEdge,
+    geometry: NodeArrangementEdgeGeometry,
+    rank: u8,
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
 }
 
 /// Quantized geometry and endpoint heights for one arrangement edge.

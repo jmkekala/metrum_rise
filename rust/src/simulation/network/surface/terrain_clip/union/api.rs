@@ -4,8 +4,16 @@ use super::*;
 use i_overlay::core::fill_rule::FillRule;
 
 impl RoadSurfaceSystem {
+    #[cfg(test)]
     pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_export(
         boundary_loops: &[RoadSurfaceTerrainClipLoop],
+    ) -> Result<RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError> {
+        let boundary_loop_refs = boundary_loops.iter().collect::<Vec<_>>();
+        Self::union_terrain_clip_boundary_refs_export(&boundary_loop_refs)
+    }
+
+    pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_refs_export(
+        boundary_loops: &[&RoadSurfaceTerrainClipLoop],
     ) -> Result<RoadSurfaceTerrainClipExport, RoadSurfaceTerrainClipExportError> {
         let contours = Self::union_terrain_clip_boundary_contours_with_sources(boundary_loops)?;
         let loops = contours
@@ -26,16 +34,19 @@ impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn union_terrain_clip_boundary_loops_with_sources(
         boundary_loops: &[RoadSurfaceTerrainClipLoop],
     ) -> Result<Vec<RoadSurfaceTerrainClipLoop>, RoadSurfaceTerrainClipExportError> {
-        Self::union_terrain_clip_boundary_contours_with_sources(boundary_loops).map(|contours| {
-            contours
-                .into_iter()
-                .map(|contour| contour.boundary_loop)
-                .collect()
-        })
+        let boundary_loop_refs = boundary_loops.iter().collect::<Vec<_>>();
+        Self::union_terrain_clip_boundary_contours_with_sources(&boundary_loop_refs).map(
+            |contours| {
+                contours
+                    .into_iter()
+                    .map(|contour| contour.boundary_loop)
+                    .collect()
+            },
+        )
     }
 
     fn union_terrain_clip_boundary_contours_with_sources(
-        boundary_loops: &[RoadSurfaceTerrainClipLoop],
+        boundary_loops: &[&RoadSurfaceTerrainClipLoop],
     ) -> Result<Vec<TerrainClipOutputContour>, RoadSurfaceTerrainClipExportError> {
         if boundary_loops.is_empty() {
             return Ok(Vec::new());

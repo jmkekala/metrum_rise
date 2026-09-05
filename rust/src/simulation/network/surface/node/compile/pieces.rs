@@ -74,7 +74,7 @@ impl RoadSurfaceSystem {
         self.compile_visual_node_piece_with_earthwork_boundaries(
             graph, terrain, node_id, input, None,
         )
-        .map(|result| result.piece)
+        .map(|result| Arc::unwrap_or_clone(result.piece))
     }
 
     pub(in crate::simulation::network::surface) fn compile_visual_node_piece_with_earthwork_boundaries(
@@ -116,7 +116,10 @@ impl RoadSurfaceSystem {
             previous_topology,
         )?;
         let node_regions = canonical.regions;
-        let earthwork_boundary_segments = node_regions.earthwork_boundary_segments.clone();
+        let mut earthwork_boundary_segments = node_regions.earthwork_boundary_segments.clone();
+        for segment in earthwork_boundary_segments.iter_mut().flatten() {
+            segment.source = segment.source.with_node_identity(node_id, input.kind);
+        }
         let top_surface_shapes = Self::top_surface_overlay_shapes(
             node_regions
                 .road_surface_polygons
@@ -158,13 +161,88 @@ impl RoadSurfaceSystem {
             render_earthwork_faces,
         )?;
         Some(NodeVisualCompileResult {
-            piece,
+            piece: Arc::new(piece),
             earthwork_boundaries: Arc::new(earthwork_boundary_segments),
             topology_cache: canonical.topology_cache.map(Arc::new),
             rail_topology_reused: canonical.rail_topology_reused,
             ownership_reused: canonical.ownership_reused,
+            preview_artifact_zero_copy: false,
+            #[cfg(test)]
             export_reuse_stats: canonical.export_reuse_stats,
         })
+    }
+
+    pub(in crate::simulation::network::surface) fn replay_exact_preview_node_piece(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        input: &RoadSurfaceVisualNodeCompileInput,
+        preview_piece: Arc<RoadSurfaceVisualNodePiece>,
+        preview_earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
+        preview_topology: Arc<NodeCanonicalTopologyCache>,
+        exact_identity: bool,
+    ) -> NodeVisualCompileResult {
+        if exact_identity && preview_piece.boolean_debug.is_none() {
+            let topology_cache = if input.kind == RoadSurfaceVisualNodePieceKind::JunctionN {
+                preview_topology
+            } else {
+                Arc::new(
+                    Arc::try_unwrap(preview_topology)
+                        .unwrap_or_else(|topology| topology.as_ref().clone())
+                        .into_for_committed_node(input.kind),
+                )
+            };
+            return NodeVisualCompileResult {
+                piece: preview_piece,
+                earthwork_boundaries: preview_earthwork_boundaries,
+                topology_cache: Some(topology_cache),
+                rail_topology_reused: true,
+                ownership_reused: true,
+                preview_artifact_zero_copy: true,
+                #[cfg(test)]
+                export_reuse_stats: Default::default(),
+            };
+        }
+
+        let (mut piece, piece_zero_copy) = match Arc::try_unwrap(preview_piece) {
+            Ok(piece) => (piece, true),
+            Err(piece) => (piece.as_ref().clone(), false),
+        };
+        piece.node_id = node_id;
+        piece.boolean_debug = None;
+        piece.earthwork_owner_sources = Self::node_earthwork_owner_sources_from_regions(
+            graph,
+            &input.mouths,
+            &piece.owned_regions,
+            &piece.node_top_surface_sources,
+        );
+        for face in &mut piece.render_earthwork_faces {
+            face.source = face.source.with_node_identity(node_id, input.kind);
+        }
+        let (mut earthwork_boundaries, boundaries_zero_copy) =
+            match Arc::try_unwrap(preview_earthwork_boundaries) {
+                Ok(boundaries) => (boundaries, true),
+                Err(boundaries) => (boundaries.as_ref().clone(), false),
+            };
+        for segment in earthwork_boundaries.iter_mut().flatten() {
+            segment.source = segment.source.with_node_identity(node_id, input.kind);
+        }
+        let (topology, topology_zero_copy) = match Arc::try_unwrap(preview_topology) {
+            Ok(topology) => (topology, true),
+            Err(topology) => (topology.as_ref().clone(), false),
+        };
+        NodeVisualCompileResult {
+            piece: Arc::new(piece),
+            earthwork_boundaries: Arc::new(earthwork_boundaries),
+            topology_cache: Some(Arc::new(topology.into_for_committed_node(input.kind))),
+            rail_topology_reused: true,
+            ownership_reused: true,
+            preview_artifact_zero_copy: piece_zero_copy
+                && boundaries_zero_copy
+                && topology_zero_copy,
+            #[cfg(test)]
+            export_reuse_stats: Default::default(),
+        }
     }
 
     pub(in crate::simulation::network::surface) fn refresh_visual_node_piece_earthwork_from_cached_top(

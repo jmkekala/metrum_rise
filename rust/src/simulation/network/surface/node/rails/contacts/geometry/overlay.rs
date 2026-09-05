@@ -4,9 +4,27 @@ use super::super::{
     GeneratedContourDirectedEdge, NodeGeneratedContour, NodeOverlayContour, NodeOverlayShapes,
     NodeRailPointKey, RoadSurfaceSystem, SurfaceXzKey,
 };
+use super::point_location::PreparedGeneratedPointLocationContour;
 
-pub(in crate::simulation::network::surface::node::rails::contacts) type GeneratedOverlayShapeKeys =
-    Vec<Vec<Vec<NodeRailPointKey>>>;
+#[derive(Clone, Debug, Default)]
+pub(in crate::simulation::network::surface::node::rails::contacts) struct GeneratedOverlayShapeKeys
+{
+    pub(super) shapes: Vec<Vec<Vec<NodeRailPointKey>>>,
+    pub(super) prepared_shapes: Vec<Vec<PreparedGeneratedPointLocationContour>>,
+    pub(super) doubled_bounds: Vec<Option<(i128, i128, i128, i128)>>,
+}
+
+impl GeneratedOverlayShapeKeys {
+    pub(in crate::simulation::network::surface::node::rails::contacts) fn is_empty(&self) -> bool {
+        self.shapes.is_empty()
+    }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts) fn iter(
+        &self,
+    ) -> impl Iterator<Item = &Vec<Vec<NodeRailPointKey>>> {
+        self.shapes.iter()
+    }
+}
 
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_contour_overlay_shapes(
     contour: &NodeGeneratedContour,
@@ -27,10 +45,52 @@ pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_overlay_shapes_keys(
     shapes: &NodeOverlayShapes,
 ) -> GeneratedOverlayShapeKeys {
-    shapes
+    let shapes = shapes
         .iter()
         .map(|shape| shape.iter().map(generated_overlay_contour_keys).collect())
-        .collect()
+        .collect::<Vec<Vec<Vec<NodeRailPointKey>>>>();
+    let doubled_bounds = shapes
+        .iter()
+        .map(|shape| {
+            generated_overlay_shape_key_bounds(shape).map(|(min_x, min_z, max_x, max_z)| {
+                (
+                    i128::from(min_x) * 2,
+                    i128::from(min_z) * 2,
+                    i128::from(max_x) * 2,
+                    i128::from(max_z) * 2,
+                )
+            })
+        })
+        .collect();
+    let prepared_shapes = shapes
+        .iter()
+        .map(|shape| {
+            shape
+                .iter()
+                .map(|contour| PreparedGeneratedPointLocationContour::new(contour))
+                .collect()
+        })
+        .collect();
+    GeneratedOverlayShapeKeys {
+        shapes,
+        prepared_shapes,
+        doubled_bounds,
+    }
+}
+
+fn generated_overlay_shape_key_bounds(
+    shape: &[Vec<NodeRailPointKey>],
+) -> Option<(i64, i64, i64, i64)> {
+    let mut points = shape.iter().flat_map(|contour| contour.iter().copied());
+    let first = points.next()?;
+    let (mut min_x, mut min_z, mut max_x, mut max_z) = (first.0, first.1, first.0, first.1);
+    for point in points {
+        min_x = min_x.min(point.0);
+        min_z = min_z.min(point.1);
+        max_x = max_x.max(point.0);
+        max_z = max_z.max(point.1);
+    }
+    Some((min_x, min_z, max_x, max_z))
 }
 
 pub(in crate::simulation::network::surface::node::rails::contacts) fn generated_overlay_shape_keys_directed_edges(

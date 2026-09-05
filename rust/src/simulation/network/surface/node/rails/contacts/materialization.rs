@@ -1,12 +1,14 @@
 //! Materialization of source-authorized generated rail contacts.
 
 use super::geometry::{
-    GeneratedOverlayShapeKeys, generated_contact_edges_from_overlay_intersection,
+    GeneratedContactOverlayScratch, GeneratedOverlayShapeKeys, PreparedGeneratedContourEdge,
+    PreparedGeneratedPointLocationContour, append_generated_contact_edges_inside_prepared_contour,
+    generated_contact_edges_from_overlay_intersection,
     generated_contact_edges_from_overlay_shape_intersection,
+    generated_contact_edges_from_overlay_shape_key_intersection,
     generated_contact_edges_from_source_edges_inside_shape_key_intersection,
-    generated_contact_edges_inside_contour, generated_contact_points_from_contour_intersections,
-    generated_contour_contains_key, generated_contour_overlay_shapes,
-    generated_overlay_shape_keys_directed_edges, generated_overlay_shapes_keys,
+    generated_contour_overlay_shapes, generated_overlay_shape_keys_directed_edges,
+    generated_overlay_shapes_keys,
 };
 use super::source_authority::{
     GeneratedSameBandContactConstraint, NodeSourceAuthorizedContactCache,
@@ -17,14 +19,12 @@ use super::{
     GeneratedContourDirectedEdge, GeneratedContourEdgeKey, GeneratedRaisedStepOwnerPair,
     NodeBandOwner, NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeOverlayShapes,
     NodeRailConstraint, NodeRailConstraintKind, NodeRailPointKey, RoadSurfaceBandKind,
-    RoadSurfaceVisualNodePieceKind, generated_constraint_contains_key_segment,
-    generated_constraint_directed_edges, generated_constraint_touches_key,
-    generated_contour_band_kind, generated_contour_directed_edges, generated_contour_keys,
-    generated_contour_supports_same_band_role, generated_point_key_lies_on_segment,
+    RoadSurfaceVisualNodePieceKind, append_quantized_segment_contact_points,
+    generated_contour_band_kind, generated_contour_keys, generated_contour_supports_same_band_role,
     generated_same_band_boundary_role_at_contour_vertex, owners_match_unordered,
-    quantized_proper_segment_intersection, road_point_from_key, road_point_key,
-    shared_generated_contour_points,
+    road_point_from_key, road_point_key,
 };
+use std::collections::BTreeMap;
 mod authority;
 mod emission;
 
@@ -85,8 +85,11 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         Option<RoadSurfaceBandKind>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) keys:
         Vec<NodeRailPointKey>,
+    point_location: PreparedGeneratedPointLocationContour,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) edges:
         Vec<GeneratedContourEdgeKey>,
+    edges_by_min_x: Vec<PreparedGeneratedContourEdge>,
+    edges_by_min_z: Vec<PreparedGeneratedContourEdge>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shapes:
         Option<NodeOverlayShapes>,
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) overlay_shape_edges:
@@ -112,15 +115,15 @@ impl GeneratedContactContourSummary {
         contour: &NodeGeneratedContour,
         include_overlay_shapes: bool,
     ) -> Self {
-        let mut keys = generated_contour_keys(contour);
+        let ordered_keys = generated_contour_keys(contour);
+        let mut keys = ordered_keys.clone();
         keys.sort_unstable();
         keys.dedup();
         let mut edges = Vec::new();
-        if keys.len() >= 2 {
-            let contour_keys = generated_contour_keys(contour);
-            for index in 0..contour_keys.len() {
-                let start = contour_keys[index];
-                let end = contour_keys[(index + 1) % contour_keys.len()];
+        if ordered_keys.len() >= 2 {
+            for index in 0..ordered_keys.len() {
+                let start = ordered_keys[index];
+                let end = ordered_keys[(index + 1) % ordered_keys.len()];
                 if start != end {
                     edges.push(GeneratedContourEdgeKey::new(start, end));
                 }
@@ -128,6 +131,19 @@ impl GeneratedContactContourSummary {
             edges.sort_unstable();
             edges.dedup();
         }
+        let prepared_edges = edges
+            .iter()
+            .copied()
+            .map(PreparedGeneratedContourEdge::new)
+            .collect::<Vec<_>>();
+        let mut edges_by_min_x = prepared_edges.clone();
+        edges_by_min_x.sort_unstable_by_key(|edge| {
+            (edge.min_x, edge.max_x, edge.min_z, edge.max_z, edge.edge)
+        });
+        let mut edges_by_min_z = prepared_edges;
+        edges_by_min_z.sort_unstable_by_key(|edge| {
+            (edge.min_z, edge.max_z, edge.min_x, edge.max_x, edge.edge)
+        });
         let (mut min_x, mut min_z) = (i64::MAX, i64::MAX);
         let (mut max_x, mut max_z) = (i64::MIN, i64::MIN);
         for key in &keys {
@@ -142,6 +158,7 @@ impl GeneratedContactContourSummary {
             max_x = 0;
             max_z = 0;
         }
+        let point_location = PreparedGeneratedPointLocationContour::new(&ordered_keys);
         let overlay_shapes = include_overlay_shapes
             .then(|| generated_contour_overlay_shapes(contour))
             .flatten();
@@ -169,7 +186,10 @@ impl GeneratedContactContourSummary {
             owner,
             kind,
             keys,
+            point_location,
             edges,
+            edges_by_min_x,
+            edges_by_min_z,
             overlay_shapes,
             overlay_shape_edges,
             overlay_shape_keys,
@@ -179,6 +199,16 @@ impl GeneratedContactContourSummary {
             max_x,
             max_z,
         }
+    }
+
+    fn replace_overlay_shapes(&mut self, overlay_shapes: Option<NodeOverlayShapes>) {
+        self.overlay_shape_keys = overlay_shapes
+            .as_ref()
+            .map(generated_overlay_shapes_keys)
+            .unwrap_or_default();
+        self.overlay_shape_edges =
+            generated_overlay_shape_keys_directed_edges(&self.overlay_shape_keys);
+        self.overlay_shapes = overlay_shapes;
     }
 
     pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn aabb_disjoint(
@@ -203,6 +233,16 @@ impl GeneratedContactContourSummary {
         self.bounds_valid()
             .then_some((self.min_x, self.min_z, self.max_x, self.max_z))
     }
+
+    pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn bounds_contain_key(
+        &self,
+        point: NodeRailPointKey,
+    ) -> bool {
+        self.min_x <= point.0
+            && point.0 <= self.max_x
+            && self.min_z <= point.1
+            && point.1 <= self.max_z
+    }
 }
 
 pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn generated_contact_contour_summaries(
@@ -214,28 +254,154 @@ pub(in crate::simulation::network::surface::node::rails::contacts::materializati
         .collect()
 }
 
-pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn shared_sorted_keys(
-    left: &[NodeRailPointKey],
-    right: &[NodeRailPointKey],
-) -> Vec<NodeRailPointKey> {
-    left.iter()
-        .copied()
-        .filter(|key| right.binary_search(key).is_ok())
-        .collect()
+const GENERATED_CONTACT_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct GeneratedContactCandidateTile {
+    x: i64,
+    z: i64,
 }
 
-pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn shared_sorted_edges(
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn generated_contact_candidate_pair_indices(
+    summaries: &[GeneratedContactContourSummary],
+) -> Vec<(usize, usize)> {
+    let mut indices_by_tile = BTreeMap::<GeneratedContactCandidateTile, Vec<usize>>::new();
+    for (summary_index, summary) in summaries.iter().enumerate() {
+        let Some((min_x, min_z, max_x, max_z)) = summary.bounds() else {
+            continue;
+        };
+        let min_tile_x = min_x.div_euclid(GENERATED_CONTACT_CANDIDATE_TILE_KEYS);
+        let max_tile_x = max_x.div_euclid(GENERATED_CONTACT_CANDIDATE_TILE_KEYS);
+        let min_tile_z = min_z.div_euclid(GENERATED_CONTACT_CANDIDATE_TILE_KEYS);
+        let max_tile_z = max_z.div_euclid(GENERATED_CONTACT_CANDIDATE_TILE_KEYS);
+        for x in min_tile_x..=max_tile_x {
+            for z in min_tile_z..=max_tile_z {
+                indices_by_tile
+                    .entry(GeneratedContactCandidateTile { x, z })
+                    .or_default()
+                    .push(summary_index);
+            }
+        }
+    }
+
+    let mut pairs = Vec::new();
+    for indices in indices_by_tile.values() {
+        for left_position in 0..indices.len() {
+            for right_index in indices.iter().copied().skip(left_position + 1) {
+                let left_index = indices[left_position];
+                pairs.push((left_index.min(right_index), left_index.max(right_index)));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn append_generated_contact_points_from_summary_intersections(
+    left: &GeneratedContactContourSummary,
+    right: &GeneratedContactContourSummary,
+    points: &mut Vec<NodeRailPointKey>,
+) {
+    let (outer, inner) = if left.edges_by_min_x.len() <= right.edges_by_min_x.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    for prepared_left_edge in &outer.edges_by_min_x {
+        let left_min_x = prepared_left_edge.min_x;
+        let left_max_x = prepared_left_edge.max_x;
+        let left_min_z = prepared_left_edge.min_z;
+        let left_max_z = prepared_left_edge.max_z;
+        let left_edge = prepared_left_edge.edge;
+        let x_last = inner
+            .edges_by_min_x
+            .partition_point(|edge| edge.min_x <= left_max_x);
+        let z_last = inner
+            .edges_by_min_z
+            .partition_point(|edge| edge.min_z <= left_max_z);
+        let right_edges = if x_last <= z_last {
+            &inner.edges_by_min_x[..x_last]
+        } else {
+            &inner.edges_by_min_z[..z_last]
+        };
+        for right_edge in right_edges {
+            if right_edge.max_x < left_min_x
+                || left_max_x < right_edge.min_x
+                || right_edge.max_z < left_min_z
+                || left_max_z < right_edge.min_z
+            {
+                continue;
+            }
+            let right_edge = right_edge.edge;
+            append_quantized_segment_contact_points(
+                left_edge.start,
+                left_edge.end,
+                right_edge.start,
+                right_edge.end,
+                points,
+            );
+        }
+    }
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn append_generated_contact_edges_inside_summary(
+    role: &GeneratedContactContourSummary,
+    target: &GeneratedContactContourSummary,
+    edges: &mut Vec<GeneratedContourEdgeKey>,
+    split_keys: &mut Vec<NodeRailPointKey>,
+) {
+    append_generated_contact_edges_inside_prepared_contour(
+        &role.edges_by_min_x,
+        &target.edges_by_min_x,
+        &target.edges_by_min_z,
+        &target.point_location,
+        target.bounds(),
+        edges,
+        split_keys,
+    );
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn append_shared_sorted_keys(
+    left: &[NodeRailPointKey],
+    right: &[NodeRailPointKey],
+    shared: &mut Vec<NodeRailPointKey>,
+) {
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        match left[left_index].cmp(&right[right_index]) {
+            std::cmp::Ordering::Less => left_index += 1,
+            std::cmp::Ordering::Greater => right_index += 1,
+            std::cmp::Ordering::Equal => {
+                shared.push(left[left_index]);
+                left_index += 1;
+                right_index += 1;
+            }
+        }
+    }
+}
+
+pub(in crate::simulation::network::surface::node::rails::contacts::materialization) fn append_shared_sorted_edges(
     left: &[GeneratedContourEdgeKey],
     right: &[GeneratedContourEdgeKey],
-) -> Vec<GeneratedContourEdgeKey> {
-    left.iter()
-        .copied()
-        .filter(|edge| right.binary_search(edge).is_ok())
-        .collect()
+    shared: &mut Vec<GeneratedContourEdgeKey>,
+) {
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        match left[left_index].cmp(&right[right_index]) {
+            std::cmp::Ordering::Less => left_index += 1,
+            std::cmp::Ordering::Greater => right_index += 1,
+            std::cmp::Ordering::Equal => {
+                shared.push(left[left_index]);
+                left_index += 1;
+                right_index += 1;
+            }
+        }
+    }
 }
 
 pub(in crate::simulation::network::surface::node::rails::contacts) use authority::{
-    GeneratedContactAuthorityIndex, generated_contact_point_has_explicit_roles,
+    GeneratedContactAuthorityIndex, GeneratedContactAuthorityPointQuery,
 };
 pub(in crate::simulation::network::surface::node::rails) use emission::{
     NodeSameMaterialContactPairCache, append_generated_material_point_contact_constraints,

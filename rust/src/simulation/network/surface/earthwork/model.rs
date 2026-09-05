@@ -94,6 +94,74 @@ pub(crate) enum RoadSurfaceEarthworkFaceSource {
 }
 
 impl RoadSurfaceEarthworkFaceSource {
+    pub(in crate::simulation::network::surface) fn with_span_identity(
+        self,
+        edge_idx: usize,
+    ) -> Self {
+        match self {
+            Self::SpanSupportBoundary {
+                edge_class,
+                support_policy,
+                owner,
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+                ..
+            } => Self::SpanSupportBoundary {
+                edge_idx,
+                edge_class,
+                support_policy,
+                owner,
+                role,
+                start_section_index,
+                end_section_index,
+                start_s_m,
+                end_s_m,
+            },
+            Self::NodeFootprintBoundary { .. } | Self::NodeSameMaterialBoundaryHandoff { .. } => {
+                self
+            }
+        }
+    }
+
+    pub(in crate::simulation::network::surface) fn with_node_identity(
+        self,
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+    ) -> Self {
+        match self {
+            Self::SpanSupportBoundary { .. } => self,
+            Self::NodeFootprintBoundary {
+                owner_kind,
+                owner_index,
+                boundary_source,
+                ..
+            } => Self::NodeFootprintBoundary {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index,
+                boundary_source,
+            },
+            Self::NodeSameMaterialBoundaryHandoff {
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+                ..
+            } => Self::NodeSameMaterialBoundaryHandoff {
+                node_id,
+                kind,
+                owner_kind,
+                owner_index_a,
+                owner_index_b,
+                boundary_source,
+            },
+        }
+    }
+
     pub(crate) fn source_ordering(self, other: Self) -> std::cmp::Ordering {
         match (self, other) {
             (

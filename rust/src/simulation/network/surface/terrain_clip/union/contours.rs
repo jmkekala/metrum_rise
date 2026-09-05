@@ -7,6 +7,7 @@ impl RoadSurfaceSystem {
         shapes: &[NodeOverlayShape],
         source_edges: &[TerrainClipSourceEdge],
     ) -> Result<Vec<TerrainClipOutputContour>, RoadSurfaceTerrainClipExportError> {
+        let source_edge_index = TerrainClipSourceEdgeIndex::new(source_edges);
         let mut contours = Vec::new();
         for (shape_index, shape) in shapes.iter().enumerate() {
             for (contour_index, contour) in shape.iter().enumerate() {
@@ -24,6 +25,7 @@ impl RoadSurfaceSystem {
                         contour,
                         topology,
                         source_edges,
+                        &source_edge_index,
                     )?;
                 contours.push(TerrainClipOutputContour {
                     boundary_loop,

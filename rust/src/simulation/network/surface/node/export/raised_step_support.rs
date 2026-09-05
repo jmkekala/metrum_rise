@@ -1486,10 +1486,7 @@ mod tests {
         NodeOwnedRegion {
             kind,
             owner_index,
-            polygon: RoadSurfaceVisualPolygon {
-                points_world: triangle.to_vec(),
-                triangles_world: vec![triangle],
-            },
+            polygon: RoadSurfaceVisualPolygon::from_parts(triangle.to_vec(), vec![triangle]),
         }
     }
 

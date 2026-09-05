@@ -14,7 +14,7 @@ use crate::simulation::terrain::cdt::{
 };
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
 use godot::prelude::{Vector2, Vector3};
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 const BUILDING_SITE_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const BUILDING_SITE_GRADING_RING_MULTIPLIERS: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
@@ -80,13 +80,13 @@ impl<'a> SiteGradingContext<'a> {
 
 pub(super) struct SiteGradingGuideSink<'a> {
     samples: &'a mut Vec<TerrainCdtTieInGuideSample>,
-    sample_keys: &'a mut BTreeMap<(i64, i64), ()>,
+    sample_keys: &'a mut HashSet<(i64, i64)>,
 }
 
 impl<'a> SiteGradingGuideSink<'a> {
     pub(super) fn new(
         samples: &'a mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &'a mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &'a mut HashSet<(i64, i64)>,
     ) -> Self {
         Self {
             samples,
@@ -108,7 +108,7 @@ impl BuildingSiteTerrainSnapshot {
         &self,
         request: BuildingSiteGradingRequest<'_>,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let (min_x, min_z, max_x, max_z) = request.world_bounds;
         let safe_step_m = request.render_step_m.max(f32::EPSILON);
@@ -456,13 +456,13 @@ fn corrected_footprint_outward(
 fn push_building_site_grading_sample(
     vertex: TerrainCdtVertex,
     tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
-    sample_keys: &mut BTreeMap<(i64, i64), ()>,
+    sample_keys: &mut HashSet<(i64, i64)>,
 ) {
     if !vertex.x.is_finite() || !vertex.z.is_finite() || !vertex.height_m.is_finite() {
         return;
     }
     let key = building_site_grading_sample_key(vertex.x, vertex.z);
-    if sample_keys.insert(key, ()).is_some() {
+    if !sample_keys.insert(key) {
         return;
     }
     tie_in_guide_samples.push(TerrainCdtTieInGuideSample { vertex });

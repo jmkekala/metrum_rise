@@ -2,32 +2,28 @@
 
 use super::*;
 use crate::simulation::network::surface::keys::SurfaceXzKey;
-use crate::simulation::network::surface::node::arrangement::seam_constraints_covering_surface_key_edge_as_fragments;
+use crate::simulation::network::surface::node::arrangement::{
+    PreparedSeamConstraintCoverages, SeamConstraintCoverageScratch,
+    prepared_seam_constraints_covering_surface_key_edge_as_fragments_into,
+};
 
 pub(in crate::simulation::network::surface::node::ownership) fn owned_source_constraints_for_edge<
     'a,
 >(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
-    constraints: &'a [NodeRegionSeamConstraint],
-) -> Vec<&'a NodeRegionSeamConstraint> {
-    let mut matches = constraints
-        .iter()
-        .filter(|constraint| {
-            let constraint_start = ownership_key_from_road_point(constraint.start_xz);
-            let constraint_end = ownership_key_from_road_point(constraint.end_xz);
-            point_key_lies_on_segment(start, constraint_start, constraint_end)
-                && point_key_lies_on_segment(end, constraint_start, constraint_end)
-        })
-        .collect::<Vec<_>>();
-    matches.extend(seam_constraints_covering_surface_key_edge_as_fragments(
+    constraints: &PreparedSeamConstraintCoverages<'a>,
+    scratch: &mut SeamConstraintCoverageScratch,
+    matches: &mut Vec<&'a NodeRegionSeamConstraint>,
+) {
+    prepared_seam_constraints_covering_surface_key_edge_as_fragments_into(
         SurfaceXzKey::from_raw_tuple(start),
         SurfaceXzKey::from_raw_tuple(end),
         constraints,
-    ));
-    matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
+        scratch,
+        matches,
+    );
     matches.dedup_by_key(|constraint| constraint.constraint_index);
-    matches
 }
 
 pub(in crate::simulation::network::surface::node::ownership) fn owned_boundary_requires_explicit_seam(
@@ -41,24 +37,34 @@ pub(in crate::simulation::network::surface::node::ownership) fn junctionn_unmate
     piece_kind: RoadSurfaceVisualNodePieceKind,
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
-    rail_constraints: &[NodeRailConstraint],
+    rail_constraint_index: &OwnedEdgeRailConstraintIndex<'_>,
+    candidate_indices: &[usize],
+    intervals: &mut Vec<(i128, i128)>,
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> Vec<usize> {
     if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN {
         return Vec::new();
     }
-    let mut source_constraint_indices = rail_constraints
+    let mut source_constraint_indices = candidate_indices
         .iter()
-        .filter(|constraint| constraint.kind == NodeRailConstraintKind::RaisedStepContact)
-        .filter(|constraint| !constraint_is_point_contact(constraint))
-        .filter(|constraint| {
+        .copied()
+        .filter(|&index| rail_constraint_index.constraint_covers_owned_edge(index, start, end))
+        .filter_map(|index| {
+            Some((
+                rail_constraint_index.constraint(index)?,
+                rail_constraint_index.constraint_points(index)?,
+            ))
+        })
+        .filter(|(constraint, _)| constraint.kind == NodeRailConstraintKind::RaisedStepContact)
+        .filter(|(constraint, _)| !constraint_is_point_contact(constraint))
+        .filter(|(constraint, _)| {
             rail_constraint_owner_pair_matches_edge(constraint, owner, opposite_owner)
         })
-        .filter(|constraint| {
-            edge_lies_on_constraint_polyline_on_overlay_grid(start, end, constraint)
+        .filter(|(_, points)| {
+            edge_lies_on_constraint_polyline_on_overlay_grid(start, end, points, intervals)
         })
-        .map(|constraint| constraint.constraint_index)
+        .map(|(constraint, _)| constraint.constraint_index)
         .collect::<Vec<_>>();
     source_constraint_indices.sort_unstable();
     source_constraint_indices.dedup();
@@ -143,10 +149,14 @@ mod tests {
             ),
         ];
 
-        let matches = owned_source_constraints_for_edge(
+        let mut matches = Vec::new();
+        let prepared = PreparedSeamConstraintCoverages::new(&constraints);
+        owned_source_constraints_for_edge(
             ownership_key_from_road_point(RoadVec2::new(0.0, 0.0)),
             ownership_key_from_road_point(RoadVec2::new(3.0, 0.0)),
-            &constraints,
+            &prepared,
+            &mut SeamConstraintCoverageScratch::default(),
+            &mut matches,
         );
 
         assert_eq!(matches.len(), 1);
@@ -174,10 +184,14 @@ mod tests {
             ),
         ];
 
-        let matches = owned_source_constraints_for_edge(
+        let mut matches = Vec::new();
+        let prepared = PreparedSeamConstraintCoverages::new(&constraints);
+        owned_source_constraints_for_edge(
             ownership_key_from_road_point(RoadVec2::new(0.0, 0.0)),
             ownership_key_from_road_point(RoadVec2::new(3.0, 0.0)),
-            &constraints,
+            &prepared,
+            &mut SeamConstraintCoverageScratch::default(),
+            &mut matches,
         );
 
         assert!(matches.is_empty());

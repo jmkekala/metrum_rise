@@ -112,7 +112,7 @@ pub(in crate::simulation::network::surface::node::rails) struct NodeSameMaterial
 
 const SAME_BAND_PARALLEL_PAIR_THRESHOLD: usize = 64;
 const SAME_BAND_PARALLEL_PAIR_BATCH: usize = 16;
-const SAME_BAND_CANDIDATE_TILE_KEYS: i64 = 8_000_000;
+const SAME_BAND_PARALLEL_CONTOUR_THRESHOLD: usize = 32;
 
 #[cfg(test)]
 pub(in crate::simulation::network::surface::node::rails) fn append_generated_same_band_contact_constraints(
@@ -180,8 +180,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
         .collect::<Vec<_>>();
     let indexed_pairs = same_band_candidate_pair_index(&summaries, &authority_index);
     let mut stats = indexed_pairs.stats;
-    let mut contact_edges = BTreeSet::<GeneratedSameBandContactConstraint>::new();
-    let mut same_material_height_splits = BTreeSet::<SameMaterialHeightSplitConstraint>::new();
+    let mut contact_edges = Vec::<GeneratedSameBandContactConstraint>::new();
+    let mut same_material_height_splits = Vec::<SameMaterialHeightSplitConstraint>::new();
     let pair_indices = indexed_pairs.pair_indices;
     let raised_step_pair_contributor_keys = raised_step_pair_contributor_keys(
         &authority_index,
@@ -237,6 +237,10 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
             .raised_step_entries
             .append(&mut result.same_material_pair_cache.raised_step_entries);
     }
+    contact_edges.sort_unstable();
+    contact_edges.dedup();
+    same_material_height_splits.sort_unstable();
+    same_material_height_splits.dedup();
     stats.same_material_height_split_candidates = same_material_height_splits.len();
     let source_constraints = super::source_authority_constraints_for_generated_contacts(
         constraints,
@@ -252,15 +256,8 @@ pub(in crate::simulation::network::surface::node::rails) fn append_generated_sam
     );
     include_source_authorized_contact_reuse_stats(&mut stats, source_contact_reuse);
 
-    let mut existing = constraints
-        .iter()
-        .filter_map(generated_same_band_contact_constraint_key)
-        .collect::<BTreeSet<_>>();
+    super::retain_new_sorted_generated_contacts(&mut contact_edges, constraints);
     for contact in contact_edges {
-        let key = contact.key();
-        if !existing.insert(key) {
-            continue;
-        }
         constraints.push(NodeRailConstraint {
             constraint_index: constraints.len(),
             kind: contact.kind,
@@ -302,7 +299,7 @@ fn populate_required_pair_overlay_summaries(
     raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
     previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
 ) {
-    let mut required_indices = BTreeSet::new();
+    let mut required_indices = vec![false; summaries.len()];
     for &(left_index, right_index) in pair_indices {
         let left_summary = &summaries[left_index];
         let right_summary = &summaries[right_index];
@@ -322,34 +319,36 @@ fn populate_required_pair_overlay_summaries(
                     .get(&(left_index, right_index))
                     .is_some_and(|key| {
                         previous_same_material_pairs
-                            .is_some_and(|previous| previous.raised_step_entries.contains_key(&key))
+                            .is_some_and(|previous| previous.raised_step_entries.contains_key(key))
                     })
             };
         if pair_is_cached {
             continue;
         }
-        required_indices.insert(left_index);
-        required_indices.insert(right_index);
+        required_indices[left_index] = true;
+        required_indices[right_index] = true;
     }
-    let required_indices = required_indices.into_iter().collect::<Vec<_>>();
-    let overlay_summaries = required_indices
-        .par_iter()
-        .map(|&index| {
-            (
-                index,
-                GeneratedContactContourSummary::from_contour_with_overlay(&contours[index], true),
-            )
-        })
+    let required_indices = required_indices
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, required)| required.then_some(index))
         .collect::<Vec<_>>();
-    for (index, summary) in overlay_summaries {
-        summaries[index] = summary;
+    let build_summary =
+        |&index: &usize| (index, generated_contour_overlay_shapes(&contours[index]));
+    let overlay_summaries = if required_indices.len() >= SAME_BAND_PARALLEL_CONTOUR_THRESHOLD {
+        required_indices
+            .par_iter()
+            .map(build_summary)
+            .collect::<Vec<_>>()
+    } else {
+        required_indices
+            .iter()
+            .map(build_summary)
+            .collect::<Vec<_>>()
+    };
+    for (index, overlay_shapes) in overlay_summaries {
+        summaries[index].replace_overlay_shapes(overlay_shapes);
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SameBandCandidateTile {
-    x: i64,
-    z: i64,
 }
 
 #[derive(Default)]
@@ -360,7 +359,7 @@ struct SameBandCandidatePairIndex {
 
 fn same_band_candidate_pair_index(
     summaries: &[GeneratedContactContourSummary],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
 ) -> SameBandCandidatePairIndex {
     let mut index = SameBandCandidatePairIndex::default();
     index.stats.pair_tests = summaries
@@ -368,30 +367,7 @@ fn same_band_candidate_pair_index(
         .saturating_mul(summaries.len().saturating_sub(1))
         / 2;
 
-    let mut indices_by_tile = BTreeMap::<SameBandCandidateTile, Vec<usize>>::new();
-    for (summary_index, summary) in summaries.iter().enumerate() {
-        if summary.owner.is_none() || summary.kind.is_none() || !summary.bounds_valid() {
-            continue;
-        }
-        for tile in same_band_candidate_tiles(summary) {
-            indices_by_tile.entry(tile).or_default().push(summary_index);
-        }
-    }
-
-    let mut tile_pairs = BTreeSet::<(usize, usize)>::new();
-    for indices in indices_by_tile.values() {
-        for left_position in 0..indices.len() {
-            for right_index in indices.iter().copied().skip(left_position + 1) {
-                let left_index = indices[left_position];
-                let pair = if left_index <= right_index {
-                    (left_index, right_index)
-                } else {
-                    (right_index, left_index)
-                };
-                tile_pairs.insert(pair);
-            }
-        }
-    }
+    let tile_pairs = generated_contact_candidate_pair_indices(summaries);
     index.stats.candidate_pairs = tile_pairs.len();
 
     for (left_index, right_index) in tile_pairs {
@@ -410,29 +386,10 @@ fn same_band_candidate_pair_index(
     index
 }
 
-fn same_band_candidate_tiles(
-    summary: &GeneratedContactContourSummary,
-) -> Vec<SameBandCandidateTile> {
-    let Some((min_x, min_z, max_x, max_z)) = summary.bounds() else {
-        return Vec::new();
-    };
-    let min_tile_x = min_x.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
-    let max_tile_x = max_x.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
-    let min_tile_z = min_z.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
-    let max_tile_z = max_z.div_euclid(SAME_BAND_CANDIDATE_TILE_KEYS);
-    let mut tiles = Vec::new();
-    for x in min_tile_x..=max_tile_x {
-        for z in min_tile_z..=max_tile_z {
-            tiles.push(SameBandCandidateTile { x, z });
-        }
-    }
-    tiles
-}
-
 fn same_band_candidate_pair_can_contact(
     left_summary: &GeneratedContactContourSummary,
     right_summary: &GeneratedContactContourSummary,
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
     stats: &mut GeneratedContactEmissionStats,
 ) -> bool {
     let Some(left_owner) = left_summary.owner else {
@@ -507,7 +464,7 @@ fn same_material_pair_has_same_height_authority(
 }
 
 fn raised_step_pair_contributor_key(
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
     left_summary: &GeneratedContactContourSummary,
     right_summary: &GeneratedContactContourSummary,
     contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
@@ -551,14 +508,7 @@ fn raised_step_pair_contributor_key(
                 source_band_index: constraint.source_band_index,
                 owner: pair.owner,
                 opposite_owner: pair.opposite_owner,
-                ordered_points_xz: Arc::from(
-                    constraint
-                        .points_xz
-                        .iter()
-                        .copied()
-                        .map(road_point_key)
-                        .collect::<Vec<_>>(),
-                ),
+                ordered_points_xz: Arc::from(constraint.ordered_keys.as_slice()),
             });
         },
     );
@@ -575,7 +525,7 @@ fn raised_step_pair_contributor_key(
 }
 
 fn raised_step_pair_contributor_keys(
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
     summaries: &[GeneratedContactContourSummary],
     pair_indices: &[(usize, usize)],
     contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
@@ -600,27 +550,26 @@ fn raised_step_pair_contributor_keys(
         .collect()
 }
 
+#[derive(Default)]
 struct SameBandContactPairResult {
     stats: GeneratedContactEmissionStats,
-    contact_edges: BTreeSet<GeneratedSameBandContactConstraint>,
-    same_material_height_splits: BTreeSet<SameMaterialHeightSplitConstraint>,
+    contact_edges: Vec<GeneratedSameBandContactConstraint>,
+    same_material_height_splits: Vec<SameMaterialHeightSplitConstraint>,
     same_material_pair_cache: NodeSameMaterialContactPairCache,
 }
 
-impl Default for SameBandContactPairResult {
-    fn default() -> Self {
-        Self {
-            stats: GeneratedContactEmissionStats::default(),
-            contact_edges: BTreeSet::new(),
-            same_material_height_splits: BTreeSet::new(),
-            same_material_pair_cache: NodeSameMaterialContactPairCache::default(),
-        }
-    }
+#[derive(Default)]
+struct SameBandPairGeometryScratch {
+    overlay: GeneratedContactOverlayScratch,
+    edges: Vec<GeneratedContourEdgeKey>,
+    edge_points: Vec<NodeRailPointKey>,
+    points: Vec<NodeRailPointKey>,
+    split_keys: Vec<NodeRailPointKey>,
 }
 
 impl SameBandContactPairResult {
-    fn merge(&mut self, mut next: Self) {
-        merge_contact_emission_stats(&mut self.stats, next.stats);
+    fn merge(&mut self, next: &mut Self) {
+        merge_contact_emission_stats(&mut self.stats, std::mem::take(&mut next.stats));
         self.contact_edges.append(&mut next.contact_edges);
         self.same_material_height_splits
             .append(&mut next.same_material_height_splits);
@@ -637,15 +586,17 @@ fn collect_same_band_pair_batch_contacts(
     contours: &[NodeGeneratedContour],
     summaries: &[GeneratedContactContourSummary],
     constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
     pair_indices: &[(usize, usize)],
     contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
     raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
     previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
 ) -> SameBandContactPairResult {
     let mut batch_result = SameBandContactPairResult::default();
+    let mut pair_result = SameBandContactPairResult::default();
+    let mut geometry_scratch = SameBandPairGeometryScratch::default();
     for &(left_index, right_index) in pair_indices {
-        batch_result.merge(collect_same_band_pair_contacts(
+        collect_same_band_pair_contacts(
             contours,
             summaries,
             constraints,
@@ -655,7 +606,10 @@ fn collect_same_band_pair_batch_contacts(
             contour_contributors,
             raised_step_pair_contributor_keys,
             previous_same_material_pairs,
-        ));
+            &mut geometry_scratch,
+            &mut pair_result,
+        );
+        batch_result.merge(&mut pair_result);
     }
     batch_result
 }
@@ -664,41 +618,51 @@ fn collect_same_band_pair_contacts(
     contours: &[NodeGeneratedContour],
     summaries: &[GeneratedContactContourSummary],
     constraints: &[NodeRailConstraint],
-    authority_index: &GeneratedContactAuthorityIndex<'_>,
+    authority_index: &GeneratedContactAuthorityIndex,
     left_index: usize,
     right_index: usize,
     contour_contributors: &[Option<Arc<SameMaterialContourContributorKey>>],
     raised_step_pair_contributor_keys: &BTreeMap<(usize, usize), RaisedStepPairContributorKey>,
     previous_same_material_pairs: Option<&NodeSameMaterialContactPairCache>,
-) -> SameBandContactPairResult {
-    let mut result = SameBandContactPairResult::default();
+    geometry_scratch: &mut SameBandPairGeometryScratch,
+    result: &mut SameBandContactPairResult,
+) {
+    debug_assert!(result.contact_edges.is_empty());
+    debug_assert!(result.same_material_height_splits.is_empty());
+    debug_assert!(result.same_material_pair_cache.entries.is_empty());
+    debug_assert!(
+        result
+            .same_material_pair_cache
+            .raised_step_entries
+            .is_empty()
+    );
     let left = &contours[left_index];
     let right = &contours[right_index];
     let left_summary = &summaries[left_index];
     let right_summary = &summaries[right_index];
     let Some(left_owner) = left_summary.owner else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     let Some(right_owner) = right_summary.owner else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     if left_owner == right_owner {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     }
     let Some(kind) = left_summary.kind else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     let Some(right_kind) = right_summary.kind else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     if left_summary.aabb_disjoint(right_summary) {
         result.stats.aabb_rejected = 1;
-        return result;
+        return;
     }
     if kind == right_kind {
         let contributor_key = SameMaterialPairContributorKey::from_indices(
@@ -718,40 +682,40 @@ fn collect_same_band_pair_contacts(
                 .same_material_pair_cache
                 .entries
                 .insert(contributor_key, Arc::clone(cached));
-            return result;
+            return;
         }
         result.stats.same_material_overlay_calls = 1;
         collect_same_material_height_splits_from_edges(
             left,
             right,
+            left_summary,
+            right_summary,
             left_summary.overlay_shapes.as_ref(),
             right_summary.overlay_shapes.as_ref(),
-            &shared_sorted_edges(&left_summary.edges, &right_summary.edges),
             left_owner,
             right_owner,
             &mut result.same_material_height_splits,
+            geometry_scratch,
         );
+        result.same_material_height_splits.sort_unstable();
+        result.same_material_height_splits.dedup();
         let contributions = Arc::<[SameMaterialHeightSplitConstraint]>::from(
-            result
-                .same_material_height_splits
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
+            result.same_material_height_splits.clone(),
         );
         result
             .same_material_pair_cache
             .entries
             .insert(contributor_key, contributions);
-        return result;
+        return;
     }
     let Some(contact_kind) = generated_raised_step_contact_kind_for_owners(left_owner, right_owner)
     else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     let Some(pair) = GeneratedRaisedStepOwnerPair::new(left_owner, right_owner) else {
         result.stats.kind_rejected = 1;
-        return result;
+        return;
     };
     let contributor_key = raised_step_pair_contributor_keys
         .get(&(left_index, right_index))
@@ -766,7 +730,7 @@ fn collect_same_band_pair_contacts(
             .same_material_pair_cache
             .raised_step_entries
             .insert(contributor_key, Arc::clone(cached));
-        return result;
+        return;
     }
     result.stats.raised_step_pair_cache_misses = 1;
     let source_edges = generated_contact_authority_source_edges_touching_contour_pair(
@@ -777,21 +741,27 @@ fn collect_same_band_pair_contacts(
         right_summary,
         authority_index,
     );
-    let (contact_edges, used_pair_overlay) = generated_raised_step_contact_edges_from_authority(
+    let used_pair_overlay = generated_raised_step_contact_edges_from_authority(
         left,
         right,
         left_summary,
         right_summary,
         &source_edges,
+        geometry_scratch,
     );
     if used_pair_overlay {
         result.stats.overlay_calls = 1;
     }
-    let shared_edge_points = contact_edges
-        .iter()
-        .flat_map(|edge| [edge.start, edge.end])
-        .collect::<BTreeSet<_>>();
-    for edge in contact_edges {
+    geometry_scratch.edge_points.clear();
+    geometry_scratch.edge_points.extend(
+        geometry_scratch
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end]),
+    );
+    geometry_scratch.edge_points.sort_unstable();
+    geometry_scratch.edge_points.dedup();
+    for &edge in &geometry_scratch.edges {
         if let Some(source) = generated_contact_edge_source_authority(
             pair.owner,
             pair.opposite_owner,
@@ -808,86 +778,63 @@ fn collect_same_band_pair_contacts(
             );
         }
     }
-    for point in shared_sorted_keys(&left_summary.keys, &right_summary.keys) {
-        if shared_edge_points.contains(&point) {
-            continue;
-        }
-        if !generated_contact_point_has_explicit_roles(
-            kind,
-            right_kind,
-            left,
-            right,
-            constraints,
-            authority_index,
-            point,
-            contact_kind,
-        ) {
-            continue;
-        }
-        let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-            pair.owner,
-            pair.opposite_owner,
-            authority_index,
-            point,
-        ) else {
-            continue;
-        };
-        result
-            .contact_edges
-            .insert(GeneratedSameBandContactConstraint {
-                kind: contact_kind,
-                owner: pair.owner,
-                opposite_owner: pair.opposite_owner,
-                start: point,
-                end: point,
-                source_mouth_order_index: source.source_mouth_order_index,
-                source_band_index: source.source_band_index,
-            });
-    }
-    for point in generated_contact_points_from_contour_intersections(left, right) {
-        if shared_edge_points.contains(&point) {
-            continue;
-        }
-        if !generated_contact_point_has_explicit_roles(
-            kind,
-            right_kind,
-            left,
-            right,
-            constraints,
-            authority_index,
-            point,
-            contact_kind,
-        ) {
-            continue;
-        }
-        let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
-            pair.owner,
-            pair.opposite_owner,
-            authority_index,
-            point,
-        ) else {
-            continue;
-        };
-        result
-            .contact_edges
-            .insert(GeneratedSameBandContactConstraint {
-                kind: contact_kind,
-                owner: pair.owner,
-                opposite_owner: pair.opposite_owner,
-                start: point,
-                end: point,
-                source_mouth_order_index: source.source_mouth_order_index,
-                source_band_index: source.source_band_index,
-            });
-    }
-    let contributions = Arc::<[GeneratedSameBandContactConstraint]>::from(
-        result.contact_edges.iter().copied().collect::<Vec<_>>(),
+    geometry_scratch.points.clear();
+    append_shared_sorted_keys(
+        &left_summary.keys,
+        &right_summary.keys,
+        &mut geometry_scratch.points,
     );
+    append_generated_contact_points_from_summary_intersections(
+        left_summary,
+        right_summary,
+        &mut geometry_scratch.points,
+    );
+    geometry_scratch.points.sort_unstable();
+    geometry_scratch.points.dedup();
+    for &point in &geometry_scratch.points {
+        if geometry_scratch.edge_points.binary_search(&point).is_ok() {
+            continue;
+        }
+        if !generated_contact_point_has_explicit_roles(
+            kind,
+            right_kind,
+            left,
+            right,
+            constraints,
+            authority_index,
+            point,
+            contact_kind,
+        ) {
+            continue;
+        }
+        let Some(source) = generated_exact_owner_pair_contact_authority_at_point(
+            pair.owner,
+            pair.opposite_owner,
+            authority_index,
+            point,
+        ) else {
+            continue;
+        };
+        result
+            .contact_edges
+            .push(GeneratedSameBandContactConstraint {
+                kind: contact_kind,
+                owner: pair.owner,
+                opposite_owner: pair.opposite_owner,
+                start: point,
+                end: point,
+                source_mouth_order_index: source.source_mouth_order_index,
+                source_band_index: source.source_band_index,
+            });
+    }
+    result.contact_edges.sort_unstable();
+    result.contact_edges.dedup();
+    let contributions =
+        Arc::<[GeneratedSameBandContactConstraint]>::from(result.contact_edges.clone());
     result
         .same_material_pair_cache
         .raised_step_entries
         .insert(contributor_key, contributions);
-    result
 }
 
 fn generated_raised_step_contact_edges_from_authority(
@@ -896,35 +843,55 @@ fn generated_raised_step_contact_edges_from_authority(
     left_summary: &GeneratedContactContourSummary,
     right_summary: &GeneratedContactContourSummary,
     source_edges: &[GeneratedContourDirectedEdge],
-) -> (Vec<GeneratedContourEdgeKey>, bool) {
-    if !source_edges.is_empty() {
-        if left_summary.overlay_shapes.is_some() && right_summary.overlay_shapes.is_some() {
-            return (
-                generated_contact_edges_from_source_edges_inside_shape_key_intersection(
-                    source_edges,
-                    &left_summary.overlay_shape_edges,
-                    &left_summary.overlay_shape_keys,
-                    &right_summary.overlay_shape_edges,
-                    &right_summary.overlay_shape_keys,
-                ),
-                false,
-            );
-        }
+    geometry_scratch: &mut SameBandPairGeometryScratch,
+) -> bool {
+    geometry_scratch.edges.clear();
+    if !source_edges.is_empty()
+        && left_summary.overlay_shapes.is_some()
+        && right_summary.overlay_shapes.is_some()
+    {
+        geometry_scratch.edges.extend(
+            generated_contact_edges_from_source_edges_inside_shape_key_intersection(
+                source_edges,
+                &left_summary.overlay_shape_edges,
+                &left_summary.overlay_shape_keys,
+                &right_summary.overlay_shape_edges,
+                &right_summary.overlay_shape_keys,
+            ),
+        );
+        return false;
     }
-    let mut edges = BTreeSet::new();
-    edges.extend(shared_sorted_edges(
+    append_shared_sorted_edges(
         &left_summary.edges,
         &right_summary.edges,
-    ));
-    edges.extend(generated_contact_edges_inside_contour(left, right));
-    edges.extend(generated_contact_edges_inside_contour(right, left));
-    edges.extend(generated_contact_edges_from_summary_overlay(
-        left,
-        right,
-        left_summary.overlay_shapes.as_ref(),
-        right_summary.overlay_shapes.as_ref(),
-    ));
-    (edges.into_iter().collect(), true)
+        &mut geometry_scratch.edges,
+    );
+    append_generated_contact_edges_inside_summary(
+        left_summary,
+        right_summary,
+        &mut geometry_scratch.edges,
+        &mut geometry_scratch.split_keys,
+    );
+    append_generated_contact_edges_inside_summary(
+        right_summary,
+        left_summary,
+        &mut geometry_scratch.edges,
+        &mut geometry_scratch.split_keys,
+    );
+    geometry_scratch
+        .edges
+        .extend_from_slice(generated_contact_edges_from_summary_overlay(
+            left,
+            right,
+            left_summary,
+            right_summary,
+            left_summary.overlay_shapes.as_ref(),
+            right_summary.overlay_shapes.as_ref(),
+            &mut geometry_scratch.overlay,
+        ));
+    geometry_scratch.edges.sort_unstable();
+    geometry_scratch.edges.dedup();
+    true
 }
 
 fn merge_contact_emission_stats(
@@ -959,15 +926,22 @@ fn merge_contact_emission_stats(
 fn collect_same_material_height_splits_from_edges(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
     left_shapes: Option<&NodeOverlayShapes>,
     right_shapes: Option<&NodeOverlayShapes>,
-    shared_edges: &[GeneratedContourEdgeKey],
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
-    contacts: &mut BTreeSet<SameMaterialHeightSplitConstraint>,
+    contacts: &mut Vec<SameMaterialHeightSplitConstraint>,
+    geometry_scratch: &mut SameBandPairGeometryScratch,
 ) {
-    let mut edges = BTreeSet::new();
-    for &edge in shared_edges {
+    geometry_scratch.edges.clear();
+    append_shared_sorted_edges(
+        &left_summary.edges,
+        &right_summary.edges,
+        &mut geometry_scratch.edges,
+    );
+    for &edge in &geometry_scratch.edges {
         insert_same_material_height_split(
             contacts,
             left_owner,
@@ -977,9 +951,15 @@ fn collect_same_material_height_splits_from_edges(
             left.source_mouth_order_index,
             left.source_band_index,
         );
-        edges.insert(edge);
     }
-    for edge in generated_contact_edges_inside_contour(left, right) {
+    let left_inside_start = geometry_scratch.edges.len();
+    append_generated_contact_edges_inside_summary(
+        left_summary,
+        right_summary,
+        &mut geometry_scratch.edges,
+        &mut geometry_scratch.split_keys,
+    );
+    for &edge in &geometry_scratch.edges[left_inside_start..] {
         insert_same_material_height_split(
             contacts,
             left_owner,
@@ -989,9 +969,15 @@ fn collect_same_material_height_splits_from_edges(
             left.source_mouth_order_index,
             left.source_band_index,
         );
-        edges.insert(edge);
     }
-    for edge in generated_contact_edges_inside_contour(right, left) {
+    let right_inside_start = geometry_scratch.edges.len();
+    append_generated_contact_edges_inside_summary(
+        right_summary,
+        left_summary,
+        &mut geometry_scratch.edges,
+        &mut geometry_scratch.split_keys,
+    );
+    for &edge in &geometry_scratch.edges[right_inside_start..] {
         insert_same_material_height_split(
             contacts,
             left_owner,
@@ -1001,10 +987,16 @@ fn collect_same_material_height_splits_from_edges(
             right.source_mouth_order_index,
             right.source_band_index,
         );
-        edges.insert(edge);
     }
-    for edge in generated_contact_edges_from_summary_overlay(left, right, left_shapes, right_shapes)
-    {
+    for &edge in generated_contact_edges_from_summary_overlay(
+        left,
+        right,
+        left_summary,
+        right_summary,
+        left_shapes,
+        right_shapes,
+        &mut geometry_scratch.overlay,
+    ) {
         let (source_mouth_order_index, source_band_index) =
             same_material_height_split_source_name(left, right, left_owner, right_owner);
         insert_same_material_height_split(
@@ -1016,20 +1008,32 @@ fn collect_same_material_height_splits_from_edges(
             source_mouth_order_index,
             source_band_index,
         );
-        edges.insert(edge);
+        geometry_scratch.edges.push(edge);
     }
-    let shared_edge_points = edges
-        .iter()
-        .flat_map(|edge| [edge.start, edge.end])
-        .collect::<BTreeSet<_>>();
-    let mut points = shared_generated_contour_points(left, right);
-    points.extend(generated_contact_points_from_contour_intersections(
-        left, right,
-    ));
-    points.sort_unstable();
-    points.dedup();
-    for point in points {
-        if shared_edge_points.contains(&point) {
+    geometry_scratch.edge_points.clear();
+    geometry_scratch.edge_points.extend(
+        geometry_scratch
+            .edges
+            .iter()
+            .flat_map(|edge| [edge.start, edge.end]),
+    );
+    geometry_scratch.edge_points.sort_unstable();
+    geometry_scratch.edge_points.dedup();
+    geometry_scratch.points.clear();
+    append_shared_sorted_keys(
+        &left_summary.keys,
+        &right_summary.keys,
+        &mut geometry_scratch.points,
+    );
+    append_generated_contact_points_from_summary_intersections(
+        left_summary,
+        right_summary,
+        &mut geometry_scratch.points,
+    );
+    geometry_scratch.points.sort_unstable();
+    geometry_scratch.points.dedup();
+    for &point in &geometry_scratch.points {
+        if geometry_scratch.edge_points.binary_search(&point).is_ok() {
             continue;
         }
         let (source_mouth_order_index, source_band_index) =
@@ -1046,18 +1050,30 @@ fn collect_same_material_height_splits_from_edges(
     }
 }
 
-fn generated_contact_edges_from_summary_overlay(
+fn generated_contact_edges_from_summary_overlay<'a>(
     left: &NodeGeneratedContour,
     right: &NodeGeneratedContour,
+    left_summary: &GeneratedContactContourSummary,
+    right_summary: &GeneratedContactContourSummary,
     left_shapes: Option<&NodeOverlayShapes>,
     right_shapes: Option<&NodeOverlayShapes>,
-) -> Vec<GeneratedContourEdgeKey> {
-    match (left_shapes, right_shapes) {
+    scratch: &'a mut GeneratedContactOverlayScratch,
+) -> &'a [GeneratedContourEdgeKey] {
+    let edges = match (left_shapes, right_shapes) {
         (Some(left_shapes), Some(right_shapes)) => {
+            if generated_contact_edges_from_overlay_shape_key_intersection(
+                &left_summary.overlay_shape_keys,
+                &right_summary.overlay_shape_keys,
+                scratch,
+            ) {
+                return scratch.edges();
+            }
             generated_contact_edges_from_overlay_shape_intersection(left_shapes, right_shapes)
         }
         _ => generated_contact_edges_from_overlay_intersection(left, right),
-    }
+    };
+    scratch.replace_edges(edges);
+    scratch.edges()
 }
 
 fn same_material_height_split_source_name(
@@ -1074,7 +1090,7 @@ fn same_material_height_split_source_name(
 }
 
 fn insert_same_material_height_split(
-    contacts: &mut BTreeSet<SameMaterialHeightSplitConstraint>,
+    contacts: &mut Vec<SameMaterialHeightSplitConstraint>,
     left_owner: NodeBandOwner,
     right_owner: NodeBandOwner,
     start: NodeRailPointKey,
@@ -1092,7 +1108,7 @@ fn insert_same_material_height_split(
     } else {
         (start, end)
     };
-    contacts.insert((
+    contacts.push((
         owner,
         opposite_owner,
         start,
@@ -1109,7 +1125,7 @@ struct SameMaterialHeightSplitAppendStats {
 
 fn append_same_material_height_split_constraints(
     constraints: &mut Vec<NodeRailConstraint>,
-    contacts: BTreeSet<SameMaterialHeightSplitConstraint>,
+    contacts: Vec<SameMaterialHeightSplitConstraint>,
 ) -> SameMaterialHeightSplitAppendStats {
     let mut stats = SameMaterialHeightSplitAppendStats {
         appended: 0,
@@ -1169,7 +1185,7 @@ fn ordered_owner_pair(
 }
 
 fn insert_generated_contact_constraint(
-    contact_edges: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+    contact_edges: &mut Vec<GeneratedSameBandContactConstraint>,
     kind: NodeRailConstraintKind,
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
@@ -1189,7 +1205,7 @@ fn insert_generated_contact_constraint(
         (edge.start, edge.start),
         (edge.end, edge.end),
     ] {
-        contact_edges.insert(GeneratedSameBandContactConstraint {
+        contact_edges.push(GeneratedSameBandContactConstraint {
             kind,
             owner,
             opposite_owner,

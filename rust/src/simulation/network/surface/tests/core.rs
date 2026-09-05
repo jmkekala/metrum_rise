@@ -1,6 +1,8 @@
 //! Core surface cache, input, overlay, and section regression tests.
 
 use super::*;
+use crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex;
+use std::sync::Arc;
 
 #[test]
 fn overlay_numeric_area_budget_accepts_logged_sub_visual_cdt_residual() {
@@ -419,7 +421,7 @@ fn standard_edge_sections_follow_solved_edge_profile_deterministically() {
     let sections_a = surface_a.compiled_sections().get(&edge_idx).unwrap();
     let sections_b = surface_b.compiled_sections().get(&edge_idx).unwrap();
     assert_eq!(sections_a, sections_b);
-    for section in sections_a {
+    for section in sections_a.iter() {
         let expected = 99.0;
         assert!((section.center_height_m - expected).abs() <= 0.001);
     }
@@ -713,9 +715,10 @@ fn failed_span_recompile_removes_stale_visual_piece_and_chunk_coverage() {
     let terrain_chunk = (3, 4);
     let mut surface = RoadSurfaceSystem::new(16.0);
 
-    surface
-        .compiled_visual_span_pieces
-        .insert(edge_idx, empty_visual_span_piece(edge_idx));
+    surface.compiled_visual_span_pieces.insert(
+        edge_idx,
+        std::sync::Arc::new(empty_visual_span_piece(edge_idx)),
+    );
     surface
         .surface_span_chunks
         .insert(edge_idx, vec![surface_chunk]);
@@ -756,9 +759,10 @@ fn failed_node_recompile_removes_stale_visual_piece_input_and_chunk_coverage() {
     };
     let mut surface = RoadSurfaceSystem::new(16.0);
 
-    surface
-        .compiled_visual_node_pieces
-        .insert(node_id, empty_visual_node_piece(node_id));
+    surface.compiled_visual_node_pieces.insert(
+        node_id,
+        std::sync::Arc::new(empty_visual_node_piece(node_id)),
+    );
     surface
         .compiled_visual_node_inputs
         .insert(node_id, input.clone());
@@ -809,13 +813,14 @@ fn empty_visual_span_piece(edge_idx: usize) -> RoadSurfaceVisualSpanPiece {
         raised_step_face_polygons: Vec::new(),
         span_raised_step_sources: Vec::new(),
         sidewalk_surface_polygons: Vec::new(),
-        span_owned_regions: Vec::new(),
+        surface_query: Arc::new(RoadSurfaceTriangleQueryIndex::default()),
+        span_owned_regions: Arc::new(Vec::new()),
         edge_class: EdgeClass::Standard,
         start_mouth_profile: None,
         end_mouth_profile: None,
         start_terrain_clip_node: false,
         end_terrain_clip_node: false,
-        span_earthwork_support_regions: Vec::new(),
+        span_earthwork_support_regions: Arc::new(Vec::new()),
         earthwork_surface_polygons: Vec::new(),
         earthwork_outer_boundary_loops: Vec::new(),
         render_earthwork_faces: Vec::new(),
@@ -833,6 +838,7 @@ fn empty_visual_node_piece(node_id: u32) -> RoadSurfaceVisualNodePiece {
         raised_step_face_polygons: Vec::new(),
         raised_step_face_sources: Vec::new(),
         sidewalk_surface_polygons: Vec::new(),
+        surface_query: Arc::new(RoadSurfaceTriangleQueryIndex::default()),
         explicit_vertical_step_segments: Vec::new(),
         node_grade_authorities: Vec::new(),
         node_top_surface_sources: Vec::new(),

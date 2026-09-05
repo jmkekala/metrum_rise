@@ -23,7 +23,14 @@ pub(super) fn emit_crosswalk_markings(
                 && lane.lane_type == LaneType::Foot
                 && let Some(marking) = lane.crosswalk_marking
             {
-                emit_zebra_stripes(mesh, graph, marking, terrain, road_surface);
+                let surface_query = road_surface.lane_owner_surface_query(
+                    graph,
+                    terrain,
+                    marking.edge_id,
+                    node_id as usize,
+                    true,
+                );
+                emit_zebra_stripes(mesh, graph, marking, terrain, road_surface, &surface_query);
             }
         }
     }
@@ -39,6 +46,7 @@ fn emit_zebra_stripes(
     marking: crate::simulation::network::lanes::CrosswalkMarking,
     terrain: &crate::simulation::terrain::TerrainSystem,
     road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+    surface_query: &RoadLaneSurfaceQuery<'_>,
 ) {
     let geometry = [marking.start, marking.end];
     let length = marking.start.distance_to(marking.end);
@@ -62,10 +70,10 @@ fn emit_zebra_stripes(
             mesh,
             MeshLayer::Marking,
             [
-                crosswalk_marking_vertex(v0, graph, terrain, road_surface),
-                crosswalk_marking_vertex(v1, graph, terrain, road_surface),
-                crosswalk_marking_vertex(v2, graph, terrain, road_surface),
-                crosswalk_marking_vertex(v3, graph, terrain, road_surface),
+                crosswalk_marking_vertex(v0, graph, terrain, road_surface, surface_query),
+                crosswalk_marking_vertex(v1, graph, terrain, road_surface, surface_query),
+                crosswalk_marking_vertex(v2, graph, terrain, road_surface, surface_query),
+                crosswalk_marking_vertex(v3, graph, terrain, road_surface, surface_query),
             ],
             [
                 Vector2::new(0.0, 0.0),
@@ -84,9 +92,13 @@ fn crosswalk_marking_vertex(
     graph: &crate::simulation::network::graph::RegionGraph,
     terrain: &crate::simulation::terrain::TerrainSystem,
     road_surface: &crate::simulation::network::surface::RoadSurfaceSystem,
+    surface_query: &RoadLaneSurfaceQuery<'_>,
 ) -> Vector3 {
-    let height_m = road_surface
-        .sample_visible_carriageway_height(graph, terrain, vertex.x, vertex.z)
+    let height_m = surface_query
+        .sample_height(vertex.x, vertex.z)
+        .or_else(|| {
+            road_surface.sample_visible_carriageway_height(graph, terrain, vertex.x, vertex.z)
+        })
         .or_else(|| road_surface.sample_visible_surface_height(graph, terrain, vertex.x, vertex.z))
         .unwrap_or(vertex.y);
     Vector3::new(vertex.x, height_m + MARKING_RENDER_Z_BIAS_M, vertex.z)

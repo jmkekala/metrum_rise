@@ -739,6 +739,9 @@ pub(super) fn canonical_square_road_loop(min: f64, max: f64) -> CanonicalTerrain
         min_z: bounds.min_z,
         max_x: bounds.max_x,
         max_z: bounds.max_z,
+        min_height_m: 0.0,
+        max_height_m: 0.0,
+        sourced_edges: Vec::new(),
         vertices,
     }
 }

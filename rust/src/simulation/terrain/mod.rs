@@ -98,6 +98,8 @@ pub struct TerrainSystem {
     /// Source heightmap as sculpted by the player, without road modifications.
     /// Used for road grade calculation and slope cost — never written by road placement.
     source_data: SparseChunkGrid<f32>,
+    /// Monotonic revision of authoritative terrain samples used by derived-query caches.
+    source_generation: u64,
     /// Render patches whose visible terrain textures must be refreshed.
     dirty_render_patches: HashSet<(usize, usize)>,
 }
@@ -126,6 +128,7 @@ impl TerrainSystem {
             render_patch_interval_cells: safe_chunk_size.saturating_sub(1).max(1),
             data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
             source_data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
+            source_generation: 0,
             dirty_render_patches: HashSet::new(),
         }
     }
@@ -154,6 +157,7 @@ impl TerrainSystem {
     /// Updates both source and visual buffers.
     pub fn set_height(&mut self, x: usize, y: usize, value: f32) {
         if x < self.width && y < self.height {
+            self.source_generation = self.source_generation.wrapping_add(1);
             self.source_data.set(x, y, value);
             self.data.set(x, y, value);
             self.mark_render_patches_for_grid_rect(x, x, y, y);
@@ -177,7 +181,6 @@ impl TerrainSystem {
     }
 
     /// Samples the current visual terrain buffer at one world-space position.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn sample_visual_height_world(&self, world_x: f32, world_z: f32) -> f32 {
         let (grid_x, grid_z) = self.world_to_grid_coords(world_x, world_z);
         self.interpolate_grid_height(&self.data, grid_x, grid_z)
@@ -186,6 +189,11 @@ impl TerrainSystem {
     /// Returns the terrain sample spacing in metres.
     pub(crate) fn cell_size_m(&self) -> f32 {
         self.cell_size
+    }
+
+    /// Returns the current authoritative terrain revision for exact derived-cache validation.
+    pub(crate) fn source_generation(&self) -> u64 {
+        self.source_generation
     }
 
     /// Calculates the surface normal at a fractional coordinate using gradient sampling.
@@ -216,10 +224,7 @@ impl TerrainSystem {
         let fx = x_clamped.fract();
         let fz = z_clamped.fract();
 
-        let h00 = grid.get(x0, z0);
-        let h10 = grid.get(x1, z0);
-        let h01 = grid.get(x0, z1);
-        let h11 = grid.get(x1, z1);
+        let [h00, h10, h01, h11] = grid.get_bilinear_cells(x0, x1, z0, z1);
 
         let h0 = h00 * (1.0 - fx) + h10 * fx;
         let h1 = h01 * (1.0 - fx) + h11 * fx;
@@ -305,6 +310,7 @@ impl TerrainSystem {
         else {
             return;
         };
+        self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
         let r_int = radius.ceil() as i32;
         let cx_int = center_x as i32;
@@ -350,6 +356,7 @@ impl TerrainSystem {
         else {
             return;
         };
+        self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
         let r_int = radius.ceil() as i32;
         let cx_int = center_x as i32;
@@ -397,6 +404,7 @@ impl TerrainSystem {
         else {
             return;
         };
+        self.source_generation = self.source_generation.wrapping_add(1);
         self.mark_render_patches_for_grid_rect(min_x, max_x, min_y, max_y);
         let r_int = radius.ceil() as i32;
         let cx_int = center_x as i32;
@@ -497,6 +505,7 @@ impl TerrainSystem {
             self.level_to_height(center_x, center_y, radius, start_height, strength);
             return;
         }
+        self.source_generation = self.source_generation.wrapping_add(1);
 
         let r_int = radius.ceil() as i32;
         let cx_int = center_x as i32;
@@ -565,12 +574,13 @@ impl TerrainSystem {
 
         self.mark_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
 
-        for grid_z in min_grid_z..=max_grid_z {
-            for grid_x in min_grid_x..=max_grid_x {
-                self.data
-                    .set(grid_x, grid_z, self.source_data.get(grid_x, grid_z));
-            }
-        }
+        self.data.copy_rect_from(
+            &self.source_data,
+            min_grid_x,
+            max_grid_x,
+            min_grid_z,
+            max_grid_z,
+        );
     }
 
     /// Returns a dense row-major snapshot of the visual terrain buffer.
@@ -601,17 +611,23 @@ impl TerrainSystem {
 
     /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
     pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
-        self.source_data.replace_from_dense(dense)
+        self.source_data.replace_from_dense(dense)?;
+        self.source_generation = self.source_generation.wrapping_add(1);
+        Ok(())
     }
 
-    /// Writes one visual terrain sample after the caller has marked the enclosing render region.
-    pub(crate) fn set_visual_height_at_grid_unmarked(
+    /// Writes visual terrain samples grouped by sparse storage chunk.
+    pub(crate) fn set_visual_heights_at_grid_unmarked<U>(
         &mut self,
-        grid_x: usize,
-        grid_z: usize,
-        value: f32,
+        writes: &[U],
+        sample: impl FnMut(&U) -> (usize, usize, f32),
     ) {
-        self.data.set(grid_x, grid_z, value);
+        self.data.set_cells_grouped_by_chunk(writes, sample);
+    }
+
+    /// Returns the sparse terrain storage-chunk extent in samples.
+    pub(crate) fn storage_chunk_size_cells(&self) -> usize {
+        self.data.chunk_size()
     }
 
     /// Returns the full terrain extent in metres.
@@ -761,22 +777,52 @@ impl TerrainSystem {
         let texture_height = sample_height + TERRAIN_RENDER_PATCH_BORDER_TEXELS * 2;
         let mut height_data = vec![0.0_f32; texture_width * texture_height];
 
-        for local_z in 0..texture_height {
-            let sample_z = bordered_global_index(
-                start_z,
-                local_z,
-                TERRAIN_RENDER_PATCH_BORDER_TEXELS,
-                self.height,
+        let source_min_x = start_x.saturating_sub(TERRAIN_RENDER_PATCH_BORDER_TEXELS);
+        let source_min_z = start_z.saturating_sub(TERRAIN_RENDER_PATCH_BORDER_TEXELS);
+        let source_max_x = end_x
+            .saturating_add(TERRAIN_RENDER_PATCH_BORDER_TEXELS)
+            .min(self.width - 1);
+        let source_max_z = end_z
+            .saturating_add(TERRAIN_RENDER_PATCH_BORDER_TEXELS)
+            .min(self.height - 1);
+        let destination_x = TERRAIN_RENDER_PATCH_BORDER_TEXELS.saturating_sub(start_x);
+        let destination_z = TERRAIN_RENDER_PATCH_BORDER_TEXELS.saturating_sub(start_z);
+        self.data.copy_rect_into(
+            source_min_x,
+            source_max_x,
+            source_min_z,
+            source_max_z,
+            &mut height_data,
+            texture_width,
+            destination_x,
+            destination_z,
+        );
+
+        let copied_width = source_max_x - source_min_x + 1;
+        let copied_height = source_max_z - source_min_z + 1;
+        let copied_end_x = destination_x + copied_width;
+        for local_z in destination_z..destination_z + copied_height {
+            let row_start = local_z * texture_width;
+            let left_value = height_data[row_start + destination_x];
+            height_data[row_start..row_start + destination_x].fill(left_value);
+            let right_value = height_data[row_start + copied_end_x - 1];
+            height_data[row_start + copied_end_x..row_start + texture_width].fill(right_value);
+        }
+        let first_copied_row = destination_z * texture_width;
+        for local_z in 0..destination_z {
+            let destination_start = local_z * texture_width;
+            height_data.copy_within(
+                first_copied_row..first_copied_row + texture_width,
+                destination_start,
             );
-            for local_x in 0..texture_width {
-                let sample_x = bordered_global_index(
-                    start_x,
-                    local_x,
-                    TERRAIN_RENDER_PATCH_BORDER_TEXELS,
-                    self.width,
-                );
-                height_data[local_z * texture_width + local_x] = self.data.get(sample_x, sample_z);
-            }
+        }
+        let last_copied_row = (destination_z + copied_height - 1) * texture_width;
+        for local_z in destination_z + copied_height..texture_height {
+            let destination_start = local_z * texture_width;
+            height_data.copy_within(
+                last_copied_row..last_copied_row + texture_width,
+                destination_start,
+            );
         }
 
         let (world_origin_x, world_origin_z) = self.grid_to_world_coords(start_x, start_z);
@@ -961,17 +1007,6 @@ fn terrain_chunk_cells_for_config(config: &WorldConfig) -> usize {
 
 fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
     ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
-}
-
-fn bordered_global_index(
-    start: usize,
-    bordered_index: usize,
-    border_texels: usize,
-    limit: usize,
-) -> usize {
-    let max_index = limit.saturating_sub(1) as isize;
-    let index = start as isize + bordered_index as isize - border_texels as isize;
-    index.clamp(0, max_index) as usize
 }
 
 fn raycast_xz_interval(

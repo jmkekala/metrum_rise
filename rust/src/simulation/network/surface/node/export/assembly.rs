@@ -1,6 +1,8 @@
 //! Final explicit node-piece assembly from exported surface regions.
 
 use super::super::*;
+use crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex;
+use std::sync::Arc;
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface::node) fn assemble_explicit_node_piece(
@@ -41,6 +43,15 @@ impl RoadSurfaceSystem {
             &mut node_top_surface_sources,
         )
         .ok()?;
+        for source_edge in terrain_clip_boundary_loops
+            .iter_mut()
+            .flat_map(|boundary_loop| &mut boundary_loop.source_edges)
+        {
+            source_edge.source = source_edge.source.with_node_identity(node_id, kind);
+        }
+        for face in &mut render_earthwork_faces {
+            face.source = face.source.with_node_identity(node_id, kind);
+        }
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
@@ -62,6 +73,11 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
+        let surface_query = Arc::new(RoadSurfaceTriangleQueryIndex::from_surface_polygons(
+            &road_surface_polygons,
+            &curb_surface_polygons,
+            &sidewalk_surface_polygons,
+        ));
         let (raised_step_face_polygons, raised_step_face_sources) =
             raised_step_faces.into_iter().unzip();
         Some(RoadSurfaceVisualNodePiece {
@@ -74,6 +90,7 @@ impl RoadSurfaceSystem {
             raised_step_face_polygons,
             raised_step_face_sources,
             sidewalk_surface_polygons,
+            surface_query,
             explicit_vertical_step_segments,
             node_grade_authorities,
             node_top_surface_sources,

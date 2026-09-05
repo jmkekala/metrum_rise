@@ -91,15 +91,18 @@ impl NodeBandHeightField {
     }
 
     pub(super) fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
-        let mut candidates = Vec::new();
+        let mut candidate = None;
         let mut outside_error = None;
         for patch in &self.patches {
             match patch.evaluate_surface_height(self.id, self.kind, point_xz)? {
                 NodeHeightPatchEvaluation::Inside(height_m) => {
-                    candidates.push(NodeAuthorizedHeightCandidate {
+                    let incoming = NodeAuthorizedHeightCandidate {
                         authority: patch.authority.source(),
                         height_m,
-                    });
+                    };
+                    candidate = Some(
+                        self.merge_agreed_height_candidate(point_xz, None, candidate, incoming)?,
+                    );
                 }
                 NodeHeightPatchEvaluation::Outside(error) => {
                     if outside_error.is_none() {
@@ -108,7 +111,7 @@ impl NodeBandHeightField {
                 }
             }
         }
-        if candidates.is_empty() {
+        let Some(candidate) = candidate else {
             return Err(outside_error.unwrap_or_else(|| {
                 let key = NodeHeightPointKey::from_point(point_xz);
                 NodeHeightFieldError::VertexOutsideHeightField {
@@ -123,10 +126,9 @@ impl NodeBandHeightField {
                     raw_parameter: f64::NAN,
                 }
             }));
-        }
+        };
 
-        self.agreed_height(point_xz, None, candidates)
-            .map(|height| height.height_m)
+        Ok(candidate.height_m)
     }
 
     pub(super) fn evaluate_authorized_height(
@@ -145,7 +147,7 @@ impl NodeBandHeightField {
                     });
                 }
             }
-            let mut candidates = Vec::new();
+            let mut candidate = None;
             for patch in &self.patches {
                 let Some(authority_rank) =
                     patch.authority.rank_for_owned_region(owner, claim_priority)
@@ -157,10 +159,16 @@ impl NodeBandHeightField {
                 }
                 match patch.evaluate_surface_height(self.id, self.kind, point_xz) {
                     Ok(NodeHeightPatchEvaluation::Inside(height_m)) => {
-                        candidates.push(NodeAuthorizedHeightCandidate {
+                        let incoming = NodeAuthorizedHeightCandidate {
                             authority: patch.authority.source(),
                             height_m,
-                        });
+                        };
+                        candidate = Some(self.merge_agreed_height_candidate(
+                            point_xz,
+                            Some(owner),
+                            candidate,
+                            incoming,
+                        )?);
                     }
                     Ok(NodeHeightPatchEvaluation::Outside(error)) => {
                         if outside_error.is_none() {
@@ -170,8 +178,11 @@ impl NodeBandHeightField {
                     Err(error) => return Err(error),
                 }
             }
-            if !candidates.is_empty() {
-                return self.agreed_height(point_xz, Some(owner), candidates);
+            if let Some(candidate) = candidate {
+                return Ok(NodeEvaluatedHeight {
+                    height_m: candidate.height_m,
+                    authority: candidate.authority,
+                });
             }
         }
 

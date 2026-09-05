@@ -12,7 +12,6 @@ use super::{
     RoadSurfaceEarthworkGeometryError,
 };
 use crate::simulation::network::types::EdgeClass;
-use std::collections::{BTreeMap, BTreeSet};
 
 impl RoadSurfaceSystem {
     pub(in crate::simulation::network::surface) fn span_earthwork_boundary_segment_loops_from_support_regions(
@@ -60,32 +59,39 @@ impl RoadSurfaceSystem {
         candidate_segments: Vec<RoadSurfaceEarthworkBoundarySegment>,
     ) -> Result<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>, RoadSurfaceEarthworkGeometryError>
     {
-        let mut edge_counts = BTreeMap::<EarthworkBoundaryEdgeKey, usize>::new();
-        for segment in &candidate_segments {
-            let start_key = EarthworkBoundaryPointKey::from_point(segment.inner_start);
-            let end_key = EarthworkBoundaryPointKey::from_point(segment.inner_end);
-            let Some(edge_key) = EarthworkBoundaryEdgeKey::normalized(start_key, end_key) else {
-                continue;
-            };
-            *edge_counts.entry(edge_key).or_insert(0) += 1;
-        }
-
-        let mut boundary_segments = Vec::new();
+        let mut indexed_segments = Vec::with_capacity(candidate_segments.len());
         for (segment_index, segment) in candidate_segments.into_iter().enumerate() {
             let start_key = EarthworkBoundaryPointKey::from_point(segment.inner_start);
             let end_key = EarthworkBoundaryPointKey::from_point(segment.inner_end);
             let Some(edge_key) = EarthworkBoundaryEdgeKey::normalized(start_key, end_key) else {
                 continue;
             };
-            if edge_counts.get(&edge_key).copied() != Some(1) {
-                continue;
+            indexed_segments.push((
+                edge_key,
+                IndexedEarthworkBoundarySegment {
+                    segment_index,
+                    segment,
+                    start_key,
+                    end_key,
+                },
+            ));
+        }
+        indexed_segments.sort_unstable_by(|(left_key, left), (right_key, right)| {
+            left_key
+                .cmp(right_key)
+                .then(left.segment_index.cmp(&right.segment_index))
+        });
+
+        let mut boundary_segments = Vec::with_capacity(indexed_segments.len());
+        let mut group_start = 0;
+        while group_start < indexed_segments.len() {
+            let edge_key = indexed_segments[group_start].0;
+            let group_len = indexed_segments[group_start..]
+                .partition_point(|(candidate, _)| *candidate == edge_key);
+            if group_len == 1 {
+                boundary_segments.push(indexed_segments[group_start].1);
             }
-            boundary_segments.push(IndexedEarthworkBoundarySegment {
-                segment_index,
-                segment,
-                start_key,
-                end_key,
-            });
+            group_start += group_len;
         }
         Self::assemble_earthwork_boundary_segment_loops(boundary_segments)
     }
@@ -101,50 +107,32 @@ impl RoadSurfaceSystem {
                 .then(a.segment_index.cmp(&b.segment_index))
         });
 
-        let mut adjacency = BTreeMap::<EarthworkBoundaryPointKey, Vec<usize>>::new();
+        let mut adjacency = Vec::with_capacity(boundary_segments.len() * 2);
         for (index, segment) in boundary_segments.iter().enumerate() {
-            adjacency.entry(segment.start_key).or_default().push(index);
-            adjacency.entry(segment.end_key).or_default().push(index);
+            adjacency.push((segment.start_key, segment.end_key, index));
+            adjacency.push((segment.end_key, segment.start_key, index));
         }
-        for (point_key, indices) in adjacency.iter_mut() {
-            indices.sort_by(|a, b| {
-                let segment_a = &boundary_segments[*a];
-                let segment_b = &boundary_segments[*b];
-                let other_a = if segment_a.start_key == *point_key {
-                    segment_a.end_key
-                } else {
-                    segment_a.start_key
-                };
-                let other_b = if segment_b.start_key == *point_key {
-                    segment_b.end_key
-                } else {
-                    segment_b.start_key
-                };
-                other_a
-                    .cmp(&other_b)
-                    .then(segment_a.segment_index.cmp(&segment_b.segment_index))
-            });
-        }
+        adjacency.sort_unstable();
 
-        let mut used = BTreeSet::<usize>::new();
+        let mut used = vec![false; boundary_segments.len()];
         let mut loops = Vec::new();
         for start_index in 0..boundary_segments.len() {
-            if used.contains(&start_index) {
+            if used[start_index] {
                 continue;
             }
             let start_key = boundary_segments[start_index].start_key;
             let mut current_key = boundary_segments[start_index].end_key;
             let mut loop_segments = vec![boundary_segments[start_index].segment];
-            used.insert(start_index);
+            used[start_index] = true;
 
             while current_key != start_key {
-                let Some(next_indices) = adjacency.get(&current_key) else {
-                    break;
-                };
-                let Some(next_index) = next_indices
+                let first = adjacency.partition_point(|entry| entry.0 < current_key);
+                let last =
+                    first + adjacency[first..].partition_point(|entry| entry.0 == current_key);
+                let Some(next_index) = adjacency[first..last]
                     .iter()
-                    .copied()
-                    .find(|candidate| !used.contains(candidate))
+                    .map(|entry| entry.2)
+                    .find(|&candidate| !used[candidate])
                 else {
                     break;
                 };
@@ -162,7 +150,7 @@ impl RoadSurfaceSystem {
                     )
                 };
                 loop_segments.push(segment);
-                used.insert(next_index);
+                used[next_index] = true;
                 current_key = next_key;
             }
 

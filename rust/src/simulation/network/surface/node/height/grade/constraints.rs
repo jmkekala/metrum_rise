@@ -1,6 +1,167 @@
 //! Shared seam and candidate constraints for node grade normalization.
 
 use super::*;
+use crate::simulation::network::surface::band_semantics::{
+    raised_step_kinds_can_contact, raised_step_requires_exact_constraint_span,
+};
+use std::collections::BTreeMap;
+
+#[derive(Default)]
+pub(super) struct NodeGradePointConstraintMatches {
+    shared_height_raised_step: Vec<usize>,
+    material_height: Vec<usize>,
+    explicit_height_split: Vec<usize>,
+}
+
+pub(super) struct NodeGradeRegionConstraintIndex {
+    matches_by_point: BTreeMap<SurfaceXzKey, NodeGradePointConstraintMatches>,
+}
+
+impl NodeGradeRegionConstraintIndex {
+    pub(super) fn from_region(region: &NodeHeightedRegion) -> Self {
+        let mut matches_by_point = region
+            .shape
+            .iter()
+            .flat_map(|contour| contour.iter())
+            .map(|vertex| {
+                (
+                    height_segment_point_key(vertex.point_xz),
+                    NodeGradePointConstraintMatches::default(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        for (constraint_index, constraint) in region.seam_constraints.iter().enumerate() {
+            let is_shared_height_raised_step = shared_height_raised_step_constraint(constraint);
+            let start = height_segment_point_key(constraint.start_xz);
+            let end = height_segment_point_key(constraint.end_xz);
+            let min_x = start.x_key().min(end.x_key());
+            let max_x = start.x_key().max(end.x_key());
+            let min_z = start.z_key().min(end.z_key());
+            let max_z = start.z_key().max(end.z_key());
+            let range_start = SurfaceXzKey::from_raw_keys(min_x, i64::MIN);
+            let range_end = SurfaceXzKey::from_raw_keys(max_x, i64::MAX);
+            for (&point, matches) in matches_by_point.range_mut(range_start..=range_end) {
+                if point.z_key() < min_z
+                    || point.z_key() > max_z
+                    || !key_lies_on_segment(point, start, end)
+                {
+                    continue;
+                }
+                if is_shared_height_raised_step {
+                    matches.shared_height_raised_step.push(constraint_index);
+                }
+                if constraint.constrains_shared_height {
+                    matches.material_height.push(constraint_index);
+                }
+                if explicit_height_split_constraint(constraint) {
+                    matches.explicit_height_split.push(constraint_index);
+                }
+            }
+        }
+
+        for (&point, matches) in &mut matches_by_point {
+            matches
+                .shared_height_raised_step
+                .sort_unstable_by_key(|&constraint_index| {
+                    let constraint = &region.seam_constraints[constraint_index];
+                    (
+                        constraint.priority_key(),
+                        constraint.constraint_index,
+                        SurfaceXzKey::from_road_xz(constraint.start_xz),
+                        SurfaceXzKey::from_road_xz(constraint.end_xz),
+                    )
+                });
+            matches
+                .shared_height_raised_step
+                .dedup_by_key(|constraint_index| {
+                    let constraint = &region.seam_constraints[*constraint_index];
+                    (
+                        constraint.constraint_index,
+                        canonical_explicit_seam_owner_pair(
+                            constraint.owner,
+                            constraint.opposite_owner,
+                        ),
+                    )
+                });
+            matches.material_height.sort_by_key(|&constraint_index| {
+                let constraint = &region.seam_constraints[constraint_index];
+                (
+                    constraint.priority_key(),
+                    constraint.constraint_index,
+                    SurfaceXzKey::from_road_xz(constraint.start_xz),
+                    SurfaceXzKey::from_road_xz(constraint.end_xz),
+                )
+            });
+            matches.material_height.dedup_by_key(|constraint_index| {
+                NodeGradeExplicitSeamHeightKey::new(
+                    point,
+                    &region.seam_constraints[*constraint_index],
+                )
+            });
+            matches
+                .explicit_height_split
+                .sort_unstable_by_key(|&constraint_index| {
+                    let constraint = &region.seam_constraints[constraint_index];
+                    (
+                        constraint.priority_key(),
+                        SurfaceXzKey::from_road_xz(constraint.start_xz),
+                        SurfaceXzKey::from_road_xz(constraint.end_xz),
+                    )
+                });
+            matches
+                .explicit_height_split
+                .dedup_by_key(|constraint_index| {
+                    let constraint = &region.seam_constraints[*constraint_index];
+                    (
+                        constraint.constraint_index,
+                        constraint.owner,
+                        constraint.opposite_owner,
+                        SurfaceXzKey::from_road_xz(constraint.start_xz),
+                        SurfaceXzKey::from_road_xz(constraint.end_xz),
+                    )
+                });
+        }
+
+        Self { matches_by_point }
+    }
+
+    fn matches(&self, point_xz: RoadVec2) -> Option<&NodeGradePointConstraintMatches> {
+        self.matches_by_point
+            .get(&height_segment_point_key(point_xz))
+    }
+
+    pub(super) fn shared_height_raised_step_constraint_indices(
+        &self,
+        point_xz: RoadVec2,
+    ) -> &[usize] {
+        self.matches(point_xz)
+            .map_or(&[], |matches| matches.shared_height_raised_step.as_slice())
+    }
+
+    pub(super) fn material_height_constraint_indices(&self, point_xz: RoadVec2) -> &[usize] {
+        self.matches(point_xz)
+            .map_or(&[], |matches| matches.material_height.as_slice())
+    }
+
+    pub(super) fn explicit_height_split_constraint_indices(&self, point_xz: RoadVec2) -> &[usize] {
+        self.matches(point_xz)
+            .map_or(&[], |matches| matches.explicit_height_split.as_slice())
+    }
+}
+
+fn shared_height_raised_step_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
+    if !constraint.is_material_transition {
+        return false;
+    }
+    let (Some(owner), Some(opposite_owner)) =
+        canonical_explicit_seam_owner_pair(constraint.owner, constraint.opposite_owner)
+    else {
+        return false;
+    };
+    raised_step_kinds_can_contact(owner.kind(), opposite_owner.kind())
+        && !raised_step_requires_exact_constraint_span(owner.kind(), opposite_owner.kind())
+}
 
 impl NodeGradeExplicitSeamHeightKey {
     pub(crate) fn new(point: SurfaceXzKey, constraint: &NodeRegionSeamConstraint) -> Self {
@@ -29,6 +190,7 @@ impl SameMaterialSharedEdgeCandidate {
         kind: RoadSurfaceBandKind,
         owner: NodeBandOwner,
         seam_constraints: &[NodeRegionSeamConstraint],
+        constraint_index: &NodeGradeRegionConstraintIndex,
         start: &NodeHeightedVertex,
         end: &NodeHeightedVertex,
     ) -> Option<(SameMaterialSharedEdgeKey, Self)> {
@@ -37,7 +199,12 @@ impl SameMaterialSharedEdgeCandidate {
         if start_key == end_key {
             return None;
         }
-        if edge_has_explicit_height_split(start.point_xz, end.point_xz, seam_constraints) {
+        if edge_has_explicit_height_split(
+            start.point_xz,
+            end.point_xz,
+            seam_constraints,
+            constraint_index,
+        ) {
             return None;
         }
         let mut start_height_m = start.height_m;
@@ -47,13 +214,13 @@ impl SameMaterialSharedEdgeCandidate {
         let mut start_source_provenance = start.source_provenance;
         let mut end_source_provenance = end.source_provenance;
         let mut start_has_explicit_shared_material_seam =
-            vertex_has_explicit_shared_material_seam(start, seam_constraints);
+            vertex_has_explicit_shared_material_seam(start, seam_constraints, constraint_index);
         let mut end_has_explicit_shared_material_seam =
-            vertex_has_explicit_shared_material_seam(end, seam_constraints);
+            vertex_has_explicit_shared_material_seam(end, seam_constraints, constraint_index);
         let mut start_has_explicit_height_split =
-            vertex_has_explicit_height_split(start, seam_constraints);
+            vertex_has_explicit_height_split(start, constraint_index);
         let mut end_has_explicit_height_split =
-            vertex_has_explicit_height_split(end, seam_constraints);
+            vertex_has_explicit_height_split(end, constraint_index);
         if end_key < start_key {
             std::mem::swap(&mut start_key, &mut end_key);
             std::mem::swap(&mut start_height_m, &mut end_height_m);
@@ -189,59 +356,58 @@ pub(super) fn same_material_vertex_height_candidate_key(
 pub(super) fn vertex_has_explicit_shared_material_seam(
     vertex: &NodeHeightedVertex,
     seam_constraints: &[NodeRegionSeamConstraint],
+    constraint_index: &NodeGradeRegionConstraintIndex,
 ) -> bool {
-    material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
-        .into_iter()
-        .any(|constraint| constraint.is_material_transition)
+    constraint_index
+        .material_height_constraint_indices(vertex.point_xz)
+        .iter()
+        .any(|&index| seam_constraints[index].is_material_transition)
 }
 
 pub(super) fn vertex_has_explicit_height_split(
     vertex: &NodeHeightedVertex,
-    seam_constraints: &[NodeRegionSeamConstraint],
+    constraint_index: &NodeGradeRegionConstraintIndex,
 ) -> bool {
-    !explicit_height_split_constraints_for_vertex(vertex.point_xz, seam_constraints).is_empty()
+    !constraint_index
+        .explicit_height_split_constraint_indices(vertex.point_xz)
+        .is_empty()
 }
 
 pub(super) fn edge_has_explicit_height_split(
     start_xz: RoadVec2,
     end_xz: RoadVec2,
     seam_constraints: &[NodeRegionSeamConstraint],
+    constraint_index: &NodeGradeRegionConstraintIndex,
 ) -> bool {
-    seam_constraints.iter().any(|constraint| {
-        explicit_height_split_constraint(constraint)
-            && point_lies_on_height_segment(start_xz, constraint.start_xz, constraint.end_xz)
-            && point_lies_on_height_segment(end_xz, constraint.start_xz, constraint.end_xz)
-    })
+    constraint_index
+        .explicit_height_split_constraint_indices(start_xz)
+        .iter()
+        .any(|&index| {
+            let constraint = &seam_constraints[index];
+            point_lies_on_height_segment(end_xz, constraint.start_xz, constraint.end_xz)
+        })
 }
 
-pub(super) fn explicit_height_split_constraints_for_vertex(
+pub(super) fn indexed_material_height_constraints_for_vertex<'a>(
     point_xz: RoadVec2,
-    seam_constraints: &[NodeRegionSeamConstraint],
-) -> Vec<&NodeRegionSeamConstraint> {
-    let mut matches = seam_constraints
+    constraints: &'a [NodeRegionSeamConstraint],
+    constraint_index: &'a NodeGradeRegionConstraintIndex,
+) -> impl Iterator<Item = &'a NodeRegionSeamConstraint> + 'a {
+    constraint_index
+        .material_height_constraint_indices(point_xz)
         .iter()
-        .filter(|constraint| explicit_height_split_constraint(constraint))
-        .filter(|constraint| {
-            point_lies_on_height_segment(point_xz, constraint.start_xz, constraint.end_xz)
-        })
-        .collect::<Vec<_>>();
-    matches.sort_unstable_by_key(|constraint| {
-        (
-            constraint.priority_key(),
-            SurfaceXzKey::from_road_xz(constraint.start_xz),
-            SurfaceXzKey::from_road_xz(constraint.end_xz),
-        )
-    });
-    matches.dedup_by_key(|constraint| {
-        (
-            constraint.constraint_index,
-            constraint.owner,
-            constraint.opposite_owner,
-            SurfaceXzKey::from_road_xz(constraint.start_xz),
-            SurfaceXzKey::from_road_xz(constraint.end_xz),
-        )
-    });
-    matches
+        .map(|&index| &constraints[index])
+}
+
+pub(super) fn indexed_explicit_height_split_constraints_for_vertex<'a>(
+    point_xz: RoadVec2,
+    constraints: &'a [NodeRegionSeamConstraint],
+    constraint_index: &'a NodeGradeRegionConstraintIndex,
+) -> impl Iterator<Item = &'a NodeRegionSeamConstraint> + 'a {
+    constraint_index
+        .explicit_height_split_constraint_indices(point_xz)
+        .iter()
+        .map(|&index| &constraints[index])
 }
 
 fn explicit_height_split_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
@@ -270,6 +436,10 @@ pub(super) fn point_lies_on_height_segment(
         SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(start)),
         SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(end)),
     )
+}
+
+fn height_segment_point_key(point: RoadVec2) -> SurfaceXzKey {
+    SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point))
 }
 
 pub(super) fn push_unique_same_material_candidate<K: Ord>(

@@ -180,13 +180,9 @@ impl RoadSurfaceSystem {
                 chunk_max.z as f32,
             );
 
-            for write in result.writes {
-                terrain.set_visual_height_at_grid_unmarked(
-                    write.grid_x,
-                    write.grid_z,
-                    write.height_sample,
-                );
-            }
+            terrain.set_visual_heights_at_grid_unmarked(&result.writes, |write| {
+                (write.grid_x, write.grid_z, write.height_sample)
+            });
             stats.add_assign(result.stats);
         }
         let apply_ms = apply_start

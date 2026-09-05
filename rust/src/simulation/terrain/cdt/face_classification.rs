@@ -82,12 +82,38 @@ pub(super) fn terrain_triangle_is_road_owned(
     )
 }
 
+pub(super) fn constrained_cdt_face_is_road_owned(
+    points: [TerrainCdtVertex; 3],
+    road_loops: &[CanonicalTerrainCdtRoadLoop],
+) -> bool {
+    let triangle_bounds = triangle_xz_bounds(points);
+    if !road_loops
+        .iter()
+        .any(|road_loop| bounds_overlap_loop(triangle_bounds, road_loop))
+    {
+        return false;
+    }
+
+    // Every road-loop boundary is a CDT constraint, so a valid face cannot cross between road and
+    // terrain ownership. Its centroid therefore classifies the whole face, including the exact
+    // side of a seam constraint. Builder post-processing still rejects faces crossing any
+    // constraint that Spade did not preserve.
+    point_inside_any_road_footprint(centroid(points), road_loops)
+}
+
 fn terrain_triangle_overlaps_any_road_footprint(
     triangle: [usize; 3],
     points: [TerrainCdtVertex; 3],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> bool {
+    let triangle_bounds = triangle_xz_bounds(points);
+    if !road_loops
+        .iter()
+        .any(|road_loop| bounds_overlap_loop(triangle_bounds, road_loop))
+    {
+        return false;
+    }
     if point_strictly_inside_any_road_footprint(centroid(points), road_loops) {
         return true;
     }
@@ -100,7 +126,6 @@ fn terrain_triangle_overlaps_any_road_footprint(
     if triangle_edges_enter_road_footprint(triangle, points, road_constraint_sources, road_loops) {
         return true;
     }
-    let triangle_bounds = triangle_xz_bounds(points);
     for road_loop in road_loops {
         if !bounds_overlap_loop(triangle_bounds, road_loop) {
             continue;
@@ -192,17 +217,18 @@ fn segment_interior_enters_road_footprint(
 
 fn sort_dedup_segment_parameters(parameters: &mut Vec<f64>) {
     parameters.sort_by(|a, b| a.total_cmp(b));
-    let mut deduped = Vec::with_capacity(parameters.len());
-    for &parameter in parameters.iter() {
-        if deduped
-            .last()
-            .is_some_and(|last: &f64| (parameter - *last).abs() <= CDT_EPSILON_M)
-        {
+    if parameters.len() < 2 {
+        return;
+    }
+    let mut write_index = 1;
+    for read_index in 1..parameters.len() {
+        if (parameters[read_index] - parameters[write_index - 1]).abs() <= CDT_EPSILON_M {
             continue;
         }
-        deduped.push(parameter);
+        parameters[write_index] = parameters[read_index];
+        write_index += 1;
     }
-    *parameters = deduped;
+    parameters.truncate(write_index);
 }
 
 pub(super) fn point_strictly_inside_any_road_footprint(

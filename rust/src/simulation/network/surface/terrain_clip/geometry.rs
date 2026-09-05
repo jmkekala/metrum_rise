@@ -11,15 +11,16 @@ use super::super::{
 use super::model::{
     OverlaySegmentParameter, RoadSurfaceTerrainClipLoop, TerrainClipContourCompactError,
 };
+use crate::simulation::core::round_f64_to_i64;
 
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 
 impl RoadSurfaceSystem {
     pub(super) fn overlay_contours_from_terrain_clip_boundary_loops(
-        boundary_loops: &[RoadSurfaceTerrainClipLoop],
+        boundary_loops: &[&RoadSurfaceTerrainClipLoop],
     ) -> Vec<NodeOverlayContour> {
         let mut contours = Vec::new();
-        for boundary_loop in boundary_loops {
+        for &boundary_loop in boundary_loops {
             let contour = Self::overlay_contour_from_world_points(&boundary_loop.points_world);
             if Self::overlay_contour_area(&contour).abs() > NODE_OVERLAY_MIN_AREA_M2 {
                 contours.push(contour);
@@ -186,7 +187,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn overlay_height_key(height_m: f64) -> i64 {
-        (height_m * NODE_OVERLAY_SCALE).round() as i64
+        round_f64_to_i64(height_m * NODE_OVERLAY_SCALE)
     }
 
     pub(super) fn overlay_heights_equal(a: f64, b: f64) -> bool {

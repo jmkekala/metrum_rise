@@ -3,10 +3,12 @@
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{
-    RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
+    RoadLaneSurfaceQuery, RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey,
 };
+use crate::{debug, debug_log};
 use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use super::{NetworkMeshData, TransitRenderer};
 
@@ -82,12 +84,19 @@ impl RoadRenderer {
         road_surface: &RoadSurfaceSystem,
         target_chunks: &BTreeSet<SurfaceChunkKey>,
     ) -> BTreeMap<SurfaceChunkKey, NetworkMeshData> {
+        let road_debug = debug::category_enabled("road");
+        let total_start = road_debug.then(Instant::now);
+        let coverage_start = road_debug.then(Instant::now);
         let compiled_surface = standard_surface::build_compiled_surface_coverage_for_chunks(
             graph,
             road_surface,
             terrain,
             target_chunks,
         );
+        let coverage_ms = coverage_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let lane_sync_start = road_debug.then(Instant::now);
         lane_system.sync_heights_to_visible_surface_for_owners(
             graph,
             terrain,
@@ -95,6 +104,9 @@ impl RoadRenderer {
             &compiled_surface.edge_indices,
             &compiled_surface.node_ids,
         );
+        let lane_sync_ms = lane_sync_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
 
         let (chunk_origin_x_m, chunk_origin_z_m) = road_surface.chunk_origin_m();
         let mut mesh = NetworkMeshData::new_chunk_partitioned(
@@ -103,6 +115,7 @@ impl RoadRenderer {
             chunk_origin_z_m,
             target_chunks.clone(),
         );
+        let crosswalk_start = road_debug.then(Instant::now);
         crosswalks::emit_crosswalk_markings(
             &mut mesh,
             graph,
@@ -111,6 +124,10 @@ impl RoadRenderer {
             road_surface,
             &compiled_surface,
         );
+        let crosswalk_ms = crosswalk_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let surface_start = road_debug.then(Instant::now);
         standard_surface::emit_compiled_surface_mesh(
             &mut mesh,
             graph,
@@ -118,6 +135,10 @@ impl RoadRenderer {
             terrain,
             &compiled_surface,
         );
+        let surface_ms = surface_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let marking_start = road_debug.then(Instant::now);
         standard_surface::emit_compiled_lane_markings(
             &mut mesh,
             graph,
@@ -126,7 +147,33 @@ impl RoadRenderer {
             terrain,
             &compiled_surface,
         );
-        mesh.into_partitioned_chunks()
+        let marking_ms = marking_start
+            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0);
+        let chunks = mesh.into_partitioned_chunks();
+        if road_debug {
+            debug_log!(
+                "road",
+                "road_mesh_generate target_chunks={} covered_edges={} covered_nodes={} output_chunks={} vertices={} coverage_ms={:.3} lane_sync_ms={:.3} crosswalk_ms={:.3} surface_ms={:.3} marking_ms={:.3} total_ms={:.3}",
+                target_chunks.len(),
+                compiled_surface.edge_indices.len(),
+                compiled_surface.node_ids.len(),
+                chunks.len(),
+                chunks
+                    .values()
+                    .map(NetworkMeshData::vertex_count)
+                    .sum::<usize>(),
+                coverage_ms,
+                lane_sync_ms,
+                crosswalk_ms,
+                surface_ms,
+                marking_ms,
+                total_start
+                    .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                    .unwrap_or(0.0)
+            );
+        }
+        chunks
     }
 }
 

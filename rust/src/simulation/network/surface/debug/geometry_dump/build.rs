@@ -52,7 +52,7 @@ impl RoadSurfaceSystem {
                 let sections = self
                     .compiled_sections
                     .get(&edge_idx)
-                    .map(Vec::as_slice)
+                    .map(|sections| sections.as_slice())
                     .unwrap_or(&[]);
                 let summary = self.road_cut_fill_summary(terrain, sections);
                 format!(
@@ -248,7 +248,7 @@ impl RoadSurfaceSystem {
         let sections = self
             .compiled_sections
             .get(&edge_idx)
-            .map(Vec::as_slice)
+            .map(|sections| sections.as_slice())
             .unwrap_or(&[]);
         let surface_chunks = self
             .surface_span_chunks

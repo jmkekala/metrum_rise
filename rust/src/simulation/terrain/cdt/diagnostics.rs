@@ -24,14 +24,11 @@ pub(super) struct TerrainCdtDiagnostics {
     pub(super) retaining_wall_face_samples: Vec<TerrainCdtFaceSample>,
 }
 
-pub(super) fn emitted_triangle_edges(triangles: &[[usize; 3]]) -> HashSet<(usize, usize)> {
-    let mut edges = HashSet::new();
-    for [a, b, c] in triangles {
-        edges.insert(normalize_edge(*a, *b));
-        edges.insert(normalize_edge(*b, *c));
-        edges.insert(normalize_edge(*c, *a));
-    }
-    edges
+#[derive(Clone, Copy)]
+struct TerrainFaceMetrics {
+    max_y_delta_m: f32,
+    max_slope_ratio: f32,
+    longest_edge_m: f32,
 }
 
 pub(super) fn terrain_face_diagnostics(
@@ -43,8 +40,8 @@ pub(super) fn terrain_face_diagnostics(
     let mut diagnostics = TerrainCdtDiagnostics {
         #[cfg(test)]
         emitted_faces: Vec::new(),
-        terrain_triangles: Vec::new(),
-        terrain_triangle_sources: Vec::new(),
+        terrain_triangles: Vec::with_capacity(triangles.len()),
+        terrain_triangle_sources: Vec::with_capacity(triangles.len()),
         retaining_wall_triangles: Vec::new(),
         retaining_wall_triangle_sources: Vec::new(),
         max_face_y_delta_m: 0.0,
@@ -59,6 +56,11 @@ pub(super) fn terrain_face_diagnostics(
         road_seam_face_samples: Vec::new(),
         retaining_wall_face_samples: Vec::new(),
     };
+    let mut road_constraint_vertices = vec![false; vertices.len()];
+    for edge in road_constraint_sources.keys() {
+        road_constraint_vertices[edge[0]] = true;
+        road_constraint_vertices[edge[1]] = true;
+    }
 
     for triangle in triangles {
         let points = [
@@ -66,38 +68,42 @@ pub(super) fn terrain_face_diagnostics(
             vertices[triangle[1]],
             vertices[triangle[2]],
         ];
-        let sources = terrain_triangle_road_sources(triangle, road_constraint_sources);
+        let sources = terrain_triangle_road_sources(
+            triangle,
+            road_constraint_sources,
+            &road_constraint_vertices,
+        );
         let touches_road_seam = !sources.is_empty();
-        let kind = classify_terrain_tie_in_face(points, &sources, retaining_wall_required_sources);
-        let metrics = terrain_face_sample(points, kind, sources);
+        let metrics = terrain_face_metrics(points);
+        let kind = classify_terrain_tie_in_face(
+            &sources,
+            retaining_wall_required_sources,
+            metrics.max_slope_ratio,
+        );
         #[cfg(test)]
         diagnostics.emitted_faces.push(TerrainCdtEmittedFace {
             triangle: *triangle,
             kind,
-            sources: metrics.sources.clone(),
+            sources: sources.clone(),
         });
         diagnostics.max_face_y_delta_m = diagnostics.max_face_y_delta_m.max(metrics.max_y_delta_m);
         diagnostics.max_face_slope_ratio = diagnostics
             .max_face_slope_ratio
             .max(metrics.max_slope_ratio);
-        diagnostics.longest_triangle_edge_m = diagnostics.longest_triangle_edge_m.max(
-            edge_length_xz_m(points[0], points[1])
-                .max(edge_length_xz_m(points[1], points[2]))
-                .max(edge_length_xz_m(points[2], points[0])) as f32,
-        );
+        diagnostics.longest_triangle_edge_m = diagnostics
+            .longest_triangle_edge_m
+            .max(metrics.longest_edge_m);
 
         match kind {
             TerrainCdtTieInKind::OrdinaryTerrain => {
                 diagnostics.terrain_triangles.push(*triangle);
-                diagnostics
-                    .terrain_triangle_sources
-                    .push(metrics.sources.clone());
+                diagnostics.terrain_triangle_sources.push(sources.clone());
             }
             TerrainCdtTieInKind::RetainingWall => {
                 diagnostics.retaining_wall_triangles.push(*triangle);
                 diagnostics
                     .retaining_wall_triangle_sources
-                    .push(metrics.sources.clone());
+                    .push(sources.clone());
                 diagnostics.retaining_wall_faces += 1;
                 diagnostics.retaining_wall_max_y_delta_m = diagnostics
                     .retaining_wall_max_y_delta_m
@@ -105,15 +111,19 @@ pub(super) fn terrain_face_diagnostics(
                 diagnostics.retaining_wall_max_slope_ratio = diagnostics
                     .retaining_wall_max_slope_ratio
                     .max(metrics.max_slope_ratio);
-                insert_road_seam_face_sample(
-                    &mut diagnostics.retaining_wall_face_samples,
-                    metrics.clone(),
-                );
             }
         }
 
         if !touches_road_seam {
             continue;
+        }
+
+        let sample = terrain_face_sample(points, kind, sources, metrics);
+        if kind == TerrainCdtTieInKind::RetainingWall {
+            insert_road_seam_face_sample(
+                &mut diagnostics.retaining_wall_face_samples,
+                sample.clone(),
+            );
         }
 
         diagnostics.road_seam_faces += 1;
@@ -123,7 +133,7 @@ pub(super) fn terrain_face_diagnostics(
         diagnostics.road_seam_max_slope_ratio = diagnostics
             .road_seam_max_slope_ratio
             .max(metrics.max_slope_ratio);
-        insert_road_seam_face_sample(&mut diagnostics.road_seam_face_samples, metrics);
+        insert_road_seam_face_sample(&mut diagnostics.road_seam_face_samples, sample);
     }
 
     diagnostics
@@ -132,7 +142,14 @@ pub(super) fn terrain_face_diagnostics(
 fn terrain_triangle_road_sources(
     triangle: &[usize; 3],
     road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+    road_constraint_vertices: &[bool],
 ) -> Vec<TerrainCdtRoadBoundarySource> {
+    if !triangle_edges(triangle)
+        .iter()
+        .any(|edge| road_constraint_vertices[edge.0] && road_constraint_vertices[edge.1])
+    {
+        return Vec::new();
+    }
     let mut sources = triangle_edges(triangle)
         .iter()
         .filter_map(|edge| {
@@ -146,9 +163,9 @@ fn terrain_triangle_road_sources(
 }
 
 fn classify_terrain_tie_in_face(
-    points: [TerrainCdtVertex; 3],
     sources: &[TerrainCdtRoadBoundarySource],
     retaining_wall_required_sources: &[TerrainCdtRoadBoundarySource],
+    max_slope_ratio: f32,
 ) -> TerrainCdtTieInKind {
     if sources.is_empty() {
         return TerrainCdtTieInKind::OrdinaryTerrain;
@@ -162,8 +179,7 @@ fn classify_terrain_tie_in_face(
     ) {
         return TerrainCdtTieInKind::RetainingWall;
     }
-    let metrics = terrain_face_sample(points, TerrainCdtTieInKind::OrdinaryTerrain, Vec::new());
-    if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
+    if max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
         TerrainCdtTieInKind::RetainingWall
     } else {
         TerrainCdtTieInKind::OrdinaryTerrain
@@ -230,23 +246,64 @@ pub(super) fn widening_tie_in_sample_against_any_road_loop(
     sample: TerrainCdtVertex,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> Option<TerrainCdtTieInSample> {
-    road_loops
-        .iter()
-        .filter_map(|road_loop| widening_tie_in_sample(sample, road_loop))
-        .max_by(|a, b| {
-            a.slope_ratio
-                .total_cmp(&b.slope_ratio)
-                .then_with(|| a.height_delta_m.total_cmp(&b.height_delta_m))
-                .then_with(|| b.distance_m.total_cmp(&a.distance_m))
-        })
+    let mut best: Option<TerrainCdtTieInSample> = None;
+    for road_loop in road_loops {
+        let Some(candidate) = widening_tie_in_sample(sample, road_loop) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|current| {
+            candidate
+                .slope_ratio
+                .total_cmp(&current.slope_ratio)
+                .then_with(|| candidate.height_delta_m.total_cmp(&current.height_delta_m))
+                .then_with(|| current.distance_m.total_cmp(&candidate.distance_m))
+                .is_gt()
+        }) {
+            best = Some(candidate);
+        }
+    }
+    best
 }
 
 pub(super) fn widening_tie_in_sample(
     sample: TerrainCdtVertex,
     road_loop: &CanonicalTerrainCdtRoadLoop,
 ) -> Option<TerrainCdtTieInSample> {
+    let max_height_delta_m = (sample.height_m - road_loop.min_height_m)
+        .abs()
+        .max((sample.height_m - road_loop.max_height_m).abs());
+    if max_height_delta_m <= MIN_TIE_IN_HEIGHT_DELTA_M {
+        return None;
+    }
+    let bounds_dx = if sample.x < road_loop.min_x {
+        road_loop.min_x - sample.x
+    } else if sample.x > road_loop.max_x {
+        sample.x - road_loop.max_x
+    } else {
+        0.0
+    };
+    let bounds_dz = if sample.z < road_loop.min_z {
+        road_loop.min_z - sample.z
+    } else if sample.z > road_loop.max_z {
+        sample.z - road_loop.max_z
+    } else {
+        0.0
+    };
+    let maximum_required_distance_m =
+        f64::from(max_height_delta_m / MAX_TERRAIN_TIE_IN_SLOPE_RATIO.max(f32::EPSILON));
+    let maximum_candidate_distance_m = maximum_required_distance_m - CDT_EPSILON_M;
+    if maximum_candidate_distance_m <= 0.0
+        || bounds_dx * bounds_dx + bounds_dz * bounds_dz
+            >= maximum_candidate_distance_m * maximum_candidate_distance_m
+    {
+        return None;
+    }
     let (distance_m, seam_point, seam_source) =
-        closest_sourced_loop_edge_distance_point_and_source(sample, road_loop)?;
+        closest_sourced_loop_edge_distance_point_and_source(
+            sample,
+            road_loop,
+            maximum_required_distance_m,
+        )?;
     let height_delta_m = (sample.height_m - seam_point.height_m).abs();
     if height_delta_m <= MIN_TIE_IN_HEIGHT_DELTA_M {
         return None;
@@ -279,54 +336,69 @@ pub(super) fn widening_tie_in_sample(
 fn closest_sourced_loop_edge_distance_point_and_source(
     point: TerrainCdtVertex,
     road_loop: &CanonicalTerrainCdtRoadLoop,
+    maximum_distance_m: f64,
 ) -> Option<(f64, TerrainCdtVertex, TerrainCdtRoadBoundarySource)> {
-    if road_loop.vertices.len() < 2 {
+    if road_loop.sourced_edges.is_empty() {
         return None;
     }
 
-    let mut closest_distance_m = f64::INFINITY;
+    let mut closest_distance_m = maximum_distance_m;
     let mut closest_point = TerrainCdtVertex::new(0.0, 0.0, 0.0);
     let mut closest_source = None;
-    for index in 0..road_loop.vertices.len() {
-        let Some(source) = road_loop.edge_sources.get(index).copied().flatten() else {
-            continue;
+    for edge in &road_loop.sourced_edges {
+        let bounds_dx = if point.x < edge.min_x {
+            edge.min_x - point.x
+        } else if point.x > edge.max_x {
+            point.x - edge.max_x
+        } else {
+            0.0
         };
-        let start = road_loop.vertices[index];
-        let end = road_loop.vertices[(index + 1) % road_loop.vertices.len()];
-        let segment_x = end.x - start.x;
-        let segment_z = end.z - start.z;
-        let segment_len_sq = segment_x * segment_x + segment_z * segment_z;
-        let t = if segment_len_sq <= CDT_EPSILON_M * CDT_EPSILON_M {
+        let bounds_dz = if point.z < edge.min_z {
+            edge.min_z - point.z
+        } else if point.z > edge.max_z {
+            point.z - edge.max_z
+        } else {
+            0.0
+        };
+        let comparison_distance_m = closest_distance_m + CDT_EPSILON_M;
+        if bounds_dx * bounds_dx + bounds_dz * bounds_dz
+            > comparison_distance_m * comparison_distance_m
+        {
+            continue;
+        }
+        let t = if edge.length_squared_m <= CDT_EPSILON_M * CDT_EPSILON_M {
             0.0
         } else {
-            (((point.x - start.x) * segment_x + (point.z - start.z) * segment_z) / segment_len_sq)
+            (((point.x - edge.start_x) * edge.delta_x + (point.z - edge.start_z) * edge.delta_z)
+                / edge.length_squared_m)
                 .clamp(0.0, 1.0)
         };
-        let closest_x = start.x + segment_x * t;
-        let closest_z = start.z + segment_z * t;
+        let closest_x = edge.start_x + edge.delta_x * t;
+        let closest_z = edge.start_z + edge.delta_z * t;
         let dx = point.x - closest_x;
         let dz = point.z - closest_z;
-        let distance_m = (dx * dx + dz * dz).sqrt();
-        let height_m =
-            (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32;
+        let distance_squared_m = dx * dx + dz * dz;
+        if distance_squared_m > comparison_distance_m * comparison_distance_m {
+            continue;
+        }
+        let distance_m = distance_squared_m.sqrt();
+        let height_m = (f64::from(edge.start_height_m) + f64::from(edge.delta_height_m) * t) as f32;
         let candidate_point = TerrainCdtVertex::new(closest_x, height_m, closest_z);
         if terrain_cdt_closer_loop_point(
             distance_m,
             candidate_point,
-            source,
+            edge.source,
             closest_distance_m,
             closest_point,
             closest_source,
         ) {
             closest_distance_m = distance_m;
             closest_point = candidate_point;
-            closest_source = Some(source);
+            closest_source = Some(edge.source);
         }
     }
 
-    closest_distance_m
-        .is_finite()
-        .then_some((closest_distance_m, closest_point, closest_source?))
+    Some((closest_distance_m, closest_point, closest_source?))
 }
 
 fn terrain_cdt_closer_loop_point(
@@ -367,6 +439,7 @@ fn terrain_face_sample(
     points: [TerrainCdtVertex; 3],
     kind: TerrainCdtTieInKind,
     sources: Vec<TerrainCdtRoadBoundarySource>,
+    metrics: TerrainFaceMetrics,
 ) -> TerrainCdtFaceSample {
     let mut min_x = points[0].x;
     let mut min_z = points[0].z;
@@ -374,8 +447,6 @@ fn terrain_face_sample(
     let mut max_z = points[0].z;
     let mut min_y_m = points[0].height_m;
     let mut max_y_m = points[0].height_m;
-    let mut max_y_delta_m = 0.0_f32;
-    let max_slope_ratio = terrain_face_plane_slope_ratio(points);
 
     for point in points {
         min_x = min_x.min(point.x);
@@ -384,13 +455,6 @@ fn terrain_face_sample(
         max_z = max_z.max(point.z);
         min_y_m = min_y_m.min(point.height_m);
         max_y_m = max_y_m.max(point.height_m);
-    }
-
-    for edge_index in 0..3 {
-        let start = points[edge_index];
-        let end = points[(edge_index + 1) % 3];
-        let y_delta_m = (end.height_m - start.height_m).abs();
-        max_y_delta_m = max_y_delta_m.max(y_delta_m);
     }
 
     TerrainCdtFaceSample {
@@ -404,8 +468,32 @@ fn terrain_face_sample(
         max_z,
         min_y_m,
         max_y_m,
-        max_y_delta_m,
-        max_slope_ratio,
+        max_y_delta_m: metrics.max_y_delta_m,
+        max_slope_ratio: metrics.max_slope_ratio,
+    }
+}
+
+fn terrain_face_metrics(points: [TerrainCdtVertex; 3]) -> TerrainFaceMetrics {
+    let min_height_m = points[0]
+        .height_m
+        .min(points[1].height_m)
+        .min(points[2].height_m);
+    let max_height_m = points[0]
+        .height_m
+        .max(points[1].height_m)
+        .max(points[2].height_m);
+    let edge_length_squared = |a: TerrainCdtVertex, b: TerrainCdtVertex| {
+        let dx = b.x - a.x;
+        let dz = b.z - a.z;
+        dx * dx + dz * dz
+    };
+    let longest_edge_squared_m = edge_length_squared(points[0], points[1])
+        .max(edge_length_squared(points[1], points[2]))
+        .max(edge_length_squared(points[2], points[0]));
+    TerrainFaceMetrics {
+        max_y_delta_m: max_height_m - min_height_m,
+        max_slope_ratio: terrain_face_plane_slope_ratio(points),
+        longest_edge_m: longest_edge_squared_m.sqrt() as f32,
     }
 }
 

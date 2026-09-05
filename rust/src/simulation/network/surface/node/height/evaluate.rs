@@ -38,10 +38,12 @@ pub(super) fn owner_scoped_outside_height_error(
 }
 
 impl NodeResolvedHeightAuthorityMap {
-    pub(super) fn from_ownership(
+    pub(super) fn from_ownership_with_points(
         ownership: &NodeBooleanOwnership,
         fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+        completeness_points: &[Vec<RoadVec2>],
     ) -> Result<Self, NodeHeightFieldError> {
+        debug_assert_eq!(ownership.owned_regions.len(), completeness_points.len());
         let provenance_by_key = height_carrier_provenance_by_key(ownership);
         let mut map = Self {
             heights_by_key: BTreeMap::new(),
@@ -49,9 +51,9 @@ impl NodeResolvedHeightAuthorityMap {
             claim_keys_by_context: BTreeMap::new(),
             canonical_key_by_context: BTreeMap::new(),
         };
-        for region in &ownership.owned_regions {
+        for (region, region_points) in ownership.owned_regions.iter().zip(completeness_points) {
             let field = height_field_for_region(region, fields)?;
-            for point_xz in pre_height_completeness_points(region) {
+            for &point_xz in region_points {
                 let height = field
                     .evaluate_authorized_height(region.owner, region.claim_priority, point_xz)
                     .map_err(|error| {
@@ -216,22 +218,27 @@ fn height_carrier_provenance_by_key(
 }
 
 pub(super) fn pre_height_completeness_points(region: &NodeBooleanOwnedRegion) -> Vec<RoadVec2> {
-    let mut points_by_key = BTreeMap::new();
+    let mut points_by_key = Vec::new();
     for point in region
         .shape
         .iter()
         .flat_map(|contour| contour.iter().copied())
     {
         let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
-        points_by_key.insert(NodeHeightPointKey::from_point(point_xz), point_xz);
+        points_by_key.push((NodeHeightPointKey::from_point(point_xz), point_xz));
     }
     for constraint in &region.seam_constraints {
         for point_xz in [constraint.start_xz, constraint.end_xz] {
             let point_xz = quantize_road_vec2_to_overlay_grid(point_xz);
-            points_by_key.insert(NodeHeightPointKey::from_point(point_xz), point_xz);
+            points_by_key.push((NodeHeightPointKey::from_point(point_xz), point_xz));
         }
     }
-    points_by_key.into_values().collect()
+    points_by_key.sort_unstable_by_key(|(key, _)| *key);
+    points_by_key.dedup_by_key(|(key, _)| *key);
+    points_by_key
+        .into_iter()
+        .map(|(_, point_xz)| point_xz)
+        .collect()
 }
 
 fn missing_owned_region_carrier_support_error(
@@ -408,13 +415,18 @@ fn source_authorized_contour_points(
     let source_keys = material_transition_constraint_point_keys(region);
     let contour = canonicalize_contour_source_endpoint_dust(contour, &source_keys);
     let mut output = Vec::with_capacity(contour.len());
+    let mut insertions = Vec::new();
     for index in 0..contour.len() {
         let start = contour[index];
         let end = contour[(index + 1) % contour.len()];
         output.push(start);
-        output.extend(source_authorized_points_for_contour_edge(
-            region, start, end,
-        ));
+        append_source_authorized_points_for_contour_edge(
+            &source_keys,
+            start,
+            end,
+            &mut insertions,
+            &mut output,
+        );
     }
     output
 }
@@ -431,49 +443,47 @@ fn material_transition_constraint_point_keys(
         .collect()
 }
 
-fn source_authorized_points_for_contour_edge(
-    region: &NodeBooleanOwnedRegion,
+fn append_source_authorized_points_for_contour_edge(
+    source_keys: &BTreeSet<SurfaceXzKey>,
     start: NodeOverlayPoint,
     end: NodeOverlayPoint,
-) -> Vec<NodeOverlayPoint> {
+    insertions: &mut Vec<(SurfaceSegmentParameter, SurfaceXzKey)>,
+    output: &mut NodeOverlayContour,
+) {
     let start_key = SurfaceXzKey::from_overlay_point(start);
     let end_key = SurfaceXzKey::from_overlay_point(end);
     if start_key == end_key {
-        return Vec::new();
+        return;
     }
-    let mut insertions = Vec::<(SurfaceSegmentParameter, SurfaceXzKey)>::new();
-    for constraint in &region.seam_constraints {
-        if !constraint.is_material_transition {
+    insertions.clear();
+    let min_x = start_key.x_key().min(end_key.x_key());
+    let max_x = start_key.x_key().max(end_key.x_key());
+    let min_z = start_key.z_key().min(end_key.z_key());
+    let max_z = start_key.z_key().max(end_key.z_key());
+    let range_start = SurfaceXzKey::from_raw_keys(min_x, i64::MIN);
+    let range_end = SurfaceXzKey::from_raw_keys(max_x, i64::MAX);
+    for &point_key in source_keys.range(range_start..=range_end) {
+        if point_key.z_key() < min_z || point_key.z_key() > max_z {
             continue;
         }
-        for point_xz in [constraint.start_xz, constraint.end_xz] {
-            let point_key =
-                SurfaceXzKey::from_road_xz(quantize_road_vec2_to_overlay_grid(point_xz));
-            if point_key == start_key
-                || point_key == end_key
-                || insertions.iter().any(|(_, key)| *key == point_key)
-            {
-                continue;
-            }
-            let Some(parameter) = point_key.overlay_segment_parameter(start_key, end_key) else {
-                continue;
-            };
-            if parameter <= SurfaceSegmentParameter::zero()
-                || parameter >= SurfaceSegmentParameter::one()
-            {
-                continue;
-            }
-            insertions.push((parameter, point_key));
+        if point_key == start_key || point_key == end_key {
+            continue;
         }
+        let Some(parameter) = point_key.overlay_segment_parameter(start_key, end_key) else {
+            continue;
+        };
+        if parameter <= SurfaceSegmentParameter::zero()
+            || parameter >= SurfaceSegmentParameter::one()
+        {
+            continue;
+        }
+        insertions.push((parameter, point_key));
     }
     insertions.sort_by_key(|(parameter, key)| (*parameter, *key));
-    insertions
-        .into_iter()
-        .map(|(_, key)| {
-            let point = key.to_road_xz();
-            [point.x, point.y]
-        })
-        .collect()
+    output.extend(insertions.iter().map(|(_, key)| {
+        let point = key.to_road_xz();
+        [point.x, point.y]
+    }));
 }
 
 fn canonicalize_contour_source_endpoint_dust(
@@ -488,19 +498,22 @@ fn canonicalize_contour_source_endpoint_dust(
             if source_keys.contains(&key) {
                 return point;
             }
-            let mut candidates = source_keys
-                .iter()
-                .copied()
-                .filter(|source_key| {
-                    let (source_x, source_z) = source_key.raw_tuple();
-                    let (x, z) = key.raw_tuple();
-                    (source_x - x).abs() <= SOURCE_ENDPOINT_DUST_KEYS
-                        && (source_z - z).abs() <= SOURCE_ENDPOINT_DUST_KEYS
-                })
-                .collect::<Vec<_>>();
-            candidates.sort_unstable();
-            candidates.dedup();
-            let [source_key] = candidates.as_slice() else {
+            let (x, z) = key.raw_tuple();
+            let range_start =
+                SurfaceXzKey::from_raw_keys(x.saturating_sub(SOURCE_ENDPOINT_DUST_KEYS), i64::MIN);
+            let range_end =
+                SurfaceXzKey::from_raw_keys(x.saturating_add(SOURCE_ENDPOINT_DUST_KEYS), i64::MAX);
+            let mut candidate = None;
+            for &source_key in source_keys.range(range_start..=range_end) {
+                let (_, source_z) = source_key.raw_tuple();
+                if (source_z - z).abs() > SOURCE_ENDPOINT_DUST_KEYS {
+                    continue;
+                }
+                if candidate.replace(source_key).is_some() {
+                    return point;
+                }
+            }
+            let Some(source_key) = candidate else {
                 return point;
             };
             let point = source_key.to_road_xz();

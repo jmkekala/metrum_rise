@@ -25,7 +25,7 @@ use crate::simulation::terrain::cdt::{
     TerrainCdtInput, TerrainCdtPatch, TerrainCdtVertex, build_road_touched_terrain_patch,
 };
 use godot::prelude::{Vector2, Vector3};
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 
 #[test]
 fn site_radius_is_measured_from_the_indexed_lot_center() {
@@ -212,7 +212,7 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
     let graph = RegionGraph::new();
     let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
     let mut samples = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
 
     let context = SiteGradingContext::new(&terrain, &graph, &road_surface, 2.0, 16.0);
     let mut sink = SiteGradingGuideSink::new(&mut samples, &mut sample_keys);
@@ -249,7 +249,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
         }],
     };
     let mut samples = Vec::new();
-    let mut sample_keys = BTreeMap::new();
+    let mut sample_keys = HashSet::new();
 
     snapshot.append_terrain_cdt_site_grading_guides_for_world_bounds(
         BuildingSiteGradingRequest::new(

@@ -50,6 +50,70 @@ fn junction_topology_reuse_uses_node_local_mouth_identity() {
 }
 
 #[test]
+fn terminal_topology_reuse_uses_node_local_mouth_identity() {
+    let input = terminal_input_with_endpoint_x(0.0);
+    let (_, _, _, topology) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(&input, false, None)
+            .expect("cold terminal rails");
+    let mut remapped_input = input.clone();
+    remapped_input.node_id = 99;
+    remapped_input.mouths[0].edge_idx = 70;
+
+    let (reused, _, reuse_status, _) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+            &remapped_input,
+            false,
+            Some(&topology),
+        )
+        .expect("edge-id-remapped terminal rails");
+    let (cold, _, _, _) = NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+        &remapped_input,
+        false,
+        None,
+    )
+    .expect("independent remapped terminal rails");
+
+    assert!(reuse_status.rail_topology_reused);
+    assert!(reuse_status.ownership_reuse_safe);
+    assert!(reuse_status.arrangement_reuse_safe);
+    assert_eq!(reused.contours.len(), cold.contours.len());
+    assert_eq!(reused.constraints, cold.constraints);
+}
+
+#[test]
+fn bend_topology_reuse_uses_node_local_mouth_identity() {
+    let input = side_join_input(RoadSurfaceVisualNodePieceKind::Bend);
+    let (_, _, _, topology) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(&input, false, None)
+            .expect("cold bend rails");
+    let mut remapped_input = input.clone();
+    remapped_input.node_id = 99;
+    remapped_input.mouths[0].edge_idx = 70;
+    remapped_input.mouths[1].edge_idx = 80;
+
+    let (reused, _, reuse_status, _) =
+        NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+            &remapped_input,
+            false,
+            Some(&topology),
+        )
+        .expect("edge-id-remapped bend rails");
+    let (cold, _, _, _) = NodeRailContourSet::from_input_with_profile_and_topology_reuse(
+        &remapped_input,
+        false,
+        None,
+    )
+    .expect("independent remapped bend rails");
+
+    assert!(reuse_status.rail_topology_reused);
+    assert!(reuse_status.ownership_reuse_safe);
+    assert!(reuse_status.arrangement_reuse_safe);
+    assert_eq!(reused.contours.len(), cold.contours.len());
+    assert_eq!(reused.constraints, cold.constraints);
+    assert_eq!(reused.side_join_gaps, cold.side_join_gaps);
+}
+
+#[test]
 fn nonterminal_side_join_bands_emit_canonical_ownership_candidates() {
     let input = nonterminal_input_with_side_join_candidate();
     let contours = NodeRailContourSet::from_input(&input).expect("valid contours");

@@ -110,9 +110,9 @@ fn renderer_uses_world_xz_uvs_for_compiled_top_surfaces() {
 
 #[test]
 fn renderer_uses_group_normal_for_node_top_surface_slivers() {
-    let flat = RoadSurfaceVisualPolygon {
-        points_world: Vec::new(),
-        triangles_world: vec![
+    let flat = RoadSurfaceVisualPolygon::from_parts(
+        Vec::new(),
+        vec![
             [
                 RoadVec3::new(0.0, 0.0, 0.0),
                 RoadVec3::new(6.0, 0.0, 0.0),
@@ -124,15 +124,15 @@ fn renderer_uses_group_normal_for_node_top_surface_slivers() {
                 RoadVec3::new(0.0, 0.0, 6.0),
             ],
         ],
-    };
-    let skinny_mouth = RoadSurfaceVisualPolygon {
-        points_world: Vec::new(),
-        triangles_world: vec![[
+    );
+    let skinny_mouth = RoadSurfaceVisualPolygon::from_parts(
+        Vec::new(),
+        vec![[
             RoadVec3::new(0.0, 0.0, 0.0),
             RoadVec3::new(0.002, 2.0, 0.0),
             RoadVec3::new(0.0, 0.0, 0.002),
         ]],
-    };
+    );
 
     let normal = stable_surface_group_normal(&[flat, skinny_mouth])
         .expect("dominant node top surface should provide a stable render normal");

@@ -97,11 +97,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   site cadence avoids repeatedly aligning its fixed 12 fixtures with the `510 m` terrain grid; the
   exact old `520 m` reproduction and failures found by extending the layout remain tracked by
   `ROAD-06`. The optimization passes removed duplicate exact preview/commit validation, cached
-  target-group geometry and quantized ownership predicates, and handed exact preview-produced
-  junction rail/ownership/arrangement topology to the matching commit. On the same headless
-  three-repetition workload, total runtime fell from `14.28 s` to `11.36 s`; fixture p95 fell from
-  `687/832/988 ms` to `544/606/675 ms` for bend/T/four-way, while commit p95 fell from
-  `229/328/463 ms` to `154/178/203 ms`. Instrumented four-way commit compilation replays the
+  target-group geometry and quantized ownership predicates, spatially indexed rail/seam coverage,
+  eliminated repeated contour and source scans, and handed exact preview-produced junction
+  rail/ownership/arrangement topology to the matching commit. On the same headless
+  three-repetition workload, total runtime fell from `14.28 s` to `9.84 s`; fixture p95 fell from
+  `687/832/988 ms` to `422/442/442 ms` for bend/T/four-way, while commit p95 fell from
+  `229/328/463 ms` to `96/83/83 ms`. Instrumented four-way commit compilation replays the
   junction rail stage in about `2.8 ms` and skips the prior height/arrangement/triangulation block;
   road-triggered terrain regeneration, road-mesh precompute, and terrain visual refresh are now the
   dominant end-to-end boundary. The matching windowed workload also passes: total runtime fell

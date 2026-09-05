@@ -4,9 +4,12 @@ use super::super::RoadSurfaceBandKind;
 use super::super::backend::RoadVec2;
 use super::super::keys::SurfaceXzKey;
 use super::super::segments::{key_collinear_with_overlay_grid_segment, segment_parameter_key};
-use super::build::merge_sorted_unique;
-use super::{NodeArrangement, NodeArrangementKey, NodeBandOwner};
-use std::collections::{BTreeMap, BTreeSet};
+use super::{NodeArrangementKey, NodeBandOwner};
+use std::collections::HashMap;
+
+const SEAM_COVERAGE_TILE_KEYS: i64 = 8_000_000;
+const SEAM_COVERAGE_MAX_INDEX_TILES: i64 = 256;
+const OVERLAY_GRID_AXIS_TOLERANCE_KEYS: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeSeamSource {
@@ -67,6 +70,139 @@ struct SeamConstraintCoverageKey {
     is_material_transition: bool,
 }
 
+#[derive(Default)]
+pub(in crate::simulation::network::surface::node) struct SeamConstraintCoverageScratch {
+    intervals: Vec<(SeamConstraintCoverageKey, i128, i128, usize)>,
+    candidate_indices: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SeamCoverageTile {
+    x: i64,
+    z: i64,
+}
+
+#[derive(Clone, Copy)]
+struct PreparedSeamConstraintCoverage {
+    start: SurfaceXzKey,
+    end: SurfaceXzKey,
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+}
+
+pub(in crate::simulation::network::surface::node) struct PreparedSeamConstraintCoverages<'a> {
+    constraints: &'a [NodeRegionSeamConstraint],
+    prepared: Vec<PreparedSeamConstraintCoverage>,
+    constraint_indices_by_tile: HashMap<SeamCoverageTile, Vec<usize>>,
+    global_constraint_indices: Vec<usize>,
+}
+
+impl<'a> PreparedSeamConstraintCoverages<'a> {
+    pub(in crate::simulation::network::surface::node) fn new(
+        constraints: &'a [NodeRegionSeamConstraint],
+    ) -> Self {
+        let prepared = constraints
+            .iter()
+            .map(|constraint| {
+                let start = SurfaceXzKey::from_road_xz(constraint.start_xz);
+                let end = SurfaceXzKey::from_road_xz(constraint.end_xz);
+                PreparedSeamConstraintCoverage {
+                    start,
+                    end,
+                    min_x: start
+                        .x_key()
+                        .min(end.x_key())
+                        .saturating_sub(OVERLAY_GRID_AXIS_TOLERANCE_KEYS),
+                    min_z: start
+                        .z_key()
+                        .min(end.z_key())
+                        .saturating_sub(OVERLAY_GRID_AXIS_TOLERANCE_KEYS),
+                    max_x: start
+                        .x_key()
+                        .max(end.x_key())
+                        .saturating_add(OVERLAY_GRID_AXIS_TOLERANCE_KEYS),
+                    max_z: start
+                        .z_key()
+                        .max(end.z_key())
+                        .saturating_add(OVERLAY_GRID_AXIS_TOLERANCE_KEYS),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut constraint_indices_by_tile = HashMap::new();
+        let mut global_constraint_indices = Vec::new();
+        for (constraint_index, constraint) in prepared.iter().enumerate() {
+            if constraint.start == constraint.end {
+                continue;
+            }
+            index_seam_coverage_constraint(
+                &mut constraint_indices_by_tile,
+                &mut global_constraint_indices,
+                constraint_index,
+                constraint,
+            );
+        }
+        Self {
+            constraints,
+            prepared,
+            constraint_indices_by_tile,
+            global_constraint_indices,
+        }
+    }
+
+    fn candidate_indices_for_bounds(
+        &self,
+        min_x: i64,
+        min_z: i64,
+        max_x: i64,
+        max_z: i64,
+        scratch: &mut SeamConstraintCoverageScratch,
+    ) {
+        scratch.candidate_indices.clear();
+        let min_tile = SeamCoverageTile {
+            x: min_x.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+            z: min_z.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+        };
+        let max_tile = SeamCoverageTile {
+            x: max_x.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+            z: max_z.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+        };
+        let tile_width = max_tile.x.saturating_sub(min_tile.x).saturating_add(1);
+        let tile_height = max_tile.z.saturating_sub(min_tile.z).saturating_add(1);
+        if tile_width.saturating_mul(tile_height) > SEAM_COVERAGE_MAX_INDEX_TILES {
+            scratch.candidate_indices.extend(0..self.prepared.len());
+        } else {
+            scratch
+                .candidate_indices
+                .extend_from_slice(&self.global_constraint_indices);
+            for x in min_tile.x..=max_tile.x {
+                for z in min_tile.z..=max_tile.z {
+                    if let Some(indices) = self
+                        .constraint_indices_by_tile
+                        .get(&SeamCoverageTile { x, z })
+                    {
+                        scratch.candidate_indices.extend_from_slice(indices);
+                    }
+                }
+            }
+            if min_tile != max_tile || !self.global_constraint_indices.is_empty() {
+                scratch.candidate_indices.sort_unstable();
+                scratch.candidate_indices.dedup();
+            }
+        }
+        scratch.candidate_indices.retain(|&constraint_index| {
+            prepared_seam_constraint_bounds_overlap(
+                &self.prepared[constraint_index],
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            )
+        });
+    }
+}
+
 impl NodeRegionSeamConstraint {
     pub(crate) fn priority_key(&self) -> (bool, bool, usize) {
         (
@@ -75,15 +211,6 @@ impl NodeRegionSeamConstraint {
             self.seam_source.priority_key(),
         )
     }
-}
-
-pub(super) fn seam_constraint_touches_key(
-    constraint: &NodeRegionSeamConstraint,
-    key: NodeArrangementKey,
-) -> bool {
-    let start = NodeArrangementKey::from_point(constraint.start_xz);
-    let end = NodeArrangementKey::from_point(constraint.end_xz);
-    key.lies_on_segment(start, end)
 }
 
 pub(super) fn seam_constraint_matches_owner_pair(
@@ -117,65 +244,143 @@ pub(super) fn seam_constraint_covers_edge(
         && edge_end.lies_on_segment(constraint_start, constraint_end)
 }
 
-pub(in crate::simulation::network::surface::node) fn seam_constraints_covering_surface_key_edge_as_fragments<
+pub(in crate::simulation::network::surface::node) fn prepared_seam_constraints_covering_surface_key_edge_as_fragments_into<
     'a,
 >(
     start: SurfaceXzKey,
     end: SurfaceXzKey,
-    constraints: &'a [NodeRegionSeamConstraint],
-) -> Vec<&'a NodeRegionSeamConstraint> {
+    constraints: &PreparedSeamConstraintCoverages<'a>,
+    scratch: &mut SeamConstraintCoverageScratch,
+    matches: &mut Vec<&'a NodeRegionSeamConstraint>,
+) {
+    matches.clear();
     if start == end {
-        return Vec::new();
+        return;
     }
     let edge_end_parameter = segment_parameter_key(start, end, end);
     if edge_end_parameter <= 0 {
-        return Vec::new();
+        return;
     }
-
-    let mut intervals_by_source = BTreeMap::<
-        SeamConstraintCoverageKey,
-        Vec<(i128, i128, &'a NodeRegionSeamConstraint)>,
-    >::new();
-    for constraint in constraints {
-        let Some((overlap_start, overlap_end)) =
-            seam_constraint_overlap_interval(start, end, edge_end_parameter, constraint)
-        else {
+    let min_x = start.x_key().min(end.x_key());
+    let min_z = start.z_key().min(end.z_key());
+    let max_x = start.x_key().max(end.x_key());
+    let max_z = start.z_key().max(end.z_key());
+    constraints.candidate_indices_for_bounds(min_x, min_z, max_x, max_z, scratch);
+    scratch.intervals.clear();
+    scratch.intervals.reserve(scratch.candidate_indices.len());
+    for &constraint_index in &scratch.candidate_indices {
+        let prepared = &constraints.prepared[constraint_index];
+        let Some((overlap_start, overlap_end)) = seam_constraint_key_overlap_interval(
+            start,
+            end,
+            edge_end_parameter,
+            prepared.start,
+            prepared.end,
+        ) else {
             continue;
         };
-        intervals_by_source
-            .entry(seam_constraint_coverage_key(constraint))
-            .or_default()
-            .push((overlap_start, overlap_end, constraint));
+        let constraint = &constraints.constraints[constraint_index];
+        scratch.intervals.push((
+            seam_constraint_coverage_key(constraint),
+            overlap_start,
+            overlap_end,
+            constraint_index,
+        ));
     }
+    append_fully_covering_seam_constraint_groups(
+        edge_end_parameter,
+        constraints.constraints,
+        scratch,
+        matches,
+    );
+}
 
-    let mut matches = Vec::new();
-    for intervals in intervals_by_source.values_mut() {
-        intervals.sort_by_key(|(start, end, _)| (*start, *end));
+fn prepared_seam_constraint_bounds_overlap(
+    constraint: &PreparedSeamConstraintCoverage,
+    min_x: i64,
+    min_z: i64,
+    max_x: i64,
+    max_z: i64,
+) -> bool {
+    constraint.min_x <= max_x
+        && min_x <= constraint.max_x
+        && constraint.min_z <= max_z
+        && min_z <= constraint.max_z
+}
+
+fn index_seam_coverage_constraint(
+    constraint_indices_by_tile: &mut HashMap<SeamCoverageTile, Vec<usize>>,
+    global_constraint_indices: &mut Vec<usize>,
+    constraint_index: usize,
+    constraint: &PreparedSeamConstraintCoverage,
+) {
+    let min_tile = SeamCoverageTile {
+        x: constraint.min_x.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+        z: constraint.min_z.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+    };
+    let max_tile = SeamCoverageTile {
+        x: constraint.max_x.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+        z: constraint.max_z.div_euclid(SEAM_COVERAGE_TILE_KEYS),
+    };
+    let tile_width = max_tile.x.saturating_sub(min_tile.x).saturating_add(1);
+    let tile_height = max_tile.z.saturating_sub(min_tile.z).saturating_add(1);
+    if tile_width.saturating_mul(tile_height) > SEAM_COVERAGE_MAX_INDEX_TILES {
+        global_constraint_indices.push(constraint_index);
+        return;
+    }
+    for x in min_tile.x..=max_tile.x {
+        for z in min_tile.z..=max_tile.z {
+            constraint_indices_by_tile
+                .entry(SeamCoverageTile { x, z })
+                .or_default()
+                .push(constraint_index);
+        }
+    }
+}
+
+fn append_fully_covering_seam_constraint_groups<'a>(
+    edge_end_parameter: i128,
+    constraints: &'a [NodeRegionSeamConstraint],
+    scratch: &mut SeamConstraintCoverageScratch,
+    matches: &mut Vec<&'a NodeRegionSeamConstraint>,
+) {
+    scratch
+        .intervals
+        .sort_by_key(|(source, start, end, _)| (*source, *start, *end));
+
+    let mut group_start = 0;
+    while group_start < scratch.intervals.len() {
+        let source = scratch.intervals[group_start].0;
+        let group_end = scratch.intervals[group_start..]
+            .partition_point(|(candidate, _, _, _)| *candidate == source)
+            + group_start;
         let mut covered_end = 0;
-        let mut covered_constraints = Vec::new();
-        for (interval_start, interval_end, constraint) in intervals {
-            if *interval_start > covered_end {
+        for candidate_index in group_start..group_end {
+            let (_, interval_start, interval_end, _) = scratch.intervals[candidate_index];
+            if interval_start > covered_end {
                 break;
             }
-            covered_end = covered_end.max(*interval_end);
-            covered_constraints.push(*constraint);
+            covered_end = covered_end.max(interval_end);
             if covered_end >= edge_end_parameter {
-                matches.extend(covered_constraints);
+                matches.extend(
+                    scratch.intervals[group_start..=candidate_index]
+                        .iter()
+                        .map(|(_, _, _, constraint_index)| &constraints[*constraint_index]),
+                );
                 break;
             }
         }
+        group_start = group_end;
     }
-    matches
 }
 
-fn seam_constraint_overlap_interval(
+fn seam_constraint_key_overlap_interval(
     start: SurfaceXzKey,
     end: SurfaceXzKey,
     edge_end_parameter: i128,
-    constraint: &NodeRegionSeamConstraint,
+    constraint_start: SurfaceXzKey,
+    constraint_end: SurfaceXzKey,
 ) -> Option<(i128, i128)> {
-    let constraint_start = SurfaceXzKey::from_road_xz(constraint.start_xz);
-    let constraint_end = SurfaceXzKey::from_road_xz(constraint.end_xz);
     if constraint_start == constraint_end
         || !key_collinear_with_overlay_grid_segment(constraint_start, start, end)
         || !key_collinear_with_overlay_grid_segment(constraint_end, start, end)
@@ -201,15 +406,6 @@ fn seam_constraint_coverage_key(
         constrains_shared_height: constraint.constrains_shared_height,
         is_material_transition: constraint.is_material_transition,
     }
-}
-
-pub(super) fn seam_constraint_covers_key(
-    constraint: &NodeRegionSeamConstraint,
-    key: NodeArrangementKey,
-) -> bool {
-    let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
-    let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
-    key.lies_on_segment(constraint_start, constraint_end)
 }
 
 pub(super) fn seam_constraint_can_source_edge_owner_pair(
@@ -243,77 +439,11 @@ pub(crate) fn seam_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConst
 pub(super) fn owners_for_material_seam_constraint(
     constraint: &NodeRegionSeamConstraint,
     region_owner: NodeBandOwner,
-) -> Vec<NodeBandOwner> {
-    match (constraint.owner, constraint.opposite_owner) {
-        (Some(owner), Some(opposite_owner)) => vec![owner, opposite_owner],
-        (Some(owner), None) | (None, Some(owner)) => vec![owner],
-        (None, None) => vec![region_owner],
-    }
-}
-
-impl NodeArrangement {
-    pub(super) fn has_explicit_material_seam_endpoint_path_at_key_between(
-        &self,
-        key: NodeArrangementKey,
-        left_owners: &[NodeBandOwner],
-        right_owners: &[NodeBandOwner],
-    ) -> bool {
-        let adjacency = self.material_seam_endpoint_owner_adjacency_at_key(key);
-        if adjacency.is_empty() {
-            return false;
-        }
-
-        let right_owners = right_owners.iter().copied().collect::<BTreeSet<_>>();
-        let mut visited = BTreeSet::new();
-        let mut pending = left_owners.to_vec();
-        while let Some(owner) = pending.pop() {
-            if !visited.insert(owner) {
-                continue;
-            }
-            if right_owners.contains(&owner) {
-                return true;
-            }
-            if let Some(neighbors) = adjacency.get(&owner) {
-                pending.extend(neighbors.iter().copied());
-            }
-        }
-        false
-    }
-
-    fn material_seam_endpoint_owner_adjacency_at_key(
-        &self,
-        key: NodeArrangementKey,
-    ) -> BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>> {
-        let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
-        for region in &self.regions {
-            for constraint in &region.seam_constraints {
-                if constraint.constrains_shared_height
-                    || !constraint.is_material_transition
-                    || !seam_constraint_touches_key(constraint, key)
-                {
-                    continue;
-                }
-                let owners = owners_for_material_seam_constraint(constraint, region.owner);
-                merge_sorted_unique(
-                    owners_by_constraint
-                        .entry(constraint.constraint_index)
-                        .or_default(),
-                    owners,
-                );
-            }
-        }
-
-        let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
-        for owners in owners_by_constraint.into_values() {
-            for left_index in 0..owners.len() {
-                for right_index in left_index + 1..owners.len() {
-                    let left = owners[left_index];
-                    let right = owners[right_index];
-                    adjacency.entry(left).or_default().insert(right);
-                    adjacency.entry(right).or_default().insert(left);
-                }
-            }
-        }
-        adjacency
-    }
+) -> impl Iterator<Item = NodeBandOwner> {
+    let owners = match (constraint.owner, constraint.opposite_owner) {
+        (Some(owner), Some(opposite_owner)) => [Some(owner), Some(opposite_owner)],
+        (Some(owner), None) | (None, Some(owner)) => [Some(owner), None],
+        (None, None) => [Some(region_owner), None],
+    };
+    owners.into_iter().flatten()
 }

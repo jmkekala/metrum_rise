@@ -2,6 +2,7 @@
 
 use super::NodeOverlayPoint;
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3};
+use crate::simulation::core::round_f64_to_i64;
 
 pub(crate) const SURFACE_XZ_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 pub(crate) const SURFACE_MM_PER_M: f64 = 1000.0;
@@ -62,11 +63,11 @@ impl SurfaceXzKey {
     }
 
     pub(crate) fn coordinate_key(value_m: f64) -> i64 {
-        (value_m * SURFACE_XZ_KEY_SCALE).round() as i64
+        round_f64_to_i64(value_m * SURFACE_XZ_KEY_SCALE)
     }
 
     pub(crate) fn coordinate_key_to_mm(value: i64) -> i64 {
-        ((value as f64 / SURFACE_XZ_KEY_SCALE) * SURFACE_MM_PER_M).round() as i64
+        round_f64_to_i64((value as f64 / SURFACE_XZ_KEY_SCALE) * SURFACE_MM_PER_M)
     }
 
     pub(crate) fn x_key(self) -> i64 {
@@ -193,10 +194,10 @@ impl SurfaceXzKey {
         if self == start || self == end {
             return true;
         }
-        if start == end || !self.collinear_with_overlay_grid_segment(start, end) {
+        if start == end || !self.inside_segment_bounds(start, end, true) {
             return false;
         }
-        self.inside_segment_bounds(start, end, true)
+        self.collinear_with_overlay_grid_segment(start, end)
     }
 
     #[cfg(test)]
@@ -212,10 +213,10 @@ impl SurfaceXzKey {
         if self == start || self == end {
             return true;
         }
-        if start == end || !self.collinear_with_segment(start, end) {
+        if start == end || !self.inside_segment_bounds(start, end, true) {
             return false;
         }
-        self.inside_segment_bounds(start, end, true)
+        self.collinear_with_segment(start, end)
     }
 
     fn inside_segment_bounds(self, start: Self, end: Self, include_endpoints: bool) -> bool {
@@ -335,7 +336,7 @@ fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
 
 impl SurfaceHeightMmKey {
     pub(crate) fn from_m_f64(value_m: f64) -> Self {
-        Self((value_m * SURFACE_MM_PER_M).round() as i64)
+        Self(round_f64_to_i64(value_m * SURFACE_MM_PER_M))
     }
 
     #[cfg(test)]

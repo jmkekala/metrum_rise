@@ -49,7 +49,7 @@ pub(in crate::simulation::network::surface::tests) fn compile_committed_preview_
     let compiled_sections = committed
         .compiled_sections()
         .get(&edge_idx)
-        .cloned()
+        .map(|sections| sections.as_ref().clone())
         .unwrap_or_default();
     let compiled_visual_node_pieces = [start_node, end_node]
         .into_iter()
@@ -57,7 +57,7 @@ pub(in crate::simulation::network::surface::tests) fn compile_committed_preview_
             committed
                 .compiled_visual_node_pieces()
                 .get(&node_id)
-                .cloned()
+                .map(|piece| piece.as_ref().clone())
         })
         .collect();
     (preview, compiled_sections, compiled_visual_node_pieces)

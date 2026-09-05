@@ -1,13 +1,16 @@
 //! Final owned-boundary extraction and arrangement export for node ownership.
 
 use super::super::arrangement::{
-    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_constraints_are_ambiguous,
+    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, PreparedSeamConstraintCoverages,
+    SeamConstraintCoverageScratch, seam_constraints_are_ambiguous,
 };
-use super::super::rails::{NodeGeneratedContourClaimPriority, NodeRailConstraint};
+use super::super::rails::NodeGeneratedContourClaimPriority;
+#[cfg(test)]
+use super::super::rails::NodeRailConstraint;
 use super::super::{NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::rings::NodeOwnershipPointIndex;
 use super::seams::{
-    junctionn_unmaterialized_raised_step_authority_indices_for_edge,
+    OwnedEdgeRailConstraintIndex, junctionn_unmaterialized_raised_step_authority_indices_for_edge,
     materialized_endpoint_pair_constraint_indices_for_owned_edge,
     owned_boundary_requires_explicit_seam, owned_source_constraints_for_edge,
     source_constraints_materialize_raised_step_authority,
@@ -33,12 +36,13 @@ impl NodeOwnedRegionArrangement {
         rail_constraints: &[NodeRailConstraint],
     ) -> Self {
         let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
+        let rail_constraint_index = OwnedEdgeRailConstraintIndex::new(rail_constraints);
         Self::from_owned_regions_with_boundary_refs(
             node_id,
             piece_kind,
             regions,
             &boundary_refs,
-            rail_constraints,
+            &rail_constraint_index,
         )
     }
 
@@ -47,22 +51,30 @@ impl NodeOwnedRegionArrangement {
         piece_kind: RoadSurfaceVisualNodePieceKind,
         regions: &[NodeBooleanOwnedRegion],
         boundary_refs: &OwnedRegionBoundaryRefs,
-        rail_constraints: &[NodeRailConstraint],
+        rail_constraint_index: &OwnedEdgeRailConstraintIndex<'_>,
     ) -> Self {
         let mut edges = Vec::new();
         let mut diagnostics = Vec::new();
-
+        let mut rail_candidate_indices = Vec::new();
+        let mut rail_coverage_intervals = Vec::new();
+        let mut source_constraint_scratch = SeamConstraintCoverageScratch::default();
+        let mut source_constraints = Vec::new();
+        let prepared_source_constraints = regions
+            .iter()
+            .map(|region| PreparedSeamConstraintCoverages::new(&region.seam_constraints))
+            .collect::<Vec<_>>();
         for (edge_key, refs) in &boundary_refs.edges {
-            let refs = canonical_owned_region_edge_refs(refs);
-            for edge_ref in &refs {
-                let Some(region) = regions.get(edge_ref.region_index) else {
+            for edge_ref in refs {
+                if edge_ref.region_index >= regions.len() {
                     continue;
-                };
-                let edge_neighbor = owned_region_edge_neighbor_for_ref(&refs, *edge_ref);
-                let source_constraints = owned_source_constraints_for_edge(
+                }
+                let edge_neighbor = owned_region_edge_neighbor_for_ref(refs, *edge_ref);
+                owned_source_constraints_for_edge(
                     edge_key.start,
                     edge_key.end,
-                    &region.seam_constraints,
+                    &prepared_source_constraints[edge_ref.region_index],
+                    &mut source_constraint_scratch,
+                    &mut source_constraints,
                 );
                 let start = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.start);
                 let end = NodeOwnedRegionArrangementKey::from_ownership_key(edge_key.end);
@@ -103,7 +115,7 @@ impl NodeOwnedRegionArrangement {
                                 materialized_endpoint_pair_constraint_indices_for_owned_edge(
                                     edge_key.start,
                                     edge_key.end,
-                                    rail_constraints,
+                                    rail_constraint_index,
                                     edge_ref.owner,
                                     opposite_owner,
                                     piece_kind,
@@ -137,12 +149,21 @@ impl NodeOwnedRegionArrangement {
                 };
                 if let Some(opposite_owner) = opposite_owner {
                     if owned_boundary_requires_explicit_seam(edge_ref.owner, opposite_owner) {
+                        rail_constraint_index.candidate_indices_for_owned_edge(
+                            edge_key.start,
+                            edge_key.end,
+                            edge_ref.owner,
+                            opposite_owner,
+                            &mut rail_candidate_indices,
+                        );
                         let source_constraint_indices =
                             junctionn_unmaterialized_raised_step_authority_indices_for_edge(
                                 piece_kind,
                                 edge_key.start,
                                 edge_key.end,
-                                rail_constraints,
+                                rail_constraint_index,
+                                &rail_candidate_indices,
+                                &mut rail_coverage_intervals,
                                 edge_ref.owner,
                                 opposite_owner,
                             );
@@ -193,7 +214,7 @@ impl NodeOwnedRegionArrangement {
                 }
                 let seam_source = source_constraints
                     .first()
-                    .map(|constraint| constraint.seam_source.clone())
+                    .map(|constraint| constraint.seam_source)
                     .or_else(|| {
                         (!endpoint_pair_source_constraint_indices.is_empty()).then(|| {
                             NodeSeamSource::RaisedStepContact {
@@ -437,6 +458,10 @@ impl OwnedRegionBoundaryRefs {
             }
         }
 
+        for refs in edges.values_mut() {
+            refs.sort_unstable();
+            refs.dedup();
+        }
         Self { edges }
     }
 }
@@ -524,19 +549,22 @@ fn supported_final_footprint_boundary_points_for_edge(
     points
 }
 
-pub(super) fn canonical_owned_region_edge_refs(
-    refs: &[OwnedRegionEdgeRef],
-) -> Vec<OwnedRegionEdgeRef> {
-    let mut refs = refs.to_vec();
-    refs.sort_unstable();
-    refs.dedup();
-    refs
-}
-
 pub(super) fn owned_region_edge_neighbor_for_ref(
     refs: &[OwnedRegionEdgeRef],
     edge_ref: OwnedRegionEdgeRef,
 ) -> OwnedRegionEdgeNeighbor {
+    let mut neighbor_owners = refs
+        .iter()
+        .map(|edge_ref| edge_ref.owner)
+        .filter(|owner| *owner != edge_ref.owner);
+    let Some(first_owner) = neighbor_owners.next() else {
+        return OwnedRegionEdgeNeighbor::Exposed;
+    };
+    if neighbor_owners.all(|owner| owner == first_owner) {
+        return OwnedRegionEdgeNeighbor::Unique {
+            opposite_owner: first_owner,
+        };
+    }
     let mut owners = refs
         .iter()
         .map(|edge_ref| edge_ref.owner)

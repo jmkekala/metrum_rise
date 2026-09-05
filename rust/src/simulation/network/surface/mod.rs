@@ -5,6 +5,8 @@
 //! keeps only the public contracts and stage re-exports that cross those owners.
 
 use spade::{ConstrainedDelaunayTriangulation, Point2};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 mod backend;
 mod band_semantics;
@@ -77,6 +79,8 @@ const NODE_OVERLAY_NUMERIC_DUST_WIDTH_M: f32 = WORLD_POINT_DEDUP_DISTANCE_M;
 const NODE_OVERLAY_NUMERIC_AREA_CAP_M2: f32 = 1.0e-3;
 // Avoid Rayon setup overhead for the small edge/node sets common in single-edit rebuilds.
 const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
+// Span earthwork and render geometry are heavy enough to amortize scheduling at two edges.
+const PARALLEL_SPAN_COMPILE_MIN_ITEMS: usize = 2;
 // Node pieces are much heavier than edge/span pieces; parallelize as soon as two dirty nodes exist.
 const PARALLEL_NODE_COMPILE_MIN_ITEMS: usize = 2;
 
@@ -173,6 +177,231 @@ pub struct RoadSurfaceVisualPolygon {
     pub points_world: Vec<RoadVec3>,
     /// Deterministic cached triangles covering the polygon in world space.
     pub triangles_world: Vec<[RoadVec3; 3]>,
+}
+
+const ROAD_SURFACE_QUERY_GRID_BASE_CELL_M: f64 = 4.0;
+const ROAD_SURFACE_QUERY_GRID_MAX_CELLS: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoadSurfaceIndexedTriangle {
+    triangle: [RoadVec3; 3],
+    carriageway: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct RoadSurfaceTriangleQueryIndex {
+    bounds_xz: [f64; 4],
+    cell_size_m: f64,
+    width: usize,
+    height: usize,
+    triangles: Vec<RoadSurfaceIndexedTriangle>,
+    cell_offsets: Vec<u32>,
+    cell_triangle_indices: Vec<u32>,
+}
+
+#[derive(Clone)]
+struct RoadSurfaceTerrainLoopGradingCacheEntry {
+    terrain_source_generation: u64,
+    render_step_bits: u32,
+    points_world: Arc<Vec<RoadVec3>>,
+    influence_bounds: Option<(f32, f32, f32, f32)>,
+    patch_margins: Arc<BTreeMap<(usize, usize), f32>>,
+}
+
+#[derive(Default)]
+struct RoadSurfaceTerrainGradingCache {
+    span_loops: HashMap<usize, Vec<Option<RoadSurfaceTerrainLoopGradingCacheEntry>>>,
+    node_loops: HashMap<u32, Vec<Option<RoadSurfaceTerrainLoopGradingCacheEntry>>>,
+}
+
+/// Prepared owner-local surface lookup reused for every point of one lane.
+pub(crate) struct RoadLaneSurfaceQuery<'a> {
+    node_indices: [Option<&'a RoadSurfaceTriangleQueryIndex>; 2],
+    node_count: usize,
+    span_index: Option<&'a RoadSurfaceTriangleQueryIndex>,
+    carriageway_only: bool,
+}
+
+impl RoadSurfaceVisualPolygon {
+    /// Builds a polygon from its deterministic boundary and triangulation.
+    pub(crate) fn from_parts(
+        points_world: Vec<RoadVec3>,
+        triangles_world: Vec<[RoadVec3; 3]>,
+    ) -> Self {
+        Self {
+            points_world,
+            triangles_world,
+        }
+    }
+}
+
+impl RoadSurfaceTriangleQueryIndex {
+    fn from_surface_polygons(
+        road: &[RoadSurfaceVisualPolygon],
+        curb: &[RoadSurfaceVisualPolygon],
+        sidewalk: &[RoadSurfaceVisualPolygon],
+    ) -> Self {
+        let mut triangles = Vec::new();
+        for (polygons, carriageway) in [(road, true), (curb, false), (sidewalk, false)] {
+            triangles.extend(polygons.iter().flat_map(|polygon| {
+                polygon
+                    .triangles_world
+                    .iter()
+                    .copied()
+                    .map(move |triangle| RoadSurfaceIndexedTriangle {
+                        triangle,
+                        carriageway,
+                    })
+            }));
+        }
+        if triangles.is_empty() {
+            return Self::default();
+        }
+
+        let mut bounds_xz = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for indexed in &triangles {
+            for point in indexed.triangle {
+                bounds_xz[0] = bounds_xz[0].min(point.x);
+                bounds_xz[1] = bounds_xz[1].min(point.z);
+                bounds_xz[2] = bounds_xz[2].max(point.x);
+                bounds_xz[3] = bounds_xz[3].max(point.z);
+            }
+        }
+
+        let mut cell_size_m = ROAD_SURFACE_QUERY_GRID_BASE_CELL_M;
+        let (mut width, mut height) = query_grid_dimensions(bounds_xz, cell_size_m);
+        while width.saturating_mul(height) > ROAD_SURFACE_QUERY_GRID_MAX_CELLS {
+            cell_size_m *= 2.0;
+            (width, height) = query_grid_dimensions(bounds_xz, cell_size_m);
+        }
+        let cell_count = width.saturating_mul(height);
+        let mut counts = vec![0_u32; cell_count];
+        for indexed in &triangles {
+            let (min_x, min_z, max_x, max_z) = query_grid_triangle_cell_bounds(
+                indexed.triangle,
+                bounds_xz,
+                cell_size_m,
+                width,
+                height,
+            );
+            for z in min_z..=max_z {
+                for x in min_x..=max_x {
+                    counts[z * width + x] += 1;
+                }
+            }
+        }
+
+        let mut cell_offsets = Vec::with_capacity(cell_count + 1);
+        cell_offsets.push(0);
+        for count in counts {
+            cell_offsets.push(cell_offsets.last().copied().unwrap_or(0) + count);
+        }
+        let mut cell_triangle_indices =
+            vec![0_u32; cell_offsets.last().copied().unwrap_or(0) as usize];
+        let mut cursors = cell_offsets[..cell_count].to_vec();
+        for (triangle_idx, indexed) in triangles.iter().enumerate() {
+            let (min_x, min_z, max_x, max_z) = query_grid_triangle_cell_bounds(
+                indexed.triangle,
+                bounds_xz,
+                cell_size_m,
+                width,
+                height,
+            );
+            for z in min_z..=max_z {
+                for x in min_x..=max_x {
+                    let cell_idx = z * width + x;
+                    let cursor = &mut cursors[cell_idx];
+                    cell_triangle_indices[*cursor as usize] = triangle_idx as u32;
+                    *cursor += 1;
+                }
+            }
+        }
+
+        Self {
+            bounds_xz,
+            cell_size_m,
+            width,
+            height,
+            triangles,
+            cell_offsets,
+            cell_triangle_indices,
+        }
+    }
+
+    fn cell_triangle_indices(&self, point: RoadVec2) -> &[u32] {
+        if self.width == 0
+            || self.height == 0
+            || point.x < self.bounds_xz[0] - f64::from(SAMPLE_EPSILON_M)
+            || point.y < self.bounds_xz[1] - f64::from(SAMPLE_EPSILON_M)
+            || point.x > self.bounds_xz[2] + f64::from(SAMPLE_EPSILON_M)
+            || point.y > self.bounds_xz[3] + f64::from(SAMPLE_EPSILON_M)
+        {
+            return &[];
+        }
+        let x = (((point.x - self.bounds_xz[0]) / self.cell_size_m).floor() as isize)
+            .clamp(0, self.width as isize - 1) as usize;
+        let z = (((point.y - self.bounds_xz[1]) / self.cell_size_m).floor() as isize)
+            .clamp(0, self.height as isize - 1) as usize;
+        let cell_idx = z * self.width + x;
+        let start = self.cell_offsets[cell_idx] as usize;
+        let end = self.cell_offsets[cell_idx + 1] as usize;
+        &self.cell_triangle_indices[start..end]
+    }
+}
+
+fn query_grid_dimensions(bounds_xz: [f64; 4], cell_size_m: f64) -> (usize, usize) {
+    let width = (((bounds_xz[2] - bounds_xz[0]) / cell_size_m).floor() as usize + 1).max(1);
+    let height = (((bounds_xz[3] - bounds_xz[1]) / cell_size_m).floor() as usize + 1).max(1);
+    (width, height)
+}
+
+fn query_grid_triangle_cell_bounds(
+    triangle: [RoadVec3; 3],
+    bounds_xz: [f64; 4],
+    cell_size_m: f64,
+    width: usize,
+    height: usize,
+) -> (usize, usize, usize, usize) {
+    let epsilon = f64::from(SAMPLE_EPSILON_M);
+    let min_world_x = triangle
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::INFINITY, f64::min)
+        - epsilon;
+    let min_world_z = triangle
+        .iter()
+        .map(|point| point.z)
+        .fold(f64::INFINITY, f64::min)
+        - epsilon;
+    let max_world_x = triangle
+        .iter()
+        .map(|point| point.x)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + epsilon;
+    let max_world_z = triangle
+        .iter()
+        .map(|point| point.z)
+        .fold(f64::NEG_INFINITY, f64::max)
+        + epsilon;
+    let cell_x = |world_x: f64| {
+        (((world_x - bounds_xz[0]) / cell_size_m).floor() as isize).clamp(0, width as isize - 1)
+            as usize
+    };
+    let cell_z = |world_z: f64| {
+        (((world_z - bounds_xz[1]) / cell_size_m).floor() as isize).clamp(0, height as isize - 1)
+            as usize
+    };
+    (
+        cell_x(min_world_x),
+        cell_z(min_world_z),
+        cell_x(max_world_x),
+        cell_z(max_world_z),
+    )
 }
 
 #[cfg(test)]

@@ -70,7 +70,9 @@ fn span_vertical_steps_include_carriageway_sidewalk_boundaries_when_profile_has_
         section_at(20.0),
     ];
     let mut surface = RoadSurfaceSystem::new(64.0);
-    surface.compiled_sections.insert(edge_idx, sections);
+    surface
+        .compiled_sections
+        .insert(edge_idx, std::sync::Arc::new(sections));
 
     let span_piece = surface
         .compile_visual_span_piece(&graph, &flat_terrain(32, 32), edge_idx)
@@ -138,12 +140,12 @@ fn span_vertical_steps_include_generic_non_road_owner_pairs() {
     let mut surface = RoadSurfaceSystem::new(64.0);
     surface.compiled_sections.insert(
         edge_idx,
-        vec![
+        std::sync::Arc::new(vec![
             section_at(0.0),
             section_at(8.0),
             section_at(12.0),
             section_at(20.0),
-        ],
+        ]),
     );
 
     let span_piece = surface

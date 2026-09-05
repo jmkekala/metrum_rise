@@ -85,7 +85,9 @@ impl RoadSurfaceSystem {
         }
         // A cusp has no unique vertex miter. Keep edge-based faces, but do not invent a loop point.
         let outer_loop = if vertex_outer_points.len() == boundary_points.len() {
-            Self::earthwork_visual_polygon_from_road_points(vertex_outer_points)
+            // This polygon is a coverage boundary, never a rendered surface. Avoid an unnecessary
+            // constrained triangulation whose triangles no consumer reads.
+            Self::make_boundary_loop_polygon(vertex_outer_points)
         } else {
             None
         };

@@ -199,7 +199,7 @@ const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
 const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
-const TERRAIN_CDT_CONTRACT_REVISION: i64 = 4;
+const TERRAIN_CDT_CONTRACT_REVISION: i64 = 5;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
@@ -226,7 +226,7 @@ impl TerrainCdtSiteGradingContext<'_> {
         world_bounds: (f32, f32, f32, f32),
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<crate::simulation::terrain::cdt::TerrainCdtTieInGuideSample>,
-        sample_keys: &mut BTreeMap<(i64, i64), ()>,
+        sample_keys: &mut HashSet<(i64, i64)>,
     ) {
         let request = || {
             BuildingSiteGradingRequest::new(

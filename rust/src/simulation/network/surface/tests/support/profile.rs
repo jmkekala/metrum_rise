@@ -39,7 +39,7 @@ pub(in crate::simulation::network::surface::tests) fn assert_rejects_invalid_spa
     let mut surface = RoadSurfaceSystem::new(64.0);
     surface
         .compiled_sections
-        .insert(edge_idx, sections_for_edge(edge_idx));
+        .insert(edge_idx, std::sync::Arc::new(sections_for_edge(edge_idx)));
 
     assert!(
         surface

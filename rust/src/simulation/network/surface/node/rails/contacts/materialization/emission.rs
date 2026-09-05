@@ -53,3 +53,43 @@ pub(super) fn source_authority_constraints_for_generated_contacts(
     }
     source_constraints
 }
+
+fn retain_new_generated_contacts(
+    contacts: &mut Vec<GeneratedSameBandContactConstraint>,
+    constraints: &[NodeRailConstraint],
+) {
+    contacts.sort_unstable();
+    retain_new_sorted_generated_contacts(contacts, constraints);
+}
+
+fn retain_new_sorted_generated_contacts(
+    contacts: &mut Vec<GeneratedSameBandContactConstraint>,
+    constraints: &[NodeRailConstraint],
+) {
+    debug_assert!(contacts.is_sorted());
+    let mut existing = constraints
+        .iter()
+        .filter_map(generated_same_band_contact_constraint_key)
+        .collect::<Vec<_>>();
+    existing.sort_unstable();
+    existing.dedup();
+
+    let mut existing_index = 0;
+    let mut previous_contact_key = None;
+    contacts.retain(|contact| {
+        let key = contact.key();
+        if previous_contact_key == Some(key) {
+            return false;
+        }
+        previous_contact_key = Some(key);
+        while existing
+            .get(existing_index)
+            .is_some_and(|existing| *existing < key)
+        {
+            existing_index += 1;
+        }
+        existing
+            .get(existing_index)
+            .is_none_or(|existing| *existing != key)
+    });
+}

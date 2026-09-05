@@ -15,7 +15,7 @@ impl RoadSurfaceSystem {
         let boundary_loops =
             self.terrain_clip_boundary_loops_for_world_bounds(graph, min_x, min_z, max_x, max_z);
         let source_count = boundary_loops.len();
-        let export = Self::union_terrain_clip_boundary_export(&boundary_loops)?;
+        let export = Self::union_terrain_clip_boundary_refs_export(&boundary_loops)?;
         let footprint_group_ids =
             Self::terrain_cdt_stable_footprint_group_ids_for_terrain_clip_export(&export);
         let road_loops = export

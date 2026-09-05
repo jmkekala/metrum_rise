@@ -80,25 +80,27 @@ pub(super) fn noded_owned_region_contour_with_point_index(
     contour: &NodeOverlayContour,
     point_index: &NodeOwnershipPointIndex,
 ) -> NodeOverlayContour {
-    noded_owned_region_contour_with_edge_points(contour, |start, end| {
-        noded_owned_region_edge_points_with_index(start, end, point_index, true)
+    noded_owned_region_contour_with_edge_points(contour, |start, end, points| {
+        noded_owned_region_edge_points_with_index(start, end, point_index, true, points);
     })
 }
 
 pub(super) fn noded_owned_region_contour_with_rail_paths_and_point_index(
     contour: &NodeOverlayContour,
     point_index: &NodeOwnershipPointIndex,
-    rail_paths: &[Vec<NodeOwnershipPointKey>],
+    rail_paths: &PreparedRailPaths<'_>,
     require_rail_path: bool,
 ) -> NodeOverlayContour {
-    noded_owned_region_contour_with_edge_points(contour, |start, end| {
-        noded_owned_region_edge_points_with_rail_paths_and_point_index(
-            start,
-            end,
-            point_index,
-            rail_paths,
-            require_rail_path,
-        )
+    let mut rail_path_candidate = Vec::new();
+    noded_owned_region_contour_with_edge_points(contour, |start, end, points| {
+        if rail_path_points_between_into(start, end, rail_paths, points, &mut rail_path_candidate) {
+            return;
+        }
+        if require_rail_path {
+            points.extend([start, end]);
+        } else {
+            noded_owned_region_edge_points_with_index(start, end, point_index, false, points);
+        }
     })
 }
 
@@ -107,22 +109,31 @@ pub(super) fn noded_owned_region_contour_with_edge_points(
     mut edge_points: impl FnMut(
         NodeOwnershipPointKey,
         NodeOwnershipPointKey,
-    ) -> Vec<NodeOwnershipPointKey>,
+        &mut Vec<NodeOwnershipPointKey>,
+    ),
 ) -> NodeOverlayContour {
     if contour.len() < 2 {
         return contour.clone();
     }
 
     let mut noded = Vec::with_capacity(contour.len());
+    let mut points = Vec::new();
     for edge_index in 0..contour.len() {
         let start = ownership_key_from_overlay_point(contour[edge_index]);
         let end = ownership_key_from_overlay_point(contour[(edge_index + 1) % contour.len()]);
         if start == end {
             continue;
         }
-        let points = edge_points(start, end);
+        points.clear();
+        edge_points(start, end, &mut points);
         let limit = points.len().saturating_sub(1);
-        noded.extend(points.into_iter().take(limit).map(overlay_point_from_key));
+        noded.extend(
+            points
+                .iter()
+                .take(limit)
+                .copied()
+                .map(overlay_point_from_key),
+        );
     }
     dedup_consecutive_overlay_points(&mut noded);
     if noded.len() >= 2
@@ -145,29 +156,18 @@ pub(super) fn noded_owned_region_edge_points_with_rail_paths(
     require_rail_path: bool,
 ) -> Vec<NodeOwnershipPointKey> {
     let point_index = NodeOwnershipPointIndex::new(global_points);
-    noded_owned_region_edge_points_with_rail_paths_and_point_index(
-        start,
-        end,
-        &point_index,
-        rail_paths,
-        require_rail_path,
-    )
-}
-
-fn noded_owned_region_edge_points_with_rail_paths_and_point_index(
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-    point_index: &NodeOwnershipPointIndex,
-    rail_paths: &[Vec<NodeOwnershipPointKey>],
-    require_rail_path: bool,
-) -> Vec<NodeOwnershipPointKey> {
-    if let Some(points) = rail_path_points_between(start, end, rail_paths) {
+    let rail_paths = PreparedRailPaths::new(rail_paths);
+    let mut points = Vec::new();
+    let mut candidate = Vec::new();
+    if rail_path_points_between_into(start, end, &rail_paths, &mut points, &mut candidate) {
         return points;
     }
     if require_rail_path {
-        return vec![start, end];
+        points.extend([start, end]);
+    } else {
+        noded_owned_region_edge_points_with_index(start, end, &point_index, false, &mut points);
     }
-    noded_owned_region_edge_points_with_index(start, end, point_index, false)
+    points
 }
 
 pub(in crate::simulation::network::surface::node::ownership) fn dedup_consecutive_overlay_points(
@@ -183,30 +183,28 @@ fn noded_owned_region_edge_points_with_index(
     end: NodeOwnershipPointKey,
     point_index: &NodeOwnershipPointIndex,
     exact_segment: bool,
-) -> Vec<NodeOwnershipPointKey> {
+    points: &mut Vec<NodeOwnershipPointKey>,
+) {
     let candidates = if exact_segment {
         point_index.candidates_between(start, end)
     } else {
         point_index.tolerant_candidates_between(start, end)
     };
-    let mut split_points = candidates
-        .iter()
-        .copied()
-        .filter(|point| *point != start && *point != end)
-        .filter(|point| {
-            if exact_segment {
-                point_key_lies_exactly_on_segment(*point, start, end)
-            } else {
-                point_key_lies_on_segment(*point, start, end)
-            }
-        })
-        .collect::<Vec<_>>();
-    split_points.sort_by_key(|point| segment_parameter_key(start, end, *point));
-    split_points.dedup();
-
-    let mut points = Vec::with_capacity(split_points.len() + 2);
-    points.push(start);
-    points.extend(split_points);
+    points.extend(
+        candidates
+            .iter()
+            .copied()
+            .filter(|point| *point != start && *point != end)
+            .filter(|point| {
+                if exact_segment {
+                    point_key_lies_exactly_on_segment(*point, start, end)
+                } else {
+                    point_key_lies_on_segment(*point, start, end)
+                }
+            }),
+    );
+    points.sort_by_key(|point| segment_parameter_key(start, end, *point));
+    points.dedup();
+    points.insert(0, start);
     points.push(end);
-    points
 }

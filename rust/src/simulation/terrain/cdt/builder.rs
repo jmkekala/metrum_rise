@@ -15,7 +15,7 @@ pub(crate) fn build_road_touched_terrain_patch(
         return Err(TerrainCdtError::InvalidPatch);
     }
 
-    let canonical = canonicalize_input(input)?;
+    let mut canonical = canonicalize_input(input)?;
     let spade_vertices = canonical
         .vertices
         .iter()
@@ -23,7 +23,9 @@ pub(crate) fn build_road_touched_terrain_patch(
         .collect::<Vec<_>>();
     let mut invalid_constraint_edges = canonical.invalid_constraint_edges;
     let mut invalid_constraint_samples = Vec::new();
-    let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, canonical.constraints.clone(), |edge| {
+    let constraint_edge_count = canonical.constraints.len();
+    let constraints = std::mem::take(&mut canonical.constraints);
+    let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, constraints, |edge| {
         invalid_constraint_edges += 1;
         insert_invalid_constraint_sample(
             &mut invalid_constraint_samples,
@@ -34,34 +36,48 @@ pub(crate) fn build_road_touched_terrain_patch(
     })
     .map_err(|_| TerrainCdtError::TriangulationFailed)?;
 
-    let mut triangles = Vec::new();
+    let inner_face_count = cdt.num_inner_faces();
+    let mut triangles = Vec::with_capacity(inner_face_count);
     let mut rejected_road_faces = 0usize;
-    let mut all_inner_edges = HashSet::new();
-    let mut rejected_face_edges = HashSet::new();
+    let road_constraint_edges = canonical
+        .road_constraint_edges
+        .iter()
+        .map(|edge| normalize_edge(edge[0], edge[1]))
+        .collect::<HashSet<_>>();
+    let mut road_constraint_vertices = vec![false; canonical.vertices.len()];
+    for &(start, end) in &road_constraint_edges {
+        road_constraint_vertices[start] = true;
+        road_constraint_vertices[end] = true;
+    }
+    let mut accepted_edges = HashSet::with_capacity(road_constraint_edges.len());
+    let mut rejected_face_edges = HashSet::with_capacity(canonical.road_constraint_edges.len());
     for face in cdt.inner_faces() {
         let [a, b, c] = face.vertices();
         let triangle = [a.fix().index(), b.fix().index(), c.fix().index()];
-        let face_edges = triangle_edges(&triangle);
-        all_inner_edges.extend(face_edges);
         let points = [
             canonical.vertices[triangle[0]],
             canonical.vertices[triangle[1]],
             canonical.vertices[triangle[2]],
         ];
-        if terrain_triangle_is_road_owned(
-            triangle,
-            points,
-            &canonical.road_constraint_sources,
-            &canonical.road_loops,
-        ) {
+        if constrained_cdt_face_is_road_owned(points, &canonical.road_loops) {
             rejected_road_faces += 1;
-            rejected_face_edges.extend(face_edges);
+            record_triangle_road_constraint_edges(
+                &triangle,
+                &road_constraint_edges,
+                &road_constraint_vertices,
+                &mut rejected_face_edges,
+            );
             continue;
         }
+        record_triangle_road_constraint_edges(
+            &triangle,
+            &road_constraint_edges,
+            &road_constraint_vertices,
+            &mut accepted_edges,
+        );
         triangles.push(triangle);
     }
 
-    let mut accepted_edges = emitted_triangle_edges(&triangles);
     let mut preserved_road_constraint_edges = canonical
         .road_constraint_edges
         .iter()
@@ -100,13 +116,26 @@ pub(crate) fn build_road_touched_terrain_patch(
                 &canonical.vertices,
             ) {
                 rejected_road_faces += 1;
-                rejected_face_edges.extend(triangle_edges(&triangle));
+                record_triangle_road_constraint_edges(
+                    &triangle,
+                    &road_constraint_edges,
+                    &road_constraint_vertices,
+                    &mut rejected_face_edges,
+                );
             } else {
                 noncrossing_triangles.push(triangle);
             }
         }
         triangles = noncrossing_triangles;
-        accepted_edges = emitted_triangle_edges(&triangles);
+        accepted_edges.clear();
+        for triangle in &triangles {
+            record_triangle_road_constraint_edges(
+                triangle,
+                &road_constraint_edges,
+                &road_constraint_vertices,
+                &mut accepted_edges,
+            );
+        }
         preserved_road_constraint_edges = canonical
             .road_constraint_edges
             .iter()
@@ -130,7 +159,10 @@ pub(crate) fn build_road_touched_terrain_patch(
     let spade_missing_road_constraint_edges = canonical
         .road_constraint_edges
         .iter()
-        .filter(|edge| !all_inner_edges.contains(&normalize_edge(edge[0], edge[1])))
+        .filter(|edge| {
+            let edge = normalize_edge(edge[0], edge[1]);
+            !accepted_edges.contains(&edge) && !rejected_face_edges.contains(&edge)
+        })
         .count();
     let rejected_road_constraint_edges = canonical
         .road_constraint_edges
@@ -155,7 +187,7 @@ pub(crate) fn build_road_touched_terrain_patch(
     Ok(TerrainCdtMesh {
         stats: TerrainCdtStats {
             input_vertices: canonical.vertices.len(),
-            constraint_edges: canonical.constraints.len(),
+            constraint_edges: constraint_edge_count,
             road_constraint_edges: canonical.road_constraint_edges.len(),
             building_site_constraint_edges,
             accepted_faces: triangles.len(),
@@ -198,6 +230,22 @@ pub(crate) fn build_road_touched_terrain_patch(
         seam_quality_samples: canonical.seam_quality_samples,
         unpreserved_road_constraint_samples,
     })
+}
+
+fn record_triangle_road_constraint_edges(
+    triangle: &[usize; 3],
+    road_constraint_edges: &HashSet<(usize, usize)>,
+    road_constraint_vertices: &[bool],
+    output: &mut HashSet<(usize, usize)>,
+) {
+    for edge in triangle_edges(triangle) {
+        if road_constraint_vertices[edge.0]
+            && road_constraint_vertices[edge.1]
+            && road_constraint_edges.contains(&edge)
+        {
+            output.insert(edge);
+        }
+    }
 }
 
 fn terrain_cdt_constraint_edge_is_building_site(

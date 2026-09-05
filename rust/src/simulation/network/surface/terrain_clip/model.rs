@@ -163,6 +163,12 @@ pub(super) struct TerrainClipSourceInterval {
     pub(super) end_y: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TerrainClipPreparedSource {
+    pub(super) edge: TerrainClipSourceEdge,
+    pub(super) interval: TerrainClipSourceInterval,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TerrainClipSegmentPointRecovery {
     Degenerate,

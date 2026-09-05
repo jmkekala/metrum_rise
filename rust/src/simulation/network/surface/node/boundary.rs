@@ -6,7 +6,7 @@ use super::{
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     band_semantics::raised_step_band_rank,
     height,
-    keys::{SurfaceSegmentParameter, SurfaceXzKey},
+    keys::{SurfaceHeightMmKey, SurfaceSegmentParameter, SurfaceXzKey},
     piece::{
         NodeFootprintBoundaryDirectSource, NodeFootprintBoundarySegmentSource,
         NodeFootprintBoundaryVertexSource, NodeOwnedRegion, NodeTopSurfacePolygonSource,
@@ -50,17 +50,17 @@ pub(super) const BOUNDARY_SOURCE_ENDPOINT_DUST_KEYS: i64 = 128;
 
 impl ArrangementBoundaryPointKey {
     pub(super) fn from_world(point: RoadVec3) -> Self {
+        let xz_key = SurfaceXzKey::from_world_xz(point);
         Self {
-            x_key: (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            z_key: (point.z * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-            y_mm: (point.y * 1000.0).round() as i64,
+            x_key: xz_key.x_key(),
+            z_key: xz_key.z_key(),
+            y_mm: SurfaceHeightMmKey::from_m_f64(point.y).as_i64(),
         }
     }
 
     pub(super) fn xz_key(self) -> arrangement::NodeArrangementKey {
-        arrangement::NodeArrangementKey::from_point(RoadVec2::new(
-            self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-            self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        arrangement::NodeArrangementKey::from_surface_key(SurfaceXzKey::from_raw_keys(
+            self.x_key, self.z_key,
         ))
     }
 }

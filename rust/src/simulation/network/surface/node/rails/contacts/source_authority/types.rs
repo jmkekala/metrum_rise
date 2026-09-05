@@ -87,11 +87,11 @@ pub(in crate::simulation::network::surface::node::rails::contacts::source_author
 {
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) key:
         SourceAuthorizedTargetGroupKey,
-    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) contour_indices:
-        Vec<usize>,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shapes:
         NodeOverlayShapes,
-    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_edges:
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_edges_by_min_x:
+        Vec<GeneratedContourDirectedEdge>,
+    pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_edges_by_min_z:
         Vec<GeneratedContourDirectedEdge>,
     pub(in crate::simulation::network::surface::node::rails::contacts::source_authority) shape_keys:
         GeneratedOverlayShapeKeys,

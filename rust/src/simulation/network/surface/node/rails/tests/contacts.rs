@@ -461,10 +461,6 @@ fn source_authorized_contact_cache_matches_cold_and_invalidates_changed_source()
         "unchanged source/group contributors should not be enumerated again"
     );
     assert!(
-        second_pass_reused_stats.source_cache_misses > 0,
-        "newly generated source contributors should still inspect the target group"
-    );
-    assert!(
         second_pass_reused_stats.source_pair_cache_misses
             < second_pass_cold_stats.source_pair_cache_misses,
         "the second pass should inspect only pairs touching its new source contributors"

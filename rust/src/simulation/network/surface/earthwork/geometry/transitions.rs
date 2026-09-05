@@ -88,10 +88,9 @@ impl RoadSurfaceSystem {
             return None;
         }
         let outward_xz = outward_xz.normalize();
-        let distance_m = self.earthwork_transition_distance_m(road_point, outward_xz, terrain);
+        let (distance_m, outer_height_m) =
+            self.earthwork_transition_distance_and_height_m(road_point, outward_xz, terrain);
         let outer_xz = RoadVec2::new(road_point.x, road_point.z) + outward_xz * distance_m;
-        let outer_height_m = terrain.sample_height_world(outer_xz.x as f32, outer_xz.y as f32)
-            * config::HEIGHT_SCALE;
         Some(RoadVec3::new(
             outer_xz.x,
             f64::from(outer_height_m),
@@ -99,12 +98,12 @@ impl RoadSurfaceSystem {
         ))
     }
 
-    pub(in crate::simulation::network::surface::earthwork) fn earthwork_transition_distance_m(
+    fn earthwork_transition_distance_and_height_m(
         &self,
         road_point: RoadVec3,
         outward_xz: RoadVec2,
         terrain: &TerrainSystem,
-    ) -> f64 {
+    ) -> (f64, f32) {
         let source_height_at_edge = terrain
             .sample_height_world(road_point.x as f32, road_point.z as f32)
             * config::HEIGHT_SCALE;
@@ -132,11 +131,16 @@ impl RoadSurfaceSystem {
                 transition_height <= f64::from(source_height)
             };
             if rejoins_source {
-                return distance_m;
+                return (distance_m, source_height);
             }
             distance_m += f64::from(EARTHWORK_MARGIN_SAMPLE_STEP_M);
         }
 
-        f64::from(EARTHWORK_MAX_MARGIN_M)
+        let distance_m = f64::from(EARTHWORK_MAX_MARGIN_M);
+        let sample_x = road_point.x + outward_xz.x * distance_m;
+        let sample_z = road_point.z + outward_xz.y * distance_m;
+        let source_height =
+            terrain.sample_height_world(sample_x as f32, sample_z as f32) * config::HEIGHT_SCALE;
+        (distance_m, source_height)
     }
 }

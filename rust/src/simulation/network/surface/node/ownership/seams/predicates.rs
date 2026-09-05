@@ -15,8 +15,16 @@ use super::super::topology_keys::{
 pub(in crate::simulation::network::surface::node::ownership) fn canonicalize_seam_constraints(
     seams: &mut Vec<NodeRegionSeamConstraint>,
 ) {
-    seams.sort_by(|a, b| seam_constraint_sort_key(a).cmp(&seam_constraint_sort_key(b)));
-    seams.dedup_by(|a, b| seam_constraint_sort_key(a) == seam_constraint_sort_key(b));
+    seams.sort_by_cached_key(seam_constraint_sort_key);
+    let mut previous_key = None;
+    seams.retain(|constraint| {
+        let key = seam_constraint_sort_key(constraint);
+        if previous_key == Some(key) {
+            return false;
+        }
+        previous_key = Some(key);
+        true
+    });
 }
 
 fn seam_constraint_sort_key(
@@ -113,50 +121,20 @@ pub(in crate::simulation::network::surface::node::ownership) fn constraint_appli
     }
 }
 
-pub(super) fn edge_lies_on_constraint(
+pub(super) fn edge_lies_on_constraint_polyline_or_path(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
     constraint: &NodeRailConstraint,
     constraint_points: &[NodeOwnershipPointKey],
     intervals: &mut Vec<(i128, i128)>,
 ) -> bool {
-    if constraint_points.len() < 2 {
-        return false;
-    }
-    constraint_points.windows(2).any(|segment| {
-        let [start, end] = [segment[0], segment[1]];
-        point_key_lies_on_segment(edge_start, start, end)
-            && point_key_lies_on_segment(edge_end, start, end)
-    }) || edge_lies_on_constraint_polyline(edge_start, edge_end, constraint_points, intervals)
+    edge_lies_on_constraint_polyline(edge_start, edge_end, constraint_points, intervals)
         || edge_endpoints_lie_on_constraint_path(
             edge_start,
             edge_end,
             constraint,
             constraint_points,
         )
-}
-
-pub(super) fn shape_edge_carries_full_seam_constraint(
-    edge_start: NodeOwnershipPointKey,
-    edge_end: NodeOwnershipPointKey,
-    constraint: &NodeRailConstraint,
-    constraint_points: &[NodeOwnershipPointKey],
-    intervals: &mut Vec<(i128, i128)>,
-) -> bool {
-    if !shape_edge_requires_exact_constraint_span(constraint) {
-        return edge_lies_on_constraint(
-            edge_start,
-            edge_end,
-            constraint,
-            constraint_points,
-            intervals,
-        );
-    }
-    edge_lies_on_single_constraint_segment_with_points(edge_start, edge_end, constraint_points)
-}
-
-fn shape_edge_requires_exact_constraint_span(constraint: &NodeRailConstraint) -> bool {
-    matches!(constraint.kind, NodeRailConstraintKind::RaisedStepContact)
 }
 
 pub(super) fn edge_lies_on_single_constraint_segment_with_points(
@@ -171,35 +149,23 @@ pub(super) fn edge_lies_on_single_constraint_segment_with_points(
     })
 }
 
-pub(super) fn edge_lies_on_single_constraint_segment(
-    edge_start: NodeOwnershipPointKey,
-    edge_end: NodeOwnershipPointKey,
-    constraint: &NodeRailConstraint,
-) -> bool {
-    constraint.points_xz.windows(2).any(|segment| {
-        let start = ownership_key_from_road_point(segment[0]);
-        let end = ownership_key_from_road_point(segment[1]);
-        point_key_lies_on_segment(edge_start, start, end)
-            && point_key_lies_on_segment(edge_end, start, end)
-    })
-}
-
 pub(super) fn edge_lies_on_constraint_polyline_on_overlay_grid(
     edge_start: NodeOwnershipPointKey,
     edge_end: NodeOwnershipPointKey,
-    constraint: &NodeRailConstraint,
+    constraint_points: &[NodeOwnershipPointKey],
+    intervals: &mut Vec<(i128, i128)>,
 ) -> bool {
-    if edge_start == edge_end || constraint.points_xz.len() < 2 {
+    if edge_start == edge_end || constraint_points.len() < 2 {
         return false;
     }
     let edge_end_parameter = segment_parameter_key(edge_start, edge_end, edge_end);
     if edge_end_parameter <= 0 {
         return false;
     }
-    let mut intervals = Vec::new();
-    for segment in constraint.points_xz.windows(2) {
-        let start = ownership_key_from_road_point(segment[0]);
-        let end = ownership_key_from_road_point(segment[1]);
+    intervals.clear();
+    for segment in constraint_points.windows(2) {
+        let start = segment[0];
+        let end = segment[1];
         if start == end
             || !point_key_collinear_with_edge_on_overlay_grid(start, edge_start, edge_end)
             || !point_key_collinear_with_edge_on_overlay_grid(end, edge_start, edge_end)
@@ -219,7 +185,7 @@ pub(super) fn edge_lies_on_constraint_polyline_on_overlay_grid(
     }
     intervals.sort_unstable();
     let mut covered_end = 0;
-    for (start, end) in intervals {
+    for &(start, end) in intervals.iter() {
         if start > covered_end {
             return false;
         }
@@ -320,32 +286,6 @@ fn constraint_allows_path_chord(constraint: &NodeRailConstraint) -> bool {
             | NodeRailConstraintKind::RaisedStepContact
             | NodeRailConstraintKind::BandBoundary { .. }
     )
-}
-
-pub(super) fn point_lies_on_point_constraint(
-    point: NodeOwnershipPointKey,
-    constraint_points: &[NodeOwnershipPointKey],
-) -> bool {
-    if constraint_points.len() < 2 {
-        return false;
-    }
-    constraint_points.windows(2).any(|segment| {
-        let [start, end] = [segment[0], segment[1]];
-        start == end && point == start
-    })
-}
-
-pub(super) fn point_lies_on_source_segment(
-    point: NodeOwnershipPointKey,
-    constraint_points: &[NodeOwnershipPointKey],
-) -> bool {
-    if constraint_points.len() < 2 {
-        return false;
-    }
-    constraint_points.windows(2).any(|segment| {
-        let [start, end] = [segment[0], segment[1]];
-        start != end && point_key_lies_on_segment(point, start, end)
-    })
 }
 
 pub(super) fn seam_source_from_constraint(

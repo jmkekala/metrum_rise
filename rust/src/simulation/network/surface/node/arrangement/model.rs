@@ -75,6 +75,7 @@ pub(crate) struct NodeArrangementEdge {
     pub(super) exposed_boundary: bool,
     pub(super) constrains_shared_height: bool,
     pub(super) is_material_transition: bool,
+    pub(super) has_applicable_material_source_constraint: bool,
     pub(super) seam_source: NodeSeamSource,
     pub(super) source_constraint_indices: Vec<usize>,
 }
@@ -110,20 +111,6 @@ pub(crate) struct NodeArrangement {
     pub(super) diagnostics: Vec<NodeArrangementDiagnostic>,
     pub(super) vertex_by_context_key:
         BTreeMap<NodeArrangementVertexContextKey, NodeArrangementVertexId>,
-}
-
-impl NodeArrangement {
-    /// Clones an identical arrangement while rebinding graph-local node identity.
-    pub(in crate::simulation::network::surface::node) fn clone_with_node_identity(
-        &self,
-        node_id: u32,
-        piece_kind: RoadSurfaceVisualNodePieceKind,
-    ) -> Self {
-        let mut arrangement = self.clone();
-        arrangement.node_id = node_id;
-        arrangement.piece_kind = piece_kind;
-        arrangement
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -230,7 +217,9 @@ impl NodeArrangementKey {
         Self::from_surface_key(SurfaceXzKey::from_road_xz(point))
     }
 
-    pub(super) fn from_surface_key(key: SurfaceXzKey) -> Self {
+    pub(in crate::simulation::network::surface::node) fn from_surface_key(
+        key: SurfaceXzKey,
+    ) -> Self {
         Self {
             x_key: key.x_key(),
             z_key: key.z_key(),

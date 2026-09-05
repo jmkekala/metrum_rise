@@ -12,10 +12,7 @@ use super::super::rails::{NodeGeneratedContourClaimPriority, NodeGeneratedContou
 use super::super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use super::edges::collect_pending_region_edge_support;
 use super::model::{NodeArrangementHeightKey, NodeArrangementVertexContextKey};
-use super::seams::{
-    NodeRegionSeamConstraint, NodeSeamSource, owners_for_material_seam_constraint,
-    seam_constraint_covers_key, seam_constraint_touches_key,
-};
+use super::seams::{NodeRegionSeamConstraint, NodeSeamSource, owners_for_material_seam_constraint};
 use super::steps::{
     NodeExplicitVerticalStepSegment, explicit_vertical_step_segments_authorize_height_side_at_key,
     owners_form_explicit_vertical_step_pair,
@@ -24,7 +21,7 @@ use super::{
     NodeArrangement, NodeArrangementBuildProfile, NodeArrangementError, NodeArrangementKey,
     NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId, NodeBandOwner,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
 fn elapsed_profile_ms(start: Option<Instant>) -> f64 {
@@ -274,6 +271,9 @@ impl NodeArrangement {
     pub(super) fn reject_implicit_material_height_conflicts(
         &self,
     ) -> Result<Option<Vec<NodeExplicitVerticalStepSegment>>, NodeArrangementError> {
+        let profile_enabled = crate::debug::category_enabled("road");
+        let total_start = profile_enabled.then(Instant::now);
+        let grouping_start = profile_enabled.then(Instant::now);
         let mut vertices_by_key =
             BTreeMap::<NodeArrangementKey, Vec<NodeArrangementVertexId>>::new();
         for vertex in &self.vertices {
@@ -296,13 +296,19 @@ impl NodeArrangement {
         if vertices_by_key.is_empty() {
             return Ok(None);
         }
+        let grouping_ms = elapsed_profile_ms(grouping_start);
 
         let relevant_keys = vertices_by_key.keys().copied().collect::<BTreeSet<_>>();
+        let index_start = profile_enabled.then(Instant::now);
         let conflict_index = MaterialHeightConflictIndex::new(self, &relevant_keys);
+        let index_ms = elapsed_profile_ms(index_start);
+        let check_start = profile_enabled.then(Instant::now);
+        let mut pair_checks = 0_usize;
 
         for (key, vertex_ids) in vertices_by_key {
             for left_index in 0..vertex_ids.len() {
                 for right_index in left_index + 1..vertex_ids.len() {
+                    pair_checks += 1;
                     let left = &self.vertices[vertex_ids[left_index].0];
                     let right = &self.vertices[vertex_ids[right_index].0];
                     if left.height_key == right.height_key {
@@ -369,6 +375,20 @@ impl NodeArrangement {
                 }
             }
         }
+        if profile_enabled {
+            crate::debug_log!(
+                "road",
+                "node_arrangement_conflict_detail node={} relevant_keys={} pair_checks={} vertical_steps={} grouping_ms={:.3} index_ms={:.3} checks_ms={:.3} total_ms={:.3}",
+                self.node_id,
+                relevant_keys.len(),
+                pair_checks,
+                conflict_index.vertical_step_segments.len(),
+                grouping_ms,
+                index_ms,
+                elapsed_profile_ms(check_start),
+                elapsed_profile_ms(total_start),
+            );
+        }
         Ok(Some(conflict_index.vertical_step_segments))
     }
 }
@@ -407,16 +427,40 @@ struct MaterialHeightConflictIndex {
 
 impl MaterialHeightConflictIndex {
     fn new(arrangement: &NodeArrangement, relevant_keys: &BTreeSet<NodeArrangementKey>) -> Self {
+        let profile_enabled = crate::debug::category_enabled("road");
+        let total_start = profile_enabled.then(Instant::now);
+        let steps_start = profile_enabled.then(Instant::now);
+        let vertical_step_segments = arrangement.explicit_vertical_step_segments();
+        let steps_ms = elapsed_profile_ms(steps_start);
         let mut index = Self {
             boundary_pairs_by_key: BTreeMap::new(),
             material_seam_pairs_by_key: BTreeMap::new(),
             material_endpoint_adjacency_by_key: BTreeMap::new(),
             material_source_by_key_owner: BTreeMap::new(),
-            vertical_step_segments: arrangement.explicit_vertical_step_segments(),
+            vertical_step_segments,
         };
+        let edges_start = profile_enabled.then(Instant::now);
         index.collect_edge_pairs(arrangement);
-        index.collect_material_endpoint_adjacency(arrangement, relevant_keys);
-        index.collect_material_source_flags(arrangement, relevant_keys);
+        let edges_ms = elapsed_profile_ms(edges_start);
+        let constraints_start = profile_enabled.then(Instant::now);
+        index.collect_material_constraint_index(arrangement, relevant_keys);
+        if profile_enabled {
+            crate::debug_log!(
+                "road",
+                "node_arrangement_conflict_index_detail node={} relevant_keys={} boundary_keys={} material_seam_keys={} material_endpoint_keys={} material_source_entries={} vertical_steps={} steps_ms={:.3} edges_ms={:.3} constraints_ms={:.3} total_ms={:.3}",
+                arrangement.node_id,
+                relevant_keys.len(),
+                index.boundary_pairs_by_key.len(),
+                index.material_seam_pairs_by_key.len(),
+                index.material_endpoint_adjacency_by_key.len(),
+                index.material_source_by_key_owner.len(),
+                index.vertical_step_segments.len(),
+                steps_ms,
+                edges_ms,
+                elapsed_profile_ms(constraints_start),
+                elapsed_profile_ms(total_start),
+            );
+        }
         index
     }
 
@@ -449,7 +493,7 @@ impl MaterialHeightConflictIndex {
             if edge.is_material_transition
                 && !edge.constrains_shared_height
                 && !edge.source_constraint_indices.is_empty()
-                && arrangement.edge_has_applicable_material_source_constraint(edge)
+                && edge.has_applicable_material_source_constraint
                 && (arrangement.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
                     || !arrangement.edge_has_owner_pair_source_constraint(edge))
             {
@@ -463,29 +507,45 @@ impl MaterialHeightConflictIndex {
         }
     }
 
-    fn collect_material_endpoint_adjacency(
+    fn collect_material_constraint_index(
         &mut self,
         arrangement: &NodeArrangement,
         relevant_keys: &BTreeSet<NodeArrangementKey>,
     ) {
+        let relevant_key_index = RelevantArrangementKeyIndex::new(relevant_keys);
         let mut owners_by_key_constraint =
-            BTreeMap::<(NodeArrangementKey, usize), Vec<NodeBandOwner>>::new();
-        for key in relevant_keys {
-            for region in arrangement.regions() {
-                for constraint in &region.seam_constraints {
-                    if constraint.constrains_shared_height
-                        || !constraint.is_material_transition
-                        || !seam_constraint_touches_key(constraint, *key)
-                    {
-                        continue;
-                    }
-                    merge_sorted_unique(
-                        owners_by_key_constraint
-                            .entry((*key, constraint.constraint_index))
-                            .or_default(),
-                        owners_for_material_seam_constraint(constraint, region.owner),
-                    );
+            HashMap::<(NodeArrangementKey, usize), Vec<NodeBandOwner>>::new();
+        for region in arrangement.regions() {
+            for constraint in &region.seam_constraints {
+                if !constraint.is_material_transition {
+                    continue;
                 }
+                let start = NodeArrangementKey::from_point(constraint.start_xz);
+                let end = NodeArrangementKey::from_point(constraint.end_xz);
+                relevant_key_index.for_each_key_on_segment(start, end, |key| {
+                    if !constraint.constrains_shared_height {
+                        let owners = owners_by_key_constraint
+                            .entry((key, constraint.constraint_index))
+                            .or_default();
+                        for owner in owners_for_material_seam_constraint(constraint, region.owner) {
+                            if let Err(insert_at) = owners.binary_search(&owner) {
+                                owners.insert(insert_at, owner);
+                            }
+                        }
+                    }
+                    if seam_constraint_can_source_region_owner_for_pair(
+                        constraint,
+                        region.owner,
+                        region.owner,
+                    ) {
+                        let flags = self
+                            .material_source_by_key_owner
+                            .entry((key, region.owner))
+                            .or_default();
+                        flags.any = true;
+                        flags.height_split |= !constraint.constrains_shared_height;
+                    }
+                });
             }
         }
 
@@ -506,35 +566,6 @@ impl MaterialHeightConflictIndex {
                         .entry(right)
                         .or_default()
                         .insert(left);
-                }
-            }
-        }
-    }
-
-    fn collect_material_source_flags(
-        &mut self,
-        arrangement: &NodeArrangement,
-        relevant_keys: &BTreeSet<NodeArrangementKey>,
-    ) {
-        for key in relevant_keys {
-            for region in arrangement.regions() {
-                for constraint in &region.seam_constraints {
-                    if !constraint.is_material_transition
-                        || !seam_constraint_can_source_region_owner_for_pair(
-                            constraint,
-                            region.owner,
-                            region.owner,
-                        )
-                        || !seam_constraint_covers_key(constraint, *key)
-                    {
-                        continue;
-                    }
-                    let flags = self
-                        .material_source_by_key_owner
-                        .entry((*key, region.owner))
-                        .or_default();
-                    flags.any = true;
-                    flags.height_split |= !constraint.constrains_shared_height;
                 }
             }
         }
@@ -655,6 +686,50 @@ impl MaterialHeightConflictIndex {
         self.material_source_by_key_owner
             .get(&(key, owner))
             .is_some_and(|flags| flags.any && (!require_height_split || flags.height_split))
+    }
+}
+
+struct RelevantArrangementKeyIndex {
+    by_x: Vec<NodeArrangementKey>,
+    by_z: Vec<NodeArrangementKey>,
+}
+
+impl RelevantArrangementKeyIndex {
+    fn new(keys: &BTreeSet<NodeArrangementKey>) -> Self {
+        let mut by_x = keys.iter().copied().collect::<Vec<_>>();
+        by_x.sort_unstable_by_key(|key| (key.x_key, key.z_key));
+        let mut by_z = keys.iter().copied().collect::<Vec<_>>();
+        by_z.sort_unstable_by_key(|key| (key.z_key, key.x_key));
+        Self { by_x, by_z }
+    }
+
+    fn for_each_key_on_segment(
+        &self,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+        mut visit: impl FnMut(NodeArrangementKey),
+    ) {
+        let x_span = start.x_key.abs_diff(end.x_key);
+        let z_span = start.z_key.abs_diff(end.z_key);
+        let (keys, start_axis, end_axis, axis_value): (
+            &[NodeArrangementKey],
+            i64,
+            i64,
+            fn(NodeArrangementKey) -> i64,
+        ) = if x_span >= z_span {
+            (&self.by_x, start.x_key, end.x_key, |key| key.x_key)
+        } else {
+            (&self.by_z, start.z_key, end.z_key, |key| key.z_key)
+        };
+        let min_axis = start_axis.min(end_axis);
+        let max_axis = start_axis.max(end_axis);
+        let first = keys.partition_point(|key| axis_value(*key) < min_axis);
+        let after_last = keys.partition_point(|key| axis_value(*key) <= max_axis);
+        for &key in &keys[first..after_last] {
+            if key.lies_on_segment(start, end) {
+                visit(key);
+            }
+        }
     }
 }
 
@@ -880,14 +955,15 @@ where
     sources
 }
 
-pub(super) fn merge_sorted_unique<T>(target: &mut Vec<T>, incoming: Vec<T>)
+pub(super) fn merge_sorted_unique<T>(target: &mut Vec<T>, incoming: impl IntoIterator<Item = T>)
 where
     T: Ord,
 {
-    if incoming.is_empty() {
+    let previous_len = target.len();
+    target.extend(incoming);
+    if target.len() == previous_len {
         return;
     }
-    target.extend(incoming);
     target.sort();
     target.dedup();
 }

@@ -43,13 +43,13 @@ use rail_authority::canonical_points_for_rail_set;
 use carrier_provenance::NodeCarrierProvenanceContext;
 use reuse::{FinalBoundaryAssemblyLookup, NodeOwnershipBuildReuseContext};
 pub(crate) use reuse::{NodeOwnershipIncrementalCache, NodeOwnershipReuseStats};
-#[cfg(test)]
-use seams::materialize_noded_region_seam_constraints;
 use seams::{
-    ConstraintOverlapMode, constraint_applies_to_owner,
+    ConstraintOverlapMode, OwnedEdgeRailConstraintIndex, PreparedOwnedShape,
+    PreparedRailConstraintQueryScratch, PreparedRailConstraints,
     materialize_noded_region_seam_constraints_from_boundary_refs_with_reuse,
-    seam_constraints_for_shape,
 };
+#[cfg(test)]
+use seams::{materialize_noded_region_seam_constraints, seam_constraints_for_shape};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 use topology_keys::{
@@ -424,18 +424,32 @@ impl NodeBooleanOwnership {
         let material_domain_ms = elapsed_profile_ms(material_domain_start);
         let region_claim_start = road_debug.then(Instant::now);
         let mut owned_regions = Vec::new();
+        let prepared_constraints_start = road_debug.then(Instant::now);
+        let prepared_constraints = PreparedRailConstraints::new(&rails.constraints);
+        let prepared_constraints_ms = elapsed_profile_ms(prepared_constraints_start);
+        let edge_constraint_index_start = road_debug.then(Instant::now);
+        let rail_constraint_index = OwnedEdgeRailConstraintIndex::new(&rails.constraints);
+        let edge_constraint_index_ms = elapsed_profile_ms(edge_constraint_index_start);
+        let asphalt_claim_start = road_debug.then(Instant::now);
         let asphalt_owner_domains = asphalt_owner_domains(rails);
         let asphalt_result = owned_regions_from_domains(
             &asphalt_shapes,
             &asphalt_owner_domains,
             &rails.constraints,
+            &prepared_constraints,
             ResidualKind::Asphalt,
             constraint_overlap_mode,
+            reuse,
         )?;
         owned_regions.extend(asphalt_result.regions);
+        let asphalt_claim_ms = elapsed_profile_ms(asphalt_claim_start);
 
-        let non_road_result = split_non_road_regions(&non_road_shapes, rails)?;
+        let non_road_claim_start = road_debug.then(Instant::now);
+        let non_road_result =
+            split_non_road_regions(&non_road_shapes, rails, &prepared_constraints, reuse)?;
         owned_regions.extend(non_road_result.regions);
+        let non_road_claim_ms = elapsed_profile_ms(non_road_claim_start);
+        let residual_start = road_debug.then(Instant::now);
         let non_road_residual = overlay_difference(
             &non_road_shapes,
             &non_road_result.claimed_shapes,
@@ -443,12 +457,34 @@ impl NodeBooleanOwnership {
         )?;
         reject_residual(non_road_residual, ResidualKind::NonRoad)?;
         discard_unanchored_bend_asphalt_mouth_band_regions(rails, &mut owned_regions)?;
+        let residual_ms = elapsed_profile_ms(residual_start);
         let region_claim_ms = elapsed_profile_ms(region_claim_start);
+        if road_debug && region_claim_ms >= 2.0 {
+            crate::debug_log!(
+                "road",
+                "node_ownership_claim_detail node={} kind={:?} constraints={} regions={} prepared_constraints_ms={:.3} edge_constraint_index_ms={:.3} asphalt_claim_ms={:.3} non_road_claim_ms={:.3} residual_ms={:.3} total_ms={:.3}",
+                rails.node_id,
+                rails.piece_kind,
+                rails.constraints.len(),
+                owned_regions.len(),
+                prepared_constraints_ms,
+                edge_constraint_index_ms,
+                asphalt_claim_ms,
+                non_road_claim_ms,
+                residual_ms,
+                region_claim_ms,
+            );
+        }
 
         let canonical_cleanup_start = road_debug.then(Instant::now);
+        let canonical_sort_start = road_debug.then(Instant::now);
         sort_boolean_owned_regions(&mut owned_regions);
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
+        let canonical_sort_ms = elapsed_profile_ms(canonical_sort_start);
+        let rail_points_start = road_debug.then(Instant::now);
         let rail_canonical_points = canonical_points_for_rail_set(rails);
+        let rail_points_ms = elapsed_profile_ms(rail_points_start);
+        let cleanup_start = road_debug.then(Instant::now);
         clean_canonical_owned_region_shapes_with_reuse(
             &mut owned_regions,
             &footprint_shapes,
@@ -458,18 +494,25 @@ impl NodeBooleanOwnership {
             rails.piece_kind,
             reuse,
         )?;
+        let cleanup_ms = elapsed_profile_ms(cleanup_start);
+        let footprint_rebuild_start = road_debug.then(Instant::now);
         footprint_shapes =
             final_footprint_shapes_from_owned_regions(rails.node_id, &owned_regions)?;
         canonicalize_footprint_shapes_with_final_points(&mut footprint_shapes, &owned_regions);
+        let footprint_rebuild_ms = elapsed_profile_ms(footprint_rebuild_start);
+        let arrangement_rebuild_start = road_debug.then(Instant::now);
         let mut owned_region_arrangement = rebuild_owned_region_seam_constraints_and_arrangement(
             rails.node_id,
             &mut owned_regions,
             &footprint_shapes,
             &rails.constraints,
+            &prepared_constraints,
+            &rail_constraint_index,
             constraint_overlap_mode,
             rails.piece_kind,
             reuse,
         );
+        let arrangement_rebuild_ms = elapsed_profile_ms(arrangement_rebuild_start);
         let base_canonical_cleanup_ms = elapsed_profile_ms(canonical_cleanup_start);
         let sliver_promotion_start = road_debug.then(Instant::now);
         if promote_source_authorized_asphalt_adjacent_sidewalk_slivers(
@@ -485,6 +528,8 @@ impl NodeBooleanOwnership {
                 &mut owned_regions,
                 &footprint_shapes,
                 &rails.constraints,
+                &prepared_constraints,
+                &rail_constraint_index,
                 constraint_overlap_mode,
                 rails.piece_kind,
                 reuse,
@@ -507,6 +552,8 @@ impl NodeBooleanOwnership {
                 rails,
                 reuse,
                 &rails.constraints,
+                &prepared_constraints,
+                &rail_constraint_index,
                 constraint_overlap_mode,
                 rails.piece_kind,
             )? {
@@ -530,6 +577,8 @@ impl NodeBooleanOwnership {
                 &mut owned_regions,
                 &footprint_shapes,
                 &rails.constraints,
+                &prepared_constraints,
+                &rail_constraint_index,
                 constraint_overlap_mode,
                 rails.piece_kind,
                 reuse,
@@ -563,10 +612,10 @@ impl NodeBooleanOwnership {
                 + reuse_stats.final_assembly_previous_hits
                 + reuse_stats.seam_extraction_previous_hits
                 + reuse_stats.edge_seam_previous_hits;
-            if total_ms >= 20.0 || previous_hits > 0 {
+            if total_ms >= 5.0 || previous_hits > 0 {
                 crate::debug_log!(
                     "road",
-                    "node_ownership_detail node={} kind={:?} contours={} constraints={} footprint_shapes={} asphalt_shapes={} non_road_shapes={} owned_regions={} arrangement_edges={} diagnostics={} cleanup_cache_hits={} cleanup_previous_hits={} cleanup_cache_misses={} final_boundary_cache_hits={} final_boundary_previous_hits={} final_boundary_cache_misses={} final_assembly_cache_hits={} final_assembly_previous_hits={} final_assembly_cache_misses={} seam_extraction_cache_hits={} seam_extraction_previous_hits={} seam_extraction_cache_misses={} edge_seam_cache_hits={} edge_seam_previous_hits={} edge_seam_cache_misses={} footprint_ms={:.3} material_domain_ms={:.3} region_claim_ms={:.3} base_canonical_cleanup_ms={:.3} sliver_promotion_ms={:.3} final_boundary_ms={:.3} dust_cleanup_ms={:.3} validation_ms={:.3} carrier_provenance_ms={:.3} total_ms={:.3}",
+                    "node_ownership_detail node={} kind={:?} contours={} constraints={} footprint_shapes={} asphalt_shapes={} non_road_shapes={} owned_regions={} arrangement_edges={} diagnostics={} cleanup_cache_hits={} cleanup_previous_hits={} cleanup_cache_misses={} final_boundary_cache_hits={} final_boundary_previous_hits={} final_boundary_cache_misses={} final_assembly_cache_hits={} final_assembly_previous_hits={} final_assembly_cache_misses={} seam_extraction_cache_hits={} seam_extraction_previous_hits={} seam_extraction_cache_misses={} edge_seam_cache_hits={} edge_seam_previous_hits={} edge_seam_cache_misses={} footprint_ms={:.3} material_domain_ms={:.3} region_claim_ms={:.3} canonical_sort_ms={:.3} rail_points_ms={:.3} cleanup_ms={:.3} footprint_rebuild_ms={:.3} arrangement_rebuild_ms={:.3} base_canonical_cleanup_ms={:.3} sliver_promotion_ms={:.3} final_boundary_ms={:.3} dust_cleanup_ms={:.3} validation_ms={:.3} carrier_provenance_ms={:.3} total_ms={:.3}",
                     rails.node_id,
                     rails.piece_kind,
                     rails.contours.len(),
@@ -595,6 +644,11 @@ impl NodeBooleanOwnership {
                     footprint_ms,
                     material_domain_ms,
                     region_claim_ms,
+                    canonical_sort_ms,
+                    rail_points_ms,
+                    cleanup_ms,
+                    footprint_rebuild_ms,
+                    arrangement_rebuild_ms,
                     base_canonical_cleanup_ms,
                     sliver_promotion_ms,
                     final_boundary_ms,
@@ -810,6 +864,8 @@ fn materialize_final_boundary_vertices_for_height(
     rails: &NodeRailContourSet,
     reuse: &mut NodeOwnershipBuildReuseContext<'_>,
     rail_constraints: &[NodeRailConstraint],
+    prepared_constraints: &PreparedRailConstraints<'_>,
+    rail_constraint_index: &OwnedEdgeRailConstraintIndex<'_>,
     constraint_overlap_mode: ConstraintOverlapMode,
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> Result<bool, NodeBooleanOwnershipError> {
@@ -844,6 +900,8 @@ fn materialize_final_boundary_vertices_for_height(
                 owned_regions,
                 footprint_shapes,
                 rail_constraints,
+                prepared_constraints,
+                rail_constraint_index,
                 constraint_overlap_mode,
                 piece_kind,
                 reuse,
@@ -1194,45 +1252,102 @@ fn rebuild_owned_region_seam_constraints_and_arrangement(
     owned_regions: &mut [NodeBooleanOwnedRegion],
     footprint_shapes: &NodeOverlayShapes,
     rail_constraints: &[NodeRailConstraint],
+    prepared_constraints: &PreparedRailConstraints<'_>,
+    rail_constraint_index: &OwnedEdgeRailConstraintIndex<'_>,
     constraint_overlap_mode: ConstraintOverlapMode,
     piece_kind: RoadSurfaceVisualNodePieceKind,
     reuse: &mut NodeOwnershipBuildReuseContext<'_>,
 ) -> NodeOwnedRegionArrangement {
+    let road_debug = crate::debug::category_enabled("road");
+    let total_start = road_debug.then(Instant::now);
+    let seam_extraction_start = road_debug.then(Instant::now);
+    let mut applicable_constraints_by_owner = BTreeMap::new();
+    for region in owned_regions.iter() {
+        applicable_constraints_by_owner
+            .entry(region.owner)
+            .or_insert_with(|| prepared_constraints.applicable_constraints(region.owner));
+    }
+    let applicable_constraint_sources_by_owner = applicable_constraints_by_owner
+        .iter()
+        .map(|(&owner, applicability)| {
+            (
+                owner,
+                applicability
+                    .indices()
+                    .iter()
+                    .map(|&index| &rail_constraints[index])
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut constraint_query_scratch = PreparedRailConstraintQueryScratch::default();
     for region in owned_regions.iter_mut() {
-        let applicable_constraints = rail_constraints
-            .iter()
-            .filter(|constraint| constraint_applies_to_owner(constraint, region.owner))
-            .collect::<Vec<_>>();
+        let applicable_constraints = applicable_constraints_by_owner
+            .get(&region.owner)
+            .expect("owned region constraint indices must be prepared");
+        let applicable_constraint_sources = applicable_constraint_sources_by_owner
+            .get(&region.owner)
+            .expect("owned region constraints must be prepared");
+        let prepared_shape = PreparedOwnedShape::new(&region.shape);
         region.seam_constraints = reuse.extracted_region_seams(
             region,
             constraint_overlap_mode,
-            &applicable_constraints,
+            applicable_constraint_sources,
             || {
-                seam_constraints_for_shape(
-                    &region.shape,
+                prepared_constraints.seam_constraints_for_shape(
+                    &prepared_shape,
                     region.owner,
-                    rail_constraints,
+                    applicable_constraints,
                     constraint_overlap_mode,
+                    &mut constraint_query_scratch,
                 )
             },
         );
     }
+    let seam_extraction_ms = elapsed_profile_ms(seam_extraction_start);
+    let boundary_refs_start = road_debug.then(Instant::now);
     let boundary_refs =
         boundaries::OwnedRegionBoundaryRefs::from_owned_regions(owned_regions, footprint_shapes);
+    let boundary_refs_ms = elapsed_profile_ms(boundary_refs_start);
+    let seam_materialization_start = road_debug.then(Instant::now);
     materialize_noded_region_seam_constraints_from_boundary_refs_with_reuse(
         owned_regions,
         &boundary_refs,
-        rail_constraints,
+        rail_constraint_index,
         piece_kind,
         reuse,
     );
-    NodeOwnedRegionArrangement::from_owned_regions_with_boundary_refs(
+    let seam_materialization_ms = elapsed_profile_ms(seam_materialization_start);
+    let arrangement_start = road_debug.then(Instant::now);
+    let arrangement = NodeOwnedRegionArrangement::from_owned_regions_with_boundary_refs(
         node_id,
         piece_kind,
         owned_regions,
         &boundary_refs,
-        rail_constraints,
-    )
+        rail_constraint_index,
+    );
+    let arrangement_ms = elapsed_profile_ms(arrangement_start);
+    if road_debug {
+        let total_ms = elapsed_profile_ms(total_start);
+        if total_ms >= 3.0 {
+            crate::debug_log!(
+                "road",
+                "node_ownership_arrangement_rebuild_detail node={} kind={:?} regions={} rail_constraints={} boundary_edges={} arrangement_edges={} seam_extraction_ms={:.3} boundary_refs_ms={:.3} seam_materialization_ms={:.3} arrangement_ms={:.3} total_ms={:.3}",
+                node_id,
+                piece_kind,
+                owned_regions.len(),
+                rail_constraints.len(),
+                boundary_refs.edges.len(),
+                arrangement.edges.len(),
+                seam_extraction_ms,
+                boundary_refs_ms,
+                seam_materialization_ms,
+                arrangement_ms,
+                total_ms,
+            );
+        }
+    }
+    arrangement
 }
 
 fn materialize_final_footprint_vertices_in_owned_regions(

@@ -1,9 +1,9 @@
 //! Triangulation of individual node-owned regions.
 
 use super::coverage::{
-    overlay_shape_from_arrangement_region, reject_triangle_coverage_mismatch,
-    triangle_coverage_residual_shapes, triangle_double_area_m2, triangle_is_inside_owner,
-    triangle_sort_key,
+    overlay_shape_contains_interior_point, overlay_shape_from_arrangement_region,
+    reject_triangle_coverage_mismatch, triangle_coverage_residual_shapes, triangle_double_area_m2,
+    triangle_is_inside_owner, triangle_sort_key,
 };
 use super::vertices::push_arrangement_constraint_loop;
 use super::*;
@@ -568,54 +568,6 @@ fn overlay_shape_bounds(shape: &NodeOverlayShape) -> Option<(f64, f64, f64, f64)
     bounds
 }
 
-fn overlay_shape_contains_interior_point(
-    shape: &NodeOverlayShape,
-    point: NodeOverlayPoint,
-) -> bool {
-    let mut inside = false;
-    for contour in shape {
-        if point_lies_on_contour(point, contour) {
-            return false;
-        }
-        if contour_contains_point(contour, point) {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
-fn contour_contains_point(contour: &NodeOverlayContour, point: NodeOverlayPoint) -> bool {
-    if contour.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut previous = contour[contour.len() - 1];
-    for current in contour {
-        if (f64::from(current[1]) > f64::from(point[1]))
-            != (f64::from(previous[1]) > f64::from(point[1]))
-        {
-            let crossing_x = f64::from(previous[0])
-                + (f64::from(point[1]) - f64::from(previous[1]))
-                    * (f64::from(current[0]) - f64::from(previous[0]))
-                    / (f64::from(current[1]) - f64::from(previous[1]));
-            if f64::from(point[0]) < crossing_x {
-                inside = !inside;
-            }
-        }
-        previous = *current;
-    }
-    inside
-}
-
-fn point_lies_on_contour(point: NodeOverlayPoint, contour: &NodeOverlayContour) -> bool {
-    if contour.len() < 2 {
-        return false;
-    }
-    (0..contour.len()).any(|index| {
-        point_lies_on_segment(point, contour[index], contour[(index + 1) % contour.len()])
-    })
-}
-
 fn point_lies_on_segment(
     point: NodeOverlayPoint,
     start: NodeOverlayPoint,
@@ -1135,7 +1087,11 @@ fn height_authority_from_region_boundary(
                 let start_key =
                     SurfaceXzKey::from_raw_keys(start.key().x_key(), start.key().z_key());
                 let end_key = SurfaceXzKey::from_raw_keys(end.key().x_key(), end.key().z_key());
-                let parameter = segments::overlay_segment_parameter(point_key, start_key, end_key)?;
+                let Some(parameter) =
+                    segments::overlay_segment_parameter(point_key, start_key, end_key)
+                else {
+                    continue;
+                };
                 let height_mm =
                     segments::interpolate_height_i64(start.height_mm(), end.height_mm(), parameter);
                 let height_m = height_mm as f64 / 1000.0;

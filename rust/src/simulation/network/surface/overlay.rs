@@ -12,6 +12,7 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::i_float::int::point::IntPoint;
 
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
+use crate::simulation::core::round_f64_to_i64;
 
 // Overlay boolean operations quantize coordinates onto the project overlay grid.
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
@@ -185,8 +186,8 @@ impl RoadSurfaceSystem {
 
     fn overlay_point_grid_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
         (
-            (point[0] * NODE_OVERLAY_SCALE).round() as i64,
-            (point[1] * NODE_OVERLAY_SCALE).round() as i64,
+            round_f64_to_i64(point[0] * NODE_OVERLAY_SCALE),
+            round_f64_to_i64(point[1] * NODE_OVERLAY_SCALE),
         )
     }
 
@@ -292,8 +293,8 @@ impl RoadSurfaceSystem {
         for contour in shape {
             points += contour.len();
             for point in contour {
-                min_x = min_x.min((point[0] * NODE_OVERLAY_SCALE).round() as i64);
-                min_z = min_z.min((point[1] * NODE_OVERLAY_SCALE).round() as i64);
+                min_x = min_x.min(round_f64_to_i64(point[0] * NODE_OVERLAY_SCALE));
+                min_z = min_z.min(round_f64_to_i64(point[1] * NODE_OVERLAY_SCALE));
             }
         }
         (min_x, min_z, points)

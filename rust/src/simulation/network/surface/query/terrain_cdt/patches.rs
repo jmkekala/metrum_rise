@@ -127,50 +127,186 @@ impl RoadSurfaceSystem {
     ) -> BTreeMap<(usize, usize), f32> {
         let base_margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
         let query_margin_m = EARTHWORK_MAX_MARGIN_M + base_margin_m;
-        let mut patch_margins = BTreeMap::new();
+        let target_patches = patch_keys
+            .iter()
+            .filter_map(|&key| {
+                terrain
+                    .render_patch_world_bounds(key.0, key.1)
+                    .map(|bounds| (key, bounds))
+            })
+            .collect::<Vec<_>>();
+        if target_patches.is_empty() {
+            return BTreeMap::new();
+        }
 
-        for &(patch_x, patch_z) in patch_keys {
-            let Some((min_x, min_z, max_x, max_z)) =
-                terrain.render_patch_world_bounds(patch_x, patch_z)
-            else {
+        // A dirty render-patch neighborhood overlaps the same short road loops repeatedly.
+        // Resolve contributors for the batch, then grade each loop once and distribute its
+        // exact result to every target patch. This keeps terrain sampling proportional to the
+        // changed road geometry instead of multiplying it by the number of dirty patches.
+        let mut edge_indices = BTreeSet::new();
+        let mut node_ids = BTreeSet::new();
+        for &(_, (min_x, min_z, max_x, max_z)) in &target_patches {
+            let (patch_edges, patch_nodes) = self.collect_spatial_query_contributors_for_bounds(
+                f64::from(min_x - query_margin_m),
+                f64::from(min_z - query_margin_m),
+                f64::from(max_x + query_margin_m),
+                f64::from(max_z + query_margin_m),
+            );
+            edge_indices.extend(patch_edges);
+            node_ids.extend(patch_nodes);
+        }
+
+        let mut patch_margins = BTreeMap::new();
+        let edge_count = edge_indices.len();
+        let node_count = node_ids.len();
+        let mut evaluated_loop_count = 0usize;
+        let mut cached_loop_count = 0usize;
+        let grading_cache = Arc::clone(&self.terrain_grading_cache);
+        let mut grading_cache = grading_cache
+            .lock()
+            .expect("road terrain grading cache lock poisoned");
+        for edge_idx in edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            let loops = self.terrain_clip_boundary_loops_for_world_bounds(
-                graph,
-                min_x - query_margin_m,
-                min_z - query_margin_m,
-                max_x + query_margin_m,
-                max_z + query_margin_m,
-            );
-            let mut local_margins = BTreeMap::new();
-            let mut exact_margin_m = None::<f32>;
-            for boundary_loop in &loops {
-                let (influence_bounds, target_margin_m) =
-                    Self::insert_terrain_patch_grading_margins_for_loop(
-                        terrain,
-                        boundary_loop,
-                        render_step_m,
-                        base_margin_m,
-                        &mut local_margins,
-                        Some((patch_x, patch_z)),
-                    );
-                if let Some(target_margin_m) = Self::terrain_cdt_exact_target_patch_margin(
-                    influence_bounds,
-                    (min_x, min_z, max_x, max_z),
-                    target_margin_m,
+            for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate()
+            {
+                if let Some(cached) = Self::insert_cached_terrain_patch_grading_margins_for_targets(
+                    &mut grading_cache.span_loops,
+                    edge_idx,
+                    loop_index,
+                    terrain,
+                    boundary_loop,
+                    render_step_m,
+                    base_margin_m,
+                    query_margin_m,
+                    &target_patches,
+                    &mut patch_margins,
                 ) {
-                    exact_margin_m = Some(
-                        exact_margin_m
-                            .map_or(target_margin_m, |current| current.max(target_margin_m)),
-                    );
+                    evaluated_loop_count += 1;
+                    cached_loop_count += usize::from(cached);
                 }
             }
-            if let Some(margin_m) = exact_margin_m {
-                patch_margins.insert((patch_x, patch_z), margin_m);
+        }
+        for node_id in node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            if !self.node_has_terrain_clip_surface_edges(graph, node_id) {
+                continue;
             }
+            for (loop_index, boundary_loop) in piece.terrain_clip_boundary_loops.iter().enumerate()
+            {
+                if let Some(cached) = Self::insert_cached_terrain_patch_grading_margins_for_targets(
+                    &mut grading_cache.node_loops,
+                    node_id,
+                    loop_index,
+                    terrain,
+                    boundary_loop,
+                    render_step_m,
+                    base_margin_m,
+                    query_margin_m,
+                    &target_patches,
+                    &mut patch_margins,
+                ) {
+                    evaluated_loop_count += 1;
+                    cached_loop_count += usize::from(cached);
+                }
+            }
+        }
+        if crate::debug::category_enabled("road") && crate::debug::is_perf_enabled() {
+            crate::debug_log!(
+                "road",
+                "terrain_grading_batch target_patches={} span_owners={} node_owners={} evaluated_loops={} cached_loops={} output_patches={}",
+                target_patches.len(),
+                edge_count,
+                node_count,
+                evaluated_loop_count,
+                cached_loop_count,
+                patch_margins.len()
+            );
         }
 
         patch_margins
+    }
+
+    fn insert_cached_terrain_patch_grading_margins_for_targets<
+        Owner: Eq + std::hash::Hash + Copy,
+    >(
+        owner_cache: &mut HashMap<Owner, Vec<Option<RoadSurfaceTerrainLoopGradingCacheEntry>>>,
+        owner: Owner,
+        loop_index: usize,
+        terrain: &TerrainSystem,
+        boundary_loop: &RoadSurfaceTerrainClipLoop,
+        render_step_m: f32,
+        base_margin_m: f32,
+        query_margin_m: f32,
+        target_patches: &[((usize, usize), (f32, f32, f32, f32))],
+        patch_margins: &mut BTreeMap<(usize, usize), f32>,
+    ) -> Option<bool> {
+        let Some((loop_min_x, loop_min_z, loop_max_x, loop_max_z)) =
+            Self::terrain_clip_boundary_loop_bounds_xz(boundary_loop)
+        else {
+            return None;
+        };
+        if !target_patches.iter().any(
+            |&(_, (patch_min_x, patch_min_z, patch_max_x, patch_max_z))| {
+                loop_min_x <= f64::from(patch_max_x + query_margin_m)
+                    && loop_max_x >= f64::from(patch_min_x - query_margin_m)
+                    && loop_min_z <= f64::from(patch_max_z + query_margin_m)
+                    && loop_max_z >= f64::from(patch_min_z - query_margin_m)
+            },
+        ) {
+            return None;
+        }
+
+        let owner_loops = owner_cache.entry(owner).or_default();
+        if owner_loops.len() <= loop_index {
+            owner_loops.resize_with(loop_index + 1, || None);
+        }
+        let cache_matches = owner_loops[loop_index].as_ref().is_some_and(|cached| {
+            cached.terrain_source_generation == terrain.source_generation()
+                && cached.render_step_bits == render_step_m.to_bits()
+                && cached.points_world.as_slice() == boundary_loop.points_world
+        });
+        if !cache_matches {
+            let mut loop_margins = BTreeMap::new();
+            let (influence_bounds, _) = Self::insert_terrain_patch_grading_margins_for_loop(
+                terrain,
+                boundary_loop,
+                render_step_m,
+                base_margin_m,
+                &mut loop_margins,
+                None,
+            );
+            owner_loops[loop_index] = Some(RoadSurfaceTerrainLoopGradingCacheEntry {
+                terrain_source_generation: terrain.source_generation(),
+                render_step_bits: render_step_m.to_bits(),
+                points_world: Arc::new(boundary_loop.points_world.clone()),
+                influence_bounds,
+                patch_margins: Arc::new(loop_margins),
+            });
+        }
+        let cached = owner_loops[loop_index]
+            .as_ref()
+            .expect("terrain grading cache entry must exist after fill");
+        for &(key, target_bounds) in target_patches {
+            let Some(&target_margin_m) = cached.patch_margins.get(&key) else {
+                continue;
+            };
+            let Some(target_margin_m) = Self::terrain_cdt_exact_target_patch_margin(
+                cached.influence_bounds,
+                target_bounds,
+                Some(target_margin_m),
+            ) else {
+                continue;
+            };
+            patch_margins
+                .entry(key)
+                .and_modify(|current| *current = current.max(target_margin_m))
+                .or_insert(target_margin_m);
+        }
+        Some(cache_matches)
     }
 
     fn terrain_cdt_exact_target_patch_margin(
@@ -189,14 +325,14 @@ impl RoadSurfaceSystem {
         has_exact_influence.then_some(target_margin_m).flatten()
     }
 
-    pub(super) fn terrain_clip_boundary_loops_for_world_bounds(
-        &self,
+    pub(super) fn terrain_clip_boundary_loops_for_world_bounds<'a>(
+        &'a self,
         graph: &RegionGraph,
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-    ) -> Vec<RoadSurfaceTerrainClipLoop> {
+    ) -> Vec<&'a RoadSurfaceTerrainClipLoop> {
         let mut boundary_loops = Vec::new();
         let (edge_indices, node_ids) = self.collect_spatial_query_contributors_for_bounds(
             f64::from(min_x),
@@ -242,13 +378,13 @@ impl RoadSurfaceSystem {
         boundary_loops
     }
 
-    fn collect_terrain_clip_boundary_loops_from_piece(
-        source: &[RoadSurfaceTerrainClipLoop],
+    fn collect_terrain_clip_boundary_loops_from_piece<'a>(
+        source: &'a [RoadSurfaceTerrainClipLoop],
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-        out: &mut Vec<RoadSurfaceTerrainClipLoop>,
+        out: &mut Vec<&'a RoadSurfaceTerrainClipLoop>,
     ) {
         for boundary_loop in source {
             if Self::visual_points_overlap_bounds_xz(
@@ -258,7 +394,7 @@ impl RoadSurfaceSystem {
                 max_x,
                 max_z,
             ) {
-                out.push(boundary_loop.clone());
+                out.push(boundary_loop);
             }
         }
     }
@@ -572,7 +708,6 @@ impl RoadSurfaceSystem {
         target_inserted
     }
 
-    #[cfg(test)]
     fn terrain_clip_boundary_loop_bounds_xz(
         boundary_loop: &RoadSurfaceTerrainClipLoop,
     ) -> Option<(f64, f64, f64, f64)> {

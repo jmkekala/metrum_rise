@@ -415,6 +415,7 @@ impl SimulationNode {
                 },
                 surface_generation: request.surface_generation,
                 patch: source.patch,
+                previous_patch: source.previous,
                 windows: window_plan.windows,
                 reused_windows: window_plan.reused_windows,
                 input_clip_loop_count: window_plan.represented_road_loop_count,

@@ -8,7 +8,9 @@ use super::super::rails::{
 };
 use super::super::{NodeOverlayContour, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem};
 use super::seams::ConstraintOverlapMode;
-use super::seams::{PreparedOwnedShape, PreparedRailConstraints};
+use super::seams::{
+    PreparedOwnedShape, PreparedRailConstraintQueryScratch, PreparedRailConstraints,
+};
 use super::{NodeBooleanOwnedRegion, NodeBooleanOwnershipError};
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::BTreeMap;

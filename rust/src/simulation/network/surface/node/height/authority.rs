@@ -71,6 +71,38 @@ impl NodeHeightPatchAuthority {
 }
 
 impl NodeBandHeightField {
+    pub(super) fn merge_agreed_height_candidate(
+        &self,
+        point_xz: RoadVec2,
+        owner: Option<NodeBandOwner>,
+        accepted: Option<NodeAuthorizedHeightCandidate>,
+        incoming: NodeAuthorizedHeightCandidate,
+    ) -> Result<NodeAuthorizedHeightCandidate, NodeHeightFieldError> {
+        let Some(accepted) = accepted else {
+            return Ok(incoming);
+        };
+        let accepted_height_mm = quantize_m(accepted.height_m);
+        let incoming_height_mm = quantize_m(incoming.height_m);
+        if accepted_height_mm == incoming_height_mm {
+            return Ok(accepted);
+        }
+        let key = NodeHeightPointKey::from_point(point_xz);
+        Err(NodeHeightFieldError::SourceHeightFieldConflict {
+            mouth_order_index: self.id.mouth_order_index(),
+            band_index: self.id.band_index(),
+            source_kind: self.kind,
+            height_field_id: self.id,
+            owner,
+            existing_authority: accepted.authority,
+            incoming_authority: incoming.authority,
+            point_x_mm: key.x_mm(),
+            point_z_mm: key.z_mm(),
+            existing_height_mm: accepted_height_mm,
+            incoming_height_mm,
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn agreed_height(
         &self,
         point_xz: RoadVec2,
@@ -91,29 +123,14 @@ impl NodeBandHeightField {
                 raw_parameter: f64::NAN,
             });
         };
-        let first_height_mm = quantize_m(first_candidate.height_m);
+        let mut accepted = first_candidate;
         for candidate in candidates.iter().copied().skip(1) {
-            let height_mm = quantize_m(candidate.height_m);
-            if height_mm != first_height_mm {
-                let key = NodeHeightPointKey::from_point(point_xz);
-                return Err(NodeHeightFieldError::SourceHeightFieldConflict {
-                    mouth_order_index: self.id.mouth_order_index(),
-                    band_index: self.id.band_index(),
-                    source_kind: self.kind,
-                    height_field_id: self.id,
-                    owner,
-                    existing_authority: first_candidate.authority,
-                    incoming_authority: candidate.authority,
-                    point_x_mm: key.x_mm(),
-                    point_z_mm: key.z_mm(),
-                    existing_height_mm: first_height_mm,
-                    incoming_height_mm: height_mm,
-                });
-            }
+            accepted =
+                self.merge_agreed_height_candidate(point_xz, owner, Some(accepted), candidate)?;
         }
         Ok(NodeEvaluatedHeight {
-            height_m: first_candidate.height_m,
-            authority: first_candidate.authority,
+            height_m: accepted.height_m,
+            authority: accepted.authority,
         })
     }
 }

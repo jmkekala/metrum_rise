@@ -408,17 +408,31 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
         }
 
         let mut writes = Vec::new();
-        for grid_z in grid_min_z..=grid_max_z {
-            for grid_x in grid_min_x..=grid_max_x {
-                let candidate_index = (grid_z - grid_min_z) * grid_width + (grid_x - grid_min_x);
-                let Some(candidate) = candidates[candidate_index] else {
-                    continue;
-                };
-                writes.push(EarthworkStampWrite {
-                    grid_x,
-                    grid_z,
-                    height_sample: candidate.height_sample,
-                });
+        let storage_chunk_size = self.terrain.storage_chunk_size_cells();
+        let min_storage_chunk_x = grid_min_x / storage_chunk_size;
+        let max_storage_chunk_x = grid_max_x / storage_chunk_size;
+        let min_storage_chunk_z = grid_min_z / storage_chunk_size;
+        let max_storage_chunk_z = grid_max_z / storage_chunk_size;
+        for storage_chunk_z in min_storage_chunk_z..=max_storage_chunk_z {
+            let chunk_min_z = grid_min_z.max(storage_chunk_z * storage_chunk_size);
+            let chunk_max_z = grid_max_z.min((storage_chunk_z + 1) * storage_chunk_size - 1);
+            for storage_chunk_x in min_storage_chunk_x..=max_storage_chunk_x {
+                let chunk_min_x = grid_min_x.max(storage_chunk_x * storage_chunk_size);
+                let chunk_max_x = grid_max_x.min((storage_chunk_x + 1) * storage_chunk_size - 1);
+                for grid_z in chunk_min_z..=chunk_max_z {
+                    for grid_x in chunk_min_x..=chunk_max_x {
+                        let candidate_index =
+                            (grid_z - grid_min_z) * grid_width + (grid_x - grid_min_x);
+                        let Some(candidate) = candidates[candidate_index] else {
+                            continue;
+                        };
+                        writes.push(EarthworkStampWrite {
+                            grid_x,
+                            grid_z,
+                            height_sample: candidate.height_sample,
+                        });
+                    }
+                }
             }
         }
         self.stats.final_unique_writes = writes.len();
@@ -518,7 +532,7 @@ impl RoadSurfaceSystem {
             }
             builder.stats.span_owners += 1;
             let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
-            for region in &piece.span_earthwork_support_regions {
+            for region in piece.span_earthwork_support_regions.iter() {
                 builder.collect_polygon(&region.polygon, height_offset_m);
             }
         }

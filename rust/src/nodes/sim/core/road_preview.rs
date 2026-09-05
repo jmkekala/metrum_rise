@@ -1,6 +1,6 @@
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use super::state::SimCore;
@@ -24,11 +24,11 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
-    topology_reuse: Option<RoadPreviewTopologyReuse>,
+    topology_reuse: Option<Arc<Mutex<Option<RoadPreviewTopologyReuse>>>>,
 }
 
 /// Exact road validation that can be reused while its source generation and inputs still match.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct RoadPreviewValidationCertificate {
     surface_generation: u64,
     fwd_lanes: u8,
@@ -36,11 +36,11 @@ pub(crate) struct RoadPreviewValidationCertificate {
     snap_to_existing_roads: bool,
     prepared_points: Vec<godot::prelude::Vector3>,
     validation: RoadPreviewValidation,
-    topology_reuse: Option<RoadPreviewTopologyReuse>,
+    topology_reuse: Mutex<Option<RoadPreviewTopologyReuse>>,
 }
 
 impl RoadPreviewSnapshot {
-    /// Copies a successful exact preview into a certificate for the authoritative commit path.
+    /// Moves a successful exact preview artifact into a certificate for one authoritative commit.
     pub(crate) fn validation_certificate(&self) -> Option<RoadPreviewValidationCertificate> {
         (self.is_valid && self.surface_generation > 0).then(|| RoadPreviewValidationCertificate {
             surface_generation: self.surface_generation,
@@ -49,7 +49,12 @@ impl RoadPreviewSnapshot {
             snap_to_existing_roads: self.snap_to_existing_roads,
             prepared_points: self.prepared_points.clone(),
             validation: self.validation.clone(),
-            topology_reuse: self.topology_reuse.clone(),
+            topology_reuse: Mutex::new(self.topology_reuse.as_ref().and_then(|topology_reuse| {
+                topology_reuse
+                    .lock()
+                    .expect("road preview topology lock poisoned")
+                    .take()
+            })),
         })
     }
 }
@@ -72,9 +77,12 @@ impl RoadPreviewValidationCertificate {
             .then_some(&self.validation)
     }
 
-    /// Clones preview-produced topology after `validation_for` accepted the exact certificate.
+    /// Takes preview-produced topology after `validation_for` accepted the exact certificate.
     pub(crate) fn topology_reuse(&self) -> Option<RoadPreviewTopologyReuse> {
-        self.topology_reuse.clone()
+        self.topology_reuse
+            .lock()
+            .expect("road preview certificate topology lock poisoned")
+            .take()
     }
 }
 
@@ -120,14 +128,38 @@ pub(crate) fn road_tool_snapshots_from_core(
     {
         return None;
     }
+    let snapshot_start = Instant::now();
+    let terrain_start = Instant::now();
     let terrain = Arc::new(core.heightmap.clone());
+    let terrain_ms = terrain_start.elapsed().as_secs_f64() * 1000.0;
+    let graph_start = Instant::now();
     let region_graph = Arc::new(core.region_graph.clone());
+    let graph_ms = graph_start.elapsed().as_secs_f64() * 1000.0;
+    let surface_start = Instant::now();
     let road_surface = Arc::new(core.transit_network.road_surface.clone());
+    let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
+    let water_start = Instant::now();
     let water = Arc::new(core.watermap.clone());
+    let water_ms = water_start.elapsed().as_secs_f64() * 1000.0;
     let surface_chunk_span_m = road_surface.chunk_span_m();
     let (surface_chunk_origin_x_m, surface_chunk_origin_z_m) = road_surface.chunk_origin_m();
     let surface_generation = core.road_tool_surface_generation;
+    let ghost_start = Instant::now();
     let ghost_snap_index = Arc::new(RoadGhostSnapIndex::from_graph(region_graph.as_ref()));
+    let ghost_ms = ghost_start.elapsed().as_secs_f64() * 1000.0;
+    if crate::debug::is_perf_enabled() {
+        println!(
+            "[DEBUG:perf] road_tool_snapshot generation={} edges={} terrain_ms={:.3} graph_ms={:.3} surface_ms={:.3} water_ms={:.3} ghost_ms={:.3} total_ms={:.3}",
+            surface_generation,
+            region_graph.edge_count(),
+            terrain_ms,
+            graph_ms,
+            surface_ms,
+            water_ms,
+            ghost_ms,
+            snapshot_start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 
     Some((
         RoadPreviewWorkerContext {
@@ -259,7 +291,8 @@ pub(crate) fn compile_road_preview_from_context(
         surface_vertices: preview.surface_vertices,
         validation: preview.validation,
         is_valid: preview.is_valid,
-        topology_reuse,
+        topology_reuse: topology_reuse
+            .map(|topology_reuse| Arc::new(Mutex::new(Some(topology_reuse)))),
     }
 }
 

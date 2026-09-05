@@ -15,9 +15,6 @@ use super::{
     NodeBooleanOwnedRegion, NodeOverlayShape, NodeOwnedRegionArrangement, RoadSurfaceBandKind,
     RoadSurfaceVisualNodePieceKind,
 };
-use crate::simulation::network::surface::{
-    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, keys::SURFACE_XZ_KEY_SCALE,
-};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -138,58 +135,6 @@ impl RailConstraintReuseKey {
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         }
-    }
-}
-
-#[derive(Clone)]
-struct IndexedRailConstraintReuseKey {
-    min: NodeOwnershipPointKey,
-    max: NodeOwnershipPointKey,
-    key: Arc<RailConstraintReuseKey>,
-}
-
-impl IndexedRailConstraintReuseKey {
-    fn from_constraint(
-        constraint: &NodeRailConstraint,
-        key: Arc<RailConstraintReuseKey>,
-    ) -> Option<Self> {
-        let first = constraint
-            .points_xz
-            .first()
-            .copied()
-            .map(ownership_key_from_road_point)?;
-        let mut min = first;
-        let mut max = first;
-        for point in constraint
-            .points_xz
-            .iter()
-            .skip(1)
-            .copied()
-            .map(ownership_key_from_road_point)
-        {
-            min.0 = min.0.min(point.0);
-            min.1 = min.1.min(point.1);
-            max.0 = max.0.max(point.0);
-            max.1 = max.1.max(point.1);
-        }
-        Some(Self { min, max, key })
-    }
-
-    fn may_touch_edge(&self, start: NodeOwnershipPointKey, end: NodeOwnershipPointKey) -> bool {
-        let padding =
-            (f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * SURFACE_XZ_KEY_SCALE).ceil() as i64;
-        let edge_min = (
-            start.0.min(end.0).saturating_sub(padding),
-            start.1.min(end.1).saturating_sub(padding),
-        );
-        let edge_max = (
-            start.0.max(end.0).saturating_add(padding),
-            start.1.max(end.1).saturating_add(padding),
-        );
-        self.max.0 >= edge_min.0
-            && self.min.0 <= edge_max.0
-            && self.max.1 >= edge_min.1
-            && self.min.1 <= edge_max.1
     }
 }
 
@@ -538,7 +483,6 @@ pub(super) struct NodeOwnershipBuildReuseContext<'a> {
     stats: NodeOwnershipReuseStats,
     all_constraint_keys: Box<[Arc<RailConstraintReuseKey>]>,
     constraint_keys_by_index: BTreeMap<usize, Arc<RailConstraintReuseKey>>,
-    indexed_constraints: Vec<IndexedRailConstraintReuseKey>,
     current_carrier_authorities:
         BTreeMap<CarrierSourceAuthorityLookupKey, Arc<CarrierSourceAuthorityReuseKey>>,
     tracking_final_assembly_contributors: bool,
@@ -552,16 +496,10 @@ impl<'a> NodeOwnershipBuildReuseContext<'a> {
         rail_constraints: &[NodeRailConstraint],
     ) -> Self {
         let mut constraint_keys_by_index = BTreeMap::new();
-        let mut indexed_constraints = Vec::with_capacity(rail_constraints.len());
         let mut all_constraint_keys = Vec::with_capacity(rail_constraints.len());
         for constraint in rail_constraints {
             let key = Arc::new(RailConstraintReuseKey::from_constraint(constraint));
             constraint_keys_by_index.insert(constraint.constraint_index, Arc::clone(&key));
-            if let Some(indexed) =
-                IndexedRailConstraintReuseKey::from_constraint(constraint, Arc::clone(&key))
-            {
-                indexed_constraints.push(indexed);
-            }
             all_constraint_keys.push(key);
         }
         Self {
@@ -570,7 +508,6 @@ impl<'a> NodeOwnershipBuildReuseContext<'a> {
             stats: NodeOwnershipReuseStats::default(),
             all_constraint_keys: all_constraint_keys.into_boxed_slice(),
             constraint_keys_by_index,
-            indexed_constraints,
             current_carrier_authorities: BTreeMap::new(),
             tracking_final_assembly_contributors: false,
             final_assembly_extracted_region_seam_keys: BTreeSet::new(),
@@ -832,14 +769,15 @@ impl<'a> NodeOwnershipBuildReuseContext<'a> {
         seams
     }
 
-    pub(super) fn materialized_owned_edge_seams(
+    pub(super) fn materialized_owned_edge_seams<'constraint>(
         &mut self,
         start: NodeOwnershipPointKey,
         end: NodeOwnershipPointKey,
         owner: NodeBandOwner,
         opposite_owner: NodeBandOwner,
         piece_kind: RoadSurfaceVisualNodePieceKind,
-        source_seams: &[NodeRegionSeamConstraint],
+        source_seams: &[&NodeRegionSeamConstraint],
+        local_constraints: impl IntoIterator<Item = &'constraint NodeRailConstraint>,
         build: impl FnOnce() -> Vec<NodeRegionSeamConstraint>,
     ) -> Vec<NodeRegionSeamConstraint> {
         let key = MaterializedOwnedEdgeSeamReuseKey {
@@ -850,14 +788,19 @@ impl<'a> NodeOwnershipBuildReuseContext<'a> {
             piece_kind: piece_kind_key(piece_kind),
             source_seams: source_seams
                 .iter()
-                .map(RegionSeamConstraintReuseKey::from_constraint)
+                .map(|constraint| RegionSeamConstraintReuseKey::from_constraint(constraint))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            local_constraints: self
-                .indexed_constraints
-                .iter()
-                .filter(|constraint| constraint.may_touch_edge(start, end))
-                .map(|constraint| Arc::clone(&constraint.key))
+            local_constraints: local_constraints
+                .into_iter()
+                .map(|constraint| {
+                    self.constraint_keys_by_index
+                        .get(&constraint.constraint_index)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Arc::new(RailConstraintReuseKey::from_constraint(constraint))
+                        })
+                })
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         };
@@ -1147,6 +1090,7 @@ mod tests {
             opposite_owner,
             RoadSurfaceVisualNodePieceKind::JunctionN,
             &[],
+            std::iter::empty(),
             Vec::new,
         );
         let cache_key = match first.cached_final_boundary_assembly(
@@ -1169,6 +1113,7 @@ mod tests {
             opposite_owner,
             RoadSurfaceVisualNodePieceKind::JunctionN,
             &[],
+            std::iter::empty(),
             Vec::new,
         );
         first.store_final_boundary_assembly(

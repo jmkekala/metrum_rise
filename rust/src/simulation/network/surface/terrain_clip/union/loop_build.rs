@@ -7,6 +7,7 @@ impl RoadSurfaceSystem {
         outer_contour: &NodeOverlayContour,
         topology: RoadSurfaceTerrainClipLoopTopology,
         source_edges: &[TerrainClipSourceEdge],
+        source_edge_index: &TerrainClipSourceEdgeIndex,
     ) -> Result<RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipExportError> {
         let contour = Self::compact_overlay_contour_by_key(outer_contour).map_err(|error| {
             RoadSurfaceTerrainClipExportError::RepeatedOverlayPointCycle {
@@ -29,14 +30,20 @@ impl RoadSurfaceSystem {
         for index in 0..contour.len() {
             let start = contour[index];
             let end = contour[(index + 1) % contour.len()];
-            let segment_points = match Self::terrain_clip_segment_points_from_source_edges(
+            let direct_source_edges =
+                source_edge_index.candidates_for_segment(start, end, source_edges);
+            let direct_prepared_sources =
+                Self::terrain_clip_prepared_sources_on_segment(start, end, &direct_source_edges);
+            let mut direct_coverage = true;
+            let segment_points = match Self::terrain_clip_segment_points_from_prepared_sources(
                 start,
                 end,
-                source_edges,
+                &direct_prepared_sources,
             ) {
                 TerrainClipSegmentPointRecovery::Degenerate => continue,
                 TerrainClipSegmentPointRecovery::Covered(points) => points,
                 TerrainClipSegmentPointRecovery::Partial => {
+                    direct_coverage = false;
                     match Self::terrain_clip_source_chain_points_from_source_edges(
                         start,
                         end,
@@ -96,6 +103,7 @@ impl RoadSurfaceSystem {
                     }
                 }
                 TerrainClipSegmentPointRecovery::Missing => {
+                    direct_coverage = false;
                     match Self::terrain_clip_dust_connector_points_from_source_edges(
                         &contour,
                         index,
@@ -182,11 +190,23 @@ impl RoadSurfaceSystem {
                     }
                 }
             };
-            if let Err(error) = Self::append_terrain_clip_sourced_segment_points(
-                &mut output_edges,
-                segment_points,
-                source_edges,
-            ) {
+            let append_result = if direct_coverage {
+                Self::append_terrain_clip_prepared_segment_points(
+                    &mut output_edges,
+                    segment_points,
+                    start,
+                    end,
+                    &direct_prepared_sources,
+                    &direct_source_edges,
+                )
+            } else {
+                Self::append_terrain_clip_sourced_segment_points(
+                    &mut output_edges,
+                    segment_points,
+                    source_edges,
+                )
+            };
+            if let Err(error) = append_result {
                 match error {
                     TerrainClipOutputSourceError::Missing { start, end } => {
                         crate::debug_log!(

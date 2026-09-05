@@ -1,4 +1,4 @@
-//! Exact node-local plan-topology reuse for JunctionN recompilation.
+//! Exact node-local plan-topology reuse for node-surface recompilation.
 
 use super::super::input::NodeArrangementInput;
 use super::super::keys::SurfaceHeightMmKey;
@@ -130,8 +130,7 @@ impl NodeRailContourSet {
             Self::base_from_input_with_profile(input, profile_enabled)?;
         let base_topology = NodeRailTopologyKey::from_rails(input, &base);
 
-        if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
-            && crate::debug::category_enabled("road")
+        if crate::debug::category_enabled("road")
             && let Some(previous_topology) = previous.and_then(|cache| cache.base_topology.as_ref())
             && previous_topology != &base_topology
         {
@@ -143,8 +142,7 @@ impl NodeRailContourSet {
             );
         }
 
-        if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
-            && let Some(previous) = previous
+        if let Some(previous) = previous
             && previous.base_topology.as_ref() == Some(&base_topology)
             && let Some(previous_rails) = previous.rails.as_ref()
             && let Some(rails) = project_cached_topology_onto_fresh_base(&base, previous_rails)
@@ -184,8 +182,7 @@ impl NodeRailContourSet {
             }
         }
 
-        if input.piece_kind == RoadSurfaceVisualNodePieceKind::JunctionN
-            && crate::debug::category_enabled("road")
+        if crate::debug::category_enabled("road")
             && let Some(previous) = previous
             && previous.base_topology.as_ref() == Some(&base_topology)
         {

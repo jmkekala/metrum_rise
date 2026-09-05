@@ -265,7 +265,7 @@ impl RoadSurfaceSystem {
             .arrangement_reuse_safe
             .then(|| previous_topology.and_then(|topology| topology.arrangement.as_ref()))
             .flatten()
-            .map(|arrangement| arrangement.clone_with_node_identity(node_id, kind));
+            .cloned();
         let (
             arrangement,
             explicit_vertical_step_segments,
@@ -278,7 +278,10 @@ impl RoadSurfaceSystem {
             attach_profile,
             attach_ms,
         ) = if let Some(arrangement) = cached_arrangement {
-            let explicit_vertical_step_segments = arrangement.explicit_vertical_step_segments();
+            let explicit_vertical_step_segments = previous_topology
+                .and_then(|topology| topology.base_explicit_vertical_step_segments.as_ref())
+                .cloned()
+                .unwrap_or_else(|| Arc::new(arrangement.explicit_vertical_step_segments()));
             (
                 arrangement,
                 explicit_vertical_step_segments,
@@ -371,9 +374,10 @@ impl RoadSurfaceSystem {
                     }
                 };
             let attach_ms = elapsed_ms(attach_start);
-            let explicit_vertical_step_segments = triangulation.explicit_vertical_step_segments;
+            let explicit_vertical_step_segments =
+                Arc::new(triangulation.explicit_vertical_step_segments);
             (
-                arrangement,
+                Arc::new(arrangement),
                 explicit_vertical_step_segments,
                 arrangement_profile,
                 heights_ms,
@@ -387,7 +391,9 @@ impl RoadSurfaceSystem {
         };
 
         let export_start = road_debug.then(Instant::now);
-        match Self::node_surface_regions_from_arrangement_with_profile_and_incremental_reuse(
+        match Self::node_surface_regions_from_arrangement_with_profile_and_incremental_reuse_for_identity(
+            node_id,
+            kind,
             &arrangement,
             &ownership.footprint_shapes,
             &explicit_vertical_step_segments,
@@ -407,6 +413,8 @@ impl RoadSurfaceSystem {
                         + ownership_reuse_stats.edge_seam_previous_hits;
                     let previous_export_hits = export_reuse_stats.previous_hits();
                     if total_ms >= 50.0
+                        || (kind == RoadSurfaceVisualNodePieceKind::JunctionN
+                            && mouths.len() >= 4)
                         || previous_ownership_hits > 0
                         || previous_export_hits > 0
                         || reuse_status.rail_topology_reused
@@ -604,7 +612,8 @@ impl RoadSurfaceSystem {
                         );
                     }
                 }
-                let retain_whole_topology = kind == RoadSurfaceVisualNodePieceKind::JunctionN;
+                let retain_whole_topology = self.retain_complete_node_topology_for_replay
+                    || kind == RoadSurfaceVisualNodePieceKind::JunctionN;
                 Some(super::NodeCanonicalSurfaceCompileResult {
                     regions,
                     topology_cache: Some(super::NodeCanonicalTopologyCache {
@@ -614,12 +623,15 @@ impl RoadSurfaceSystem {
                             rail_topology.into_incremental_only()
                         },
                         ownership: retain_whole_topology.then_some(ownership),
-                        arrangement: retain_whole_topology.then(|| Arc::new(arrangement)),
+                        arrangement: retain_whole_topology.then(|| Arc::clone(&arrangement)),
+                        base_explicit_vertical_step_segments: retain_whole_topology
+                            .then(|| Arc::clone(&explicit_vertical_step_segments)),
                         ownership_incremental,
                         export_incremental: Arc::new(export_incremental),
                     }),
                     rail_topology_reused: reuse_status.rail_topology_reused,
                     ownership_reused: reuse_status.ownership_reuse_safe,
+                    #[cfg(test)]
                     export_reuse_stats,
                 })
             }

@@ -8,9 +8,10 @@ use super::build::{
 };
 use super::regions::PendingArrangementRegion;
 use super::seams::{
-    NodeRegionSeamConstraint, NodeSeamSource, seam_constraint_can_source_edge_owner_pair,
-    seam_constraint_covers_edge, seam_constraints_are_ambiguous,
-    seam_constraints_covering_surface_key_edge_as_fragments,
+    NodeRegionSeamConstraint, NodeSeamSource, PreparedSeamConstraintCoverages,
+    SeamConstraintCoverageScratch,
+    prepared_seam_constraints_covering_surface_key_edge_as_fragments_into,
+    seam_constraint_can_source_edge_owner_pair, seam_constraints_are_ambiguous,
 };
 use super::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementEdge, NodeArrangementEdgeId,
@@ -124,6 +125,7 @@ impl NodeArrangement {
             exposed_boundary,
             constrains_shared_height,
             is_material_transition,
+            has_applicable_material_source_constraint: false,
             seam_source,
             source_constraint_indices,
         });
@@ -138,6 +140,10 @@ impl NodeArrangement {
         edge_use_counts: &BTreeMap<NodeArrangementEdgeKey, usize>,
     ) -> Vec<NodeArrangementEdgeId> {
         let mut boundary_edges = Vec::with_capacity(pending.edge_count());
+        let prepared_seam_constraints =
+            PreparedSeamConstraintCoverages::new(&pending.seam_constraints);
+        let mut seam_coverage_scratch = SeamConstraintCoverageScratch::default();
+        let mut source_constraints = Vec::new();
         for edge in pending.loop_edges(&self.vertices) {
             let opposite = edge_owners.get(&edge.key).and_then(|owners| {
                 owners
@@ -147,8 +153,13 @@ impl NodeArrangement {
             });
             let opposite_owner = opposite.map(|owner| owner.owner);
             let opposite_height_field_id = opposite.map(|owner| owner.height_field_id);
-            let source_constraints =
-                source_constraints_for_edge(edge, &pending.seam_constraints, &self.vertices);
+            source_constraints_for_edge_into(
+                edge,
+                &prepared_seam_constraints,
+                &self.vertices,
+                &mut seam_coverage_scratch,
+                &mut source_constraints,
+            );
             let selected_source_constraint = selected_edge_source_constraint(&source_constraints);
             let endpoint_pair_source_constraint_indices = if source_constraints.is_empty() {
                 opposite_owner
@@ -221,13 +232,24 @@ impl NodeArrangement {
                 .is_some_and(|constraint| constraint.is_material_transition)
                 || !endpoint_pair_source_constraint_indices.is_empty()
                 || has_source_authorized_side_join_boundary;
+            let has_applicable_material_source_constraint =
+                opposite_owner.is_some_and(|opposite_owner| {
+                    source_constraints.iter().any(|constraint| {
+                        constraint.is_material_transition
+                            && seam_constraint_can_source_edge_owner_pair(
+                                constraint,
+                                pending.owner,
+                                Some(opposite_owner),
+                            )
+                    })
+                });
             let source_constraint_indices = canonical_sources(
                 source_constraints
                     .iter()
                     .map(|constraint| constraint.constraint_index)
                     .chain(endpoint_pair_source_constraint_indices),
             );
-            boundary_edges.push(self.push_edge(
+            let edge_id = self.push_edge(
                 edge.start,
                 edge.end,
                 pending.owner,
@@ -239,73 +261,38 @@ impl NodeArrangement {
                 is_material_transition,
                 seam_source,
                 source_constraint_indices,
-            ));
+            );
+            self.edges[edge_id.0].has_applicable_material_source_constraint =
+                has_applicable_material_source_constraint;
+            boundary_edges.push(edge_id);
         }
         boundary_edges
     }
-
-    pub(super) fn edge_has_applicable_material_source_constraint(
-        &self,
-        edge: &NodeArrangementEdge,
-    ) -> bool {
-        let Some(opposite_owner) = edge.opposite_owner else {
-            return false;
-        };
-        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
-            return false;
-        };
-        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
-            return false;
-        };
-        self.regions.iter().any(|region| {
-            let source_constraints =
-                source_constraints_for_key_edge(start, end, &region.seam_constraints);
-            source_constraints.iter().any(|constraint| {
-                constraint.is_material_transition
-                    && edge
-                        .source_constraint_indices
-                        .contains(&constraint.constraint_index)
-                    && seam_constraint_can_source_edge_owner_pair(
-                        constraint,
-                        edge.owner,
-                        Some(opposite_owner),
-                    )
-            })
-        })
-    }
 }
 
-fn source_constraints_for_edge<'a>(
+fn source_constraints_for_edge_into<'a>(
     edge: PendingArrangementEdge,
-    constraints: &'a [NodeRegionSeamConstraint],
+    constraints: &PreparedSeamConstraintCoverages<'a>,
     vertices: &[NodeArrangementVertex],
-) -> Vec<&'a NodeRegionSeamConstraint> {
+    scratch: &mut SeamConstraintCoverageScratch,
+    matches: &mut Vec<&'a NodeRegionSeamConstraint>,
+) {
     let Some(start) = vertices.get(edge.start.0).map(|vertex| vertex.key) else {
-        return Vec::new();
+        matches.clear();
+        return;
     };
     let Some(end) = vertices.get(edge.end.0).map(|vertex| vertex.key) else {
-        return Vec::new();
+        matches.clear();
+        return;
     };
-    source_constraints_for_key_edge(start, end, constraints)
-}
-
-fn source_constraints_for_key_edge<'a>(
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-    constraints: &'a [NodeRegionSeamConstraint],
-) -> Vec<&'a NodeRegionSeamConstraint> {
-    let mut matches = constraints
-        .iter()
-        .filter(|constraint| seam_constraint_covers_edge(constraint, start, end))
-        .collect::<Vec<_>>();
-    matches.extend(seam_constraints_covering_surface_key_edge_as_fragments(
+    prepared_seam_constraints_covering_surface_key_edge_as_fragments_into(
         start.surface_key(),
         end.surface_key(),
         constraints,
-    ));
-    matches.sort_by_key(|constraint| (constraint.priority_key(), constraint.constraint_index));
+        scratch,
+        matches,
+    );
     matches.dedup_by_key(|constraint| constraint.constraint_index);
-    matches
 }
 
 fn edge_has_source_authorized_side_join_asphalt_sidewalk_boundary(

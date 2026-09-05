@@ -4,17 +4,19 @@ use super::backend::godot_vec3_to_road;
 use super::keys::SurfaceXzKey;
 use super::{
     CompiledNodeKind, NodeCanonicalTopologyCache, NodeOwnedRegion, NodeVisualCompileResult,
-    PARALLEL_NODE_COMPILE_MIN_ITEMS, PARALLEL_SURFACE_COMPILE_MIN_ITEMS,
-    RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry, RoadSurfaceEarthworkBoundarySegment,
-    RoadSurfaceSection, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualNodeCompileInput,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    PARALLEL_NODE_COMPILE_MIN_ITEMS, PARALLEL_SPAN_COMPILE_MIN_ITEMS,
+    PARALLEL_SURFACE_COMPILE_MIN_ITEMS, RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry,
+    RoadSurfaceEarthworkBoundarySegment, RoadSurfaceSection, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainGradingCache, RoadSurfaceVisualNodeCompileInput, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
-use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 fn elapsed_ms(start: Option<Instant>) -> f64 {
@@ -41,9 +43,10 @@ pub struct RoadSurfaceSystem {
     pub(crate) dirty_terrain_chunks: HashSet<SurfaceChunkKey>,
     pub(crate) dirty_query_chunks: HashSet<SurfaceChunkKey>,
     pub(crate) node_validation_logging_enabled: bool,
-    pub(crate) compiled_sections: HashMap<usize, Vec<RoadSurfaceSection>>,
-    pub(crate) compiled_visual_span_pieces: HashMap<usize, RoadSurfaceVisualSpanPiece>,
-    pub(crate) compiled_visual_node_pieces: HashMap<u32, RoadSurfaceVisualNodePiece>,
+    pub(in crate::simulation::network::surface) retain_complete_node_topology_for_replay: bool,
+    pub(crate) compiled_sections: HashMap<usize, Arc<Vec<RoadSurfaceSection>>>,
+    pub(crate) compiled_visual_span_pieces: HashMap<usize, Arc<RoadSurfaceVisualSpanPiece>>,
+    pub(crate) compiled_visual_node_pieces: HashMap<u32, Arc<RoadSurfaceVisualNodePiece>>,
     pub(crate) compiled_visual_node_inputs: HashMap<u32, RoadSurfaceVisualNodeCompileInput>,
     pub(crate) compiled_visual_node_earthwork_boundaries:
         HashMap<u32, Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>>,
@@ -64,9 +67,12 @@ pub struct RoadSurfaceSystem {
     pub(crate) query_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
     pub(crate) surface_chunk_cache: HashMap<SurfaceChunkKey, RoadSurfaceChunkCacheEntry>,
     pub(crate) earthwork_chunk_cache: HashMap<SurfaceChunkKey, RoadEarthworkChunkCacheEntry>,
+    pub(in crate::simulation::network::surface) terrain_grading_cache:
+        Arc<Mutex<RoadSurfaceTerrainGradingCache>>,
     pub(crate) last_rebuilt_surface_chunks: Vec<SurfaceChunkKey>,
     pub(crate) last_rebuilt_terrain_chunks: Vec<SurfaceChunkKey>,
     pub(crate) last_rebuilt_query_chunks: Vec<SurfaceChunkKey>,
+    pub(crate) last_reused_span_topology_count: usize,
     pub(crate) last_reused_node_topology_count: usize,
     pub(crate) last_reused_node_height_topology_count: usize,
     pub(crate) last_reused_node_ownership_topology_count: usize,
@@ -75,14 +81,45 @@ pub struct RoadSurfaceSystem {
 /// Exact preview-produced node topology candidates for one matching authoritative commit.
 #[derive(Clone)]
 pub(crate) struct RoadPreviewTopologyReuse {
+    spans: HashMap<usize, RoadPreviewSpanTopologyReuse>,
     nodes: Vec<RoadPreviewNodeTopologyReuse>,
+}
+
+#[derive(Clone, PartialEq)]
+struct RoadPreviewSpanSource {
+    start_node: u32,
+    end_node: u32,
+    primary_type: TransitType,
+    allowed_types: u8,
+    class: EdgeClass,
+    width: f32,
+    fwd_lanes: u8,
+    bkw_lanes: u8,
+    physical_length: f32,
+    start_clip: f32,
+    end_clip: f32,
+    geometry: Vec<godot::prelude::Vector3>,
+    physical_geometry: Vec<godot::prelude::Vector3>,
+    deleted: bool,
+}
+
+#[derive(Clone)]
+struct RoadPreviewSpanTopologyReuse {
+    edge_idx: usize,
+    source: RoadPreviewSpanSource,
+    sections: Arc<Vec<RoadSurfaceSection>>,
+    visible_ranges: Vec<(usize, usize)>,
+    earthwork_ranges: Vec<(usize, usize)>,
+    piece: Arc<RoadSurfaceVisualSpanPiece>,
 }
 
 #[derive(Clone)]
 struct RoadPreviewNodeTopologyReuse {
+    node_id: u32,
     position_xz: SurfaceXzKey,
-    kind: RoadSurfaceVisualNodePieceKind,
-    mouth_count: usize,
+    input: RoadSurfaceVisualNodeCompileInput,
+    piece: Arc<RoadSurfaceVisualNodePiece>,
+    earthwork_boundaries: Arc<Vec<Vec<RoadSurfaceEarthworkBoundarySegment>>>,
     topology: Arc<NodeCanonicalTopologyCache>,
 }
 
@@ -90,34 +127,155 @@ impl std::fmt::Debug for RoadPreviewTopologyReuse {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RoadPreviewTopologyReuse")
+            .field("span_count", &self.spans.len())
             .field("node_count", &self.nodes.len())
             .finish()
     }
 }
 
 impl RoadPreviewTopologyReuse {
-    fn topology_for(
-        &self,
+    /// Counts locally compiled span artifacts retained by this certificate.
+    #[cfg(test)]
+    pub(crate) fn span_count(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// Counts locally compiled node artifacts retained by this certificate.
+    #[cfg(test)]
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn take_candidate_for(
+        &mut self,
         graph: &RegionGraph,
         node_id: u32,
         input: &RoadSurfaceVisualNodeCompileInput,
-    ) -> Option<&Arc<NodeCanonicalTopologyCache>> {
+    ) -> Option<RoadPreviewNodeTopologyReuse> {
         let position_xz = SurfaceXzKey::from_world_xz(godot_vec3_to_road(graph.node(node_id).pos));
-        self.nodes
+        let candidate_index = self
+            .nodes
             .iter()
-            .find(|candidate| {
-                candidate.position_xz == position_xz
-                    && candidate.kind == input.kind
-                    && candidate.mouth_count == input.mouths.len()
-            })
-            .map(|candidate| &candidate.topology)
+            .position(|candidate| candidate.node_id == node_id && candidate.input == *input)
+            .or_else(|| {
+                self.nodes.iter().position(|candidate| {
+                    candidate.position_xz == position_xz
+                        && candidate.input.topology_eq_ignoring_edge_identity(input)
+                })
+            })?;
+        Some(self.nodes.swap_remove(candidate_index))
     }
+
+    fn take_candidate_for_span(
+        &mut self,
+        surface: &RoadSurfaceSystem,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_idx: usize,
+        sections: &[RoadSurfaceSection],
+    ) -> Option<RoadPreviewSpanTopologyReuse> {
+        let edge = graph.edge(edge_idx);
+        let candidate_key = if self
+            .spans
+            .get(&edge_idx)
+            .is_some_and(|candidate| candidate.exact_input_matches(edge, sections))
+        {
+            edge_idx
+        } else {
+            let mut matches = self.spans.iter().filter(|(_, candidate)| {
+                candidate.source.topology_eq_ignoring_node_identity(edge)
+                    && sections_eq_ignoring_edge_identity(&candidate.sections, sections)
+            });
+            let (&candidate_key, _) = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            candidate_key
+        };
+        let candidate = self.spans.get(&candidate_key)?;
+        let visible_ranges =
+            surface.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
+        let visible_ranges_match = candidate.visible_ranges == visible_ranges;
+        let earthwork_ranges =
+            surface.earthwork_section_ranges_for_edge(graph, edge_idx, edge, sections, terrain);
+        let earthwork_ranges_match = candidate.earthwork_ranges == earthwork_ranges;
+        if !visible_ranges_match || !earthwork_ranges_match {
+            if crate::debug::category_enabled("road") {
+                crate::debug_log!(
+                    "road",
+                    "preview_span_reuse_miss edge={} candidate_edge={} visible_ranges={} earthwork_ranges={}",
+                    edge_idx,
+                    candidate.edge_idx,
+                    visible_ranges_match,
+                    earthwork_ranges_match,
+                );
+            }
+            return None;
+        }
+        self.spans.remove(&candidate_key)
+    }
+}
+
+impl RoadPreviewSpanSource {
+    fn from_edge(edge: &Edge) -> Self {
+        Self {
+            start_node: edge.start_node,
+            end_node: edge.end_node,
+            primary_type: edge.primary_type,
+            allowed_types: edge.allowed_types,
+            class: edge.class,
+            width: edge.width,
+            fwd_lanes: edge.fwd_lanes,
+            bkw_lanes: edge.bkw_lanes,
+            physical_length: edge.physical_length,
+            start_clip: edge.start_clip,
+            end_clip: edge.end_clip,
+            geometry: edge.geometry.clone(),
+            physical_geometry: edge.physical_geometry.clone(),
+            deleted: edge.deleted,
+        }
+    }
+
+    fn topology_eq_ignoring_node_identity(&self, edge: &Edge) -> bool {
+        self.primary_type == edge.primary_type
+            && self.allowed_types == edge.allowed_types
+            && self.class == edge.class
+            && self.width == edge.width
+            && self.fwd_lanes == edge.fwd_lanes
+            && self.bkw_lanes == edge.bkw_lanes
+            && self.physical_length == edge.physical_length
+            && self.start_clip == edge.start_clip
+            && self.end_clip == edge.end_clip
+            && self.geometry == edge.geometry
+            && self.physical_geometry == edge.physical_geometry
+            && self.deleted == edge.deleted
+    }
+}
+
+impl RoadPreviewSpanTopologyReuse {
+    fn exact_input_matches(&self, edge: &Edge, sections: &[RoadSurfaceSection]) -> bool {
+        self.source == RoadPreviewSpanSource::from_edge(edge)
+            && self.sections.as_slice() == sections
+    }
+}
+
+fn sections_eq_ignoring_edge_identity(a: &[RoadSurfaceSection], b: &[RoadSurfaceSection]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            a.s_m == b.s_m
+                && a.center_xz == b.center_xz
+                && a.center_height_m == b.center_height_m
+                && a.tangent_xz == b.tangent_xz
+                && a.lateral_xz == b.lateral_xz
+                && a.bands == b.bands
+        })
 }
 
 /// Runtime caller category attached to road-surface compile timing logs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceCompileReason {
-    /// Compile was requested through the legacy/default entry point.
+    /// Test helper compiled without a production caller category.
+    #[cfg(test)]
     Unspecified,
     /// Async road-tool preview worker compiled transient surface geometry.
     PreviewWorker,
@@ -134,6 +292,7 @@ pub(crate) enum RoadSurfaceCompileReason {
 impl RoadSurfaceCompileReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            #[cfg(test)]
             Self::Unspecified => "unspecified",
             Self::PreviewWorker => "preview_worker",
             Self::CommitValidator => "commit_validator",
@@ -180,6 +339,7 @@ impl RoadSurfaceSystem {
             dirty_terrain_chunks: HashSet::new(),
             dirty_query_chunks: HashSet::new(),
             node_validation_logging_enabled: true,
+            retain_complete_node_topology_for_replay: false,
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
@@ -201,9 +361,11 @@ impl RoadSurfaceSystem {
             query_chunk_nodes: HashMap::new(),
             surface_chunk_cache: HashMap::new(),
             earthwork_chunk_cache: HashMap::new(),
+            terrain_grading_cache: Arc::new(Mutex::new(RoadSurfaceTerrainGradingCache::default())),
             last_rebuilt_surface_chunks: Vec::new(),
             last_rebuilt_terrain_chunks: Vec::new(),
             last_rebuilt_query_chunks: Vec::new(),
+            last_reused_span_topology_count: 0,
             last_reused_node_topology_count: 0,
             last_reused_node_height_topology_count: 0,
             last_reused_node_ownership_topology_count: 0,
@@ -220,29 +382,60 @@ impl RoadSurfaceSystem {
         (self.chunk_origin_x_m, self.chunk_origin_z_m)
     }
 
-    /// Captures reusable canonical node topology for the requested compiled validation nodes.
-    pub(crate) fn preview_topology_reuse_for_nodes(
+    /// Captures exact reusable span and node artifacts from a compiled preview validation.
+    pub(crate) fn preview_topology_reuse(
         &self,
         graph: &RegionGraph,
+        terrain: &TerrainSystem,
         node_ids: &[u32],
     ) -> Option<RoadPreviewTopologyReuse> {
+        let spans = self
+            .compiled_visual_span_pieces
+            .iter()
+            .filter_map(|(&edge_idx, piece)| {
+                let edge = (edge_idx < graph.edge_count()).then(|| graph.edge(edge_idx))?;
+                let sections = self.compiled_sections.get(&edge_idx)?;
+                Some((
+                    edge_idx,
+                    RoadPreviewSpanTopologyReuse {
+                        edge_idx,
+                        source: RoadPreviewSpanSource::from_edge(edge),
+                        sections: Arc::clone(sections),
+                        visible_ranges: self
+                            .visible_section_ranges_for_edge(graph, terrain, edge_idx, sections),
+                        earthwork_ranges: self.earthwork_section_ranges_for_edge(
+                            graph, edge_idx, edge, sections, terrain,
+                        ),
+                        piece: Arc::clone(piece),
+                    },
+                ))
+            })
+            .collect::<HashMap<_, _>>();
         let nodes = node_ids
             .iter()
             .filter_map(|&node_id| {
                 let node_id = graph.get_valid_node(node_id);
                 let input = self.compiled_visual_node_inputs.get(&node_id)?;
+                let piece = self.compiled_visual_node_pieces.get(&node_id)?;
                 let topology = self.compiled_visual_node_topologies.get(&node_id)?;
                 Some(RoadPreviewNodeTopologyReuse {
+                    node_id,
                     position_xz: SurfaceXzKey::from_world_xz(godot_vec3_to_road(
                         graph.node(node_id).pos,
                     )),
-                    kind: input.kind,
-                    mouth_count: input.mouths.len(),
+                    input: input.clone(),
+                    piece: Arc::clone(piece),
+                    earthwork_boundaries: self
+                        .compiled_visual_node_earthwork_boundaries
+                        .get(&node_id)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::new(Vec::new())),
                     topology: Arc::clone(topology),
                 })
             })
             .collect::<Vec<_>>();
-        (!nodes.is_empty()).then_some(RoadPreviewTopologyReuse { nodes })
+        (!spans.is_empty() || !nodes.is_empty())
+            .then_some(RoadPreviewTopologyReuse { spans, nodes })
     }
 
     /// Offers exact preview topology to the next dirty compile; canonical base keys still verify it.
@@ -305,17 +498,17 @@ impl RoadSurfaceSystem {
     }
 
     /// Returns the currently cached compiled sections by edge id.
-    pub fn compiled_sections(&self) -> &HashMap<usize, Vec<RoadSurfaceSection>> {
+    pub fn compiled_sections(&self) -> &HashMap<usize, Arc<Vec<RoadSurfaceSection>>> {
         &self.compiled_sections
     }
 
     /// Returns the currently cached explicit visual span pieces by edge id.
-    pub fn compiled_visual_span_pieces(&self) -> &HashMap<usize, RoadSurfaceVisualSpanPiece> {
+    pub fn compiled_visual_span_pieces(&self) -> &HashMap<usize, Arc<RoadSurfaceVisualSpanPiece>> {
         &self.compiled_visual_span_pieces
     }
 
     /// Returns the currently cached explicit visual node pieces by node id.
-    pub fn compiled_visual_node_pieces(&self) -> &HashMap<u32, RoadSurfaceVisualNodePiece> {
+    pub fn compiled_visual_node_pieces(&self) -> &HashMap<u32, Arc<RoadSurfaceVisualNodePiece>> {
         &self.compiled_visual_node_pieces
     }
 
@@ -330,6 +523,7 @@ impl RoadSurfaceSystem {
     }
 
     /// Compiles the road-surface cache if it is dirty or has not been built yet.
+    #[cfg(test)]
     pub fn compile_dirty(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
         self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::Unspecified);
     }
@@ -340,7 +534,7 @@ impl RoadSurfaceSystem {
         terrain: &TerrainSystem,
         reason: RoadSurfaceCompileReason,
     ) {
-        let preview_topology_reuse = self.pending_preview_topology_reuse.take();
+        let mut preview_topology_reuse = self.pending_preview_topology_reuse.take();
         if self.compile_generation_is_latched() {
             return;
         }
@@ -364,7 +558,8 @@ impl RoadSurfaceSystem {
         if road_debug && let Some(reuse) = preview_topology_reuse.as_ref() {
             crate::debug_log!(
                 "road",
-                "preview_topology_reuse_offered nodes={}",
+                "preview_topology_reuse_offered spans={} nodes={}",
+                reuse.spans.len(),
                 reuse.nodes.len()
             );
         }
@@ -413,16 +608,20 @@ impl RoadSurfaceSystem {
 
         let sections_start = road_debug.then(Instant::now);
         let section_results: Vec<(usize, Option<Vec<RoadSurfaceSection>>)> =
-            Self::collect_surface_compile_work(&sorted_span_edges, |edge_idx| {
-                if edge_idx >= graph.edge_count() {
-                    return (edge_idx, None);
-                }
-                let edge = graph.edge(edge_idx);
-                if !Self::is_surface_edge(edge) {
-                    return (edge_idx, None);
-                }
-                (edge_idx, Some(self.compile_edge_sections(graph, edge_idx)))
-            });
+            Self::collect_compile_work(
+                &sorted_span_edges,
+                PARALLEL_SURFACE_COMPILE_MIN_ITEMS,
+                |edge_idx| {
+                    if edge_idx >= graph.edge_count() {
+                        return (edge_idx, None);
+                    }
+                    let edge = graph.edge(edge_idx);
+                    if !Self::is_surface_edge(edge) {
+                        return (edge_idx, None);
+                    }
+                    (edge_idx, Some(self.compile_edge_sections(graph, edge_idx)))
+                },
+            );
         // Compiler methods read only the staged sections/spans, chunk scale, validation policy,
         // and explicitly supplied prior node topology. Keep that dirty-only state isolated so a
         // failed generation cannot mutate any published cache or coverage index.
@@ -432,9 +631,13 @@ impl RoadSurfaceSystem {
             self.chunk_origin_z_m,
         );
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
+        staging.retain_complete_node_topology_for_replay =
+            self.retain_complete_node_topology_for_replay;
         for (edge_idx, sections) in section_results {
             if let Some(sections) = sections {
-                staging.compiled_sections.insert(edge_idx, sections);
+                staging
+                    .compiled_sections
+                    .insert(edge_idx, Arc::new(sections));
             }
         }
         let sections_ms = elapsed_ms(sections_start);
@@ -447,16 +650,62 @@ impl RoadSurfaceSystem {
                 *edge_idx < graph.edge_count() && Self::is_surface_edge(graph.edge(*edge_idx))
             })
             .collect();
-        let span_results: Vec<(usize, Option<RoadSurfaceVisualSpanPiece>)> =
-            Self::collect_surface_compile_work(&span_candidates, |edge_idx| {
-                (
-                    edge_idx,
-                    staging.compile_visual_span_piece(graph, terrain, edge_idx),
-                )
-            });
+        let span_work = span_candidates
+            .iter()
+            .copied()
+            .map(|edge_idx| {
+                let preview_candidate =
+                    staging
+                        .compiled_sections
+                        .get(&edge_idx)
+                        .and_then(|sections| {
+                            preview_topology_reuse.as_mut().and_then(|reuse| {
+                                reuse.take_candidate_for_span(
+                                    &staging, graph, terrain, edge_idx, sections,
+                                )
+                            })
+                        });
+                (edge_idx, preview_candidate)
+            })
+            .collect::<Vec<_>>();
+        let span_results: Vec<(usize, Option<Arc<RoadSurfaceVisualSpanPiece>>, bool, bool)> =
+            Self::collect_owned_compile_work(
+                span_work,
+                PARALLEL_SPAN_COMPILE_MIN_ITEMS,
+                |(edge_idx, preview_candidate)| {
+                    if let Some(candidate) = preview_candidate {
+                        let (piece, zero_copy) = if candidate.edge_idx == edge_idx {
+                            (candidate.piece, true)
+                        } else {
+                            match Arc::try_unwrap(candidate.piece) {
+                                Ok(piece) => {
+                                    (Arc::new(piece.into_with_edge_identity(edge_idx)), true)
+                                }
+                                Err(piece) => {
+                                    (Arc::new(piece.clone_with_edge_identity(edge_idx)), false)
+                                }
+                            }
+                        };
+                        (edge_idx, Some(piece), true, zero_copy)
+                    } else {
+                        (
+                            edge_idx,
+                            staging
+                                .compile_visual_span_piece(graph, terrain, edge_idx)
+                                .map(Arc::new),
+                            false,
+                            false,
+                        )
+                    }
+                },
+            );
         let mut failed_span_ids = Vec::new();
-        for (edge_idx, span_piece) in span_results {
+        let mut reused_span_topology_count = 0usize;
+        let mut zero_copy_span_artifact_count = 0usize;
+        for (edge_idx, span_piece, topology_reused, zero_copy) in span_results {
             if let Some(span_piece) = span_piece {
+                reused_span_topology_count += usize::from(topology_reused);
+                zero_copy_span_artifact_count += usize::from(zero_copy);
                 staging
                     .compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
@@ -533,83 +782,111 @@ impl RoadSurfaceSystem {
             }
             node_candidates.push((node_id, input, false));
         }
+        let node_candidate_count = node_candidates.len();
+        let node_candidates = node_candidates
+            .into_iter()
+            .map(|(node_id, input, refresh_earthwork)| {
+                let preview_candidate = preview_topology_reuse
+                    .as_mut()
+                    .and_then(|reuse| reuse.take_candidate_for(graph, node_id, &input));
+                (node_id, input, refresh_earthwork, preview_candidate)
+            })
+            .collect::<Vec<_>>();
         let node_results: Vec<(
             u32,
             RoadSurfaceVisualNodeCompileInput,
             Option<NodeVisualCompileResult>,
             bool,
             f64,
-        )> = Self::collect_node_compile_work(&node_candidates, |node_id| {
-            let earthwork_refresh_start = (road_debug && node_id.2).then(Instant::now);
-            let reused_result = node_id.2.then(|| {
-                self.compiled_visual_node_pieces
-                    .get(&node_id.0)
-                    .zip(
-                        self.compiled_visual_node_earthwork_boundaries
-                            .get(&node_id.0),
+        )> = Self::collect_owned_compile_work(
+            node_candidates,
+            PARALLEL_NODE_COMPILE_MIN_ITEMS,
+            |node_id| {
+                let earthwork_refresh_start = (road_debug && node_id.2).then(Instant::now);
+                let reused_result = node_id.2.then(|| {
+                    self.compiled_visual_node_pieces
+                        .get(&node_id.0)
+                        .zip(
+                            self.compiled_visual_node_earthwork_boundaries
+                                .get(&node_id.0),
+                        )
+                        .and_then(|(piece, earthwork_boundaries)| {
+                            staging
+                                .refresh_visual_node_piece_earthwork_from_cached_top(
+                                    graph,
+                                    terrain,
+                                    node_id.0,
+                                    &node_id.1,
+                                    piece,
+                                    earthwork_boundaries,
+                                )
+                                .map(|piece| NodeVisualCompileResult {
+                                    piece: Arc::new(piece),
+                                    earthwork_boundaries: Arc::clone(earthwork_boundaries),
+                                    topology_cache: self
+                                        .compiled_visual_node_topologies
+                                        .get(&node_id.0)
+                                        .cloned(),
+                                    rail_topology_reused: false,
+                                    ownership_reused: false,
+                                    preview_artifact_zero_copy: false,
+                                    #[cfg(test)]
+                                    export_reuse_stats: Default::default(),
+                                })
+                        })
+                });
+                let earthwork_refresh_ms = elapsed_ms(earthwork_refresh_start);
+                let preview_candidate = node_id.3;
+                let preview_candidate_matched = preview_candidate.is_some();
+                let (result, topology_reused) = if let Some(result) = reused_result.flatten() {
+                    (Some(result), true)
+                } else if let Some(candidate) = preview_candidate {
+                    let exact_identity =
+                        candidate.node_id == node_id.0 && candidate.input == node_id.1;
+                    (
+                        Some(staging.replay_exact_preview_node_piece(
+                            graph,
+                            node_id.0,
+                            &node_id.1,
+                            candidate.piece,
+                            candidate.earthwork_boundaries,
+                            candidate.topology,
+                            exact_identity,
+                        )),
+                        true,
                     )
-                    .and_then(|(piece, earthwork_boundaries)| {
-                        staging
-                            .refresh_visual_node_piece_earthwork_from_cached_top(
-                                graph,
-                                terrain,
-                                node_id.0,
-                                &node_id.1,
-                                piece,
-                                earthwork_boundaries,
-                            )
-                            .map(|piece| NodeVisualCompileResult {
-                                piece,
-                                earthwork_boundaries: Arc::clone(earthwork_boundaries),
-                                topology_cache: self
-                                    .compiled_visual_node_topologies
-                                    .get(&node_id.0)
-                                    .cloned(),
-                                rail_topology_reused: false,
-                                ownership_reused: false,
-                                export_reuse_stats: Default::default(),
-                            })
-                    })
-            });
-            let earthwork_refresh_ms = elapsed_ms(earthwork_refresh_start);
-            let (result, topology_reused) = if let Some(result) = reused_result.flatten() {
-                (Some(result), true)
-            } else {
-                let previous_topology = preview_topology_reuse
-                    .as_ref()
-                    .and_then(|reuse| reuse.topology_for(graph, node_id.0, &node_id.1))
-                    .or_else(|| self.compiled_visual_node_topologies.get(&node_id.0));
-                if road_debug {
-                    crate::debug_log!(
-                        "road",
-                        "preview_topology_reuse_candidate node={} kind={:?} mouths={} matched={}",
-                        node_id.0,
-                        node_id.1.kind,
-                        node_id.1.mouths.len(),
-                        preview_topology_reuse.as_ref().is_some_and(|reuse| reuse
-                            .topology_for(graph, node_id.0, &node_id.1)
-                            .is_some())
-                    );
-                }
+                } else {
+                    let previous_topology = self.compiled_visual_node_topologies.get(&node_id.0);
+                    if road_debug {
+                        crate::debug_log!(
+                            "road",
+                            "preview_topology_reuse_candidate node={} kind={:?} mouths={} matched={}",
+                            node_id.0,
+                            node_id.1.kind,
+                            node_id.1.mouths.len(),
+                            preview_candidate_matched
+                        );
+                    }
+                    (
+                        staging.compile_visual_node_piece_with_earthwork_boundaries(
+                            graph,
+                            terrain,
+                            node_id.0,
+                            &node_id.1,
+                            previous_topology.map(Arc::as_ref),
+                        ),
+                        false,
+                    )
+                };
                 (
-                    staging.compile_visual_node_piece_with_earthwork_boundaries(
-                        graph,
-                        terrain,
-                        node_id.0,
-                        &node_id.1,
-                        previous_topology.map(Arc::as_ref),
-                    ),
-                    false,
+                    node_id.0,
+                    node_id.1,
+                    result,
+                    topology_reused,
+                    earthwork_refresh_ms,
                 )
-            };
-            (
-                node_id.0,
-                node_id.1.clone(),
-                result,
-                topology_reused,
-                earthwork_refresh_ms,
-            )
-        });
+            },
+        );
         failed_node_ids.extend(
             node_results
                 .iter()
@@ -626,7 +903,7 @@ impl RoadSurfaceSystem {
                 dirty_edge_count,
                 dirty_node_count,
                 sorted_span_edges.len(),
-                node_candidates.len()
+                node_candidate_count
             );
             self.latch_compile_failure(failure_label.clone());
             self.last_failed_span_ids.clear();
@@ -660,6 +937,15 @@ impl RoadSurfaceSystem {
                     .is_some_and(|compile| compile.ownership_reused)
             })
             .count();
+        let zero_copy_preview_node_artifact_count = node_results
+            .iter()
+            .filter(|result| {
+                result
+                    .2
+                    .as_ref()
+                    .is_some_and(|compile| compile.preview_artifact_zero_copy)
+            })
+            .count();
         let node_earthwork_refresh_ms = node_results.iter().map(|result| result.4).sum::<f64>();
 
         let prune_start = road_debug.then(Instant::now);
@@ -672,7 +958,7 @@ impl RoadSurfaceSystem {
                 self.compiled_sections.remove(&edge_idx);
             }
             let span_piece = staging.compiled_visual_span_pieces.remove(&edge_idx);
-            self.apply_span_compile_result(edge_idx, span_piece);
+            self.apply_span_compile_result_arc(edge_idx, span_piece);
         }
         for node_id in nodes_to_remove {
             self.remove_node_piece_coverage(node_id);
@@ -685,6 +971,7 @@ impl RoadSurfaceSystem {
         for (node_id, input, visual_piece, _, _) in node_results {
             self.apply_node_compile_result_with_earthwork_boundaries(node_id, input, visual_piece);
         }
+        self.last_reused_span_topology_count = reused_span_topology_count;
         self.last_reused_node_topology_count = reused_node_topology_count;
         self.last_reused_node_height_topology_count = reused_node_height_topology_count;
         self.last_reused_node_ownership_topology_count = reused_node_ownership_topology_count;
@@ -708,10 +995,10 @@ impl RoadSurfaceSystem {
 
         if road_debug {
             let total_ms = elapsed_ms(total_start);
-            if total_ms >= 50.0 {
+            if total_ms >= 50.0 || crate::debug::is_perf_enabled() {
                 crate::debug_log!(
                     "road",
-                    "surface_compile_dirty_detail compile_reason={} dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} node_candidates={} node_reused={} node_topology_reused={} node_height_topology_reused={} node_ownership_topology_reused={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} node_earthwork_refresh_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
+                    "surface_compile_dirty_detail compile_reason={} dirty_edges={} dirty_nodes={} dirty_surface_chunks={} dirty_terrain_chunks={} span_edges={} nodes={} span_candidates={} span_topology_reused={} span_artifact_zero_copy={} node_candidates={} node_reused={} node_topology_reused={} node_height_topology_reused={} node_ownership_topology_reused={} node_artifact_zero_copy={} rebuilt_surface_chunks={} rebuilt_terrain_chunks={} prune_ms={:.3} ordering_ms={:.3} sections_ms={:.3} spans_ms={:.3} nodes_ms={:.3} node_earthwork_refresh_ms={:.3} chunk_cache_ms={:.3} total_ms={:.3}",
                     reason.as_str(),
                     dirty_edge_count,
                     dirty_node_count,
@@ -720,11 +1007,14 @@ impl RoadSurfaceSystem {
                     sorted_span_edges.len(),
                     sorted_nodes.len(),
                     span_candidates.len(),
-                    node_candidates.len(),
+                    reused_span_topology_count,
+                    zero_copy_span_artifact_count,
+                    node_candidate_count,
                     reused_node_count,
                     reused_node_topology_count,
                     reused_node_height_topology_count,
                     reused_node_ownership_topology_count,
+                    zero_copy_preview_node_artifact_count,
                     self.last_rebuilt_surface_chunks.len(),
                     self.last_rebuilt_terrain_chunks.len(),
                     prune_ms,
@@ -843,21 +1133,25 @@ impl RoadSurfaceSystem {
             self.chunk_origin_z_m,
         );
         staging.node_validation_logging_enabled = self.node_validation_logging_enabled;
+        staging.retain_complete_node_topology_for_replay =
+            self.retain_complete_node_topology_for_replay;
         let staging_ms = elapsed_ms(staging_start);
 
         let sections_start = road_debug.then(Instant::now);
         let section_results: Vec<(usize, Vec<RoadSurfaceSection>)> =
-            Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
+            Self::collect_compile_work(&edge_ids, PARALLEL_SURFACE_COMPILE_MIN_ITEMS, |edge_idx| {
                 (edge_idx, self.compile_edge_sections(graph, edge_idx))
             });
         for (edge_idx, sections) in section_results {
-            staging.compiled_sections.insert(edge_idx, sections);
+            staging
+                .compiled_sections
+                .insert(edge_idx, Arc::new(sections));
         }
         let sections_ms = elapsed_ms(sections_start);
 
         let spans_start = road_debug.then(Instant::now);
         let span_results: Vec<(usize, Option<RoadSurfaceVisualSpanPiece>)> =
-            Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
+            Self::collect_compile_work(&edge_ids, PARALLEL_SPAN_COMPILE_MIN_ITEMS, |edge_idx| {
                 (
                     edge_idx,
                     staging.compile_visual_span_piece(graph, terrain, edge_idx),
@@ -922,15 +1216,19 @@ impl RoadSurfaceSystem {
             u32,
             RoadSurfaceVisualNodeCompileInput,
             Option<NodeVisualCompileResult>,
-        )> = Self::collect_node_compile_work(&node_candidates, |node_id| {
-            (
-                node_id.0,
-                node_id.1.clone(),
-                staging.compile_visual_node_piece_with_earthwork_boundaries(
-                    graph, terrain, node_id.0, &node_id.1, None,
-                ),
-            )
-        });
+        )> = Self::collect_compile_work(
+            &node_candidates,
+            PARALLEL_NODE_COMPILE_MIN_ITEMS,
+            |node_id| {
+                (
+                    node_id.0,
+                    node_id.1.clone(),
+                    staging.compile_visual_node_piece_with_earthwork_boundaries(
+                        graph, terrain, node_id.0, &node_id.1, None,
+                    ),
+                )
+            },
+        );
         failed_node_ids.extend(
             node_results
                 .iter()
@@ -1037,6 +1335,14 @@ impl RoadSurfaceSystem {
         edge_idx: usize,
         span_piece: Option<RoadSurfaceVisualSpanPiece>,
     ) {
+        self.apply_span_compile_result_arc(edge_idx, span_piece.map(Arc::new));
+    }
+
+    fn apply_span_compile_result_arc(
+        &mut self,
+        edge_idx: usize,
+        span_piece: Option<Arc<RoadSurfaceVisualSpanPiece>>,
+    ) {
         self.remove_span_piece_coverage(edge_idx);
         if let Some(span_piece) = span_piece {
             self.insert_span_piece_coverage(&span_piece);
@@ -1058,11 +1364,13 @@ impl RoadSurfaceSystem {
             node_id,
             input,
             visual_piece.map(|piece| NodeVisualCompileResult {
-                piece,
+                piece: Arc::new(piece),
                 earthwork_boundaries: Arc::new(Vec::new()),
                 topology_cache: None,
                 rail_topology_reused: false,
                 ownership_reused: false,
+                preview_artifact_zero_copy: false,
+                #[cfg(test)]
                 export_reuse_stats: Default::default(),
             }),
         );
@@ -1102,7 +1410,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    pub(crate) fn collect_surface_compile_work<I, O, F>(items: &[I], work: F) -> Vec<O>
+    fn collect_compile_work<I, O, F>(items: &[I], parallel_min_items: usize, work: F) -> Vec<O>
     where
         I: Clone + Send + Sync,
         O: Send,
@@ -1110,25 +1418,29 @@ impl RoadSurfaceSystem {
     {
         // Slice parallel iterators are indexed; collecting into Vec preserves input order, so
         // the serial commit phase remains deterministic without re-sorting by id.
-        if items.len() >= PARALLEL_SURFACE_COMPILE_MIN_ITEMS {
+        if items.len() >= parallel_min_items {
             items.par_iter().cloned().map(&work).collect()
         } else {
             items.iter().cloned().map(&work).collect()
         }
     }
 
-    pub(crate) fn collect_node_compile_work<I, O, F>(items: &[I], work: F) -> Vec<O>
+    fn collect_owned_compile_work<I, O, F>(
+        items: Vec<I>,
+        parallel_min_items: usize,
+        work: F,
+    ) -> Vec<O>
     where
-        I: Clone + Send + Sync,
+        I: Send,
         O: Send,
-        F: Fn(I) -> O + Sync,
+        F: Fn(I) -> O + Sync + Send,
     {
-        // Node compilation dominates road-edit latency; two independent dirty nodes are already
-        // worth Rayon scheduling overhead. Indexed collection keeps commit order deterministic.
-        if items.len() >= PARALLEL_NODE_COMPILE_MIN_ITEMS {
-            items.par_iter().cloned().map(&work).collect()
+        // Consuming indexed work preserves deterministic output order while moving large buffers
+        // into workers without cloning them.
+        if items.len() >= parallel_min_items {
+            items.into_par_iter().map(work).collect()
         } else {
-            items.iter().cloned().map(&work).collect()
+            items.into_iter().map(work).collect()
         }
     }
 

@@ -74,21 +74,6 @@ fn update_generated_band_contour_constraint(
         }
     }
 }
-pub(super) fn shared_generated_contour_points(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-) -> Vec<NodeRailPointKey> {
-    let mut left_points = generated_contour_keys(left);
-    let mut right_points = generated_contour_keys(right);
-    left_points.sort_unstable();
-    left_points.dedup();
-    right_points.sort_unstable();
-    right_points.dedup();
-    left_points
-        .into_iter()
-        .filter(|point| right_points.binary_search(point).is_ok())
-        .collect()
-}
 pub(super) fn generated_contour_directed_edges(
     contour: &NodeGeneratedContour,
 ) -> Vec<GeneratedContourDirectedEdge> {

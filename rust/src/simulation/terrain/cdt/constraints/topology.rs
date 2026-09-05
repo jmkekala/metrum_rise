@@ -1,6 +1,6 @@
 //! Patch rails, constraint noding, and deterministic segment geometry.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::super::*;
 
@@ -90,7 +90,7 @@ struct TerrainCdtSourceSampleConstraintHit {
 
 pub(in crate::simulation::terrain::cdt) fn node_road_constraint_edges(
     vertices: &mut Vec<TerrainCdtVertex>,
-    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    vertex_lookup: &mut HashMap<(i64, i64), usize>,
     patch: TerrainCdtPatch,
     source_sample_vertex_indices: &[usize],
     road_constraint_edges: &mut Vec<[usize; 2]>,
@@ -350,6 +350,9 @@ pub(in crate::simulation::terrain::cdt) fn source_sample_parameter_on_road_const
     end: TerrainCdtVertex,
     sample: TerrainCdtVertex,
 ) -> Option<f64> {
+    if !point_bounds_overlap_segment(sample, start, end) {
+        return None;
+    }
     if same_xz(sample, start) {
         return Some(0.0);
     }
@@ -380,7 +383,7 @@ fn insert_road_constraint_vertex(
     vertex: TerrainCdtVertex,
     site_owned_only: bool,
     vertices: &mut Vec<TerrainCdtVertex>,
-    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    vertex_lookup: &mut HashMap<(i64, i64), usize>,
     constraint_vertex_site_owned_only: &mut BTreeMap<usize, bool>,
 ) -> Option<usize> {
     let key = terrain_cdt_vertex_xz_key(vertex);
@@ -466,6 +469,9 @@ pub(in crate::simulation::terrain::cdt) fn segment_intersections(
     second_start: TerrainCdtVertex,
     second_end: TerrainCdtVertex,
 ) -> [Option<TerrainCdtVertex>; 2] {
+    if !segment_bounds_overlap(first_start, first_end, second_start, second_end) {
+        return [None, None];
+    }
     let first_dx = first_end.x - first_start.x;
     let first_dz = first_end.z - first_start.z;
     let second_dx = second_end.x - second_start.x;

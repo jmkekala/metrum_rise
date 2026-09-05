@@ -96,9 +96,10 @@ fn elevated_junction_rejects_contradictory_side_vertex_heights() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     for edge_idx in 0..graph.edge_count() {
-        surface
-            .compiled_sections
-            .insert(edge_idx, surface.compile_edge_sections(&graph, edge_idx));
+        surface.compiled_sections.insert(
+            edge_idx,
+            std::sync::Arc::new(surface.compile_edge_sections(&graph, edge_idx)),
+        );
     }
     for edge_idx in 0..graph.edge_count() {
         let span_piece = surface

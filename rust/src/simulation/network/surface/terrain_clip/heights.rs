@@ -7,28 +7,25 @@ use super::super::{
 };
 use super::geometry::{interpolate_height_f64, interpolate_overlay_point};
 use super::model::{
-    TerrainClipSegmentPointRecovery, TerrainClipSourceEdge, TerrainClipSourceInterval,
+    TerrainClipPreparedSource, TerrainClipSegmentPointRecovery, TerrainClipSourceEdge,
+    TerrainClipSourceInterval,
 };
 
 /// Height-key tolerance used only for numeric-dust terrain-clip connector ties.
 pub(super) const TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM: u64 = 1;
 
 impl RoadSurfaceSystem {
-    pub(super) fn terrain_clip_top_envelope_points_from_interval_coverage<I>(
+    pub(super) fn terrain_clip_top_envelope_points_from_prepared_sources(
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
-        intervals: I,
-    ) -> TerrainClipSegmentPointRecovery
-    where
-        I: IntoIterator<Item = TerrainClipSourceInterval>,
-    {
-        let intervals = intervals.into_iter().collect::<Vec<_>>();
-        if intervals.is_empty() {
+        sources: &[TerrainClipPreparedSource],
+    ) -> TerrainClipSegmentPointRecovery {
+        if sources.is_empty() {
             return TerrainClipSegmentPointRecovery::Missing;
         }
 
-        let mut breakpoints = Self::terrain_clip_interval_breakpoints(&intervals);
-        Self::append_terrain_clip_height_crossings(&intervals, &mut breakpoints);
+        let mut breakpoints = Self::terrain_clip_interval_breakpoints(sources);
+        Self::append_terrain_clip_height_crossings(sources, &mut breakpoints);
         breakpoints.sort_by(|a, b| a.total_cmp(b));
         breakpoints.dedup_by(|a, b| *a == *b);
 
@@ -44,23 +41,12 @@ impl RoadSurfaceSystem {
                 continue;
             }
 
-            let covering = intervals
-                .iter()
-                .copied()
-                .filter(|interval| Self::terrain_clip_interval_covers(*interval, start_t, end_t))
-                .collect::<Vec<_>>();
-            if covering.is_empty() {
-                return TerrainClipSegmentPointRecovery::Partial;
-            }
-            covered_any = true;
-
-            let Some(start_y) = Self::terrain_clip_top_envelope_height_at_t(&covering, start_t)
+            let Some((start_y, end_y)) =
+                Self::terrain_clip_top_envelope_heights(sources, start_t, end_t)
             else {
                 return TerrainClipSegmentPointRecovery::Partial;
             };
-            let Some(end_y) = Self::terrain_clip_top_envelope_height_at_t(&covering, end_t) else {
-                return TerrainClipSegmentPointRecovery::Partial;
-            };
+            covered_any = true;
             Self::merge_terrain_clip_top_envelope_height(&mut heights[index], start_y);
             Self::merge_terrain_clip_top_envelope_height(&mut heights[index + 1], end_y);
         }
@@ -84,11 +70,12 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn terrain_clip_interval_breakpoints(intervals: &[TerrainClipSourceInterval]) -> Vec<f64> {
-        let mut breakpoints = Vec::with_capacity(intervals.len() * 2 + 2);
+    fn terrain_clip_interval_breakpoints(sources: &[TerrainClipPreparedSource]) -> Vec<f64> {
+        let mut breakpoints = Vec::with_capacity(sources.len() * 2 + 2);
         breakpoints.push(0.0);
         breakpoints.push(1.0);
-        for interval in intervals {
+        for source in sources {
+            let interval = source.interval;
             breakpoints.push(interval.start_t.clamp(0.0, 1.0));
             breakpoints.push(interval.end_t.clamp(0.0, 1.0));
         }
@@ -96,13 +83,13 @@ impl RoadSurfaceSystem {
     }
 
     fn append_terrain_clip_height_crossings(
-        intervals: &[TerrainClipSourceInterval],
+        sources: &[TerrainClipPreparedSource],
         breakpoints: &mut Vec<f64>,
     ) {
-        for first_index in 0..intervals.len() {
-            for second_index in first_index + 1..intervals.len() {
-                let first = intervals[first_index];
-                let second = intervals[second_index];
+        for first_index in 0..sources.len() {
+            for second_index in first_index + 1..sources.len() {
+                let first = sources[first_index].interval;
+                let second = sources[second_index].interval;
                 let start_t = first.start_t.max(second.start_t).max(0.0);
                 let end_t = first.end_t.min(second.end_t).min(1.0);
                 if end_t <= start_t {
@@ -141,15 +128,30 @@ impl RoadSurfaceSystem {
         interval.start_t <= start_t && interval.end_t >= end_t
     }
 
-    fn terrain_clip_top_envelope_height_at_t(
-        intervals: &[TerrainClipSourceInterval],
-        t: f64,
-    ) -> Option<f64> {
-        intervals
-            .iter()
-            .copied()
-            .map(|interval| interval_height_at(interval, t))
-            .max_by(|a, b| a.total_cmp(b))
+    fn terrain_clip_top_envelope_heights(
+        sources: &[TerrainClipPreparedSource],
+        start_t: f64,
+        end_t: f64,
+    ) -> Option<(f64, f64)> {
+        let mut heights: Option<(f64, f64)> = None;
+        for source in sources {
+            let interval = source.interval;
+            if !Self::terrain_clip_interval_covers(interval, start_t, end_t) {
+                continue;
+            }
+            let candidate_start = interval_height_at(interval, start_t);
+            let candidate_end = interval_height_at(interval, end_t);
+            heights = Some(heights.map_or(
+                (candidate_start, candidate_end),
+                |(current_start, current_end)| {
+                    (
+                        current_start.max(candidate_start),
+                        current_end.max(candidate_end),
+                    )
+                },
+            ));
+        }
+        heights
     }
 
     fn merge_terrain_clip_top_envelope_height(height: &mut Option<f64>, candidate: f64) {
@@ -157,19 +159,22 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn dedup_terrain_clip_top_envelope_points(points: &mut Vec<RoadVec3>) {
-        let mut deduped = Vec::with_capacity(points.len());
-        for &point in points.iter() {
-            if let Some(last) = deduped.last_mut() {
-                if Self::world_points_same_for_boundary(*last, point) {
-                    if point.y > last.y {
-                        last.y = point.y;
-                    }
-                    continue;
-                }
-            }
-            deduped.push(point);
+        if points.len() < 2 {
+            return;
         }
-        *points = deduped;
+        let mut write_index = 0;
+        for read_index in 1..points.len() {
+            let point = points[read_index];
+            if Self::world_points_same_for_boundary(points[write_index], point) {
+                if point.y > points[write_index].y {
+                    points[write_index].y = point.y;
+                }
+                continue;
+            }
+            write_index += 1;
+            points[write_index] = point;
+        }
+        points.truncate(write_index + 1);
     }
 
     pub(super) fn terrain_clip_unambiguous_overlay_point_height_from_source_edges(

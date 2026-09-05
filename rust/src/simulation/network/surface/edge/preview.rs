@@ -157,7 +157,7 @@ impl RoadSurfaceSystem {
         let compiled_sections = preview_surface
             .compiled_sections()
             .get(&edge_idx)
-            .cloned()
+            .map(|sections| sections.as_ref().clone())
             .unwrap_or_default();
         let compiled_visual_node_pieces = [start_node, end_node]
             .into_iter()
@@ -165,7 +165,7 @@ impl RoadSurfaceSystem {
                 preview_surface
                     .compiled_visual_node_pieces()
                     .get(&node_id)
-                    .cloned()
+                    .map(|piece| piece.as_ref().clone())
             })
             .collect();
         let surface_vertices = self.build_preview_surface_vertices(&compiled_sections);
@@ -950,6 +950,9 @@ impl RoadSurfaceSystem {
             self.chunk_origin_z_m,
         );
         validation_surface.node_validation_logging_enabled = false;
+        // This transient compiler exists specifically to hand exact topology to the matching
+        // authoritative commit. Committed terminal/bend caches are downgraded again after replay.
+        validation_surface.retain_complete_node_topology_for_replay = true;
         validation_surface.compile_dirty_with_reason(&validation_graph, terrain, compile_reason);
 
         if let Some(failure) = Self::explicit_surface_validation_failure(
@@ -1054,8 +1057,14 @@ impl RoadSurfaceSystem {
             );
         }
 
-        let topology_reuse = validation_surface
-            .preview_topology_reuse_for_nodes(&validation_graph, &required_node_ids);
+        // The authoritative dirty set also includes far endpoints of adjacent spans. Capture every
+        // locally compiled node; exact solved-input matching rejects anything the commit changed.
+        let reusable_node_ids = validation_surface.all_surface_node_ids(&validation_graph);
+        let topology_reuse = validation_surface.preview_topology_reuse(
+            &validation_graph,
+            terrain,
+            &reusable_node_ids,
+        );
         (validation, topology_reuse)
     }
 

@@ -1,6 +1,7 @@
 //! Deterministic polygon clipping and patch-boundary geometry.
 
 use super::*;
+use crate::simulation::core::round_f64_to_i64;
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::{IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -47,11 +48,12 @@ pub(super) fn simplified_road_loop(
     Ok(deduplicated)
 }
 
+#[cfg(test)]
 pub(super) fn clip_loop_to_patch(
     points: Vec<TerrainCdtVertex>,
     patch: TerrainCdtPatch,
 ) -> Vec<TerrainCdtVertex> {
-    clip_loop_to_patch_single(points, patch)
+    clip_loop_to_patch_axis_aligned(points, patch)
 }
 
 /// Intersects one loop with a rectangle without joining disconnected output components.
@@ -59,6 +61,30 @@ pub(super) fn clip_loop_to_patch_components(
     points: &[TerrainCdtVertex],
     patch: TerrainCdtPatch,
 ) -> Vec<Vec<TerrainCdtVertex>> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    let bounds = terrain_cdt_loop_bounds(points);
+    if bounds.max_x < patch.min_x - CDT_EPSILON_M
+        || patch.max_x + CDT_EPSILON_M < bounds.min_x
+        || bounds.max_z < patch.min_z - CDT_EPSILON_M
+        || patch.max_z + CDT_EPSILON_M < bounds.min_z
+    {
+        return Vec::new();
+    }
+    if bounds.min_x >= patch.min_x
+        && bounds.max_x <= patch.max_x
+        && bounds.min_z >= patch.min_z
+        && bounds.max_z <= patch.max_z
+    {
+        let vertices = simplified_road_loop(points.to_vec()).unwrap_or_default();
+        if vertices.len() < 3 || signed_area(&vertices).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+            return Vec::new();
+        }
+        let mut vertices = ensure_ccw(vertices);
+        rotate_loop_to_canonical_start(&mut vertices);
+        return vec![vertices];
+    }
     let Some(origin) = overlay_grid_origin(points, patch) else {
         return Vec::new();
     };
@@ -81,17 +107,38 @@ pub(super) fn clip_loop_to_patch_components(
         },
         Default::default(),
     );
-    let legacy_clipped = clip_loop_to_patch_single(points.to_vec(), patch);
+    // This pass preserves exact source-edge intersection heights; the integer overlay below owns
+    // disconnected-component topology.
+    let axis_clipped = clip_loop_to_patch_axis_aligned(points.to_vec(), patch);
+    let mut original_vertices_by_xz = points
+        .iter()
+        .copied()
+        .map(|vertex| (terrain_cdt_vertex_xz_key(vertex), vertex))
+        .collect::<Vec<_>>();
+    original_vertices_by_xz.sort_by_key(|(key, _)| *key);
+    original_vertices_by_xz.dedup_by_key(|(key, _)| *key);
+    let source_intersections = axis_clipped
+        .iter()
+        .copied()
+        .filter(|vertex| segment_height_at_sample(points, *vertex).is_some())
+        .collect::<Vec<_>>();
     let overlay_shapes = overlay.overlay(OverlayRule::Intersect, FillRule::EvenOdd);
-    let legacy_clipped = simplified_road_loop(legacy_clipped).unwrap_or_default();
+    let axis_clipped = simplified_road_loop(axis_clipped).unwrap_or_default();
     if overlay_shapes.len() == 1
-        && legacy_clipped.len() >= 3
-        && signed_area(&legacy_clipped).abs() > CDT_EPSILON_M * CDT_EPSILON_M
+        && axis_clipped.len() >= 3
+        && signed_area(&axis_clipped).abs() > CDT_EPSILON_M * CDT_EPSILON_M
     {
-        let vertices = legacy_clipped
+        let vertices = axis_clipped
             .iter()
             .map(|vertex| {
-                clipped_vertex_from_overlay(points, &legacy_clipped, vertex.x, vertex.z, patch)
+                clipped_vertex_from_overlay(
+                    points,
+                    &original_vertices_by_xz,
+                    &source_intersections,
+                    vertex.x,
+                    vertex.z,
+                    patch,
+                )
             })
             .collect();
         let mut vertices = ensure_ccw(vertices);
@@ -108,7 +155,14 @@ pub(super) fn clip_loop_to_patch_components(
                 .map(|point| {
                     let x = overlay_coord(point.x, origin.0);
                     let z = overlay_coord(point.y, origin.1);
-                    clipped_vertex_from_overlay(points, &legacy_clipped, x, z, patch)
+                    clipped_vertex_from_overlay(
+                        points,
+                        &original_vertices_by_xz,
+                        &source_intersections,
+                        x,
+                        z,
+                        patch,
+                    )
                 })
                 .collect::<Vec<_>>();
             let vertices = simplified_road_loop(vertices).ok()?;
@@ -133,16 +187,17 @@ pub(super) fn clip_loop_to_patch_components(
 
 fn clipped_vertex_from_overlay(
     original: &[TerrainCdtVertex],
-    legacy_clipped: &[TerrainCdtVertex],
+    original_vertices_by_xz: &[((i64, i64), TerrainCdtVertex)],
+    source_intersections: &[TerrainCdtVertex],
     x: f64,
     z: f64,
     patch: TerrainCdtPatch,
 ) -> TerrainCdtVertex {
     let quantized = TerrainCdtVertex::new(x, 0.0, z);
-    let exact_original = original
-        .iter()
-        .find(|vertex| same_xz(**vertex, quantized))
-        .copied()
+    let exact_original = original_vertices_by_xz
+        .binary_search_by_key(&terrain_cdt_vertex_xz_key(quantized), |(key, _)| *key)
+        .ok()
+        .map(|index| original_vertices_by_xz[index].1)
         .or_else(|| {
             original
                 .iter()
@@ -163,9 +218,8 @@ fn clipped_vertex_from_overlay(
     if let Some(vertex) = exact_original {
         return vertex;
     }
-    let exact_intersection = legacy_clipped
+    let exact_intersection = source_intersections
         .iter()
-        .filter(|vertex| segment_height_at_sample(original, **vertex).is_some())
         .filter_map(|vertex| {
             let dx = vertex.x - x;
             let dz = vertex.z - z;
@@ -184,7 +238,11 @@ fn clipped_vertex_from_overlay(
     })
 }
 
-fn clip_loop_to_patch_single(
+fn terrain_cdt_vertex_xz_key(vertex: TerrainCdtVertex) -> (i64, i64) {
+    (quantized_coord(vertex.x), quantized_coord(vertex.z))
+}
+
+fn clip_loop_to_patch_axis_aligned(
     points: Vec<TerrainCdtVertex>,
     patch: TerrainCdtPatch,
 ) -> Vec<TerrainCdtVertex> {
@@ -272,7 +330,7 @@ fn overlay_coord(value: i32, origin: i64) -> f64 {
 }
 
 fn overlay_quantized_coord(value: f64) -> i64 {
-    (value / CDT_OVERLAY_GRID_M).round() as i64
+    round_f64_to_i64(value / CDT_OVERLAY_GRID_M)
 }
 
 fn clipped_vertex_height(
@@ -481,7 +539,7 @@ pub(super) fn shared_road_constraint_height(a: f32, b: f32) -> Option<f32> {
 }
 
 pub(super) fn quantized_coord(value: f64) -> i64 {
-    (value / CDT_EPSILON_M).round() as i64
+    round_f64_to_i64(value / CDT_EPSILON_M)
 }
 
 pub(super) fn signed_area(points: &[TerrainCdtVertex]) -> f64 {

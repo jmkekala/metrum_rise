@@ -11,7 +11,8 @@ use super::contacts::{
     append_generated_material_point_contact_constraints,
     append_generated_same_band_contact_constraints_with_source_reuse,
     append_source_authorized_raised_step_point_contacts_with_reuse,
-    node_generated_contact_contours_with_reuse, node_generated_contact_source_constraints,
+    node_generated_contact_contours_with_pair_reuse, node_generated_contact_contours_with_reuse,
+    node_generated_contact_source_constraints,
     node_generated_contact_sources_from_contour_backed_contacts,
     retain_source_authorized_generated_contact_constraint_sets_with_reuse,
     synchronize_shared_height_contact_vertices,
@@ -306,7 +307,7 @@ impl NodeRailContourSet {
         let mut contact_noding_pairs = Default::default();
         let mut retained_contacts = Default::default();
         let contact_noding_first_start = profile_enabled.then(Instant::now);
-        let noding_profile = node_generated_contact_contours_with_reuse(
+        let noding_profile = node_generated_contact_contours_with_pair_reuse(
             &mut contours,
             &mut constraints,
             previous_incremental.map(|previous| &previous.contact_noding_pairs),
@@ -367,7 +368,7 @@ impl NodeRailContourSet {
         profile.raised_step_contacts_second_ms =
             elapsed_profile_ms(raised_step_contacts_second_start);
         let contact_noding_second_start = profile_enabled.then(Instant::now);
-        let noding_profile = node_generated_contact_contours_with_reuse(
+        let noding_profile = node_generated_contact_contours_with_pair_reuse(
             &mut contours,
             &mut constraints,
             previous_incremental.map(|previous| &previous.contact_noding_pairs),

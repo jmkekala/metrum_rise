@@ -11,15 +11,19 @@ const EXPLICIT_MATERIAL_SEAM_HEIGHT_DUST_MM: i64 = 1;
 
 pub(super) fn apply_junctionn_same_material_seam_height_normalization(
     regions: &mut [NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
 ) -> Result<(), NodeHeightFieldError> {
     let mut candidates_by_key =
         BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
-    for region in regions.iter() {
+    for (region_index, region) in regions.iter().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
-            for constraint in
-                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
-            {
+            for constraint in indexed_material_height_constraints_for_vertex(
+                vertex.point_xz,
+                &region.seam_constraints,
+                constraint_index,
+            ) {
                 if constraint.is_material_transition {
                     continue;
                 }
@@ -60,16 +64,19 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
         return Ok(());
     }
 
-    for region in regions {
+    for (region_index, region) in regions.iter_mut().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         let owner = region.owner;
         for vertex in region
             .shape
             .iter_mut()
             .flat_map(|contour| contour.iter_mut())
         {
-            for constraint in
-                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
-            {
+            for constraint in indexed_material_height_constraints_for_vertex(
+                vertex.point_xz,
+                &region.seam_constraints,
+                constraint_index,
+            ) {
                 if constraint.is_material_transition {
                     continue;
                 }
@@ -92,21 +99,28 @@ pub(super) fn apply_junctionn_same_material_seam_height_normalization(
 
 pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
     regions: &mut [NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
     normalize_same_xz_shared_height_raised_steps: bool,
 ) {
-    apply_fragmented_shared_height_raised_step_seam_normalization(regions);
+    apply_fragmented_shared_height_raised_step_seam_normalization(regions, constraint_indices);
     if normalize_same_xz_shared_height_raised_steps {
-        apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(regions);
+        apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
+            regions,
+            constraint_indices,
+        );
     }
 
     let mut candidates_by_key =
         BTreeMap::<NodeGradeExplicitSeamHeightKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
-    for region in regions.iter() {
+    for (region_index, region) in regions.iter().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
-            for constraint in
-                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
-            {
+            for constraint in indexed_material_height_constraints_for_vertex(
+                vertex.point_xz,
+                &region.seam_constraints,
+                constraint_index,
+            ) {
                 if !constraint.is_material_transition {
                     continue;
                 }
@@ -137,16 +151,19 @@ pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
         return;
     }
 
-    for region in regions {
+    for (region_index, region) in regions.iter_mut().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         let owner = region.owner;
         for vertex in region
             .shape
             .iter_mut()
             .flat_map(|contour| contour.iter_mut())
         {
-            let constraints =
-                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints);
-            for constraint in constraints {
+            for constraint in indexed_material_height_constraints_for_vertex(
+                vertex.point_xz,
+                &region.seam_constraints,
+                constraint_index,
+            ) {
                 if !constraint.is_material_transition {
                     continue;
                 }
@@ -168,11 +185,13 @@ pub(super) fn apply_junctionn_explicit_material_seam_height_normalization(
 
 fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
     regions: &mut [NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
 ) {
     let mut candidates_by_point =
         BTreeMap::<SurfaceXzKey, Vec<SameMaterialVertexHeightCandidate>>::new();
 
-    for region in regions.iter() {
+    for (region_index, region) in regions.iter().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             let point = SurfaceXzKey::from_road_xz(vertex.point_xz);
             let candidate = SameMaterialVertexHeightCandidate {
@@ -184,6 +203,7 @@ fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
                 has_explicit_shared_material_seam: vertex_has_explicit_shared_material_seam(
                     vertex,
                     &region.seam_constraints,
+                    constraint_index,
                 ),
             };
             push_unique_same_material_candidate(&mut candidates_by_point, point, candidate);
@@ -272,7 +292,8 @@ fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
         return;
     }
 
-    for region in regions {
+    for (region_index, region) in regions.iter_mut().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         let owner = region.owner;
         for vertex in region
             .shape
@@ -284,7 +305,11 @@ fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
                 selected_by_context.get(&(point, owner))
             {
                 if !*allows_unseamed_vertex
-                    && !vertex_has_explicit_shared_material_seam(vertex, &region.seam_constraints)
+                    && !vertex_has_explicit_shared_material_seam(
+                        vertex,
+                        &region.seam_constraints,
+                        constraint_index,
+                    )
                 {
                     continue;
                 }
@@ -301,17 +326,20 @@ fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
 
 fn apply_fragmented_shared_height_raised_step_seam_normalization(
     regions: &mut [NodeHeightedRegion],
+    constraint_indices: &[NodeGradeRegionConstraintIndex],
 ) {
     let mut candidates_by_key = BTreeMap::<
         RaisedStepSharedHeightSeamPointKey,
         Vec<SameMaterialVertexHeightCandidate>,
     >::new();
 
-    for region in regions.iter() {
+    for (region_index, region) in regions.iter().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             for constraint in raised_step_shared_height_constraints_for_vertex(
                 vertex.point_xz,
                 &region.seam_constraints,
+                constraint_index,
             ) {
                 let point = SurfaceXzKey::from_road_xz(vertex.point_xz);
                 let Some(key) = raised_step_shared_height_seam_point_key(point, constraint) else {
@@ -346,7 +374,8 @@ fn apply_fragmented_shared_height_raised_step_seam_normalization(
         return;
     }
 
-    for region in regions {
+    for (region_index, region) in regions.iter_mut().enumerate() {
+        let constraint_index = &constraint_indices[region_index];
         let owner = region.owner;
         for vertex in region
             .shape
@@ -356,6 +385,7 @@ fn apply_fragmented_shared_height_raised_step_seam_normalization(
             for constraint in raised_step_shared_height_constraints_for_vertex(
                 vertex.point_xz,
                 &region.seam_constraints,
+                constraint_index,
             ) {
                 let point = SurfaceXzKey::from_road_xz(vertex.point_xz);
                 let Some(key) = raised_step_shared_height_seam_point_key(point, constraint) else {
@@ -375,28 +405,19 @@ fn apply_fragmented_shared_height_raised_step_seam_normalization(
     }
 }
 
-fn raised_step_shared_height_constraints_for_vertex(
+fn raised_step_shared_height_constraints_for_vertex<'a>(
     point_xz: RoadVec2,
-    constraints: &[NodeRegionSeamConstraint],
-) -> Vec<&NodeRegionSeamConstraint> {
+    constraints: &'a [NodeRegionSeamConstraint],
+    constraint_index: &'a NodeGradeRegionConstraintIndex,
+) -> impl Iterator<Item = &'a NodeRegionSeamConstraint> + 'a {
     let point = SurfaceXzKey::from_road_xz(point_xz);
-    let mut matches = constraints
+    constraint_index
+        .shared_height_raised_step_constraint_indices(point_xz)
         .iter()
-        .filter(|constraint| {
-            point_lies_on_height_segment(point_xz, constraint.start_xz, constraint.end_xz)
+        .map(|&index| &constraints[index])
+        .filter(move |constraint| {
+            raised_step_shared_height_seam_point_key(point, constraint).is_some()
         })
-        .filter(|constraint| raised_step_shared_height_seam_point_key(point, constraint).is_some())
-        .collect::<Vec<_>>();
-    matches.sort_by_key(|constraint| {
-        (
-            constraint.priority_key(),
-            constraint.constraint_index,
-            SurfaceXzKey::from_road_xz(constraint.start_xz),
-            SurfaceXzKey::from_road_xz(constraint.end_xz),
-        )
-    });
-    matches.dedup_by_key(|constraint| raised_step_shared_height_seam_point_key(point, constraint));
-    matches
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

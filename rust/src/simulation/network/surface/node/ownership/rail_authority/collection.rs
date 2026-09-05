@@ -5,6 +5,7 @@ use crate::simulation::network::surface::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M,
     keys::{SURFACE_XZ_KEY_SCALE, SurfaceHeightMmKey},
 };
+use std::borrow::Cow;
 
 pub(in crate::simulation::network::surface::node::ownership) fn canonical_points_for_rail_set(
     rails: &NodeRailContourSet,
@@ -41,12 +42,6 @@ pub(in crate::simulation::network::surface::node::ownership) fn canonical_points
             .entry(owner)
             .or_default()
             .extend(path.iter().copied());
-        if contour.height_points_world.is_some() {
-            points_by_owner
-                .entry(owner)
-                .or_default()
-                .extend(path.iter().copied());
-        }
         if let (NodeGeneratedContourKind::Band { kind }, Some(source_band_index)) =
             (contour.kind, contour.source_band_index)
             && let Some(paths_for_source) = rails.height_carrier_paths_by_source.get(&(
@@ -121,8 +116,7 @@ impl NodeSourceCarrierRegistry {
                 points
                     .iter()
                     .copied()
-                    .map(|point| ownership_key_from_road_point(road_vec3_xz(point)))
-                    .collect(),
+                    .map(|point| ownership_key_from_road_point(road_vec3_xz(point))),
                 &numeric_dust_canonicalized_sources,
             );
             height_points_by_source
@@ -143,7 +137,7 @@ impl NodeSourceCarrierRegistry {
                 let source = (kind, contour.source_mouth_order_index, source_band_index);
                 let source_path = canonical_source_carrier_path_for_source(
                     source,
-                    path.clone(),
+                    &path,
                     &numeric_dust_canonicalized_sources,
                 );
                 height_points_by_source
@@ -177,7 +171,7 @@ impl NodeSourceCarrierRegistry {
                     );
                     let source_path = canonical_source_carrier_path_for_source(
                         source,
-                        path.clone(),
+                        &path,
                         &numeric_dust_canonicalized_sources,
                     );
                     height_points_by_source
@@ -202,9 +196,10 @@ impl NodeSourceCarrierRegistry {
                 continue;
             };
             for paths in paths_for_source {
+                let raw_path = height_carrier_loop_points(paths);
                 let path = canonical_source_carrier_path_for_source(
                     *source,
-                    height_carrier_loop_points(paths),
+                    &raw_path,
                     &numeric_dust_canonicalized_sources,
                 );
                 for owner in owners {
@@ -263,29 +258,29 @@ fn height_carrier_loop_points(paths: &NodeRailHeightCarrierPaths) -> Vec<NodeOwn
     path
 }
 
-fn canonical_source_carrier_path_for_source(
+fn canonical_source_carrier_path_for_source<'a>(
     source: NodeRailHeightSourceKey,
-    points: Vec<NodeOwnershipPointKey>,
+    points: &'a [NodeOwnershipPointKey],
     numeric_dust_canonicalized_sources: &BTreeSet<NodeRailHeightSourceKey>,
-) -> Vec<NodeOwnershipPointKey> {
+) -> Cow<'a, [NodeOwnershipPointKey]> {
     if source_uses_numeric_dust_carrier_canonicalization(source, numeric_dust_canonicalized_sources)
     {
-        canonical_source_carrier_path_points(points)
+        Cow::Owned(canonical_source_carrier_path_points(points.iter().copied()))
     } else {
-        points
+        Cow::Borrowed(points)
     }
 }
 
 fn canonical_source_carrier_points_for_source(
     source: NodeRailHeightSourceKey,
-    points: Vec<NodeOwnershipPointKey>,
+    points: impl IntoIterator<Item = NodeOwnershipPointKey>,
     numeric_dust_canonicalized_sources: &BTreeSet<NodeRailHeightSourceKey>,
 ) -> Vec<NodeOwnershipPointKey> {
     if source_uses_numeric_dust_carrier_canonicalization(source, numeric_dust_canonicalized_sources)
     {
         canonical_source_carrier_points(points)
     } else {
-        points
+        points.into_iter().collect()
     }
 }
 
@@ -387,9 +382,10 @@ fn include_source_height_range(
 }
 
 fn canonical_source_carrier_path_points(
-    points: Vec<NodeOwnershipPointKey>,
+    points: impl IntoIterator<Item = NodeOwnershipPointKey>,
 ) -> Vec<NodeOwnershipPointKey> {
-    let mut canonical = Vec::with_capacity(points.len());
+    let points = points.into_iter();
+    let mut canonical = Vec::with_capacity(points.size_hint().0);
     for point in points {
         if canonical
             .last()

@@ -9,6 +9,18 @@ pub(super) fn triangle_is_inside_owner(
     vertices: &[NodeTriangulatedVertex],
     owner_shape: &NodeOverlayShape,
 ) -> Result<bool, NodeTriangulationError> {
+    let centroid = triangle.vertices.iter().fold([0.0, 0.0], |mut sum, index| {
+        let point = vertices[*index].point_world;
+        sum[0] += point.x / 3.0;
+        sum[1] += point.z / 3.0;
+        sum
+    });
+    // Every owner contour is a CDT constraint, so a face whose interior point belongs to the
+    // owner cannot cross an outer or hole boundary. Keep the boolean fallback for exterior and
+    // boundary-adjacent numeric cases instead of relying on that invariant to reject triangles.
+    if overlay_shape_contains_interior_point(owner_shape, centroid) {
+        return Ok(true);
+    }
     let triangle_shape = vec![positive_triangle_contour(triangle, vertices)];
     let triangle_shapes = vec![triangle_shape];
     let owner_shapes = vec![owner_shape.clone()];
@@ -20,6 +32,72 @@ pub(super) fn triangle_is_inside_owner(
         "triangle_minus_owner",
     )?;
     Ok(residual.is_empty())
+}
+
+pub(super) fn overlay_shape_contains_interior_point(
+    shape: &NodeOverlayShape,
+    point: NodeOverlayPoint,
+) -> bool {
+    let mut inside = false;
+    for contour in shape {
+        if point_lies_on_contour(point, contour) {
+            return false;
+        }
+        if contour_contains_point(contour, point) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn contour_contains_point(contour: &NodeOverlayContour, point: NodeOverlayPoint) -> bool {
+    if contour.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = contour[contour.len() - 1];
+    for current in contour {
+        if (current[1] > point[1]) != (previous[1] > point[1]) {
+            let crossing_x = previous[0]
+                + (point[1] - previous[1]) * (current[0] - previous[0])
+                    / (current[1] - previous[1]);
+            if point[0] < crossing_x {
+                inside = !inside;
+            }
+        }
+        previous = *current;
+    }
+    inside
+}
+
+fn point_lies_on_contour(point: NodeOverlayPoint, contour: &NodeOverlayContour) -> bool {
+    if contour.len() < 2 {
+        return false;
+    }
+    (0..contour.len()).any(|index| {
+        point_lies_on_segment(point, contour[index], contour[(index + 1) % contour.len()])
+    })
+}
+
+fn point_lies_on_segment(
+    point: NodeOverlayPoint,
+    start: NodeOverlayPoint,
+    end: NodeOverlayPoint,
+) -> bool {
+    let dx = end[0] - start[0];
+    let dz = end[1] - start[1];
+    let px = point[0] - start[0];
+    let pz = point[1] - start[1];
+    let length = dx.hypot(dz);
+    if length <= f64::EPSILON {
+        return false;
+    }
+    let cross = (dx * pz - dz * px).abs();
+    if cross > f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * length {
+        return false;
+    }
+    let dot = px * dx + pz * dz;
+    dot >= 0.0 && dot <= length * length
 }
 
 pub(super) fn reject_triangle_coverage_mismatch(

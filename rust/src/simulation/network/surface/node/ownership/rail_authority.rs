@@ -90,7 +90,11 @@ impl NodeSourceCarrierRegistry {
             || self
                 .source_segments_by_owner
                 .get(&owner)
-                .is_some_and(|segments| segments.iter().any(|segment| segment.source == source))
+                .is_some_and(|segments| {
+                    segments
+                        .binary_search_by_key(&source, |segment| segment.source)
+                        .is_ok()
+                })
     }
 
     pub(super) fn uses_numeric_dust_carrier_canonicalization(

@@ -409,6 +409,21 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
     );
     previous_window.mesh_buffers = Some(Arc::clone(&previous_buffers));
     let previous = Arc::new(previous_window);
+    let mut previous_patch = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    previous_patch.input_road_loops = 1;
+    previous_patch.requires_engineered_refinement = true;
+    previous_patch.requires_road_clipping = true;
+    previous_patch.clip_source_count = 1;
+    previous_patch.road_clip_source_count = 1;
+    previous_patch.road_clip_loop_count = 1;
+    previous_patch.windows = vec![Arc::clone(&previous)];
+    let previous_patch_buffers =
+        Arc::new(SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+            &previous_patch.patch,
+            &[(&previous, previous.mesh_result.as_ref().unwrap())],
+            2.0,
+        ));
+    previous_patch.mesh_buffers = Some(Arc::clone(&previous_patch_buffers));
     let key = previous.key;
     let cdt_input = TerrainCdtInput::new(previous.cdt_patch, Vec::new(), Vec::new());
     let input = RefinedTerrainPatchBuildInput {
@@ -419,6 +434,7 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
         },
         surface_generation: 2,
         patch: test_patch(),
+        previous_patch: Some(Arc::new(previous_patch)),
         windows: vec![RefinedTerrainCdtWindowBuildInput {
             key,
             cdt_input,
@@ -457,10 +473,13 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
             .expect("reused successful window should retain output buffers"),
         &previous_buffers
     ));
-    assert!(
-        entry.mesh_buffers.is_some(),
-        "matching-generation mesh composition must finish on the worker"
-    );
+    assert!(Arc::ptr_eq(
+        entry
+            .mesh_buffers
+            .as_ref()
+            .expect("matching-generation mesh composition must finish on the worker"),
+        &previous_patch_buffers
+    ));
 }
 
 #[test]
@@ -519,6 +538,10 @@ fn cached_window_buffers_preserve_multi_window_patch_assembly() {
         2.0,
     );
 
+    assert!(
+        cached.variant_payload_valid,
+        "composed cached buffers must carry the off-thread validation certificate"
+    );
     assert_eq!(
         cached, fallback,
         "cached tile conversion must preserve deterministic complete-patch assembly"
@@ -563,6 +586,7 @@ fn local_refined_build_derives_complete_clip_counts_from_window_manifests() {
         },
         surface_generation: 2,
         patch: test_patch(),
+        previous_patch: None,
         windows: Vec::new(),
         reused_windows: vec![Arc::new(road_window), Arc::new(mixed_window)],
         input_clip_loop_count: 99,
@@ -605,6 +629,7 @@ fn local_refined_build_rejects_equal_sized_wrong_contributor_manifest() {
         },
         surface_generation: 2,
         patch: test_patch(),
+        previous_patch: None,
         windows: Vec::new(),
         reused_windows: vec![Arc::new(road_window)],
         input_clip_loop_count: 1,
@@ -652,6 +677,7 @@ fn refined_patch_build_never_reuses_failed_window() {
         },
         surface_generation: 2,
         patch: test_patch(),
+        previous_patch: None,
         windows: vec![RefinedTerrainCdtWindowBuildInput {
             key,
             cdt_input: TerrainCdtInput::new(invalid_patch, Vec::new(), Vec::new()),
@@ -956,6 +982,57 @@ fn terrain_cdt_local_window_input_samples_arbitrary_boundary() {
             .iter()
             .any(|sample| sample.x == 5.0 && sample.z == 29.0),
         "local CDT windows must seed globally aligned vertices along arbitrary horizontal boundaries"
+    );
+}
+
+#[test]
+fn terrain_cdt_background_grid_matches_source_resolution_but_keeps_fine_seams() {
+    let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 64, 0.0);
+    let patch = TerrainPatchSnapshot {
+        patch_x: 0,
+        patch_z: 0,
+        sample_width: 9,
+        sample_height: 9,
+        texture_width: 9,
+        texture_height: 9,
+        inner_offset_x: 0,
+        inner_offset_z: 0,
+        world_origin_x: 0.0,
+        world_origin_z: 0.0,
+        world_size_x: 64.0,
+        world_size_z: 64.0,
+        height_data: vec![0.0; 81],
+    };
+
+    let input = SimulationNode::terrain_cdt_input_for_bounds(
+        &terrain,
+        &patch,
+        &[],
+        2.0,
+        (0.0, 0.0, 64.0, 64.0),
+        None,
+    );
+
+    assert!(
+        input
+            .source_samples
+            .iter()
+            .any(|sample| sample.x == 8.0 && sample.z == 8.0),
+        "the background grid must retain source-resolution interior samples"
+    );
+    assert!(
+        !input
+            .source_samples
+            .iter()
+            .any(|sample| sample.x == 2.0 && sample.z == 2.0),
+        "the background grid must not invent render-resolution interior terrain samples"
+    );
+    assert!(
+        input
+            .source_samples
+            .iter()
+            .any(|sample| sample.x == 2.0 && sample.z == 0.0),
+        "window seams must retain render-resolution samples"
     );
 }
 
@@ -1882,6 +1959,42 @@ fn regular_terrain_filler_does_not_globalize_canonical_window_lattices() {
         "canonical 2 m side lattices must not create a patch-wide Cartesian filler grid; emitted {} vertices",
         export.vertices.len()
     );
+}
+
+#[test]
+fn terrain_mesh_payload_certificate_rejects_non_finite_and_out_of_bounds_data() {
+    let vertices = [
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(1.0, 0.0, 0.0),
+        Vector3::new(0.0, 0.0, 1.0),
+    ];
+    let normals = [Vector3::UP; 3];
+    let uvs = [Vector2::ZERO; 3];
+
+    assert!(SimulationNode::triangle_mesh_buffers_are_valid(
+        &vertices,
+        &normals,
+        &uvs,
+        &[0, 1, 2],
+        true,
+    ));
+
+    let mut non_finite_vertices = vertices;
+    non_finite_vertices[1].x = f32::NAN;
+    assert!(!SimulationNode::triangle_mesh_buffers_are_valid(
+        &non_finite_vertices,
+        &normals,
+        &uvs,
+        &[0, 1, 2],
+        true,
+    ));
+    assert!(!SimulationNode::triangle_mesh_buffers_are_valid(
+        &vertices,
+        &normals,
+        &uvs,
+        &[0, 1, 3],
+        true,
+    ));
 }
 
 #[test]

@@ -125,7 +125,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 4
+const TERRAIN_CDT_CONTRACT_REVISION := 5
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -2407,6 +2407,19 @@ func _triangle_mesh_payload_is_valid(
 		return false
 	if normals.size() != vertices.size() or uvs.size() != vertices.size():
 		return false
+	if indices.is_empty():
+		if vertices.size() % 3 != 0:
+			return false
+	elif indices.size() % 3 != 0:
+		return false
+	# Refined buffers are built and fully validated off-thread in Rust. Keep the cheap Variant
+	# shape checks above at this boundary, but do not repeat O(vertices + indices) validation in
+	# interpreted GDScript on every upload.
+	var rust_validated = patch_data.get("terrain_mesh_payload_validated", false)
+	if typeof(rust_validated) != TYPE_BOOL:
+		return false
+	if rust_validated:
+		return true
 	for vertex in vertices:
 		if not is_finite(vertex.x) or not is_finite(vertex.y) or not is_finite(vertex.z):
 			return false
@@ -2417,9 +2430,7 @@ func _triangle_mesh_payload_is_valid(
 		if not is_finite(uv.x) or not is_finite(uv.y):
 			return false
 	if indices.is_empty():
-		return vertices.size() % 3 == 0
-	if indices.size() % 3 != 0:
-		return false
+		return true
 	for index in indices:
 		if index < 0 or index >= vertices.size():
 			return false
