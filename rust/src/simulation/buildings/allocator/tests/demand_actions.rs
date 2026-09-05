@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand spawn, upgrade, and lifecycle action tests.
 
 use super::support::*;

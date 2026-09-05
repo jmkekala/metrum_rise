@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Incident edge collection and visual node kind classification.
 
 use super::*;

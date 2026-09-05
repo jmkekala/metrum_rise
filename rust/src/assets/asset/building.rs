@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building asset schema and frontage compatibility rules.
 
 use super::{AnchorType, AssetManifest};

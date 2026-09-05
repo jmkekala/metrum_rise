@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authored economy definitions used by the developer-facing economy editor.
 //!
 //! The runtime household/building simulation still owns live economic state, but

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-piece ownership and visible-top assertions for road-surface tests.
 
 use super::*;

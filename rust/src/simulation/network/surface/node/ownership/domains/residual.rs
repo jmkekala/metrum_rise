@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Residual rejection and post-claim ordering validation.
 
 use super::*;

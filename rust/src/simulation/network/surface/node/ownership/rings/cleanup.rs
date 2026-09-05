@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Owned-region ring cleanup and self-touch splitting.
 
 use super::super::super::arrangement::NodeBandOwner;

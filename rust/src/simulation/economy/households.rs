@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household storage, settlement, and shared household economy helpers.
 
 mod admission;

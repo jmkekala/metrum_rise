@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
 use std::sync::{Arc, Mutex, RwLock};

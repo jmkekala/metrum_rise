@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical height-carrier vertex normalization.
 
 use super::model::*;

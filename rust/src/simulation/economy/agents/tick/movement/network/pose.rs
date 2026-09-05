@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Simulation-side lane-distance to position sampling.
 
 use super::super::super::super::MODE_WALK;

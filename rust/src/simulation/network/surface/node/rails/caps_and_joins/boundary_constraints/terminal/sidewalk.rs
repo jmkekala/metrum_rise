@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal sidewalk footprint and raised-step constraint emission.
 
 use super::super::*;

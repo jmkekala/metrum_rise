@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Chunk cache rebuild and stale-entry pruning.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! World editor and save/load Godot API methods.
 
 use super::*;

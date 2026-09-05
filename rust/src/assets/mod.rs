@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asset pack manifest schema and deserialization.
 //!
 //! Defines the v1 content contract between the asset editor, the runtime, and modders.

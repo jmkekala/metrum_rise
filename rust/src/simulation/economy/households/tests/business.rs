@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Business solvency, taxation, utility, and service-funding tests.
 
 use super::support::*;

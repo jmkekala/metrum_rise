@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step render key test helpers.
 
 use super::*;

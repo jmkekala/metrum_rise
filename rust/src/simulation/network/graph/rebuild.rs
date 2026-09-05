@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Graph metadata rebuild phases for adjacency, clips, profiles, and terrain sync.
 
 mod adjacency;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Godot node wrappers — the bridge between GDScript and the Rust simulation.
 //!
 //! [`simulation_node::SimulationNode`] exposes all `#[func]` API methods called by GDScript.

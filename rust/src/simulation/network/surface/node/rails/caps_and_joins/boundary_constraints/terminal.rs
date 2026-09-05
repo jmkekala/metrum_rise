@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal-cap boundary constraint emission.
 
 use super::owners::terminal_cap_band_material_opposite_owner;

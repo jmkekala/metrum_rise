@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared allocator fixtures, asset registration, and startup-demand setup.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Async terrain and water payload preparation helpers for `SimulationNode`.
 
 mod node_jobs;

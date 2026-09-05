@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared fixtures for node-height tests.
 
 use super::*;

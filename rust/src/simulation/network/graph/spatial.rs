@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Spatial indexing for nodes and edges using R-Trees and chunked grids.
 
 use super::data::{EdgeEntry, RegionGraph};

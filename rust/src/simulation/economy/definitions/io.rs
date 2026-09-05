@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! TOML file IO for authored economy projects.
 
 use super::schema::{ControllersFile, EconomyProject, ProfilesFile, ScenariosFile};

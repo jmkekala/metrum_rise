@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand-owned household removal and household swap-remove repair.
 
 use super::HouseholdSystem;

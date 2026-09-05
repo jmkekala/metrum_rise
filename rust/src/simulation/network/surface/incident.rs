@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Incident edge and mouth-profile data shared by span, node, and rail compilation.
 
 use super::{

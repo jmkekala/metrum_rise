@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Road node move tool — click to select a node, drag to reposition it on the terrain.
 ##
 ## Extends NetworkTool.

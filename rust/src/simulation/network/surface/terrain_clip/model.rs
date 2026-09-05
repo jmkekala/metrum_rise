@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-clip source model and local export diagnostics.
 
 use super::super::backend::RoadVec3;

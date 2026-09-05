@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Floating road-properties window for SelectTool edge editing.
 ##
 ## The window mirrors the previous side panel behavior but uses Godot's built-in

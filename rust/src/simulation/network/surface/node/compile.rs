@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visual node-piece compilation orchestration.
 
 use super::super::edge::edge_class_sort_key;

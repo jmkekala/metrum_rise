@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Incident mouth profile and path construction.
 
 use super::classification::incident_direction_ordering;

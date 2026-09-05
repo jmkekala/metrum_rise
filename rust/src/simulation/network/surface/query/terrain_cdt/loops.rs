@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain CDT road loop export from road-owned terrain-clip loops.
 
 use super::stable_ids::terrain_cdt_usize_to_u32;

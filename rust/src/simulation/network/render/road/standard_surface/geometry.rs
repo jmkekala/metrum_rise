@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared triangle emission, section projection, winding, normals, and UV helpers.
 
 use super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arrangement vertex identity and height-context tests.
 
 use super::*;

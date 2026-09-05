@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building-site apron grading and road/terrain tie-in validation.
 
 use super::geometry::{SITE_POINT_EPS_M, point_in_polygon_slice, signed_polygon_area};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road network: graph data, topology operations, rendering, and pathfinding integration.
 //!
 //! The public entry point for road edits is [`TransitNetwork`], which manages the

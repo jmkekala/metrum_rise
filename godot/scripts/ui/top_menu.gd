@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared top menu bar for gameplay and editor scenes.
 ##
 ## The menu is attached by each scene root and dispatches to that root's

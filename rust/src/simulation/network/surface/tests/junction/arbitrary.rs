@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arbitrary multi-arm junction tests.
 
 use super::*;

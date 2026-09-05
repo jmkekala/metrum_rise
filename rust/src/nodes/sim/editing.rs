@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 
 use crate::config;

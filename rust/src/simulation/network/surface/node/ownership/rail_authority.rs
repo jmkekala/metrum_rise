@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail-source authority indexing for node boolean ownership.
 
 use super::super::RoadSurfaceBandKind;

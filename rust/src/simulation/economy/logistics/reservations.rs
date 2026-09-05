@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Reservation views for active inbound, outbound, and border freight jobs.
 
 use std::collections::HashMap;

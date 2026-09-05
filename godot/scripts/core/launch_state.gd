@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Autoload launch handoff state for scene-to-scene gameplay startup.
 ## Stores the next requested world/save selection so gameplay only opens after
 ## the player explicitly chooses content from the main menu.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-seam source recovery, quality budgets, and deterministic simplification.
 
 use super::*;

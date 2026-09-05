@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated Bend and JunctionN conflict-matrix fixtures.
 
 use super::*;

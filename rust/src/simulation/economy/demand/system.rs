@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand system state and pass orchestration.
 
 use super::actions::DemandBuildingActionPlan;

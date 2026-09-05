@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated rail contour model and stage-local error types.
 
 use super::super::IncidentEdgeSide;

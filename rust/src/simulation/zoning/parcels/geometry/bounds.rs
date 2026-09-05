@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parcel rectangle construction and world-bounds checks.
 
 use super::polyline::{sample_pos_on_polyline, sample_tangent_on_polyline};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Benchmarking and performance profiling for simulation.
 
 use crate::nodes::sim::core::SimCore;

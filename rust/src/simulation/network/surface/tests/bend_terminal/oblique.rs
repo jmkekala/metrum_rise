@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Oblique bend and terminal regression tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Overlay and quantized geometry helpers for road-surface tests.
 
 use super::*;

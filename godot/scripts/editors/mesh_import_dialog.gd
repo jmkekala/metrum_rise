@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Mesh import picker with a live 3D preview for the asset editor.
 ##
 ## Shows supported model files from the native filesystem and previews the

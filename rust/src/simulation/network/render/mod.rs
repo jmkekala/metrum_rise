@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network rendering infrastructure for generating road and junction meshes.
 
 pub mod road;

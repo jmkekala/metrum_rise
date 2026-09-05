@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical contact-point insertion for generated rail contacts.
 
 mod candidates;

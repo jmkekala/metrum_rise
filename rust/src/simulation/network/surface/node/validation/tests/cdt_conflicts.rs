@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Cross-region CDT edge-height validation tests.
 
 use super::*;

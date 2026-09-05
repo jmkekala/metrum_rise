@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-local carrier provenance closure for boolean-owned region vertices.
 
 use super::rail_authority::{

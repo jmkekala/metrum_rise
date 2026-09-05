@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Non-overlapping spacing search for curved parcel runs.
 
 use crate::simulation::network::graph::RegionGraph;

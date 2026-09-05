@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Public parcel zoning edit limits and first-slice defaults.
 
 /// First-slice authored parcel frontage in metres.

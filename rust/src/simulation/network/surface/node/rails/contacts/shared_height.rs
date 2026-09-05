@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared-height repair for generated raised-step contact carriers.
 
 use super::*;

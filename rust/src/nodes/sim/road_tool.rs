@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-tool query helpers shared by Godot-facing bridge methods.
 
 use crate::simulation::network::graph::RegionGraph;

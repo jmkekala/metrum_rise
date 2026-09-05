@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-aligned zoning parcels and built-in zoning-profile registry.
 //!
 //! User-authored parcels are the zoning authority for private building spawn. Broad zoning-family

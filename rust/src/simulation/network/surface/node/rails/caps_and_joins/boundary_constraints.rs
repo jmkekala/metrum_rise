@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal-cap and side-join rail boundary constraints.
 
 use super::*;

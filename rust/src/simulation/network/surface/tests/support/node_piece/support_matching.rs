@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visible-top support matching helpers.
 
 use super::*;

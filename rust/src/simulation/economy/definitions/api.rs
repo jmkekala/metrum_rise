@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! JSON bridge used by the economy editor and Godot-facing tooling.
 
 use super::index::build_index;

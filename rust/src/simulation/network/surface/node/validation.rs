@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Structured validation and diagnostics for canonical node surface compilation.
 
 mod boundaries;

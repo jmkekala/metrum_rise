@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork visibility policy and span section range selection.
 
 use super::super::{RoadSurfaceSection, RoadSurfaceSystem};

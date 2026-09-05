@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Overlay-shape conversion helpers for generated contact geometry.
 
 use super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical ring noding and cleanup helpers for node boolean ownership.
 
 mod cleanup;

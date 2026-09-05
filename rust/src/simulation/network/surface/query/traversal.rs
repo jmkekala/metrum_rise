@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared chunk and triangle traversal helpers for surface queries.
 
 use super::super::{

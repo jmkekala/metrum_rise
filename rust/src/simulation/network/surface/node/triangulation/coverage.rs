@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Triangle inclusion and coverage validation for node CDT output.
 
 use super::*;

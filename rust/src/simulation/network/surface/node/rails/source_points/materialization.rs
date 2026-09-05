@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-carrier point materialization from node carrier provenance.
 
 mod owned_regions;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork provenance and footprint helpers for road-surface tests.
 
 use super::*;

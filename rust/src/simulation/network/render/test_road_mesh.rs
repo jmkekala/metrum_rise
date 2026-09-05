@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Black-box renderer tests for the graph-dilation road mesher.
 //!
 //! These tests validate the visible road/sidewalk contract of the replacement renderer rather

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span projection diagnostic debug writers.
 
 use super::*;

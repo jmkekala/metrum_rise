@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step top-boundary and source extraction helpers.
 
 use super::*;

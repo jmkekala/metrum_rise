@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical segment membership, parameter, and interpolation helpers.
 
 #[cfg(test)]

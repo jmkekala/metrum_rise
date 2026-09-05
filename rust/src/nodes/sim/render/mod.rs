@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Specialized rendering bridge sub-modules (Item R12).
 //!
 //! Decouples Godot-facing render transform generation into focused units

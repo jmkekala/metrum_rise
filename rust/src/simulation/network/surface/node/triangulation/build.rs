@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node triangulation entry points.
 
 use super::coverage::overlay_shape_from_arrangement_region;

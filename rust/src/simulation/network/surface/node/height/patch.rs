@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height patch construction and local surface evaluation.
 
 use super::carriers::*;

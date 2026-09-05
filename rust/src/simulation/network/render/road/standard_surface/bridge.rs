@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Bridge underside concrete and terrain-supported pier emission.
 
 use super::super::{

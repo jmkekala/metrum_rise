@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Owned top-surface region export from triangulated arrangement faces.
 
 use super::super::*;

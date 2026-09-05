@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Patch clipping and piece-footprint preservation tests.
 
 use super::*;

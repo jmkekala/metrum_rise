@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Building inspector window manager backed by Godot's built-in Window chrome.
 ##
 ## Call try_inspect() with a world position to populate and show a per-building

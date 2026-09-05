@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Explicit industry area placement tool with a player-drawn production polygon.
 ##
 ## Rust methods called: get_industry_building_placement_preview(),

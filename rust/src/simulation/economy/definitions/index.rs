@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Export cache index generation for authored economy projects.
 
 use super::scenario_graph::port_exists;

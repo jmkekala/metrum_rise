@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building-specific rendering logic for Godot interaction.
 //!
 //! Handles building instance transform generation and plot/construction-site visuals.

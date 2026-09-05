@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Operational day-clock and simulation speed control.
 
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;

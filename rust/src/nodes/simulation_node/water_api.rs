@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Water rendering and water-patch Godot API methods.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Cached loading of shipped runtime economy tuning and catalog data.
 
 use super::io::{PROFILES_FILE, parse_toml_file};

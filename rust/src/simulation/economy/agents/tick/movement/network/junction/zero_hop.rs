@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Zero-hop access connector handling at the destination junction neck.
 
 use super::super::super::super::super::ACCESS_PLAN_VALID;

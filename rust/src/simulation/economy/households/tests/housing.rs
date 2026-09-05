@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Housing eligibility, relocation, eviction, and removal tests.
 
 use super::support::*;

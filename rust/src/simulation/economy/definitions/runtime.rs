@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime economy tuning and compiled catalog contracts used by live simulation systems.
 
 use super::serde_helpers::{deserialize_u16_from_number, deserialize_u32_from_number};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network, road-tool, and traffic-editing Godot API methods.
 
 use super::*;

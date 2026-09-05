@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Economic simulation foundations: explicit households, agent movement, and
 //! live economy-pressure counters.
 //!

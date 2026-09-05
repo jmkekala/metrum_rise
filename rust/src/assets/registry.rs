@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asset registry: runtime catalogue of all loaded content-pack assets.
 //!
 //! The registry is the single source of truth for simulation-facing asset identity.

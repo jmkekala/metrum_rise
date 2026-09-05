@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-surface system state, dirty rebuild orchestration, and shared ordering helpers.
 
 use super::backend::godot_vec3_to_road;

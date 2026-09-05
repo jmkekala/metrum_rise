@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,

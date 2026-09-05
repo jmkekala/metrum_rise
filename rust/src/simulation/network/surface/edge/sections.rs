@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Edge centerline section sampling and longitudinal height selection.
 
 use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Zoning and service-building Godot API methods.
 
 use crate::nodes::sim::core::SERVICE_BUILD_COST_PER_LOT_CELL;

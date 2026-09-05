@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Dirty tracking, chunk ownership, and cache rebuild helpers for road-surface pieces.
 
 use super::{

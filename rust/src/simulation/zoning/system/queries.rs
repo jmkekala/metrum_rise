@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Read-only parcel queries exposed by `ZoningSystem`.
 
 use super::ZoningSystem;

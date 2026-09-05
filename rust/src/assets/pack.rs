@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Pack-level manifest (`pack.toml`).
 //!
 //! Every content pack ships exactly one `pack.toml` at the pack root.

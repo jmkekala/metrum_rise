@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Character source-asset schema.
 
 use serde::Deserialize;

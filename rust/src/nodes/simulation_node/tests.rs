@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Regression tests for the Godot simulation-node bridge.
 
 use super::async_terrain::{

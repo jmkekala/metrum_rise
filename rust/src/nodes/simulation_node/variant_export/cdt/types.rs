@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared terrain CDT export buffer types.
 
 use super::super::super::*;

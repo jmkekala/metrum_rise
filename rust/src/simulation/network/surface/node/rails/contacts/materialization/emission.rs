@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Constraint emission routing for source-authorized generated rail contacts.
 
 mod point_contacts;

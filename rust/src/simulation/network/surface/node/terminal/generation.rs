@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal-cap band generation and canonicalization.
 
 use super::height_anchors::{

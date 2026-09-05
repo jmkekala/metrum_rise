@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Offline edge compaction and graph-local reference remapping.
 
 use super::super::data::RegionGraph;

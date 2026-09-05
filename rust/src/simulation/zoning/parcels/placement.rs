@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road attachment projection and parcel-run placement.
 
 mod projection;

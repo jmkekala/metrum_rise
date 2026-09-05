@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Inventory mutation and throughput helpers for sandbox playback.
 
 use crate::simulation::economy::definitions::schema::{EconomyProfile, ResourcePort, ScenarioEdge};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! `SimulationNode` helpers for async terrain and water jobs.
 
 use super::super::*;

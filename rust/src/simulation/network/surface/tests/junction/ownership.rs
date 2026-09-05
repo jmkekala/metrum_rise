@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction ownership and overlay tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent SoA and path serialization.
 
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;

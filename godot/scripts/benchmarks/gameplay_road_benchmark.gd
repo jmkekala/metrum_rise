@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Deterministic end-to-end road-building profiler workload for Samply captures.
 ##
 ## Loads a real authored world, drives the production RoadTool preview and commit paths, waits for

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Emission of visible slope and retaining-wall faces owned by compiled road pieces.
 
 use super::super::{MeshLayer, NetworkMeshData, concrete_color, earthwork_color};

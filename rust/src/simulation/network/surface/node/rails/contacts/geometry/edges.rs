@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Contact edge and point extraction from generated contour geometry.
 
 use super::super::{

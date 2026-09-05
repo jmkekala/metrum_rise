@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building search indices and vacancy management.
 
 use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Region vertex height evaluation against authorized fields.
 
 use super::super::keys::SurfaceSegmentParameter;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-owned roadbed grading-envelope generation for terrain CDT inputs.
 
 use super::*;

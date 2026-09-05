@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Refined road-clipped terrain build and cache payload contracts.
 
 use std::collections::BTreeMap;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Public road-surface contracts, module wiring, and shared numeric constants.
 //!
 //! The sibling modules own the concrete edge, span, node, overlay, query,

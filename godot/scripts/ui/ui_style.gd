@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared style constants and helper factories for procedural UI.
 ##
 ## New UI code should use these helpers instead of open-coding StyleBoxFlat

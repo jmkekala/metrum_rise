@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Main menu shell — default startup surface for normal gameplay launches.
 ## No map or SimulationNode is present here; the player must pick a world or a
 ## save before gameplay scene loading begins.

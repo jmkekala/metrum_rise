@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Border-node discovery for outside-world freight.
 
 use crate::simulation::network::graph::RegionGraph;

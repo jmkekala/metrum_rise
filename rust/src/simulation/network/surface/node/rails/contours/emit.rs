@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated contour emission from rail paths.
 
 use super::cleaning::cleaned_closed_contour;

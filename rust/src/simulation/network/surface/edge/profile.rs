@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lateral roadbed profile bands and section boundary reconstruction.
 
 use super::super::backend::{RoadVec2, RoadVec3};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared household, building, network, and replenishment fixtures.
 
 use super::*;

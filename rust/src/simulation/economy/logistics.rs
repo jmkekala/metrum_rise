@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Batched building-level freight reservations and delayed deliveries.
 //!
 //! The first shipment slice keeps freight explicit without introducing per-order

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Side-join boundary constraint emission.
 
 use super::owners::{

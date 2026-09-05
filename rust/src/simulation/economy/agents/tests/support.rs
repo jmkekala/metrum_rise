@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared agent movement fixtures and network builders.
 
 use super::*;

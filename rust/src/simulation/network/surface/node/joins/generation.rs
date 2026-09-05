@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Side-join band generation between adjacent node mouths.
 
 use super::heights::endpoint_height_plane_for_band_kind;

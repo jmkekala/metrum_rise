@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-aligned zoning parcel storage and placement geometry.
 
 mod geometry;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::data_grid::DataGrid;
 use super::noise::NoiseSystem;
 use super::pollution::PollutionSystem;

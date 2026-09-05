@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asset editor and asset registry Godot API methods.
 
 use super::*;

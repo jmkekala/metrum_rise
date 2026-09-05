@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction mouth clipping and incident-edge collection.
 
 use super::super::data::{Edge, RegionGraph};

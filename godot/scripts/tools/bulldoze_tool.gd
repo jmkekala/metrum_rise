@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Dedicated bulldoze tool for deleting one building or road target per click.
 ##
 ## Rust methods called: get_bulldoze_target_at(), bulldoze_at(), intersect_world_surface()

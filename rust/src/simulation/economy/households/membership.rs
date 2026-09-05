@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent-to-household membership rebuilds and money synchronization.
 
 use std::sync::atomic::Ordering;

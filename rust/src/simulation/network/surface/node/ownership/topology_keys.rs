@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical topology key adapters for node boolean ownership.
 
 use super::super::NodeOverlayPoint;

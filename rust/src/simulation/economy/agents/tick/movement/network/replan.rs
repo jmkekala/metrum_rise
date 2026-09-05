@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Pre-movement network replan gates for immigration and exact access trips.
 
 use super::super::super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household record storage and building-reference maintenance.
 
 use std::collections::HashMap;

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Coordinates visual refresh after async network mutations (roads, rails, etc.).
 ##
 ## The sim thread adds roads/rails asynchronously and sets the `network_dirty` flag

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compiled road-surface renderer regression tests.
 
 use super::geometry::{

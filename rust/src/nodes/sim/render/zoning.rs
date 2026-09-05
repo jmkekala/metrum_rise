@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Zoning and environmental overlay rendering logic for Godot interaction.
 //!
 //! Handles the conversion of 2D data grids (zoning, pollution, noise, desirability)

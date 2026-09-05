@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-authorized raised-step contact collection.
 
 use super::super::geometry::append_generated_directed_edge_segments_inside_shape_keys;

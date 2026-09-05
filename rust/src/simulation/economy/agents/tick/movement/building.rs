@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! In-building movement state handling for scheduled trip activation.
 
 use super::super::super::TRANSIT_ACCESS_EGRESS;

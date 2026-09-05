@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boundary segment splitting before source provenance resolution.
 
 use super::sources::node_earthwork_source_for_boundary_subsegment;

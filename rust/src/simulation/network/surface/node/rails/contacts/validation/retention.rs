@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Retention filter for exact source-authorized generated contacts.
 
 use super::super::source_authority::generated_contact_kind_from_constraint;

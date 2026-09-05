@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Grounded road, earthwork, and terrain-support regression tests.
 
 use super::*;

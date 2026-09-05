@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## First-run user data bootstrap for release builds.
 ## Creates the canonical writable player-data folders and seeds bundled starter
 ## content from res://bootstrap/ without overwriting user-owned files.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Zoning parcel variant export helpers.
 
 use super::super::*;

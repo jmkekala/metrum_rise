@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Explicit service-building placement tool with Rust-authored frontage snapping and validation.
 ##
 ## Rust methods called: get_service_building_placement_preview(),

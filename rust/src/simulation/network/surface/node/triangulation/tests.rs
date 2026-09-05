@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Triangulation tests kept beside the stage while out of the production router.
 
 use super::*;

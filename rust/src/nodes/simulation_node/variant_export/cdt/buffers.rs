@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! CDT and regular-terrain mesh buffer export helpers.
 
 use super::super::super::*;

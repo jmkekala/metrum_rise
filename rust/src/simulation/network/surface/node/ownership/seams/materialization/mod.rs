@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Seam materialization on final noded owned boundaries.
 
 mod candidates;

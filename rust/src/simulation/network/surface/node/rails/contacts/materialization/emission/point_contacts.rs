@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Point-contact constraint emission for generated rail contact materialization.
 
 use super::super::authority::{

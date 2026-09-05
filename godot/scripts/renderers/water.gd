@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Water patch renderer — uploads chunk-local visible water patches and world-edge water curtains.
 ##
 ## Rust methods called: get_water_patch_debug(), get_water_patch_authored_fill_debug(),

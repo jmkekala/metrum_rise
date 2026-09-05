@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Pathfinding: cost calculation, A* state, and CCH/CRP hierarchical routing.
 //!
 //! Use [`cch::CchGraph::find_path`] for all agent route queries.

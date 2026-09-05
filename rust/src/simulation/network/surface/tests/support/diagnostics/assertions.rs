@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Diagnostic assertion helpers.
 
 pub(in crate::simulation::network::surface::tests) fn assert_debug_dump_mouth_seams_are_clean(

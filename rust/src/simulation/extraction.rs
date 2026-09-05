@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Resource extraction sites owned by explicit industry buildings.
 //!
 //! Authored deposit grids describe where resources exist. Extraction sites are

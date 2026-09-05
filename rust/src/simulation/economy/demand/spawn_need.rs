@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand spawn-need accounting and hard spawn gates.
 
 use super::actions::DemandSpawnCandidate;

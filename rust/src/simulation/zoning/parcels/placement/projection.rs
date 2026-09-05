@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Projection from world points to buildable road frontage positions.
 
 use super::super::geometry::sample_pos_on_polyline;

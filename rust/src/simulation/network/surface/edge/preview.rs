@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Temporary road preview compilation from conditioned edge input.
 
 use super::super::backend::road_vec3_to_godot;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain clip loop export from source-backed earthwork boundary segments.
 
 use crate::simulation::network::surface::{

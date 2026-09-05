@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Access-egress and access-ingress movement state handling.
 
 mod egress;

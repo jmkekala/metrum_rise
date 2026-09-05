@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Economy editor shell — launched via `--economy-editor` command-line argument.
 ## Loads the authoritative `economy/` TOML pack, visualizes authored scenario
 ## graphs, edits selected definitions in memory, and round-trips validation /

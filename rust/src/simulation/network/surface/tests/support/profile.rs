@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span/profile helper routines for road-surface tests.
 
 use super::*;

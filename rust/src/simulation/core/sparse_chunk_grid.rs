@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Sparse chunk-backed grid storage for large authored worlds.
 //!
 //! The grid exposes dense `(x, y)` access but only allocates chunk payloads for

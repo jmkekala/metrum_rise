@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Pack directory scanner.
 //!
 //! Reads a directory of content packs from the native filesystem and produces

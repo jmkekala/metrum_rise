@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Truckload quantization for aggregate freight amounts.
 
 const MIN_POSITIVE_AMOUNT: f32 = 0.000_1;

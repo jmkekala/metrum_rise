@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Low-frequency daily agent state updates.
 
 use super::TRANSIT_IN_BUILDING;

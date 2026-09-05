@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Exact final-edge seam materialization tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-band and contact-edge constraint emission for generated rails.
 
 use super::super::authority::{

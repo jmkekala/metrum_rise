@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic lane-entry claim serialization for the parallel movement pass.
 
 use super::super::{

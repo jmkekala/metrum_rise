@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Global simulation constants shared across all modules.
 //!
 //! Import with `use crate::config;` or individual constants as needed.

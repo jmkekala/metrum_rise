@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Heightmap terrain system used for road grade, raycasting, and rendering.
 //!
 //! Two height arrays are maintained: `source_data` (user-sculpted, never modified by roads)

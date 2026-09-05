@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-height synchronization for standard road source geometry.
 
 use super::super::data::RegionGraph;

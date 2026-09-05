@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared debug support geometry, matching, and literal writers.
 
 use super::*;

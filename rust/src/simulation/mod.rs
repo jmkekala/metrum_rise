@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! All simulation subsystems. Driven by [`crate::nodes::simulation_node::SimulationNode`].
 //!
 //! Subsystems communicate by passing references to each other in `simulate_tick` —

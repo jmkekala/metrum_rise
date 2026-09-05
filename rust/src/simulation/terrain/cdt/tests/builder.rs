@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! End-to-end builder, source export, and tie-in diagnostic tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Top-surface intrusion and overlay checks.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arrangement diagnostic tests for node boolean ownership.
 
 use super::*;

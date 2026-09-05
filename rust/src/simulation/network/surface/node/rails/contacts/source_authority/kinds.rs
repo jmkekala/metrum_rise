@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated contact-kind and constraint conversion helpers.
 
 use super::super::{

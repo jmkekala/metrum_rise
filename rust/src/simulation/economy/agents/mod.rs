@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent simulation: data layout, activity states, and lifecycle management.
 
 mod building_refs;

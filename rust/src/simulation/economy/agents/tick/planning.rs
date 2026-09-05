@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Trip planning and network replanning helpers for agent movement.
 
 mod candidate;

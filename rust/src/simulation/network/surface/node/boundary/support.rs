@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Final-owned footprint boundary support proofs.
 
 use super::sources::node_footprint_boundary_vertex_source_for_edge_point;

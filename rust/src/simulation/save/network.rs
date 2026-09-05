@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road graph and lane connection serialization.
 
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;

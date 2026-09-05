@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boundary height candidate lookup and conflict reporting.
 
 use super::super::super::{

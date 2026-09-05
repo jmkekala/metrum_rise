@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step vertical face construction from canonical arrangement intervals.
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network lane-entry bootstrap for agents without an active lane.
 
 use super::super::super::super::{

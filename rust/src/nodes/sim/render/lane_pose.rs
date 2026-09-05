@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared lane sampling helpers for agent render transforms.
 
 use crate::simulation::network::lanes::Lane;

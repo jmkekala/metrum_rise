@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain visual-height stamping for road-owned earthwork support.
 
 use super::super::{

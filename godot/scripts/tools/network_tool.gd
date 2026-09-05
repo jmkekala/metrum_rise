@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Base class for all road-network editing tools (RoadTool, MoveTool, CulDeSacTool).
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),

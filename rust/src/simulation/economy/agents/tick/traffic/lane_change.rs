@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane-change and conservative overtaking helper rules.
 
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};

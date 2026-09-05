@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Blank-world creation and reusable world-definition bridge methods.
 
 use crate::config::HEIGHT_SCALE;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-patch road loop extraction and CDT source adaptation.
 
 use super::super::{

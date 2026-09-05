@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Ghost road-tool Godot API methods.
 
 use super::super::super::*;

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Cul-de-sac placement tool — toggles a circular dead-end cap on a selected road node.
 ##
 ## Extends NetworkTool.

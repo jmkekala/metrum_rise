@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Bounded road-surface compiler cache capture and graph-undo restoration.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Edge input conditioning, preview compilation, and sampled cross-section generation.
 
 use crate::simulation::network::types::EdgeClass;

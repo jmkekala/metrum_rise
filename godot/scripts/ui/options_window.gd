@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared options window for main menu and gameplay contexts.
 ##
 ## Owns the category shell and global footer actions while category panels own

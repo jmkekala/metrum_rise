@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Validation entry points for authored economy projects and runtime tuning.
 
 mod common;

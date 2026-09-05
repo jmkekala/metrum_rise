@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Workplace assignment, worker counts, and daily wage payment.
 
 use std::cmp::Ordering as CmpOrdering;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-authorized generated-contact target grouping.
 
 use super::super::geometry::{

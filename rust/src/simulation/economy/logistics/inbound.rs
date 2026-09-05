@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Input restock request planning for profile-driven buildings.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;

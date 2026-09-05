@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Carrier-provenance closure tests for post-boolean owned vertices.
 
 use super::*;

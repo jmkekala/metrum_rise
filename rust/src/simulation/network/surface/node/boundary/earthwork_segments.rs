@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-backed earthwork boundary segment export from footprint loops.
 
 use super::super::band_semantics::{raised_step_band_rank, raised_step_kinds_can_contact};

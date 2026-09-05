@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Removal, immigration, and hourly admission lifecycle tests.
 
 use super::support::*;

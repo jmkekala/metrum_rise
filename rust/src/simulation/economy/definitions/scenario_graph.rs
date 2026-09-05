@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared deterministic helpers for authored economy scenario graphs.
 
 use super::schema::{

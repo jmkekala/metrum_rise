@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Planned local access topology validation.
 
 use super::super::lane_nav::{lane_origin_node, lane_terminal_node};

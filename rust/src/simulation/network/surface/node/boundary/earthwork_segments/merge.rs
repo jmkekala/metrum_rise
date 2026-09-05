@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical source merge and owner selection for earthwork boundaries.
 
 use super::*;

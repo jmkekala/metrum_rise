@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parallel dispatch phase for the movement state machine.
 
 use super::claims::LaneClaimContext;

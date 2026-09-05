@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Validation report types and debug serialization.
 
 use super::super::arrangement::{

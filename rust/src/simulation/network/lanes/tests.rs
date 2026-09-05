@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane geometry and junction-connectivity regression tests.
 
 use super::super::graph::{Edge, RegionGraph};

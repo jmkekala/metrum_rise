@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Resource profile and freight timing lookup helpers.
 
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};

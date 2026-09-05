@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Regular terrain filler buffers emitted outside refined CDT windows.
 
 use super::super::super::super::*;

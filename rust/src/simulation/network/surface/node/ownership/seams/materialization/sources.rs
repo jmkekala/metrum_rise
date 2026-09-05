@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source seam queries used after owned-edge materialization.
 
 use super::*;

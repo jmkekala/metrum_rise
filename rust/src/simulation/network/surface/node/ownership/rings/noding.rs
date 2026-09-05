@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical owned-region ring noding helpers.
 
 use super::super::super::NodeOverlayContour;

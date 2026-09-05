@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Contact contour noding candidate discovery.
 
 use super::super::super::NodeGeneratedContourKind;

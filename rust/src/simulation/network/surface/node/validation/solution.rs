@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Whole-solution validation orchestration for triangulated node surfaces.
 
 use super::super::RoadSurfaceSystem;

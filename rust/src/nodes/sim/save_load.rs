@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! SQLite save/load bridge methods for the Godot simulation node.
 
 use crate::debug_log;

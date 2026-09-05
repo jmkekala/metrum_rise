@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared fiscal policy and arithmetic for city revenue and transfer flows.
 
 use crate::simulation::economy::definitions::{RuntimeEconomyTuning, load_runtime_economy_tuning};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road network graph data structures and spatial indexing.
 
 /// Core data structures for nodes and edges.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building entrance derivation and authored-scale tests.
 
 use super::support::*;

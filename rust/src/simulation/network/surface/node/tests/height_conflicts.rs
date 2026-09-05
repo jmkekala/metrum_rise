@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Final node footprint height-conflict tests.
 
 use super::*;

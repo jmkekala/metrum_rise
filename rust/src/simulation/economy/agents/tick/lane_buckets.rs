@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane bucket maintenance, overlap correction, and congestion aggregation.
 
 mod congestion;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Undo and render snapshots produced from authoritative simulation state.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};

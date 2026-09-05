@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Unsafe SoA slice wrappers used by the parallel agent movement pass.
 
 // Safety invariant upheld by callers:

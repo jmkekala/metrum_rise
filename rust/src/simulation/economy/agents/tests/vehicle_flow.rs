@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! IDM following, overlap correction, and edge congestion tests.
 
 use super::support::*;

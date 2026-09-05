@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Point probe debug dump for final road-surface triangles.
 
 use super::*;

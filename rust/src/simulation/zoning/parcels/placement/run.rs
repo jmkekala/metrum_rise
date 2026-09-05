@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-road parcel-run projection.
 
 mod spacing;

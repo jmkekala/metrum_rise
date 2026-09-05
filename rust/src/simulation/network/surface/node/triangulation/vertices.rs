@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arrangement vertex insertion and CDT constraint collection.
 
 use super::*;

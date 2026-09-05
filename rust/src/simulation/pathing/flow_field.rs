@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Flow-field routing: multi-source reverse Dijkstra per zone type.
 //!
 //! A [`FlowField`] answers "from any node V, which node should I move to next

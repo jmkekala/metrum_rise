@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical ordering and key normalization for CDT provenance and edges.
 
 use super::super::*;

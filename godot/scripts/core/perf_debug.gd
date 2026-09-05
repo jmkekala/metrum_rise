@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Opt-in renderer frame CPU diagnostics for `--debug perf`.
 ##
 ## Renderers record their main-thread work here when `METRUM_DEBUG_PERF=1`.

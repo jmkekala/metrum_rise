@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Emission of compiled road, curb, sidewalk, and raised-step top surfaces.
 
 use super::super::{MeshLayer, NetworkMeshData, curb_color, road_color, sidewalk_color};

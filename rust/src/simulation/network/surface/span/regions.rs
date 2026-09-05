@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span owned-region resolution and render bucket routing.
 
 use super::super::{RoadSurfaceSection, RoadSurfaceSystem};

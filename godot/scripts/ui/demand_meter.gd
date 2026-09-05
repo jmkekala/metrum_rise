@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Compact R/C/I demand meter for the gameplay HUD.
 ##
 ## Displays normalized residential, commercial, and industrial demand pressures

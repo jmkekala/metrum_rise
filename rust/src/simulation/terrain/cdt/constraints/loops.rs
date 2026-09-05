@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-loop constraint insertion and source-vertex splitting.
 
 use std::collections::BTreeMap;

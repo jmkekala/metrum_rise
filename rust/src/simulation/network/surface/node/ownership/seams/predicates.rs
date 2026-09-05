@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared seam predicates and sorting helpers.
 
 use super::super::super::RoadSurfaceBandKind;

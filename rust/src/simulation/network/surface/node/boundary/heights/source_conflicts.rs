@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-height source identity checks for boundary height candidates.
 
 use super::*;

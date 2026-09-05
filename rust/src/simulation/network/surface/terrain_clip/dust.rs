@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Numeric-dust terrain-clip connector recovery.
 
 use super::super::backend::RoadVec3;

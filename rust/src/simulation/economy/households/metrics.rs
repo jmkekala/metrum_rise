@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared household economy metrics and profile helpers.
 
 use super::Household;

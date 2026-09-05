@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authoritative simulation state and deterministic cadence transitions.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};

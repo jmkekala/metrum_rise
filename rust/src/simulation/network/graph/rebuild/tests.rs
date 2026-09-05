@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction profile rebuild regression tests.
 
 use super::junction_profiles::{

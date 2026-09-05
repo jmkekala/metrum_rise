@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit height-carrier evaluation for canonical node-owned regions.
 
 use super::arrangement::{NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint};

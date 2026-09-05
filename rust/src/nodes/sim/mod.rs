@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Simulation node submodules for modular Godot-Rust bridge organization.
 
 // pub mod api; (Moved to simulation_node.rs for macro sanity)

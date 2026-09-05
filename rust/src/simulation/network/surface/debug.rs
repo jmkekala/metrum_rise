@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Debug extraction helpers for compiled road-surface state.
 
 use super::node::{

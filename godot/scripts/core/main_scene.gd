@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Main gameplay scene root.
 ##
 ## Attaches shared scene-level UI such as the top menu and exposes gameplay

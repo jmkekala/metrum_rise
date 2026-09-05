@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Water patch mesh generation and cache helpers for the Godot renderer.
 
 use crate::nodes::sim::core::SimCore;

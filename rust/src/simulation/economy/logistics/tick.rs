@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Hourly logistics orchestration.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;

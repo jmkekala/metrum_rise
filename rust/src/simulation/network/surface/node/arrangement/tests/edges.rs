@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arrangement edge ownership and diagnostics tests.
 
 use super::*;

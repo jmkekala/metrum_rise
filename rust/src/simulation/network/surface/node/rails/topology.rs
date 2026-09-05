@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated contour topology helpers for node rails.
 
 use super::super::backend::polyline_to_road_points;

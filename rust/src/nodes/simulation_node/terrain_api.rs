@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain editing and terrain-patch Godot API methods.
 
 use super::*;

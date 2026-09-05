@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boolean ownership solve for canonical node-arrangement contours.
 
 use super::arrangement::{

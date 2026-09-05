@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit source-authority support for generated rail contacts.
 
 mod kinds;

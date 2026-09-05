@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Single-parcel placement behavior tests.
 
 use super::super::helpers::{add_vertical_road_at_x, make_straight_road, make_zoning};

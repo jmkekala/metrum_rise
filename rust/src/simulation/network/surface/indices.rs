@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Small index helpers shared by surface compilation stages.
 
 use super::keys::SurfaceXzKey;

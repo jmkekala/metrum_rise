@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail constraint emission helpers.
 
 use super::cleaning::cleaned_open_rail;

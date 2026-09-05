@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane occupancy, gap, and entry-claim helpers.
 
 use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};

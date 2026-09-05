@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit-site and zoning-overlap validation tests.
 
 use super::support::*;

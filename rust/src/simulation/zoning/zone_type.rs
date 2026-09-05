@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Broad land-use families derived from zoning profiles.
 
 /// Land-use category assigned to a zoning profile.

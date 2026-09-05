@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Zoning maintenance behavior tests.
 
 use super::helpers::{make_straight_road, make_zoning};

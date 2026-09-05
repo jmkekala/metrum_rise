@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Customizable Contraction Hierarchy (CCH) pathfinding.
 //!
 //! Provides fast queries and O(E) metric customization for dynamic traffic.

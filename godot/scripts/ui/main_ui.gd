@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Procedurally built HUD — all UI panels, buttons, and overlays constructed at runtime.
 ##
 ## Rust methods called: set_simulation_speed(), undo_action(),

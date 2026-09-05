@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared source-authority contact data.
 
 use super::super::geometry::GeneratedOverlayShapeKeys;

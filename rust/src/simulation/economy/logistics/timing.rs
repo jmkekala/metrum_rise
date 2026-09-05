@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Freight operating-window timing and price adjustments.
 
 use crate::simulation::economy::definitions::FreightTimingProfile;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Immutable reuse of post-triangulation explicit vertical-step topology.
 
 use super::extraction::{

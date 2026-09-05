@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical node arrangement construction and export tests.
 
 use super::super::backend::RoadVec2;

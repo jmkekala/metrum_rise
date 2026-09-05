@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction dirty-recompile cache tests.
 
 use super::*;

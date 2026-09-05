@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Materialization of source-authorized generated rail contacts.
 
 use super::geometry::{

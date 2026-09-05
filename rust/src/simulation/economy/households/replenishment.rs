@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household stock consumption, shopper-carried store trips, and replenishment state.
 
 #[cfg(test)]

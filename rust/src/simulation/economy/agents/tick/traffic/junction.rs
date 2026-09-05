@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction and connector speed helpers.
 
 use crate::config::{

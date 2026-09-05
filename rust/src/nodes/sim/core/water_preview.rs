@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Transient authored-water preview state and render diagnostics.
 
 /// Validation state for one transient world-editor lake-fill preview.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated contour owner-carrier authority tests.
 
 use super::*;

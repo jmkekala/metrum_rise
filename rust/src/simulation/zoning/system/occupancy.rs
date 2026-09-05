@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building occupancy bookkeeping for authored parcels.
 
 use super::ZoningSystem;

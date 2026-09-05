@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
 use metrum_rise::assets::AssetManifest;

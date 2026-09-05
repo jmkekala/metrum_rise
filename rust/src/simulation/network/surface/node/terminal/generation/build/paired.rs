@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Paired terminal cap-band construction.
 
 use super::*;

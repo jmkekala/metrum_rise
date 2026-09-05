@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent references to building allocator indices.
 
 use super::data::AgentSystem;

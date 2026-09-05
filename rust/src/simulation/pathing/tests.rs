@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::*;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};

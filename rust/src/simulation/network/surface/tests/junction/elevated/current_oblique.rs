@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Current logged elevated oblique junction compile tests.
 
 use super::*;

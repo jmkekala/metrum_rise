@@ -67,6 +67,14 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 - **Do not create additional `*.md` files in `docs/`** unless they have a durable distinct role and are linked from `docs/README.md`. Prefer updating the owning subsystem document rather than piling more detail into `project.md`.
 - **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
 
+## Source File Licensing
+
+- Every project-owned Rust source file (`*.rs`) must begin with `// SPDX-License-Identifier: GPL-2.0-only`.
+- Every project-owned GDScript source file (`*.gd`) must begin with `# SPDX-License-Identifier: GPL-2.0-only`.
+- Keep the SPDX identifier as the first line, followed by a blank line and then any Rust crate attributes/module documentation or GDScript `##` class documentation.
+- Do not add author names, copyright-holder names, full licence boilerplate, or modification histories to individual source files.
+- Do not replace or override notices in third-party files. Preserve their original licensing and attribution.
+
 ## AI Behaviour Guidelines
 
 ### Persona & Collaboration

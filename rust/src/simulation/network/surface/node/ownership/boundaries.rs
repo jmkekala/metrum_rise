@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Final owned-boundary extraction and arrangement export for node ownership.
 
 use super::super::arrangement::{

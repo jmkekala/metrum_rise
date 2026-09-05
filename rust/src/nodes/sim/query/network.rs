@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-network spatial queries (closest-point identification, edge projection).
 
 use super::{get_closest_canonical_node, is_live_canonical_node};

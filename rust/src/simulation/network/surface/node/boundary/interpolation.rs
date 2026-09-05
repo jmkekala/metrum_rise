@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Missing footprint boundary height rejection.
 
 use super::*;

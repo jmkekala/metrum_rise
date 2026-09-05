@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node arrangement input extraction and validation.
 
 use super::rails::{

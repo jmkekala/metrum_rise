@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Undo/Redo system for simulation state.
 
 use crate::nodes::sim::core::{

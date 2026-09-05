@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit visual node-piece construction and incident-edge classification.
 
 #[cfg(test)]

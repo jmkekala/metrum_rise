@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Persistent player-facing settings backed by Godot ConfigFile.
 ##
 ## This owns general runtime/UI preferences. Boot-critical mod activation stays

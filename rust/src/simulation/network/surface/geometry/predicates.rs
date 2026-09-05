@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! XZ geometric predicates, distances, and ray intersections.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! CDT regression tests and shared terrain/road fixtures.
 
 use std::collections::BTreeMap;

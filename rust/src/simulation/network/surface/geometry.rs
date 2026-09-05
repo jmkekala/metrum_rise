@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Low-level polygon, triangle, and section-boundary geometry helpers.
 
 use super::backend::{RoadVec2, RoadVec3};

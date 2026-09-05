@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical source mapping and boundary validation tests.
 
 use super::*;

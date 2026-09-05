@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated rail constraint predicates and boundary-role helpers.
 
 use super::super::arrangement::NodeBandOwner;

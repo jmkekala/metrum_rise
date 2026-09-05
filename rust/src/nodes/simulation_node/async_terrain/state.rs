@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Async terrain and water request state types.
 
 use super::super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic polygon clipping and patch-boundary geometry.
 
 use super::*;

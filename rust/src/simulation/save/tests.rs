@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent movement, routing, traffic, and congestion tests.
 
 use super::*;

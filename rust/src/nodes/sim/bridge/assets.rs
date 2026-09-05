@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Godot-Rust bridge helpers for asset management and content registries.
 use crate::assets::asset::ZoneClass;
 use crate::debug_log;

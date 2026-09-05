@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Footprint boundary source-edge and direct-vertex provenance.
 
 use super::super::band_semantics::band_kind_sort_key;

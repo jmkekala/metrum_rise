@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authored natural-resource deposit layers.
 //!
 //! Resource deposits are map-authored data, not building/runtime economy state.

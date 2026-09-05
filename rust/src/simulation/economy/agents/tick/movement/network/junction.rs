@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Junction lane-end orchestration for network movement.
 
 mod enter;

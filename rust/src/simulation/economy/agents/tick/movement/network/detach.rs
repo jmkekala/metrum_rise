@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network-lane detach into local access ingress movement.
 
 use super::super::super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_ACCESS_INGRESS};

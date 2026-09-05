@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Grouping and contour-union helpers for generated cap and side-join bands.
 
 use super::super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network, immigration, and junction movement state orchestration.
 
 mod detach;

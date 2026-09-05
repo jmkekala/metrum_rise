@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-carrier materialization from explicit node carrier provenance.
 
 use super::super::super::contours::height_for_key_on_generated_edge;

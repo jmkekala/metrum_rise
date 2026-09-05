@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Flat junction canonical pipeline tests.
 
 use super::*;

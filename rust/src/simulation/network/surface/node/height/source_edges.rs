@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical source-height support keys.
 
 use super::model::NodeHeightSourcePointKey;

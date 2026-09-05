@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-authority index construction for generated contacts.
 
 use super::super::super::source_authority::generated_contact_kind_from_constraint;

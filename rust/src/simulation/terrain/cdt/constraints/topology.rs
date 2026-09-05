@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Patch rails, constraint noding, and deterministic segment geometry.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

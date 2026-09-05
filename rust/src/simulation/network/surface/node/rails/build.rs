@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail contour construction from validated node arrangement input.
 
 use super::super::input::NodeArrangementInput;

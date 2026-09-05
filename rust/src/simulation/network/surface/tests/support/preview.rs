@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Preview/committed-surface comparison helpers for road-surface tests.
 
 use super::*;

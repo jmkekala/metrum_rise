@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Graphics options panel.
 ##
 ## Owns pending display preference edits and commits them through the shared

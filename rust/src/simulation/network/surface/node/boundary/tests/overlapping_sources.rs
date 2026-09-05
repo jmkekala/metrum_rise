@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Overlapping source-edge provenance tests.
 
 use super::*;

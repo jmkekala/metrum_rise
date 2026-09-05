@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime zoning-profile value types.
 
 use crate::simulation::zoning::ZoneType;

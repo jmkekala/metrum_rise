@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node surface export from canonical arrangement output.
 
 use super::*;

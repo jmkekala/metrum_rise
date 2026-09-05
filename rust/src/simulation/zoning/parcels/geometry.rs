@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parcel rectangle geometry, overlap tests, and road-corridor conflict checks.
 
 mod bounds;

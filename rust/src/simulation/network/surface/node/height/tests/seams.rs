@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit seam height-continuity tests.
 
 use super::*;

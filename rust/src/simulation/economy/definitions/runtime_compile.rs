@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compilation from authored economy profiles into compact runtime catalog data.
 
 use super::runtime::{

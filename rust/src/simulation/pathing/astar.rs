@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! A* priority-queue state used by the bidirectional Dijkstra query in [`super::cch`].
 //!
 //! State is keyed by `(node_id, incoming_edge)` rather than just `node_id` so that

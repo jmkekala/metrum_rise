@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Baseline water runtime for authored still-water bodies.
 //!
 //! Water is authored as deterministic lake and open-water fills. The runtime

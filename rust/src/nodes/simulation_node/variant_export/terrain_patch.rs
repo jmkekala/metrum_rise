@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain patch and refined terrain variant export helpers.
 
 use super::super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-specific spatial queries (raycasting, height sampling).
 
 use crate::config::HEIGHT_SCALE;

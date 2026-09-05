@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node visual-piece DTOs and exported provenance contracts.
 
 use super::{

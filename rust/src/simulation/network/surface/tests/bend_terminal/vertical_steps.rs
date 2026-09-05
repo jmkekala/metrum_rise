@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Bend and terminal vertical-step tests.
 
 use super::*;

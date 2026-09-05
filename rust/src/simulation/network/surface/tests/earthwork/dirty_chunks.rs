@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork dirty chunk coverage tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Chunk helpers for parcel-local broad-phase checks.
 
 use crate::simulation::network::graph::RegionGraph;

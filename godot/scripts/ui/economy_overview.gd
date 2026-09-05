@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Economy overview window backed by Rust-owned budget ledgers and service policies.
 ##
 ## Controls are live: service slider changes are sent to SimulationNode immediately

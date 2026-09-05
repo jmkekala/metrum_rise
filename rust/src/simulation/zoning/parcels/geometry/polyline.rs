@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Polyline sampling helpers for road-attached parcels.
 
 use godot::prelude::{Vector2, Vector3};

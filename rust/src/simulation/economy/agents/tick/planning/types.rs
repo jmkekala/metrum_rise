@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared trip-plan result types.
 
 /// A fully built trip from a current building to a target building.

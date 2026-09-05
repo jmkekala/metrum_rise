@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Elevated junction canonical boundary-source regression tests.
 
 use super::*;

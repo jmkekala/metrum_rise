@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 #![allow(missing_docs)]
 //! Godot camera node for RTS-style controls.
 //!

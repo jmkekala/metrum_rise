@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! World-authoring variant export helpers.
 
 use super::super::*;

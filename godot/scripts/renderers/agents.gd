@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
 ## Rust methods called: get_agent_transforms(), get_car_transforms(), get_car_render_ids(),

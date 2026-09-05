@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authored resource overlay rendering bridge.
 
 use crate::nodes::sim::core::SimCore;

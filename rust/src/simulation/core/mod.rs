@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core simulation primitives: time and tick control.
 
 pub mod config;

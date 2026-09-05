@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-patch invalidation and authoritative CDT exclusion loops for building sites.
 
 use super::model::{BuildingSiteClient, BuildingSiteTerrainClient, BuildingSiteTerrainSnapshot};

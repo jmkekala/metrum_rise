@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical input ordering, clipping, vertex insertion, and stage assembly.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

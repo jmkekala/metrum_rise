@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent index repair after graph, lane, building, and household remaps.
 
 use super::data::AgentSystem;

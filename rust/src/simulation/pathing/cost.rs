@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Edge traversal cost calculation for the pathfinding system.
 //!
 //! Cost is expressed in **time** (seconds), not distance, so that roads with

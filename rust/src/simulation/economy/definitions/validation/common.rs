@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared helpers for authored economy validation.
 
 use std::collections::BTreeSet;

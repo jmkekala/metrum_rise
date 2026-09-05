@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};

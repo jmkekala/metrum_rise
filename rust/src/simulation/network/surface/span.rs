@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit visual span-piece compilation and span mouth profile construction.
 
 mod boundaries;

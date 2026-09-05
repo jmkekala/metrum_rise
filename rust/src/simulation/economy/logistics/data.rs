@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core shipment storage and typed logistics state.
 
 use std::collections::{BTreeMap, HashMap};

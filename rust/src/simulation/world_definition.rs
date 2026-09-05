@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Reusable authored-world persistence for blank-world authoring.
 //!
 //! A `WorldDefinition` is intentionally narrower than a city save:

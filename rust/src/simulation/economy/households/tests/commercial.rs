@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Commercial bootstrap capacity and production tests.
 
 use super::support::*;

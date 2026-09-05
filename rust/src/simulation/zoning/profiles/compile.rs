@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compilation and validation of authored zoning profiles.
 
 use super::authored::AuthoredZoneProfile;

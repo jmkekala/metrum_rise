@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Side-join endpoint height-plane fitting.
 
 use super::*;

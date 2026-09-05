@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-clip query and road-loop variant export helpers.
 
 use super::super::super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-edge matching and merge helpers for earthwork boundary export.
 
 use super::*;

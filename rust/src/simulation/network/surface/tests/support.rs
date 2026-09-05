@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared road-surface test fixtures and assertions.
 
 use super::*;

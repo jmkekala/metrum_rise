@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::{Vector2, Vector3};
 use metrum_rise::config;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Local access and frontage travel-time helpers.
 
 use super::super::super::{MODE_CAR, MODE_WALK};

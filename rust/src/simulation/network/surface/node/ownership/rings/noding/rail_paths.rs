@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail-path assisted edge noding helpers.
 
 use super::*;

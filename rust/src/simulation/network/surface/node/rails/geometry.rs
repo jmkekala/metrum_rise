@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical quantized rail geometry helpers.
 
 use super::super::backend::RoadVec2;

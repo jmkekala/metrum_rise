@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Derivation of deterministic flat support footprints from building assets.
 
 use super::geometry::{

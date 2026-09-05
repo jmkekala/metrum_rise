@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Background simulation command processing and fixed-rate thread loop.
 
 use std::sync::atomic::Ordering;

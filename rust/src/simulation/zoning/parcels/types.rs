@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core parcel identity, placement geometry, and placement error types.
 
 use godot::prelude::Vector2;

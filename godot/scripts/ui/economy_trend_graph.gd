@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Minimal multi-series line graph used by Economy Overview.
 ##
 ## The control draws already-aggregated backend values. It does not compute

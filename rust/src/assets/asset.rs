@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Per-asset manifest (`asset.toml`) schema and validation API.
 //!
 //! Every imported asset ships with one manifest describing its class, dimensions,

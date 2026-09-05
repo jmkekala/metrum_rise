@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Edge input conditioning before preview or committed section compilation.
 
 use super::super::RoadSurfaceSystem;

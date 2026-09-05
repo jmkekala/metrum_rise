@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Debug-only node top-surface smoothness metrics.
 
 use super::super::arrangement::NodeBandHeightFieldId;

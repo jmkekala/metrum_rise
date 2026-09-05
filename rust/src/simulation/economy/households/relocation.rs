@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household housing resolution, relocation, and eviction.
 
 use std::collections::BTreeMap;

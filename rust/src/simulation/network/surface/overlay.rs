@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic overlay boolean geometry helpers for road surfaces.
 
 use super::band_semantics::band_kind_sort_key;

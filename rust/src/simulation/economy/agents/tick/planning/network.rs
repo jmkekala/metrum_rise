@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network replan construction for agents already outside a building.
 
 use super::super::super::MODE_CAR;

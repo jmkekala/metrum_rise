@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network replan failure watchdog and deterministic recovery fallbacks.
 
 use super::super::slices::MovementSlices;

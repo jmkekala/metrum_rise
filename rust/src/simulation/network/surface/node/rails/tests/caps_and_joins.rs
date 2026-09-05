@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail cap and side-join ownership tests.
 
 use super::*;

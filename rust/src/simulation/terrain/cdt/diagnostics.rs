@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Mesh diagnostics and source-provenance summaries.
 
 use std::collections::{BTreeMap, HashSet};

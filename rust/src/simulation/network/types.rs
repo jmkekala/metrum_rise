@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Common types and enumerations for the transportation network.
 
 /// The mode of transport for an edge or lane.

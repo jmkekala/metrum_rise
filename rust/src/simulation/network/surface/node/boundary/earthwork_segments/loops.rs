@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Loop-level earthwork boundary segment assembly.
 
 use super::splits::push_sourced_node_earthwork_boundary_segments;

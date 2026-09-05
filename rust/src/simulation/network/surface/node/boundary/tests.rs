@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node boundary provenance and height-export tests.
 
 use super::*;

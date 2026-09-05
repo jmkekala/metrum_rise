@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Coarse-grid and hillside roadbed tests.
 
 use super::*;

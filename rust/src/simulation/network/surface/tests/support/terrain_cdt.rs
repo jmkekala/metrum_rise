@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain CDT export and provenance helpers for road-surface tests.
 
 use super::*;

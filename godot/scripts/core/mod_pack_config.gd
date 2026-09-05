@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared mod-pack activation defaults and persistence helpers.
 ##
 ## Missing config means a fresh player profile and enables the bundled starter pack. Once the

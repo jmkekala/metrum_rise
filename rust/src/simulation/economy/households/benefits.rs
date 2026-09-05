@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household transfer payment and treasury interaction.
 
 use std::sync::atomic::Ordering;

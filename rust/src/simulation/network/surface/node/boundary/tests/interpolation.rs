@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boundary interpolation and missing-height rejection tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-constraint noding for generated rail contacts.
 
 use super::super::source_authority::{

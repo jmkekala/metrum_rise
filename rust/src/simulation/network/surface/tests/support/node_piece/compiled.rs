@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compiled node-piece lookup helpers.
 
 use super::*;

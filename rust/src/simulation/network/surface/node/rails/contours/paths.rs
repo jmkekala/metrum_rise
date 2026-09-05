@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rail path cleanup and point-appending helpers.
 
 use super::*;

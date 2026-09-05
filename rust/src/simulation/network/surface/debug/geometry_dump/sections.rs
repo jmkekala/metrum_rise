@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span section and ownership debug literal writers.
 
 use super::*;

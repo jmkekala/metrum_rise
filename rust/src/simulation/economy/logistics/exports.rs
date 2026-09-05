@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Output surplus export planning to `OWA` border terminals.
 
 use crate::debug_log;

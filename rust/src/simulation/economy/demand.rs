@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand-driven daily growth pass built from authored baseline tuning.
 
 mod actions;

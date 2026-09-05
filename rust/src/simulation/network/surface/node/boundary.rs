@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-owned footprint boundary resolution and source-backed terrain seams.
 
 use super::{

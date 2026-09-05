@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal-cap path construction and cleanup.
 
 use super::height_anchors::endpoint_boundary_world;

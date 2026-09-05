@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit vertical-step authority extraction from canonical arrangement edges.
 
 use super::super::band_semantics::{

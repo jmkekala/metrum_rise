@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-carrier alignment for generated rail contours.
 
 use super::*;

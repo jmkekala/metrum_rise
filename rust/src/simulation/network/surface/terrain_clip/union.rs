@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-clip union orchestration.
 
 use super::super::{NodeOverlayContour, NodeOverlayShape, RoadSurfaceSystem};

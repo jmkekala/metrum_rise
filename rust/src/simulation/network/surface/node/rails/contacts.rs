@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-authorized generated rail contact materialization.
 
 mod geometry;

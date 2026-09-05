@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Deterministic scene lighting setup shared by gameplay and editor scenes.
 ##
 ## The node configures the existing WorldEnvironment and DirectionalLight3D

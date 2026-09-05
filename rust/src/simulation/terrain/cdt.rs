@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic constrained triangulation for road-touched terrain patches.
 //!
 //! The public data contract is kept in [`model`]. The remaining modules form a one-way

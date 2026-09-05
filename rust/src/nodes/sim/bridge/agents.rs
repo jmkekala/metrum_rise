@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Godot-Rust bridge helpers for agent renderer data formatting.
 use crate::nodes::sim::core::RenderSnapshot;
 use godot::prelude::*;

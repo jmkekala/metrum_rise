@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Orbit/pan/zoom camera controller for the asset editor sandbox.
 ## Uses _input with an explicit viewport-position guard: input is only processed
 ## when the mouse is inside the 3D viewport area (between the side panels).

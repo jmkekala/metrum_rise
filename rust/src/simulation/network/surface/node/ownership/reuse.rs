@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Exact contributor-local reuse for node ownership compilation.
 
 use super::super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain CDT input, windowing, fingerprint, and sampling helpers.
 
 use super::super::super::*;

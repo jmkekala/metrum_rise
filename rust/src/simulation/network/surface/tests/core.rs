@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core surface cache, input, overlay, and section regression tests.
 
 use super::*;

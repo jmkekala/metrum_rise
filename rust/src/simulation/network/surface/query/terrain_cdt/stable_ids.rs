@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Stable terrain CDT footprint and loop IDs.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! JSON-serializable sandbox result contracts.
 
 use serde::Serialize;

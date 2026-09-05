@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visual span/node handoff distances and material-conflict ownership growth.
 
 use super::super::{CompiledNodeKind, IncidentEdgeSide, RoadSurfaceSystem, SAMPLE_EPSILON_M};

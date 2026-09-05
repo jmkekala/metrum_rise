@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{ChunkCacheKind, RoadSurfaceCompileReason, RoadSurfaceSystem, SurfaceChunkKey};

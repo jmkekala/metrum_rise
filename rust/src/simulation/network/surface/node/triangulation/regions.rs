@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Triangulation of individual node-owned regions.
 
 use super::coverage::{

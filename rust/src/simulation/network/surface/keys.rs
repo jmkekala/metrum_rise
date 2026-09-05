@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical XZ and height quantization keys shared by surface stages.
 
 use super::NodeOverlayPoint;

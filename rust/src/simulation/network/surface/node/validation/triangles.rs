@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Triangle validation router and shared triangle index helpers.
 
 mod coverage;

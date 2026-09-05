@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boolean ownership error diagnostic mapping.
 
 use super::*;

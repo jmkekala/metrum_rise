@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-height handoff bridge coverage tests.
 
 use super::*;

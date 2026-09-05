@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-clip segment and source-chain recovery.
 
 use super::super::backend::RoadVec3;

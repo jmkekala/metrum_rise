@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household shopping, reservation, shortage, and cancellation tests.
 
 use super::support::*;

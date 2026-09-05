@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Seam extraction and materialization helpers for node boolean ownership.
 
 mod extraction;

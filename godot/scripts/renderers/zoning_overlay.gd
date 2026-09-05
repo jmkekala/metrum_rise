@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Zone overlay -- builds a mesh from Rust-authored road-aligned parcel geometry.
 ##
 ## Rust methods called: get_zoning_overlay_revision(), get_zoning_overlay_occupancy_revision(),

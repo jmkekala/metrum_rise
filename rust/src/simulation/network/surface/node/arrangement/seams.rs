@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Seam source identity and source-authority helpers for node arrangements.
 
 use super::super::RoadSurfaceBandKind;

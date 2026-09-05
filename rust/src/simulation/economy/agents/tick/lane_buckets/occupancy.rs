@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Retained per-lane occupancy snapshot maintenance.
 
 use super::super::runtime::PAR_THRESHOLD;

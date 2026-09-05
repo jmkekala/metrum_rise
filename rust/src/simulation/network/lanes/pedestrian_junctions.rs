@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authoritative pedestrian junction routes and rendered-crossing geometry.
 
 use super::super::graph::RegionGraph;

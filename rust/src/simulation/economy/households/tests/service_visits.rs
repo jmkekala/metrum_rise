@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Representative personal-service visit tests.
 
 use super::support::*;

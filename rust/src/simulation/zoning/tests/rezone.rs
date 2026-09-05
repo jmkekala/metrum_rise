@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parcel rezone stroke and point-query tests.
 
 use super::helpers::{make_straight_road, make_zoning};

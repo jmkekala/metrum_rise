@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Building renderer — maintains one MultiMeshInstance3D per registered building asset part.
 ##
 ## Rust methods called:

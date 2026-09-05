@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Per-edge congestion aggregation from live network agents.
 
 use crate::simulation::economy::agents::data::AgentSystem;

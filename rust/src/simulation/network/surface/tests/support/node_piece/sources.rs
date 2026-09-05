@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-piece source provenance assertions.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Field-production sites owned by explicit agricultural buildings.
 //!
 //! Farms are renewable producers: a placed farm owns one player-drawn field

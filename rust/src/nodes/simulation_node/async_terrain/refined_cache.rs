@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! `SimCore` refined terrain patch cache builders and invalidation helpers.
 
 use super::super::*;

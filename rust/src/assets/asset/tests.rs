@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asset manifest parsing and validation regression tests.
 
 use super::*;

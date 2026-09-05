@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit vertical-step owner-pair authority helpers.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared terminal-cap path and side-edge extraction helpers.
 
 use super::super::*;

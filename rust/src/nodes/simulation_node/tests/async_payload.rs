@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Async Payload regression tests for the simulation-node bridge.
 
 use super::*;

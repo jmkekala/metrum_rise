@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building allocator placement, indexing, lifecycle, and demand tests.
 
 use super::*;

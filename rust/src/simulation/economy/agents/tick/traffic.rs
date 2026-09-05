@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Traffic movement helpers for car following, junctions, and lane changes.
 
 mod idm;

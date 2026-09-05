@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Low-frequency frontage delay cache updates used by exact access planning.
 
 use super::super::MODE_CAR;

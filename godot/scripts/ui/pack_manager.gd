@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Mod pack options panel.
 ##
 ## Scans user://mods/ for installed packs, reads/writes user://active_packs.cfg

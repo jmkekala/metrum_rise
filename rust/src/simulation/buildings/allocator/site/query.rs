@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Spatial lookup and ray-query operations for derived building sites.
 
 use super::geometry::{point_in_polygon_slice, update_site_plane_ray_hit};

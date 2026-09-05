@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! World configuration and bounded-grid sizing helpers.
 //!
 //! `WorldConfig` is the chunk-aware world-size config.

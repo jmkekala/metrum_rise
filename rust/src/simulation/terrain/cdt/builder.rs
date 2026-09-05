@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! CDT orchestration from canonical input to classified output mesh.
 
 use std::collections::HashSet;

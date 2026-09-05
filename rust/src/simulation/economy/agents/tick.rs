@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Main simulation loop for agents: transit state machine and movement.
 
 mod access;

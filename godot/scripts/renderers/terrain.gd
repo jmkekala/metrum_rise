@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Terrain patch renderer — uploads chunk-local visual terrain patches and world-edge terrain skirts.
 ##
 ## Rust methods called: get_terrain_patch_layout(), get_dirty_terrain_patches(),

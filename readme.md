@@ -1,8 +1,8 @@
 # METRUM RISE
 
 ## Description
-Open Source (GPLv2) city building game build with Godot game engine and Rust programming language.
-License: [GNU General Public License, version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+Open source city building game built with the Godot game engine and Rust programming language.
+License: [GNU General Public License, version 2 only (GPL-2.0-only)](LICENSE.md)
 
 ## Requirements
 - Godot (4.x)

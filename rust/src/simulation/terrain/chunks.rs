@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain chunk asset manifest and disk loader.
 //!
 //! The first terrain-import slice bakes one directory per chunk under

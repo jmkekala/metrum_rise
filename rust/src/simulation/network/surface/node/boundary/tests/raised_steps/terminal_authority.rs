@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal raised-step source-edge authority tests.
 
 use super::*;

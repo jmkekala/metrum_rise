@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Serde defaults and numeric deserializers shared by authored economy schema.
 
 use serde::{Deserialize, Deserializer};

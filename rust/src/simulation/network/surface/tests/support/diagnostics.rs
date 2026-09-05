@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node pipeline diagnostic helpers for road-surface tests.
 
 use super::*;

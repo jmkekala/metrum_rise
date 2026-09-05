@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Sandbox graph, controller, and price lookup helpers.
 
 use crate::simulation::economy::definitions::schema::{

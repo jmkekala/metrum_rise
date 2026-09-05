@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Unit tests for the road-surface compiler and ownership caches.
 
 use super::arrangement::{

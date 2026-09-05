@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! `OWA` border fallback import shipment creation.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;

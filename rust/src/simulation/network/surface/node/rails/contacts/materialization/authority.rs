@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Contact authority lookup for generated rail contact materialization.
 
 use super::super::super::super::super::keys::surface_overlay_grid_collinearity_error_bound;

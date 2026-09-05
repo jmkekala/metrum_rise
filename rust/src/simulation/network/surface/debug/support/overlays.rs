@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Debug overlay contour and shape helpers.
 
 use super::*;

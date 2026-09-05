@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Per-tick repair of stale agent building references.
 
 use super::super::TRANSIT_ACCESS_INGRESS;

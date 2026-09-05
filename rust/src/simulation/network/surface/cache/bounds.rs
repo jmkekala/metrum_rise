@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Chunk bounds and piece AABB helpers.
 
 use super::*;

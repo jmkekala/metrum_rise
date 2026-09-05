@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Owner lookup helpers for terminal-cap and side-join boundary constraints.
 
 use super::*;

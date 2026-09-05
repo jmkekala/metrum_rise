@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime accumulator, attachment repair, and allocator tick tests.
 
 use super::support::*;

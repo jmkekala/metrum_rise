@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Geometry helpers for sampling world-space positions along road edges.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;

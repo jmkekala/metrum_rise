@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step and vertical-face debug diagnostics.
 
 use super::*;

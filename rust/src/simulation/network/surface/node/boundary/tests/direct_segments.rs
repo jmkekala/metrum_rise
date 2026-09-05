@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Direct boundary segment owner-resolution tests.
 
 use super::*;

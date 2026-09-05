@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Household admission and arrived carrier materialization.
 
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};

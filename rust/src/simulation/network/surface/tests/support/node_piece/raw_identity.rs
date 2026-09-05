@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Exact canonical raw-polygon identity helpers.
 
 use super::*;

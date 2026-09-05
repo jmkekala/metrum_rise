@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Revision-scoped freight route ETA cache.
 
 use std::collections::BTreeMap;

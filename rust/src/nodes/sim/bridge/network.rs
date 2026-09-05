@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Godot-Rust bridge helpers for network-related geometry formatting.
 use crate::config::HEIGHT_SCALE;
 use crate::debug_log;

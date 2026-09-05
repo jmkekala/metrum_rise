@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Vehicle and pedestrian junction transition tests.
 
 use super::support::*;

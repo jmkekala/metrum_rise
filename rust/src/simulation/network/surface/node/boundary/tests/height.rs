@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boundary height authority tests.
 
 use super::super::super::{

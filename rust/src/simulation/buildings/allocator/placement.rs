@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand-driven building placement candidate discovery and frontage-slot resolution.
 
 use crate::assets::AnchorType;

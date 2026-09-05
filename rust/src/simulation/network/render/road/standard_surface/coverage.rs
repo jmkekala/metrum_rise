@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Selection of compiled edge spans and node pieces visible to the renderer.
 
 use crate::simulation::network::graph::{Edge, RegionGraph};

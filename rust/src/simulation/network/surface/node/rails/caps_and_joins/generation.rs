@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal-cap and side-join generated rail contour orchestration.
 
 use super::boundary_constraints::{

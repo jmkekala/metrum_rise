@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! System and environment Godot API methods.
 
 use super::*;

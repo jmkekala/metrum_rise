@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Dirty tracking and graph-surface membership helpers.
 
 use super::*;

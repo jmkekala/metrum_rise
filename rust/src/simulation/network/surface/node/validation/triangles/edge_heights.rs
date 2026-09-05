@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Cross-region triangle edge height validation.
 
 use super::super::super::NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;

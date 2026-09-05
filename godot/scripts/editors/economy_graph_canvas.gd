@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Lightweight economy-graph canvas for the developer economy editor.
 ## Draws scenario node links, exposes node selection, and allows simple
 ## drag-based position updates for authored graph nodes.

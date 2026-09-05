@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared demand value types and constants.
 
 use crate::simulation::zoning::ZoneType;

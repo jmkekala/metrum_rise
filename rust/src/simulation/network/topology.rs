@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network topology modification and intersection processing.
 //!
 //! Handles the logic for detecting road crossings, splitting edges at

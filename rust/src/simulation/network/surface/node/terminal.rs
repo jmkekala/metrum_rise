@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical terminal-cap adapter for one-mouth visual node ownership.
 
 use super::backend::{

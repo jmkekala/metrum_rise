@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Stable parcel storage and chunk-local parcel lookup.
 
 use super::geometry::{

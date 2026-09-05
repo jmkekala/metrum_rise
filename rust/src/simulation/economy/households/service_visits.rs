@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Sampled visible service visits layered over aggregate commercial service demand.
 
 use std::sync::atomic::AtomicU32;

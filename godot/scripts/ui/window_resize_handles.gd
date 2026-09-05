@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Wide invisible resize handles for embedded Godot windows.
 ##
 ## Godot's built-in subwindow border can be difficult to hit precisely. This

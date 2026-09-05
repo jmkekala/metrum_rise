@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! CDT debug sidecar sample export helpers.
 
 use super::super::super::*;

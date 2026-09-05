@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building-site derivation, grading, and query regression tests.
 
 use super::derive::{

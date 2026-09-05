@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Derived entrance/access cache built from building placement, asset anchors, and live lanes.
 
 use crate::assets::AnchorType;

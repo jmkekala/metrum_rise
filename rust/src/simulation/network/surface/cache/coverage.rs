@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Piece-to-chunk coverage index maintenance.
 
 use super::*;

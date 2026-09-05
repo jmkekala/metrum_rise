@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generated-contact endpoint validation against exact source authority.
 
 #[cfg(test)]

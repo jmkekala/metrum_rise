@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Grade-local authority and candidate data types.
 
 use super::*;

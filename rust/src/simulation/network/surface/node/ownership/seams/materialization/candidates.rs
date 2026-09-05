@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Candidate selection for owned-edge seam materialization.
 
 use super::super::super::super::super::keys::SURFACE_XZ_KEY_SCALE;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Local access path construction and walking.
 
 use super::super::super::MODE_WALK;

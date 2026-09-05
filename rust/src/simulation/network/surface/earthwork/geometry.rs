@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork skirt geometry, transition vectors, and top-surface intrusion checks.
 
 use super::super::{

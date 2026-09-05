@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic small-value selection helpers for agent lifecycle code.
 
 /// Mixes a stable integer seed into a well-distributed 64-bit value.

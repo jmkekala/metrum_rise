@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit vertical-step source-selection tests.
 
 use super::*;

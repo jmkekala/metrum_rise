@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compiled roadbed renderer coordinator.
 
 use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;

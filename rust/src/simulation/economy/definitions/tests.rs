@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Tests for the editor-facing economy definition JSON bridge.
 
 use super::api::{export_project_json, load_project_json, run_sandbox_json};

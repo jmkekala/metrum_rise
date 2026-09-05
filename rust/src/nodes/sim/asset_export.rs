@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Asset export helpers: validate form data and write `pack.toml` / `asset.toml` to disk.
 //!
 //! GDScript sends a JSON string describing the form state. Rust validates it, generates

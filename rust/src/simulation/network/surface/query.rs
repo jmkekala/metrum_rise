@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime road-surface query module wiring.
 //!
 //! Query-facing code is split by consumer contract: terrain/CDT loop export,

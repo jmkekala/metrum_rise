@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Exact source validation for generated rail contacts.
 
 mod authority;

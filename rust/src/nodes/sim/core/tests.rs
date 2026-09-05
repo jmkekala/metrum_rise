@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 use super::{

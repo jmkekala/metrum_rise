@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent-specific rendering and visual debug logic for Godot interaction.
 //!
 //! Handles pedestrian and car instance transform generation, and agent path visual debug.

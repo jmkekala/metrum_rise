@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Spatial grid subsystems: environmental diffusion and the generic grid primitive.
 //!
 //! All grids use [`data_grid::DataGrid<T>`] as their storage primitive — a flat `Vec<T>`

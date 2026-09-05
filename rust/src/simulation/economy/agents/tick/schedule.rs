@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Work schedule timing helpers for building-origin agent trips.
 
 use super::planning::estimate_building_origin_trip_minutes;

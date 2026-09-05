@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand action contracts consumed by building placement and lifecycle code.
 
 use super::types::DemandUse;

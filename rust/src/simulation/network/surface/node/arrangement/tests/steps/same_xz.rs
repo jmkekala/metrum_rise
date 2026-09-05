@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-XZ vertical-step arrangement tests.
 
 use super::*;

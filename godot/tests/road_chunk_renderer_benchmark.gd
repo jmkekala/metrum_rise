@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Deterministic headless benchmark for committed-road chunk validation and ArrayMesh upload.
 extends SceneTree
 

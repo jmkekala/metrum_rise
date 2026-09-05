@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Private building growth, level-change, and despawn planning.
 
 use super::actions::{

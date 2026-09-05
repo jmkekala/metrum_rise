@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visible-surface query, debug export, and sync regression tests.
 
 use super::*;

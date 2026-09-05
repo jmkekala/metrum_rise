@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Compiled roadbed rendering split by ownership and visual layer.
 
 mod bridge;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visibility and integrated-earthwork policy for surface queries.
 
 use super::super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;

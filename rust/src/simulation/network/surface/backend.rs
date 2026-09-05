@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Geometry-backend adapter boundary for road-surface compilation.
 
 use super::NodeOverlayPoint;

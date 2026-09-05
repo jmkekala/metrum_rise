@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Settled economy snapshots consumed by demand pressure and planning.
 
 use super::config::DemandConfig;

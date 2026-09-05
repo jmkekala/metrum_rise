@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime economy tuning validation.
 
 use super::common::duplicate_ids;

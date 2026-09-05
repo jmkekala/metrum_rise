@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Resource-keyed supplier lookup over freight-reachable components.
 
 use std::collections::BTreeMap;

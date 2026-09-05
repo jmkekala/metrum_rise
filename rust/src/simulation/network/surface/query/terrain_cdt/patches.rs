@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain render patch discovery and terrain-clip loop collection.
 
 use super::*;

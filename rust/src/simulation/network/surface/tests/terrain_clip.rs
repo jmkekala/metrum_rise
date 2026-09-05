@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain clip and road-touched CDT stage contract tests.
 
 use super::super::RoadSurfaceTerrainClipContourRole;

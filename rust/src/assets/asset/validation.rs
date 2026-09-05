@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Structural and semantic asset manifest validation.
 
 use super::{

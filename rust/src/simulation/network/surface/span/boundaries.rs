@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span boundary and terrain-clip source construction from resolved owned regions.
 
 use super::super::{

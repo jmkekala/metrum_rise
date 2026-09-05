@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork boundary source selection from final edges and direct vertices.
 
 use super::merge::*;

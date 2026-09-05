@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Static overlap correction for cars in retained lane buckets.
 
 use crate::config::{CAR_LENGTH, IDM_S_MIN};

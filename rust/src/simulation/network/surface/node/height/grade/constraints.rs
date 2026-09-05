@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared seam and candidate constraints for node grade normalization.
 
 use super::*;

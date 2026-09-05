@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Credit accrual and pressure normalization helpers.
 
 use super::types::EPSILON;

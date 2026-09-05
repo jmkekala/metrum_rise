@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Contact noding insertion into generated contours and source constraints.
 
 use super::super::{

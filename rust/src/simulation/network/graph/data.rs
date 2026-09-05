@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core graph data structures: Nodes, Edges, and the RegionGraph container.
 
 use super::super::types::*;

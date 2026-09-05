@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-height authority agreement for canonical owned node vertices.
 
 use super::super::RoadSurfaceBandKind;

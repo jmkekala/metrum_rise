@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand diagnostics snapshots and debug logging.
 
 use super::system::DemandSystem;

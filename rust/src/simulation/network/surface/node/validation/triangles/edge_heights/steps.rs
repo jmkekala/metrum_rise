@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit vertical-step authorization for cross-region height edges.
 
 use super::*;

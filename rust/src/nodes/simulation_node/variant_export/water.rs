@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Water patch, water mesh, and authored-water variant export helpers.
 
 use super::super::*;

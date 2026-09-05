@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-corridor conflict checks for parcel placement.
 
 use super::overlap::rectangles_overlap_on_axes;

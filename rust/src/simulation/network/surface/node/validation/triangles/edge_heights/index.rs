@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Heighted triangle-edge indexing and owner coverage checks.
 
 use super::*;

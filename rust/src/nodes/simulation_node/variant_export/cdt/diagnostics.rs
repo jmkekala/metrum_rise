@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! CDT build diagnostics, failure payloads, and source sidecar exports.
 
 use super::super::super::*;

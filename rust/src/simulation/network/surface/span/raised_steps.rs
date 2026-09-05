@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Span raised-step constraint extraction and vertical face generation.
 
 use super::super::{

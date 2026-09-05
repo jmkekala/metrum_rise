@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Release-safe crash diagnostics and fixed-size flight recorder.
 
 use std::io::Write;

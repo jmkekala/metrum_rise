@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Arrangement face boundary intervals used by node vertical face export.
 
 use super::arrangement::NodeArrangementFace;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane graph navigation helpers used by agent movement and planning.
 
 use crate::simulation::economy::agents::ACCESS_PLAN_VALID;

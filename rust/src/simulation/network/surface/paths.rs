@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared world-path canonical height interpolation helpers.
 
 use super::{

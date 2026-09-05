@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Library-backed rail and contour generation for canonical node arrangements.
 
 use super::keys::SURFACE_POLYLINE_POINT_EQUAL_EPS_M;

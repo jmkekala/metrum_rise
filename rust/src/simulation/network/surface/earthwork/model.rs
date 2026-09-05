@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Earthwork data contracts, keys, and deterministic ordering helpers.
 
 use super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height triangle construction and canonical polygon support checks.
 
 use super::model::*;

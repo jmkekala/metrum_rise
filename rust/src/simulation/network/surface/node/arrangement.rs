@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical node-arrangement identity and ownership data model.
 
 mod build;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Rails stage contract tests.
 
 use super::super::arrangement::NodeBandOwner;

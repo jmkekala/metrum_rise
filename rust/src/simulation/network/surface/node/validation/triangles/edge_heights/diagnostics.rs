@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Cross-region edge-height diagnostics.
 
 use super::steps::{

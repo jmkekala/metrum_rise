@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Modular query sub-modules for spatial and simulation state inspection (Item R13).
 
 pub mod lanes;

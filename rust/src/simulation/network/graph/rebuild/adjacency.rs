@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Adjacency reconstruction and disconnected-component queries.
 
 use super::super::data::RegionGraph;

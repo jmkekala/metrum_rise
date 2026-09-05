@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit source-handoff and contour-support height keys.
 
 use super::model::*;

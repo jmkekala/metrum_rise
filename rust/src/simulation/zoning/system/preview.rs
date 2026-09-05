@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parcel preview and drag-stroke projection for `ZoningSystem`.
 
 use super::ZoningSystem;

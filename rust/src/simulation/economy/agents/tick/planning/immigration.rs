@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Initial access plan construction for immigrating cars.
 
 use super::super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::super::graph::Edge;
 use super::super::types::TransitType;
 use super::{Lane, LaneType};

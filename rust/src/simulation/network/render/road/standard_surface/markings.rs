@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane-divider marking placement and crosswalk-mouth clearance.
 
 use super::super::crosswalks::CROSSWALK_STRIPE_LEN;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand tuning loading and validation.
 
 use super::types::{DemandChannel, EPSILON, GrowthProfileRuntime, UseTuningF32};

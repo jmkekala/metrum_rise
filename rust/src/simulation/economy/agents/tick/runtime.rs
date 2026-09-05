@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Runtime dispatch helpers for the agent tick.
 
 use rayon::prelude::*;

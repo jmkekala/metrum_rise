@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Per-agent movement state machine for the agent tick loop.
 
 mod access_state;

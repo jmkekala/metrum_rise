@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Parcel rectangle and stroke overlap tests.
 
 use super::bounds::geometry_for_parcel;

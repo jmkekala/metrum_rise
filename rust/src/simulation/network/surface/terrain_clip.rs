@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-preserving terrain-clip boundary export for owned road pieces.
 
 mod dust;

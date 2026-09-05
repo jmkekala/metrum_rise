@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Candidate scoring and exact path construction for building-origin trips.
 
 use super::super::super::{

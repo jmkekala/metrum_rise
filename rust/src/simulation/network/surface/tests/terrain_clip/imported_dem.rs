@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Production road-surface to terrain-CDT agreement tests on a baked imported DEM fixture.
 
 use super::*;

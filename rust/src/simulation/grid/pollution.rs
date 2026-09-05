@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Industrial pollution emission and diffusion system.
 
 use super::data_grid::DataGrid;

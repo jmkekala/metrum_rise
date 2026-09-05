@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Economy-side reachability helpers for candidate planning.
 
 use std::collections::BTreeMap;

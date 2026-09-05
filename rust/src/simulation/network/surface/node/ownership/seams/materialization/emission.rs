@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Region seam constraint emission from selected owned-edge candidates.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core arrangement identifiers, keys, records, and accessors.
 
 use super::super::backend::RoadVec2;

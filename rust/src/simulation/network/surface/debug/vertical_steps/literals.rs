@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step key and owner literal writers.
 
 use super::*;

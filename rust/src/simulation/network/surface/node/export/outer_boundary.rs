@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Outer boundary polygon export from solved arrangement regions.
 
 use super::super::*;

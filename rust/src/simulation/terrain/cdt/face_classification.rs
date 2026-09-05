@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-footprint ownership and post-triangulation face rejection.
 
 use std::collections::BTreeMap;

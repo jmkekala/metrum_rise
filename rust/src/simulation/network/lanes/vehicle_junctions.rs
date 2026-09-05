@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 use super::super::graph::RegionGraph;
 use super::super::types::TransitFlags;
 use super::geometry::build_cum_dist;

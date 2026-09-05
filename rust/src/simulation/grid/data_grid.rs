@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generic 2D data grid primitive.
 
 /// A flat memory-efficient 2D grid storage.

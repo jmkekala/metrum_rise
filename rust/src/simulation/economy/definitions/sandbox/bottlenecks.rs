@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Bottleneck summary construction for sandbox playback results.
 
 use crate::simulation::economy::definitions::schema::EconomyScenario;

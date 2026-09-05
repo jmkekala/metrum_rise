@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terminal curb/shoulder raised-step constraint emission.
 
 use super::super::owners::inner_raised_step_opposite_owner_for_segment;

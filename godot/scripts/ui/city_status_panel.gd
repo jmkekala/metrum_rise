@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Compact city status panel for treasury balance and live agent count.
 ##
 ## This HUD panel is read-only and intended to sit between the clock/speed panel

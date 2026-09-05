@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Mutating parcel placement and rezone operations.
 
 use super::ZoningSystem;

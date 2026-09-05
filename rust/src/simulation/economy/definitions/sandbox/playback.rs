@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Sandbox playback orchestrator.
 
 use super::bottlenecks::{BottleneckInputs, build_bottlenecks};

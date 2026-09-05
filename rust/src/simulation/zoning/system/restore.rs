@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Save/load parcel restoration from road attachment data.
 
 use super::ZoningSystem;

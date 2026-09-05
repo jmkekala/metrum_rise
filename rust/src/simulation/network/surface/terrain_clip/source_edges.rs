@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source-edge extraction and diagnostics for terrain-clip union output.
 
 use super::super::backend::RoadVec3;

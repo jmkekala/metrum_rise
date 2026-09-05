@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Terrain-clip cutter height recovery and interval coverage.
 
 use super::super::backend::RoadVec3;

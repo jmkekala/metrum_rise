@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Expected and canonical raised-step debug extraction.
 
 use super::*;

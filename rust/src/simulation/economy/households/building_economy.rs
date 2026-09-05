@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building-side production, utility settlement, bankruptcy, and liquidation.
 
 use super::data::DailyHouseholdLedger;

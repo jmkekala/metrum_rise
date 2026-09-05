@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Road-aligned parcel zoning tool -- sends placement points to Rust and previews returned geometry.
 ##
 ## Rust methods called: get_zone_profiles(), get_zoning_parcel_preview(),

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node ownership, height, and top-surface debug dump formatting.
 
 use super::*;

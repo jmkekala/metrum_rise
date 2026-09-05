@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared scaling rules for explicit player-drawn production areas.
 
 use crate::simulation::buildings::allocator::Building;

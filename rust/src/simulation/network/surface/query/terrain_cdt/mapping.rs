@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-surface terrain clip provenance mapping into terrain CDT DTOs.
 
 use super::stable_ids::{terrain_cdt_usize_to_u32, terrain_cdt_usize_to_u64};

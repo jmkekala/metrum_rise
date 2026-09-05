@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Debug logging for Metrum Rise.
 //!
 //! Controlled at runtime via environment variables:

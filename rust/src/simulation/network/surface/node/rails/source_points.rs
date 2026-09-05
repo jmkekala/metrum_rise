@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source height-carrier point collection for generated node rails.
 
 mod collection;

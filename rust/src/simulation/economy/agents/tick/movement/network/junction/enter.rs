@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Connector entry, wait, and claim handling.
 
 use super::super::super::super::super::{MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};

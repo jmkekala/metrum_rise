@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Serialization for terrain, water, buildings, and zoning systems.
 
 use crate::nodes::sim::core::PendingDemandSpawnAction;

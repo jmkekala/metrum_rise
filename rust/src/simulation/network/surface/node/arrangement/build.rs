@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Construction pipeline for canonical node arrangements.
 
 use super::super::backend::RoadVec2;

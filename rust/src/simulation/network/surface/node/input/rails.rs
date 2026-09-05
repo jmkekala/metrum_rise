@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node input rail, interval, and path construction.
 
 use super::*;

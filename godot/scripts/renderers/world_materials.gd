@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared world/editor material factory and texture cache.
 ## Rendering tools should request common asphalt/concrete materials here instead
 ## of rebuilding shader materials or reloading texture sets locally.

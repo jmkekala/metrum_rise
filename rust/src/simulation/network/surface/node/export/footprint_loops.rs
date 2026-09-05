@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Footprint boundary loop export from the final boolean road-owned footprint.
 
 use super::super::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! IDM speed and braking helpers.
 
 use crate::config::{IDM_A_MAX, IDM_B, IDM_S_MIN, IDM_T_HEAD};

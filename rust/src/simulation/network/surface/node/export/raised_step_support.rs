@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Raised-step vertical face support checks against final owned top surfaces.
 
 use super::super::{

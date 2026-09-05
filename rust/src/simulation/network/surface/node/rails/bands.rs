@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Mouth band and corridor contour generation for node rails.
 
 use super::super::arrangement::NodeBandOwner;

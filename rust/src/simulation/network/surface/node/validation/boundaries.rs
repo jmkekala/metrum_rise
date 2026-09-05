@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boundary constraint validation for triangulated node regions.
 
 use super::super::backend::RoadVec3;

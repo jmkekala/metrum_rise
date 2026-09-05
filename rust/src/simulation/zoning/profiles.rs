@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Built-in zoning-profile registry loading and deterministic runtime compilation.
 
 mod authored;

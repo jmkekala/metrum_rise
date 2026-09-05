@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Background simulation thread, `SimCore` state bundle, and `RenderSnapshot`.
 //!
 //! `SimCore` owns all simulation state. The background thread continuously ticks

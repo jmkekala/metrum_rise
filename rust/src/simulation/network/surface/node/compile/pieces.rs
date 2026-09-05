@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visual node-piece assembly entry points.
 
 use super::*;

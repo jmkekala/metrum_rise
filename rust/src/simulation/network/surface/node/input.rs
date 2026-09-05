@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical node-arrangement input extracted from solved road-surface profiles.
 
 use super::backend::{

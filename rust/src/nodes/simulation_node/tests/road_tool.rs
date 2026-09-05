@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road Tool regression tests for the simulation-node bridge.
 
 use super::*;

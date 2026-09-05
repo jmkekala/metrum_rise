@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! SQLite save/load infrastructure for simulation snapshots.
 
 use crate::nodes::sim::core::{

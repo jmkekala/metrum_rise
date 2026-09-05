@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height agreement validation for explicit seams and shared sources.
 
 use super::grade::{

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Node-height field construction and evaluation tests.
 
 use super::super::arrangement::NodeSeamSource;

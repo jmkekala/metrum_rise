@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Canonical arrangement boundary-edge ownership and source matching.
 
 use super::super::RoadSurfaceBandKind;

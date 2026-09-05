@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 #![warn(missing_docs)]
 //! Metrum Rise — simulation backend, compiled as a Godot 4 GDExtension (`libmetrum_rise.so`).
 //!

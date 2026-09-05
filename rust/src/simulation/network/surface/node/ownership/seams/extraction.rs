@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Seam extraction from owned shapes and source rail constraints.
 
 use super::super::super::super::keys::surface_overlay_grid_collinearity_error_bound;

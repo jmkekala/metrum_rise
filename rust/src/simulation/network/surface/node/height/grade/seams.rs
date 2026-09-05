@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Explicit same-material and material-transition seam height normalization.
 
 use super::*;

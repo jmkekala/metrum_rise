@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Agent spawning, removal, and whole-store lifecycle helpers.
 
 use super::data::{Agent, AgentSystem};

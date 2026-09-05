@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic owner assignment helpers for generated node rails.
 
 use super::super::arrangement::NodeBandOwner;

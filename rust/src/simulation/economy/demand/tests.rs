@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Demand tests.
 
 use super::credits::advance_spawn_need_credit;

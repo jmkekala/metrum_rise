@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shipment arrival, refund, and failure handling.
 
 use std::collections::HashMap;

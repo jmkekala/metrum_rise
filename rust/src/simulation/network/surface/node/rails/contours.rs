@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Generic generated contour, constraint, and path helpers for node rails.
 
 use super::super::arrangement::NodeBandOwner;

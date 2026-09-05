@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Headless contract test for atomic road-chunk hydration and replacement.
 extends SceneTree
 

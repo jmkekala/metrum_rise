@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Pedestrian junction connection-count regressions.
 
 #[cfg(test)]

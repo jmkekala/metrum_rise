@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Public zoning-profile registry API.
 
 use super::authored::{load_authored_zone_profiles, load_builtin_growth_profile_ids};

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Tests for node boolean ownership.
 
 use super::rail_authority::{

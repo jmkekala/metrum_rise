@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Network-specific rendering logic for Godot interaction.
 //!
 //! Handles road mesh generation and road connection utility calculations.

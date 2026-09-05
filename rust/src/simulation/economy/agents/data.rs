@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core data layout for the agent simulation.
 //!
 //! # Memory layout

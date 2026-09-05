@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Spatial interaction and querying utilities for the road network.
 //!
 //! Provides functions for snapping world positions to nodes and edges,

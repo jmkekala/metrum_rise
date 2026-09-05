@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Provenance attached to one canonical road constraint.
 
 use super::super::*;

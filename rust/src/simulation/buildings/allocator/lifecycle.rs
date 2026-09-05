@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building removal, demand-owned household admission, and coordinate restoration.
 
 use crate::config::SIDEWALK_WIDTH;

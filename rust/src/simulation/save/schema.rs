@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! SQLite schema and enum mapping for persistent storage.
 
 use super::SaveLoadError;

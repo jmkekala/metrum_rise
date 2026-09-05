@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-patch authority ranking and candidate agreement.
 
 use super::model::*;

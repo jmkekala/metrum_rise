@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared zoning test fixtures.
 
 use crate::simulation::core::config::WorldConfig;

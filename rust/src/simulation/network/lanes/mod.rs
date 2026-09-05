@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane geometry, lane connectivity, and per-lane derived planning caches.
 
 use godot::prelude::*;

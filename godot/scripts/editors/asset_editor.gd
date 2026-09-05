@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Asset editor shell — launched via `--asset-editor` command-line argument.
 ## Shares the same SimulationNode and compiled .so as the game, but runs a
 ## 500 m sandbox with no agents, no demand simulation, and no background tick thread.

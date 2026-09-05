@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Core node-height records, keys, authority types, and scalar quantization.
 
 use super::grade::NodeGradeVertexAuthority;

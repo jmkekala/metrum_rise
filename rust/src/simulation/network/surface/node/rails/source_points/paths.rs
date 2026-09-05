@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Source height-carrier path normalization.
 
 use super::super::super::backend::{RoadVec3, road_vec3_xz as xz};

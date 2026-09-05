@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane buckets, frontage delay, and steady-state congestion tests.
 
 use super::support::*;

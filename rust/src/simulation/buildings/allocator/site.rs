@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building-site derivation, grading, terrain ownership, and spatial queries.
 
 mod derive;

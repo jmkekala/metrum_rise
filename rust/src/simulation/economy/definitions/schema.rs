@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Authored TOML and JSON schema for economy profiles, controllers, and scenarios.
 
 use super::runtime::RuntimeEconomyTuning;

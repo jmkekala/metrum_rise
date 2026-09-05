@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boolean domain claiming and owned-region extraction.
 
 use super::super::reuse::NodeOwnershipBuildReuseContext;

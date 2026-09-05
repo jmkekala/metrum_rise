@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared XZ vertex height authority tests.
 
 use super::*;

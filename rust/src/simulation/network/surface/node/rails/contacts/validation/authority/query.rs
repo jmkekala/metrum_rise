@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Exact source-authority queries for generated contacts.
 
 use super::super::super::{

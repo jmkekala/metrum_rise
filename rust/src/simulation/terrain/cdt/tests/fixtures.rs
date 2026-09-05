@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Shared road-loop, DEM, provenance, and mesh assertion fixtures.
 
 use super::*;

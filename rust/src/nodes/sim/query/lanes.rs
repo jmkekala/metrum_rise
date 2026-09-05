@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Lane-specific spatial queries (lane positions, junction connectivity, crosswalks).
 
 use crate::nodes::sim::core::SimCore;

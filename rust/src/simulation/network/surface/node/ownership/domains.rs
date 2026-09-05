@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Boolean domain claiming and overlay helpers for node ownership.
 
 use super::super::arrangement::{NodeBandOwner, NodeRegionSeamConstraint};

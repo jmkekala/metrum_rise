@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Visible-surface sampling, raycast, and section-range queries.
 
 use super::super::{

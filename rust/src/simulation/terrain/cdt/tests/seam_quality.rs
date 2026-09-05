@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Seam simplification and source-provenance quality tests.
 
 use super::*;

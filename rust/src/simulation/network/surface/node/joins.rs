@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Contour-adapter boundary for node side-join ownership candidates.
 
 use super::backend::{

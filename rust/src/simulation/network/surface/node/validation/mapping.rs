@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Error-to-validation-diagnostic mapping.
 
 use super::super::RoadSurfaceVisualNodePieceKind;

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Shared dark/light theme helpers for editor shells and editor-owned dialogs.
 ##
 ## Gameplay HUD styling remains in `ui_style.gd`; this file is for dense tools

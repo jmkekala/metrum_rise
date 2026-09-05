@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Side-join path construction and endpoint lookup.
 
 use super::*;

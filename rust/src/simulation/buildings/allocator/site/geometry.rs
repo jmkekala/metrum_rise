@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Polygon, hull, bounds, and plane-intersection primitives.
 
 use super::model::BuildingSiteClient;

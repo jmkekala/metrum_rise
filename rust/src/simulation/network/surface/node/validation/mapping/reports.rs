@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Validation report constructors from stage-specific diagnostics.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! City treasury, service policy, fiscal reporting, and economy diagnostics.
 
 use super::state::SimCore;

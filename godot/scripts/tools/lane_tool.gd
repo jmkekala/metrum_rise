@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Lane connection editor — visual tool for configuring turn restrictions at road junctions.
 ##
 ## Rust methods called: get_node_lanes(), get_lane_connections_array(), set_lane_connection(),

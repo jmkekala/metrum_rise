@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Checks command-line arguments and loads the appropriate scene.
 ## This is the project's main scene entry point.
 ## Normal launch → MainMenu.tscn. --asset-editor → AssetEditor.tscn.

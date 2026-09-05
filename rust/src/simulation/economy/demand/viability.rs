@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Building level-change viability gates.
 
 use super::credits::clamp01;

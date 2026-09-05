@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Deterministic Bend and JunctionN endpoint-profile solving and support materialization.
 
 use super::super::data::{Edge, RegionGraph};

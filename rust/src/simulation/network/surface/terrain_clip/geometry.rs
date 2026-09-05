@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Local terrain-clip overlay geometry helpers.
 
 use super::super::backend::RoadVec3;

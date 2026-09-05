@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Local building access geometry, legality, and access-time helpers.
 
 mod geometry;

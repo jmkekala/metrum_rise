@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! IDM speed update phase for live vehicle traffic.
 
 use super::super::{ACCESS_PLAN_VALID, MODE_CAR, TRANSIT_INTERSECTION, TRANSIT_NETWORK};

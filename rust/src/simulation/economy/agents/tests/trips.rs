@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Trip planning, access, and arrival lifecycle tests.
 
 use super::support::*;

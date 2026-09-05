@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-source diagnostic extraction helpers.
 
 use super::*;

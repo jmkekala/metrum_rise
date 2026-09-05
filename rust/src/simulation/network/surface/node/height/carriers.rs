@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Height-carrier construction from source bands and generated contours.
 
 use super::model::*;

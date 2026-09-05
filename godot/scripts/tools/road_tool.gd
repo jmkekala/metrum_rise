@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
 ## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,

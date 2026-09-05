@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Road-locked terrain patch selection tests.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+
 //! Same-material shared-edge height authority normalization.
 
 use super::*;
