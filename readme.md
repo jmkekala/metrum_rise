@@ -54,5 +54,5 @@ They are at the "screenshots" folder.
 
 
 ## Video
-45 min video about this buggy game on how it looks on release
-- [Metrum Rise - Open Source City Building Game](https://youtu.be/QtjniXLWW9M)
+State of the game
+[![Metrum Rise - Gameplay - 08/2026](https://img.youtube.com/vi/ms_MAdVKa-8/0.jpg)(https://youtu.be/ms_MAdVKa-8?si=JPI0rLBUGm1l4vuD)
