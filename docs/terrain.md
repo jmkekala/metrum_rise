@@ -764,6 +764,12 @@ Deterministic terrain-render rules:
   validating a request revision and copying bounded patch-local terrain/site inputs; road clipping,
   road/site grading, CDT input construction, triangulation, and Godot payload conversion must run
   after that lock is released
+- Rayon terrain/water workers must never block or spin waiting for the simulation mutex: an agent
+  tick can hold that mutex while waiting for Rayon. Snapshot acquisition uses `try_lock`; contention
+  returns the unchanged request through the existing frame-driven retry protocol. Completed refined
+  payloads remain queued until nonblocking Godot polling can insert their cache entries with current
+  generation checks, before exposing them as ready. Publication is `O(B)` for the completed batch,
+  with an `O(1)` busy path; no terrain geometry is rebuilt or discarded merely because the lock is busy
 - terrain payload publication revisions are patch-local for local terrain, road, and building-site
   changes; global invalidation is reserved for world-wide source/layout changes; one physical build
   per patch/render-step may be in flight, stale results are rejected, and revision churn coalesces
@@ -812,6 +818,11 @@ Deterministic terrain-render rules:
   no handled failure is acknowledgement-eligible. Standalone publication rechecks network dirtiness
   and generation after staging, residency additions wait while network publication is pending, and
   transient detached-resource build failures remain retryable in the same generation.
+- road insertion also validates the production terrain payloads before accepting simulation state.
+  The simulation thread borrows the staged world, rebuilds only affected patch/tile products, and
+  stores successful buffers in the existing cache. A failure rolls back graph and split dependents
+  before lane, entrance, parcel-maintenance, routing, or treasury changes. GPU staging remains a
+  separate generation check; it is no longer the first place a terrain-CDT failure can reject a road.
 - a statusless non-engineered payload may use the regular heightmap `PlaneMesh`. An engineered
   payload is renderable only when its current-contract final status is `ok` and its clipped baked
   buffers are structurally valid. A positive omitted-pathological-face count is accepted only when

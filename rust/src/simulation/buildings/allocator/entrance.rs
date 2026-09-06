@@ -46,14 +46,36 @@ impl BuildingAllocator {
         self.entrances.clear();
         self.entrances.reserve(self.buildings.len());
         for building in &self.buildings {
-            self.entrances
-                .push(self.derive_building_entrance(building, graph, lanes));
+            self.entrances.push(Self::derive_building_entrance(
+                building,
+                graph,
+                lanes,
+                &self.registry,
+            ));
         }
         self.entrances_dirty = false;
         self.bump_entrance_ref_revision();
         if let Some(old_entrances) = old_entrances.as_deref() {
             log_entrance_cache_rebuild(old_entrances, &self.entrances, &self.buildings);
         }
+    }
+
+    /// Rebuilds saved entrances using the live catalogue before its ownership is transferred.
+    pub(crate) fn rebuild_loaded_entrance_cache(
+        &mut self,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+        registry: &crate::assets::AssetRegistry,
+    ) {
+        self.entrances.clear();
+        self.entrances.reserve(self.buildings.len());
+        for building in &self.buildings {
+            self.entrances.push(Self::derive_building_entrance(
+                building, graph, lanes, registry,
+            ));
+        }
+        self.entrances_dirty = false;
+        self.bump_entrance_ref_revision();
     }
 
     /// Appends the derived entrance for a newly appended building to a clean cache.
@@ -69,7 +91,12 @@ impl BuildingAllocator {
         {
             return false;
         }
-        let entrance = self.derive_building_entrance(&self.buildings[building_idx], graph, lanes);
+        let entrance = Self::derive_building_entrance(
+            &self.buildings[building_idx],
+            graph,
+            lanes,
+            &self.registry,
+        );
         self.entrances.push(entrance);
         self.entrances_dirty = self.entrances.len() != self.buildings.len();
         self.bump_entrance_ref_revision();
@@ -77,10 +104,10 @@ impl BuildingAllocator {
     }
 
     fn derive_building_entrance(
-        &self,
         building: &Building,
         graph: &RegionGraph,
         lanes: &LaneSystem,
+        registry: &crate::assets::AssetRegistry,
     ) -> BuildingEntrance {
         let mut entrance = BuildingEntrance {
             edge_idx: building.edge_idx,
@@ -88,7 +115,7 @@ impl BuildingAllocator {
             ..BuildingEntrance::default()
         };
 
-        let Some(asset_entry) = self.registry.get(&building.asset_id) else {
+        let Some(asset_entry) = registry.get(&building.asset_id) else {
             return entrance;
         };
         let Some(anchor) = main_entrance_anchor(asset_entry.manifest.anchors.as_slice()) else {

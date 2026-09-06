@@ -3,6 +3,7 @@
 //! World editor and save/load Godot API methods.
 
 use super::*;
+use crate::nodes::camera_node::CameraNode;
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -39,10 +40,16 @@ impl SimulationNode {
         }
     }
 
-    /// Saves the current simulation into a single SQLite snapshot file.
+    /// Saves the current simulation and active orbit camera into a single SQLite snapshot file.
     #[func]
     pub fn save_game(&self, path: GString) -> bool {
-        match self.lock_core().save_game_internal(&path.to_string()) {
+        let camera = self
+            .active_game_camera()
+            .map(|camera| camera.bind().saved_state());
+        match self
+            .lock_core()
+            .save_game_internal(&path.to_string(), camera)
+        {
             Ok(()) => true,
             Err(err) => {
                 godot_error!("Save failed: {}", err);
@@ -66,7 +73,7 @@ impl SimulationNode {
         }
     }
 
-    /// Loads a SQLite save snapshot and replaces the live simulation state.
+    /// Loads a SQLite snapshot, replaces the live world, and restores its saved orbit camera.
     #[func]
     pub fn load_game(&mut self, path: GString) -> bool {
         let result = {
@@ -74,9 +81,12 @@ impl SimulationNode {
             core.load_game_internal(&path.to_string())
         };
         match result {
-            Ok(()) => {
+            Ok(camera_state) => {
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
+                if let (Some(state), Some(mut camera)) = (camera_state, self.active_game_camera()) {
+                    camera.bind_mut().restore_saved_state(state);
+                }
                 true
             }
             Err(err) => {
@@ -84,6 +94,10 @@ impl SimulationNode {
                 false
             }
         }
+    }
+
+    fn active_game_camera(&self) -> Option<Gd<CameraNode>> {
+        self.base().get_viewport()?.get_camera_3d()?.try_cast().ok()
     }
 
     /// Loads a reusable world-definition asset and replaces the live runtime with a blank city.

@@ -10,6 +10,38 @@ use crate::simulation::zoning::parcels;
 use crate::simulation::zoning::{ParcelPlacementError, ZoneType};
 
 #[test]
+fn curved_run_spacing_keeps_every_frontage_inside_road() {
+    for radius in [60.0, 80.0, 140.0] {
+        let (graph, edge_idx) = make_quarter_arc_road(radius);
+        let length = graph.edge(edge_idx).physical_length;
+        for reverse in [false, true] {
+            let mut zoning = make_zoning();
+            let profile = zoning
+                .profiles
+                .default_runtime_id_for_zone_type(ZoneType::Residential)
+                .unwrap();
+            let start =
+                inward_arc_point(radius, -std::f32::consts::FRAC_PI_2 + 10.0 / radius, 15.0);
+            let end = inward_arc_point(radius, 0.0, 15.0);
+            let (start, end) = if reverse { (end, start) } else { (start, end) };
+            let ids = zoning
+                .place_parcel_run_at(
+                    start.x, start.y, end.x, end.y, profile, 20.0, 20.0, 0.0, &graph,
+                )
+                .unwrap();
+            assert!(!ids.is_empty());
+            for parcel in zoning.parcels() {
+                let center = parcel.frontage_center_t() * length;
+                assert!(
+                    center >= 10.0 && center <= length - 10.0,
+                    "radius={radius} reverse={reverse} center={center} length={length}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_parcel_drag_run_uses_same_edge_side_and_gap() {
     let (graph, edge_idx) = make_straight_road();
     let mut z = make_zoning();

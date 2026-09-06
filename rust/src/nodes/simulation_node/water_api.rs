@@ -145,19 +145,8 @@ impl SimulationNode {
             let core = Arc::clone(&self.core);
             let jobs = Arc::clone(&self.water_patch_payload_jobs);
             rayon::spawn(move || {
-                let mut built = Vec::with_capacity(build_requests.len());
-                let mut failed = Vec::new();
-                {
-                    let core = core
-                        .lock()
-                        .expect("simulation core lock poisoned during water payload build");
-                    for request in build_requests {
-                        match SimulationNode::water_patch_payload_for_request(&core, request) {
-                            Some(payload) => built.push(payload),
-                            None => failed.push(request),
-                        }
-                    }
-                }
+                let (built, failed) =
+                    SimulationNode::try_prepare_water_patch_payloads(&core, build_requests);
                 let mut job_state = jobs
                     .lock()
                     .expect("water payload job lock poisoned during result publication");

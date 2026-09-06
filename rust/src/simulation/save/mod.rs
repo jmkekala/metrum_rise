@@ -33,16 +33,20 @@ use std::fs;
 use std::path::Path;
 
 pub mod agents;
+mod camera;
 pub mod network;
 pub mod schema;
 #[cfg(test)]
 pub mod tests;
 pub mod world;
 
+pub(crate) use camera::SavedCameraState;
 use schema::*;
 
 /// View of the live simulation state for serialization.
 pub(crate) struct SaveGameView<'a> {
+    /// Active orbit camera, absent for simulation-only snapshots.
+    pub camera: Option<SavedCameraState>,
     pub config: &'a WorldConfig,
     pub time: &'a TimeSystem,
     pub terrain: &'a TerrainSystem,
@@ -69,6 +73,8 @@ pub(crate) struct SaveGameView<'a> {
 
 /// Fully hydrated simulation state after loading from disk.
 pub(crate) struct LoadedSimulation {
+    /// Saved presentation state, absent from older or simulation-only snapshots.
+    pub camera: Option<SavedCameraState>,
     pub config: WorldConfig,
     pub time: TimeSystem,
     pub terrain: TerrainSystem,
@@ -341,6 +347,9 @@ pub(super) struct SnapshotMaps {
 
 /// Entry point to save the live simulation state to a SQLite database.
 pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadResult<()> {
+    if let Some(camera) = view.camera {
+        camera.validate()?;
+    }
     if let Some(p) = path.parent() {
         if !p.as_os_str().is_empty() {
             fs::create_dir_all(p)?;
@@ -353,6 +362,9 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     conn.execute_batch(SCHEMA)?;
     let maps = build_snapshot_maps(view.graph, view.allocator, view.agents)?;
     let tx = conn.transaction()?;
+    if let Some(camera) = view.camera {
+        camera::save_camera_state(&tx, camera)?;
+    }
     tx.execute(
         "INSERT INTO save_meta(version, saved_at_unix, game_build) VALUES (?1, ?2, ?3)",
         params![
@@ -452,9 +464,14 @@ pub(crate) fn load_from_sqlite(
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    if version != SAVE_VERSION {
+    if version != SAVE_VERSION && version != 58 && version != 57 {
         return Err(SaveLoadError::custom("version mismatch"));
     }
+    let camera = if version >= 59 {
+        camera::load_camera_state(&conn)?
+    } else {
+        None
+    };
     let config = conn.query_row(
         "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
@@ -552,22 +569,24 @@ pub(crate) fn load_from_sqlite(
     agriculture.apply_work_area_scales(&mut allocator);
 
     let mut transit_network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
+    network::rebuild_loaded_graph_runtime(&graph, &mut transit_network, &mut terrain);
     transit_network.lane_system.rebuild(&mut graph);
-
-    for i in 0..agents.len() {
-        let eid = agents.current_edge[i];
-        let lidx = agents.current_lane_id[i];
-        if eid != usize::MAX && lidx != usize::MAX {
-            agents.current_lane_id[i] = transit_network
-                .lane_system
-                .get_lane_id(eid, lidx)
-                .unwrap_or(usize::MAX);
-        }
-    }
-    agents::validate_loaded_planned_lane_ids(&mut agents, transit_network.lane_system.lanes.len());
+    transit_network.lane_system.sync_heights_to_visible_surface(
+        &graph,
+        &terrain,
+        &transit_network.road_surface,
+    );
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
+    allocator.rebuild_loaded_entrance_cache(&graph, &transit_network.lane_system, registry);
+    agents::restore_lane_references(
+        &conn,
+        version,
+        &mut agents,
+        &graph,
+        &transit_network,
+        &allocator,
+    )?;
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;
@@ -646,6 +665,7 @@ pub(crate) fn load_from_sqlite(
     let budget_history = load_budget_history(&conn)?;
 
     Ok(LoadedSimulation {
+        camera,
         config,
         time,
         terrain,

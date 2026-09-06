@@ -50,36 +50,42 @@ impl RoadAddOutcome {
 }
 
 impl SimCore {
-    /// Rolls back the last road commit when its final surface compiler output cannot be published.
-    pub(crate) fn rollback_unpublishable_road_commit(&mut self) -> bool {
-        if self
+    /// Accepts a road only after the road surface and every affected terrain payload succeed.
+    pub(crate) fn validate_staged_road_render(&mut self) -> bool {
+        let patches = self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+        let validation = if self
             .transit_network
             .road_surface
             .published_generation_matches_source()
         {
-            return false;
+            crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
+                self, &patches,
+            )
+        } else {
+            Err(self
+                .transit_network
+                .road_surface
+                .last_compile_failure_label()
+                .unwrap_or("surface_geometry_invalid_after_commit")
+                .to_owned())
+        };
+        match validation {
+            Ok(entries) => {
+                self.insert_refined_terrain_patch_cache_entries(entries);
+                self.accept_staged_road_edit();
+                true
+            }
+            Err(reason) => {
+                self.rollback_staged_road_edit();
+                self.last_road_timing = format!("rejected=render_geometry_invalid {reason}");
+                debug_log!(
+                    "road",
+                    "road_commit_rejected reason=render_geometry_invalid detail={} rollback=true",
+                    reason
+                );
+                false
+            }
         }
-
-        let failure_suffix = self
-            .transit_network
-            .road_surface
-            .last_compile_failure_label()
-            .map(|label| format!(" surface_failure={label}"))
-            .unwrap_or_default();
-        let rolled_back = !self.benchmark_mode && self.undo_action_internal();
-        debug_log!(
-            "road",
-            "road_commit_rejected reason=surface_geometry_invalid_after_commit rollback={} graph_edges={}{}",
-            rolled_back,
-            self.region_graph.edge_count(),
-            failure_suffix
-        );
-        self.last_road_timing =
-            format!("rejected=surface_geometry_invalid_after_commit{failure_suffix}");
-        if rolled_back {
-            self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
-        }
-        true
     }
 }
 
@@ -1097,7 +1103,7 @@ impl SimCore {
         }
 
         let t_undo = Instant::now();
-        if !self.benchmark_mode {
+        if !self.benchmark_mode || self.transit_network.road_edit_is_staged() {
             self.push_network_undo_for_polyline(&fixed_points, ROAD_UNDO_TOPOLOGY_MARGIN_M);
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
@@ -1661,7 +1667,7 @@ impl SimCore {
     pub(crate) fn rebuild_network_surface_terrain_internal_with_entrance_rebuild(
         &mut self,
         rebuild_entrances: bool,
-    ) {
+    ) -> Vec<(usize, usize)> {
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
@@ -1771,6 +1777,7 @@ impl SimCore {
                     .unwrap_or(0.0)
             );
         }
+        road_locked_dirty_patch_keys
     }
 
     /// Returns the ID of the nearest node to `pos` if `pos` is within
@@ -2456,37 +2463,120 @@ mod tests {
     }
 
     #[test]
-    fn unpublishable_committed_road_rolls_back_without_treasury_charge() {
+    fn accepted_road_has_current_terrain_payloads_before_publication() {
+        let mut core = test_core();
+        core.benchmark_mode = false;
+        core.transit_network.begin_road_edit();
+        core.transit_network.bulk_load = true;
+        assert!(
+            core.add_road_internal(
+                vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+                1,
+                1,
+            )
+            .committed
+        );
+        core.transit_network.bulk_load = false;
+        core.region_graph.rebuild_intersection_clips();
+        assert!(
+            core.validate_staged_road_render(),
+            "{}",
+            core.last_road_timing
+        );
+        assert!(!core.refined_terrain_patch_cache.is_empty());
+        for entry in core.refined_terrain_patch_cache.values() {
+            assert_eq!(
+                entry.surface_generation,
+                core.terrain_payload_generation_for_patch(entry.key.patch_x, entry.key.patch_z)
+            );
+            assert!(
+                entry
+                    .windows
+                    .iter()
+                    .all(|window| window.mesh_result.is_ok())
+            );
+            assert!(entry.mesh_buffers.is_some());
+        }
+        assert_eq!(core.undo_stack.len(), 1);
+        assert!(!core.transit_network.road_edit_is_staged());
+        assert!(
+            core.transit_network.lane_system.lanes.is_empty(),
+            "render validation precedes lane publication"
+        );
+    }
+
+    #[test]
+    fn terrain_rejection_restores_split_dependents_and_preserves_undo_history() {
+        use crate::simulation::buildings::allocator::EdgeOccupancy;
         let mut core = test_core();
         core.benchmark_mode = false;
         core.treasury.balance = 10_000.0;
-        let balance_before = core.treasury.balance;
-        let lifetime_build_cost_before = core.treasury.lifetime_build_cost;
-
-        let outcome = core.add_road_internal(
-            vec![Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
-            1,
-            1,
+        assert!(
+            core.add_road_internal(
+                vec![
+                    Vector3::new(-100.0, 0.0, 0.0),
+                    Vector3::new(100.0, 0.0, 0.0)
+                ],
+                1,
+                1
+            )
+            .committed
         );
-        assert!(outcome.committed);
-        assert!(outcome.build_cost > 0.0);
+        finalize_network_render_for_test(&mut core);
+        let original_edge = core.region_graph.edge(0).clone();
+        let mut building = test_building("test", 70.0, 0.0);
+        building.edge_idx = 0;
+        building.cell_x = 20;
+        building.frontage_t = 0.85;
+        core.allocator.buildings.push(building);
+        let original_building = core.allocator.buildings[0].clone();
+        core.allocator.edge_occupancy.insert(
+            0,
+            EdgeOccupancy {
+                cells_long: 32,
+                left: vec![false; 32],
+                right: vec![true; 32],
+            },
+        );
+        for _ in 1..30 {
+            core.push_network_undo_for_polyline(&[], 0.0);
+        }
+        let lane_count = core.transit_network.lane_system.lanes.len();
+        core.transit_network.begin_road_edit();
+        core.transit_network.bulk_load = true;
+        assert!(
+            core.add_road_internal(
+                vec![Vector3::new(0.0, 0.0, -80.0), Vector3::new(0.0, 0.0, 0.0)],
+                1,
+                1
+            )
+            .committed
+        );
+        assert_eq!(core.undo_stack.len(), 31);
+        assert_ne!(core.allocator.buildings[0].edge_idx, 0);
+        core.transit_network.bulk_load = false;
+        core.region_graph.rebuild_intersection_clips();
+        // Refined terrain cannot be prepared against an unfinished authored terrain stroke.
+        core.terrain_stroke_active = true;
+        assert!(!core.validate_staged_road_render());
+        assert!(core.last_road_timing.contains("terrain_input_unavailable"));
+        assert_eq!(core.undo_stack.len(), 30);
         assert_eq!(core.region_graph.edge_count(), 1);
-        assert_eq!(core.undo_stack.len(), 1);
-
-        core.transit_network.road_surface.clear();
-        assert!(core.rollback_unpublishable_road_commit());
-
-        assert_eq!(core.region_graph.edge_count(), 0);
-        assert!(core.undo_stack.is_empty());
-        assert_eq!(core.treasury.balance, balance_before);
         assert_eq!(
-            core.treasury.lifetime_build_cost,
-            lifetime_build_cost_before
+            core.region_graph.edge(0).physical_geometry,
+            original_edge.physical_geometry
         );
-        assert_eq!(
-            core.last_road_timing,
-            "rejected=surface_geometry_invalid_after_commit"
-        );
+        let restored = &core.allocator.buildings[0];
+        assert_eq!(restored.edge_idx, original_building.edge_idx);
+        assert_eq!(restored.cell_x, original_building.cell_x);
+        assert_eq!(restored.frontage_t, original_building.frontage_t);
+        assert_eq!(core.allocator.edge_occupancy.len(), 1);
+        assert_eq!(core.allocator.edge_occupancy[&0].cells_long, 32);
+        assert_eq!(core.allocator.edge_occupancy[&0].right, vec![true; 32]);
+        assert_eq!(core.transit_network.lane_system.lanes.len(), lane_count);
+        assert_eq!(core.treasury.balance, 10_000.0);
+        assert_eq!(core.treasury.lifetime_build_cost, 0.0);
+        assert!(!core.transit_network.road_edit_is_staged());
     }
 
     #[test]

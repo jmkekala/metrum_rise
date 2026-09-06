@@ -4,10 +4,70 @@
 
 use super::super::*;
 use super::state::*;
-use crate::nodes::sim::core::RefinedTerrainAssemblyScope;
+use crate::nodes::sim::core::{ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RefinedTerrainAssemblyScope};
 use std::collections::BTreeSet;
 
 impl SimulationNode {
+    /// Builds the actual renderer products for the edit's affected patches before acceptance.
+    /// Work is limited to those patches and their dirty 64 m windows; no world snapshot is copied.
+    pub(crate) fn validate_staged_road_terrain(
+        core: &mut SimCore,
+        patch_keys: &[(usize, usize)],
+    ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
+        core.refresh_engineered_terrain_patch_ownership_for_keys(
+            ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
+            patch_keys,
+        );
+        let mut sources = Vec::with_capacity(patch_keys.len());
+        for &(patch_x, patch_z) in patch_keys {
+            if !core.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
+                continue;
+            }
+            let request = TerrainPatchPayloadRequest {
+                key: TerrainPatchPayloadKey {
+                    patch_x,
+                    patch_z,
+                    render_step_mm: 2000,
+                },
+                request_id: 0,
+                surface_generation: core.terrain_payload_generation_for_patch(patch_x, patch_z),
+            };
+            let source = Self::terrain_patch_payload_build_source_for_request(core, request)
+                .ok_or_else(|| format!("terrain_input_unavailable patch=({patch_x},{patch_z})"))?;
+            sources.push(source);
+        }
+        let jobs = sources
+            .into_par_iter()
+            .map(|source| {
+                Self::terrain_patch_payload_build_job_for_world(
+                    &core.region_graph,
+                    &core.transit_network.road_surface,
+                    &core.heightmap,
+                    core.road_tool_surface_generation,
+                    source,
+                )
+            })
+            .collect();
+        let (ready, _, inputs, failed) = Self::split_terrain_patch_payload_jobs(jobs);
+        if !failed.is_empty() {
+            return Err("terrain_input_generation_mismatch".to_owned());
+        }
+        let mut entries = SimCore::build_refined_terrain_patch_cache_entries(inputs);
+        entries.extend(ready.into_iter().filter_map(|payload| match payload.data {
+            TerrainPatchPayloadData::Refined { patch } => Some(patch),
+            _ => None,
+        }));
+        for entry in &entries {
+            if let Some(reason) = Self::cached_refined_cdt_failure_label(entry) {
+                return Err(format!(
+                    "{reason} patch=({},{})",
+                    entry.key.patch_x, entry.key.patch_z
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
     pub(in crate::nodes::simulation_node) fn lock_water_patch_mesh_jobs(
         &self,
     ) -> std::sync::MutexGuard<'_, WaterPatchMeshAsyncState> {
@@ -52,11 +112,75 @@ impl SimulationNode {
     pub(in crate::nodes::simulation_node) fn drain_completed_terrain_patch_payload_jobs(
         &self,
     ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
-        let mut jobs = self.lock_terrain_patch_payload_jobs();
-        (
-            std::mem::take(&mut jobs.completed),
-            std::mem::take(&mut jobs.failed),
-        )
+        Self::finish_terrain_patch_payload_jobs(&self.core, &self.terrain_patch_payload_jobs)
+    }
+
+    pub(in crate::nodes::simulation_node) fn finish_terrain_patch_payload_jobs(
+        core: &Mutex<SimCore>,
+        jobs: &Mutex<TerrainPatchPayloadAsyncState>,
+    ) -> (Vec<TerrainPatchPayload>, Vec<TerrainPatchPayloadRequest>) {
+        // Workers must not wait for SimCore: its owner may be waiting on Rayon. Retain completed
+        // payloads until polling can insert their reusable geometry without blocking either thread.
+        let Some(mut core) = Self::try_lock_shared_core(core) else {
+            return (Vec::new(), Vec::new());
+        };
+        let (completed, failed) = {
+            let mut jobs = jobs
+                .lock()
+                .expect("terrain patch payload job lock poisoned");
+            (
+                std::mem::take(&mut jobs.completed),
+                std::mem::take(&mut jobs.failed),
+            )
+        };
+        let entries = completed
+            .iter()
+            .filter_map(|payload| match &payload.data {
+                TerrainPatchPayloadData::Refined { patch } => Some(Arc::clone(patch)),
+                _ => None,
+            })
+            .collect();
+        core.insert_refined_terrain_patch_cache_entries(entries);
+        (completed, failed)
+    }
+
+    pub(in crate::nodes::simulation_node) fn try_prepare_terrain_patch_payload_sources(
+        core: &Mutex<SimCore>,
+        requests: Vec<TerrainPatchPayloadRequest>,
+    ) -> (
+        Vec<TerrainPatchPayloadBuildSource>,
+        Vec<TerrainPatchPayloadRequest>,
+    ) {
+        let Some(mut core) = Self::try_lock_shared_core(core) else {
+            return (Vec::new(), requests);
+        };
+        let mut sources = Vec::with_capacity(requests.len());
+        let mut failed = Vec::new();
+        for request in requests {
+            match Self::terrain_patch_payload_build_source_for_request(&mut core, request) {
+                Some(source) => sources.push(source),
+                None => failed.push(request),
+            }
+        }
+        (sources, failed)
+    }
+
+    pub(in crate::nodes::simulation_node) fn try_prepare_water_patch_payloads(
+        core: &Mutex<SimCore>,
+        requests: Vec<WaterPatchPayloadRequest>,
+    ) -> (Vec<WaterPatchPayload>, Vec<WaterPatchPayloadRequest>) {
+        let Some(core) = Self::try_lock_shared_core(core) else {
+            return (Vec::new(), requests);
+        };
+        let mut built = Vec::with_capacity(requests.len());
+        let mut failed = Vec::new();
+        for request in requests {
+            match Self::water_patch_payload_for_request(&core, request) {
+                Some(payload) => built.push(payload),
+                None => failed.push(request),
+            }
+        }
+        (built, failed)
     }
 
     pub(in crate::nodes::simulation_node) fn drain_completed_water_patch_payload_jobs(
@@ -342,6 +466,22 @@ impl SimulationNode {
         query: &RoadToolQuerySnapshot,
         source: TerrainPatchPayloadBuildSource,
     ) -> TerrainPatchPayloadBuildJob {
+        Self::terrain_patch_payload_build_job_for_world(
+            &query.region_graph,
+            &query.road_surface,
+            &query.terrain,
+            query.surface_generation,
+            source,
+        )
+    }
+
+    fn terrain_patch_payload_build_job_for_world(
+        graph: &crate::simulation::network::graph::RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        surface_generation: u64,
+        source: TerrainPatchPayloadBuildSource,
+    ) -> TerrainPatchPayloadBuildJob {
         let source = match source {
             TerrainPatchPayloadBuildSource::Ready(payload) => {
                 return TerrainPatchPayloadBuildJob::Ready(payload);
@@ -349,7 +489,7 @@ impl SimulationNode {
             TerrainPatchPayloadBuildSource::Refined(source) => source,
         };
         let request = source.request;
-        if query.surface_generation != source.road_surface_generation {
+        if surface_generation != source.road_surface_generation {
             return TerrainPatchPayloadBuildJob::Failed(request);
         }
         let render_step_m = (request.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON);
@@ -360,8 +500,8 @@ impl SimulationNode {
         let (window_plan, road_clip_query) = match &source.assembly_scope {
             RefinedTerrainAssemblyScope::FullPatch => {
                 let road_clip_query = Self::road_clip_loop_query_for_snapshot(
-                    query.region_graph.as_ref(),
-                    query.road_surface.as_ref(),
+                    graph,
+                    road_surface,
                     &source.sites,
                     source.patch.world_origin_x - source.road_locked_margin_m,
                     source.patch.world_origin_z - source.road_locked_margin_m,
@@ -373,14 +513,14 @@ impl SimulationNode {
                         + source.road_locked_margin_m,
                 );
                 let window_plan = Self::terrain_cdt_window_build_inputs(
-                    query.terrain.as_ref(),
+                    terrain,
                     &source.patch,
                     &road_clip_query.cdt_road_loops,
                     render_step_m,
                     Some(TerrainCdtSiteGradingContext {
                         source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
-                        graph: query.region_graph.as_ref(),
-                        road_surface: query.road_surface.as_ref(),
+                        graph: graph,
+                        road_surface: road_surface,
                     }),
                     source.previous.as_deref(),
                 );
@@ -391,10 +531,10 @@ impl SimulationNode {
                     return TerrainPatchPayloadBuildJob::Failed(request);
                 };
                 Self::terrain_cdt_incremental_window_build_inputs(
-                    query.terrain.as_ref(),
+                    terrain,
                     &source.patch,
-                    query.region_graph.as_ref(),
-                    query.road_surface.as_ref(),
+                    graph,
+                    road_surface,
                     &source.sites,
                     tile_keys,
                     render_step_m,

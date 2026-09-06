@@ -286,6 +286,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 			if road_tool:
 				if not enabled:
 					road_tool.cancel_road()
@@ -296,6 +297,7 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool._update_lanes_label()
 					road_tool.mark_network_topology_dirty()
 		Tool.WALKWAY: 
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 			if road_tool: 
 				if not enabled:
 					road_tool.cancel_road()

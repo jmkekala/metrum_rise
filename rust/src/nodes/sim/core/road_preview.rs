@@ -19,8 +19,10 @@ use crate::simulation::water::WaterSystem;
 pub(crate) struct RoadPreviewSnapshot {
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
-    fwd_lanes: u8,
-    bkw_lanes: u8,
+    /// Forward vehicle lanes used for live parcel-clearance validation when publishing the result.
+    pub(crate) fwd_lanes: u8,
+    /// Backward vehicle lanes used for live parcel-clearance validation when publishing the result.
+    pub(crate) bkw_lanes: u8,
     snap_to_existing_roads: bool,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,

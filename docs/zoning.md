@@ -117,6 +117,8 @@ Single-parcel placement is all-or-nothing.
 - The selected zoning profile must exist, except runtime id `0` for free/unzoned parcels.
 - The parcel must attach to a buildable road edge.
 - The frontage must stay within the physical road edge span.
+- Curved-run spacing rechecks the persisted normalized attachment after advancing a candidate;
+  the initial station check alone does not bound the final frontage.
 - Every corner must stay within world bounds.
 - The parcel must not overlap existing parcels.
 - The parcel must not overlap another road-owned corridor.
@@ -219,7 +221,11 @@ preview for that gesture. Releasing the mouse commits the displayed retained dra
 exists.
 
 `godot/scripts/renderers/zoning_overlay.gd` renders Rust-authored parcel geometry with an
-`ImmediateMesh`. It also draws orange no-build edge guide lines while the zoning tool is active.
+`ArrayMesh`. Zoning, service/industry placement, road, and walkway tools show the parcel overlay
+and orange no-build edge guides. Empty parcels remain visible constraints during road placement;
+the Rust road preview uses the same indexed parcel-corridor intersection check as commit and
+returns `parcel_overlap` before submission. Changing parcels invalidates cached road verdicts
+through the zoning overlay revision.
 
 Godot must not rasterize zoning state into an authoritative grid or resolve placement conflicts.
 
@@ -257,7 +263,8 @@ Persisted parcel fields:
 
 Normal load restores each parcel through the same road attachment, bounds, existing parcel overlap,
 and road-corridor overlap validation used by `restore_parcel_from_attachment(...)`. A parcel record
-that fails road-corridor or existing-parcel overlap validation is not inserted into zoning.
+that fails road-corridor overlap, existing-parcel overlap, or endpoint frontage validation is not
+inserted into zoning.
 Building parcel occupancy is rebuilt after buildings load.
 
 Old save compatibility is best-effort and must preserve live invariants. The SQLite loader may

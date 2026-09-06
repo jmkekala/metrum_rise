@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Lane geometry construction and authoritative agent position sampling.
+
 use super::super::graph::Edge;
 use super::super::types::TransitType;
 use super::{Lane, LaneType};
@@ -156,4 +158,43 @@ pub fn build_one_lane(
 /// Returns the half-width of the road asphalt based on the number of lanes.
 pub fn road_half_width(edge: &Edge) -> f32 {
     ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+}
+
+/// Samples the authoritative agent position, including the deterministic pedestrian offset.
+/// Movement and snapshot recovery share the same arithmetic.
+pub(crate) fn agent_lane_position(
+    lane: &Lane,
+    dist: f32,
+    pedestrian_index: Option<usize>,
+) -> Option<Vector3> {
+    if dist <= 0.0 {
+        return lane.geometry.first().copied();
+    }
+    if dist >= lane.length {
+        return lane.geometry.last().copied();
+    }
+    if lane.geometry.len() < 2 || lane.cum_dist.is_empty() {
+        return None;
+    }
+    let seg = lane
+        .cum_dist
+        .partition_point(|&d| d <= dist)
+        .saturating_sub(1)
+        .min(lane.geometry.len() - 2);
+    let p0 = lane.geometry[seg];
+    let p1 = lane.geometry[seg + 1];
+    let seg_len = lane.cum_dist[seg + 1] - lane.cum_dist[seg];
+    let t = if seg_len > 1e-5 {
+        (dist - lane.cum_dist[seg]) / seg_len
+    } else {
+        0.0
+    };
+    let mut out = p0.lerp(p1, t.clamp(0.0, 1.0));
+    if let Some(i) = pedestrian_index.filter(|_| seg_len > 1e-5) {
+        let tangent = (p1 - p0) / seg_len;
+        let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
+        let jitter = (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
+        out += normal * jitter;
+    }
+    Some(out)
 }

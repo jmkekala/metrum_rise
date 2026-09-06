@@ -3,7 +3,8 @@
 //! Footprint boundary loop export from the final boolean road-owned footprint.
 
 use super::super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayShapes, NodeOwnedRegion, SAMPLE_EPSILON_M,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayShapes,
+    NodeOwnedRegion, SAMPLE_EPSILON_M,
     arrangement::NodeArrangementKey,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3},
     boundary::{
@@ -412,5 +413,74 @@ fn footprint_boundary_points_numeric_area_budget_m2(points: &[RoadVec3]) -> f32 
         .take(points.len())
         .map(|(start, end)| RoadVec2::new(start.x - end.x, start.z - end.z).length())
         .sum::<f64>() as f32;
-    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
+    // This is the uncertainty of a complete boundary, not one boolean-operation residual.
+    // Capping its accumulated area makes an unchanged sub-resolution seam become a real
+    // terrain hole merely because it is longer or joins another seam at the junction.
+    perimeter_m * NODE_OVERLAY_NUMERIC_DUST_WIDTH_M + points.len() as f32 * NODE_OVERLAY_MIN_AREA_M2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::RoadSurfaceVisualNodePieceKind;
+
+    fn export_loop(contour: &[[f64; 2]]) -> Result<usize, NodeBoundaryExportError> {
+        let mut sources = NodeFootprintBoundaryExportSources::from_owned_regions(
+            45,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &[],
+            &[],
+            &[],
+            &[],
+        )?;
+        let mut identities = BTreeSet::new();
+        let mut loops = Vec::new();
+        push_valid_footprint_boundary_point_loops(
+            footprint_boundary_xz_point_loop_from_contour(contour),
+            &[],
+            &mut sources,
+            &mut identities,
+            &mut loops,
+        )?;
+        Ok(loops.len())
+    }
+
+    #[test]
+    fn logged_junction_seam_does_not_become_a_terrain_hole() {
+        // Saved junction 45: 29.6 m of boundary enclosing 0.0013775 m² of overlay dust.
+        // Its opposing curb heights differ by 92 mm and cannot share a terrain vertex.
+        let contour = vec![
+            [2817.34375, -8223.773438],
+            [2820.83585, -8223.538413],
+            [2820.625401, -8220.41146],
+            [2820.332087, -8216.051711],
+            [2820.245228, -8214.760651],
+            [2820.332129, -8216.051708],
+            [2820.500081, -8218.547104],
+            [2820.66802, -8221.0425],
+            [2820.835992, -8223.538582],
+            [2821.003859, -8226.033296],
+            [2820.835862, -8223.538591],
+        ];
+        for reversed in [false, true] {
+            let mut candidate = contour.clone();
+            if reversed {
+                candidate.reverse();
+            }
+            for _ in 0..candidate.len() {
+                assert_eq!(
+                    export_loop(&candidate).expect("dust boundary must be omitted"),
+                    0
+                );
+                candidate.rotate_left(1);
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_hole_is_not_discarded_by_boundary_uncertainty() {
+        // A real hole of comparable area must reach height/source validation.
+        let contour = [[0.0, 0.0], [0.04, 0.0], [0.04, 0.04], [0.0, 0.04]];
+        assert!(export_loop(&contour).is_err());
+    }
 }

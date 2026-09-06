@@ -96,7 +96,16 @@ impl RoadSurfaceSystem {
         }
 
         let (outer_boundary_loops, terrain_clip_boundary_loops) =
-            Self::build_span_boundary_loops_from_regions(&resolved.regions, edge_class).ok()?;
+            Self::build_span_boundary_loops_from_regions(&resolved.regions, edge_class)
+                .map_err(|error| {
+                    crate::debug_log!(
+                        "road",
+                        "span_boundary_failed edge={:?} error={:?}",
+                        sections.first().map(|s| s.edge_idx),
+                        error
+                    );
+                })
+                .ok()?;
         resolved.outer_boundary_loops = outer_boundary_loops;
         resolved.terrain_clip_boundary_loops = terrain_clip_boundary_loops;
         Some(resolved)

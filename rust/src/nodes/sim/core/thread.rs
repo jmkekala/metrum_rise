@@ -251,6 +251,7 @@ pub(crate) fn run_sim_thread(
                         // Bulk-load defers per-edge rebuilds until finalization.
                         let add_internal_start = Instant::now();
                         c.transit_network.bulk_load = true;
+                        c.transit_network.begin_road_edit();
                         record_crash_phase_for_core(&c, "add road internal");
                         let mut road_add = c.add_road_internal_with_snap_and_validation(
                             points,
@@ -261,6 +262,7 @@ pub(crate) fn run_sim_thread(
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
                         let finalize_start = Instant::now();
+                        let mut surface_ms = 0.0;
                         if road_add.committed {
                             let c = &mut *c;
                             c.transit_network.bulk_load = false;
@@ -284,78 +286,74 @@ pub(crate) fn run_sim_thread(
                                 c.last_surface_debug_edges.dedup();
                             }
 
-                            let t_inv = Instant::now();
-                            // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
-                            record_crash_phase_for_core(c, "add road lane invalidation");
-                            c.agents.invalidate_lane_ids_for_edges(
-                                &dirty,
-                                &c.transit_network.lane_system,
-                                &c.region_graph,
-                            );
-                            let dt_inv_us = t_inv.elapsed().as_micros();
-
-                            let t_lanes = Instant::now();
-                            record_crash_phase_for_core(c, "add road lane rebuild");
-                            c.transit_network
-                                .lane_system
-                                .rebuild_edges_incremental(&mut c.region_graph, &dirty);
-                            c.agents.reattach_invalidated_lanes_for_edges(
-                                &dirty,
-                                &c.transit_network.lane_system,
-                                &c.region_graph,
-                            );
-                            let dt_lanes_us = t_lanes.elapsed().as_micros();
-                            record_crash_phase_for_core(c, "add road entrance rebuild");
-                            c.rebuild_building_entrances_internal();
-
-                            // Rebuild CCH and run the connectivity check. This is the only
-                            // place the CCH is actually rebuilt for road placements — the
-                            // sim-tick path is gated on speed > 0.0 and would miss paused edits.
-                            record_crash_phase_for_core(c, "add road cch rebuild");
-                            c.transit_network.rebuild_cch_and_check(&c.region_graph);
-                            c.transit_network.cch_dirty_chunks.clear();
-
-                            // Zone flush is deferred to the next simulate_tick_internal call
-                            // so it does not block road placement. zoning_dirty_edges accumulates.
-
-                            let total_us = road_total.elapsed().as_micros();
-                            let msg = format!(
-                                "TOTAL={}µs  {}  profiles={}µs  regrade={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
-                                total_us,
-                                c.last_road_timing,
-                                dt_profile_us,
-                                dt_regrade_us,
-                                dt_clips_us,
-                                dt_lanes_us,
-                                dirty_count,
-                                dt_inv_us
-                            );
-                            debug_log!("road", "{}", msg);
-                            c.last_road_timing = msg;
                             if let Some(topology_reuse) = road_add.preview_topology_reuse.take() {
                                 c.transit_network
                                     .road_surface
                                     .enqueue_preview_topology_reuse(topology_reuse);
                             }
+                            let surface_start = Instant::now();
+                            record_crash_phase_for_core(c, "add road render validation");
+                            road_add.committed = c.validate_staged_road_render();
+                            surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
+                            if road_add.committed {
+                                let t_inv = Instant::now();
+                                // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
+                                record_crash_phase_for_core(c, "add road lane invalidation");
+                                c.agents.invalidate_lane_ids_for_edges(
+                                    &dirty,
+                                    &c.transit_network.lane_system,
+                                    &c.region_graph,
+                                );
+                                let dt_inv_us = t_inv.elapsed().as_micros();
+
+                                let t_lanes = Instant::now();
+                                record_crash_phase_for_core(c, "add road lane rebuild");
+                                c.transit_network
+                                    .lane_system
+                                    .rebuild_edges_incremental(&mut c.region_graph, &dirty);
+                                c.agents.reattach_invalidated_lanes_for_edges(
+                                    &dirty,
+                                    &c.transit_network.lane_system,
+                                    &c.region_graph,
+                                );
+                                let dt_lanes_us = t_lanes.elapsed().as_micros();
+                                record_crash_phase_for_core(c, "add road entrance rebuild");
+                                c.rebuild_building_entrances_internal();
+
+                                // Rebuild CCH and run the connectivity check. This is the only
+                                // place the CCH is actually rebuilt for road placements — the
+                                // sim-tick path is gated on speed > 0.0 and would miss paused edits.
+                                record_crash_phase_for_core(c, "add road cch rebuild");
+                                c.transit_network.rebuild_cch_and_check(&c.region_graph);
+                                c.transit_network.cch_dirty_chunks.clear();
+
+                                // Zone flush is deferred to the next simulate_tick_internal call
+                                // so it does not block road placement. zoning_dirty_edges accumulates.
+
+                                let total_us = road_total.elapsed().as_micros();
+                                let msg = format!(
+                                    "TOTAL={}µs  {}  profiles={}µs  regrade={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
+                                    total_us,
+                                    c.last_road_timing,
+                                    dt_profile_us,
+                                    dt_regrade_us,
+                                    dt_clips_us,
+                                    dt_lanes_us,
+                                    dirty_count,
+                                    dt_inv_us
+                                );
+                                debug_log!("road", "{}", msg);
+                                c.last_road_timing = msg;
+                                if !c.benchmark_mode {
+                                    c.treasury.deduct_build_cost(road_add.build_cost);
+                                }
+                            }
                         } else {
                             c.transit_network.bulk_load = false;
+                            c.transit_network.accept_road_edit();
                         }
-                        let finalize_ms = finalize_start.elapsed().as_secs_f64() * 1000.0;
-                        let surface_start = Instant::now();
-                        if road_add.committed {
-                            record_crash_phase_for_core(&c, "add road surface rebuild");
-                            c.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
-                            if !c
-                                .transit_network
-                                .road_surface
-                                .published_generation_matches_source()
-                            {
-                                c.rollback_unpublishable_road_commit();
-                            } else if !c.benchmark_mode {
-                                c.treasury.deduct_build_cost(road_add.build_cost);
-                            }
-                        }
-                        let surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
+                        let finalize_ms =
+                            (finalize_start.elapsed().as_secs_f64() * 1000.0 - surface_ms).max(0.0);
                         let mesh_start = Instant::now();
                         record_crash_phase_for_core(&c, "add road mesh precompute");
                         c.precompute_road_mesh_data();
@@ -384,9 +382,6 @@ pub(crate) fn run_sim_thread(
                             invalidated_refined_cache_entries,
                         )
                     };
-                    let refined_input_count = 0usize;
-                    let refined_window_count = 0usize;
-                    let refined_reused_windows = 0usize;
                     if let Some((preview_context, query_snapshot)) = road_snapshots {
                         publish_road_tool_snapshots(
                             &road_preview_context,
@@ -397,7 +392,7 @@ pub(crate) fn run_sim_thread(
                     }
                     if crate::debug::is_perf_enabled() {
                         println!(
-                            "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_build_ms={:.3} refined_cdt_sum_ms={:.3} refined_inputs={} refined_entries={} refined_windows={} refined_reused_windows={} refined_cache_invalidated={} insert_lock_wait_ms={:.3} insert_ms={:.3} refined_prebuild=skipped",
+                            "[DEBUG:perf] add_road_command total_ms={:.3} lock_wait_ms={:.3} add_internal_ms={:.3} finalize_ms={:.3} surface_and_terrain_ms={:.3} mesh_ms={:.3} snapshot_ms={:.3} collect_refined_ms={:.3} refined_cache_invalidated={} refined_prebuild=validated_before_accept",
                             road_total.elapsed().as_secs_f64() * 1000.0,
                             road_lock_wait_ms,
                             add_internal_ms,
@@ -406,15 +401,7 @@ pub(crate) fn run_sim_thread(
                             mesh_ms,
                             snapshot_ms,
                             collect_refined_ms,
-                            0.0,
-                            0.0,
-                            refined_input_count,
-                            0,
-                            refined_window_count,
-                            refined_reused_windows,
-                            invalidated_refined_cache_entries,
-                            0.0,
-                            0.0
+                            invalidated_refined_cache_entries
                         );
                     }
                 }

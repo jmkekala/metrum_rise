@@ -421,12 +421,28 @@ impl RoadSurfaceSystem {
                         &span_earthwork_support_regions,
                         edge.class,
                     )
+                    .map_err(|error| {
+                        crate::debug_log!(
+                            "road",
+                            "span_earthwork_boundary_failed edge={} error={:?}",
+                            edge_idx,
+                            error
+                        );
+                    })
                     .ok()?;
                 self.build_closed_earthwork_geometry_from_boundary_segments(
                     &earthwork_boundary_segments,
                     terrain,
                     None,
                 )
+                .map_err(|error| {
+                    crate::debug_log!(
+                        "road",
+                        "span_earthwork_geometry_failed edge={} error={:?}",
+                        edge_idx,
+                        error
+                    );
+                })
                 .ok()?
             };
         let earthwork_geometry_ms = elapsed_ms(earthwork_geometry_start);

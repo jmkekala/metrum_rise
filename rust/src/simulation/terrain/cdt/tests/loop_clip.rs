@@ -5,6 +5,83 @@
 use super::*;
 
 #[test]
+fn disconnected_clip_preserves_exact_boundary_at_large_world_coordinates() {
+    let road_loop = TerrainCdtRoadLoop::new(
+        95,
+        0,
+        vec![
+            test_vertex(3140.0, 0.0),
+            test_vertex(3140.0, 10.0),
+            test_vertex(3128.0, 10.0),
+            test_vertex(3128.0, 7.0),
+            test_vertex(3138.0, 7.0),
+            test_vertex(3138.0, 3.0),
+            test_vertex(3135.999135, 3.0),
+            test_vertex(3128.0, 3.0),
+            test_vertex(3128.0, 0.0),
+        ],
+    );
+    let patch = TerrainCdtPatch::new(3072.0, -10.0, 3136.0, 64.0, [0.0; 4]);
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+    assert_eq!(clipped.len(), 2);
+    assert!(
+        clipped
+            .iter()
+            .flat_map(|part| &part.vertices)
+            .all(|vertex| vertex.x <= patch.max_x)
+    );
+    assert!(canonicalize_input(TerrainCdtInput::new(patch, clipped, Vec::new())).is_ok());
+}
+
+#[test]
+fn clipping_near_tile_boundary_keeps_intersections_on_the_boundary() {
+    let road_loop = TerrainCdtRoadLoop::new(
+        94,
+        0,
+        vec![
+            TerrainCdtVertex::new(63.999135, 1.0, 3.0),
+            TerrainCdtVertex::new(64.298561, 1.0, 2.962693),
+            TerrainCdtVertex::new(66.0, 1.0, 13.0),
+            TerrainCdtVertex::new(60.0, 1.0, 13.0),
+        ],
+    );
+    for patch in [
+        TerrainCdtPatch::new(0.0, 0.0, 64.0, 64.0, [0.0; 4]),
+        TerrainCdtPatch::new(64.0, 0.0, 128.0, 64.0, [0.0; 4]),
+    ] {
+        let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+        assert_eq!(clipped.len(), 1);
+        assert!(
+            clipped[0]
+                .vertices
+                .iter()
+                .all(|vertex| vertex.x >= patch.min_x && vertex.x <= patch.max_x)
+        );
+        assert!(canonicalize_input(TerrainCdtInput::new(patch, clipped, Vec::new())).is_ok());
+    }
+}
+
+#[test]
+fn clipping_preserves_submillimetre_edges_between_distinct_identity_cells() {
+    let road_loop = TerrainCdtRoadLoop::new(
+        93,
+        0,
+        vec![
+            TerrainCdtVertex::new(3.0004, 1.0, 3.0),
+            TerrainCdtVertex::new(3.0006, 1.0, 3.0),
+            TerrainCdtVertex::new(7.0, 1.0, 3.0),
+            TerrainCdtVertex::new(7.0, 1.0, 7.0),
+            TerrainCdtVertex::new(3.0004, 1.0, 7.0),
+        ],
+    );
+    let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]);
+    let clipped = clip_terrain_cdt_road_loop_to_patch(&road_loop, patch);
+    assert_eq!(clipped.len(), 1);
+    assert_eq!(clipped[0].source_edges.len(), road_loop.source_edges.len());
+    assert!(canonicalize_input(TerrainCdtInput::new(patch, clipped, Vec::new())).is_ok());
+}
+
+#[test]
 fn concave_loop_rectangle_clip_preserves_disconnected_components() {
     let road_loop = disconnected_clip_test_loop();
     let patch = TerrainCdtPatch::new(-1.0, 4.0, 11.0, 9.0, [0.0; 4]);

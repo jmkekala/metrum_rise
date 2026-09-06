@@ -6,6 +6,60 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn explicit_transform_rebuild_uses_saved_frontage_on_graded_bend() {
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
+
+    let config = WorldConfig::new(1000.0, 1000.0, 10.0, 10.0);
+    let zoning = ZoningSystem::new(&config);
+    let mut graph = RegionGraph::new();
+    let points = vec![
+        Vector3::ZERO,
+        Vector3::new(200.0, 10.0, 0.0),
+        Vector3::new(200.0, 20.0, 200.0),
+    ];
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(points[2], NodeType::Junction);
+    let edge_idx = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        width: 7.0,
+        physical_length: graph.calculate_length(&points),
+        geometry: points.clone(),
+        physical_geometry: points,
+        ..Edge::default()
+    });
+    let mut allocator = BuildingAllocator::new();
+    // Equal-length graded segments put t=0.25/0.75 halfway along each arm.
+    let cases = [
+        (0.25, 1, Vector2::new(100.0, -20.0), Vector2::new(0.0, 1.0)),
+        (0.25, -1, Vector2::new(100.0, 20.0), Vector2::new(0.0, -1.0)),
+        (0.75, 1, Vector2::new(220.0, 100.0), Vector2::new(-1.0, 0.0)),
+        (0.75, -1, Vector2::new(180.0, 100.0), Vector2::new(1.0, 0.0)),
+    ];
+    for (frontage_t, side, _, _) in cases {
+        let mut building =
+            indexed_test_building("test:explicit".to_owned(), ZoneType::Industrial, 0);
+        building.edge_idx = edge_idx;
+        building.frontage_t = frontage_t;
+        building.side = side;
+        building.support_height_m = 17.25;
+        allocator.buildings.push(building);
+    }
+    allocator
+        .recompute_derived_transforms(&graph, &zoning)
+        .unwrap();
+    for (idx, (_, _, center, facing)) in cases.into_iter().enumerate() {
+        let building = &allocator.buildings[idx];
+        assert!(Vector2::new(building.center_x, building.center_y).distance_to(center) < 0.0001);
+        assert_eq!(building.facing_dir, facing);
+        assert_eq!(building.side_offset, 5.0);
+        assert_eq!(building.support_height_m, 17.25);
+        assert_eq!(allocator.building_sites[idx].support_height_m, 17.25);
+    }
+}
+
+#[test]
 fn test_building_removal_clears_zoning_occupancy() {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::zoning::ZoningSystem;

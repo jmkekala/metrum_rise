@@ -110,6 +110,7 @@ impl RoadSurfaceSystem {
                         &contour,
                         index,
                         source_edges,
+                        source_edge_index,
                     ) {
                         TerrainClipDustConnectorRecovery::Covered(points) => points,
                         TerrainClipDustConnectorRecovery::Ambiguous(context) => {

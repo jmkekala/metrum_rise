@@ -615,23 +615,21 @@ impl BuildingAllocator {
                     edge.width * 0.5 + crate::config::SIDEWALK_WIDTH,
                 )
             } else {
-                let width_cells = building.width_cells as f32;
-                let along_offset = width_cells * 0.5 * zone_cell_m;
-                let depth_offset = crate::config::SIDEWALK_WIDTH
-                    + (building.cell_y as f32 + depth_cells * 0.5) * zone_cell_m;
-                let edge_t =
-                    (building.cell_x as f32 * zone_cell_m / edge.physical_length).clamp(0.0, 1.0);
-
-                let world_pos_on_edge = Self::sample_pos_on_edge(graph, building.edge_idx, edge_t);
-                let tangent = Self::sample_tangent_on_edge(graph, building.edge_idx, edge_t);
-                let normal = Vector2::new(tangent.y, -tangent.x) * building.side as f32;
-                (
-                    world_pos_on_edge
-                        + normal * (edge.width * 0.5 + depth_offset)
-                        + tangent * along_offset,
-                    normal,
-                    building.side as f32,
+                // Explicit placement has no frontage grid cell. Its saved normalized
+                // attachment is the center of the frontage, including on curved roads.
+                Self::explicit_frontage_transform(
+                    graph,
+                    building.edge_idx,
+                    building.frontage_t,
+                    building.side,
+                    depth_cells * zone_cell_m,
                 )
+                .ok_or_else(|| {
+                    format!(
+                        "building edge {} has no frontage tangent",
+                        building.edge_idx
+                    )
+                })?
             };
 
             building.center_x = center_2d.x;

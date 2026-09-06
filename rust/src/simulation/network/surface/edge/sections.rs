@@ -6,6 +6,7 @@ use super::super::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
 use super::super::{
     CompiledNodeKind, IncidentEdgeSide, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
 };
+use super::polyline::SpanTangentFrame;
 use super::{EdgeMouthPolicy, EdgeProfilePlaneBlend};
 use crate::config;
 use crate::simulation::network::graph::rebuild::{
@@ -106,10 +107,29 @@ impl RoadSurfaceSystem {
             end_profile_plane.is_some(),
             width_tapers,
         );
+        let span_frame = mouth_policy.ownership_range.map(|(start_s_m, end_s_m)| {
+            let mut start_tangent = self
+                .sample_polyline(&points, &cumulative, start_s_m, None)
+                .1;
+            let mut end_tangent = self.sample_polyline(&points, &cumulative, end_s_m, None).1;
+            if start_s_m <= SAMPLE_EPSILON_M {
+                start_tangent = start_pass_through_tangent.unwrap_or(start_tangent);
+            }
+            if total_length_m - end_s_m <= SAMPLE_EPSILON_M {
+                end_tangent = end_pass_through_tangent.unwrap_or(end_tangent);
+            }
+            SpanTangentFrame {
+                start_s_m,
+                end_s_m,
+                start_tangent,
+                end_tangent,
+            }
+        });
         sample_distances
             .into_iter()
             .map(|s_m| {
-                let (center, sampled_tangent_xz) = self.sample_polyline(&points, &cumulative, s_m);
+                let (center, sampled_tangent_xz) =
+                    self.sample_polyline(&points, &cumulative, s_m, span_frame.as_ref());
                 let tangent_xz = if s_m <= SAMPLE_EPSILON_M {
                     start_pass_through_tangent.unwrap_or(sampled_tangent_xz)
                 } else if total_length_m - s_m <= SAMPLE_EPSILON_M {

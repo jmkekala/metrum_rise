@@ -45,8 +45,11 @@ impl RoadSurfaceSystem {
         for index in 0..points.len() {
             let inner_start = points[index];
             let inner_end = points[(index + 1) % points.len()];
-            let span_xz = RoadVec2::new(inner_end.x - inner_start.x, inner_end.z - inner_start.z);
-            if span_xz.length_squared() <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
+            // Boundary assembly uses canonical keys. Dropping a short edge between distinct
+            // keys opens an otherwise closed region and makes the entire span unpublishable.
+            if EarthworkBoundaryPointKey::from_point(inner_start)
+                == EarthworkBoundaryPointKey::from_point(inner_end)
+            {
                 continue;
             }
             segments.push(RoadSurfaceEarthworkBoundarySegment {
@@ -173,6 +176,12 @@ impl RoadSurfaceSystem {
             if Self::earthwork_signed_polygon_area_xz(&point_loop).abs()
                 <= f64::from(SAMPLE_EPSILON_M)
             {
+                crate::debug_log!(
+                    "road",
+                    "owned_boundary_loop_degenerate area={} points={:?}",
+                    Self::earthwork_signed_polygon_area_xz(&point_loop),
+                    point_loop
+                );
                 return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                     point_count: point_loop.len(),
                 });
@@ -256,6 +265,7 @@ impl RoadSurfaceSystem {
 mod tests {
     use super::*;
     use crate::simulation::network::surface::{RoadSurfaceEarthworkSupportPolicy, RoadVec3};
+    use crate::simulation::terrain::TerrainSystem;
 
     fn test_earthwork_source() -> RoadSurfaceEarthworkFaceSource {
         RoadSurfaceEarthworkFaceSource::SpanSupportBoundary {
@@ -285,6 +295,38 @@ mod tests {
             inner_end: RoadVec3::new(end_x, 0.0, end_z),
             source: test_earthwork_source(),
         }
+    }
+
+    #[test]
+    fn earthwork_region_keeps_short_edges_between_distinct_boundary_keys() {
+        let polygon = RoadSurfaceVisualPolygon {
+            points_world: vec![
+                RoadVec3::new(3.0004, 0.0, 3.0),
+                RoadVec3::new(3.0006, 0.0, 3.0),
+                RoadVec3::new(7.0, 0.0, 3.0),
+                RoadVec3::new(7.0, 0.0, 7.0),
+                RoadVec3::new(3.0004, 0.0, 7.0),
+            ],
+            triangles_world: Vec::new(),
+        };
+        let mut segments = Vec::new();
+        RoadSurfaceSystem::push_region_polygon_boundary_segments(
+            &polygon,
+            test_earthwork_source(),
+            &mut segments,
+        );
+        let loops = RoadSurfaceSystem::owned_region_boundary_segment_loops(segments)
+            .expect("closed boundary must stay closed");
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].len(), polygon.points_world.len());
+        let terrain = TerrainSystem::from_world_config(
+            &crate::simulation::core::config::WorldConfig::new(100.0, 100.0, 10.0, 10.0),
+        );
+        assert!(
+            RoadSurfaceSystem::new(512.0)
+                .build_closed_earthwork_geometry_from_boundary_segments(&loops, &terrain, None)
+                .is_ok()
+        );
     }
 
     #[test]

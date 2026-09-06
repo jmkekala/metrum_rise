@@ -93,6 +93,46 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- `ROAD-12`: road acceptance now requires complete road/terrain products before routing changes or
+  charging, with bounded rollback of graph and split building references. Complete-boundary dust
+  cleanup fixes the latest iso `(23, 1)` failure; the 52-road save rebuilds all five engineered
+  patches through save/load. All 1,535 Rust tests and both Godot bridges pass.
+  `ROAD-13` separately tracks a surface-preview rejection encountered
+  while deleting and redrawing that connector. See [`roads.md`](roads.md).
+
+- `SIM-01`: terrain/water payload jobs no longer block Rayon workers on the simulation mutex.
+  Busy snapshots use the existing retry protocol; completed terrain waits for nonblocking cache
+  publication. The saved-city streaming replay now advances with power-plant previews on both one
+  worker and the default pool. All 1,532 Rust tests and both Godot bridges pass. See [`terrain.md`](terrain.md).
+
+- `ROAD-11`: terrain clipping resolves numeric-dust gaps using only their connected source anchors,
+  so a distant curb step cannot block road/terrain publication. The iso save now produces all five
+  engineered terrain patches and six road chunks on load, save/reload, and live road rebuilding.
+  All 1,530 Rust tests and both Godot bridge regressions pass. See [`roads.md`](roads.md).
+
+- `SAVE-01`: city saves include the active camera's position, orbit angles, zoom, and projection.
+  Native load restores the view before renderer refresh; older saves remain loadable.
+  See [`ui.md`](ui.md).
+
+- `ROAD-10`: road/walkway mode shows parcel constraints, and every preview path checks the same
+  local parcel corridor as commit. Span framing stays continuous across closely spaced profile
+  samples while retaining exact node-mouth geometry. See [`roads.md`](roads.md) and [`zoning.md`](zoning.md).
+
+- `BUILD-01`: explicit farms and service/industry buildings restore their saved fractional road
+  frontage instead of moving to grid cell zero. Placement and load share the transform calculation,
+  preserving the saved support plane and rebuilding site footprints at the correct position.
+  See [`building_allocator.md`](building_allocator.md).
+
+- `TRAFFIC-01`: saves preserve directed sidewalk lanes and junction connector endpoints through
+  lane rebuilds and graph compaction. Load restores lane heights and entrance caches before agent
+  references; version 57 saves recover junction routes from saved topology and positions.
+  See [`traffic.md`](traffic.md) and [`entrance_and_exit.md`](entrance_and_exit.md).
+
+- `ROAD-09` / `ZONE-02`: road/terrain clipping preserves exact tile boundaries and short canonical
+  edges; save/load preserves road grades instead of resnapping roads to terrain. Curved parcel-run
+  spacing validates its final attachment, and existing invalid endpoint parcels use the save
+  quarantine lifecycle. See [`roads.md`](roads.md) and [`zoning.md`](zoning.md).
+
 - Road placement no longer applies the Godot-only 90-degree spline guard or exposes the dead
   `Too steep` rejection; standard-road grade targets now shape and diagnose the generated profile
   without acting as player limits. Exact surface compilation remains a transactional integrity gate.

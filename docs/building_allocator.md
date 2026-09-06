@@ -226,6 +226,21 @@ Important invariant:
 - `update_edge_indices()` remaps `Building.edge_idx` and parcel road attachments after road compaction
 - `recompute_derived_transforms()` rebuilds `center_x`, `center_y`, and `facing_dir` from saved
   attachment data plus live road geometry
+- Explicit sites (`parcel_id = 0`), including farms, use the saved `edge_idx`, `frontage_t`,
+  `side`, and depth. `frontage_t` locates the frontage center along the physical road polyline;
+  `cell_x = 0` is not a road station. Placement and load share the same position/tangent sampler,
+  sidewalk setback, and half-depth offset. `support_height_m` remains the saved placement plane;
+  site footprints and entrance caches rebuild from the restored transform.
+- `BUILD-01` debugging: compare SQLite `buildings` attachment/support fields and
+  `network_edge_geometry` physical points with the building inspector's `center_x` / `center_z`.
+  `METRUM_DEBUG_BUILDINGS=1` adds footprint, facing, support-height, and nearby road/terrain
+  samples to the building render frame's `site_mesh_data.debug_sites`. Its `center` is the
+  support polygon centroid, which can differ from the building center. A second save/load must
+  preserve building-part transforms, site surface vertices, and farm field polygons.
+- The `iso.sqlite` native replay restores all three farms within 2 mm of independently sampled
+  saved frontage positions. Their support heights, 43 field vertices, rendered building parts,
+  and site surface meshes survive another save/load unchanged; all five surrounding terrain
+  patch payloads compile successfully.
 
 ## Indices And Vacancy Rules
 

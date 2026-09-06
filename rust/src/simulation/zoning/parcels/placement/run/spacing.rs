@@ -48,10 +48,18 @@ pub(super) fn next_non_overlapping_run_geometry_directed(
     previous_geometries: &[ParcelGeometry],
     blocking_geometry: Option<&ParcelGeometry>,
 ) -> Option<(f32, ParcelGeometry)> {
+    let min_frontage_s = frontage_m * 0.5;
+    let max_frontage_s = edge_len_m - min_frontage_s;
     let mut low_s = min_center_s;
     let mut high_s = min_center_s;
     loop {
         if !directed_s_within_limit(high_s, limit_s, direction) {
+            return None;
+        }
+        // Spacing on a curve may advance beyond the caller's initial station. Check the
+        // normalized attachment that is actually persisted, including its f32 round trip.
+        let attachment_s = (high_s / edge_len_m) * edge_len_m;
+        if attachment_s < min_frontage_s || attachment_s > max_frontage_s {
             return None;
         }
         let geometry = geometry_from_attachment(

@@ -71,6 +71,12 @@ fn road_corridor_overlap_query_finds_blocking_parcel() {
         z.parcel_ids_overlapping_road_corridor(&clear, 5.0)
             .is_empty()
     );
+    let opposite_side = [Vector3::ZERO, Vector3::new(0.0, 0.0, 80.0)];
+    assert!(
+        z.parcel_ids_overlapping_road_corridor(&opposite_side, 5.0)
+            .is_empty(),
+        "a branch leaving on the opposite side must not hit the parcel"
+    );
 }
 
 #[test]

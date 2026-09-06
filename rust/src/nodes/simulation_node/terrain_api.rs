@@ -386,25 +386,11 @@ impl SimulationNode {
                 let worker_start = Instant::now();
                 let perf_enabled = crate::debug::is_perf_enabled();
                 let snapshot_start = Instant::now();
-                let (sources, mut failed_requests) = {
-                    let mut core = core
-                        .lock()
-                        .expect("simulation core lock poisoned during terrain payload snapshot");
-                    let mut sources = Vec::with_capacity(build_requests.len());
-                    let mut failed = Vec::new();
-                    for request in build_requests {
-                        if let Some(source) =
-                            SimulationNode::terrain_patch_payload_build_source_for_request(
-                                &mut core, request,
-                            )
-                        {
-                            sources.push(source);
-                        } else {
-                            failed.push(request);
-                        }
-                    }
-                    (sources, failed)
-                };
+                let (sources, mut failed_requests) =
+                    SimulationNode::try_prepare_terrain_patch_payload_sources(
+                        &core,
+                        build_requests,
+                    );
                 let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;
 
                 let input_start = Instant::now();
@@ -482,16 +468,6 @@ impl SimulationNode {
                     &refined_requests,
                     &refined_entries,
                 );
-                let cache_inserted_count = if refined_entries.is_empty() {
-                    0
-                } else {
-                    core.lock()
-                        .expect(
-                            "simulation core lock poisoned during refined terrain cache insertion",
-                        )
-                        .insert_refined_terrain_patch_cache_entries(refined_entries)
-                };
-                let cache_inserted = cache_inserted_count > 0;
                 let mut job_state = jobs
                     .lock()
                     .expect("terrain payload job lock poisoned during result publication");
@@ -503,7 +479,7 @@ impl SimulationNode {
                         || refined_request_count > 0)
                 {
                     println!(
-                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} refined_windows={} failed_windows={} invalid_entries={} road_loops={} site_loops={} first_error={} cache_inserted={} cdt_ms={:.3} total_ms={:.3}",
+                        "[DEBUG:perf] terrain_payload_worker_done requests={} refined_requests={} refined_entries={} refined_windows={} failed_windows={} invalid_entries={} road_loops={} site_loops={} first_error={} cdt_ms={:.3} total_ms={:.3}",
                         request_count,
                         refined_request_count,
                         refined_entry_count,
@@ -513,7 +489,6 @@ impl SimulationNode {
                         refined_road_loop_count,
                         refined_site_loop_count,
                         first_refined_error,
-                        cache_inserted,
                         cdt_ms,
                         worker_start.elapsed().as_secs_f64() * 1000.0
                     );

@@ -155,8 +155,8 @@ pub(super) fn clip_loop_to_patch_components(
             let vertices = contour
                 .into_iter()
                 .map(|point| {
-                    let x = overlay_coord(point.x, origin.0);
-                    let z = overlay_coord(point.y, origin.1);
+                    let x = overlay_clipped_coord(point.x, origin.0, patch.min_x, patch.max_x);
+                    let z = overlay_clipped_coord(point.y, origin.1, patch.min_z, patch.max_z);
                     clipped_vertex_from_overlay(
                         points,
                         &original_vertices_by_xz,
@@ -196,13 +196,25 @@ fn clipped_vertex_from_overlay(
     patch: TerrainCdtPatch,
 ) -> TerrainCdtVertex {
     let quantized = TerrainCdtVertex::new(x, 0.0, z);
+    // An exact clip intersection owns its rectangle coordinate. Recovering a nearby original
+    // must neither move that intersection off the boundary nor reintroduce an outside vertex.
+    let preserves_clip = |vertex: &TerrainCdtVertex| {
+        vertex.x >= patch.min_x
+            && vertex.x <= patch.max_x
+            && vertex.z >= patch.min_z
+            && vertex.z <= patch.max_z
+            && (!(x == patch.min_x || x == patch.max_x) || vertex.x == x)
+            && (!(z == patch.min_z || z == patch.max_z) || vertex.z == z)
+    };
     let exact_original = original_vertices_by_xz
         .binary_search_by_key(&terrain_cdt_vertex_xz_key(quantized), |(key, _)| *key)
         .ok()
         .map(|index| original_vertices_by_xz[index].1)
+        .filter(preserves_clip)
         .or_else(|| {
             original
                 .iter()
+                .filter(|vertex| preserves_clip(vertex))
                 .filter_map(|vertex| {
                     let dx = vertex.x - x;
                     let dz = vertex.z - z;
@@ -222,6 +234,7 @@ fn clipped_vertex_from_overlay(
     }
     let exact_intersection = source_intersections
         .iter()
+        .filter(|vertex| preserves_clip(vertex))
         .filter_map(|vertex| {
             let dx = vertex.x - x;
             let dz = vertex.z - z;
@@ -250,22 +263,22 @@ fn clip_loop_to_patch_axis_aligned(
 ) -> Vec<TerrainCdtVertex> {
     let points = clip_loop_to_boundary(
         points,
-        |point| point.x >= patch.min_x - CDT_EPSILON_M,
+        |point| point.x >= patch.min_x,
         |a, b| intersect_at_x(a, b, patch.min_x),
     );
     let points = clip_loop_to_boundary(
         points,
-        |point| point.x <= patch.max_x + CDT_EPSILON_M,
+        |point| point.x <= patch.max_x,
         |a, b| intersect_at_x(a, b, patch.max_x),
     );
     let points = clip_loop_to_boundary(
         points,
-        |point| point.z >= patch.min_z - CDT_EPSILON_M,
+        |point| point.z >= patch.min_z,
         |a, b| intersect_at_z(a, b, patch.min_z),
     );
     let points = clip_loop_to_boundary(
         points,
-        |point| point.z <= patch.max_z + CDT_EPSILON_M,
+        |point| point.z <= patch.max_z,
         |a, b| intersect_at_z(a, b, patch.max_z),
     );
     points
@@ -327,8 +340,17 @@ fn overlay_point(x: f64, z: f64, origin: (i64, i64)) -> Option<IntPoint> {
     ))
 }
 
-fn overlay_coord(value: i32, origin: i64) -> f64 {
-    (origin + i64::from(value)) as f64 * CDT_OVERLAY_GRID_M
+fn overlay_clipped_coord(value: i32, origin: i64, min: f64, max: f64) -> f64 {
+    let key = origin + i64::from(value);
+    // Integer overlay sides are exact. Converting them through the grid scale can otherwise
+    // produce e.g. 3136.0000000000005 and defeat exact boundary preservation on re-entry.
+    if key == overlay_quantized_coord(min) {
+        min
+    } else if key == overlay_quantized_coord(max) {
+        max
+    } else {
+        key as f64 * CDT_OVERLAY_GRID_M
+    }
 }
 
 fn overlay_quantized_coord(value: f64) -> i64 {
@@ -475,18 +497,20 @@ fn clip_loop_to_boundary(
 
 fn intersect_at_x(a: TerrainCdtVertex, b: TerrainCdtVertex, x: f64) -> TerrainCdtVertex {
     let denominator = b.x - a.x;
-    if denominator.abs() <= CDT_EPSILON_M {
+    if denominator.abs() <= f64::EPSILON {
         return TerrainCdtVertex::new(x, a.height_m, a.z);
     }
-    interpolate_vertex(a, b, (x - a.x) / denominator)
+    let intersection = interpolate_vertex(a, b, (x - a.x) / denominator);
+    TerrainCdtVertex::new(x, intersection.height_m, intersection.z)
 }
 
 fn intersect_at_z(a: TerrainCdtVertex, b: TerrainCdtVertex, z: f64) -> TerrainCdtVertex {
     let denominator = b.z - a.z;
-    if denominator.abs() <= CDT_EPSILON_M {
+    if denominator.abs() <= f64::EPSILON {
         return TerrainCdtVertex::new(a.x, a.height_m, z);
     }
-    interpolate_vertex(a, b, (z - a.z) / denominator)
+    let intersection = interpolate_vertex(a, b, (z - a.z) / denominator);
+    TerrainCdtVertex::new(intersection.x, intersection.height_m, z)
 }
 
 pub(super) fn interpolate_vertex(

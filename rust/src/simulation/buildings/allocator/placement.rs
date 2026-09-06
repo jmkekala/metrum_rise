@@ -852,14 +852,14 @@ impl BuildingAllocator {
         let edge = graph
             .get_edge(projection.edge_idx)
             .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
-        let centerline = Self::sample_pos_on_edge(graph, projection.edge_idx, projection.t);
-        let tangent = Self::sample_tangent_on_edge(graph, projection.edge_idx, projection.t);
-        if tangent.length_squared() <= 1e-12 {
-            return Err(ExplicitServicePlacementRejection::RoadFrontageUnavailable);
-        }
-        let outward = Vector2::new(tangent.y, -tangent.x).normalized() * projection.side as f32;
-        let frontage_center = centerline + outward * (edge.width * 0.5 + SIDEWALK_WIDTH);
-        let center_2d = frontage_center + outward * (depth_m * 0.5);
+        let (center_2d, outward, _) = Self::explicit_frontage_transform(
+            graph,
+            projection.edge_idx,
+            projection.t,
+            projection.side,
+            depth_m,
+        )
+        .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
 
         Ok(ResolvedPlacement {
             asset_id: asset_id.to_owned(),

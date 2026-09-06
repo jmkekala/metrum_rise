@@ -45,7 +45,6 @@ pub(crate) fn clip_terrain_cdt_road_loop_to_patch(
                 }
             })
         })
-        .filter(|edge| edge_length_xz_m(edge.start, edge.end) > CDT_EPSILON_M)
         .collect::<Vec<_>>();
     clip_loop_to_patch_components(&road_loop.vertices, patch)
         .into_iter()
@@ -111,9 +110,12 @@ fn component_contains_source_edge(
         if edge_key > source_key {
             break;
         }
-        let start = component[edge_index];
-        let end = component[(edge_index + 1) % component.len()];
-        if segments_have_metric_collinear_overlap(start, end, source_edge.start, source_edge.end) {
+        // Canonically identical edges retain their provenance even across adjacent identity
+        // cells separated by less than 1 mm. Metric length must not erase that topology.
+        if !same_xz(
+            component[edge_index],
+            component[(edge_index + 1) % component.len()],
+        ) {
             return true;
         }
     }

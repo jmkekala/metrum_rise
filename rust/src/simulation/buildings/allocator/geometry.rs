@@ -21,6 +21,30 @@ pub(crate) struct RoadFrontageProjection {
 }
 
 impl BuildingAllocator {
+    /// Reconstructs an explicit site's center, outward normal and road setback from its attachment.
+    pub(crate) fn explicit_frontage_transform(
+        graph: &RegionGraph,
+        edge_idx: usize,
+        frontage_t: f32,
+        side: i8,
+        depth_m: f32,
+    ) -> Option<(Vector2, Vector2, f32)> {
+        let edge = graph.get_edge(edge_idx)?;
+        let centerline = Self::sample_pos_on_edge(graph, edge_idx, frontage_t);
+        let tangent = Self::sample_tangent_on_edge(graph, edge_idx, frontage_t);
+        if tangent.length_squared() <= 1e-12 {
+            return None;
+        }
+        let outward = Vector2::new(tangent.y, -tangent.x).normalized() * side as f32;
+        let setback = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        let frontage_center = centerline + outward * setback;
+        Some((
+            frontage_center + outward * (depth_m * 0.5),
+            outward,
+            setback,
+        ))
+    }
+
     /// Returns the world-space (X, Z) position at fractional distance `t` along an edge.
     pub fn get_pos_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         Self::sample_pos_on_edge(graph, edge_idx, t)

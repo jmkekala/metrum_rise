@@ -35,6 +35,7 @@ impl RoadSurfaceSystem {
             let points_world = Self::span_boundary_loop_points(&segments);
             let point_count = points_world.len();
             let Some(loop_polygon) = Self::make_boundary_loop_polygon(points_world) else {
+                crate::debug_log!("road", "span_boundary_loop_invalid segments={:?}", segments);
                 return Err(RoadSurfaceEarthworkGeometryError::DegenerateBoundaryLoop {
                     point_count,
                 });

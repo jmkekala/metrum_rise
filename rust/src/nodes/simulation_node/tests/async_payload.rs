@@ -5,6 +5,115 @@
 use super::*;
 
 #[test]
+fn payload_workers_release_rayon_when_simulation_core_is_busy() {
+    use super::super::async_terrain::WaterPatchPayloadRequest;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let core = Arc::new(Mutex::new(test_core_with_flat_terrain(0.0)));
+    let guard = core.lock().unwrap();
+    let terrain_request = TerrainPatchPayloadRequest {
+        key: TerrainPatchPayloadKey {
+            patch_x: 0,
+            patch_z: 0,
+            render_step_mm: 0,
+        },
+        request_id: 1,
+        surface_generation: guard.terrain_payload_generation_for_patch(0, 0),
+    };
+    let water_request = WaterPatchPayloadRequest {
+        key: WaterPatchPayloadKey {
+            patch_x: 0,
+            patch_z: 0,
+        },
+        request_id: 2,
+        source_generation: guard.watermap.render_generation(),
+        surface_generation: guard.cached_road_mesh_generation,
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let worker_core = Arc::clone(&core);
+    pool.spawn(move || {
+        let (terrain, terrain_retry) = SimulationNode::try_prepare_terrain_patch_payload_sources(
+            &worker_core,
+            vec![terrain_request],
+        );
+        let (water, water_retry) =
+            SimulationNode::try_prepare_water_patch_payloads(&worker_core, vec![water_request]);
+        tx.send((terrain.len(), terrain_retry, water.len(), water_retry))
+            .unwrap();
+    });
+    // Release the guard before asserting, so a regression cannot leave the test worker blocked.
+    let result = rx.recv_timeout(Duration::from_secs(2));
+    drop(guard);
+    let (terrain_count, terrain_retry, water_count, water_retry) =
+        result.expect("payload snapshots must yield the worker while SimCore is held");
+    assert_eq!((terrain_count, water_count), (0, 0));
+    assert_eq!(terrain_retry.len(), 1);
+    assert_eq!(terrain_retry[0].request_id, terrain_request.request_id);
+    assert_eq!(water_retry.len(), 1);
+    assert_eq!(water_retry[0].request_id, water_request.request_id);
+    pool.install(|| {
+        let (terrain, failed) =
+            SimulationNode::try_prepare_terrain_patch_payload_sources(&core, terrain_retry);
+        assert!(failed.is_empty());
+        assert_eq!(terrain.len(), 1);
+        let (water, failed) = SimulationNode::try_prepare_water_patch_payloads(&core, water_retry);
+        assert!(failed.is_empty());
+        assert_eq!(water.len(), 1);
+    });
+}
+
+#[test]
+fn completed_terrain_waits_for_cache_publication_without_losing_payloads() {
+    let mut core = test_core_with_flat_terrain(0.0);
+    core.terrain_payload_global_generation = 7;
+    let core = Mutex::new(core);
+    let mut jobs = TerrainPatchPayloadAsyncState::new();
+    let current = Arc::new(test_cached_refined_terrain_patch(
+        TERRAIN_CDT_CONTRACT_REVISION,
+        7,
+    ));
+    // Stale completion after the current one must not replace the accepted cache generation.
+    for patch in [
+        Arc::clone(&current),
+        Arc::new(test_cached_refined_terrain_patch(
+            TERRAIN_CDT_CONTRACT_REVISION,
+            6,
+        )),
+    ] {
+        jobs.completed.push(TerrainPatchPayload {
+            key: TerrainPatchPayloadKey {
+                patch_x: 0,
+                patch_z: 0,
+                render_step_mm: 2000,
+            },
+            request_id: patch.surface_generation,
+            surface_generation: patch.surface_generation,
+            data: TerrainPatchPayloadData::Refined { patch },
+        });
+    }
+    let jobs = Mutex::new(jobs);
+    let guard = core.lock().unwrap();
+    let (completed, failed) = SimulationNode::finish_terrain_patch_payload_jobs(&core, &jobs);
+    assert!(completed.is_empty() && failed.is_empty());
+    assert_eq!(jobs.lock().unwrap().completed.len(), 2);
+    drop(guard);
+
+    let (completed, failed) = SimulationNode::finish_terrain_patch_payload_jobs(&core, &jobs);
+    assert_eq!(completed.len(), 2);
+    assert!(failed.is_empty());
+    assert!(jobs.lock().unwrap().completed.is_empty());
+    assert!(Arc::ptr_eq(
+        &core.lock().unwrap().refined_terrain_patch_cache[&current.key],
+        &current
+    ));
+}
+
+#[test]
 fn terrain_patch_payload_async_clear_drops_stale_world_payloads() {
     let mut state = TerrainPatchPayloadAsyncState::new();
     let key = TerrainPatchPayloadKey {

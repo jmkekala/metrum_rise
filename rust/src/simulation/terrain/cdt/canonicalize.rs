@@ -369,8 +369,10 @@ fn insert_road_vertex(
         site_owned_only,
     };
     if let Some(existing) = road_vertex_heights.get(&key).copied() {
-        let merged = merge_road_vertex_height(existing, candidate)
-            .ok_or(TerrainCdtError::ConflictingRoadBoundaryHeight)?;
+        let merged = merge_road_vertex_height(existing, candidate).ok_or_else(|| {
+            crate::debug_log!("road", "terrain_cdt_vertex_height_conflict key={:?} incoming={:?} existing_height={} existing_site={} incoming_site={}", key, vertex, existing.height_m, existing.site_owned_only, site_owned_only);
+            TerrainCdtError::ConflictingRoadBoundaryHeight
+        })?;
         let index = vertex_lookup
             .get(&key)
             .copied()

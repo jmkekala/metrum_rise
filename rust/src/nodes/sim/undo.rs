@@ -124,10 +124,41 @@ impl SimCore {
     }
 
     fn push_undo_snapshot(&mut self, snapshot: SimulationSnapshot) {
-        if self.undo_stack.len() >= 30 {
+        if self.undo_stack.len() >= 30 && !self.transit_network.road_edit_is_staged() {
             self.undo_stack.pop_front();
         }
         self.undo_stack.push_back(snapshot);
+    }
+
+    /// Rejects a staged road before lane, routing, entrance, or parcel maintenance runs.
+    pub(crate) fn rollback_staged_road_edit(&mut self) {
+        let state = self
+            .undo_stack
+            .pop_back()
+            .expect("staged road has a graph checkpoint");
+        let graph = state
+            .trans_graph
+            .expect("staged road checkpoint contains topology");
+        let (edge_ids, node_ids) = graph.affected_topology_ids(
+            self.region_graph.node_count(),
+            self.region_graph.edge_count(),
+        );
+        self.transit_network
+            .rollback_road_edit_dependents(&mut self.allocator);
+        self.region_graph.restore_undo_delta(graph);
+        self.transit_network.bulk_dirty_edges.clear();
+        self.reset_local_network_render_state(&edge_ids, &node_ids, state.road_surface_topology);
+        self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+    }
+
+    /// Accepts a staged road and only then applies the undo-history size limit.
+    pub(crate) fn accept_staged_road_edit(&mut self) {
+        self.transit_network.accept_road_edit();
+        if self.benchmark_mode {
+            self.undo_stack.pop_back();
+        } else if self.undo_stack.len() > 30 {
+            self.undo_stack.pop_front();
+        }
     }
 
     /// Captures a bounded inverse journal for one building deletion.

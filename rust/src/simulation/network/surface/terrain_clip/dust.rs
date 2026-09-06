@@ -14,12 +14,14 @@ use super::heights::TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM;
 use super::model::{
     TerrainClipDustConnectorRecovery, TerrainClipSegmentHeights, TerrainClipSourceEdge,
 };
+use super::source_edges::TerrainClipSourceEdgeIndex;
 
 impl RoadSurfaceSystem {
     fn terrain_clip_dust_connector_heights_from_source_edges(
         contour: &NodeOverlayContour,
         segment_index: usize,
         source_edges: &[TerrainClipSourceEdge],
+        source_edge_index: &TerrainClipSourceEdgeIndex,
     ) -> Result<Option<TerrainClipSegmentHeights>, String> {
         let len = contour.len();
         if len < 3 {
@@ -34,21 +36,28 @@ impl RoadSurfaceSystem {
 
         let previous = contour[(segment_index + len - 1) % len];
         let next = contour[(segment_index + 2) % len];
+        let previous_sources =
+            source_edge_index.candidates_for_segment(previous, start, source_edges);
+        let next_sources = source_edge_index.candidates_for_segment(end, next, source_edges);
         if let (Some(previous_heights), Some(next_heights)) = (
-            Self::terrain_clip_segment_heights_from_source_edges(previous, start, source_edges),
-            Self::terrain_clip_segment_heights_from_source_edges(end, next, source_edges),
+            Self::terrain_clip_segment_heights_from_source_edges(
+                previous,
+                start,
+                &previous_sources,
+            ),
+            Self::terrain_clip_segment_heights_from_source_edges(end, next, &next_sources),
         ) {
             Self::validate_terrain_clip_dust_endpoint_height(
                 "start",
                 start,
                 previous_heights.end_y,
-                source_edges,
+                &source_edge_index.candidates_for_segment(start, start, source_edges),
             )?;
             Self::validate_terrain_clip_dust_endpoint_height(
                 "end",
                 end,
                 next_heights.start_y,
-                source_edges,
+                &source_edge_index.candidates_for_segment(end, end, source_edges),
             )?;
             return Ok(Some(TerrainClipSegmentHeights {
                 start_y: previous_heights.end_y,
@@ -56,63 +65,80 @@ impl RoadSurfaceSystem {
             }));
         }
 
-        let heights =
-            Self::terrain_clip_contour_vertex_heights_from_source_edges(contour, source_edges)?;
-        let Some(heights) = heights else {
+        let Some(start_y) = Self::terrain_clip_dust_run_vertex_height(
+            contour,
+            segment_index,
+            source_edges,
+            source_edge_index,
+        )?
+        else {
             return Ok(None);
         };
-        Ok(Some(TerrainClipSegmentHeights {
-            start_y: heights[segment_index],
-            end_y: heights[(segment_index + 1) % len],
-        }))
+        let Some(end_y) = Self::terrain_clip_dust_run_vertex_height(
+            contour,
+            (segment_index + 1) % len,
+            source_edges,
+            source_edge_index,
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TerrainClipSegmentHeights { start_y, end_y }))
     }
 
-    fn terrain_clip_contour_vertex_heights_from_source_edges(
+    fn terrain_clip_dust_run_vertex_height(
         contour: &NodeOverlayContour,
+        vertex_index: usize,
         source_edges: &[TerrainClipSourceEdge],
-    ) -> Result<Option<Vec<f64>>, String> {
+        source_edge_index: &TerrainClipSourceEdgeIndex,
+    ) -> Result<Option<f64>, String> {
         let len = contour.len();
-        if len < 3 {
-            return Ok(None);
+        let point_height = |index: usize| {
+            let point = contour[index];
+            let sources = source_edge_index.candidates_for_segment(point, point, source_edges);
+            Self::terrain_clip_dust_overlay_point_height_from_source_edges(point, &sources)
+        };
+        if let Some(height) = point_height(vertex_index)? {
+            return Ok(Some(height));
         }
 
-        let mut heights = contour
-            .iter()
-            .copied()
-            .map(|point| {
-                Self::terrain_clip_dust_overlay_point_height_from_source_edges(point, source_edges)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let Some(anchor) = heights.iter().position(Option::is_some) else {
+        // Only the connected dust run and its two source anchors own this height. Other
+        // contour vertices can have legitimate raised curb steps resolved by the cutter's
+        // top envelope; applying dust-height equality there rejects unrelated geometry.
+        let find_anchor = |backwards: bool| -> Result<Option<(f64, f64)>, String> {
+            let mut index = vertex_index;
+            let mut distance_m = 0.0;
+            for _ in 1..len {
+                let next = if backwards {
+                    (index + len - 1) % len
+                } else {
+                    (index + 1) % len
+                };
+                let edge_index = if backwards { next } else { index };
+                if !Self::terrain_clip_connector_is_numeric_dust(contour, edge_index) {
+                    return Ok(None);
+                }
+                distance_m += overlay_segment_length_m(contour[index], contour[next]);
+                if let Some(height) = point_height(next)? {
+                    return Ok(Some((height, distance_m)));
+                }
+                index = next;
+            }
+            Ok(None)
+        };
+        let Some((previous_y, previous_distance)) = find_anchor(true)? else {
             return Ok(None);
         };
-        let mut offset = 1usize;
-        while offset < len {
-            let index = (anchor + offset) % len;
-            if heights[index].is_some() {
-                offset += 1;
-                continue;
-            }
-
-            let run_start_offset = offset;
-            while offset < len && heights[(anchor + offset) % len].is_none() {
-                offset += 1;
-            }
-            let prev_index = (anchor + run_start_offset - 1) % len;
-            let next_index = (anchor + offset) % len;
-            if Self::interpolate_terrain_clip_dust_run_heights(
-                contour,
-                &mut heights,
-                prev_index,
-                next_index,
-            )
-            .is_none()
-            {
-                return Ok(None);
-            }
-        }
-
-        Ok(heights.into_iter().collect())
+        let Some((next_y, next_distance)) = find_anchor(false)? else {
+            return Ok(None);
+        };
+        let total_distance = previous_distance + next_distance;
+        let t = if total_distance > 0.0 {
+            previous_distance / total_distance
+        } else {
+            0.0
+        };
+        Ok(Some(interpolate_height_f64(previous_y, next_y, t)))
     }
 
     fn validate_terrain_clip_dust_endpoint_height(
@@ -135,54 +161,18 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn interpolate_terrain_clip_dust_run_heights(
-        contour: &NodeOverlayContour,
-        heights: &mut [Option<f64>],
-        prev_index: usize,
-        next_index: usize,
-    ) -> Option<()> {
-        let start_y = heights[prev_index]?;
-        let end_y = heights[next_index]?;
-        let mut total_length_m = 0.0f64;
-        let mut edge_index = prev_index;
-        while edge_index != next_index {
-            if !Self::terrain_clip_connector_is_numeric_dust(contour, edge_index) {
-                return None;
-            }
-            let next = (edge_index + 1) % contour.len();
-            total_length_m += overlay_segment_length_m(contour[edge_index], contour[next]);
-            edge_index = next;
-        }
-
-        let mut distance_m = 0.0f64;
-        edge_index = prev_index;
-        while edge_index != next_index {
-            let next = (edge_index + 1) % contour.len();
-            distance_m += overlay_segment_length_m(contour[edge_index], contour[next]);
-            if heights[next].is_none() {
-                let t = if total_length_m > 0.0 {
-                    distance_m / total_length_m
-                } else {
-                    0.0
-                };
-                heights[next] = Some(interpolate_height_f64(start_y, end_y, t));
-            }
-            edge_index = next;
-        }
-
-        Some(())
-    }
-
     pub(super) fn terrain_clip_dust_connector_points_from_source_edges(
         contour: &NodeOverlayContour,
         segment_index: usize,
         source_edges: &[TerrainClipSourceEdge],
+        source_edge_index: &TerrainClipSourceEdgeIndex,
     ) -> TerrainClipDustConnectorRecovery {
         let len = contour.len();
         let heights = match Self::terrain_clip_dust_connector_heights_from_source_edges(
             contour,
             segment_index,
             source_edges,
+            source_edge_index,
         ) {
             Ok(Some(heights)) => heights,
             Ok(None) => return TerrainClipDustConnectorRecovery::Missing,
@@ -239,5 +229,92 @@ impl RoadSurfaceSystem {
         let a_mm = SurfaceHeightMmKey::from_m_f64(a).as_i64();
         let b_mm = SurfaceHeightMmKey::from_m_f64(b).as_i64();
         a_mm.abs_diff(b_mm) <= TERRAIN_CLIP_DUST_HEIGHT_TIE_TOLERANCE_MM
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{
+        RoadSurfaceBandKind, RoadSurfaceEarthworkFaceSource, RoadSurfaceTerrainClipEdgeKind,
+        RoadSurfaceVisualNodePieceKind,
+    };
+
+    #[test]
+    fn dust_run_recovery_ignores_a_remote_curb_step() {
+        let mut contour = vec![
+            [0.0, 0.0],
+            [0.5, 0.0],
+            [0.50002, 0.00008],
+            [0.49998, 0.00016],
+            [0.50001, 0.00024],
+            [0.5, 0.00032],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
+        ];
+        let source_edge = |start: [f64; 2], start_y, end: [f64; 2], end_y| TerrainClipSourceEdge {
+            start: RoadVec3::new(start[0], start_y, start[1]),
+            end: RoadVec3::new(end[0], end_y, end[1]),
+            kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+            source: RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                node_id: 0,
+                kind: RoadSurfaceVisualNodePieceKind::Bend,
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 0,
+                boundary_source: None,
+            },
+            source_index: 0,
+            edge_index: 0,
+        };
+        let sources = vec![
+            source_edge(contour[0], 20.0, contour[1], 20.0),
+            source_edge(contour[5], 20.006, contour[6], 20.006),
+            source_edge(contour[6], 20.006, contour[7], 20.006),
+            source_edge(contour[7], 20.006, contour[8], 20.0),
+            source_edge(contour[8], 20.0, contour[0], 20.0),
+        ];
+        let mut with_curb_step = sources.clone();
+        with_curb_step.push(source_edge(contour[7], 20.126, [1.1, 1.0], 20.126));
+        let gap_start = contour[2];
+        let gap_end = contour[3];
+        // Contour order and cyclic start must not change which run owns the recovery.
+        for _ in 0..2 {
+            for _ in 0..contour.len() {
+                let index = (0..contour.len())
+                    .find(|&index| {
+                        let pair = [contour[index], contour[(index + 1) % contour.len()]];
+                        pair == [gap_start, gap_end] || pair == [gap_end, gap_start]
+                    })
+                    .unwrap();
+                let expected =
+                    RoadSurfaceSystem::terrain_clip_dust_connector_heights_from_source_edges(
+                        &contour,
+                        index,
+                        &sources,
+                        &TerrainClipSourceEdgeIndex::new(&sources),
+                    )
+                    .unwrap()
+                    .unwrap();
+                let actual =
+                    RoadSurfaceSystem::terrain_clip_dust_connector_heights_from_source_edges(
+                        &contour,
+                        index,
+                        &with_curb_step,
+                        &TerrainClipSourceEdgeIndex::new(&with_curb_step),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    [actual.start_y, actual.end_y],
+                    [expected.start_y, expected.end_y]
+                );
+                assert!(actual.start_y >= 20.0 && actual.start_y <= 20.006);
+                assert!(actual.end_y >= 20.0 && actual.end_y <= 20.006);
+                contour.rotate_left(1);
+            }
+            contour.reverse();
+            with_curb_step.reverse();
+        }
     }
 }

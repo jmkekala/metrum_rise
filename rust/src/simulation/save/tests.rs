@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Simulation snapshot persistence regressions.
+
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
@@ -113,6 +115,66 @@ fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
                 .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
         })
         .unwrap_or(ZoneType::None)
+}
+
+#[test]
+fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
+    let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
+    let mut terrain = TerrainSystem::from_world_config(&config);
+    let mut graph = RegionGraph::new();
+    let points = vec![Vector3::new(-40.0, 1.0, 0.0), Vector3::new(40.0, 3.0, 0.0)];
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(points[1], NodeType::Junction);
+    let length = points[0].distance_to(points[1]);
+    let edge_idx = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        class: EdgeClass::Standard,
+        width: 7.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: DEFAULT_URBAN_ROAD_SPEED_MS,
+        base_cost: length / DEFAULT_URBAN_ROAD_SPEED_MS,
+        physical_length: length,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: points.clone(),
+        physical_geometry: points.clone(),
+        deleted: false,
+        no_building_spawn: false,
+        vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+    });
+    let mut zoning = ZoningSystem::new(&config);
+    zoning
+        .restore_parcel_from_attachment(1, edge_idx, 1, 0.85, 20.0, 20.0, 0, &graph)
+        .unwrap();
+    let mut network = TransitNetwork::new_for_world(&config);
+    network::rebuild_loaded_graph_runtime(&graph, &mut network, &mut terrain);
+    network.lane_system.rebuild(&mut graph);
+    assert_eq!(graph.node(start).pos, points[0]);
+    assert_eq!(graph.node(end).pos, points[1]);
+    assert_eq!(graph.edge(edge_idx).geometry, points);
+    assert_eq!(graph.edge(edge_idx).physical_geometry, points);
+    assert_eq!(graph.edge(edge_idx).physical_length, length);
+    assert_eq!(network.road_surface.compiled_visual_span_pieces().len(), 1);
+    let parcel = &zoning.parcels()[0];
+    let mut restored = ZoningSystem::new(&config);
+    restored
+        .restore_parcel_from_attachment(
+            1,
+            edge_idx,
+            parcel.side(),
+            parcel.frontage_center_t(),
+            parcel.frontage_m(),
+            parcel.depth_m(),
+            0,
+            &graph,
+        )
+        .unwrap();
+    assert_eq!(restored.parcels()[0].front_center(), parcel.front_center());
 }
 
 #[test]
@@ -251,6 +313,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator
         .recompute_derived_transforms(&graph, &zoning)
         .expect("transforms");
+    // An explicit site has no parcel/grid station; its fractional frontage owns placement.
+    let mut explicit = allocator.buildings[0].clone();
+    explicit.parcel_id = 0;
+    explicit.frontage_t = 0.7;
+    explicit.side = -1;
+    explicit.center_x = 8.0;
+    explicit.center_y = 20.0;
+    explicit.facing_dir = Vector2::new(0.0, -1.0);
+    explicit.support_height_m = 17.25;
+    explicit.occupancy = 0;
+    allocator.buildings.push(explicit);
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
     allocator.rebuild_zone_index();
     let resource_extraction = ResourceExtractionSystem::from_sites(vec![ExtractorSite {
@@ -505,9 +578,17 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
 
     let path = temp_path("round_trip");
+    let camera = SavedCameraState {
+        pivot: [45.25, 32.5, -61.75],
+        yaw: 2.4,
+        pitch: -0.6,
+        distance: 235.0,
+        orthogonal: false,
+    };
     save_to_sqlite(
         &path,
         SaveGameView {
+            camera: Some(camera),
             config: &config,
             time: &time,
             terrain: &terrain,
@@ -534,6 +615,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     )
     .expect("save");
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
+    assert_eq!(loaded.camera, Some(camera));
+    // Pre-camera snapshots still load and never invent a view from a different save.
+    let conn = Connection::open(&path).unwrap();
+    conn.execute("DROP TABLE camera_state", []).unwrap();
+    for version in [57, 58] {
+        conn.execute("UPDATE save_meta SET version = ?1", [version])
+            .unwrap();
+        assert_eq!(
+            load_from_sqlite(&path, &allocator.registry).unwrap().camera,
+            None
+        );
+    }
+    drop(conn);
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);
@@ -604,7 +698,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         zone_at_world(&loaded.zoning, 0.0, 0.0),
         ZoneType::Residential
     );
-    assert_eq!(loaded.allocator.buildings.len(), 1);
+    assert_eq!(loaded.allocator.buildings.len(), 2);
+    let explicit = &loaded.allocator.buildings[1];
+    assert_eq!(explicit.parcel_id, 0);
+    assert_eq!(explicit.frontage_t, 0.7);
+    assert_eq!((explicit.center_x, explicit.center_y), (8.0, 20.0));
+    assert_eq!(explicit.facing_dir, Vector2::new(0.0, -1.0));
+    assert_eq!(explicit.side_offset, 5.0);
+    assert_eq!(explicit.support_height_m, 17.25);
     assert_eq!(loaded.resource_extraction.sites().len(), 1);
     let loaded_extractor = &loaded.resource_extraction.sites()[0];
     assert_eq!(loaded_extractor.building_idx, 0);
@@ -922,6 +1023,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     save_to_sqlite(
         &path,
         SaveGameView {
+            camera: None,
             config: &config,
             time: &time,
             terrain: &terrain,
@@ -990,6 +1092,14 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
             [],
         )
         .expect("insert second overlapping neighboring parcel");
+        for (parcel_id, frontage_t) in [(4_i64, 0.01_f32), (5, 0.99)] {
+            conn.execute(
+                "INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id)
+                 SELECT ?1, edge_id, side, ?2, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels WHERE parcel_id = 1",
+                rusqlite::params![parcel_id, frontage_t],
+            )
+            .expect("insert parcel extending past road endpoint");
+        }
     }
 
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load legacy overlap");

@@ -5,7 +5,6 @@
 use crate::config::HIGH_SPEED_ROAD_THRESHOLD_MS;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
@@ -243,22 +242,14 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
 }
 
 pub(super) fn rebuild_loaded_graph_runtime(
-    graph: &mut RegionGraph,
+    graph: &RegionGraph,
     transit_network: &mut TransitNetwork,
     terrain: &mut TerrainSystem,
 ) {
-    graph.rebuild_all_indices();
-    transit_network.sync_to_terrain(graph, terrain);
+    // Node positions, grades, physical lengths and junction clips are saved authority. Terrain
+    // synchronization is an edit: running it here moves roads away from their restored parcels
+    // and changes the boundary geometry consumed by the renderer.
     transit_network.rebuild_all_terrain_earthworks(graph, terrain);
-    for edge in graph.edges_iter_mut() {
-        if edge.deleted {
-            continue;
-        }
-        let (base_cost, len) = CostCalculator::calculate_costs(edge);
-        edge.base_cost = base_cost;
-        edge.physical_length = len;
-    }
-    graph.rebuild_intersection_clips();
 }
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {

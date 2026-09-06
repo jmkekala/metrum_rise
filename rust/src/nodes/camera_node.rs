@@ -6,6 +6,7 @@
 //! Provides orbit, pan, and zoom functionality tailored for city simulation.
 
 use crate::nodes::simulation_node::SimulationNode;
+use crate::simulation::save::SavedCameraState;
 use godot::classes::camera_3d::ProjectionType;
 use godot::classes::{Camera3D, ICamera3D, InputEvent};
 use godot::prelude::*;
@@ -127,6 +128,37 @@ impl ICamera3D for CameraNode {
 
 #[godot_api]
 impl CameraNode {
+    /// Captures orbit controls rather than a transform that the next camera input would overwrite.
+    pub(crate) fn saved_state(&self) -> SavedCameraState {
+        SavedCameraState {
+            pivot: [self.pivot.x, self.pivot.y, self.pivot.z],
+            yaw: self.yaw,
+            pitch: self.pitch,
+            distance: self.distance,
+            orthogonal: self.orthogonal,
+        }
+    }
+
+    /// Restores validated presentation state after its world has been loaded.
+    pub(crate) fn restore_saved_state(&mut self, state: SavedCameraState) {
+        self.pivot = Vector3::new(state.pivot[0], state.pivot[1], state.pivot[2]);
+        self.yaw = state.yaw;
+        self.pitch = state.pitch;
+        self.distance = state.distance;
+        self.orthogonal = state.orthogonal;
+        self.base_mut().set_projection(if state.orthogonal {
+            ProjectionType::ORTHOGONAL
+        } else {
+            ProjectionType::PERSPECTIVE
+        });
+        if state.orthogonal {
+            self.base_mut().set_size(state.distance * 0.5);
+        }
+        // The saved pivot already includes terrain clearance. Applying it directly preserves
+        // the view and avoids a terrain callback into the SimulationNode still finishing load.
+        self.apply_camera_transform(self.camera_offset());
+    }
+
     /// Pans the camera on the XZ plane relative to the current view.
     #[func]
     pub fn pan(&mut self, direction: Vector3, speed_mult: f32, delta: f32) {
@@ -292,12 +324,16 @@ impl CameraNode {
         }
     }
 
-    fn update_camera_transform(&mut self) {
+    fn camera_offset(&self) -> Vector3 {
         let yaw_basis = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
         let pitch_basis = Basis::from_euler(EulerOrder::YXZ, Vector3::new(self.pitch, 0.0, 0.0));
         let rotation = yaw_basis * pitch_basis;
 
-        let offset = rotation * Vector3::new(0.0, 0.0, self.distance);
+        rotation * Vector3::new(0.0, 0.0, self.distance)
+    }
+
+    fn update_camera_transform(&mut self) {
+        let offset = self.camera_offset();
         let mut pivot = self.pivot;
         if let Some(pivot_surface_y) = self.terrain_height_at(pivot.x, pivot.z) {
             let camera_surface_y = self.terrain_height_at(pivot.x + offset.x, pivot.z + offset.z);
@@ -310,6 +346,11 @@ impl CameraNode {
             );
             self.pivot.y = pivot.y;
         }
+        self.apply_camera_transform(offset);
+    }
+
+    fn apply_camera_transform(&mut self, offset: Vector3) {
+        let pivot = self.pivot;
         let new_pos = pivot + offset;
         let near_clip = self.near_clip_m;
         let far_clip = (self.distance * 4.0 + self.far_margin_m).max(self.min_far_m);

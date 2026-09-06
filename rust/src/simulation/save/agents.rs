@@ -2,12 +2,15 @@
 
 //! Agent SoA and path serialization.
 
+mod lanes;
+pub(super) use lanes::restore_lane_references;
+
 use crate::config::DEFAULT_URBAN_ROAD_SPEED_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_IMMIGRATION_ORIGIN, ACCESS_PLAN_VALID, AGE_ELDER,
-    Agent, AgentSystem, MODE_CAR, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
-    TRANSIT_NETWORK, age_group_can_work,
+    Agent, AgentSystem, MODE_CAR, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
+    TRANSIT_INTERSECTION, TRANSIT_NETWORK, age_group_can_work,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -76,6 +79,7 @@ pub(super) fn save_agents(
     network: &TransitNetwork,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
+    lanes::save_lane_references(tx, graph, network, maps)?;
     let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, age_group, pending_household_size, freight_shipment_id, work_building, current_building, target_building, freight_target_border_node, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, schedule_seed, cached_commute_minutes, next_commute_refresh_time, next_departure_day, next_departure_minute, next_departure_origin_building, next_departure_target_building, next_departure_activity, cached_schedule_work_building, cached_work_profile_index, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
@@ -129,7 +133,7 @@ pub(super) fn save_agents(
             agents.next_replan_time[i],
             optional_edge_to_db(agents.current_edge[i], maps)?,
             if agents.current_lane_id[i] != usize::MAX {
-                Some(network.lane_system.lanes[agents.current_lane_id[i]].lane_idx as i64)
+                Some(usize_to_i64(agents.current_lane_id[i])?)
             } else {
                 Some(-1)
             },
@@ -409,7 +413,13 @@ pub(super) fn validate_loaded_agents(
         if agents.access_flags[i] & ACCESS_PLAN_VALID == 0 {
             clear_agent_access_plan(agents, i);
         } else {
-            let attach_ok = if agents.access_flags[i] & ACCESS_IMMIGRATION_ORIGIN != 0 {
+            let attach_ok = if matches!(
+                agents.transit[i],
+                TRANSIT_NETWORK | TRANSIT_INTERSECTION | TRANSIT_ACCESS_INGRESS
+            ) {
+                // A network replan has no building-origin attachment to restore.
+                true
+            } else if agents.access_flags[i] & ACCESS_IMMIGRATION_ORIGIN != 0 {
                 agents.planned_attach_node[i] < graph.node_count() as u32
                     && agents.planned_attach_lane_id[i] == u32::MAX
             } else {
@@ -437,10 +447,6 @@ pub(super) fn validate_loaded_agents(
                 || graph.edge(agents.current_edge[i]).deleted
             {
                 clear = true;
-            } else {
-                if agents.transit_mode[i] != MODE_CAR {
-                    agents.current_lane_id[i] = usize::MAX;
-                }
             }
         }
         if clear {
@@ -562,7 +568,12 @@ pub(super) fn validate_loaded_planned_lane_ids(agents: &mut AgentSystem, lane_co
             continue;
         }
 
-        let attach_ok = if agents.access_flags[i] & ACCESS_IMMIGRATION_ORIGIN != 0 {
+        let attach_ok = if matches!(
+            agents.transit[i],
+            TRANSIT_NETWORK | TRANSIT_INTERSECTION | TRANSIT_ACCESS_INGRESS
+        ) {
+            true
+        } else if agents.access_flags[i] & ACCESS_IMMIGRATION_ORIGIN != 0 {
             agents.planned_attach_lane_id[i] == u32::MAX
         } else {
             agents.planned_attach_lane_id[i] != u32::MAX

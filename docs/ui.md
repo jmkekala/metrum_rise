@@ -99,6 +99,12 @@ accelerator column.
 Gameplay `New Game` still opens a file picker rooted at `user://worlds/` and loads the selected
 `WorldDefinition` into the live scene.
 Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
+City snapshots also store the active `CameraNode` focus point, yaw, pitch, orbit distance, and
+projection in the same SQLite transaction as the world (format version 59). Loading restores
+those controls immediately after world replacement, before terrain/water residency refreshes;
+the next pan, orbit, or zoom therefore continues from the saved view. The saved focus height
+already includes terrain clearance and is restored without another terrain adjustment. Versions
+57/58 and simulation-only snapshots have no camera state and keep the scene's current view.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`,
 `WorldEditor`).
@@ -585,6 +591,8 @@ instance; `main_ui.gd` remains gameplay-only.
 Camera ownership rules:
 
 - gameplay and WorldEditor share one world-camera core in the `CameraNode` native node
+- `CameraNode` owns camera snapshot/restore; the native game save/load bridge captures and applies
+  its state only during save/load, with O(1) work and no per-tick camera synchronization
 - shared world-camera behavior includes:
   - orbit math
   - pan math

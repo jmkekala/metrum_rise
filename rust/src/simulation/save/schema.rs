@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 57;
+pub const SAVE_VERSION: i64 = 59;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -16,6 +16,25 @@ CREATE TABLE save_meta(
     version INTEGER NOT NULL,
     saved_at_unix INTEGER NOT NULL,
     game_build TEXT NOT NULL
+);
+CREATE TABLE camera_state(
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    pivot_x REAL NOT NULL,
+    pivot_y REAL NOT NULL,
+    pivot_z REAL NOT NULL,
+    yaw REAL NOT NULL,
+    pitch REAL NOT NULL,
+    distance REAL NOT NULL,
+    orthogonal INTEGER NOT NULL
+);
+CREATE TABLE saved_lanes(
+    lane_id INTEGER PRIMARY KEY,
+    edge_id INTEGER NOT NULL,
+    is_fwd INTEGER NOT NULL,
+    lane_idx INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    from_lane_id INTEGER NOT NULL,
+    to_lane_id INTEGER NOT NULL
 );
 CREATE TABLE world_config(
     width_m REAL NOT NULL,

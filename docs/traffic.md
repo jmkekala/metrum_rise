@@ -22,6 +22,20 @@ Implementation lives mainly in:
 
 ## Current Scope
 
+Save format 58 stores one identity row per live lane: road edge, direction and local lane index,
+or junction node plus incoming/outgoing road lanes. Current and planned agent references resolve
+through these identities after graph compaction and lane rebuilds. Tombstoned lanes are excluded.
+Loading rebuilds final visible-surface lane heights before restoring distances and references,
+and validates each current lane against its owner and travel mode. Pedestrian lanes remain active
+through load, including final frontage legs with an exhausted graph-node path.
+
+Version 57 saves recover sidewalk direction from the saved road/node and connector identity from
+the saved junction, outgoing route and authoritative position (including the pedestrian offset).
+Recovery only inspects that edge or junction's indexed lanes and rejects unmatched connector
+poses. Equivalent matching route prefixes use stable lane order. New saves use explicit identities.
+This work occurs only during save/load; current-lane pose sampling remains allocation-free O(log P)
+in the lane's point count, and agent restoration uses local owner lookups rather than city-wide scans.
+
 The current traffic model is intentionally local and deterministic. Cars are independent agents
 travelling along lane centerlines with per-lane occupancy buckets used for local gap checks.
 There is no global microscopic traffic assignment, signal timing, parking search, multi-car

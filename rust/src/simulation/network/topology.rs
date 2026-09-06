@@ -15,6 +15,55 @@ use std::collections::HashMap;
 
 const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
+/// Inverse of the dependent records changed by one staged edge split.
+pub(super) struct RoadSplitDependentsUndo {
+    edge_id: usize,
+    new_edge_id: usize,
+    buildings: Vec<(usize, usize, usize, f32)>,
+    occupancy: Option<crate::simulation::buildings::allocator::EdgeOccupancy>,
+}
+
+impl TransitNetwork {
+    /// Starts a bounded journal while a road edit is awaiting render-product validation.
+    pub(crate) fn begin_road_edit(&mut self) {
+        assert!(self.road_edit_split_undo.is_none());
+        self.road_edit_split_undo = Some(Vec::new());
+    }
+
+    /// Reports whether dependent mutations are currently journaled for rollback.
+    pub(crate) fn road_edit_is_staged(&self) -> bool {
+        self.road_edit_split_undo.is_some()
+    }
+
+    /// Accepts the staged building and occupancy references after validation.
+    pub(crate) fn accept_road_edit(&mut self) {
+        self.road_edit_split_undo = None;
+    }
+
+    /// Restores split dependents in reverse order without touching lanes or agent state.
+    pub(crate) fn rollback_road_edit_dependents(
+        &mut self,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        if let Some(journal) = self.road_edit_split_undo.take() {
+            for undo in journal.into_iter().rev() {
+                for (index, edge_idx, cell_x, frontage_t) in undo.buildings {
+                    let building = &mut allocator.buildings[index];
+                    building.edge_idx = edge_idx;
+                    building.cell_x = cell_x;
+                    building.frontage_t = frontage_t;
+                }
+                allocator.edge_occupancy.remove(&undo.new_edge_id);
+                if let Some(occupancy) = undo.occupancy {
+                    allocator.edge_occupancy.insert(undo.edge_id, occupancy);
+                } else {
+                    allocator.edge_occupancy.remove(&undo.edge_id);
+                }
+            }
+        }
+    }
+}
+
 /// Maximum distance between consecutive geometry points used for the O(segs²)
 /// crossing-detection inner loop. Mouse-tracked polylines can have a point
 /// every ~0.5 m; 5 m is accurate enough for roads wider than 7 m and gives a
@@ -683,7 +732,14 @@ fn migrate_split_dependents(
     new_len_second: f32,
     zoning: &crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    journal: &mut Option<Vec<RoadSplitDependentsUndo>>,
 ) {
+    let mut undo = journal.as_ref().map(|_| RoadSplitDependentsUndo {
+        edge_id,
+        new_edge_id,
+        buildings: Vec::new(),
+        occupancy: allocator.edge_occupancy.get(&edge_id).cloned(),
+    });
     let cell_size = zoning.config.zone_cell_m;
     let traffic_debug = crate::debug::is_traffic_enabled();
     let old_occ_cells = allocator
@@ -699,6 +755,10 @@ fn migrate_split_dependents(
     // Migrate buildings
     for (building_idx, b) in allocator.buildings.iter_mut().enumerate() {
         if b.edge_idx == edge_id {
+            if let Some(undo) = &mut undo {
+                undo.buildings
+                    .push((building_idx, b.edge_idx, b.cell_x, b.frontage_t));
+            }
             let old_cell_x = b.cell_x;
             let old_frontage_t = b.frontage_t;
             if b.cell_x >= split_x {
@@ -761,6 +821,9 @@ fn migrate_split_dependents(
                 },
             );
         }
+    }
+    if let (Some(journal), Some(undo)) = (journal, undo) {
+        journal.push(undo);
     }
     if traffic_debug {
         crate::traffic_log!(
@@ -1053,6 +1116,7 @@ pub fn split_edge(
         new_len_second,
         zoning,
         allocator,
+        &mut network.road_edit_split_undo,
     );
 
     network.mark_point_dirty(split_pos);

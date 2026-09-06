@@ -89,7 +89,12 @@ impl SimulationNode {
             );
         }
 
-        Self::road_candidate_validation_to_variant(&validation, &prepared_points)
+        self.road_candidate_validation_to_variant(
+            &validation,
+            &prepared_points,
+            fwd_lanes,
+            bkw_lanes,
+        )
     }
 
     /// Validates a road-tool candidate by compiling temporary surface geometry.
@@ -189,7 +194,12 @@ impl SimulationNode {
             );
         }
 
-        Self::road_candidate_validation_to_variant(&validation, &prepared_points)
+        self.road_candidate_validation_to_variant(
+            &validation,
+            &prepared_points,
+            fwd_lanes,
+            bkw_lanes,
+        )
     }
 
     /// Returns the road-tool surface snapshot generation currently used for validation.
@@ -287,14 +297,18 @@ impl SimulationNode {
             return Variant::nil();
         }
 
-        Self::road_preview_snapshot_to_variant(preview)
+        self.road_preview_snapshot_to_variant(preview)
     }
 
-    fn road_preview_snapshot_to_variant(preview: &RoadPreviewSnapshot) -> Variant {
-        let mut dict = Self::road_candidate_validation_to_dictionary(
+    fn road_preview_snapshot_to_variant(&self, preview: &RoadPreviewSnapshot) -> Variant {
+        let Some(mut dict) = self.road_candidate_dictionary_with_parcel_clearance(
             &preview.validation,
             &preview.prepared_points,
-        );
+            i32::from(preview.fwd_lanes),
+            i32::from(preview.bkw_lanes),
+        ) else {
+            return Variant::nil();
+        };
         dict.set(
             "request_id",
             i64::try_from(preview.request_id).unwrap_or(i64::MAX),
@@ -307,15 +321,67 @@ impl SimulationNode {
             "surface_vertices",
             PackedVector3Array::from_iter(preview.surface_vertices.iter().copied()),
         );
-        dict.set("is_valid", preview.is_valid);
         dict.to_variant()
     }
 
     fn road_candidate_validation_to_variant(
+        &self,
         validation: &RoadPreviewValidation,
         prepared_points: &[Vector3],
+        fwd_lanes: i32,
+        bkw_lanes: i32,
     ) -> Variant {
-        Self::road_candidate_validation_to_dictionary(validation, prepared_points).to_variant()
+        let dict = self
+            .road_candidate_dictionary_with_parcel_clearance(
+                validation,
+                prepared_points,
+                fwd_lanes,
+                bkw_lanes,
+            )
+            .unwrap_or_else(|| {
+                let mut pending =
+                    Self::road_candidate_validation_to_dictionary(validation, prepared_points);
+                pending.set("is_valid", false);
+                pending.set("is_pending", true);
+                pending
+            });
+        dict.to_variant()
+    }
+
+    fn road_candidate_dictionary_with_parcel_clearance(
+        &self,
+        validation: &RoadPreviewValidation,
+        prepared_points: &[Vector3],
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Option<VarDictionary> {
+        let mut dict = Self::road_candidate_validation_to_dictionary(validation, prepared_points);
+        if validation.is_valid {
+            // Query the existing parcel chunk index locally. Never copy city-wide zoning into
+            // a preview snapshot or wait on the simulation lock from the mouse-hover path.
+            let core = self.try_lock_core()?;
+            let lanes =
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) + bkw_lanes.clamp(0, i32::from(u8::MAX));
+            let half_width = (lanes as f32 * crate::config::LANE_WIDTH).max(2.0) * 0.5
+                + crate::config::SIDEWALK_WIDTH;
+            let overlaps = core
+                .zoning
+                .parcel_ids_overlapping_road_corridor(prepared_points, half_width);
+            dict.set(
+                "zoning_revision",
+                i64::try_from(core.zoning.overlay_revision()).unwrap_or(i64::MAX),
+            );
+            if let Some(&first) = overlaps.first() {
+                dict.set("is_valid", false);
+                dict.set("invalid_reason", "parcel_overlap");
+                dict.set("overlapping_parcel_count", overlaps.len() as i64);
+                dict.set(
+                    "first_overlapping_parcel_id",
+                    i64::try_from(first).unwrap_or(i64::MAX),
+                );
+            }
+        }
+        Some(dict)
     }
 
     fn road_candidate_validation_to_dictionary(

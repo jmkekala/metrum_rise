@@ -892,7 +892,7 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
 
     let save_path = temp_save_path("load_registry_entrances");
     source
-        .save_game_internal(save_path.to_str().expect("utf-8 temp path"))
+        .save_game_internal(save_path.to_str().expect("utf-8 temp path"), None)
         .expect("save test world");
 
     let mut loaded = test_core();

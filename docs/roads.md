@@ -152,6 +152,12 @@ survive while targeting an orphaned physical lane.
 - span sections are ordered along the edge plan polyline
 - every original edge knot and every node throat appears as a section
 - long spans are refined by deterministic world-space constants owned in Rust code
+- span cross-section directions interpolate normalized centered secants between polyline knots;
+  incident lengths are retained before normalization so short profile supports do not amplify
+  coordinate roundoff. Exact node-mouth directions bound this frame, and node-owned rails retain
+  their source geometry. Inserted samples use the same continuous frame, preventing tiny bands
+  from folding across near-adjacent profile knots. Sampling stays O(P) per section for P edge
+  points, adds two O(P) mouth samples per compiled edge, and allocates no tangent-search buffers.
 - span output emits role-tagged asphalt, curb / shoulder, non-road, query, terrain clip, earthwork,
   and chunk coverage data
 
@@ -315,12 +321,20 @@ or hidden compatibility fallback.
 Grounded `Standard` roads replace visible terrain inside the road-owned footprint. Terrain under
 asphalt, curb / shoulder, or sidewalk is not an independent visible carrier.
 
+Save/load preserves saved node positions, road grades, physical lengths, and junction clips.
+It rebuilds derived road surfaces, terrain earthworks, and lanes without running terrain-authoring
+resynchronization over the saved roads.
+
 Road-touched terrain patches obey this contract:
 
 - Rust unions grounded road-owned footprint loops for the patch before CDT input
 - terrain patch rectangles, footprint loops, and source-terrain samples are inserted in canonical
   order
 - road footprint constraints are clipped and split at patch boundaries before Spade input
+- clipping preserves exact rectangle coordinates, including integer-overlay output for disconnected
+  components; source-vertex recovery cannot move an intersection off that boundary or outside the patch
+- source provenance and earthwork loop connectivity follow canonical endpoint identity, including
+  edges shorter than 1 mm between distinct keys; their nonzero outward directions remain valid
 - source-terrain samples are inserted only outside road-owned footprints
 - Rust inserts deterministic grade-limited tie-in guide samples outside grounded `Standard`
   footprints before ordinary source terrain samples, using the final unioned roadbed loops rather
@@ -381,11 +395,18 @@ profile remains `Bridge` and forms a structural ramp across the full approach. I
 ordinary bridge-clearance zone near its grounded landing, but it may not pass below source terrain
 and it never becomes `Standard` earthwork that raises terrain to the bridge deck.
 
-Player-facing placement rules are limited to structural impossibilities: roads shorter than `2 m`,
-standard roadbeds crossing authored water without bridge mode, bridge/tunnel clearance failures,
-and endpoints that resolve to an impossible same-node connection. There is no hard centerline-grade
-or curve-angle rejection. Same-node rejection uses the distinct `same_node_connection` reason; it
-is not reported as a compiler failure.
+Player-facing placement rules include existing parcel conflicts and structural impossibilities:
+roads shorter than `2 m`, standard roadbeds crossing authored water without bridge mode,
+bridge/tunnel clearance failures, and endpoints that resolve to an impossible same-node connection.
+There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
+`same_node_connection` reason; it is not reported as a compiler failure.
+
+Road and walkway tools show the committed parcel overlay. Cheap candidate validation, synchronous
+commit validation, and completed async previews query the same parcel chunk index and corridor
+width as the simulation-thread commit guard. Conflicts return `parcel_overlap` with the count and
+first parcel id; empty/free parcels remain parcel authority and are not silently removed. Preview
+caches include the zoning revision as well as road geometry/generation. A busy simulation mutex
+produces a retryable pending result, never a cached valid verdict or a blocking hover wait.
 
 Placement validity also includes local road-surface compileability. A preview or commit replays the
 candidate's local post-split topology before acceptance, including interior crossings against nearby
@@ -414,6 +435,37 @@ Terrain CDT boundary ownership follows the same `1 mm` canonical vertex identity
 graph: a junction seam may be physically shorter than `1 mm` while still joining two distinct
 canonical cells, and it retains its source until seam hardening deterministically merges or accepts
 it. Truly unsourced road boundaries still fail the coordinated terrain/road upload.
+
+Numeric-dust connector height recovery is local to the connected run and its two source anchors.
+It must not validate every vertex of the unioned contour: a distant curb can legitimately expose
+two source heights handled by the terrain cutter's top envelope. Recovery walks only numeric-dust
+edges, stops at the first source anchor in each direction, and retains strict conflict checks for
+every sampled point in that run. Source queries reuse `TerrainClipSourceEdgeIndex`; each point
+query costs `O(log T + K log K)` for `T` indexed tiles and `K` local candidates, instead of scanning
+all patch sources for every contour vertex. This is terrain-build work, with no per-agent/tick cost.
+`ROAD-11` covers the iso `(22, 1)` patch failure that blocked live road publication and left terrain
+absent after reload.
+
+`ROAD-12` closes the simulation/render acceptance gap. A road command stages its local graph
+edit under the simulation mutex, compiles the road surface, and runs the production terrain input,
+CDT, and final-buffer builders for the affected grading patches. Constraint conflicts and
+pathological final buffers reject the command. Only a complete result permits lane/agent remapping,
+entrance/parcel repair, routing rebuild, and the treasury charge. Successful terrain buffers enter
+the normal generation-checked cache for reuse by the renderer. A failed edit restores the local
+graph/compiler checkpoint and reverses split building/frontage/occupancy mutations; it does not
+invoke the ordinary undo path's global lane rebuild or consume an older undo record.
+Terrain validation reuses indexed source queries and dirty 64 m tile assembly, borrowing the live
+world while locked instead of copying it. Added journal storage/work is proportional to affected
+split records and occupancy cells; terrain work is proportional to affected tiles and patch output.
+
+The `(23, 1)` saved-map failure came from a 29.6 m junction boundary enclosing only 0.0013775 m²
+of numeric seam dust. The single-operation area cap incorrectly made this complete boundary survive
+cleanup, then opposing curb vertices with heights 92 mm apart collided on the terrain identity grid.
+Complete-boundary uncertainty now accumulates the existing 0.1 mm edge strip and vertex floor
+without that unrelated fixed cap. Height conflicts remain errors; a resolved hole of comparable
+area still reaches normal source/height validation. Regression coverage includes cyclic/reversed
+order of the logged contour, terrain rejection after an occupied road split, and cached terrain
+availability before accepted-road publication.
 
 Authored water is part of the same placement contract. A `Standard` candidate is rejected with the
 stable `water_requires_bridge` reason when its complete roadbed footprint overlaps visible baseline

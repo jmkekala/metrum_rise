@@ -116,6 +116,8 @@ func _process(delta):
 		_clear_preview_cache()
 		if current_path != null:
 			_preview_update_pending = true
+	if current_path != null and not _preview_zoning_revision_is_current(_candidate_cache_validation):
+		_preview_update_pending = true
 	_preview_idle_exact_delay_sec = maxf(_preview_idle_exact_delay_sec - delta, 0.0)
 	if (
 		current_path != null
@@ -312,7 +314,7 @@ func _queue_preview_update() -> void:
 	var validation := _candidate_validation_for_points(points)
 	_draw_candidate_preview(points, validation)
 	if not bool(validation.get("is_valid", false)):
-		_preview_update_pending = false
+		_preview_update_pending = bool(validation.get("is_pending", false))
 		_preview_exact_waiting = false
 		_preview_idle_exact_delay_sec = 0.0
 		return
@@ -332,6 +334,7 @@ func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 		and _candidate_cache_bkw_lanes == bkw_lanes
 		and _candidate_cache_snap_to_roads == _snap_to_roads_enabled()
 		and _candidate_cache_surface_generation == simulation_node.get_road_tool_surface_generation()
+		and _preview_zoning_revision_is_current(_candidate_cache_validation)
 		and _road_surface_points_match(points, _candidate_cache_points)
 	):
 		return _candidate_cache_validation.duplicate(true)
@@ -378,6 +381,8 @@ func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
 	return validation
 
 func _remember_candidate_validation(points: PackedVector3Array, validation: Dictionary) -> void:
+	if bool(validation.get("is_pending", false)):
+		return
 	_candidate_cache_points = points
 	_candidate_cache_validation = validation.duplicate(true)
 	_candidate_cache_fwd_lanes = fwd_lanes
@@ -391,7 +396,10 @@ func _preview_surface_generation_is_current(preview: Dictionary) -> bool:
 	var generation := int(preview.get("surface_generation", -1))
 	if generation <= 0:
 		return false
-	return generation == simulation_node.get_road_tool_surface_generation()
+	return generation == simulation_node.get_road_tool_surface_generation() and _preview_zoning_revision_is_current(preview)
+
+func _preview_zoning_revision_is_current(preview: Dictionary) -> bool:
+	return not preview.has("zoning_revision") or int(preview["zoning_revision"]) == simulation_node.get_zoning_overlay_revision()
 
 func _poll_pending_preview_result() -> void:
 	if current_path == null or _preview_request_id <= 0:
@@ -436,6 +444,8 @@ func _draw_blueprint(points: PackedVector3Array, validation: Dictionary) -> void
 		_draw_candidate_preview(points, validation)
 
 func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary) -> void:
+	if bool(validation.get("is_pending", false)):
+		_preview_update_pending = true
 	is_valid = bool(validation.get("is_valid", false))
 	if points.size() > 1:
 		_draw_coarse_preview_surface(points, validation)
@@ -591,6 +601,8 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Water crossing requires a bridge"
 		"surface_geometry_invalid":
 			return "Road surface compilation failed"
+		"parcel_overlap":
+			return "Road overlaps existing zoning parcels"
 		"same_node_connection":
 			return "Road endpoints connect to the same junction"
 		"too_short":

@@ -332,7 +332,11 @@ impl SimulationNode {
     /// waiting for an in-progress road placement.
     #[inline]
     fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
-        match self.core.try_lock() {
+        Self::try_lock_shared_core(&self.core)
+    }
+
+    fn try_lock_shared_core(core: &Mutex<SimCore>) -> Option<std::sync::MutexGuard<'_, SimCore>> {
+        match core.try_lock() {
             Ok(g) => Some(g),
             Err(std::sync::TryLockError::WouldBlock) => None,
             Err(std::sync::TryLockError::Poisoned(_)) => {

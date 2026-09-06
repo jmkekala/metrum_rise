@@ -133,6 +133,7 @@ pub struct TransitNetwork {
     /// Edge IDs that were added or modified during the current bulk-load sequence.
     /// Drained by `finalize_bulk_load` to drive `rebuild_edges_incremental`.
     pub bulk_dirty_edges: HashSet<usize>,
+    road_edit_split_undo: Option<Vec<topology::RoadSplitDependentsUndo>>,
     /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
     pub flow_fields: FlowFieldSystem,
     /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
@@ -175,6 +176,7 @@ impl TransitNetwork {
             lane_system: lanes::LaneSystem::new(),
             bulk_load: false,
             bulk_dirty_edges: HashSet::new(),
+            road_edit_split_undo: None,
             flow_fields: FlowFieldSystem::new(),
             frontage_delay_elapsed_s: 0.0,
             road_surface: RoadSurfaceSystem::new_with_chunk_grid(

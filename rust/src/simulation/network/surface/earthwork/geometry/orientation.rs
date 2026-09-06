@@ -34,7 +34,9 @@ impl RoadSurfaceSystem {
         edge_xz: RoadVec2,
         winding_ccw: bool,
     ) -> Option<RoadVec2> {
-        if edge_xz.length_squared() <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M) {
+        // A retained boundary edge can span distinct identity keys at less than 1 mm.
+        // Its direction is still defined; only a zero-length edge has no normal.
+        if edge_xz.length_squared() == 0.0 {
             return None;
         }
         let tangent = edge_xz.normalize();

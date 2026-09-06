@@ -4,16 +4,23 @@
 
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::save::{LoadedSimulation, SaveGameView, load_from_sqlite, save_to_sqlite};
+use crate::simulation::save::{
+    LoadedSimulation, SaveGameView, SavedCameraState, load_from_sqlite, save_to_sqlite,
+};
 use std::path::PathBuf;
 
 impl SimCore {
     /// Saves the current simulation state into a single-file SQLite snapshot.
-    pub(crate) fn save_game_internal(&self, path: &str) -> Result<(), String> {
+    pub(crate) fn save_game_internal(
+        &self,
+        path: &str,
+        camera: Option<SavedCameraState>,
+    ) -> Result<(), String> {
         let path = PathBuf::from(path);
         save_to_sqlite(
             &path,
             SaveGameView {
+                camera,
                 config: &self.config,
                 time: &self.time,
                 terrain: &self.heightmap,
@@ -42,11 +49,15 @@ impl SimCore {
     }
 
     /// Loads a full simulation snapshot from a SQLite save file and replaces the live world.
-    pub(crate) fn load_game_internal(&mut self, path: &str) -> Result<(), String> {
+    pub(crate) fn load_game_internal(
+        &mut self,
+        path: &str,
+    ) -> Result<Option<SavedCameraState>, String> {
         let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
+        let camera = loaded.camera;
         self.apply_loaded_simulation(loaded)?;
-        Ok(())
+        Ok(camera)
     }
 
     fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) -> Result<(), String> {
@@ -66,10 +77,7 @@ impl SimCore {
         let mut new_allocator = loaded.allocator;
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
-        self.allocator
-            .recompute_derived_transforms(&self.region_graph, &self.zoning)?;
-        self.allocator
-            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+        // Transforms and entrances were restored before agent lane references.
         self.allocator
             .rebuild_building_site_clients(self.zoning.config.zone_cell_m);
         self.households = loaded.households;

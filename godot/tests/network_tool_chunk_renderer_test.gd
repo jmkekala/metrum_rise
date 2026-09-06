@@ -5,6 +5,7 @@ extends SceneTree
 
 const NetworkRendererScript := preload("res://scripts/renderers/network_renderer.gd")
 const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
+const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const LAYERS := ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
 const CHUNK_SPAN_M := 510.0
 const CHUNK_ORIGIN_X_M := 125.5
@@ -182,12 +183,30 @@ class TestRoadTool:
 	func drain_pending_border_checks() -> void:
 		border_check_count += 1
 
+class MockRoadCandidateSimulation:
+	extends MockSimulation
+	var zoning_revision: int = 1
+	var validation: Dictionary = {}
+	var validation_calls: int = 0
+
+	func get_zoning_overlay_revision() -> int:
+		return zoning_revision
+
+	func validate_road_candidate_with_snap(_points, _fwd, _bkw, _snap) -> Dictionary:
+		validation_calls += 1
+		return validation.duplicate(true)
+
+	func validate_road_candidate_for_commit_with_snap(_points, _fwd, _bkw, _snap) -> Dictionary:
+		validation_calls += 1
+		return validation.duplicate(true)
+
 var _failures: int = 0
 
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	_test_road_parcel_validation_cache()
 	_test_real_terrain_atomic_transaction()
 	var host := Node3D.new()
 	root.add_child(host)
@@ -827,7 +846,7 @@ func _engineered_terrain_payload(key: Vector2i, generation: int) -> Dictionary:
 	var payload := _terrain_payload_metadata(key, generation, true)
 	payload.merge({
 		"terrain_cdt_status": "ok",
-		"terrain_cdt_contract_revision": 4,
+		"terrain_cdt_contract_revision": TerrainRendererScript.TERRAIN_CDT_CONTRACT_REVISION,
 		"terrain_cdt_mesh_suppressed": false,
 		"terrain_mesh_vertices": PackedVector3Array([
 			Vector3(-0.5, 0.0, -0.5),
@@ -903,6 +922,32 @@ func _tombstone(chunk_x: int, chunk_z: int) -> Dictionary:
 		"chunk_z": chunk_z,
 		"removed": true,
 	}
+
+func _test_road_parcel_validation_cache() -> void:
+	var simulation := MockRoadCandidateSimulation.new()
+	simulation.generation = 1
+	var tool = RoadToolScript.new()
+	tool.simulation_node = simulation
+	var points := PackedVector3Array([Vector3.ZERO, Vector3(50.0, 0.0, 0.0)])
+	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap", "zoning_revision": 1}
+	var blocked: Dictionary = tool._candidate_validation_for_points(points)
+	_expect(not blocked["is_valid"], "parcel conflicts must invalidate the road preview")
+	_expect(tool._preview_invalid_text(blocked).contains("zoning"), "parcel conflicts must explain the rejection")
+	simulation.zoning_revision = 2
+	simulation.validation = {"is_valid": true, "zoning_revision": 2, "surface_generation": 1}
+	_expect(tool._candidate_validation_for_points(points)["is_valid"], "removing zoning must invalidate the blocked candidate cache")
+	tool._remember_preview_surface(points, simulation.validation)
+	simulation.zoning_revision = 3
+	simulation.validation = {"is_valid": false, "invalid_reason": "parcel_overlap", "zoning_revision": 3}
+	_expect(not tool._commit_validation_for_points(points)["is_valid"], "new zoning must invalidate an exact cached commit verdict")
+	tool._clear_preview_cache()
+	simulation.validation = {"is_valid": false, "is_pending": true}
+	tool._candidate_validation_for_points(points)
+	_expect(tool._candidate_cache_validation.is_empty(), "a busy parcel check must remain retryable")
+	simulation.validation = {"is_valid": true, "zoning_revision": 3}
+	_expect(tool._candidate_validation_for_points(points)["is_valid"], "the next parcel check must recover after lock contention")
+	tool.free()
+	simulation.free()
 
 func _expect(condition: bool, message: String) -> void:
 	if condition:

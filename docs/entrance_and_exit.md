@@ -735,6 +735,13 @@ That is a meaningful increase, but it is still cheap compared to the cost of kee
 
 ##### Save/load and lifecycle impact
 
+Save format 58 remaps both planned lane IDs through the saved directed lane identities, alongside
+the active lane. Building entrances rebuild using the borrowed asset catalogue before agent
+restoration; no catalogue clone is required. Network and ingress trips may have no origin attach
+after a network replan, but must retain a valid destination detach. Version 57 destination lanes
+are reconstructed from the target building's legal frontage lanes and planned directed node;
+stale runtime-array IDs are never interpreted as rebuilt lane IDs.
+
 The SoA migration requires coordinated updates in all agent lifecycle code:
 
 - `spawn_housed_agent()` and `spawn_border_arrival_agent()`

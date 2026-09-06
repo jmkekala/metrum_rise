@@ -708,6 +708,7 @@ pub(super) fn load_zoning(
     let mut quarantined_parcels = Vec::new();
     let mut road_overlap_count = 0usize;
     let mut existing_overlap_count = 0usize;
+    let mut frontage_out_of_bounds_count = 0usize;
     let mut stmt = conn.prepare(
         "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels ORDER BY parcel_id",
     )?;
@@ -720,22 +721,31 @@ pub(super) fn load_zoning(
         let frontage_m: f32 = row.get(4)?;
         let depth_m: f32 = row.get(5)?;
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
-        let (overlaps_road, overlaps_existing) = zoning
-            .restore_saved_parcel_from_attachment(
-                parcel_id,
-                edge_idx,
-                side,
-                frontage_t,
-                frontage_m,
-                depth_m,
-                profile_runtime_id,
-                graph,
-            )
-            .map_err(|err| {
-                SaveLoadError::custom(format!(
+        let restored = zoning.restore_saved_parcel_from_attachment(
+            parcel_id,
+            edge_idx,
+            side,
+            frontage_t,
+            frontage_m,
+            depth_m,
+            profile_runtime_id,
+            graph,
+        );
+        let (overlaps_road, overlaps_existing) = match restored {
+            Ok(overlaps) => overlaps,
+            Err(crate::simulation::zoning::ParcelPlacementError::FrontageOutOfBounds) => {
+                // Older curved-run spacing could advance beyond an edge endpoint. Use the
+                // existing quarantine lifecycle so no building retains an illegal attachment.
+                quarantined_parcels.push(parcel_id);
+                frontage_out_of_bounds_count += 1;
+                continue;
+            }
+            Err(err) => {
+                return Err(SaveLoadError::custom(format!(
                     "invalid saved parcel parcel_id={parcel_id} edge_id={edge_idx} side={side} frontage_t={frontage_t:.6}: {err:?}"
-                ))
-            })?;
+                )));
+            }
+        };
         if overlaps_road || overlaps_existing {
             quarantined_parcels.push(parcel_id);
         }
@@ -744,12 +754,13 @@ pub(super) fn load_zoning(
         }
         existing_overlap_count += usize::from(overlaps_existing);
     }
-    if road_overlap_count > 0 || existing_overlap_count > 0 {
+    if !quarantined_parcels.is_empty() {
         crate::debug_log!(
             "save",
-            "legacy_saved_parcel_quarantine road_overlaps={} existing_overlaps={}",
+            "legacy_saved_parcel_quarantine road_overlaps={} existing_overlaps={} frontage_out_of_bounds={}",
             road_overlap_count,
-            existing_overlap_count
+            existing_overlap_count,
+            frontage_out_of_bounds_count
         );
     }
     Ok((zoning, quarantined_parcels))

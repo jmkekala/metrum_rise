@@ -258,7 +258,7 @@ impl SimulationNode {
             );
 
             let save_path = "benchmark.sav";
-            match core.save_game_internal(save_path) {
+            match core.save_game_internal(save_path, None) {
                 Ok(()) => godot_print!(
                     "[gen] Saved to '{}'  total: {:.1}s",
                     save_path,
@@ -282,7 +282,7 @@ impl SimulationNode {
         {
             let mut core = self.core.lock().unwrap();
             match core.load_game_internal(save_path) {
-                Ok(()) => godot_print!(
+                Ok(_) => godot_print!(
                     "[bench] Loaded: {:.2}s  RSS {}MB  edges={} lanes={}",
                     t0.elapsed().as_secs_f32(),
                     rss_mb(),

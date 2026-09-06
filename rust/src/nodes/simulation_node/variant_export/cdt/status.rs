@@ -132,6 +132,15 @@ impl SimulationNode {
                     })
                     .then_some("terrain_cdt_constraint_conflicts")
             })
+            .or_else(|| {
+                cached.mesh_buffers.as_ref().and_then(|buffers| {
+                    Self::terrain_cdt_output_is_pathological(
+                        buffers.terrain_max_face_slope_ratio,
+                        buffers.terrain_longest_triangle_edge_m,
+                    )
+                    .then_some("terrain_cdt_pathological_output")
+                })
+            })
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_clip_input_failure_label(
