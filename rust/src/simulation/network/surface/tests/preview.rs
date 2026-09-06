@@ -73,7 +73,6 @@ fn preview_matches_committed_sections_on_flat_terrain() {
     assert!(preview.is_valid);
     assert_eq!(preview.compiled_sections, committed_sections);
     assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
-    assert_preview_vertices_use_solved_section_height_keys(&preview);
 }
 
 #[test]
@@ -232,6 +231,18 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
     ];
 
     for (stroke_idx, stroke) in strokes.into_iter().enumerate() {
+        let mut cold_surface = network.road_surface.clone();
+        cold_surface.compiled_visual_node_topologies.clear();
+        let (cold_preview, cold_reuse) = cold_surface
+            .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                &stroke,
+                1,
+                1,
+                &terrain,
+                &graph,
+                &cold_surface,
+                true,
+            );
         let (preview, topology_reuse) = network
             .road_surface
             .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
@@ -243,6 +254,10 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
                 &network.road_surface,
                 true,
             );
+        assert_eq!(
+            preview, cold_preview,
+            "seeded preview must match cold validation"
+        );
         assert!(
             preview.is_valid,
             "double-T stroke {stroke_idx} must validate: {:?}",
@@ -281,10 +296,24 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
         dirty_edges.extend(regrade_changed_edges);
         graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
         network.mark_surface_dirty_from_sets(&graph, &dirty_edges, &affected_nodes);
+        let mut cold_commit = network.road_surface.clone();
+        cold_commit.compiled_visual_node_topologies.clear();
+        cold_commit.enqueue_preview_topology_reuse(cold_reuse.unwrap());
+        cold_commit.compile_dirty(&graph, &terrain);
         network
             .road_surface
             .enqueue_preview_topology_reuse(topology_reuse);
         network.road_surface.compile_dirty(&graph, &terrain);
+
+        assert_eq!(
+            network.road_surface.compiled_visual_node_pieces,
+            cold_commit.compiled_visual_node_pieces,
+            "seeded node geometry and provenance must match cold preview artifacts"
+        );
+        assert_eq!(
+            network.road_surface.compiled_visual_span_pieces,
+            cold_commit.compiled_visual_span_pieces,
+        );
 
         assert_eq!(
             network.road_surface.last_reused_span_topology_count, offered_spans,

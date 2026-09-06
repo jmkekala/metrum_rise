@@ -53,6 +53,7 @@ var _preview_request_snap_to_roads: bool = true
 var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
+var _preview_input_dirty: bool = false
 var _preview_result_pending: bool = false
 var _preview_idle_exact_delay_sec: float = 0.0
 var _preview_exact_waiting: bool = false
@@ -63,17 +64,13 @@ var _candidate_cache_bkw_lanes: int = -1
 var _candidate_cache_snap_to_roads: bool = true
 var _candidate_cache_surface_generation: int = -1
 var _last_snap_to_roads_enabled: bool = true
+var _road_preview_material: ShaderMaterial
 
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
 const ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC := 0.025
-const ROAD_PREVIEW_RENDER_OFFSET_M := 0.08
-const ROAD_PREVIEW_LANE_WIDTH_M := 3.5
-const ROAD_PREVIEW_SIDEWALK_WIDTH_M := 1.5
-const ROAD_PREVIEW_MIN_WIDTH_M := 2.0
 const MAP_BORDER_SNAP_DIST_M := 25.0
-const ROAD_NETWORK_SNAP_CONFIRM_EPS_M := 0.25
 const ROAD_NETWORK_SNAP_RELEASE_DIST_M := 8.0
 const ROAD_SELF_SNAP_DIST_M := 2.5
 
@@ -83,13 +80,14 @@ const ROAD_SELF_SNAP_DIST_M := 2.5
 var _start_tangent_angle: float = 0.0
 # True when a real road tangent was found at start_pos (false = open terrain, show world angle).
 var _has_road_tangent: bool = false
-var _sticky_network_snap_active: bool = false
-var _sticky_network_snap_pos: Vector3 = Vector3.ZERO
+# The Rust cursor result retains a node/edge target only within its snapshot generation.
+var _sticky_network_snap: Dictionary = {}
 
 func _ready():
 	super._ready()
 	if blueprint_mesh:
-		blueprint_mesh.position.y = ROAD_PREVIEW_RENDER_OFFSET_M
+		_road_preview_material = WorldMaterials.road_preview_material()
+		blueprint_mesh.material_override = _road_preview_material
 	_road_debug_enabled = _road_debug_is_enabled()
 	_hud_canvas = CanvasLayer.new()
 	_hud_canvas.layer = 10
@@ -105,7 +103,12 @@ func _ready():
 	_hud_canvas.add_child(_info_label)
 
 func _process(delta):
+	var previous_mouse_pos := _last_world_mouse_pos
+	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
+	# The base tool has now resolved this frame's pointer, including camera-only movement.
+	if current_path != null and _has_last_world_mouse_pos and (not had_mouse_pos or previous_mouse_pos != _last_world_mouse_pos):
+		_queue_preview_update()
 	if not active:
 		_clear_sticky_network_snap()
 	var snap_to_roads := _snap_to_roads_enabled()
@@ -115,10 +118,15 @@ func _process(delta):
 			_clear_sticky_network_snap()
 		_clear_preview_cache()
 		if current_path != null:
-			_preview_update_pending = true
+			_queue_preview_update()
 	if current_path != null and not _preview_zoning_revision_is_current(_candidate_cache_validation):
 		_preview_update_pending = true
 	_preview_idle_exact_delay_sec = maxf(_preview_idle_exact_delay_sec - delta, 0.0)
+	if _preview_input_dirty:
+		_preview_input_dirty = false
+		_preview_update_pending = true
+		_preview_exact_waiting = true
+		_preview_idle_exact_delay_sec = ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC
 	if (
 		current_path != null
 		and _preview_exact_waiting
@@ -175,8 +183,7 @@ func adjust_altitude(delta: float):
 func _unhandled_input(event):
 	if _scripted_pointer_enabled:
 		return
-	if active and event is InputEventMouseMotion:
-		_queue_preview_update()
+	# Pointer motion is sampled by _process, after the base tool resolves the current frame.
 
 	# G toggle works whenever the road tool is the active tool (not just mid-draw).
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -195,6 +202,9 @@ func _handle_click():
 	var state_before: int = current_state
 	var mouse_start_us := Time.get_ticks_usec()
 	var pos = get_world_mouse_pos()
+	# A click can arrive before _process: commit the click's fresh cursor, not last frame's.
+	_last_world_mouse_pos = pos
+	_has_last_world_mouse_pos = is_valid
 	var mouse_ms := float(Time.get_ticks_usec() - mouse_start_us) / 1000.0
 	var tangent_ms := 0.0
 	var ghost_queue_ms := 0.0
@@ -245,12 +255,14 @@ func _handle_click():
 			current_path.curve.bake_interval = 0.5
 			current_path.curve.up_vector_enabled = false # Prevent 'looking_at' errors on degenerate paths
 			add_child(current_path)
+			_queue_preview_update()
 			path_ms = float(Time.get_ticks_usec() - path_start_us) / 1000.0
 			
 		State.SETTING_CONTROL:
 			control_pos = pos
 			_clear_sticky_network_snap()
 			current_state = State.SETTING_END
+			_queue_preview_update()
 			
 		State.SETTING_END:
 			var commit_start_us := Time.get_ticks_usec()
@@ -272,9 +284,12 @@ func _update_preview():
 	if current_path == null: return
 	var points := _refresh_preview_curve()
 	var validation := _candidate_validation_for_points(points)
+	is_valid = bool(validation.get("is_valid", false))
+	if is_valid and _draw_blueprint(points, validation):
+		return
 	_draw_candidate_preview(points, validation)
-	if bool(validation.get("is_valid", false)):
-		_draw_blueprint(points, validation)
+	if not is_valid and not bool(validation.get("is_pending", false)):
+		_preview_exact_waiting = false
 
 func _refresh_preview_curve() -> PackedVector3Array:
 	if current_path == null:
@@ -310,17 +325,8 @@ func _refresh_preview_curve() -> PackedVector3Array:
 func _queue_preview_update() -> void:
 	if current_path == null:
 		return
-	var points := _refresh_preview_curve()
-	var validation := _candidate_validation_for_points(points)
-	_draw_candidate_preview(points, validation)
-	if not bool(validation.get("is_valid", false)):
-		_preview_update_pending = bool(validation.get("is_pending", false))
-		_preview_exact_waiting = false
-		_preview_idle_exact_delay_sec = 0.0
-		return
-	_preview_update_pending = false
-	_preview_exact_waiting = true
-	_preview_idle_exact_delay_sec = ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC
+	# Coalesce input bursts; validation, curve baking and mesh upload happen once in _process.
+	_preview_input_dirty = true
 
 func _candidate_validation_for_points(points: PackedVector3Array) -> Dictionary:
 	if points.size() < 2:
@@ -435,13 +441,15 @@ func _poll_pending_preview_result() -> void:
 	else:
 		_draw_candidate_preview(points, validation)
 
-func _draw_blueprint(points: PackedVector3Array, validation: Dictionary) -> void:
+func _draw_blueprint(points: PackedVector3Array, validation: Dictionary) -> bool:
 	var preview := _get_compiled_preview_surface()
 	if preview.is_empty():
-		return
-
-	if not _draw_compiled_preview_surface(points, preview, validation):
-		_draw_candidate_preview(points, validation)
+		return false
+	if not bool(preview.get("is_valid", false)):
+		_remember_candidate_validation(points, preview)
+		_draw_candidate_preview(points, preview)
+		return true
+	return _draw_compiled_preview_surface(points, preview, validation)
 
 func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary) -> void:
 	if bool(validation.get("is_pending", false)):
@@ -469,63 +477,54 @@ func _draw_compiled_preview_surface(
 		return false
 
 	var preview_request_id := int(preview.get("request_id", 0))
+	_update_road_preview_material(validation)
 	if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
 		_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation)
 		return true
 
-	var arr_mesh = ArrayMesh.new()
-	var arrays = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = surface_vertices
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	blueprint_mesh.mesh = arr_mesh
+	if not _upload_road_preview_mesh(preview):
+		return false
 	_preview_drawn_request_id = preview_request_id
 	_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation)
 	return true
 
 func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionary = {}) -> bool:
-	if points.size() < 2:
+	_update_road_preview_material(preview)
+	if not _upload_road_preview_mesh(preview):
+		_clear_preview_visual()
 		return false
+	_preview_drawn_request_id = 0
+	var prepared: PackedVector3Array = preview.get("prepared_points", points)
+	_update_preview_measurement_label(prepared, preview)
+	return true
 
-	var half_width := _coarse_preview_half_width_m()
-	var surface_vertices := PackedVector3Array()
-	for index in range(points.size() - 1):
-		var a: Vector3 = points[index]
-		var b: Vector3 = points[index + 1]
-		var dir := b - a
-		dir.y = 0.0
-		if dir.length_squared() <= 0.0001:
-			continue
-		dir = dir.normalized()
-		var side := Vector3(-dir.z, 0.0, dir.x) * half_width
-		var a_left := a + side
-		var a_right := a - side
-		var b_left := b + side
-		var b_right := b - side
-		surface_vertices.append(a_left)
-		surface_vertices.append(b_left)
-		surface_vertices.append(a_right)
-		surface_vertices.append(a_right)
-		surface_vertices.append(b_left)
-		surface_vertices.append(b_right)
-
-	if surface_vertices.size() < 3:
+func _upload_road_preview_mesh(preview: Dictionary) -> bool:
+	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
+	var uvs: PackedVector2Array = preview.get("surface_uvs", PackedVector2Array())
+	var colors: PackedColorArray = preview.get("surface_colors", PackedColorArray())
+	if vertices.size() < 3 or vertices.size() % 3 != 0 or uvs.size() != vertices.size() or colors.size() != vertices.size():
 		return false
-
 	var arr_mesh := ArrayMesh.new()
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = surface_vertices
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_COLOR] = colors
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	blueprint_mesh.mesh = arr_mesh
-	_preview_drawn_request_id = 0
-	_update_preview_measurement_label(points, preview)
 	return true
 
-func _coarse_preview_half_width_m() -> float:
-	var lane_count: int = max(1, fwd_lanes + bkw_lanes)
-	var road_width := maxf(ROAD_PREVIEW_MIN_WIDTH_M, float(lane_count) * ROAD_PREVIEW_LANE_WIDTH_M)
-	return road_width * 0.5 + ROAD_PREVIEW_SIDEWALK_WIDTH_M
+func _update_blueprint_visuals() -> void:
+	# Road status is applied with its matching geometry, after this frame's validation.
+	pass
+
+func _update_road_preview_material(preview: Dictionary) -> void:
+	if _road_preview_material == null:
+		return
+	_road_preview_material.set_shader_parameter("forward_lanes", fwd_lanes)
+	_road_preview_material.set_shader_parameter("backward_lanes", bkw_lanes)
+	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
+	_road_preview_material.set_shader_parameter("placement_state", state)
 
 func _update_preview_measurement_label(points: PackedVector3Array, preview: Dictionary = {}) -> void:
 	if not _info_label or points.size() < 2:
@@ -614,6 +613,8 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 
 func _commit_segment(end_pos: Vector3) -> bool:
 	var total_start_us := Time.get_ticks_usec()
+	_last_world_mouse_pos = end_pos
+	_has_last_world_mouse_pos = true
 
 	var baked_start_us := Time.get_ticks_usec()
 	var points := _refresh_preview_curve()
@@ -720,6 +721,7 @@ func cancel_road():
 func mark_network_topology_dirty() -> void:
 	mark_network_nodes_dirty()
 	_clear_sticky_network_snap()
+	_queue_preview_update()
 	_ghost_guides_dirty = true
 	_request_deferred_ghost_rebuild()
 
@@ -822,8 +824,7 @@ func get_world_mouse_pos() -> Vector3:
 		_start_tangent_angle,
 		_ghost_enabled,
 		MAP_BORDER_SNAP_DIST_M,
-		_sticky_network_snap_active,
-		_sticky_network_snap_pos,
+		_sticky_network_snap,
 		ROAD_NETWORK_SNAP_RELEASE_DIST_M
 	)
 	if pos_variant == null:
@@ -832,29 +833,12 @@ func get_world_mouse_pos() -> Vector3:
 		is_valid = false
 		return Vector3.ZERO
 	is_valid = true
-	var pos: Vector3 = pos_variant
-	if not _snap_to_roads_enabled():
+	var pos: Vector3 = pos_variant["position"]
+	if not _snap_to_roads_enabled() or not _can_stick_to_network_snap(pos):
 		_clear_sticky_network_snap()
 		return pos
-	_update_sticky_network_snap(pos)
+	_sticky_network_snap = pos_variant
 	return pos
-
-func _update_sticky_network_snap(pos: Vector3) -> void:
-	if not _snap_to_roads_enabled():
-		_clear_sticky_network_snap()
-		return
-	if not _can_stick_to_network_snap(pos):
-		_clear_sticky_network_snap()
-		return
-	var network_pos = simulation_node.get_closest_network_point(pos, ROAD_NETWORK_SNAP_CONFIRM_EPS_M)
-	if network_pos == null:
-		_clear_sticky_network_snap()
-		return
-	if _xz_distance(pos, network_pos) > ROAD_NETWORK_SNAP_CONFIRM_EPS_M:
-		_clear_sticky_network_snap()
-		return
-	_sticky_network_snap_active = true
-	_sticky_network_snap_pos = pos
 
 func _can_stick_to_network_snap(pos: Vector3) -> bool:
 	if current_state == State.SETTING_END:
@@ -865,8 +849,7 @@ func _can_stick_to_network_snap(pos: Vector3) -> bool:
 	return true
 
 func _clear_sticky_network_snap() -> void:
-	_sticky_network_snap_active = false
-	_sticky_network_snap_pos = Vector3.ZERO
+	_sticky_network_snap.clear()
 
 func _xz_distance(a: Vector3, b: Vector3) -> float:
 	var dx := a.x - b.x
@@ -1010,6 +993,7 @@ func _preview_request_matches(points: PackedVector3Array) -> bool:
 	return _road_surface_points_match(points, _preview_request_points)
 
 func _clear_preview_cache() -> void:
+	_preview_input_dirty = false
 	_preview_cache_points = PackedVector3Array()
 	_preview_cache_surface = {}
 	_preview_cache_fwd_lanes = -1
@@ -1032,13 +1016,8 @@ func _clear_preview_cache() -> void:
 	_preview_idle_exact_delay_sec = 0.0
 
 func _road_surface_points_match(left: PackedVector3Array, right: PackedVector3Array) -> bool:
-	if left.size() != right.size():
-		return false
-	var epsilon_sq := ROAD_SURFACE_POINT_EPS_M * ROAD_SURFACE_POINT_EPS_M
-	for index in range(left.size()):
-		if left[index].distance_squared_to(right[index]) > epsilon_sq:
-			return false
-	return true
+	# A completed preview must describe the current candidate, even for sub-5 cm pointer motion.
+	return left == right
 
 func _road_surface_points_from_curve(curve: Curve3D) -> PackedVector3Array:
 	var raw_points: PackedVector3Array = curve.get_baked_points()

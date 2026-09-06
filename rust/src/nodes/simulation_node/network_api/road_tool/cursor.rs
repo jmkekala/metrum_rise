@@ -3,6 +3,7 @@
 //! Cursor road-tool Godot API methods.
 
 use super::super::super::*;
+use crate::simulation::network::interaction::{NetworkSnap, NetworkSnapTarget};
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -27,6 +28,8 @@ impl SimulationNode {
     /// This combines visible-surface picking, angle snapping, network snapping, optional
     /// ghost-guide snapping, map-border snapping, and self-snapping so the Godot editor loop
     /// does not perform several bridge calls for every mouse frame.
+    /// Returns position, snap node/edge ids (-1 when absent), and the snapshot generation.
+    /// Pass the previous result back as `previous_snap` to retain a generation-checked target.
     #[func]
     pub fn get_road_tool_cursor_pos(
         &self,
@@ -41,8 +44,7 @@ impl SimulationNode {
         start_tangent_angle: f32,
         ghost_enabled: bool,
         border_snap_dist_m: f32,
-        sticky_network_snap_active: bool,
-        sticky_network_snap_pos: Vector3,
+        previous_snap: VarDictionary,
         sticky_network_snap_release_dist_m: f32,
     ) -> Variant {
         let query = self.road_tool_query_snapshot.read().unwrap();
@@ -75,7 +77,7 @@ impl SimulationNode {
                 hit = Self::road_tool_snap_to_border(hit, half_w, half_h);
                 hit.y =
                     Self::road_tool_cursor_height_at_xz(&query, hit.x, hit.z, altitude_offset_m);
-                return hit.to_variant();
+                return Self::road_tool_cursor_result(hit, None, query.surface_generation);
             }
         };
 
@@ -101,40 +103,34 @@ impl SimulationNode {
 
         let snap_to_existing_roads = !shift_pressed;
 
-        if snap_to_existing_roads
-            && Self::road_tool_should_keep_sticky_network_snap(
+        if snap_to_existing_roads {
+            let previous_id = |key| {
+                previous_snap
+                    .get(key)
+                    .and_then(|value| value.try_to::<i64>().ok())
+                    .unwrap_or(-1)
+            };
+            if let Some(snap) = Self::road_tool_cursor_network_snap(
                 &query.region_graph,
                 pos,
-                sticky_network_snap_active,
-                sticky_network_snap_pos,
+                previous_id("snap_edge"),
+                previous_id("snap_node"),
+                previous_id("surface_generation"),
+                query.surface_generation,
                 sticky_network_snap_release_dist_m,
-            )
-        {
-            let mut sticky_pos = sticky_network_snap_pos;
-            sticky_pos.y = Self::road_tool_cursor_height_at_xz(
-                &query,
-                sticky_pos.x,
-                sticky_pos.z,
-                altitude_offset_m,
-            );
-            return sticky_pos.to_variant();
-        }
-
-        if snap_to_existing_roads {
-            if let Some(mut snapped_pos) =
-                crate::simulation::network::interaction::get_closest_point_xz(
-                    &query.region_graph,
-                    pos,
-                    5.0,
-                )
-            {
+            ) {
+                let mut snapped_pos = snap.position;
                 snapped_pos.y = Self::road_tool_cursor_height_at_xz(
                     &query,
                     snapped_pos.x,
                     snapped_pos.z,
                     altitude_offset_m,
                 );
-                return snapped_pos.to_variant();
+                return Self::road_tool_cursor_result(
+                    snapped_pos,
+                    Some(snap.target),
+                    query.surface_generation,
+                );
             }
         }
 
@@ -149,49 +145,83 @@ impl SimulationNode {
                 10.0,
                 altitude_offset_m,
             ) {
-                return ghost_snap.to_variant();
+                return Self::road_tool_cursor_result(ghost_snap, None, query.surface_generation);
             }
         }
 
         if Self::road_tool_is_near_border(pos, half_w, half_h, border_snap_dist) {
             pos = Self::road_tool_snap_to_border(pos, half_w, half_h);
             pos.y = Self::road_tool_cursor_height_at_xz(&query, pos.x, pos.z, altitude_offset_m);
-            return pos.to_variant();
+            return Self::road_tool_cursor_result(pos, None, query.surface_generation);
         }
 
         if active {
             if pos.distance_to(start_pos) < 2.5 {
-                return start_pos.to_variant();
+                return Self::road_tool_cursor_result(start_pos, None, query.surface_generation);
             }
             if current_state == 2 && pos.distance_to(control_pos) < 2.5 {
-                return control_pos.to_variant();
+                return Self::road_tool_cursor_result(control_pos, None, query.surface_generation);
             }
         }
 
-        pos.to_variant()
+        Self::road_tool_cursor_result(pos, None, query.surface_generation)
     }
 
-    pub(in crate::nodes::simulation_node) fn road_tool_should_keep_sticky_network_snap(
+    fn road_tool_cursor_result(
+        position: Vector3,
+        target: Option<NetworkSnapTarget>,
+        generation: u64,
+    ) -> Variant {
+        let mut result = VarDictionary::new();
+        result.set("position", position);
+        result.set(
+            "snap_edge",
+            match target {
+                Some(NetworkSnapTarget::Edge(id)) => id as i64,
+                _ => -1,
+            },
+        );
+        result.set(
+            "snap_node",
+            match target {
+                Some(NetworkSnapTarget::Node(id)) => i64::from(id),
+                _ => -1,
+            },
+        );
+        result.set(
+            "surface_generation",
+            i64::try_from(generation).unwrap_or(-1),
+        );
+        result.to_variant()
+    }
+
+    pub(in crate::nodes::simulation_node) fn road_tool_cursor_network_snap(
         graph: &crate::simulation::network::graph::RegionGraph,
         cursor_pos: Vector3,
-        sticky_active: bool,
-        sticky_pos: Vector3,
+        edge_id: i64,
+        node_id: i64,
+        target_generation: i64,
+        surface_generation: u64,
         release_dist_m: f32,
-    ) -> bool {
-        if !sticky_active || release_dist_m <= 0.0 {
-            return false;
-        }
-        let dx = cursor_pos.x - sticky_pos.x;
-        let dz = cursor_pos.z - sticky_pos.z;
-        if dx * dx + dz * dz > release_dist_m * release_dist_m {
-            return false;
-        }
-        crate::simulation::network::interaction::get_closest_point_xz(graph, sticky_pos, 0.25)
-            .is_some_and(|network_pos| {
-                let dx = network_pos.x - sticky_pos.x;
-                let dz = network_pos.z - sticky_pos.z;
-                dx * dx + dz * dz <= 0.25 * 0.25
+    ) -> Option<NetworkSnap> {
+        use crate::simulation::network::interaction::{
+            get_closest_network_snap_xz, retained_network_snap_xz,
+        };
+        // IDs are snapshot-local: never reuse a target after topology/generation replacement.
+        let target = (u64::try_from(target_generation).ok() == Some(surface_generation))
+            .then(|| {
+                u32::try_from(node_id)
+                    .ok()
+                    .map(NetworkSnapTarget::Node)
+                    .or_else(|| usize::try_from(edge_id).ok().map(NetworkSnapTarget::Edge))
             })
+            .flatten();
+        if let Some(snap) = target.and_then(|target| {
+            retained_network_snap_xz(graph, cursor_pos, target, 5.0, release_dist_m)
+        }) {
+            return Some(snap);
+        }
+        get_closest_network_snap_xz(graph, cursor_pos, 5.0)
     }
 
     pub(in crate::nodes::simulation_node) fn road_tool_closest_cursor_hit(

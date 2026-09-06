@@ -2,7 +2,6 @@
 
 //! Temporary road preview compilation from conditioned edge input.
 
-use super::super::backend::road_vec3_to_godot;
 use super::super::{
     RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSection, RoadSurfaceSystem,
     RoadSurfaceVisualNodePiece, SAMPLE_EPSILON_M,
@@ -22,6 +21,7 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 const PREVIEW_VALID_REASON: &str = "";
 const PREVIEW_BRIDGE_CLEARANCE_REASON: &str = "bridge_clearance";
@@ -31,6 +31,14 @@ const PREVIEW_SAME_NODE_REASON: &str = "same_node_connection";
 const PREVIEW_TOO_SHORT_REASON: &str = "too_short";
 const PREVIEW_MIN_ENDPOINT_SEGMENT_M: f32 = 2.0;
 const PREVIEW_BRIDGE_GROUND_TOLERANCE_M: f32 = 0.05;
+
+struct SurfaceValidationGraph {
+    graph: RegionGraph,
+    new_edge_idx: usize,
+    required_edge_ids: Vec<usize>,
+    required_node_ids: Vec<u32>,
+    source_node_ids: HashMap<u32, u32>,
+}
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
 #[derive(Clone, Debug, PartialEq)]
@@ -97,8 +105,6 @@ pub struct PreviewRoadSurfaceResult {
     pub compiled_sections: Vec<RoadSurfaceSection>,
     /// Explicit visual node pieces for the temporary preview edge endpoints.
     pub compiled_visual_node_pieces: Vec<RoadSurfaceVisualNodePiece>,
-    /// Triangulated top-surface preview mesh vertices from the solved section geometry.
-    pub surface_vertices: Vec<Vector3>,
     /// Detailed validity state and machine-readable invalid reason.
     pub validation: RoadPreviewValidation,
     /// Preview validity after grade and bridge / tunnel clearance checks.
@@ -129,7 +135,6 @@ impl RoadSurfaceSystem {
                 prepared_points,
                 compiled_sections: Vec::new(),
                 compiled_visual_node_pieces: Vec::new(),
-                surface_vertices: Vec::new(),
                 validation: RoadPreviewValidation::valid(0.0),
                 is_valid: true,
             };
@@ -173,7 +178,6 @@ impl RoadSurfaceSystem {
                     .map(|piece| piece.as_ref().clone())
             })
             .collect();
-        let surface_vertices = self.build_preview_surface_vertices(&compiled_sections);
         let validation = Self::preview_surface_validation(
             edge_class,
             &prepared_points,
@@ -187,7 +191,6 @@ impl RoadSurfaceSystem {
             prepared_points,
             compiled_sections,
             compiled_visual_node_pieces,
-            surface_vertices,
             validation,
             is_valid,
         }
@@ -283,7 +286,7 @@ impl RoadSurfaceSystem {
             bkw_lanes,
             terrain,
         );
-        let (validation, topology_reuse) = self
+        let (validation, topology_reuse) = existing_surface
             .validate_prepared_road_input_against_graph_with_compile_reason_and_topology_reuse(
                 &prepared_input,
                 fwd_lanes,
@@ -312,7 +315,6 @@ impl RoadSurfaceSystem {
                 prepared_points,
                 compiled_sections: Vec::new(),
                 compiled_visual_node_pieces: Vec::new(),
-                surface_vertices: Vec::new(),
                 validation: RoadPreviewValidation::valid(0.0),
                 is_valid: true,
             };
@@ -331,7 +333,6 @@ impl RoadSurfaceSystem {
         ));
 
         let compiled_sections = self.compile_edge_sections(&graph, edge_idx);
-        let surface_vertices = self.build_preview_surface_vertices(&compiled_sections);
         let validation = Self::preview_surface_validation(
             edge_class,
             &prepared_points,
@@ -345,7 +346,6 @@ impl RoadSurfaceSystem {
             prepared_points,
             compiled_sections,
             compiled_visual_node_pieces: Vec::new(),
-            surface_vertices,
             validation,
             is_valid,
         }
@@ -656,38 +656,6 @@ impl RoadSurfaceSystem {
         node_id.min(i32::MAX as u32) as i32
     }
 
-    fn build_preview_surface_vertices(&self, sections: &[RoadSurfaceSection]) -> Vec<Vector3> {
-        if sections.len() < 2 {
-            return Vec::new();
-        }
-
-        let mut vertices = Vec::new();
-        for pair in sections.windows(2) {
-            let profile_a = self.section_profile_world_points(&pair[0]);
-            let profile_b = self.section_profile_world_points(&pair[1]);
-            if profile_a.len() < 2 || profile_a.len() != profile_b.len() {
-                continue;
-            }
-
-            for index in 0..profile_a.len() - 1 {
-                let a0 = profile_a[index];
-                let a1 = profile_a[index + 1];
-                let b0 = profile_b[index];
-                let b1 = profile_b[index + 1];
-                vertices.extend_from_slice(&[
-                    road_vec3_to_godot(a0),
-                    road_vec3_to_godot(b0),
-                    road_vec3_to_godot(a1),
-                    road_vec3_to_godot(a1),
-                    road_vec3_to_godot(b0),
-                    road_vec3_to_godot(b1),
-                ]);
-            }
-        }
-
-        vertices
-    }
-
     fn preview_surface_validation(
         edge_class: EdgeClass,
         prepared_points: &[Vector3],
@@ -904,16 +872,21 @@ impl RoadSurfaceSystem {
             );
         }
 
-        let Some((validation_graph, new_edge_idx, required_edge_ids, required_node_ids)) = self
-            .build_surface_validation_graph(
-                prepared_points,
-                edge_class,
-                fwd_lanes,
-                bkw_lanes,
-                existing_graph,
-                extension,
-                endpoint_snap_enabled,
-            )
+        let Some(SurfaceValidationGraph {
+            graph: validation_graph,
+            new_edge_idx,
+            required_edge_ids,
+            required_node_ids,
+            source_node_ids,
+        }) = self.build_surface_validation_graph(
+            prepared_points,
+            edge_class,
+            fwd_lanes,
+            bkw_lanes,
+            existing_graph,
+            extension,
+            endpoint_snap_enabled,
+        )
         else {
             return (
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
@@ -942,6 +915,19 @@ impl RoadSurfaceSystem {
         // The validation graph is a bounded excerpt. Preserve successful artifacts so failures
         // on synthetic frontier nodes can be separated from missing candidate-owned surfaces.
         validation_surface.retain_partial_validation_artifacts = true;
+        // Only immutable topology candidates cross into the transient compiler. Fresh local
+        // mouths, exact rail/height keys and contributor checks still decide all reuse. O(N)
+        // lookups over the copied neighborhood, independent of the resident network size.
+        for (source_node_id, local_node_id) in source_node_ids {
+            if validation_graph.get_valid_node(local_node_id) != local_node_id {
+                continue;
+            }
+            if let Some(topology) = self.compiled_visual_node_topologies.get(&source_node_id) {
+                validation_surface
+                    .compiled_visual_node_topologies
+                    .insert(local_node_id, Arc::clone(topology));
+            }
+        }
         validation_surface.compile_validation_neighborhood_with_reason(
             &validation_graph,
             terrain,
@@ -1310,6 +1296,14 @@ impl RoadSurfaceSystem {
             None,
             true,
         )
+        .map(|validation| {
+            (
+                validation.graph,
+                validation.new_edge_idx,
+                validation.required_edge_ids,
+                validation.required_node_ids,
+            )
+        })
     }
 
     fn build_surface_validation_graph(
@@ -1321,7 +1315,7 @@ impl RoadSurfaceSystem {
         existing_graph: &RegionGraph,
         extension: Option<&RoadExtensionReprofile>,
         endpoint_snap_enabled: bool,
-    ) -> Option<(RegionGraph, usize, Vec<usize>, Vec<u32>)> {
+    ) -> Option<SurfaceValidationGraph> {
         if prepared_points.len() < 2 {
             return None;
         }
@@ -1419,12 +1413,13 @@ impl RoadSurfaceSystem {
         required_node_ids.sort_unstable();
         required_node_ids.dedup();
 
-        Some((
-            validation_graph,
+        Some(SurfaceValidationGraph {
+            graph: validation_graph,
             new_edge_idx,
             required_edge_ids,
             required_node_ids,
-        ))
+            source_node_ids: node_map,
+        })
     }
 
     fn validation_candidate_existing_edge_ids(

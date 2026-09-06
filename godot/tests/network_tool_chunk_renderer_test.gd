@@ -6,6 +6,7 @@ extends SceneTree
 const NetworkRendererScript := preload("res://scripts/renderers/network_renderer.gd")
 const TerrainRendererScript := preload("res://scripts/renderers/terrain.gd")
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
+const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const LAYERS := ["earthwork", "curb", "raised_step", "sidewalk", "road", "marking", "concrete"]
 const CHUNK_SPAN_M := 510.0
 const CHUNK_ORIGIN_X_M := 125.5
@@ -188,6 +189,8 @@ class MockRoadCandidateSimulation:
 	var zoning_revision: int = 1
 	var validation: Dictionary = {}
 	var validation_calls: int = 0
+	var preview_requests: int = 0
+	var completed_preview: Variant = null
 
 	func get_zoning_overlay_revision() -> int:
 		return zoning_revision
@@ -200,12 +203,58 @@ class MockRoadCandidateSimulation:
 		validation_calls += 1
 		return validation.duplicate(true)
 
+	func request_preview_road_surface_with_snap(_points, _fwd, _bkw, _snap) -> int:
+		preview_requests += 1
+		return preview_requests
+
+	func get_preview_road_surface_result(request_id: int) -> Variant:
+		if completed_preview != null and int(completed_preview["request_id"]) == request_id:
+			return completed_preview
+		return null
+
+class PointerRoadTool:
+	extends RoadToolScript
+	var pointer: Vector3 = Vector3.ZERO
+	var pointer_queries: int = 0
+	var coarse_draws: int = 0
+	var last_drawn_points := PackedVector3Array()
+	var clicked_points := PackedVector3Array()
+	var exact_draws: int = 0
+
+	func get_world_mouse_pos() -> Vector3:
+		pointer_queries += 1
+		is_valid = true
+		return pointer
+
+	func _update_blueprint_visuals() -> void:
+		pass
+
+	func _update_node_visuals() -> void:
+		pass
+
+	func _draw_coarse_preview_surface(points: PackedVector3Array, _preview: Dictionary = {}) -> bool:
+		coarse_draws += 1
+		last_drawn_points = points
+		return true
+
+	func _draw_compiled_preview_surface(points: PackedVector3Array, _preview: Dictionary, _validation: Dictionary) -> bool:
+		exact_draws += 1
+		last_drawn_points = points
+		return true
+
+	func _commit_validation_for_points(points: PackedVector3Array) -> Dictionary:
+		clicked_points = points
+		# Capture click geometry without placing a live road in this input-path regression.
+		return {"is_valid": false, "invalid_reason": "test_rejection"}
+
 var _failures: int = 0
 
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	_test_road_pointer_frame_updates()
+	await _test_native_road_cursor_contract()
 	_test_road_parcel_validation_cache()
 	_test_real_terrain_atomic_transaction()
 	var host := Node3D.new()
@@ -922,6 +971,179 @@ func _tombstone(chunk_x: int, chunk_z: int) -> Dictionary:
 		"chunk_z": chunk_z,
 		"removed": true,
 	}
+
+func _test_native_road_cursor_contract() -> void:
+	var host := Node3D.new()
+	root.add_child(host)
+	var simulation := SimulationNode.new()
+	simulation.name = "SimulationNode"
+	host.add_child(simulation)
+	_expect(simulation.create_blank_world(256.0, 256.0, 8.0, 128.0, 0.0), "cursor bridge fixture must create a flat world")
+	var previous: Dictionary = {}
+	for index in range(5):
+		var x := 30.0 + index * 0.1
+		var result: Variant = simulation.get_road_tool_cursor_pos(
+			Vector3(x, 100.0, 20.0), Vector3.DOWN, 0.0, false, 0,
+			Vector3.ZERO, Vector3.ZERO, false, 0.0, false, 25.0, previous, 8.0
+		)
+		_expect(result is Dictionary, "native cursor result must include position and target identity")
+		if result is Dictionary:
+			var position: Vector3 = result["position"]
+			_expect(absf(position.x - x) < 0.0001 and absf(position.z - 20.0) < 0.0001, "free cursor motion must remain continuous through the native bridge")
+			_expect(result["snap_edge"] == -1 and result["snap_node"] == -1, "free terrain must not retain a network target")
+			_expect(result["surface_generation"] == simulation.get_road_tool_surface_generation(), "cursor target must carry its source generation")
+			previous = result
+	await _test_native_road_preview_contract(simulation)
+	host.free()
+
+func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
+	var tool := RoadToolScript.new()
+	tool.blueprint_mesh = MeshInstance3D.new()
+	tool.add_child(tool.blueprint_mesh)
+	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
+	tool.blueprint_mesh.material_override = tool._road_preview_material
+	var points := PackedVector3Array([Vector3(-40.0, 0.0, -8.0), Vector3(0.0, 0.0, 8.0), Vector3(40.0, 0.0, -8.0)])
+	for lanes in [Vector2i(1, 1), Vector2i(3, 1), Vector2i(1, 0), Vector2i(0, 0)]:
+		tool.fwd_lanes = lanes.x
+		tool.bkw_lanes = lanes.y
+		var preview: Dictionary = simulation.validate_road_candidate_with_snap(points, lanes.x, lanes.y, false)
+		var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
+		var uvs: PackedVector2Array = preview.get("surface_uvs", PackedVector2Array())
+		var colors: PackedColorArray = preview.get("surface_colors", PackedColorArray())
+		_expect(not vertices.is_empty() and vertices.size() == uvs.size() and vertices.size() == colors.size(), "native moving preview must export material and lane coordinates with its geometry")
+		_expect(tool._draw_coarse_preview_surface(points, preview), "moving preview must upload a textured road mesh")
+		_expect(tool.blueprint_mesh.mesh.get_surface_count() == 1, "moving preview must remain a single draw surface")
+		for point in vertices:
+			_expect(point.y >= 0.149, "preview must float above the flat visual terrain")
+		if lanes == Vector2i.ZERO:
+			for uv in uvs:
+				_expect(absf(uv.y) <= 1.001, "zero-lane preview must be a 2-metre walkway, not a road plus sidewalks")
+	tool.fwd_lanes = 2
+	tool.bkw_lanes = 1
+	var request := simulation.request_preview_road_surface_with_snap(points, 2, 1, false)
+	var completed: Variant = null
+	var deadline := Time.get_ticks_msec() + 10000
+	while completed == null and Time.get_ticks_msec() < deadline:
+		completed = simulation.get_preview_road_surface_result(request)
+		await process_frame
+	_expect(completed is Dictionary, "native exact preview must finish")
+	if completed is Dictionary:
+		_expect(tool._draw_compiled_preview_surface(points, completed, completed), "exact preview must use the same textured display contract")
+		var mesh: Mesh = tool.blueprint_mesh.mesh
+		_expect(tool._draw_compiled_preview_surface(points, completed, completed) and tool.blueprint_mesh.mesh == mesh, "unchanged exact preview must not upload another mesh")
+		for state in [{"is_valid": true}, {"is_pending": true}, {"is_valid": false}]:
+			tool._update_road_preview_material(state)
+			var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
+			_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
+		if not OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE").is_empty():
+			await _capture_road_preview(tool.blueprint_mesh.mesh, tool._road_preview_material)
+	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
+		for lane_count in [1, 4]:
+			tool.fwd_lanes = lane_count
+			tool.bkw_lanes = lane_count
+			var timings: Array[int] = []
+			for iteration in range(220):
+				points[-1].x = 40.0 + float(iteration % 20) * 0.01
+				var start := Time.get_ticks_usec()
+				var preview: Dictionary = simulation.validate_road_candidate_with_snap(points, lane_count, lane_count, false)
+				tool._draw_coarse_preview_surface(points, preview)
+				if iteration >= 20:
+					timings.append(Time.get_ticks_usec() - start)
+			timings.sort()
+			print("ROAD_PREVIEW_TIMING lanes=%d samples=%d validation_and_upload_p50_us=%d p95_us=%d" % [lane_count * 2, timings.size(), timings[100], timings[190]])
+	tool.free()
+
+func _capture_road_preview(mesh: Mesh, material: ShaderMaterial) -> void:
+	# Optional real-renderer diagnostic. Normal headless regression runs do not render or save images.
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(960, 720)
+	viewport.own_world_3d = true
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(viewport)
+	var ground := MeshInstance3D.new()
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(200.0, 160.0)
+	ground.mesh = plane
+	var ground_mat := StandardMaterial3D.new()
+	ground_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	ground_mat.albedo_color = Color(0.22, 0.34, 0.18)
+	ground.material_override = ground_mat
+	viewport.add_child(ground)
+	for state in range(3):
+		var instance := MeshInstance3D.new()
+		instance.mesh = mesh
+		instance.position.z = float(state - 1) * 32.0
+		var copy := material.duplicate() as ShaderMaterial
+		copy.set_shader_parameter("placement_state", state)
+		instance.material_override = copy
+		viewport.add_child(instance)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.position = Vector3(35.0, 100.0, 100.0)
+	camera.look_at(Vector3.ZERO)
+	camera.current = true
+	for frame in range(5):
+		await process_frame
+	await RenderingServer.frame_post_draw
+	var result := viewport.get_texture().get_image().save_png(OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE"))
+	_expect(result == OK, "preview diagnostic image must save")
+	viewport.free()
+
+func _test_road_pointer_frame_updates() -> void:
+	var simulation := MockRoadCandidateSimulation.new()
+	simulation.generation = 1
+	simulation.validation = {"is_valid": true, "zoning_revision": 1, "surface_generation": 1}
+	var tool := PointerRoadTool.new()
+	tool.simulation_node = simulation
+	tool.active = true
+	tool.current_state = RoadToolScript.State.SETTING_END
+	tool.start_pos = Vector3.ZERO
+	tool.control_pos = Vector3.ZERO
+	tool.current_path = Path3D.new()
+	tool.current_path.curve = Curve3D.new()
+	tool.current_path.curve.bake_interval = 0.5
+	tool.add_child(tool.current_path)
+	tool._last_world_mouse_pos = Vector3(10.0, 0.0, 0.0)
+	tool._has_last_world_mouse_pos = true
+	for index in range(32):
+		tool.pointer = Vector3(20.0 + index, 0.0, 0.0)
+		tool._unhandled_input(InputEventMouseMotion.new())
+		tool._queue_preview_update()
+	_expect(simulation.validation_calls == 0 and tool.coarse_draws == 0, "input bursts must not validate or upload before the frame update")
+	tool._process(1.0 / 60.0)
+	_expect(tool.pointer_queries == 1, "the frame must resolve the cursor once")
+	_expect(simulation.validation_calls == 1 and tool.coarse_draws == 1, "32 queued updates must coalesce into one validation/draw")
+	_expect(tool.last_drawn_points[-1] == tool.pointer, "the preview must use this frame's pointer, not last frame's cache")
+	_expect(simulation.preview_requests == 0, "immediate feedback must not wait for exact compilation")
+	tool.pointer = Vector3(60.0, 0.0, 0.0)
+	tool._process(1.0 / 60.0)
+	_expect(tool.coarse_draws == 2 and tool.last_drawn_points[-1] == tool.pointer, "camera-only pointer movement must refresh the preview without a motion event")
+	tool._process(0.03)
+	_expect(simulation.preview_requests == 1, "a stationary candidate must still request exact geometry")
+	simulation.completed_preview = {
+		"request_id": 1, "is_valid": true, "surface_generation": 1, "zoning_revision": 1,
+		"prepared_points": tool.last_drawn_points,
+	}
+	tool._process(1.0 / 60.0)
+	_expect(tool.exact_draws == 1, "the exact result must replace the matching coarse preview")
+	var settled_draws := tool.coarse_draws
+	for index in range(16):
+		tool._unhandled_input(InputEventMouseMotion.new())
+	tool._process(1.0 / 60.0)
+	_expect(tool.coarse_draws == settled_draws and tool.exact_draws == 1, "motion within an unchanged snap must not downgrade or redraw a settled preview")
+	tool.pointer.x += 0.01
+	tool._process(1.0 / 60.0)
+	_expect(tool.last_drawn_points[-1] == tool.pointer and tool.exact_draws == 1, "a sub-5 cm move must not reuse the old exact preview")
+	tool._process(0.03)
+	_expect(simulation.preview_requests == 2, "fine pointer movements must request matching exact geometry")
+	tool._process(1.0 / 60.0)
+	_expect(tool.exact_draws == 1, "an obsolete exact result must not replace the current candidate")
+	# Click between frames: no _process call may be needed to update the committed endpoint.
+	tool.pointer = Vector3(75.0, 0.0, 0.0)
+	tool._handle_click()
+	_expect(tool.clicked_points[-1] == tool.pointer, "clicks must commit the freshly resolved cursor position")
+	tool.free()
+	simulation.free()
 
 func _test_road_parcel_validation_cache() -> void:
 	var simulation := MockRoadCandidateSimulation.new()

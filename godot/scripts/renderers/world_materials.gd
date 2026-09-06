@@ -34,6 +34,7 @@ const CONCRETE_ROUGH := "res://assets/textures/general/concrete_layers/concrete_
 const CONCRETE_DISP := "res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"
 
 const ROAD_SHADER := "res://assets/materials/road.gdshader"
+const ROAD_PREVIEW_SHADER := "res://scripts/shaders/road_preview.gdshader"
 const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
@@ -55,6 +56,15 @@ static func prewarm_road_materials() -> void:
 	road_sidewalk_material()
 	road_sidewalk_face_material()
 	road_concrete_material()
+
+static func road_preview_material() -> ShaderMaterial:
+	# Per-tool status/lane uniforms; the large texture resources remain shared with committed roads.
+	var material := ShaderMaterial.new()
+	material.shader = _load_shader(ROAD_PREVIEW_SHADER)
+	material.render_priority = 5
+	material.set_shader_parameter("asphalt_tex", _load_texture(ROAD_ASPHALT_DIFF))
+	material.set_shader_parameter("sidewalk_tex", _load_texture(SIDEWALK_ASPHALT_DIFF))
+	return material
 
 static func road_asphalt_material() -> ShaderMaterial:
 	if _road_asphalt_material == null:

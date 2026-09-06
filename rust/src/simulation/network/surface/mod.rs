@@ -31,6 +31,7 @@ mod terrain_clip;
 
 pub use backend::{RoadVec2, RoadVec3};
 pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
+pub(crate) use edge::RoadPreviewVisualMesh;
 pub use edge::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 pub use node::RoadSurfaceVisualNodePiece;
 pub use span::RoadSurfaceVisualSpanPiece;

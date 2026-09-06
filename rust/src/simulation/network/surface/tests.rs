@@ -9,7 +9,6 @@ use super::band_semantics::ordered_raised_step_kinds;
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
 use super::height::NodeHeightFieldError;
-use super::keys::SurfaceHeightMmKey;
 use super::validation::{NodeGeometryDiagnosticKind, NodeValidationReport};
 use super::{
     IncidentEdgeSide, IncidentMouthProfile, NodeFootprintBoundaryVertexSource, NodeOverlayContour,

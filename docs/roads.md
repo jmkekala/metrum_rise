@@ -401,6 +401,43 @@ bridge/tunnel clearance failures, and endpoints that resolve to an impossible sa
 There is no hard centerline-grade or curve-angle rejection. Same-node rejection uses the distinct
 `same_node_connection` reason; it is not reported as a compiler failure.
 
+Road cursor snapping retains a generation-checked node or edge identity. Nodes remain fixed snap
+targets; edges continuously project the latest cursor onto their centerline and acquire their real
+endpoints within the node capture radius. Retention releases by distance to that target, not distance
+to the previous projected point. Interior polyline knots have no endpoint margin, avoiding artificial
+half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
+uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
+
+Mouse motion performs no curve baking, validation, or mesh upload in the input-event handler.
+The tool resolves the current pointer once per frame, then coalesces changed position/settings into
+one lightweight preview update. Camera-only movement also refreshes the preview; motion that leaves
+the resolved snap unchanged preserves the displayed exact result. Exact compilation remains async
+after the existing idle delay. Cache/request matching uses exact points, so fine movements cannot
+redisplay an old result within the former 5 cm tolerance. Clicks resolve their current pointer before
+building the committed curve, including clicks arriving before the next frame. Shift angle/length rules and capture/release
+distances are unchanged by this scheduling/snap-target change.
+
+The moving and settled previews render asphalt, lane dividers, curbs, and sidewalks rather than a
+uniform blue ribbon. They share committed-road texture resources and Rust's lateral band widths;
+zero vehicle lanes render the actual 2 m walkway. Valid placement uses untinted materials with no
+outline; pending validation is amber, and rejection is red. Lane coordinates remain in metres through curves.
+
+Preview display positions are separate from the authoritative prepared points. Moving feedback
+reuses the already prepared terrain-aware vertical profile; settled feedback uses compiled sections.
+Both display meshes sample current visual terrain along and across the road, at 0.25–2 m spacing
+tied to terrain resolution, and lift vertices 15 cm above
+the higher of the planned roadbed and terrain, preserving raised band offsets. This keeps cut areas
+visible before commit excavates them, without lowering elevated roads or changing tunnel/bridge
+classification, validation, cost, or committed heights. Normal depth testing stays enabled; the
+preview is not an always-visible overlay through buildings. It is a sampled placement display, not
+an exact visualization of the future cut/fill terrain or junction ownership.
+
+Display generation is `O(longitudinal samples × lateral strips)` for the current stroke, with
+constant-time terrain-grid samples and no city-wide query or junction compilation. Buffer capacity
+is computed before triangle emission. Packed material/UV data travels with the existing validation
+or async result; GDScript performs no per-vertex terrain calls. Each update chooses the matching
+exact mesh or moving mesh, avoiding a redundant coarse upload before an available exact result.
+
 Road and walkway tools show the committed parcel overlay. Cheap candidate validation, synchronous
 commit validation, and completed async previews query the same parcel chunk index and corridor
 width as the simulation-thread commit guard. Conflicts return `parcel_overlap` with the count and
@@ -423,6 +460,11 @@ height values additionally permit boolean ownership and the already validated, t
 arrangement to be rebound from preview-local node IDs to authoritative node IDs. Any metadata,
 topology, carrier, source-authority, or exact-height mismatch takes the full deterministic compiler
 path.
+Preview validation also seeds that same compiler with immutable committed-node topology candidates,
+remapped through the bounded validation graph's source-to-local node map. It rebuilds current node
+inputs before checking reuse; removed/merged local identities are not seeded. This adds only
+`O(copied neighborhood nodes)` lookups and shared references, not a resident-network scan or a
+second topology cache. Cold and seeded preview/commit output must remain identical.
 `surface_geometry_invalid` is an exact surface-compiler integrity failure, never a curve-angle or
 grade policy. An ordinary continuation or T-junction producing it is a compiler bug. Road debug logs
 must include the failed required split spans or nodes with their lengths, clips, lane counts, and

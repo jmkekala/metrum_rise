@@ -10,7 +10,7 @@ use crate::debug_log;
 use crate::nodes::sim::road_tool::{RoadGhostSnapIndex, validate_road_candidate_against_water};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{
-    RoadPreviewTopologyReuse, RoadPreviewValidation, RoadSurfaceSystem,
+    RoadPreviewTopologyReuse, RoadPreviewValidation, RoadPreviewVisualMesh, RoadSurfaceSystem,
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
@@ -25,7 +25,7 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) bkw_lanes: u8,
     snap_to_existing_roads: bool,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
-    pub(crate) surface_vertices: Vec<godot::prelude::Vector3>,
+    pub(crate) visual_mesh: RoadPreviewVisualMesh,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
     topology_reuse: Option<Arc<Mutex<Option<RoadPreviewTopologyReuse>>>>,
@@ -205,7 +205,7 @@ pub(crate) fn run_road_preview_worker(
             compile_road_preview_from_context(&context, request)
         };
         let prepared_count = preview.prepared_points.len();
-        let surface_vertex_count = preview.surface_vertices.len();
+        let surface_vertex_count = preview.visual_mesh.vertices.len();
         let is_valid = preview.is_valid;
         if road_debug {
             let validation = &preview.validation;
@@ -283,6 +283,13 @@ pub(crate) fn compile_road_preview_from_context(
         .then_some(topology_reuse)
         .flatten();
 
+    let visual_mesh = preview_surface.build_preview_visual_mesh(
+        &preview.prepared_points,
+        &preview.compiled_sections,
+        fwd_lanes,
+        bkw_lanes,
+        context.terrain.as_ref(),
+    );
     RoadPreviewSnapshot {
         request_id: request.request_id,
         surface_generation: generation_matches
@@ -292,7 +299,7 @@ pub(crate) fn compile_road_preview_from_context(
         bkw_lanes,
         snap_to_existing_roads: request.snap_to_existing_roads,
         prepared_points: preview.prepared_points,
-        surface_vertices: preview.surface_vertices,
+        visual_mesh,
         validation: preview.validation,
         is_valid: preview.is_valid,
         topology_reuse: topology_reuse
@@ -315,7 +322,7 @@ mod tests {
             bkw_lanes: 1,
             snap_to_existing_roads: true,
             prepared_points: points.clone(),
-            surface_vertices: Vec::new(),
+            visual_mesh: RoadPreviewVisualMesh::default(),
             validation: RoadPreviewValidation::valid(0.0),
             is_valid: true,
             topology_reuse: None,

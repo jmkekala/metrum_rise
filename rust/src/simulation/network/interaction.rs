@@ -28,6 +28,24 @@ pub struct ProjectionData {
     pub dist_from_road: f32,
 }
 
+/// Stable target within one road-tool graph generation; edges slide, nodes stay fixed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NetworkSnapTarget {
+    /// Canonical live graph node.
+    Node(u32),
+    /// Live edge whose centerline receives the current pointer projection.
+    Edge(usize),
+}
+
+/// Current pointer projection and the network entity responsible for the snap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NetworkSnap {
+    /// Exact network position before the editor applies visible-surface height.
+    pub(crate) position: Vector3,
+    /// Target retained until the pointer leaves its release radius or the graph changes.
+    pub(crate) target: NetworkSnapTarget,
+}
+
 /// Finds the world-space position on the network closest to `world_pos`.
 ///
 /// Snaps to nodes with higher priority than segments. Returns `None` if
@@ -37,7 +55,7 @@ pub fn get_closest_point(
     world_pos: Vector3,
     max_dist: f32,
 ) -> Option<Vector3> {
-    get_closest_point_impl(graph, world_pos, max_dist, false)
+    get_closest_point_impl(graph, world_pos, max_dist, false).map(|snap| snap.position)
 }
 
 /// Finds the closest network point using only XZ distance for snap eligibility and scoring.
@@ -46,7 +64,80 @@ pub(crate) fn get_closest_point_xz(
     world_pos: Vector3,
     max_dist: f32,
 ) -> Option<Vector3> {
+    get_closest_network_snap_xz(graph, world_pos, max_dist).map(|snap| snap.position)
+}
+
+/// Acquires a cursor snap using the existing node grid and edge R-tree.
+pub(crate) fn get_closest_network_snap_xz(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    max_dist: f32,
+) -> Option<NetworkSnap> {
     get_closest_point_impl(graph, world_pos, max_dist, true)
+}
+
+/// Reprojects one retained target, with no allocation or resident-network scan.
+/// Edge work is O(its polyline segments); endpoint acquisition keeps existing node priority.
+pub(crate) fn retained_network_snap_xz(
+    graph: &RegionGraph,
+    world_pos: Vector3,
+    target: NetworkSnapTarget,
+    node_acquire_dist: f32,
+    release_dist: f32,
+) -> Option<NetworkSnap> {
+    if release_dist <= 0.0 {
+        return None;
+    }
+    match target {
+        NetworkSnapTarget::Node(node_id) => {
+            if node_id as usize >= graph.node_count() || !is_live_canonical_node(graph, node_id) {
+                return None;
+            }
+            let position = graph.node(node_id).pos;
+            (snap_distance(position, world_pos, true) <= release_dist)
+                .then_some(NetworkSnap { position, target })
+        }
+        NetworkSnapTarget::Edge(edge_id) => {
+            let edge = graph.edges().get(edge_id).filter(|edge| !edge.deleted)?;
+            let mut endpoint = None;
+            let mut endpoint_distance = node_acquire_dist;
+            for node_id in [edge.start_node, edge.end_node] {
+                let node_id = graph.get_valid_node(node_id);
+                let position = graph.node(node_id).pos;
+                let distance = snap_distance(position, world_pos, true);
+                if distance < endpoint_distance {
+                    endpoint_distance = distance;
+                    endpoint = Some(NetworkSnap {
+                        position,
+                        target: NetworkSnapTarget::Node(node_id),
+                    });
+                }
+            }
+            if endpoint.is_some() {
+                return endpoint;
+            }
+            let mut closest = None;
+            let mut min_distance = release_dist;
+            for (index, segment) in edge.geometry.windows(2).enumerate() {
+                let Some(position) = get_edge_snap_point_for_mode(
+                    world_pos,
+                    segment[0],
+                    segment[1],
+                    true,
+                    index == 0,
+                    index + 2 == edge.geometry.len(),
+                ) else {
+                    continue;
+                };
+                let distance = snap_distance(position, world_pos, true);
+                if distance <= min_distance {
+                    min_distance = distance;
+                    closest = Some(NetworkSnap { position, target });
+                }
+            }
+            closest
+        }
+    }
 }
 
 fn get_closest_point_impl(
@@ -54,7 +145,7 @@ fn get_closest_point_impl(
     world_pos: Vector3,
     max_dist: f32,
     xz_only: bool,
-) -> Option<Vector3> {
+) -> Option<NetworkSnap> {
     let mut closest_pos = None;
     let mut min_score = f32::MAX;
 
@@ -72,7 +163,10 @@ fn get_closest_point_impl(
             let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
             if score < min_score {
                 min_score = score;
-                closest_pos = Some(node.pos);
+                closest_pos = Some(NetworkSnap {
+                    position: node.pos,
+                    target: NetworkSnapTarget::Node(node_id),
+                });
             }
             if d < closest_node_dist {
                 closest_node_dist = d;
@@ -101,11 +195,15 @@ fn get_closest_point_impl(
         let half_width = edge.width * 0.5;
         let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
 
-        for i in 0..edge.geometry.len() - 1 {
-            let p0 = edge.geometry[i];
-            let p1 = edge.geometry[i + 1];
-
-            let Some(pos) = get_edge_snap_point_for_mode(world_pos, p0, p1, xz_only) else {
+        for (index, segment) in edge.geometry.windows(2).enumerate() {
+            let Some(pos) = get_edge_snap_point_for_mode(
+                world_pos,
+                segment[0],
+                segment[1],
+                xz_only,
+                index == 0,
+                index + 2 == edge.geometry.len(),
+            ) else {
                 continue;
             };
             let d_perp = snap_distance(pos, world_pos, xz_only);
@@ -114,7 +212,10 @@ fn get_closest_point_impl(
                 let score = d_perp;
                 if score < min_score {
                     min_score = score;
-                    closest_pos = Some(pos);
+                    closest_pos = Some(NetworkSnap {
+                        position: pos,
+                        target: NetworkSnapTarget::Edge(edge_idx),
+                    });
                 }
             }
         }
@@ -230,6 +331,8 @@ fn get_edge_snap_point_for_mode(
     a: Vector3,
     b: Vector3,
     xz_only: bool,
+    start_endpoint: bool,
+    end_endpoint: bool,
 ) -> Option<Vector3> {
     if !xz_only {
         return get_edge_snap_point(p, a, b);
@@ -244,7 +347,11 @@ fn get_edge_snap_point_for_mode(
 
     let seg_len = length_sq.sqrt();
     let end_margin = (EDGE_SNAP_ENDPOINT_MARGIN_M / seg_len).min(0.49);
-    let t = (((p.x - a.x) * dx + (p.z - a.z) * dz) / length_sq).clamp(end_margin, 1.0 - end_margin);
+    // Interior polyline knots are not graph endpoints: clamping each side creates 0.5 m jumps.
+    let t = (((p.x - a.x) * dx + (p.z - a.z) * dz) / length_sq).clamp(
+        if start_endpoint { end_margin } else { 0.0 },
+        if end_endpoint { 1.0 - end_margin } else { 1.0 },
+    );
     Some(a + (b - a) * t)
 }
 
@@ -287,14 +394,85 @@ pub fn find_intersection_2d(
 #[cfg(test)]
 mod tests {
     use super::{
-        find_intersection_2d, get_closest_point, get_closest_point_xz, get_edge_snap_point,
-        get_edge_snap_point_for_mode,
+        NetworkSnapTarget, find_intersection_2d, get_closest_network_snap_xz, get_closest_point,
+        get_closest_point_xz, get_edge_snap_point, get_edge_snap_point_for_mode,
+        retained_network_snap_xz,
     };
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{
         EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
     };
     use godot::prelude::Vector3;
+
+    #[test]
+    fn cursor_snap_is_continuous_across_interior_polyline_knots() {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 2.0, 20.0), NodeType::Junction);
+        let mut edge = test_edge(start, end);
+        edge.geometry = vec![
+            Vector3::ZERO,
+            Vector3::new(2.0, 1.0, 10.0),
+            Vector3::new(0.0, 2.0, 20.0),
+        ];
+        edge.physical_geometry = edge.geometry.clone();
+        let edge_id = graph.add_edge(edge);
+        let target = NetworkSnapTarget::Edge(edge_id);
+        for step in 0..81 {
+            let z = 8.0 + step as f32 * 0.05;
+            let point = Vector3::new(2.0 - (z - 10.0).abs() * 0.2, z * 0.1, z);
+            let fresh = get_closest_network_snap_xz(&graph, point, 5.0).unwrap();
+            let retained = retained_network_snap_xz(&graph, point, target, 5.0, 8.0).unwrap();
+            assert_eq!(fresh.target, target);
+            assert_eq!(retained.target, target);
+            assert!(fresh.position.distance_to(point) < 0.00001);
+            assert!(retained.position.distance_to(point) < 0.00001);
+        }
+    }
+
+    #[test]
+    fn retained_edge_does_not_jump_to_parallel_road_and_acquires_its_endpoint() {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+        let first = graph.add_edge(test_edge(start, end));
+        let second_start = graph.add_node(Vector3::new(3.0, 0.0, 0.0), NodeType::Junction);
+        let second_end = graph.add_node(Vector3::new(3.0, 0.0, 20.0), NodeType::Junction);
+        let mut second_edge = test_edge(second_start, second_end);
+        for point in &mut second_edge.geometry {
+            point.x += 3.0;
+        }
+        second_edge.physical_geometry = second_edge.geometry.clone();
+        let second = graph.add_edge(second_edge);
+        let point = Vector3::new(2.9, 0.0, 10.0);
+        assert_eq!(
+            get_closest_network_snap_xz(&graph, point, 5.0)
+                .unwrap()
+                .target,
+            NetworkSnapTarget::Edge(second)
+        );
+        let target = NetworkSnapTarget::Edge(first);
+        assert_eq!(
+            retained_network_snap_xz(&graph, point, target, 5.0, 8.0)
+                .unwrap()
+                .position,
+            Vector3::new(0.0, 0.0, 10.0)
+        );
+        assert_eq!(
+            retained_network_snap_xz(&graph, Vector3::new(0.5, 0.0, 19.0), target, 5.0, 8.0)
+                .unwrap()
+                .target,
+            NetworkSnapTarget::Node(end)
+        );
+        assert!(
+            retained_network_snap_xz(&graph, point, NetworkSnapTarget::Edge(999), 5.0, 8.0)
+                .is_none()
+        );
+        assert!(
+            retained_network_snap_xz(&graph, point, NetworkSnapTarget::Node(999), 5.0, 8.0)
+                .is_none()
+        );
+    }
 
     #[test]
     fn edge_snap_uses_exact_projection_instead_of_quantized_steps() {
@@ -340,6 +518,8 @@ mod tests {
             Vector3::new(8.0, 30.0, 0.0),
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10.0, 10.0, 0.0),
+            true,
+            true,
             true,
         )
         .unwrap();

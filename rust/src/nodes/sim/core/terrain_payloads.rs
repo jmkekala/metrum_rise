@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::simulation::network::surface::SurfaceChunkKey;
 use crate::simulation::terrain::TerrainPatchSnapshot;
 use crate::simulation::terrain::cdt::{
-    TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch,
+    TerrainCdtError, TerrainCdtInput, TerrainCdtMesh, TerrainCdtPatch, TerrainCdtRoadLoop,
 };
 use godot::prelude::{Vector2, Vector3};
 
@@ -106,6 +106,8 @@ pub(crate) struct RefinedTerrainCdtWindowBuildInput {
     pub(crate) key: RefinedTerrainCdtWindowKey,
     /// CDT input for this local window.
     pub(crate) cdt_input: TerrainCdtInput,
+    /// Immutable road clipping prepared by the tile planner, independent of terrain samples.
+    pub(crate) road_input: Option<Arc<CachedTerrainCdtRoadInput>>,
     /// Previous compiled window when the fingerprint did not change.
     pub(crate) previous: Option<Arc<CachedRefinedTerrainCdtWindow>>,
     /// True when this core tile has an exact road or building-site contributor.
@@ -113,6 +115,25 @@ pub(crate) struct RefinedTerrainCdtWindowBuildInput {
     /// Stable tile-local road contributor fingerprints represented by this input.
     pub(crate) road_clip_fingerprints: Vec<u64>,
     /// Stable tile-local building-site contributor fingerprints represented by this input.
+    pub(crate) site_clip_fingerprints: Vec<u64>,
+}
+
+/// Exact road-only preprocessing retained with a tile, not a global geometry cache.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CachedTerrainCdtRoadInput {
+    /// Unquantized core bounds, compared by float bits before reusing any clipped geometry.
+    pub(crate) bounds_bits: [u32; 4],
+    /// Freshly sampled core corner heights used by clipping's boundary-height fallback.
+    pub(crate) corner_height_bits: [u32; 4],
+    /// Ordered authoritative contributors, shared by all tiles from the same query.
+    pub(crate) source_loops: Vec<Arc<TerrainCdtRoadLoop>>,
+    /// Halo loop count before core clipping; controls the grading-constraint contract.
+    pub(crate) halo_loop_count: usize,
+    /// Rekeyed loops clipped to the tile core, ready for fresh terrain sampling.
+    pub(crate) road_loops: Vec<TerrainCdtRoadLoop>,
+    /// Halo road contributors represented by this tile.
+    pub(crate) road_clip_fingerprints: Vec<u64>,
+    /// Halo building-site contributors represented by this tile.
     pub(crate) site_clip_fingerprints: Vec<u64>,
 }
 
@@ -127,6 +148,8 @@ pub(crate) struct CachedRefinedTerrainCdtWindow {
     pub(crate) input_source_samples: usize,
     /// Local CDT window used inside the base render patch.
     pub(crate) cdt_patch: TerrainCdtPatch,
+    /// Road-only preprocessing retained for exact reuse during subsequent tile input assembly.
+    pub(crate) road_input: Option<Arc<CachedTerrainCdtRoadInput>>,
     /// CDT result for this window.
     pub(crate) mesh_result: Result<TerrainCdtMesh, TerrainCdtError>,
     /// Immutable render buffers derived from this window's successful CDT result.

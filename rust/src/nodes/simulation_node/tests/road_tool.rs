@@ -39,42 +39,54 @@ fn road_tool_cursor_classifies_closer_terrain_hit_as_offsettable_height() {
 }
 
 #[test]
-fn road_tool_sticky_network_snap_holds_inside_release_radius() {
+fn road_tool_sticky_network_snap_slides_inside_release_radius() {
     let graph = test_snap_graph();
-
-    assert!(SimulationNode::road_tool_should_keep_sticky_network_snap(
-        &graph,
-        Vector3::new(4.0, 0.0, 7.9),
-        true,
-        Vector3::new(4.0, 0.0, 0.0),
-        8.0,
-    ));
+    for step in 0..40 {
+        let x = 6.0 + step as f32 * 0.2;
+        let snap = SimulationNode::road_tool_cursor_network_snap(
+            &graph,
+            Vector3::new(x, 40.0, 7.9),
+            0,
+            -1,
+            1,
+            1,
+            8.0,
+        )
+        .unwrap();
+        assert!((snap.position.x - x).abs() < 0.0001);
+        assert_eq!(snap.position.z, 0.0);
+    }
 }
 
 #[test]
 fn road_tool_sticky_network_snap_releases_outside_release_radius() {
     let graph = test_snap_graph();
 
-    assert!(!SimulationNode::road_tool_should_keep_sticky_network_snap(
-        &graph,
-        Vector3::new(4.0, 0.0, 8.1),
-        true,
-        Vector3::new(4.0, 0.0, 0.0),
-        8.0,
-    ));
+    use crate::simulation::network::interaction::{NetworkSnapTarget, retained_network_snap_xz};
+    assert!(
+        retained_network_snap_xz(
+            &graph,
+            Vector3::new(10.0, 0.0, 8.1),
+            NetworkSnapTarget::Edge(0),
+            5.0,
+            8.0
+        )
+        .is_none()
+    );
 }
 
 #[test]
-fn road_tool_sticky_network_snap_rejects_non_network_anchor() {
+fn road_tool_sticky_network_snap_rejects_stale_generation() {
     let graph = test_snap_graph();
-
-    assert!(!SimulationNode::road_tool_should_keep_sticky_network_snap(
-        &graph,
-        Vector3::new(40.0, 0.0, 40.0),
-        true,
-        Vector3::new(40.0, 0.0, 40.0),
-        8.0,
-    ));
+    use crate::simulation::network::interaction::NetworkSnapTarget;
+    let position = Vector3::new(7.0, 0.0, 0.0);
+    let retained =
+        SimulationNode::road_tool_cursor_network_snap(&graph, position, -1, 0, 1, 1, 8.0).unwrap();
+    assert_eq!(retained.target, NetworkSnapTarget::Node(0));
+    let fresh =
+        SimulationNode::road_tool_cursor_network_snap(&graph, position, -1, 0, 1, 2, 8.0).unwrap();
+    assert_eq!(fresh.target, NetworkSnapTarget::Edge(0));
+    assert_eq!(fresh.position, position);
 }
 
 #[test]

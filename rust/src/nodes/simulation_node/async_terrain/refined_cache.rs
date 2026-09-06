@@ -417,6 +417,7 @@ impl SimCore {
                                 input_road_loops,
                                 input_source_samples,
                                 cdt_patch,
+                                road_input: window.road_input,
                                 mesh_result,
                                 mesh_buffers,
                                 cdt_ms,

@@ -64,38 +64,3 @@ pub(in crate::simulation::network::surface::tests) fn compile_committed_preview_
         .collect();
     (preview, compiled_sections, compiled_visual_node_pieces)
 }
-
-pub(in crate::simulation::network::surface::tests) fn assert_preview_vertices_use_solved_section_height_keys(
-    preview: &PreviewRoadSurfaceResult,
-) {
-    let solved_height_keys = preview
-        .compiled_sections
-        .iter()
-        .flat_map(|section| section.bands.iter())
-        .flat_map(|band| {
-            [
-                SurfaceHeightMmKey::from_m_f32(band.height_start_m),
-                SurfaceHeightMmKey::from_m_f32(band.height_end_m),
-            ]
-        })
-        .collect::<BTreeSet<_>>();
-    assert!(
-        !solved_height_keys.is_empty(),
-        "preview height-key regression check requires compiled section bands"
-    );
-    assert!(
-        !preview.surface_vertices.is_empty(),
-        "preview height-key regression check requires preview mesh vertices"
-    );
-
-    for vertex in &preview.surface_vertices {
-        let key = SurfaceHeightMmKey::from_m_f32(vertex.y);
-        assert!(
-            solved_height_keys.contains(&key),
-            "preview mesh vertex height must come from solved section geometry without render lift: y={:.6} key={} solved_keys={:?}",
-            vertex.y,
-            key.as_i64(),
-            solved_height_keys
-        );
-    }
-}

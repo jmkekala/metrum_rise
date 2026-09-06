@@ -24,7 +24,7 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtTileId {
 }
 
 struct TerrainCdtTileContributor {
-    road_loop: TerrainCdtRoadLoop,
+    road_loop: Arc<TerrainCdtRoadLoop>,
     influence_bounds: (f32, f32, f32, f32),
     guide_samples: Vec<TerrainCdtTieInGuideSample>,
     guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
@@ -39,6 +39,7 @@ struct TerrainCdtPlannedWindow {
     tile_id: TerrainCdtTileId,
     key: RefinedTerrainCdtWindowKey,
     cdt_input: TerrainCdtInput,
+    road_input: Arc<CachedTerrainCdtRoadInput>,
     matching_previous: Option<Arc<CachedRefinedTerrainCdtWindow>>,
     has_engineered_contributor: bool,
     road_clip_fingerprints: Vec<u64>,
@@ -137,7 +138,9 @@ impl SimulationNode {
                     contributor_indices,
                     safe_render_step_m,
                     site_grading,
-                    None,
+                    previous_windows
+                        .get(&Self::terrain_cdt_tile_spatial_key(patch, tile_id)?)
+                        .cloned(),
                 )
             })
             .collect::<Vec<_>>()
@@ -189,6 +192,7 @@ impl SimulationNode {
                 RefinedTerrainCdtWindowBuildInput {
                     key: window.key,
                     cdt_input: window.cdt_input,
+                    road_input: Some(window.road_input),
                     previous,
                     has_engineered_contributor: window.has_engineered_contributor,
                     road_clip_fingerprints: window.road_clip_fingerprints,
@@ -359,6 +363,7 @@ impl SimulationNode {
             windows.push(RefinedTerrainCdtWindowBuildInput {
                 key: window.key,
                 cdt_input: window.cdt_input,
+                road_input: Some(window.road_input),
                 previous,
                 has_engineered_contributor: window.has_engineered_contributor,
                 road_clip_fingerprints: window.road_clip_fingerprints,
@@ -454,7 +459,7 @@ impl SimulationNode {
             &mut sample_keys,
         );
         Some(TerrainCdtTileContributor {
-            road_loop,
+            road_loop: Arc::new(road_loop),
             influence_bounds,
             guide_samples,
             guide_constraints,
@@ -522,33 +527,25 @@ impl SimulationNode {
         matching_previous: Option<Arc<CachedRefinedTerrainCdtWindow>>,
     ) -> Option<TerrainCdtPlannedWindow> {
         let bounds = Self::terrain_cdt_tile_bounds(patch, tile_id)?;
-        let halo_patch = TerrainCdtPatch::new(
-            f64::from(bounds.0 - TERRAIN_CDT_TILE_HALO_M),
-            f64::from(bounds.1 - TERRAIN_CDT_TILE_HALO_M),
-            f64::from(bounds.2 + TERRAIN_CDT_TILE_HALO_M),
-            f64::from(bounds.3 + TERRAIN_CDT_TILE_HALO_M),
-            [0.0; 4],
-        );
-        let (local_road_loops, road_clip_fingerprints, site_clip_fingerprints) =
-            Self::terrain_cdt_tile_local_loops_and_manifest(
-                tile_id,
-                halo_patch,
-                contributors,
-                contributor_indices,
-            );
-        let core_patch = TerrainCdtPatch::new(
-            bounds.0.into(),
-            bounds.1.into(),
-            bounds.2.into(),
-            bounds.3.into(),
-            [0.0; 4],
+        let core_patch =
+            Self::terrain_cdt_patch_for_bounds(terrain, bounds.0, bounds.1, bounds.2, bounds.3);
+        let road_input = Self::terrain_cdt_tile_road_input(
+            tile_id,
+            bounds,
+            core_patch,
+            contributors,
+            contributor_indices,
+            matching_previous
+                .as_deref()
+                .and_then(|window| window.road_input.as_ref()),
         );
         let mut guide_samples = contributor_indices
             .iter()
             .flat_map(|&index| contributors[index].guide_samples.iter().copied())
             .filter(|sample| Self::terrain_cdt_vertex_in_bounds(sample.vertex, bounds))
             .collect::<Vec<_>>();
-        let guide_constraints = if contributor_indices.len() == 1 && local_road_loops.len() == 1 {
+        let guide_constraints = if contributor_indices.len() == 1 && road_input.halo_loop_count == 1
+        {
             contributors[contributor_indices[0]]
                 .guide_constraints
                 .iter()
@@ -568,7 +565,7 @@ impl SimulationNode {
         let cdt_input = Self::terrain_cdt_input_for_bounds_with_guides(
             terrain,
             patch,
-            local_road_loops,
+            road_input.road_loops.clone(),
             render_step_m,
             bounds,
             guide_samples,
@@ -580,10 +577,11 @@ impl SimulationNode {
             tile_id,
             key,
             cdt_input,
+            road_clip_fingerprints: road_input.road_clip_fingerprints.clone(),
+            site_clip_fingerprints: road_input.site_clip_fingerprints.clone(),
+            road_input,
             matching_previous,
             has_engineered_contributor: !contributor_indices.is_empty(),
-            road_clip_fingerprints,
-            site_clip_fingerprints,
         })
     }
 
@@ -608,10 +606,16 @@ impl SimulationNode {
             &mut guide_constraints,
             &mut sample_keys,
         );
+        let patch_model =
+            Self::terrain_cdt_patch_for_bounds(terrain, bounds.0, bounds.1, bounds.2, bounds.3);
+        let clipped_loops = road_loops
+            .iter()
+            .flat_map(|road_loop| clip_terrain_cdt_road_loop_to_patch(road_loop, patch_model))
+            .collect();
         Self::terrain_cdt_input_for_bounds_with_guides(
             terrain,
             patch,
-            road_loops.to_vec(),
+            clipped_loops,
             safe_render_step_m,
             bounds,
             guide_samples,
@@ -620,6 +624,7 @@ impl SimulationNode {
         )
     }
 
+    // Road loops are already core-clipped. All terrain and site-dependent inputs stay fresh.
     fn terrain_cdt_input_for_bounds_with_guides(
         terrain: &TerrainSystem,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
@@ -633,10 +638,6 @@ impl SimulationNode {
         let (min_x, min_z, max_x, max_z) = bounds;
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
-        let road_loops = road_loops
-            .iter()
-            .flat_map(|road_loop| clip_terrain_cdt_road_loop_to_patch(road_loop, patch_model))
-            .collect();
         let mut source_samples = Vec::new();
         let mut sample_keys = tie_in_guide_samples
             .iter()
@@ -750,6 +751,16 @@ impl SimulationNode {
         (key.min_x_mm, key.min_z_mm, key.max_x_mm, key.max_z_mm)
     }
 
+    fn terrain_cdt_tile_spatial_key(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        tile_id: TerrainCdtTileId,
+    ) -> Option<(i64, i64, i64, i64)> {
+        let (min_x, min_z, max_x, max_z) = Self::terrain_cdt_tile_bounds(patch, tile_id)?;
+        let [min_x, min_z, max_x, max_z] =
+            [min_x, min_z, max_x, max_z].map(|coord| Self::quantize_cdt_coord_mm(f64::from(coord)));
+        Some((min_x, min_z, max_x, max_z))
+    }
+
     fn terrain_cdt_tile_id_for_window_key(key: RefinedTerrainCdtWindowKey) -> TerrainCdtTileId {
         TerrainCdtTileId {
             x: key.min_x_mm.div_euclid(TERRAIN_CDT_TILE_SPAN_MM),
@@ -781,6 +792,112 @@ impl SimulationNode {
                 && Self::quantize_cdt_coord_mm(left.vertex.z)
                     == Self::quantize_cdt_coord_mm(right.vertex.z)
         });
+    }
+
+    fn terrain_cdt_tile_road_input(
+        tile_id: TerrainCdtTileId,
+        bounds: (f32, f32, f32, f32),
+        core_patch: TerrainCdtPatch,
+        contributors: &[TerrainCdtTileContributor],
+        contributor_indices: &[usize],
+        previous: Option<&Arc<CachedTerrainCdtRoadInput>>,
+    ) -> Arc<CachedTerrainCdtRoadInput> {
+        let bounds_bits = [bounds.0, bounds.1, bounds.2, bounds.3].map(f32::to_bits);
+        let corner_height_bits = core_patch.corner_heights_m.map(f32::to_bits);
+        // O(V + E) exact checks over this tile's contributor vertices and source edges, with no
+        // hit-path allocation. Query loops are shared across tiles; retention ends with the tile.
+        if let Some(previous) = previous.filter(|previous| {
+            previous.bounds_bits == bounds_bits
+                && previous.corner_height_bits == corner_height_bits
+                && previous.source_loops.len() == contributor_indices.len()
+                && previous
+                    .source_loops
+                    .iter()
+                    .zip(contributor_indices)
+                    .all(|(old, &index)| {
+                        Self::terrain_cdt_road_loop_input_eq(old, &contributors[index].road_loop)
+                    })
+        }) {
+            return Arc::clone(previous);
+        }
+        let halo_patch = TerrainCdtPatch::new(
+            f64::from(bounds.0 - TERRAIN_CDT_TILE_HALO_M),
+            f64::from(bounds.1 - TERRAIN_CDT_TILE_HALO_M),
+            f64::from(bounds.2 + TERRAIN_CDT_TILE_HALO_M),
+            f64::from(bounds.3 + TERRAIN_CDT_TILE_HALO_M),
+            [0.0; 4],
+        );
+        let (halo_loops, road_clip_fingerprints, site_clip_fingerprints) =
+            Self::terrain_cdt_tile_local_loops_and_manifest(
+                tile_id,
+                halo_patch,
+                contributors,
+                contributor_indices,
+            );
+        Arc::new(CachedTerrainCdtRoadInput {
+            bounds_bits,
+            corner_height_bits,
+            source_loops: contributor_indices
+                .iter()
+                .map(|&index| Arc::clone(&contributors[index].road_loop))
+                .collect(),
+            halo_loop_count: halo_loops.len(),
+            road_loops: halo_loops
+                .iter()
+                .flat_map(|road_loop| clip_terrain_cdt_road_loop_to_patch(road_loop, core_patch))
+                .collect(),
+            road_clip_fingerprints,
+            site_clip_fingerprints,
+        })
+    }
+
+    fn terrain_cdt_road_loop_input_eq(
+        left: &TerrainCdtRoadLoop,
+        right: &TerrainCdtRoadLoop,
+    ) -> bool {
+        let vertex_eq = |left: &TerrainCdtVertex, right: &TerrainCdtVertex| {
+            left.x.to_bits() == right.x.to_bits()
+                && left.z.to_bits() == right.z.to_bits()
+                && left.height_m.to_bits() == right.height_m.to_bits()
+        };
+        left.stable_piece_id == right.stable_piece_id
+            && left.footprint_group_id == right.footprint_group_id
+            && left.local_loop_index == right.local_loop_index
+            && left.is_hole == right.is_hole
+            && left.vertices.len() == right.vertices.len()
+            && left.source_edges.len() == right.source_edges.len()
+            && left
+                .vertices
+                .iter()
+                .zip(&right.vertices)
+                .all(|(a, b)| vertex_eq(a, b))
+            && left
+                .source_edges
+                .iter()
+                .zip(&right.source_edges)
+                .all(|(a, b)| {
+                    a.source == b.source
+                        && vertex_eq(&a.start, &b.start)
+                        && vertex_eq(&a.end, &b.end)
+                        && match (a.source, b.source) {
+                            (
+                                TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                                    start_s_m: a_start,
+                                    end_s_m: a_end,
+                                    ..
+                                },
+                                TerrainCdtRoadBoundarySource::SpanSupportBoundary {
+                                    start_s_m: b_start,
+                                    end_s_m: b_end,
+                                    ..
+                                },
+                            ) => {
+                                a_start.to_bits() == b_start.to_bits()
+                                    && a_end.to_bits() == b_end.to_bits()
+                            }
+                            _ => true,
+                        }
+                })
     }
 
     fn terrain_cdt_tile_local_loops_and_manifest(

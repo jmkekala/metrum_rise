@@ -116,7 +116,7 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
-    CityTreasury, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
+    CachedTerrainCdtRoadInput, CityTreasury, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
     RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
     RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,

@@ -17,6 +17,7 @@ fn test_cached_cdt_window(
             fingerprint: min_x_mm as u64,
         },
         input_road_loops: 1,
+        road_input: None,
         input_source_samples: 0,
         cdt_patch: TerrainCdtPatch::new(
             min_x_mm as f64 / 1_000.0,
@@ -102,6 +103,7 @@ fn cached_patch_from_planned_windows(
         .map(|window| {
             Arc::new(CachedRefinedTerrainCdtWindow {
                 key: window.key,
+                road_input: window.road_input,
                 input_road_loops: window.cdt_input.road_loops.len(),
                 input_source_samples: window.cdt_input.source_samples.len(),
                 cdt_patch: window.cdt_input.patch,
@@ -440,6 +442,7 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
         windows: vec![RefinedTerrainCdtWindowBuildInput {
             key,
             cdt_input,
+            road_input: None,
             previous: Some(Arc::clone(&previous)),
             has_engineered_contributor: true,
             road_clip_fingerprints: vec![0],
@@ -683,6 +686,7 @@ fn refined_patch_build_never_reuses_failed_window() {
         windows: vec![RefinedTerrainCdtWindowBuildInput {
             key,
             cdt_input: TerrainCdtInput::new(invalid_patch, Vec::new(), Vec::new()),
+            road_input: None,
             previous: Some(Arc::clone(&previous)),
             has_engineered_contributor: true,
             road_clip_fingerprints: vec![1],
@@ -1236,6 +1240,160 @@ fn terrain_cdt_planner_reuses_unchanged_tiles_and_rebuilds_cardinal_seams() {
 }
 
 #[test]
+fn terrain_cdt_road_input_reuse_matches_cold_planning_and_invalidates_exact_changes() {
+    let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
+    let patch = planner_test_patch(128.0, 64.0);
+    let road_loop = planner_test_loop(7, 10.0, 24.0, 90.0, 32.0);
+    let plan = |terrain: &TerrainSystem,
+                patch: &TerrainPatchSnapshot,
+                road: &TerrainCdtRoadLoop,
+                step,
+                previous: Option<&CachedRefinedTerrainPatch>| {
+        SimulationNode::terrain_cdt_window_build_inputs(
+            terrain,
+            patch,
+            std::slice::from_ref(road),
+            step,
+            None,
+            previous,
+        )
+    };
+    let first = plan(&terrain, &patch, &road_loop, 2.0, None);
+    let previous = cached_patch_from_planned_windows(patch.clone(), first.windows, 1);
+    let check = |terrain: &TerrainSystem,
+                 patch: &TerrainPatchSnapshot,
+                 road: &TerrainCdtRoadLoop,
+                 step,
+                 expected_hits| {
+        let cold = plan(terrain, patch, road, step, None);
+        let warm = plan(terrain, patch, road, step, Some(&previous));
+        assert_eq!(cold.windows.len(), warm.windows.len());
+        let mut hits = 0;
+        for (cold, warm) in cold.windows.iter().zip(&warm.windows) {
+            assert_eq!(cold.key, warm.key);
+            assert_eq!(cold.cdt_input, warm.cdt_input);
+            assert_eq!(cold.road_clip_fingerprints, warm.road_clip_fingerprints);
+            assert_eq!(cold.site_clip_fingerprints, warm.site_clip_fingerprints);
+            let road_input = warm.road_input.as_ref().unwrap();
+            hits += usize::from(
+                previous
+                    .windows
+                    .iter()
+                    .any(|old| Arc::ptr_eq(old.road_input.as_ref().unwrap(), road_input)),
+            );
+        }
+        assert_eq!(hits, expected_hits);
+        warm
+    };
+    check(&terrain, &patch, &road_loop, 2.0, 2);
+    // Render-step and non-corner terrain changes must still resample the complete CDT input.
+    let coarser = check(&terrain, &patch, &road_loop, 4.0, 2);
+    assert_ne!(coarser.windows[0].key, previous.windows[0].key);
+    let mut changed_terrain = terrain.clone();
+    // Terrain storage is centered on world (0, 0): grid (96, 32) is world (32, 0).
+    changed_terrain.set_height(96, 32, 1.0);
+    let resampled = check(&changed_terrain, &patch, &road_loop, 2.0, 2);
+    assert_ne!(resampled.windows[0].key, previous.windows[0].key);
+    // A core corner also participates in road clipping's boundary-height fallback.
+    changed_terrain.set_height(64, 32, 1.0);
+    check(&changed_terrain, &patch, &road_loop, 2.0, 1);
+    let mut resized_patch = patch.clone();
+    resized_patch.world_size_x = 127.0;
+    check(&terrain, &resized_patch, &road_loop, 2.0, 1);
+    for change in 0..5 {
+        let mut changed_road = road_loop.clone();
+        match change {
+            0 => changed_road.vertices[0].x += 0.000_001,
+            1 => changed_road.vertices[0].height_m = -0.0,
+            2 => changed_road.source_edges[0].start.height_m = -0.0,
+            3 => {
+                changed_road.source_edges[0].source =
+                    TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+                        building_idx: 8,
+                        local_loop_index: 0,
+                        local_edge_index: 0,
+                    }
+            }
+            _ => changed_road.footprint_group_id += 1,
+        }
+        check(&terrain, &patch, &changed_road, 2.0, 0);
+    }
+}
+
+#[test]
+#[ignore = "controlled release timing: cargo test --release benchmark_terrain_cdt_road_input_reuse -- --ignored --nocapture"]
+fn benchmark_terrain_cdt_road_input_reuse() {
+    assert!(
+        !cfg!(debug_assertions),
+        "benchmark requires a release build"
+    );
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 64, 0.0);
+    let patch = planner_test_patch(512.0, 512.0);
+    let road_loops = [TerrainCdtRoadLoop::new(
+        7,
+        0,
+        (0..128)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * index as f64 / 128.0;
+                TerrainCdtVertex::new(
+                    256.0 + 220.0 * angle.cos(),
+                    0.0,
+                    256.0 + 180.0 * angle.sin(),
+                )
+            })
+            .collect(),
+    )];
+    let plan = |previous| {
+        SimulationNode::terrain_cdt_window_build_inputs(
+            &terrain,
+            &patch,
+            &road_loops,
+            2.0,
+            None,
+            previous,
+        )
+    };
+    let first = plan(None);
+    let warm = cached_patch_from_planned_windows(patch.clone(), first.windows, 1);
+    let mut cold = warm.clone();
+    for window in &mut cold.windows {
+        Arc::make_mut(window).road_input = None;
+    }
+    let cold_plan = plan(Some(&cold));
+    let warm_plan = plan(Some(&warm));
+    assert_eq!(cold_plan.windows.len(), warm_plan.windows.len());
+    for (cold, warm) in cold_plan.windows.iter().zip(&warm_plan.windows) {
+        assert_eq!(cold.key, warm.key);
+        assert_eq!(cold.cdt_input, warm.cdt_input);
+    }
+    // Alternate order to limit warm-up / thermal bias. This measures input assembly, not CDT or
+    // end-to-end gameplay; both arms retain the same final-window cache and normal Rayon pool.
+    let mut timings = [Vec::new(), Vec::new()];
+    for round in 0..22 {
+        for index in [round % 2, 1 - round % 2] {
+            let previous = if index == 0 { &cold } else { &warm };
+            let start = Instant::now();
+            for _ in 0..10 {
+                std::hint::black_box(plan(Some(previous)));
+            }
+            if round >= 2 {
+                timings[index].push(start.elapsed().as_secs_f64() * 100.0);
+            }
+        }
+    }
+    for samples in &mut timings {
+        samples.sort_by(f64::total_cmp);
+    }
+    let cold_ms = (timings[0][9] + timings[0][10]) * 0.5;
+    let warm_ms = (timings[1][9] + timings[1][10]) * 0.5;
+    println!(
+        "terrain input assembly: tiles={} cold_ms={cold_ms:.3} warm_ms={warm_ms:.3} speedup={:.2}x",
+        warm.windows.len(),
+        cold_ms / warm_ms
+    );
+}
+
+#[test]
 fn terrain_cdt_planner_does_not_reuse_stale_halo_contributor_manifest() {
     let terrain = TerrainSystem::with_chunking(129, 65, 1.0, 64, 0.0);
     let patch = planner_test_patch(128.0, 64.0);
@@ -1300,6 +1458,7 @@ fn terrain_cdt_incremental_planner_drops_removed_local_tiles_without_assembling_
                 fingerprint: tile_x as u64,
             },
             input_road_loops: usize::from(has_engineered_contributor),
+            road_input: None,
             input_source_samples: 0,
             cdt_patch: TerrainCdtPatch::new(
                 min_x_mm as f64 / 1_000.0,
@@ -1380,6 +1539,7 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
                         fingerprint: (z * 8 + x) as u64,
                     },
                     input_road_loops: 1,
+                    road_input: None,
                     input_source_samples: 0,
                     cdt_patch: TerrainCdtPatch::new(
                         min_x_mm as f64 / 1_000.0,

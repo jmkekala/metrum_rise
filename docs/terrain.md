@@ -784,6 +784,14 @@ Deterministic terrain-render rules:
   provenance, local terrain samples, grading guides/constraints, render step, core bounds, and
   contract revision; unchanged fingerprints reuse immutable compiled geometry and per-tile render
   buffers from the last accepted generation
+- each cached tile also retains its road-input clipping: ordered source loops shared across tiles,
+  halo contributor manifests, and core-clipped loops. Reuse compares full geometry/provenance
+  (including float bits), exact core bounds, and freshly sampled corner heights in
+  `O(local contributor vertices + source edges)` without allocating on a hit. Both halo and core
+  clipping are skipped only after this match. Terrain samples, adaptive margins, road/site grading
+  guides, and final input fingerprints are still rebuilt; source-generation equality alone cannot
+  authorize reuse of visual-terrain inputs. Retention is bounded by cached tiles, with no history
+  chain or independent global geometry cache.
 - an edit plans `old_coverage union new_coverage` plus deterministic seam-dependency tiles; removed
   contributors omit their old refined coverage so regular terrain fills it again, while unrelated
   tile fingerprints and compiled meshes remain unchanged

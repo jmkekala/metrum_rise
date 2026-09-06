@@ -60,7 +60,22 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   coverage and guide generation. Pre-clipped road provenance now resolves exact component edges
   through a deterministic sorted index, while canonical CDT bypasses redundant source-vertex
   recovery only for loops whose source endpoints are already represented. Fresh release gameplay
-  measurements pass; complete assembled node export buffers remain.
+  measurements pass; complete assembled node export buffers remain. Preview validation now seeds
+  committed node-topology candidates through its local node map. Terrain tiles retain exact
+  road-input clipping while resampling terrain/site grading. A controlled 48-tile release cache-hit
+  benchmark reduced input assembly from 1.650 ms to 0.972 ms (1.70x); the headless gameplay matrix
+  shows no clear end-to-end improvement. All 1,541 Rust tests pass; cache-hit timing is available via
+  `cargo test --release benchmark_terrain_cdt_road_input_reuse -- --ignored --nocapture` in `rust/`.
+  Road-tool UX now retains generation-checked edge targets with continuous projection, reserves
+  fixed snaps for nodes, removes interior-knot snap gaps, and coalesces preview updates after fresh
+  per-frame cursor sampling. Clicks use current pointer coordinates; fine movements cannot reuse
+  an old exact preview. Cursor sweeps, input bursts, camera-only movement, stale targets/results,
+  native cursor payloads, and click-before-frame behaviour have targeted regression coverage.
+  Moving and settled previews now show shared asphalt/sidewalk textures and lane dividers.
+  Valid placement is untinted; checking/rejection feedback remains amber/red. A display-only
+  terrain-draped mesh with 15 cm clearance replaces raw endpoint-height ribbons; prepared
+  placement heights remain authoritative. Full-width hill,
+  elevated-road, walkway-width, native payload, and rendered-material checks cover the change.
 - `ROAD-06`: a deterministic Kuopio T-junction can pass RoadTool validation but produce
   incompatible-height road-owned terrain-CDT constraints after the authoritative graph mutation.
   Atomic rendering correctly retains the prior complete generation, but the graph then remains

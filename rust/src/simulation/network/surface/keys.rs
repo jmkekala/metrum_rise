@@ -341,11 +341,6 @@ impl SurfaceHeightMmKey {
         Self(round_f64_to_i64(value_m * SURFACE_MM_PER_M))
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_m_f32(value_m: f32) -> Self {
-        Self::from_m_f64(f64::from(value_m))
-    }
-
     pub(crate) fn as_i64(self) -> i64 {
         self.0
     }

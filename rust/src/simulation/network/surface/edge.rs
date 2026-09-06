@@ -8,6 +8,7 @@ mod handoff;
 mod input;
 mod polyline;
 mod preview;
+mod preview_visual;
 mod profile;
 mod sections;
 
@@ -19,6 +20,7 @@ pub(crate) const CURB_STEP_HEIGHT_M: f32 = profile::CURB_STEP_HEIGHT_M;
 pub(crate) use input::PreparedRoadInput;
 pub(crate) use input::RoadExtensionReprofile;
 pub use preview::{PreviewRoadSurfaceResult, RoadPreviewValidation};
+pub(crate) use preview_visual::RoadPreviewVisualMesh;
 use profile::EdgeProfilePlaneBlend;
 
 pub(crate) fn edge_class_sort_key(edge_class: EdgeClass) -> u8 {

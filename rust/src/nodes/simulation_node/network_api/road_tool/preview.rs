@@ -3,13 +3,14 @@
 //! Preview road-tool Godot API methods.
 
 use super::super::super::*;
+use crate::simulation::network::surface::RoadPreviewVisualMesh;
 
 #[godot_api(secondary)]
 impl SimulationNode {
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
-    /// This does not compile temporary preview meshes or mutate simulation state; road-tool click
-    /// placement also uses this fast contract so mouse interaction never waits on mesh generation.
+    /// Includes a terrain-draped display ribbon but does not compile junctions or mutate simulation
+    /// state. The display positions must never be fed back into authoritative placement.
     #[func]
     pub fn validate_road_candidate(
         &self,
@@ -38,7 +39,7 @@ impl SimulationNode {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         let validate_start = road_debug.then(Instant::now);
-        let (prepared_points, validation) = {
+        let (prepared_points, validation, visual_mesh) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
             let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
                 &points,
@@ -62,7 +63,14 @@ impl SimulationNode {
                 &query.water,
                 validation,
             );
-            (prepared_input.points, validation)
+            let visual_mesh = query.road_surface.build_preview_visual_mesh(
+                &prepared_input.points,
+                &[],
+                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+                &query.terrain,
+            );
+            (prepared_input.points, validation, visual_mesh)
         };
         let validate_ms = validate_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -89,12 +97,15 @@ impl SimulationNode {
             );
         }
 
-        self.road_candidate_validation_to_variant(
+        let result = self.road_candidate_validation_to_variant(
             &validation,
             &prepared_points,
             fwd_lanes,
             bkw_lanes,
-        )
+        );
+        let mut dict = result.to::<VarDictionary>();
+        Self::append_road_preview_visual_mesh(&mut dict, &visual_mesh);
+        dict.to_variant()
     }
 
     /// Validates a road-tool candidate by compiling temporary surface geometry.
@@ -317,11 +328,20 @@ impl SimulationNode {
             "surface_generation",
             i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
+        Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
+        dict.to_variant()
+    }
+
+    fn append_road_preview_visual_mesh(dict: &mut VarDictionary, mesh: &RoadPreviewVisualMesh) {
         dict.set(
             "surface_vertices",
-            PackedVector3Array::from_iter(preview.surface_vertices.iter().copied()),
+            PackedVector3Array::from(mesh.vertices.as_slice()),
         );
-        dict.to_variant()
+        dict.set("surface_uvs", PackedVector2Array::from(mesh.uvs.as_slice()));
+        dict.set(
+            "surface_colors",
+            PackedColorArray::from(mesh.colors.as_slice()),
+        );
     }
 
     fn road_candidate_validation_to_variant(
