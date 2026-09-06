@@ -52,8 +52,15 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   thread boundaries, guarded by generation and complete input equality. That certificate now also
   carries immutable node-topology candidates: an exact node-local rail match reuses contact output,
   exact height identity reuses boolean ownership and the validated triangulated arrangement, and
-  every mismatch takes the cold compiler path. Fresh release gameplay measurements pass; complete
-  assembled node export buffers remain.
+  every mismatch takes the cold compiler path. Preview topology/profile solving now also consumes
+  the same bulk split-edge dirty ledger as the matching simulation-thread commit, so close junction
+  clusters retain all exact preview-produced span and node artifacts. Refined-terrain planning now
+  sends only contributor-bearing tiles through Spade, lets the existing side-manifest-aware regular
+  filler own empty neighbors, and shares each contributor's one exact grading-margin probe between
+  coverage and guide generation. Pre-clipped road provenance now resolves exact component edges
+  through a deterministic sorted index, while canonical CDT bypasses redundant source-vertex
+  recovery only for loops whose source endpoints are already represented. Fresh release gameplay
+  measurements pass; complete assembled node export buffers remain.
 - `ROAD-06`: a deterministic Kuopio T-junction can pass RoadTool validation but produce
   incompatible-height road-owned terrain-CDT constraints after the authoritative graph mutation.
   Atomic rendering correctly retains the prior complete generation, but the graph then remains
@@ -123,7 +130,32 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   road-triggered terrain regeneration, road-mesh precompute, and terrain visual refresh are now the
   dominant end-to-end boundary. The matching windowed workload also passes: total runtime fell
   from `24.72 s` to `21.36 s`, four-way fixture p95 from `1,134 ms` to `823 ms`, and four-way commit
-  p95 from `517 ms` to `244 ms`. See
+  p95 from `517 ms` to `244 ms`. The controlled matrix then exposed that the fixed `100 ms` exact
+  preview debounce dominated every successful fixture and that an exact rejection did not replace
+  the cheap synchronous verdict. Reducing the idle gate to `25 ms` and making the exact result
+  authoritative cut controlled headless preview p50 by `52.7–60.5%`, fixture p50 by `29.1–40.2%`,
+  and total measured runtime from `29.96 s` to `24.72 s`. The exact ROAD-08 curve now rejects in
+  `41–75 ms` across four clean-world cycles instead of appearing pending beyond `90 s`. A follow-up
+  profile found that each exact preview cold-compiled every node in its bounded validation graph.
+  Exact validation now seeds the incremental compiler with only required edges/nodes and their local
+  incidence closure: sampled preview node-compiler CPU fell `18.1%`, the hardest double-T local
+  compile fell from about `41 ms` to `27 ms`, and the full headless capture fell to `24.28 s`.
+  Profiling then found that the double-T commit's bulk topology finalizer re-solved a wider split-edge
+  ledger than its exact preview, invalidating three of five span artifacts and two of four node
+  artifacts. Preview now replays that exact bulk ledger through shared scope helpers: the third
+  commit reuses `5/5` spans and `4/4` nodes, its surface compiler fell from about `37.3 ms` to
+  `0.69 ms`, and an isolated repeated third-commit p50 fell from `92.0 ms` to `83.0 ms`. The next
+  downstream profile identified refined-terrain CDT as the commit bottleneck. Contributor-only CDT
+  planning halves the first double-T patch from `16` windows / about `2,768` source samples to `8` /
+  about `1,318`, and reusing its exact adaptive grading margin removes the duplicate terrain-probe
+  pass. Per-contributor margin/guide construction and per-window clipping/sampling now execute as
+  ordered Rayon jobs, with fingerprint and manifest aggregation remaining serial and canonical.
+  Direct dense-layout instrumentation lowers refined input p50 from `10.677 ms` to `4.886 ms` and
+  complete refined-worker p50 from `13.758 ms` to `12.428 ms`; the matching full controlled capture
+  lowers measured commit-phase CPU samples from `1,842` to `1,545` and commit wall-time sum from
+  `4,118 ms` to `3,858 ms`, with all 32 fixtures passing. A 12-repetition focused release run
+  lowers aggregate double-T commit p50 from `82.875 ms` to `76.436 ms`; a clean release run also
+  passes all 32 controlled fixtures. See
   [`roads.md`](roads.md) and [`reference.md`](reference.md).
 - Committed roads now render as deterministic terrain-span-sized meshes instead of one
   full-network `ArrayMesh`. Rust rebuilds only the changed surface/earthwork chunk union, emits its

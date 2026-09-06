@@ -522,7 +522,27 @@ Required bounds:
   cleanup cancels the active road preview before the process exits, and the wrapper validates the
   metrics document because Samply may not propagate the recorded Godot process's nonzero status.
   `./run.sh --profile-gameplay-roads-headless` replays exactly the same workload through Godot's
-  headless renderer as the CPU-only comparator. See
+  headless renderer as the CPU-only comparator. Exact previews now start after `25 ms` of pointer
+  idle instead of `100 ms`; pointer motion still resets the delay and the worker still coalesces
+  queued requests. A completed exact rejection replaces the earlier cheap candidate verdict, so the
+  tool turns invalid immediately rather than displaying a stale valid coarse preview. The targeted
+  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=road08` workload verifies that the formerly 90-second apparent
+  hang reports `surface_geometry_invalid` in the same bounded preview interval. Exact validation no
+  longer invokes a cold full compile over every node copied into its bounded graph excerpt. It marks
+  only the candidate-required edges/nodes and incident topology dirty, then runs the same incremental
+  compiler used by authoritative edits; the existing required-piece checks and exact preview-to-commit
+  certificate remain unchanged. Samply attributes `18.1%` fewer preview samples to node compilation,
+  while direct compiler timing for the hardest double-T preview fell from about `41 ms` to `27 ms`.
+  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=double_t` isolates that clean-world fixture for repeated checks.
+  Exact preview topology processing also records and profiles the same bulk split-edge dirty ledger
+  consumed by simulation-thread commit finalization. The insertion-dirty-node and bulk-profile-node
+  scope builders are shared by preview and commit, keeping the work proportional to the locally
+  changed topology while preventing scope drift. On the close double-T's third commit this changes
+  exact reuse from `2/5` to `5/5` spans and from `2/4` to `4/4` nodes; direct surface compilation
+  falls from about `37.3 ms` to `0.69 ms`, and repeated end-to-end third-commit p50 falls from
+  `92.0 ms` to `83.0 ms`. The targeted regression requires complete artifact reuse across all three
+  bulk commits, and the clean 32-fixture controlled release profile passes.
+  See
   [`reference.md`](reference.md) for artifact names, controls, and interpretation.
 - centroid ownership makes these chunks deterministic update/upload batches. A triangle may extend
   beyond its home chunk, so this contract does not yet authorize independent chunk streaming or
@@ -557,6 +577,23 @@ Required bounds:
 - regular boundary-lattice samples stay local to directly adjacent seam filler; only non-lattice
   geometry breakpoints become patch-wide filler partitions, preventing the fixed tile lattice from
   producing a Cartesian filler-grid expansion
+- only tiles with an exact road/site contributor enter Spade; contributor-free dirty neighbors use
+  that side-manifest-aware regular filler, and each contributor's adaptive grading margin is probed
+  once then shared by coverage and guide generation; on the focused double-T workload this halves
+  the first affected patch from `16` CDT windows to `8` and lowers aggregate commit p50 by about
+  `7.8%`
+- independent contributor margin/guide jobs and independent tile clipping/sampling/fingerprint jobs
+  use ordered Rayon collection; canonical manifest aggregation stays serial, preserving exact output
+  while cutting dense double-T refined-input p50 from `10.677 ms` to `4.886 ms`; across the full
+  controlled matrix this lowers measured commit CPU samples by `16.1%` and commit wall-time sum by
+  `6.3%`, with all 32 fixtures passing
+- pre-clipped source provenance first resolves exact component edges through a deterministic sorted
+  edge index and reserves the metric `O(E * P)` overlap scan for nonexact partitions; canonical CDT
+  input skips source-vertex recovery only when every source endpoint is already present at the same
+  quantized position and height, reducing the normal path to `O((E + P) log P)`. In the controlled
+  Samply capture this removed all sampled source-split work, reduced outer road-loop clipping from
+  `567` to `386` samples (`31.9%`), canonicalization from `294` to `236` (`19.7%`), and complete
+  refined-CDT construction from `795` to `700` samples (`11.9%`), with all 32 fixtures passing
 - one refined patch is published atomically only for the exact requested generation; stale work
   cannot publish, while the immutable last accepted generation remains the visible and reusable
   source until a complete replacement is accepted

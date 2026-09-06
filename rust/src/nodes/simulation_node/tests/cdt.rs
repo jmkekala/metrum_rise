@@ -1182,7 +1182,14 @@ fn terrain_cdt_planner_reuses_unchanged_tiles_and_rebuilds_cardinal_seams() {
         None,
         None,
     );
-    assert_eq!(first.windows.len(), 4);
+    assert_eq!(first.windows.len(), 2);
+    assert!(
+        first
+            .windows
+            .iter()
+            .all(|window| window.has_engineered_contributor),
+        "contributor-free neighbors belong to regular filler, not Spade CDT"
+    );
     let previous = cached_patch_from_planned_windows(
         patch.clone(),
         first.windows,
@@ -1204,9 +1211,8 @@ fn terrain_cdt_planner_reuses_unchanged_tiles_and_rebuilds_cardinal_seams() {
         .map(|window| (window.key.min_x_mm, window.previous.is_some()))
         .collect::<BTreeMap<_, _>>();
     assert_eq!(reuse_by_min_x.get(&0), Some(&false));
-    assert_eq!(reuse_by_min_x.get(&64_000), Some(&false));
-    assert_eq!(reuse_by_min_x.get(&128_000), Some(&true));
     assert_eq!(reuse_by_min_x.get(&192_000), Some(&true));
+    assert_eq!(reuse_by_min_x.len(), 2);
 
     let removed = SimulationNode::terrain_cdt_window_build_inputs(
         &terrain,
@@ -1223,11 +1229,10 @@ fn terrain_cdt_planner_reuses_unchanged_tiles_and_rebuilds_cardinal_seams() {
             .iter()
             .map(|window| window.key.min_x_mm)
             .collect::<Vec<_>>(),
-        vec![128_000, 192_000],
+        vec![192_000],
         "old-only tiles must be absent from the complete current generation"
     );
-    assert!(removed.windows[0].previous.is_none());
-    assert!(removed.windows[1].previous.is_some());
+    assert!(removed.windows[0].previous.is_some());
 }
 
 #[test]
@@ -1409,7 +1414,10 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
         &previous,
     );
 
-    assert_eq!(plan.windows.len(), 2);
+    assert!(
+        plan.windows.is_empty(),
+        "dirty tiles without current contributors must return to regular filler"
+    );
     assert_eq!(plan.reused_windows.len(), 64 - local_scope.len());
     assert!(
         plan.windows

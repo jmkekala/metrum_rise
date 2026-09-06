@@ -16,7 +16,7 @@ const DEFAULT_FIXTURE_SPACING_M := 640
 const FIXTURE_MARGIN_M := 260.0
 const CAMERA_RADIUS_M := 190.0
 const IDLE_STABLE_FRAMES := 5
-const MATRIX_SCHEMA_VERSION := 1
+const MATRIX_SCHEMA_VERSION := 2
 const DEFAULT_MATRIX_NAME := "controlled"
 
 var simulation_node: Node
@@ -129,7 +129,7 @@ func run() -> void:
 		var entry: Dictionary = workload[workload_index]
 		var cycle_index: int = entry["cycle_index"]
 		if (
-			matrix_name == DEFAULT_MATRIX_NAME
+			matrix_name != "baseline"
 			and active_cycle_index >= 0
 			and cycle_index != active_cycle_index
 		):
@@ -289,7 +289,9 @@ func _fixture_definitions() -> Array[Dictionary]:
 	]
 	if matrix_name == "baseline":
 		return baselines
-	if matrix_name != DEFAULT_MATRIX_NAME:
+	if matrix_name == "road08":
+		return [_road08_regression_fixture()]
+	if matrix_name != DEFAULT_MATRIX_NAME and matrix_name != "double_t":
 		return []
 
 	var definitions := baselines.duplicate(true) as Array[Dictionary]
@@ -363,7 +365,36 @@ func _fixture_definitions() -> Array[Dictionary]:
 			"junctions": [_junction_check(Vector2.ZERO, 4)],
 		},
 	])
+	if matrix_name == "double_t":
+		for fixture in definitions:
+			if fixture["case_id"] == "double_t_close_2l":
+				var targeted_fixture := fixture.duplicate(true) as Dictionary
+				targeted_fixture["anchor_override"] = Vector2(-640.0, 640.0)
+				return [targeted_fixture]
+		return []
 	return definitions
+
+func _road08_regression_fixture() -> Dictionary:
+	return {
+		"case_id": "road08_curved_preview",
+		"topology": "bend",
+		"complexity_axis": "terrain_sensitive_spline",
+		"baseline_case": "",
+		"anchor_alignment": "free",
+		"anchor_override": Vector2(-1920.0, -1280.0),
+		"segments": [
+			_straight_segment(Vector2(-90.0, 0.0), Vector2.ZERO),
+			_spline_segment(
+				Vector2.ZERO,
+				Vector2(0.0, 90.0),
+				Vector2(12.0, 45.0),
+				1,
+				1,
+				"surface_geometry_invalid"
+			),
+		],
+		"junctions": [_junction_check(Vector2.ZERO, 1)],
+	}
 
 func _straight_segment(
 	start_offset: Vector2,
@@ -384,9 +415,10 @@ func _spline_segment(
 	end_offset: Vector2,
 	control_offset: Vector2,
 	fwd_lanes: int = 1,
-	bkw_lanes: int = 1
+	bkw_lanes: int = 1,
+	expected_preview_invalid_reason: String = ""
 ) -> Dictionary:
-	return {
+	var segment := {
 		"draw_mode": 1,
 		"start_offset": start_offset,
 		"end_offset": end_offset,
@@ -394,6 +426,9 @@ func _spline_segment(
 		"fwd_lanes": fwd_lanes,
 		"bkw_lanes": bkw_lanes,
 	}
+	if not expected_preview_invalid_reason.is_empty():
+		segment["expected_preview_invalid_reason"] = expected_preview_invalid_reason
+	return segment
 
 func _junction_check(offset: Vector2, expected_degree: int) -> Dictionary:
 	return {"offset": offset, "expected_degree": expected_degree}
@@ -435,7 +470,7 @@ func _select_fixture_anchors(workload: Array[Dictionary]) -> Array[Vector2]:
 	for entry in workload:
 		var cycle_index: int = entry["cycle_index"]
 		if (
-			matrix_name == DEFAULT_MATRIX_NAME
+			matrix_name != "baseline"
 			and active_cycle_index >= 0
 			and cycle_index != active_cycle_index
 		):
@@ -461,6 +496,15 @@ func _find_fixture_anchor(
 	half_width: float,
 	half_depth: float
 ) -> Dictionary:
+	if fixture.has("anchor_override"):
+		var anchor: Vector2 = fixture["anchor_override"]
+		if (
+			not used_anchors.has(anchor)
+			and _fixture_fits_world(anchor, fixture, half_width, half_depth)
+			and _anchor_supports_fixture(anchor, fixture)
+		):
+			return {"ok": true, "anchor": anchor}
+		return {"ok": false}
 	for ring in range(0, 20):
 		for grid_z in range(-ring, ring + 1):
 			for grid_x in range(-ring, ring + 1):
@@ -662,20 +706,53 @@ func _run_segment(
 	_begin_scripted_road(anchor, segment, start_pos, end_pos)
 	var preview_wait: Dictionary = await _wait_for_preview(settle_timeout_sec)
 	var preview_ms := _elapsed_ms(preview_start_us)
+	var expected_invalid_reason := String(
+		segment.get("expected_preview_invalid_reason", "")
+	)
+	var actual_invalid_reason := String(preview_wait.get("invalid_reason", ""))
+	var expected_rejection := (
+		not bool(preview_wait.get("ok", false))
+		and not expected_invalid_reason.is_empty()
+		and actual_invalid_reason == expected_invalid_reason
+	)
 	_phase_end(
 		preview_phase,
 		{
-			"ok": bool(preview_wait.get("ok", false)),
+			"ok": bool(preview_wait.get("ok", false)) or expected_rejection,
 			"elapsed_ms": preview_ms,
 			"request_id": road_tool._preview_request_id,
+			"expected_rejection": expected_rejection,
+			"invalid_reason": actual_invalid_reason,
 		}
 	)
+	if expected_rejection:
+		return {
+			"ok": true,
+			"committed": false,
+			"expected_preview_rejection": true,
+			"invalid_reason": actual_invalid_reason,
+			"draw_mode": "spline" if draw_mode == 1 else "straight",
+			"fwd_lanes": fwd_lanes,
+			"bkw_lanes": bkw_lanes,
+			"surface_point_count": prepared_points.size(),
+			"surface_length_m": _polyline_length(prepared_points),
+			"preview_ms": preview_ms,
+			"start": [start_pos.x, start_pos.y, start_pos.z],
+			"end": [end_pos.x, end_pos.y, end_pos.z],
+		}
 	if not bool(preview_wait.get("ok", false)):
 		return {
 			"ok": false,
 			"error": "preview did not complete",
 			"preview_ms": preview_ms,
 			"wait": preview_wait,
+		}
+	if not expected_invalid_reason.is_empty():
+		return {
+			"ok": false,
+			"error": "expected preview rejection did not occur",
+			"expected_invalid_reason": expected_invalid_reason,
+			"preview_ms": preview_ms,
 		}
 
 	var generation_before: int = simulation_node.get_network_render_generation()
@@ -769,6 +846,17 @@ func _wait_for_preview(timeout_sec: float) -> Dictionary:
 				"invalid_reason": validation.get("invalid_reason", "unknown"),
 			}
 		var preview: Dictionary = road_tool._preview_cache_surface
+		if (
+			not preview.is_empty()
+			and not bool(preview.get("is_valid", false))
+			and not road_tool._preview_result_pending
+			and road_tool._preview_surface_generation_is_current(preview)
+		):
+			return {
+				"ok": false,
+				"elapsed_ms": _elapsed_ms(start_us),
+				"invalid_reason": preview.get("invalid_reason", "unknown"),
+			}
 		if (
 			not preview.is_empty()
 			and bool(preview.get("is_valid", false))
@@ -902,7 +990,8 @@ func _build_summary(fixture_definitions: Array[Dictionary]) -> Dictionary:
 			for segment_variant in fixture.get("segments", []):
 				var segment: Dictionary = segment_variant
 				preview_values.append(float(segment.get("preview_ms", 0.0)))
-				commit_values.append(float(segment.get("commit_ms", 0.0)))
+				if segment.has("commit_ms"):
+					commit_values.append(float(segment["commit_ms"]))
 		cases[case_id] = {
 			"topology": fixture_definition["topology"],
 			"complexity_axis": fixture_definition["complexity_axis"],
@@ -954,6 +1043,10 @@ func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dicti
 			}
 			if segment.has("control_offset"):
 				descriptor["control_offset"] = _vector2_array(segment["control_offset"])
+			if segment.has("expected_preview_invalid_reason"):
+				descriptor["expected_preview_invalid_reason"] = (
+					segment["expected_preview_invalid_reason"]
+				)
 			segments.append(descriptor)
 		var junctions: Array[Dictionary] = []
 		for junction_variant in fixture["junctions"]:
@@ -962,7 +1055,7 @@ func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dicti
 				"offset": _vector2_array(junction["offset"]),
 				"expected_degree": junction["expected_degree"],
 			})
-		descriptors.append({
+		var fixture_descriptor := {
 			"case_id": fixture["case_id"],
 			"topology": fixture["topology"],
 			"complexity_axis": fixture["complexity_axis"],
@@ -970,7 +1063,10 @@ func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dicti
 			"anchor_alignment": fixture["anchor_alignment"],
 			"segments": segments,
 			"junctions": junctions,
-		})
+		}
+		if fixture.has("anchor_override"):
+			fixture_descriptor["anchor_override"] = _vector2_array(fixture["anchor_override"])
+		descriptors.append(fixture_descriptor)
 	return descriptors
 
 func _vector2_array(value: Vector2) -> Array[float]:

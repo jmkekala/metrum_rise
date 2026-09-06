@@ -781,6 +781,13 @@ Deterministic terrain-render rules:
 - an edit plans `old_coverage union new_coverage` plus deterministic seam-dependency tiles; removed
   contributors omit their old refined coverage so regular terrain fills it again, while unrelated
   tile fingerprints and compiled meshes remain unchanged
+- seam invalidation remains cardinal, but only tiles with current road/site contributors enter the
+  CDT builder; contributor-free neighbors return to the regular filler, which consumes the exact
+  adjacent window side manifest, and contributor coverage/guide generation share one adaptive
+  grading-margin probe result
+- contributor margin/guide generation and tile-local clipping, sampling, and fingerprint generation
+  run as ordered Rayon jobs; deterministic serial aggregation retains canonical tile and manifest
+  ordering, keeping total work `O(contributors + windows)` while reducing its wall-clock critical path
 - only changed tiles build through Rayon; completed tile results are sorted canonically before patch
   composition so scheduling order cannot change topology or shared seam identity
 - successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
@@ -1313,7 +1320,9 @@ What is implemented now:
   summaries include render stats for viewport, draw calls, primitives, memory buckets, vsync,
   FPS cap, and resource-pool counters; refined terrain preparation snapshots only bounded local
   inputs under the simulation lock, performs road/site grading and CDT work off-lock, and uses
-  patch-local revisions with one physical in-flight build per patch/render-step
+  patch-local revisions with one physical in-flight build per patch/render-step. Road-loop source
+  attribution uses a sorted exact-edge index before its metric-overlap fallback, and canonical CDT
+  skips source-vertex recovery only after proving every source endpoint is already represented
 - gameplay world-load refresh leaves terrain/water/network revisions dirty until the renderers
   acknowledge the exact payloads and road mesh they actually uploaded; resident terrain batches
   are prevalidated and staged as detached/inactive resources before an atomic scene swap

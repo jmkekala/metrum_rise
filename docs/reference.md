@@ -102,7 +102,12 @@ the authored world between its warmup and measured cycles, so every case repeats
 clean-network state. `METRUM_GAMEPLAY_BENCHMARK_MATRIX=baseline` selects the former three-case,
 12-fixture growing-network/site-sweep workload. Increasing baseline repetitions can encounter
 additional correctness sites and fails promptly if it does. Setting the baseline matrix and fixture
-spacing to `520` reproduces the original failing site.
+spacing to `520` reproduces the original failing site. The targeted `road08` matrix replays the exact
+terrain-sensitive curve at `(-1920, -1280)`: it commits the setup span, requires the authoritative
+curve preview to reject with `surface_geometry_invalid`, and records the rejection latency instead of
+mistaking a completed invalid result for pending work. The targeted `double_t` matrix replays only
+`double_t_close_2l` at its controlled `(-640, 640)` anchor, reloading the authored world before every
+cycle; use it for repeated local-density measurements without paying for unrelated matrix cases.
 
 Artifacts are timestamped under the ignored `benchmark-results/` directory: the Samply
 `.profile.json.gz`, its presymbolicated `.syms.json` sidecar, a `.metrics.json` file with phase
@@ -119,7 +124,8 @@ phase timings as separate workloads.
 
 The stable controls are:
 
-- `METRUM_GAMEPLAY_BENCHMARK_MATRIX` selects `controlled` (default) or `baseline`
+- `METRUM_GAMEPLAY_BENCHMARK_MATRIX` selects `controlled` (default), `baseline`, or the targeted
+  `road08` and `double_t` workloads
 - `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` and
   `METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS`
 - `METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC` for each renderer/generation settle fence

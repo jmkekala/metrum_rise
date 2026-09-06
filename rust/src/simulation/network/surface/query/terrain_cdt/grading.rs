@@ -74,6 +74,7 @@ impl RoadSurfaceSystem {
     }
 
     /// Emits deterministic terrain-CDT guide samples for the roadbed grading envelope.
+    #[cfg(test)]
     pub(crate) fn append_terrain_cdt_roadbed_grading_envelope(
         terrain: &TerrainSystem,
         road_loops: &[TerrainCdtRoadLoop],
@@ -85,6 +86,29 @@ impl RoadSurfaceSystem {
         let safe_step_m = render_step_m.max(f32::EPSILON);
         let max_distance_m =
             Self::terrain_cdt_required_grading_margin_m(terrain, road_loops, safe_step_m);
+        Self::append_terrain_cdt_roadbed_grading_envelope_with_margin(
+            terrain,
+            road_loops,
+            safe_step_m,
+            max_distance_m,
+            tie_in_guide_samples,
+            tie_in_guide_constraints,
+            sample_keys,
+        );
+    }
+
+    /// Emits grading guides using a support distance already computed for the same loops.
+    pub(crate) fn append_terrain_cdt_roadbed_grading_envelope_with_margin(
+        terrain: &TerrainSystem,
+        road_loops: &[TerrainCdtRoadLoop],
+        render_step_m: f32,
+        max_distance_m: f32,
+        tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
+        tie_in_guide_constraints: &mut Vec<TerrainCdtTieInGuideConstraint>,
+        sample_keys: &mut HashSet<(i64, i64)>,
+    ) {
+        let safe_step_m = render_step_m.max(f32::EPSILON);
+        let max_distance_m = max_distance_m.max(0.0);
         let constrain_guide_rails_for_input = road_loops.len() == 1
             && road_loops.first().is_some_and(|road_loop| {
                 !road_loop.is_hole

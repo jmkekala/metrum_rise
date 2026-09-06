@@ -83,6 +83,37 @@ pub(in crate::simulation::network) fn build_surface_edge(
     }
 }
 
+/// Returns the surface nodes dirtied by one road insertion and its topology splits.
+pub(in crate::simulation::network) fn road_insert_surface_dirty_nodes(
+    graph: &RegionGraph,
+    start_node: u32,
+    end_node: u32,
+    edge_id: usize,
+    node_count_before_intersections: usize,
+    edge_count_before_intersections: usize,
+) -> HashSet<u32> {
+    let mut dirty_nodes = HashSet::from([
+        graph.get_valid_node(start_node),
+        graph.get_valid_node(end_node),
+    ]);
+    if edge_id < graph.edge_count() && !graph.edge(edge_id).deleted {
+        dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).start_node));
+        dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).end_node));
+    }
+    for new_node_id in node_count_before_intersections as u32..graph.node_count() as u32 {
+        dirty_nodes.insert(graph.get_valid_node(new_node_id));
+    }
+    for new_edge_id in edge_count_before_intersections..graph.edge_count() {
+        let edge = graph.edge(new_edge_id);
+        if edge.deleted {
+            continue;
+        }
+        dirty_nodes.insert(graph.get_valid_node(edge.start_node));
+        dirty_nodes.insert(graph.get_valid_node(edge.end_node));
+    }
+    dirty_nodes
+}
+
 /// Top-level road network manager for pathfinding integration and coordinate conversion.
 ///
 /// Use this struct for all road edits. It ensures the CCH graph is rebuilt after structural changes.
@@ -292,22 +323,14 @@ impl TransitNetwork {
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
 
-        let mut surface_dirty_nodes: HashSet<u32> = HashSet::new();
-        surface_dirty_nodes.insert(graph.get_valid_node(start));
-        surface_dirty_nodes.insert(graph.get_valid_node(end));
-        if edge_id < graph.edge_count() && !graph.edge(edge_id).deleted {
-            surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).start_node));
-            surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).end_node));
-        }
-        for new_nid in node_count_before as u32..graph.node_count() as u32 {
-            surface_dirty_nodes.insert(graph.get_valid_node(new_nid));
-        }
-        for new_eid in edges_before..graph.edge_count() {
-            if !graph.edge(new_eid).deleted {
-                surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(new_eid).start_node));
-                surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(new_eid).end_node));
-            }
-        }
+        let surface_dirty_nodes = road_insert_surface_dirty_nodes(
+            graph,
+            start,
+            end,
+            edge_id,
+            node_count_before,
+            edges_before,
+        );
         self.mark_surface_dirty_for_nodes(graph, &surface_dirty_nodes);
 
         if !self.bulk_load {
@@ -535,6 +558,30 @@ impl TransitNetwork {
             }
         }
         self.mark_surface_dirty_from_sets(graph, &edge_ids, node_ids);
+    }
+
+    /// Returns the exact node-profile scope consumed by bulk road finalization.
+    pub(crate) fn bulk_surface_profile_nodes(
+        &self,
+        graph: &RegionGraph,
+        dirty_edges: &HashSet<usize>,
+    ) -> HashSet<u32> {
+        let mut affected_nodes = self
+            .road_surface
+            .dirty_nodes()
+            .iter()
+            .copied()
+            .map(|node_id| graph.get_valid_node(node_id))
+            .collect::<HashSet<_>>();
+        for &edge_idx in dirty_edges {
+            if edge_idx >= graph.edge_count() || graph.edge(edge_idx).deleted {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            affected_nodes.insert(graph.get_valid_node(edge.start_node));
+            affected_nodes.insert(graph.get_valid_node(edge.end_node));
+        }
+        affected_nodes
     }
 
     /// Adapts newly changed edge endpoints to the local junction profile.

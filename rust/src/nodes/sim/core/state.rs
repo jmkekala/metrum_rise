@@ -397,25 +397,9 @@ impl SimCore {
         &mut self,
     ) -> BulkRoadGeometryFinalize {
         let mut dirty_edges = std::mem::take(&mut self.transit_network.bulk_dirty_edges);
-        let mut affected_nodes: HashSet<u32> = self
+        let affected_nodes = self
             .transit_network
-            .road_surface
-            .dirty_nodes()
-            .iter()
-            .copied()
-            .map(|node_id| self.region_graph.get_valid_node(node_id))
-            .collect();
-
-        for &edge_idx in &dirty_edges {
-            if edge_idx >= self.region_graph.edge_count()
-                || self.region_graph.edge(edge_idx).deleted
-            {
-                continue;
-            }
-            let edge = self.region_graph.edge(edge_idx);
-            affected_nodes.insert(self.region_graph.get_valid_node(edge.start_node));
-            affected_nodes.insert(self.region_graph.get_valid_node(edge.end_node));
-        }
+            .bulk_surface_profile_nodes(&self.region_graph, &dirty_edges);
 
         let profile_start = Instant::now();
         let profile_changed_edges = self.transit_network.solve_dirty_junction_endpoint_profiles(

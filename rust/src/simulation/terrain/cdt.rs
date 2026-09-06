@@ -45,14 +45,18 @@ pub(crate) fn clip_terrain_cdt_road_loop_to_patch(
                 }
             })
         })
+        .filter(|edge| edge_length_xz_m(edge.start, edge.end) > CDT_EPSILON_M)
         .collect::<Vec<_>>();
     clip_loop_to_patch_components(&road_loop.vertices, patch)
         .into_iter()
         .map(|vertices| {
+            let component_edge_index = component_edge_index(&vertices);
             let source_edges = clipped_source_edges
                 .iter()
                 .copied()
-                .filter(|edge| component_contains_source_edge(&vertices, *edge))
+                .filter(|edge| {
+                    component_contains_source_edge(&vertices, &component_edge_index, *edge)
+                })
                 .collect();
             TerrainCdtRoadLoop::new_with_source_edges_and_topology(
                 road_loop.stable_piece_id,
@@ -66,10 +70,53 @@ pub(crate) fn clip_terrain_cdt_road_loop_to_patch(
         .collect()
 }
 
+type TerrainCdtComponentEdgeKey = ((i64, i64), (i64, i64));
+
+fn component_edge_index(
+    component: &[TerrainCdtVertex],
+) -> Vec<(TerrainCdtComponentEdgeKey, usize)> {
+    let mut edges = (0..component.len())
+        .map(|index| {
+            (
+                normalized_xz_edge_key(component[index], component[(index + 1) % component.len()]),
+                index,
+            )
+        })
+        .collect::<Vec<_>>();
+    edges.sort_unstable_by_key(|entry| entry.0);
+    edges
+}
+
+fn normalized_xz_edge_key(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+) -> TerrainCdtComponentEdgeKey {
+    let start = terrain_cdt_vertex_xz_key(start);
+    let end = terrain_cdt_vertex_xz_key(end);
+    if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
 fn component_contains_source_edge(
     component: &[TerrainCdtVertex],
+    component_edge_index: &[(TerrainCdtComponentEdgeKey, usize)],
     source_edge: TerrainCdtRoadLoopSourceEdge,
 ) -> bool {
+    let source_key = normalized_xz_edge_key(source_edge.start, source_edge.end);
+    let first_exact = component_edge_index.partition_point(|entry| entry.0 < source_key);
+    for &(edge_key, edge_index) in &component_edge_index[first_exact..] {
+        if edge_key > source_key {
+            break;
+        }
+        let start = component[edge_index];
+        let end = component[(edge_index + 1) % component.len()];
+        if segments_have_metric_collinear_overlap(start, end, source_edge.start, source_edge.end) {
+            return true;
+        }
+    }
     (0..component.len()).any(|index| {
         let start = component[index];
         let end = component[(index + 1) % component.len()];

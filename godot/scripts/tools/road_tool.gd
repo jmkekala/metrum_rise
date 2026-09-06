@@ -67,7 +67,7 @@ var _last_snap_to_roads_enabled: bool = true
 const ROAD_PROFILE_SLOW_MS := 50.0
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
-const ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC := 0.10
+const ROAD_PREVIEW_EXACT_IDLE_DELAY_SEC := 0.025
 const ROAD_PREVIEW_RENDER_OFFSET_M := 0.08
 const ROAD_PREVIEW_LANE_WIDTH_M := 3.5
 const ROAD_PREVIEW_SIDEWALK_WIDTH_M := 1.5
@@ -416,7 +416,11 @@ func _poll_pending_preview_result() -> void:
 
 	_preview_result_pending = false
 	_remember_preview_surface(points, preview)
-	var validation := _candidate_validation_for_points(points)
+	# The exact compile is the authoritative placement result. Replace the cheap synchronous
+	# candidate verdict even when compilation rejected the surface, otherwise the UI keeps showing
+	# a stale valid coarse preview and callers can wait forever for an already completed request.
+	_remember_candidate_validation(points, preview)
+	var validation: Dictionary = preview
 	if bool(validation.get("is_valid", false)):
 		if not _draw_compiled_preview_surface(points, preview, validation):
 			_draw_candidate_preview(points, validation)

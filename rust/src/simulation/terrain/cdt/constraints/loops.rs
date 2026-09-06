@@ -50,6 +50,29 @@ struct TerrainCdtSourceVertexSplit {
     vertex: TerrainCdtVertex,
 }
 
+pub(in crate::simulation::terrain::cdt) fn road_loop_contains_source_edge_vertices(
+    points: &[TerrainCdtVertex],
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+) -> bool {
+    if source_edges.is_empty() {
+        return true;
+    }
+    let mut point_keys = points
+        .iter()
+        .copied()
+        .map(terrain_cdt_vertex_key)
+        .collect::<Vec<_>>();
+    point_keys.sort_unstable();
+    point_keys.dedup();
+    source_edges.iter().all(|edge| {
+        [edge.start, edge.end].into_iter().all(|vertex| {
+            point_keys
+                .binary_search(&terrain_cdt_vertex_key(vertex))
+                .is_ok()
+        })
+    })
+}
+
 pub(in crate::simulation::terrain::cdt) fn split_road_loop_segments_at_source_vertices(
     points: Vec<TerrainCdtVertex>,
     source_edges: &[TerrainCdtRoadLoopSourceEdge],

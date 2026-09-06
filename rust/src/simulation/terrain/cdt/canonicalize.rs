@@ -106,9 +106,16 @@ pub(super) fn canonicalize_input(
         {
             continue;
         }
+        let source_vertices_are_in_original_loop =
+            road_loop_contains_source_edge_vertices(&original_points, &original_source_edges);
         for points in clip_loop_to_patch_components(&original_points, input.patch) {
-            let points =
-                split_road_loop_segments_at_source_vertices(points, &original_source_edges)?;
+            // Terrain-clip export has already inserted every retained source endpoint into the
+            // clipped loop, so recovery is only needed for irregular external input.
+            let points = if source_vertices_are_in_original_loop {
+                points
+            } else {
+                split_road_loop_segments_at_source_vertices(points, &original_source_edges)?
+            };
             if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
                 continue;
             }

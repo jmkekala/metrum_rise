@@ -195,6 +195,37 @@ fn cdt_rejects_conflicting_source_split_heights() {
 }
 
 #[test]
+fn source_edge_vertices_require_matching_loop_vertices_and_heights() {
+    let points = square_road_loop(2.0, 8.0, 4.0);
+    let source = TerrainCdtRoadBoundarySource::SyntheticTestBoundary {
+        stable_piece_id: 7,
+        local_loop_index: 2,
+        local_edge_index: 0,
+    };
+    let mut source_edges = points
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, start)| TerrainCdtRoadLoopSourceEdge {
+            start,
+            end: points[(index + 1) % points.len()],
+            source,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(road_loop_contains_source_edge_vertices(
+        &points,
+        &source_edges[1..3]
+    ));
+
+    source_edges[1].end.height_m += 1.0;
+    assert!(!road_loop_contains_source_edge_vertices(
+        &points,
+        &source_edges[1..3]
+    ));
+}
+
+#[test]
 fn road_seam_height_owns_a_shared_patch_corner() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]);
     let road = vec![

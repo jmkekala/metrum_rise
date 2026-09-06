@@ -15,7 +15,9 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, NodeType};
-use crate::simulation::network::{TransitNetwork, build_surface_edge, topology};
+use crate::simulation::network::{
+    TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
+};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector3;
@@ -940,7 +942,13 @@ impl RoadSurfaceSystem {
         // The validation graph is a bounded excerpt. Preserve successful artifacts so failures
         // on synthetic frontier nodes can be separated from missing candidate-owned surfaces.
         validation_surface.retain_partial_validation_artifacts = true;
-        validation_surface.compile_dirty_with_reason(&validation_graph, terrain, compile_reason);
+        validation_surface.compile_validation_neighborhood_with_reason(
+            &validation_graph,
+            terrain,
+            &required_edge_ids,
+            &required_node_ids,
+            compile_reason,
+        );
 
         if let Some(failure) = Self::explicit_surface_validation_failure(
             &validation_surface,
@@ -1048,13 +1056,49 @@ impl RoadSurfaceSystem {
 
         // The authoritative dirty set also includes far endpoints of adjacent spans. Capture every
         // locally compiled node; exact solved-input matching rejects anything the commit changed.
-        let reusable_node_ids = validation_surface.all_surface_node_ids(&validation_graph);
+        let mut reusable_node_ids = validation_surface
+            .compiled_visual_node_pieces()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        reusable_node_ids.sort_unstable();
         let topology_reuse = validation_surface.preview_topology_reuse(
             &validation_graph,
             terrain,
             &reusable_node_ids,
         );
         (validation, topology_reuse)
+    }
+
+    fn compile_validation_neighborhood_with_reason(
+        &mut self,
+        validation_graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        required_edge_ids: &[usize],
+        required_node_ids: &[u32],
+        compile_reason: RoadSurfaceCompileReason,
+    ) {
+        // A fresh transient system normally requests a full compile. Treat its empty cache as an
+        // already-published generation so the explicit validation ledger remains authoritative.
+        debug_assert!(!self.compiled_once);
+        self.compiled_once = true;
+
+        for &edge_idx in required_edge_ids {
+            self.mark_edge_dirty(validation_graph, edge_idx);
+        }
+        for &node_id in required_node_ids {
+            let node_id = validation_graph.get_valid_node(node_id);
+            self.mark_node_dirty(validation_graph, node_id);
+            if node_id as usize >= validation_graph.node_adjacency_count() {
+                continue;
+            }
+            for &edge_idx in validation_graph.node_adjacency(node_id) {
+                if !self.dirty_edges.contains(&edge_idx) {
+                    self.mark_edge_dirty(validation_graph, edge_idx);
+                }
+            }
+        }
+        self.compile_dirty_with_reason(validation_graph, terrain, compile_reason);
     }
 
     fn explicit_surface_validation_failure(
@@ -1474,6 +1518,14 @@ impl RoadSurfaceSystem {
         let world_config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&world_config);
         let mut allocator = BuildingAllocator::new();
+        let start_node = validation_graph.edge(new_edge_idx).start_node;
+        let end_node = validation_graph.edge(new_edge_idx).end_node;
+        let node_count_before = validation_graph.node_count();
+        let edge_count_before = validation_graph.edge_count();
+        // Production commits batch intersection edits and profile every edge touched by splitting.
+        // Populate the same bulk ledger here so preview sections are commit-identical.
+        network.bulk_load = true;
+        network.bulk_dirty_edges.insert(new_edge_idx);
         topology::process_intersections(
             &mut network,
             validation_graph,
@@ -1483,15 +1535,18 @@ impl RoadSurfaceSystem {
         );
         Self::cleanup_validation_duplicate_edges(validation_graph);
 
-        let affected_nodes = (0..validation_graph.node_count())
-            .map(|node_id| validation_graph.get_valid_node(node_id as u32))
-            .collect::<HashSet<_>>();
-        let mut affected_edges = validation_graph
-            .edges()
-            .iter()
-            .enumerate()
-            .filter_map(|(edge_idx, edge)| (!edge.deleted).then_some(edge_idx))
-            .collect::<HashSet<_>>();
+        let surface_dirty_nodes = road_insert_surface_dirty_nodes(
+            validation_graph,
+            start_node,
+            end_node,
+            new_edge_idx,
+            node_count_before,
+            edge_count_before,
+        );
+        network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
+
+        let mut affected_edges = std::mem::take(&mut network.bulk_dirty_edges);
+        let affected_nodes = network.bulk_surface_profile_nodes(validation_graph, &affected_edges);
         let profile_changed_edges = validation_graph
             .solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges);
         affected_edges.extend(profile_changed_edges);

@@ -3,9 +3,12 @@
 //! Temporary road preview regression tests.
 
 use super::*;
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::surface::{
     PreparedRoadInput, RoadExtensionReprofile, RoadSurfaceCompileReason,
 };
+use crate::simulation::zoning::ZoningSystem;
 
 #[test]
 fn visual_polygon_builder_preserves_skinny_closure_geometry() {
@@ -204,6 +207,94 @@ fn exact_preview_captures_all_nodes_on_adjacent_dirty_spans() {
     assert!(surface.last_reused_node_topology_count >= 1);
     assert!(surface.last_reused_node_height_topology_count >= 1);
     assert!(surface.last_reused_node_ownership_topology_count >= 1);
+}
+
+#[test]
+fn exact_preview_replays_close_double_t_bulk_profile_scope() {
+    let terrain = sloped_terrain(192, 192);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new_with_surface_chunk_span(32.0);
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut allocator = BuildingAllocator::new();
+    network.road_surface.compile_dirty(&graph, &terrain);
+
+    let ground_point = |x: f32, z: f32| {
+        Vector3::new(
+            x,
+            terrain.sample_height_world(x, z) * crate::config::HEIGHT_SCALE,
+            z,
+        )
+    };
+    let strokes = [
+        vec![ground_point(-60.0, 0.0), ground_point(60.0, 0.0)],
+        vec![ground_point(-16.0, 48.0), ground_point(-16.0, 0.0)],
+        vec![ground_point(16.0, -48.0), ground_point(16.0, 0.0)],
+    ];
+
+    for (stroke_idx, stroke) in strokes.into_iter().enumerate() {
+        let (preview, topology_reuse) = network
+            .road_surface
+            .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                &stroke,
+                1,
+                1,
+                &terrain,
+                &graph,
+                &network.road_surface,
+                true,
+            );
+        assert!(
+            preview.is_valid,
+            "double-T stroke {stroke_idx} must validate: {:?}",
+            preview.validation
+        );
+        let topology_reuse =
+            topology_reuse.expect("exact double-T preview should retain local topology");
+        let offered_spans = topology_reuse.span_count();
+        let offered_nodes = topology_reuse.node_count();
+
+        network.bulk_load = true;
+        network.add_road(
+            &mut graph,
+            preview.prepared_points,
+            1,
+            1,
+            preview.edge_class,
+            &mut zoning,
+            &mut allocator,
+        );
+        network.bulk_load = false;
+
+        let mut dirty_edges = std::mem::take(&mut network.bulk_dirty_edges);
+        let affected_nodes = network.bulk_surface_profile_nodes(&graph, &dirty_edges);
+        let profile_changed_edges = network.solve_dirty_junction_endpoint_profiles(
+            &mut graph,
+            &affected_nodes,
+            &dirty_edges,
+        );
+        dirty_edges.extend(profile_changed_edges);
+        let regrade_changed_edges = network.regrade_dirty_junction_endpoint_profiles(
+            &mut graph,
+            &affected_nodes,
+            &dirty_edges,
+        );
+        dirty_edges.extend(regrade_changed_edges);
+        graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+        network.mark_surface_dirty_from_sets(&graph, &dirty_edges, &affected_nodes);
+        network
+            .road_surface
+            .enqueue_preview_topology_reuse(topology_reuse);
+        network.road_surface.compile_dirty(&graph, &terrain);
+
+        assert_eq!(
+            network.road_surface.last_reused_span_topology_count, offered_spans,
+            "stroke {stroke_idx} must reuse every exact preview span"
+        );
+        assert_eq!(
+            network.road_surface.last_reused_node_topology_count, offered_nodes,
+            "stroke {stroke_idx} must reuse every exact preview node"
+        );
+    }
 }
 
 #[test]
