@@ -660,12 +660,19 @@ Required bounds:
   `METRUM_GAMEPLAY_BENCHMARK_MAX_FPS` overrides it; cadence, viewport, engine, CPU/GPU names, worker
   counts, and source/binary/world fingerprints are recorded. Do not interpret headless/windowed
   differences as GPU execution cost. `state_after.command` exposes generation-matched core stages:
-  locking, add, finalization, surface/terrain, agents/lanes, buildings, routing, mesh, snapshot, and
-  refined-state work, plus dirty edges and rebuilt chunks. Finalization includes its maintenance
-  children; core work includes core stages but excludes context publication and renderer work.
+  command-queue wait, locking, add, finalization, surface/terrain, agents/lanes, buildings, routing,
+  mesh, snapshot, and refined-state work, plus dirty edges and rebuilt chunks. Finalization includes
+  its maintenance children; core work excludes queue wait, context publication and renderer work.
   Do not add inclusive parents and children. Cardinality scans occur outside segment clocks;
   `nodes` counts storage including aliases. Fixture totals include bookkeeping/verification and
   are not the primary response-time KPI.
+- Authoring commands wake the simulation thread through its existing channel; they do not wait
+  for the next 60 Hz movement tick (`ROAD-18`). Completed edits publish the road/terrain render
+  snapshot even between ticks. A separate monotonic deadline gates the unchanged fixed simulation
+  delta; camera/command wakeups neither advance ticks early nor postpone their deadline, and a
+  slow edit does not trigger catch-up bursts. Coalesced speed/camera updates survive intervening
+  wakes. Scheduling adds `O(1)` work without a new queue, thread, or spatial index; edit snapshots
+  reuse the existing buffers and publication path.
 - Summaries separate `initial_road`, `edit_1`, and later edits. p95 is null below 100 observations;
   p99 is null below 1,000. These are descriptive quantiles, not confidence intervals or independent
   process replicates. The wrapper rejects existing outputs and validates full fixture coverage,
@@ -720,9 +727,24 @@ Required bounds:
   each with one warmup and five measured fixture repetitions, show the empty-world first stroke
   regressing from `36.2 → 41.2 ms` (`13.9–17.3%`), while its following T is `48.2 → 48.1 ms`.
   The 112-edge first stroke improves `63.1 → 58.4 ms`; its T result is inconclusive.
-  The first-road regression remains explicit follow-up `ROAD-18`, not a claimed noise-free win.
+  That first-road regression was tracked separately as `ROAD-18`; its follow-up is below.
   Captures, staged comparisons, superseded experiments and verification are under ignored
   `benchmark-results/road-perf-pass-2/`.
+- `ROAD-18` follow-up isolates an existing uninterruptible simulation-thread sleep: cheap road
+  commands could spend up to one 60 Hz interval waiting to start. The interruptible channel wait
+  and immediate edit snapshot remove that scheduling delay without changing geometry or routing.
+  Three matched release/headless process pairs run sides `0,8`, one warmup and five measured
+  repetitions, in A1 B1 B2 A2 A3 B3 order without compiler/test load. Empty-network first-road
+  click-to-first-idle medians fall `43.7 → 30.8 ms` (`16.1–36.3%` lower across paired processes);
+  command-queue wait falls `7.33 → 0.079 ms`. The following T improves `41.9 → 35.3 ms`.
+  Unchanged-build process medians still vary (A1/A2 `−6.5%`, B1/B2 `+19.5%` for first-road latency),
+  so these are descriptive measurements, not significance or whole-game FPS claims.
+  At 112 background edges, first-road results are mixed across pairs; the following T improves
+  `64.8 → 52.6 ms`. Three additional side-32 pairs (one fixture each, no extra warmup after grid
+  construction) retain the large-grid gains: first road `194 → 193 ms`, local T `217 → 200 ms`.
+  Both large-grid ranges cross zero, so no further large-grid speedup is claimed. All paired
+  guide counts and pre/post graph/lane/agent/building cardinalities match. Captures, comparisons,
+  binary fingerprints, exclusions and verification are under ignored `benchmark-results/road-18/`.
 - Criterion now distinguishes `compile_dirty_unchanged_edge` / `compile_dirty_unchanged_terrain`
   from real `compile_dirty_lane_width_change` / `compile_dirty_changed_terrain` kernels. The grid
   is centered inside its terrain, sample/world coordinates agree, changed samples lie inside the

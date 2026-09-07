@@ -190,8 +190,14 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   local T click-to-first-idle `3731 → 202 ms`, routing `3437 → 21 ms`, and an additional
   `359 → 202 ms` response reduction from guide reuse with the router held fixed.
   All 1,553 Rust tests and bridge/interaction/authored-terrain replays pass. These are headless
-  road-edit measurements, not whole-game FPS. A warmed empty-network first stroke regresses
-  `36.2 → 41.2 ms`; subsequent T latency is unchanged. That small-case cost remains `ROAD-18`.
+  road-edit measurements, not whole-game FPS. That pass's warmed empty-network first stroke
+  regressed `36.2 → 41.2 ms`; subsequent T latency was unchanged. `ROAD-18` now removes the
+  uninterruptible command sleep and publishes completed edit snapshots between fixed movement
+  ticks. Three new matched warmed pairs improve first-road response `43.7 → 30.8 ms`
+  (`16.1–36.3%` across pairs), with queue wait `7.33 → 0.079 ms`. Side-32 controls retain the
+  large-grid gains with matching guide/graph/lane output; their additional speedup is inconclusive.
+  All 1,557 Rust tests, eight report checks, three Godot bridge suites, 48 paired fixtures,
+  interaction and saved-city replays pass. See [`roads.md`](roads.md) for measurement limits.
   Earlier schema-2 optimization passes removed duplicate exact preview/commit validation, cached
   target-group geometry and quantized ownership predicates, spatially indexed rail/seam coverage,
   eliminated repeated contour and source scans, and handed exact preview-produced junction

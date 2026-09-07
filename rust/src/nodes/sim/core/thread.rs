@@ -54,6 +54,8 @@ pub(crate) enum SimCommand {
         snap_to_existing_roads: bool,
         /// Successful exact preview tied to the same immutable road-surface generation.
         validation_certificate: Option<RoadPreviewValidationCertificate>,
+        /// Dispatch timestamp for queue latency, independent of core mutex contention.
+        enqueued_at: Instant,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -122,8 +124,8 @@ fn record_crash_command_for_core(core: &SimCore, command: CrashCommand) {
 
 /// Background simulation thread loop.
 ///
-/// Runs at ~60 Hz, decoupled from Godot's render frame. Movement ticks and queued
-/// structural edits own the core mutex while they execute. Render-facing APIs consume
+/// Movement runs at ~60 Hz; queued edits wake the thread independently of that cadence.
+/// Movement ticks and structural edits own the core mutex while they execute. Render-facing APIs consume
 /// immutable snapshots or use nonblocking acquisition, and snapshot publication occurs
 /// after releasing the core mutex.
 pub(crate) fn run_sim_thread(
@@ -136,6 +138,11 @@ pub(crate) fn run_sim_thread(
     const TARGET_DT: f64 = 1.0 / 60.0;
     let target = Duration::from_micros(16_667); // ~60 Hz
     let mut recycled_snapshot = RenderSnapshot::default();
+    let mut next_tick = Instant::now();
+    let mut ready_command = None;
+    // Coalesced controls survive wakes until the next tick or structural-edit snapshot.
+    let mut pending_speed = None;
+    let mut pending_camera_aabb = None;
 
     loop {
         let frame_start = Instant::now();
@@ -148,11 +155,14 @@ pub(crate) fn run_sim_thread(
         let mut add_road_commands = 0_usize;
         let mut undo_commands = 0_usize;
         let mut bulldoze_commands = 0_usize;
-        let mut pending_speed = None;
-        let mut pending_camera_aabb = None;
         let mut should_quit = false;
         loop {
-            match cmd_rx.try_recv() {
+            // The command that interrupted the wait must precede newer queued commands.
+            match ready_command
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| cmd_rx.try_recv())
+            {
                 Ok(SimCommand::SetSpeed(s)) => {
                     commands_processed += 1;
                     set_speed_commands += 1;
@@ -221,12 +231,14 @@ pub(crate) fn run_sim_thread(
                     bkw_lanes,
                     snap_to_existing_roads,
                     validation_certificate,
+                    enqueued_at,
                 }) => {
                     commands_processed += 1;
                     add_road_commands += 1;
                     let road_total = Instant::now();
                     let mut edit_metrics =
                         crate::nodes::sim::benchmark::road_edit::RoadEditMetrics::default();
+                    edit_metrics.queue_wait_ms = enqueued_at.elapsed().as_secs_f64() * 1000.0;
                     let lock_wait_start = Instant::now();
                     let (
                         road_snapshots,
@@ -451,6 +463,23 @@ pub(crate) fn run_sim_thread(
             return;
         }
 
+        let now = Instant::now();
+        let tick_due = begin_due_sim_tick(&mut next_tick, now, target);
+        let edit_snapshot_due = add_road_commands + undo_commands + bulldoze_commands > 0;
+        if !tick_due && !edit_snapshot_due {
+            // O(1), allocation-free scheduling on the existing channel. Authoring commands wake
+            // immediately, but neither wakeups nor expensive edits create extra movement ticks.
+            ready_command = match cmd_rx.recv_timeout(next_tick.saturating_duration_since(now)) {
+                Ok(command) => Some(command),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    crate::debug::suspend_hang_watchdog();
+                    return;
+                }
+            };
+            continue;
+        }
+
         let perf_enabled = crate::debug::is_perf_enabled();
         let lock_wait_ms: f64;
         let mut pathing_ms = 0.0;
@@ -475,11 +504,11 @@ pub(crate) fn run_sim_thread(
             let mut core = core.lock().expect("simulation core lock poisoned");
             lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
             let lock_held_start = Instant::now();
-            if let Some(speed) = pending_speed {
+            if let Some(speed) = pending_speed.take() {
                 core.time.speed_multiplier = speed;
                 record_crash_command_for_core(&core, CrashCommand::SetSpeed { speed });
             }
-            if let Some(camera_aabb) = pending_camera_aabb {
+            if let Some(camera_aabb) = pending_camera_aabb.take() {
                 core.camera_aabb = camera_aabb;
                 record_crash_command_for_core(
                     &core,
@@ -494,7 +523,9 @@ pub(crate) fn run_sim_thread(
             record_crash_phase_for_core(&core, "sim frame");
             let speed = core.time.speed_multiplier;
 
-            if speed > 0.0 {
+            // Publish completed edits immediately, even between movement deadlines. Otherwise
+            // network/terrain dirty flags would put the removed queue delay back on the renderer.
+            if tick_due && speed > 0.0 {
                 // Rebuild CCH if dirty, then rebuild any dirty flow fields.
                 let pathing_start = Instant::now();
                 let c = &mut *core;
@@ -652,11 +683,49 @@ pub(crate) fn run_sim_thread(
                 bulldoze_commands,
             );
         }
+    }
+}
 
-        // Sleep to maintain ~60 Hz.
-        let elapsed = frame_start.elapsed();
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
+// Missed wall-clock deadlines never trigger catch-up bursts. Fixed simulation dt remains owned
+// by the tick body; this gate only decides when that body may run again.
+fn begin_due_sim_tick(next_tick: &mut Instant, now: Instant, interval: Duration) -> bool {
+    if now < *next_tick {
+        return false;
+    }
+    *next_tick = now + interval;
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_wakes_neither_advance_nor_postpone_sim_ticks() {
+        let start = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut next_tick = start;
+        for tick in 0..60 {
+            for offset_us in [0, 1, 100, 8_000, 16_666] {
+                let now = start + interval * tick + Duration::from_micros(offset_us);
+                assert_eq!(
+                    begin_due_sim_tick(&mut next_tick, now, interval),
+                    offset_us == 0
+                );
+            }
         }
+        assert_eq!(next_tick, start + interval * 60);
+    }
+
+    #[test]
+    fn slow_road_command_does_not_create_catch_up_ticks() {
+        let start = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut next_tick = start;
+        assert!(begin_due_sim_tick(&mut next_tick, start, interval));
+        let late = start + interval * 5;
+        assert!(begin_due_sim_tick(&mut next_tick, late, interval));
+        assert!(!begin_due_sim_tick(&mut next_tick, late, interval));
+        assert_eq!(next_tick, late + interval);
     }
 }

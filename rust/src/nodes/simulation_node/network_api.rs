@@ -92,8 +92,8 @@ impl SimulationNode {
         snap_to_existing_roads: bool,
     ) {
         // Send to the background thread so the Godot main thread is never blocked
-        // by the expensive lane-rebuild and zoning-obstruction passes (~500 ms).
-        // The road appears on the next sim tick (~16 ms later) — imperceptible delay.
+        // by lane rebuilding and zoning work. The command wakes the existing simulation thread
+        // without waiting for, or advancing, its next movement tick.
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = points.len();
@@ -117,6 +117,7 @@ impl SimulationNode {
                 bkw_lanes,
                 snap_to_existing_roads,
                 validation_certificate,
+                enqueued_at: Instant::now(),
             })
             .is_ok();
         let send_ms = send_start

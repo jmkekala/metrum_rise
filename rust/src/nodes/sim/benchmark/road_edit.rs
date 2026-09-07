@@ -9,6 +9,8 @@ use godot::prelude::*;
 pub(crate) struct RoadEditMetrics {
     pub(crate) generation: u64,
     pub(crate) committed: bool,
+    // Dispatch to dequeue, excluding subsequent core mutex contention.
+    pub(crate) queue_wait_ms: f64,
     pub(crate) lock_wait_ms: f64,
     pub(crate) core_work_ms: f64,
     pub(crate) add_ms: f64,
@@ -36,6 +38,7 @@ impl RoadEditMetrics {
         fields!(
             generation,
             committed,
+            queue_wait_ms,
             lock_wait_ms,
             core_work_ms,
             add_ms,
