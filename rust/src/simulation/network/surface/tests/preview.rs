@@ -83,7 +83,7 @@ fn exact_preview_replays_terminal_topology_into_commit() {
     surface.compile_dirty(&graph, &terrain);
     let raw_points = vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
 
-    let (preview, topology_reuse) = surface
+    let (preview, topology_reuse, _) = surface
         .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
             &raw_points,
             1,
@@ -160,7 +160,7 @@ fn exact_preview_captures_all_nodes_on_adjacent_dirty_spans() {
     surface.compile_dirty(&graph, &terrain);
 
     let raw_points = vec![graph.node(bend).pos, Vector3::new(20.0, 0.0, 32.0)];
-    let (preview, topology_reuse) = surface
+    let (preview, topology_reuse, _) = surface
         .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
             &raw_points,
             1,
@@ -233,7 +233,7 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
     for (stroke_idx, stroke) in strokes.into_iter().enumerate() {
         let mut cold_surface = network.road_surface.clone();
         cold_surface.compiled_visual_node_topologies.clear();
-        let (cold_preview, cold_reuse) = cold_surface
+        let (cold_preview, cold_reuse, _) = cold_surface
             .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
                 &stroke,
                 1,
@@ -243,7 +243,7 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
                 &cold_surface,
                 true,
             );
-        let (preview, topology_reuse) = network
+        let (preview, topology_reuse, _) = network
             .road_surface
             .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
                 &stroke,

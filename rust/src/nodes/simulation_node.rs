@@ -118,9 +118,10 @@ use crate::nodes::sim::core::{
     CachedRefinedTerrainCdtWindow, CachedRefinedTerrainMeshBuffers, CachedRefinedTerrainPatch,
     CachedTerrainCdtRoadInput, CityTreasury, DailyBudgetLedgerEntry, ROAD_BUILD_COST_PER_METER,
     RefinedTerrainCdtWindowBuildInput, RefinedTerrainCdtWindowKey, RefinedTerrainPatchBuildInput,
-    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSnapshot,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, SERVICE_POLICY_ELECTRICITY, SimCommand,
-    SimCore, road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
+    RefinedTerrainPatchCacheKey, RenderSnapshot, RoadPreviewRequest, RoadPreviewSender,
+    RoadPreviewSnapshot, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
+    SERVICE_POLICY_ELECTRICITY, SimCommand, SimCore, road_preview_channel,
+    road_tool_snapshots_from_core, run_road_preview_worker, run_sim_thread,
 };
 use crate::nodes::sim::core::{
     WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
@@ -268,8 +269,8 @@ pub struct SimulationNode {
     pub(crate) cmd_tx: std::sync::mpsc::Sender<SimCommand>,
     /// Receiver held here until `ready()` transfers it to the background thread.
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
-    /// Channel for road-tool preview jobs handled outside the simulation thread.
-    pub(crate) road_preview_tx: std::sync::mpsc::Sender<RoadPreviewRequest>,
+    /// Bounded latest-input mailbox for the worker outside the simulation thread.
+    pub(crate) road_preview_tx: RoadPreviewSender,
     /// Immutable context consumed by the road-preview worker.
     pub(crate) road_preview_context: Arc<RwLock<RoadPreviewWorkerContext>>,
     /// Latest completed road-tool preview from the dedicated preview worker.
@@ -531,16 +532,17 @@ impl INode3D for SimulationNode {
         let water_patch_mesh_jobs = Arc::new(Mutex::new(WaterPatchMeshAsyncState::new()));
         let terrain_patch_payload_jobs = Arc::new(Mutex::new(TerrainPatchPayloadAsyncState::new()));
         let water_patch_payload_jobs = Arc::new(Mutex::new(WaterPatchPayloadAsyncState::new()));
-        let (road_preview_tx, road_preview_rx) = std::sync::mpsc::channel();
+        let (road_preview_tx, road_preview_rx) = road_preview_channel();
+        let core_arc = Arc::new(Mutex::new(core));
         let _road_preview_thread = {
+            let core = Arc::clone(&core_arc);
             let context = Arc::clone(&road_preview_context);
             let result = Arc::clone(&road_preview_result);
             std::thread::spawn(move || {
-                run_road_preview_worker(context, result, road_preview_rx);
+                run_road_preview_worker(core, context, result, road_preview_rx);
             })
         };
 
-        let core_arc = Arc::new(Mutex::new(core));
         let snapshot = Arc::new(RwLock::new(initial_snapshot));
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
 

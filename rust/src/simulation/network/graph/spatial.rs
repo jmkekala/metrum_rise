@@ -122,6 +122,24 @@ impl RegionGraph {
             .collect()
     }
 
+    /// Visits intersecting edge bounds without allocating traversal or candidate buffers.
+    pub(crate) fn visit_edges_near_aabb(
+        &self,
+        min: Vector3,
+        max: Vector3,
+        mut visit: impl FnMut(usize),
+    ) {
+        let envelope = AABB::from_corners([min.x, min.z], [max.x, max.z]);
+        // Internal iteration uses the call stack, avoiding the external iterator's SmallVec spill.
+        // Keep the collecting API above unchanged: its traversal order is used by existing callers.
+        let _ = self
+            .spatial_edge_rt
+            .locate_in_envelope_intersecting_int(&envelope, |entry| {
+                visit(entry.edge_idx);
+                std::ops::ControlFlow::<()>::Continue(())
+            });
+    }
+
     /// Returns node IDs in lookup chunks intersecting an XZ AABB.
     pub(crate) fn get_nodes_near_aabb(
         &self,

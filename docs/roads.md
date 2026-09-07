@@ -408,35 +408,116 @@ to the previous projected point. Interior polyline knots have no endpoint margin
 half-metre jumps. Retained projection is allocation-free `O(edge polyline segments)`; acquisition
 uses the existing node grid and edge R-tree. No additional spatial index or whole-network scan is used.
 
+Ghost-guide snapping also queries the existing edge R-tree (`ROAD-20`). Its search bounds include
+the maximum guide reach (240 m lateral offsets or 200 m outward extensions) plus capture radius,
+rounded outwards. The index's internal visitor avoids heap-backed traversal storage; candidate
+polylines stream the same offset segments and crossing-pair rejection without candidate or offset
+buffers. Equal-distance ties resolve by world-XZ order, not index traversal order. Work depends on
+the indexed local edges and their source segments; long polylines
+or dense overlapping bounds still cost more. Road-tool snapshot publication no longer builds or
+retires a second whole-network snapping R-tree. Visible guide generation is unchanged.
+
 Mouse motion performs no curve baking, validation, or mesh upload in the input-event handler.
 The tool resolves the current pointer once per frame, then coalesces changed position/settings into
 one lightweight preview update. Camera-only movement also refreshes the preview; motion that leaves
-the resolved snap unchanged preserves the displayed exact result. Exact compilation remains async
-after the existing idle delay. Cache/request matching uses exact points, so fine movements cannot
+the resolved snap unchanged preserves the displayed exact result. Exact compilation starts immediately
+and continues during motion: one running job completes while the current curve replaces pending
+intent, then the newest input is dispatched. The native mailbox also holds at most one pending job;
+there is no idle timer or unbounded request backlog. Cache/request matching uses exact points, so fine movements cannot
 redisplay an old result within the former 5 cm tolerance. Clicks resolve their current pointer before
 building the committed curve, including clicks arriving before the next frame. Shift angle/length rules and capture/release
 distances are unchanged by this scheduling/snap-target change.
 
-The moving and settled previews render asphalt, lane dividers, curbs, and sidewalks rather than a
+The moving and ordinary settled stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
 uniform blue ribbon. They share committed-road texture resources and Rust's lateral band widths;
 zero vehicle lanes render the actual 2 m walkway. Valid placement uses untinted materials with no
 outline; pending validation is amber, and rejection is red. Lane coordinates remain in metres through curves.
 
 Preview display positions are separate from the authoritative prepared points. Moving feedback
 reuses the already prepared terrain-aware vertical profile; settled feedback uses compiled sections.
-Both display meshes sample current visual terrain along and across the road, at 0.25–2 m spacing
+Both stroke ribbons sample current visual terrain along and across the road, at 0.25–2 m spacing
 tied to terrain resolution, and lift vertices 15 cm above
 the higher of the planned roadbed and terrain, preserving raised band offsets. This keeps cut areas
 visible before commit excavates them, without lowering elevated roads or changing tunnel/bridge
 classification, validation, cost, or committed heights. Normal depth testing stays enabled; the
 preview is not an always-visible overlay through buildings. It is a sampled placement display, not
-an exact visualization of the future cut/fill terrain or junction ownership.
+an exact visualization of the future cut/fill terrain.
 
 Display generation is `O(longitudinal samples × lateral strips)` for the current stroke, with
 constant-time terrain-grid samples and no city-wide query or junction compilation. Buffer capacity
-is computed before triangle emission. Packed material/UV data travels with the existing validation
-or async result; GDScript performs no per-vertex terrain calls. Each update chooses the matching
-exact mesh or moving mesh, avoiding a redundant coarse upload before an available exact result.
+is computed before triangle emission. Hover validation returns prepared points and its source
+generation without generating or exporting a ribbon. Only an actual fallback draw requests packed
+material/UV geometry from those prepared points; it performs no second snap/profile solve and rejects
+a changed source generation. GDScript performs no per-vertex terrain calls. A matching exact result
+is consumed before hover validation, avoiding both a redundant validity check and unused fallback
+construction. Retaining a compiled pose during motion likewise builds no ribbon.
+
+When the exact worker compiles an affected `Bend`, `JunctionN` or `PassThrough`, moving and settled
+feedback show the resulting local connection and spans through the committed road renderer: asphalt, sidewalks, curb/step
+faces, crosswalks and lane dividers. It exports the already-compiled validation neighborhood,
+reconstructing lanes only inside that excerpt for the normal marking rules. It does not compile
+the junction again, rebuild city routing or modify the live graph. Before display-only lifting,
+all vertex attributes must match an independent cold commit, including unequal widths, slopes,
+four-way crossings and an old terminal that becomes a pass-through without a nearby junction.
+The export decision reuses node classification already required by validation; isolated strokes
+retain their lightweight ribbon. Terminal-extension previews include the reprofiled existing edge
+in the same changed-edge ledger as commit, keeping sloped bend heights and mouths identical.
+
+Cached road chunks retain compact source-owner ranges alongside their existing vertex buffers.
+The worker uses the existing owner-to-chunk memberships to select replacements, snapshots only
+those chunk Arcs under a nonblocking, generation-checked core lock, then filters them off-lock.
+Unrelated owners retain their exact vertices/material attributes. This removes the old curbs and
+markings by identity, not by approximate triangle clipping or blanking neighboring roads.
+The preview context is an `O(1)` Arc snapshot; expensive work holds neither its publication lock
+nor `SimCore`. A newer pointer request supersedes one waiting for chunk access.
+
+`RoadJunctionPreview` stages retained geometry and new surfaces before temporarily hiding
+the corresponding resident instances. Ordinary motion keeps the last completed junction visible
+until its replacement is ready. That older pose is display-only: exact click validation still requires
+identical current points and context. Session, start/control, lane, mode, snap-target, query and zoning
+changes retire mismatched poses/results. Rejection, cancellation, world reset and source generation
+changes restore originals; incomplete/stale batches cannot replace a complete preview. A pending
+parcel check retries without removing the displayed junction or authorizing a click. A completed
+pose consumed while that check is pending remains eligible for display when validation recovers;
+it is not lost merely because it completed on an earlier frame.
+Query and source-mesh revisions are checked separately: a water-only edit invalidates validation
+without requiring unchanged resident road chunks to be relabelled or rebuilt.
+Unchanged request IDs do not upload meshes again. One retained CPU-mesh cache is keyed by exact
+source-mesh generation, chunk grid, replacement keys and excluded owners. Matching revisions omit
+retained payloads at the bridge and preserve their GPU instances; only planned geometry is replaced.
+Temporary fallback detaches this retained cache; cancellation, renderer reset and tool destruction
+release it. Cached dictionaries are immutable references, not per-frame deep copies. Junction results
+do not build a redundant stroke ribbon. `ROAD-23` keeps replacement geometry over committed roads
+at its compiled height: existing terrain is already cut out beneath those roads and cannot support a
+blanket hover offset. Only new coverage receives terrain-aware clearance. Triangles transitioning
+between anchored and lifted coverage are split at the current cutout boundaries, including vertical
+curb/support faces; the contact vertices remain unlifted and material layers share their XZ offsets.
+Inserted interior vertices are checked against existing coverage too: interpolating an offset from
+new coverage must not raise a vertex inside the old road footprint.
+Existing collinear terrain breakpoints are retained even on unlifted replacement edges, avoiding
+raster T-junction cracks when an old terminal becomes a straight continuation.
+The local old-minus-planned cutout footprint receives reversible ground infill when a bend removes
+an old terminal corner. Its inner edge follows the planned road and its outer edge the existing
+surface. Holes and sub-centimetre residuals use the shared constrained triangulator without the
+road renderer's skinny-triangle rejection. Failure to build complete infill declines the replacement
+scene, leaving the ordinary ribbon available. Prepared points, reusable topology and live terrain
+patches remain untouched: this is a render-only seam treatment, not full future excavation/grading.
+
+The added work scales with the local validation/lane excerpt and affected chunks: `O(C log M)`
+for `C` chunk-cache lookups among `M` resident chunks on a retained-cache miss, then `O(R + V)` retained-range filtering,
+payload copying for affected ranges/vertices. Display clearance queries reuse existing query chunks
+and owner-local triangle grids. Footprint booleans/CDT depend on local boundary segments,
+intersections and output only. Contact splitting takes `O(B(T + P))` boundary checks for `B` local
+segments, `T` input triangles and `P` generated pieces; boundaries are filtered to the chunk and
+source triangle's actual bounds before splitting, and scratch buffers are reused per chunk.
+Fully anchored triangles only need collinear seam breakpoints.
+Wholly lifted triangles are also checked because they can enclose a cutout without a covered
+original vertex. Independent chunk work uses
+Rayon. A retained-cache hit checks `O(affected owners + chunks)` dependencies and shares mesh Arcs
+in `O(1)`, avoiding retained filtering, payload copying and upload. Planned geometry still scales
+with the local excerpt. The request mailbox is bounded to one pending input plus one running job.
+Normal mesh generation adds `O(1)` ownership bookkeeping per triangle and storage per
+contiguous owner/layer/chunk run; no new spatial index or whole-network preview scan is introduced.
 
 Road and walkway tools show the committed parcel overlay. Cheap candidate validation, synchronous
 commit validation, and completed async previews query the same parcel chunk index and corridor
@@ -745,6 +826,111 @@ Required bounds:
   Both large-grid ranges cross zero, so no further large-grid speedup is claimed. All paired
   guide counts and pre/post graph/lane/agent/building cardinalities match. Captures, comparisons,
   binary fingerprints, exclusions and verification are under ignored `benchmark-results/road-18/`.
+- `ROAD-19` initially added the compiled junction display without changing the moving ribbon or idle delay
+  (that scheduling is superseded by `ROAD-21`).
+  Three matched release/headless process pairs use the same current frontend/readiness-checking
+  harness with baseline and candidate native libraries, sides `0,8`, one warmup and five measured
+  repetitions, in A1 B1 B2 A2 A3 B3 order without competing build/test load. Readiness now includes
+  successful junction-mesh staging. Empty-background T preview readiness is `67.4 → 67.5 ms`;
+  with 112 background edges it is `61.3 → 67.3 ms`. Both paired ranges cross zero and unchanged-build
+  readiness varies by about 10–12% on some operations; this is a visual improvement, not a speedup.
+  Commit results are mixed: empty first stroke `32.8 → 34.2 ms`, T `40.6 → 35.6 ms`; 112-edge first
+  stroke `42.9 → 47.2 ms`, T `53.6 → 49.9 ms`. The 112-edge first-stroke paired range is `+0.3–13.2%`;
+  its mesh stage is only `0.403 → 0.445 ms`, so the total difference cannot be attributed to owner
+  recording from these observations alone. Guide output and pre/post graph/lane/agent/building
+  cardinalities match. Three additional side-32 process pairs (1,984 background edges, one fixture
+  each after grid construction, no extra whole-fixture warmup) leave T preview readiness unchanged
+  at `62.0 → 61.9 ms`, but T click-to-first-idle regresses `182.0 → 206.5 ms`
+  (`+4.4–15.2%` per pair). Its mesh stage stays `0.459 → 0.459 ms`; snapshot/surface and
+  post-command publication times account for the observed difference, without an isolated causal
+  explanation in that pass. This regression was tracked as `ROAD-20`; its later recovery is below.
+  The 48-fixture layout matrix, three interaction fixtures, saved-city delete/redraw/save/load replay,
+  four Godot suites and single-worker junction replay pass. Real-renderer T/cross/unequal-width
+  captures checked road appearance on a solid plane; they did not exercise committed terrain cutouts.
+  `ROAD-23` supersedes that incomplete seam validation and the blanket preview hover offset.
+  Captures, noise controls, fingerprints and exclusions are under ignored
+  `benchmark-results/junction-preview/`. These remain CPU/headless observations, not GPU or FPS results.
+- `ROAD-21` replaces idle-gated junction display with continuous latest-input updates. Three serial
+  release/headless captures per implementation use 96 moving inputs per T, crossing and unequal-width
+  T trace, with no midpoint pause. The old implementation shows zero junction updates during motion;
+  final captures show `58–72` for T, `40–43` for crossing and `46` for unequal-width T. Final per-process
+  median input-to-new-mesh latency is `19–37 ms`; the age of the currently displayed pose has medians
+  `20–50 ms` and maximum `84 ms`. First display takes `20–52 ms`; all remaining motion frames retain
+  a junction. Tool-process CPU medians are `0.36–2.07 ms`, maximum `15.40 ms`. These are separate
+  processes, not paired speedup estimates or GPU/FPS measurements; actual input timestamps are
+  recorded and the timers do not guarantee OS-pointer or presentation cadence. Each distribution
+  has fewer than 100 samples, so p95/p99 are intentionally absent. The final harness adds continuity
+  assertions and optional visual-only captures to the baseline trace; input geometry/cadence is unchanged.
+  A contention regression caught pending validation incorrectly clearing visible geometry; it now
+  retries while preserving the last display-only pose. All 1,566 Rust tests pass (one ignored), all
+  Criterion targets check, and five Godot suites pass. The 48-fixture matrix, three continuous-input
+  interaction fixtures, sides `0,8,32`, saved-city replay and single-worker stream also pass.
+  Software-rendered T/cross/unequal-width poses during motion and matching preview/commit captures
+  pass; visual-only captures deliberately pause for readback and are excluded from timing results.
+  Timing captures, excluded diagnostic runs and binary/frontend fingerprints live under ignored
+  `benchmark-results/junction-realtime/`. These runs did not establish recovery of the commit
+  regression; the separate `ROAD-20` follow-up is below.
+- `ROAD-22` extends the compiled scene to bends and straight continuations, including unequal
+  widths and sloped terminal reprofiles. It removes unconditional hover-ribbon construction and
+  consumes matching exact results before cheap validation. A red-before/green-after regression
+  also prevents a pending parcel check from wasting a completed display pose. Three interleaved
+  baseline/candidate release/headless pairs (A1 B1 B2 A2 A3 B3), with 100 warmups and 1,000 measured
+  calls per lane count, reduce unused-ribbon hover validation p50 from `78 → 40 µs` for two lanes
+  and `135 → 56 µs` for eight lanes. All calls validate, cost checksums match, and exported unused
+  ribbons fall from 1,000 to zero per case. This saves `38–79 µs/call`, not half of total preview time.
+  Three final 96-input motion captures show `67–90` normal-bend and `66–81` unequal-width-bend
+  updates, versus zero before; new-mesh latency medians are `18–19 ms`. Existing T/crossing update
+  counts remain within before/after variability; early higher T rates did not persist, so no stable
+  whole-preview speedup is claimed. Displayed pose age still reaches `100 ms` in a crossing run;
+  continuous updates are not a guaranteed frame-time bound. All 1,569 Rust tests pass (one ignored),
+  including cold-commit bend/continuation comparisons, plus five Godot suites, the 48-fixture matrix,
+  interaction/scaling/saved-city/single-worker replays and rendered bend/commit checks. Captures,
+  exact fingerprints and diagnostic exclusions live under ignored `benchmark-results/bend-preview/`.
+  That pass did not recover `ROAD-20`. These are CPU/headless measurements, not GPU or presentation latency.
+- `ROAD-23` removes blanket preview lift over committed coverage and closes vacated cutouts with
+  temporary ground. Nine actual-terrain rendered fixtures (T, crossing, unequal-width T, water-reset,
+  bend, unequal-width bend, continuation, adjacent T junctions and slope) reduce preview-only sky
+  pixels from `142–355` to zero; cancellation restores the exact source coverage. The slope references
+  retain six source/eight cold-commit subpixel seams: those exact reference pixels are not attributed
+  to preview or claimed fixed. Tests now use clipped CDT patches rather than a solid plane.
+  All 1,573 Rust tests pass (one ignored), plus five Godot suites, single-worker junction replay,
+  benchmark-target compilation and formatting. Three matched release/headless process pairs use
+  the identical frontend and 96-input moving traces with no competing build/test/image-analysis load.
+  Median-of-process-p50 new-mesh latency is T `35.9 → 36.5 ms`, crossing `36.7 → 36.7 ms`, unequal T
+  `35.7 → 36.0 ms`, bend `18.6 → 18.5 ms`, and unequal bend `18.4 → 19.1 ms`. Wide-bend updates are
+  `74/87/74 → 62/70/75` per 96 inputs; the added geometry has a measurable cost in two pairs.
+  T results remain noisy (one paired p50 crosses a frame boundary by `16.9 ms`); these samples do
+  not establish unchanged performance or a speedup. Maximum final displayed-pose age is `83.6 ms`.
+  Captures, exact build/input fingerprints, paired distributions and exclusions are under ignored
+  `benchmark-results/preview-seams/verification.txt`. The final release library is deployed; live
+  terrain and commit semantics remain unchanged. This is not full future excavation/grading.
+- `ROAD-20` follow-up removes redundant whole-network ghost-snap indexing from road-tool snapshot
+  publication. A current side-32 Samply capture with existing stage timers measures `31.5 ms` building
+  that index inside a `40.1 ms` T snapshot. This identifies avoidable
+  commit work, not proof that mesh-owner bookkeeping caused the historical `182 → 207 ms` delta.
+  The final implementation queries the existing immutable edge index and streams exact local guides;
+  its internal visitor uses no heap-backed traversal/candidate buffers. Equal-distance snapping uses
+  world-XZ order, and ordinary collecting graph queries retain their existing traversal order.
+  Three matched final release/headless process pairs run sides `0,8,32`, one fixture each, no extra
+  fixture warmup after grid construction, in A1 B1 B2 A2 A3 B3 order without competing build/test load.
+  At 1,984 background edges, first-road click-to-first-idle medians fall `175.3 → 152.6 ms`
+  (`9.2–19.0%` lower per pair), and T medians fall `199.2 → 140.8 ms` (`21.7–32.6%` lower).
+  T snapshot work falls `40.6 → 6.1 ms` (`84.7–86.1%` lower per pair). Unchanged-build side-32 T
+  comparisons vary up to `3.6%` for A and `13.0%` for B, below each paired T improvement.
+  Three additional pairs at sides `0,8`, with one warmup and five measured repetitions per fixture,
+  reduce 112-edge first-road medians `54.1 → 39.5 ms` and T `54.6 → 41.3 ms`; all pairs improve.
+  Empty-network first-road/T paired ranges cross zero: no empty-network speedup is claimed.
+  Preview readiness is mixed: scaling empty-network T rises `40.4 → 47.3 ms`, while
+  warmed 112-edge T falls `47.3 → 40.9 ms`. Fixed scripted inputs bypass mouse snapping; the separate
+  release cursor diagnostic measures dense queries at `98.7–98.9 µs`, versus `1.29–1.56 µs` for a
+  prebuilt reference index, at both 112 and 1,984 edges. This accepts about `0.10 ms` local cursor work
+  to eliminate whole-network edit work; it is not a query-speed or universal frame-time improvement.
+  Guide counts and pre/post graph/lane/agent/building cardinalities match in all accepted pairs.
+  All 1,575 Rust tests pass (two ignored), plus five native Godot suites, single-worker junction replay,
+  benchmark-target compilation and formatting. Exact preview geometry, terrain, commit validation and
+  visible guide generation remain intact. Final captures, unchanged-build controls, fingerprints and
+  exclusions are under ignored `benchmark-results/road-20-33koNf/verification.txt`; the final release
+  is deployed. These are descriptive CPU/headless process medians, not GPU/FPS or significance claims.
 - Criterion now distinguishes `compile_dirty_unchanged_edge` / `compile_dirty_unchanged_terrain`
   from real `compile_dirty_lane_width_change` / `compile_dirty_changed_terrain` kernels. The grid
   is centered inside its terrain, sample/world coordinates agree, changed samples lie inside the
@@ -753,9 +939,9 @@ Required bounds:
   input is retained per iteration. `cargo bench --bench surface_benchmark -- --test`
   smoke-executes all kernels. `./run.sh --test` checks all Criterion targets for API drift and runs
   benchmark statistics/report regressions alongside existing tests.
-- Exact previews now start after `25 ms` of pointer
-  idle instead of `100 ms`; pointer motion still resets the delay and the worker still coalesces
-  queued requests. A completed exact rejection replaces the earlier cheap candidate verdict, so the
+- Before `ROAD-21` removed the idle gate, exact previews started after `25 ms` of pointer
+  idle instead of `100 ms`, with motion resetting the delay. A completed exact rejection still
+  replaces the earlier cheap candidate verdict, so the
   tool turns invalid immediately rather than displaying a stale valid coarse preview. The targeted
   `METRUM_GAMEPLAY_BENCHMARK_MATRIX=road08` workload keeps the formerly 90-second apparent-hang
   site pinned. The old expected rejection is stale: current geometry accepts the exact preview and

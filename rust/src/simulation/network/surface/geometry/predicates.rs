@@ -9,6 +9,15 @@ impl RoadSurfaceSystem {
         points_world: &[RoadVec3],
         point: RoadVec2,
     ) -> bool {
+        Self::polygon_contains_point_xz_with_boundary(points_world, point, true)
+    }
+
+    /// Allows constrained ground regions to exclude the road polygon query's boundary halo.
+    pub(super) fn polygon_contains_point_xz_with_boundary(
+        points_world: &[RoadVec3],
+        point: RoadVec2,
+        include_boundary_halo: bool,
+    ) -> bool {
         if points_world.len() < 3 {
             return false;
         }
@@ -16,7 +25,9 @@ impl RoadSurfaceSystem {
         for index in 0..points_world.len() {
             let start = points_world[index];
             let end = points_world[(index + 1) % points_world.len()];
-            if Self::point_segment_distance_squared_xz(point, start, end) <= 0.0001 {
+            if include_boundary_halo
+                && Self::point_segment_distance_squared_xz(point, start, end) <= 0.0001
+            {
                 return true;
             }
             let start_z = start.z;

@@ -707,6 +707,12 @@ if [ $TEST -eq 1 ]; then
     if ! godot --headless --script res://tests/road_benchmark_metrics_test.gd; then
         exit 1
     fi
+    if ! godot --headless --script res://tests/road_junction_preview_test.gd; then
+        exit 1
+    fi
+    if ! godot --headless --script res://tests/road_preview_stream_test.gd; then
+        exit 1
+    fi
     godot --headless --script res://tests/camera_save_load_test.gd
     exit $?
 fi

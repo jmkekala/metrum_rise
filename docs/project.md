@@ -108,6 +108,49 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- `ROAD-20`: road edits no longer rebuild a second whole-network ghost-snapping R-tree.
+  Snapping streams local guides through the existing edge index without traversal/candidate buffers.
+  Three matched release/headless pairs reduce side-32 T click-to-first-idle `199 → 141 ms` and
+  snapshot work `40.6 → 6.1 ms`; warmed 112-edge first-road commits improve `54.1 → 39.5 ms`.
+  Dense cursor queries cost about `0.10 ms` rather than `0.002 ms`; empty-network commit results
+  remain inconclusive, and preview readiness is not uniformly faster. All 1,575 Rust tests, five
+  Godot suites, single-worker junction replay and matched guide/graph/lane checks pass. This recovers
+  commit responsiveness without attributing the historical regression to mesh-owner bookkeeping.
+  See [`roads.md`](roads.md).
+
+- `ROAD-23`: fixed compiled-preview terrain seams. Existing road coverage stays unlifted;
+  transition triangles get explicit cutout contacts, and vacated terminal footprints receive
+  temporary ground infill. Visual regressions now use actual clipped terrain rather than a solid
+  plane: all nine fixtures have zero preview-only sky pixels, versus 142–355 before. All 1,573 Rust
+  tests, five Godot suites and single-worker replay pass. Matched motion medians remain about
+  19–37 ms; wide bends have fewer updates in two of three pairs, so this is a correctness fix,
+  not a speedup. Terrain data remains unchanged. See [`roads.md`](roads.md).
+
+- `ROAD-22`: compiled previews now include bends and straight continuations, with matching sloped
+  terminal reprofiles. Hover validation no longer builds unused ribbons, and completed poses survive
+  pending-check recovery. Isolated release comparisons reduce that validation step from `78 → 40 µs`
+  (two lanes) and `135 → 56 µs` (eight lanes); total preview latency does not improve proportionally.
+  Moving bends show `66–90` updates per 96 inputs at `18–19 ms` median new-mesh latency. All 1,569 Rust
+  tests, five Godot suites and layout/rendered regressions pass. See [`roads.md`](roads.md).
+
+- `ROAD-21`: junction previews now update throughout pointer motion, replacing the idle timer and
+  unbounded request queue with one running job and latest-input coalescing. Unchanged retained road
+  meshes are shared across CPU payloads/GPU instances; outdated display poses never authorize a click.
+  Three headless captures show `40–72` updates per 96 moving inputs versus zero before, with median
+  input-to-new-mesh latency `19–37 ms` (displayed pose age medians `20–50 ms`, not a 60 FPS guarantee).
+  Pending checks preserve the visible junction; rejection/context changes retire it. All 1,566 Rust
+  tests, five Godot suites, 48 matrix fixtures and interaction/scaling/saved-city/single-worker replays
+  pass. The independent commit regression is addressed separately by `ROAD-20`. See [`roads.md`](roads.md).
+
+- `ROAD-19`: the initial settled road preview added the compiled junction, connecting spans, sidewalks,
+  curbs and markings using committed materials. Exact source-owner filtering preserves unrelated
+  roads; cancellation restores resident meshes. Five cold-commit geometry comparisons and all
+  1,562 Rust tests pass, plus four native Godot suites including water-only revision changes.
+  Three matched process pairs put T preview readiness at about `67 ms`, versus `61–67 ms` for
+  the former ribbon. The 48-layout matrix, interaction/saved-city/single-worker replays and rendered
+  comparisons also pass. Side-32 preview readiness stays near `62 ms`, but T commit latency rises
+  `182 → 207 ms`; the later `ROAD-20` follow-up recovers responsiveness. See [`roads.md`](roads.md).
+
 - `ROAD-12`: road acceptance now requires complete road/terrain products before routing changes or
   charging, with bounded rollback of graph and split building references. Complete-boundary dust
   cleanup fixes the latest iso `(23, 1)` failure; the 52-road save rebuilds all five engineered
@@ -211,7 +254,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   from `24.72 s` to `21.36 s`, four-way fixture p95 from `1,134 ms` to `823 ms`, and four-way commit
   p95 from `517 ms` to `244 ms`. The controlled matrix then exposed that the fixed `100 ms` exact
   preview debounce dominated every successful fixture and that an exact rejection did not replace
-  the cheap synchronous verdict. Reducing the idle gate to `25 ms` and making the exact result
+  the cheap synchronous verdict. Initially reducing the idle gate to `25 ms` (since removed by
+  `ROAD-21`) and making the exact result
   authoritative cut controlled headless preview p50 by `52.7–60.5%`, fixture p50 by `29.1–40.2%`,
   and total measured runtime from `29.96 s` to `24.72 s`. The exact ROAD-08 curve then rejected in
   `41–75 ms` instead of appearing pending beyond `90 s`; current geometry accepts and commits it,

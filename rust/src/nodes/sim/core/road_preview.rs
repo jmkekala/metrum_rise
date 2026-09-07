@@ -2,13 +2,19 @@
 
 //! Asynchronous road-preview requests, worker snapshots, and compilation.
 
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+mod requests;
+pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
+
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::time::{Duration, Instant};
 
 use super::state::SimCore;
 use crate::debug_log;
-use crate::nodes::sim::road_tool::{RoadGhostSnapIndex, validate_road_candidate_against_water};
+use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::render::road::preview::{
+    RoadJunctionPreview, RoadPreviewRetainedCache,
+};
 use crate::simulation::network::surface::{
     RoadPreviewTopologyReuse, RoadPreviewValidation, RoadPreviewVisualMesh, RoadSurfaceSystem,
 };
@@ -26,6 +32,7 @@ pub(crate) struct RoadPreviewSnapshot {
     snap_to_existing_roads: bool,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) visual_mesh: RoadPreviewVisualMesh,
+    pub(crate) junction_preview: Option<RoadJunctionPreview>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
     topology_reuse: Option<Arc<Mutex<Option<RoadPreviewTopologyReuse>>>>,
@@ -100,6 +107,7 @@ pub(crate) struct RoadPreviewWorkerContext {
     surface_chunk_origin_x_m: f32,
     surface_chunk_origin_z_m: f32,
     surface_generation: u64,
+    source_mesh_generation: u64,
 }
 
 pub(crate) struct RoadPreviewRequest {
@@ -118,7 +126,6 @@ pub(crate) struct RoadToolQuerySnapshot {
     pub(crate) road_surface: Arc<RoadSurfaceSystem>,
     /// Immutable authored-water state used by road placement validation.
     pub(crate) water: Arc<WaterSystem>,
-    pub(crate) ghost_snap_index: Arc<RoadGhostSnapIndex>,
     pub(crate) surface_generation: u64,
 }
 
@@ -148,19 +155,15 @@ pub(crate) fn road_tool_snapshots_from_core(
     let surface_chunk_span_m = road_surface.chunk_span_m();
     let (surface_chunk_origin_x_m, surface_chunk_origin_z_m) = road_surface.chunk_origin_m();
     let surface_generation = core.road_tool_surface_generation;
-    let ghost_start = Instant::now();
-    let ghost_snap_index = Arc::new(RoadGhostSnapIndex::from_graph(region_graph.as_ref()));
-    let ghost_ms = ghost_start.elapsed().as_secs_f64() * 1000.0;
     if crate::debug::is_perf_enabled() {
         println!(
-            "[DEBUG:perf] road_tool_snapshot generation={} edges={} terrain_ms={:.3} graph_ms={:.3} surface_ms={:.3} water_ms={:.3} ghost_ms={:.3} total_ms={:.3}",
+            "[DEBUG:perf] road_tool_snapshot generation={} edges={} terrain_ms={:.3} graph_ms={:.3} surface_ms={:.3} water_ms={:.3} total_ms={:.3}",
             surface_generation,
             region_graph.edge_count(),
             terrain_ms,
             graph_ms,
             surface_ms,
             water_ms,
-            ghost_ms,
             snapshot_start.elapsed().as_secs_f64() * 1000.0
         );
     }
@@ -175,35 +178,91 @@ pub(crate) fn road_tool_snapshots_from_core(
             surface_chunk_origin_x_m,
             surface_chunk_origin_z_m,
             surface_generation,
+            source_mesh_generation: core.cached_road_mesh_generation,
         },
         RoadToolQuerySnapshot {
             terrain,
             region_graph,
             road_surface,
             water,
-            ghost_snap_index,
             surface_generation,
         },
     ))
 }
 
 pub(crate) fn run_road_preview_worker(
+    core: Arc<Mutex<SimCore>>,
     context: Arc<RwLock<RoadPreviewWorkerContext>>,
     result: Arc<RwLock<Option<RoadPreviewSnapshot>>>,
-    rx: std::sync::mpsc::Receiver<RoadPreviewRequest>,
+    rx: requests::RoadPreviewReceiver,
 ) {
-    while let Ok(mut request) = rx.recv() {
-        while let Ok(next) = rx.try_recv() {
-            request = next;
-        }
+    let mut ready_request = None;
+    let mut retained_cache = RoadPreviewRetainedCache::default();
+    'requests: loop {
+        let Some(request) = ready_request.take().or_else(|| rx.recv().ok()) else {
+            return;
+        };
 
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
-        let preview = {
-            let context = context.read().expect("road preview context lock poisoned");
+        let mut preview = {
+            // O(1) immutable Arc snapshot; compiling/exporting must not delay a newer context.
+            let context = context
+                .read()
+                .expect("road preview context lock poisoned")
+                .clone();
             compile_road_preview_from_context(&context, request)
         };
+        if let Some(scene) = &mut preview.junction_preview
+            && !retained_cache.reuse(scene)
+        {
+            // Snapshot only the affected chunk Arcs. Never hold SimCore while filtering meshes
+            // or doing Rayon work, and never wait for it while retaining the context read lock.
+            let meshes = loop {
+                match core.try_lock() {
+                    Ok(core) => {
+                        if core.cached_road_mesh_generation != scene.source_mesh_generation
+                            || core.road_tool_surface_generation != preview.surface_generation
+                        {
+                            break None;
+                        }
+                        break Some(
+                            scene
+                                .replacement_chunks
+                                .iter()
+                                .filter_map(|key| {
+                                    core.cached_road_mesh_chunks
+                                        .get(key)
+                                        .map(|mesh| (*key, Arc::clone(mesh)))
+                                })
+                                .collect(),
+                        );
+                    }
+                    Err(TryLockError::Poisoned(_)) => panic!("simulation core lock poisoned"),
+                    Err(TryLockError::WouldBlock) => {}
+                }
+                // Keep the completed compile while contended, but a newer pointer request wins.
+                match rx.recv_timeout(Duration::from_millis(1)) {
+                    Ok(next) => {
+                        ready_request = Some(next);
+                        continue 'requests;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            };
+            if let Some(meshes) = meshes {
+                scene.retain_existing(&meshes);
+                retained_cache.store(scene);
+            } else {
+                preview.junction_preview = None;
+                preview.surface_generation = 0;
+                preview.is_valid = false;
+                preview.validation.is_valid = false;
+                preview.validation.invalid_reason = "stale_surface_generation";
+            }
+        }
         let prepared_count = preview.prepared_points.len();
         let surface_vertex_count = preview.visual_mesh.vertices.len();
         let is_valid = preview.is_valid;
@@ -254,7 +313,7 @@ pub(crate) fn compile_road_preview_from_context(
     );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let (mut preview, topology_reuse) = preview_surface
+    let (mut preview, topology_reuse, render_input) = preview_surface
         .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
             &request.points,
             fwd_lanes,
@@ -282,14 +341,32 @@ pub(crate) fn compile_road_preview_from_context(
     let topology_reuse = (preview.is_valid && generation_matches)
         .then_some(topology_reuse)
         .flatten();
+    let junction_preview = (preview.is_valid && generation_matches)
+        .then_some(render_input)
+        .flatten()
+        .and_then(|input| {
+            let mut scene = input.render(
+                &context.terrain,
+                &context.region_graph,
+                &context.road_surface,
+            )?;
+            // Water-only query changes retain the previous, still-correct road meshes.
+            scene.source_mesh_generation = context.source_mesh_generation;
+            Some(scene)
+        });
 
-    let visual_mesh = preview_surface.build_preview_visual_mesh(
-        &preview.prepared_points,
-        &preview.compiled_sections,
-        fwd_lanes,
-        bkw_lanes,
-        context.terrain.as_ref(),
-    );
+    // A junction scene already contains the candidate road. Do not build/export a second ribbon.
+    let visual_mesh = if junction_preview.is_some() {
+        RoadPreviewVisualMesh::default()
+    } else {
+        preview_surface.build_preview_visual_mesh(
+            &preview.prepared_points,
+            &preview.compiled_sections,
+            fwd_lanes,
+            bkw_lanes,
+            context.terrain.as_ref(),
+        )
+    };
     RoadPreviewSnapshot {
         request_id: request.request_id,
         surface_generation: generation_matches
@@ -300,6 +377,7 @@ pub(crate) fn compile_road_preview_from_context(
         snap_to_existing_roads: request.snap_to_existing_roads,
         prepared_points: preview.prepared_points,
         visual_mesh,
+        junction_preview,
         validation: preview.validation,
         is_valid: preview.is_valid,
         topology_reuse: topology_reuse
@@ -323,6 +401,7 @@ mod tests {
             snap_to_existing_roads: true,
             prepared_points: points.clone(),
             visual_mesh: RoadPreviewVisualMesh::default(),
+            junction_preview: None,
             validation: RoadPreviewValidation::valid(0.0),
             is_valid: true,
             topology_reuse: None,

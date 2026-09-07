@@ -6,7 +6,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::nodes::sim::road_tool::{
     GHOST_GRID_SPACING_M, GHOST_LINE_LIFT_M, GHOST_MAX_OFFSETS, GHOST_OFFSET_ALPHAS,
     GHOST_OUTWARD_EXTEND_M, GHOST_TICK_HALF_M, GHOST_TICK_INTERVAL_M, GHOST_TICK_LIFT_M,
-    RoadGhostSnapIndex, endpoint_tangent_xz,
+    endpoint_tangent_xz, nearest_road_ghost_point,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
@@ -76,12 +76,10 @@ pub fn get_road_ghost_snap(
     max_dist_m: f32,
     altitude_offset_m: f32,
 ) -> Option<Vector3> {
-    let ghost_snap_index = RoadGhostSnapIndex::from_graph(&core.region_graph);
     get_road_ghost_snap_from_parts(
         &core.region_graph,
         &core.transit_network.road_surface,
         &core.heightmap,
-        &ghost_snap_index,
         pos,
         max_dist_m,
         altitude_offset_m,
@@ -93,23 +91,20 @@ pub(crate) fn get_road_ghost_snap_from_parts(
     graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
     terrain: &TerrainSystem,
-    ghost_snap_index: &RoadGhostSnapIndex,
     pos: Vector3,
     max_dist_m: f32,
     altitude_offset_m: f32,
 ) -> Option<Vector3> {
     let query = Vector2::new(pos.x, pos.z);
-    ghost_snap_index
-        .nearest_point(query, max_dist_m)
-        .map(|point| {
-            let height_m = road_surface
-                .sample_visible_surface_height(graph, terrain, point.x, point.y)
-                .unwrap_or_else(|| {
-                    terrain.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE
-                        + altitude_offset_m
-                });
-            Vector3::new(point.x, height_m, point.y)
-        })
+    nearest_road_ghost_point(graph, query, max_dist_m).map(|point| {
+        let height_m = road_surface
+            .sample_visible_surface_height(graph, terrain, point.x, point.y)
+            .unwrap_or_else(|| {
+                terrain.sample_visual_height_world(point.x, point.y) * HEIGHT_SCALE
+                    + altitude_offset_m
+            });
+        Vector3::new(point.x, height_m, point.y)
+    })
 }
 
 /// Returns the full physical geometry of every non-deleted road edge.

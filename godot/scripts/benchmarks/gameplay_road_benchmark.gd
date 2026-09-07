@@ -1026,8 +1026,8 @@ func _run_segment(
 
 func _replay_pointer_trace(end_xz: Vector2) -> int:
 	var last_input_us := Time.get_ticks_usec()
-	# Fixed 24-point world-space trace, ~400 ms at 60 input samples/s, with one 80 ms
-	# midpoint hold to exercise exact preparation before motion resumes. Record actual latency;
+	# Fixed continuous 24-point world-space trace at 60 input samples/s, without an idle hold.
+	# The dedicated stream regression measures displayed updates and input age. Record latency;
 	# do not claim these scheduled inputs are physical OS mouse events or GPU presentation.
 	for index in range(24):
 		var remaining := float(23 - index) / 23.0
@@ -1035,7 +1035,7 @@ func _replay_pointer_trace(end_xz: Vector2) -> int:
 		last_input_us = Time.get_ticks_usec()
 		road_tool.set_scripted_pointer(true, _surface_point(pointer))
 		road_tool._queue_preview_update()
-		await get_tree().create_timer(0.080 if index == 12 else 1.0 / 60.0).timeout
+		await get_tree().create_timer(1.0 / 60.0).timeout
 	return last_input_us
 
 func _begin_scripted_road(
@@ -1093,8 +1093,10 @@ func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
 			and bool(preview.get("is_valid", false))
 			and not road_tool._preview_update_pending
 			and not road_tool._preview_result_pending
-			and not road_tool._preview_exact_waiting
 			and road_tool._preview_surface_generation_is_current(preview)
+			and not road_tool._cached_preview_surface_for_points(road_tool._road_surface_points_from_curve(road_tool.current_path.curve)).is_empty()
+			# Exact-junction readiness includes successful render staging, not only worker completion.
+			and (not preview.has("junction_preview") or road_tool._junction_preview.request_id == int(preview.get("request_id", 0)))
 		):
 			var ready_ms := _elapsed_ms(start_us)
 			await get_tree().process_frame

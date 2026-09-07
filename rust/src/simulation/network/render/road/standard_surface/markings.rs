@@ -5,7 +5,7 @@
 use super::super::crosswalks::CROSSWALK_STRIPE_LEN;
 use super::super::{
     MARKING_RENDER_Z_BIAS_M, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData,
-    marking_center_color, marking_dash_color,
+    NetworkMeshOwner, marking_center_color, marking_dash_color,
 };
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::{emit_surface_quad, section_world_point_at_lateral_offset};
@@ -34,6 +34,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_lane_markings(
     let crosswalk_endpoint_flags =
         lane_marking_crosswalk_endpoint_flags_by_edge(graph, lane_system, &coverage.edge_indices);
     for &edge_idx in &coverage.edge_indices {
+        mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
         let edge = graph.edge(edge_idx);
         if edge.deleted || edge.primary_type != TransitType::Road {
             continue;

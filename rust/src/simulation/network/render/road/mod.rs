@@ -12,10 +12,11 @@ use godot::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use super::{NetworkMeshData, TransitRenderer};
+use super::{NetworkMeshData, NetworkMeshOwner, TransitRenderer};
 
 /// Intersection crosswalk markings.
 pub mod crosswalks;
+pub(crate) mod preview;
 /// Compiled roadbed top-surface, structural concrete, and lane-marking rendering.
 pub mod standard_surface;
 
@@ -340,6 +341,7 @@ fn push_triangle_to_layer(
             .chunks
             .entry(chunk)
             .or_insert_with(NetworkMeshData::new);
+        chunk_mesh.current_owner = mesh.current_owner;
         push_triangle_to_layer(chunk_mesh, layer, local_vertices, uvs, color, normal);
         return;
     }
@@ -394,6 +396,8 @@ fn push_triangle_to_layer(
         target.2.push(uvs[index]);
         target.3.push(color);
     }
+    let end = target.0.len();
+    mesh.record_owner_triangle(layer as usize, end);
 }
 
 pub(super) fn earthwork_color() -> Color {

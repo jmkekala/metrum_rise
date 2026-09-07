@@ -14,6 +14,7 @@ pub(super) fn emit_crosswalk_markings(
 ) {
     use crate::simulation::network::lanes::LaneType;
     for &node_id in &coverage.node_ids {
+        mesh.set_owner(NetworkMeshOwner::Node(node_id));
         let Some(lane_ids) = lane_system.node_lanes.get(&(node_id as usize)) else {
             continue;
         };

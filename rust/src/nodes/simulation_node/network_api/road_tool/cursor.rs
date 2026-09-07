@@ -140,7 +140,6 @@ impl SimulationNode {
                 &query.region_graph,
                 &query.road_surface,
                 &query.terrain,
-                &query.ghost_snap_index,
                 pos,
                 10.0,
                 altitude_offset_m,

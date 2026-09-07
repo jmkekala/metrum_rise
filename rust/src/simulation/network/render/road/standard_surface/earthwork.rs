@@ -2,7 +2,7 @@
 
 //! Emission of visible slope and retaining-wall faces owned by compiled road pieces.
 
-use super::super::{MeshLayer, NetworkMeshData, concrete_color, earthwork_color};
+use super::super::{MeshLayer, NetworkMeshData, NetworkMeshOwner, concrete_color, earthwork_color};
 use super::coverage::CompiledSurfaceCoverage;
 use super::geometry::emit_surface_polygon;
 use crate::simulation::network::graph::RegionGraph;
@@ -20,6 +20,7 @@ pub(super) fn emit_compiled_earthwork_mesh(
     coverage: &CompiledSurfaceCoverage,
 ) {
     for &edge_idx in &coverage.edge_indices {
+        mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
@@ -27,6 +28,7 @@ pub(super) fn emit_compiled_earthwork_mesh(
     }
 
     for &node_id in &coverage.node_ids {
+        mesh.set_owner(NetworkMeshOwner::Node(node_id));
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };

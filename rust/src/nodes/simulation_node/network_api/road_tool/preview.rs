@@ -9,8 +9,8 @@ use crate::simulation::network::surface::RoadPreviewVisualMesh;
 impl SimulationNode {
     /// Returns cheap synchronous hover feedback for a road-tool candidate.
     ///
-    /// Includes a terrain-draped display ribbon but does not compile junctions or mutate simulation
-    /// state. The display positions must never be fed back into authoritative placement.
+    /// Returns prepared points and validation without allocating a display ribbon. Call
+    /// `build_road_preview_ribbon` only when fallback geometry will actually be displayed.
     #[func]
     pub fn validate_road_candidate(
         &self,
@@ -39,7 +39,7 @@ impl SimulationNode {
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
         let validate_start = road_debug.then(Instant::now);
-        let (prepared_points, validation, visual_mesh) = {
+        let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
             let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
                 &points,
@@ -63,14 +63,7 @@ impl SimulationNode {
                 &query.water,
                 validation,
             );
-            let visual_mesh = query.road_surface.build_preview_visual_mesh(
-                &prepared_input.points,
-                &[],
-                fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
-                &query.terrain,
-            );
-            (prepared_input.points, validation, visual_mesh)
+            (prepared_input.points, validation, query.surface_generation)
         };
         let validate_ms = validate_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -104,7 +97,40 @@ impl SimulationNode {
             bkw_lanes,
         );
         let mut dict = result.to::<VarDictionary>();
-        Self::append_road_preview_visual_mesh(&mut dict, &visual_mesh);
+        dict.set(
+            "surface_generation",
+            i64::try_from(surface_generation).unwrap_or(i64::MAX),
+        );
+        dict.to_variant()
+    }
+
+    /// Builds display-only fallback geometry from an already-prepared road profile.
+    ///
+    /// Returns nil if the source terrain/road revision changed. Does not snap or validate again;
+    /// cost is O(profile samples × lateral strips), with constant-time terrain-grid sampling.
+    /// The lifted vertices are never authoritative placement inputs.
+    #[func]
+    pub fn build_road_preview_ribbon(
+        &self,
+        prepared_points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        surface_generation: i64,
+    ) -> Variant {
+        let query = self.road_tool_query_snapshot.read().unwrap().clone();
+        if i64::try_from(query.surface_generation).unwrap_or(i64::MAX) != surface_generation {
+            return Variant::nil();
+        }
+        let mesh = query.road_surface.build_preview_visual_mesh(
+            &prepared_points.to_vec(),
+            &[],
+            fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+            bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8,
+            &query.terrain,
+        );
+        let mut dict = VarDictionary::new();
+        dict.set("surface_generation", surface_generation);
+        Self::append_road_preview_visual_mesh(&mut dict, &mesh);
         dict.to_variant()
     }
 
@@ -143,7 +169,7 @@ impl SimulationNode {
         let validate_start = road_debug.then(Instant::now);
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let (prepared_points, validation) = {
+        let (prepared_points, validation, surface_generation) = {
             let query = self.road_tool_query_snapshot.read().unwrap();
             let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
                 &points,
@@ -178,7 +204,7 @@ impl SimulationNode {
                 &query.water,
                 validation,
             );
-            (prepared_input.points, validation)
+            (prepared_input.points, validation, query.surface_generation)
         };
         let validate_ms = validate_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -205,12 +231,19 @@ impl SimulationNode {
             );
         }
 
-        self.road_candidate_validation_to_variant(
-            &validation,
-            &prepared_points,
-            fwd_lanes,
-            bkw_lanes,
-        )
+        let mut dict = self
+            .road_candidate_validation_to_variant(
+                &validation,
+                &prepared_points,
+                fwd_lanes,
+                bkw_lanes,
+            )
+            .to::<VarDictionary>();
+        dict.set(
+            "surface_generation",
+            i64::try_from(surface_generation).unwrap_or(i64::MAX),
+        );
+        dict.to_variant()
     }
 
     /// Returns the road-tool surface snapshot generation currently used for validation.
@@ -261,17 +294,14 @@ impl SimulationNode {
             .expect("road query snapshot lock poisoned")
             .surface_generation;
         let send_start = road_debug.then(Instant::now);
-        let send_ok = self
-            .road_preview_tx
-            .send(RoadPreviewRequest {
-                request_id,
-                surface_generation,
-                points,
-                fwd_lanes,
-                bkw_lanes,
-                snap_to_existing_roads,
-            })
-            .is_ok();
+        let send_ok = self.road_preview_tx.submit(RoadPreviewRequest {
+            request_id,
+            surface_generation,
+            points,
+            fwd_lanes,
+            bkw_lanes,
+            snap_to_existing_roads,
+        });
         let send_ms = send_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
@@ -295,8 +325,14 @@ impl SimulationNode {
     }
 
     /// Returns the completed road-tool preview for `request_id`, or `null` while pending/stale.
+    /// `retained_revision` identifies retained geometry already installed by the caller; zero
+    /// requests a complete payload. A matching revision omits unchanged retained mesh buffers.
     #[func]
-    pub fn get_preview_road_surface_result(&self, request_id: i64) -> Variant {
+    pub fn get_preview_road_surface_result(
+        &self,
+        request_id: i64,
+        retained_revision: i64,
+    ) -> Variant {
         let Ok(request_id) = u64::try_from(request_id) else {
             return Variant::nil();
         };
@@ -308,10 +344,17 @@ impl SimulationNode {
             return Variant::nil();
         }
 
-        self.road_preview_snapshot_to_variant(preview)
+        self.road_preview_snapshot_to_variant(
+            preview,
+            u64::try_from(retained_revision).unwrap_or(0),
+        )
     }
 
-    fn road_preview_snapshot_to_variant(&self, preview: &RoadPreviewSnapshot) -> Variant {
+    fn road_preview_snapshot_to_variant(
+        &self,
+        preview: &RoadPreviewSnapshot,
+        retained_revision: u64,
+    ) -> Variant {
         let Some(mut dict) = self.road_candidate_dictionary_with_parcel_clearance(
             &preview.validation,
             &preview.prepared_points,
@@ -329,6 +372,48 @@ impl SimulationNode {
             i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
+        if let Some(scene) = &preview.junction_preview {
+            let empty = BTreeSet::new();
+            let mut replacement = SimCore::road_mesh_chunks_dict(
+                &scene.planned,
+                &empty,
+                true,
+                preview.surface_generation,
+                scene.chunk_span_m,
+                scene.chunk_origin_x_m,
+                scene.chunk_origin_z_m,
+            );
+            if scene.retained_revision != retained_revision || retained_revision == 0 {
+                let retained = SimCore::road_mesh_chunks_dict(
+                    &scene.retained,
+                    &empty,
+                    true,
+                    preview.surface_generation,
+                    scene.chunk_span_m,
+                    scene.chunk_origin_x_m,
+                    scene.chunk_origin_z_m,
+                );
+                replacement.set("retained_chunks", retained.get("chunks").unwrap());
+            }
+            replacement.set(
+                "retained_revision",
+                i64::try_from(scene.retained_revision).unwrap_or(i64::MAX),
+            );
+            replacement.set(
+                "source_mesh_generation",
+                i64::try_from(scene.source_mesh_generation).unwrap_or(i64::MAX),
+            );
+            replacement.set(
+                "replacement_keys",
+                PackedInt32Array::from_iter(
+                    scene
+                        .replacement_chunks
+                        .iter()
+                        .flat_map(|key| [key.0, key.1]),
+                ),
+            );
+            dict.set("junction_preview", replacement);
+        }
         dict.to_variant()
     }
 

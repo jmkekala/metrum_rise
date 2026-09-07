@@ -2,7 +2,9 @@
 
 //! Emission of compiled road, curb, sidewalk, and raised-step top surfaces.
 
-use super::super::{MeshLayer, NetworkMeshData, curb_color, road_color, sidewalk_color};
+use super::super::{
+    MeshLayer, NetworkMeshData, NetworkMeshOwner, curb_color, road_color, sidewalk_color,
+};
 use super::bridge::emit_compiled_bridge_concrete;
 use super::coverage::CompiledSurfaceCoverage;
 use super::earthwork::emit_compiled_earthwork_mesh;
@@ -24,6 +26,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
     emit_compiled_earthwork_mesh(mesh, graph, road_surface, terrain, coverage);
 
     for &edge_idx in &coverage.edge_indices {
+        mesh.set_owner(NetworkMeshOwner::Edge(edge_idx));
         let edge = graph.edge(edge_idx);
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
@@ -56,6 +59,7 @@ pub(in crate::simulation::network::render::road) fn emit_compiled_surface_mesh(
     }
 
     for &node_id in &coverage.node_ids {
+        mesh.set_owner(NetworkMeshOwner::Node(node_id));
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };

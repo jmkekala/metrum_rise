@@ -26,9 +26,9 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadPreviewRequest, RoadPreviewSnapshot, RoadPreviewValidationCertificate,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
-    run_road_preview_worker,
+    RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewValidationCertificate,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_preview_channel,
+    road_tool_snapshots_from_core, run_road_preview_worker,
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, WaterRuntimeSnapshot,
