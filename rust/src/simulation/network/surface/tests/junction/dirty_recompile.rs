@@ -640,24 +640,38 @@ fn preview_validation_retains_exact_artifacts_outside_a_failed_context_node() {
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
 
-    let mut surface = RoadSurfaceSystem::new(16.0);
-    surface.retain_partial_validation_artifacts = true;
-    surface.compile_dirty_with_reason(&graph, &terrain, RoadSurfaceCompileReason::CommitValidator);
-
-    assert_eq!(surface.last_failed_node_ids, vec![center]);
-    assert!(
-        surface
-            .compiled_visual_span_pieces
-            .contains_key(&candidate_edge),
-        "a failed context node must not erase an independently successful candidate span"
-    );
-    for node_id in [candidate_start, candidate_end] {
-        assert!(
-            surface.compiled_visual_node_pieces.contains_key(&node_id),
-            "candidate terminal {node_id} must remain available to the exact required-set check"
+    for incremental in [false, true] {
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.retain_partial_validation_artifacts = true;
+        // ROAD-13: bounded preview compilation starts with an empty incremental cache, not the
+        // full-compile path. Both must retain valid pieces without publishing a complete world.
+        surface.compiled_once = incremental;
+        for edge_id in edge_ids.iter().copied().chain([candidate_edge]) {
+            surface.mark_edge_dirty(&graph, edge_id);
+        }
+        surface.compile_dirty_with_reason(
+            &graph,
+            &terrain,
+            RoadSurfaceCompileReason::CommitValidator,
         );
+
+        assert_eq!(surface.last_failed_node_ids, vec![center]);
+        assert!(surface.compile_generation_is_latched());
+        assert!(!surface.published_generation_matches_source());
+        assert!(
+            surface
+                .compiled_visual_span_pieces
+                .contains_key(&candidate_edge),
+            "a failed context node must not erase the candidate span (incremental={incremental})"
+        );
+        for node_id in [candidate_start, candidate_end] {
+            assert!(
+                surface.compiled_visual_node_pieces.contains_key(&node_id),
+                "candidate terminal {node_id} must remain available (incremental={incremental})"
+            );
+        }
+        assert!(!surface.compiled_visual_node_pieces.contains_key(&center));
     }
-    assert!(!surface.compiled_visual_node_pieces.contains_key(&center));
 }
 
 #[test]

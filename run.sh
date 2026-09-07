@@ -7,8 +7,10 @@
 #                        Run deterministic Rust generation and Godot upload benchmarks
 #   --benchmark-road-chunk-upload
 #                        Run only the deterministic Godot upload benchmark
+#   --benchmark-gameplay-roads / --benchmark-gameplay-roads-headless
+#                        Measure the gameplay workload without profiler overhead
 #   --profile-gameplay-roads
-#                        Profile the windowed Kuopio road-building workload with Samply
+#                        Profile the windowed controlled road workload with Samply
 #   --profile-gameplay-roads-headless
 #                        Profile the same workload with Godot's CPU-only headless renderer
 #
@@ -80,6 +82,7 @@ TEST=0
 ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
 GAMEPLAY_ROAD_PROFILE_MODE=""
+GAMEPLAY_ROAD_USE_PROFILER=0
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
@@ -189,8 +192,16 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--profile-gameplay-roads" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="windowed"
+        GAMEPLAY_ROAD_USE_PROFILER=1
         RELEASE=1
     elif [ "$arg" = "--profile-gameplay-roads-headless" ]; then
+        GAMEPLAY_ROAD_PROFILE_MODE="headless"
+        GAMEPLAY_ROAD_USE_PROFILER=1
+        RELEASE=1
+    elif [ "$arg" = "--benchmark-gameplay-roads" ]; then
+        GAMEPLAY_ROAD_PROFILE_MODE="windowed"
+        RELEASE=1
+    elif [ "$arg" = "--benchmark-gameplay-roads-headless" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="headless"
         RELEASE=1
     elif [[ "$arg" == --visuals=* ]]; then
@@ -570,11 +581,11 @@ printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cf
 repair_godot_import_cache_if_needed
 
 if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
-    if ! command -v samply >/dev/null 2>&1; then
+    if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && ! command -v samply >/dev/null 2>&1; then
         echo "Error: samply is not installed or not on PATH." >&2
         exit 2
     fi
-    if [ -r /proc/sys/kernel/perf_event_paranoid ]; then
+    if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && [ -r /proc/sys/kernel/perf_event_paranoid ]; then
         PERF_EVENT_PARANOID="$(< /proc/sys/kernel/perf_event_paranoid)"
         if [ "$PERF_EVENT_PARANOID" -gt 1 ]; then
             echo "Error: kernel.perf_event_paranoid=$PERF_EVENT_PARANOID; Samply needs 1 or lower." >&2
@@ -592,7 +603,11 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     GAMEPLAY_WORLD_PATH="${METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH:-$PROJECT_ROOT/maps/processed/Kuopio/kuopio_324km2_10m.sqlite}"
     GAMEPLAY_SAMPLE_RATE="${METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE:-1000}"
 
-    if [ ! -f "$GAMEPLAY_WORLD_PATH" ]; then
+    if [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "paired" ] && \
+       [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "scaling" ] && \
+       [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "interaction" ] && \
+       [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "saved" ] && \
+       [ ! -f "$GAMEPLAY_WORLD_PATH" ]; then
         echo "Error: Kuopio world definition not found at $GAMEPLAY_WORLD_PATH" >&2
         exit 2
     fi
@@ -601,37 +616,41 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     export METRUM_GAMEPLAY_BENCHMARK_RUN_ID="$GAMEPLAY_RUN_ID"
     export METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH="$GAMEPLAY_WORLD_PATH"
     export METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH="$GAMEPLAY_METRICS_PATH"
-    # Samply may return success even when the recorded child exits nonzero. Empty the target first so
-    # only a metrics document produced by this invocation can authorize a successful wrapper exit.
-    : > "$GAMEPLAY_METRICS_PATH"
+    export METRUM_GAMEPLAY_BENCHMARK_PROFILED="$GAMEPLAY_ROAD_USE_PROFILER"
+    export METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+    export METRUM_GAMEPLAY_BENCHMARK_GIT_DIRTY="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no | wc -l)"
+    export METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256="$(git -C "$PROJECT_ROOT" diff --binary HEAD | sha256sum | cut -d ' ' -f 1)"
+    # Never let an old success document authorize this run, or overwrite a saved capture.
+    if [ -e "$GAMEPLAY_METRICS_PATH" ] || [ -e "$GAMEPLAY_LOG_PATH" ] || \
+       { [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && [ -e "$GAMEPLAY_PROFILE_PATH" ]; }; then
+        echo "Error: benchmark output already exists; choose a new METRUM_GAMEPLAY_BENCHMARK_RUN_ID." >&2
+        exit 2
+    fi
 
-    echo "Profiling deterministic $GAMEPLAY_ROAD_PROFILE_MODE gameplay road workload..."
-    echo "  World:   $GAMEPLAY_WORLD_PATH"
-    echo "  Profile: $GAMEPLAY_PROFILE_PATH"
+    echo "Running deterministic $GAMEPLAY_ROAD_PROFILE_MODE gameplay road workload (profiler=$GAMEPLAY_ROAD_USE_PROFILER)..."
+    echo "  Matrix:  ${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}"
+    if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
+        echo "  Profile: $GAMEPLAY_PROFILE_PATH"
+    fi
     echo "  Metrics: $GAMEPLAY_METRICS_PATH"
     echo "  Log:     $GAMEPLAY_LOG_PATH"
     cd "$GODOT_DIR"
+    GAMEPLAY_COMMAND=(godot --path "$GODOT_DIR" --log-file "$GAMEPLAY_LOG_PATH")
     if [ "$GAMEPLAY_ROAD_PROFILE_MODE" = "headless" ]; then
-        samply record \
-            --rate "$GAMEPLAY_SAMPLE_RATE" \
-            --save-only \
-            --unstable-presymbolicate \
-            --profile-name "Metrum Rise gameplay roads (headless)" \
-            --output "$GAMEPLAY_PROFILE_PATH" \
-            godot --headless --path "$GODOT_DIR" --log-file "$GAMEPLAY_LOG_PATH" \
-            -- --gameplay-road-benchmark
+        GAMEPLAY_COMMAND+=(--headless)
     else
-        samply record \
-            --rate "$GAMEPLAY_SAMPLE_RATE" \
-            --save-only \
-            --unstable-presymbolicate \
-            --profile-name "Metrum Rise gameplay roads (windowed)" \
-            --output "$GAMEPLAY_PROFILE_PATH" \
-            godot --windowed --resolution 1920x1080 --path "$GODOT_DIR" \
-            --log-file "$GAMEPLAY_LOG_PATH" -- --gameplay-road-benchmark
+        GAMEPLAY_COMMAND+=(--windowed --resolution 1920x1080)
+    fi
+    GAMEPLAY_COMMAND+=(-- --gameplay-road-benchmark)
+    if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
+        samply record --rate "$GAMEPLAY_SAMPLE_RATE" --save-only --unstable-presymbolicate \
+            --profile-name "Metrum Rise gameplay roads ($GAMEPLAY_ROAD_PROFILE_MODE)" \
+            --output "$GAMEPLAY_PROFILE_PATH" "${GAMEPLAY_COMMAND[@]}"
+    else
+        "${GAMEPLAY_COMMAND[@]}"
     fi
     PROFILE_STATUS=$?
-    if [ $PROFILE_STATUS -eq 0 ]; then
+    if [ $PROFILE_STATUS -eq 0 ] && [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
         if [ ! -s "$GAMEPLAY_PROFILE_PATH" ] || ! gzip -t "$GAMEPLAY_PROFILE_PATH" 2>/dev/null; then
             echo "Error: Samply did not produce a readable profile at $GAMEPLAY_PROFILE_PATH" >&2
             PROFILE_STATUS=1
@@ -641,12 +660,12 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
         fi
     fi
     if [ $PROFILE_STATUS -eq 0 ]; then
-        if ! grep -Eq '"success"[[:space:]]*:[[:space:]]*true' "$GAMEPLAY_METRICS_PATH"; then
-            echo "Error: gameplay benchmark did not report success in $GAMEPLAY_METRICS_PATH" >&2
+        if ! python3 "$PROJECT_ROOT/tools/road_benchmark_report.py" --validate "$GAMEPLAY_METRICS_PATH"; then
+            echo "Error: gameplay benchmark did not produce a complete valid capture." >&2
             PROFILE_STATUS=1
         fi
     fi
-    echo "Gameplay road profile finished with status $PROFILE_STATUS."
+    echo "Gameplay road benchmark finished with status $PROFILE_STATUS."
     exit $PROFILE_STATUS
 fi
 
@@ -668,6 +687,13 @@ if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
 fi
 
 if [ $TEST -eq 1 ]; then
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
+        exit 1
+    fi
+    echo "Checking benchmark targets for API drift..."
+    if ! cargo check --benches; then
+        exit 1
+    fi
     echo "Running Rust tests..."
     if ! cargo test; then
         echo "Rust tests failed!"
@@ -676,6 +702,9 @@ if [ $TEST -eq 1 ]; then
     echo "Running Godot bridge tests..."
     cd ../godot
     if ! godot --headless --script res://tests/network_tool_chunk_renderer_test.gd; then
+        exit 1
+    fi
+    if ! godot --headless --script res://tests/road_benchmark_metrics_test.gd; then
         exit 1
     fi
     godot --headless --script res://tests/camera_save_load_test.gd

@@ -2,6 +2,8 @@
 
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
+mod ghost_lines;
+
 use super::{
     CityTreasury, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, SimCore,
     absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,
@@ -95,6 +97,7 @@ fn test_core() -> SimCore {
         last_tick_duration: 0.0,
         last_agent_tick_us: 0,
         last_road_timing: String::new(),
+        last_road_edit_metrics: Default::default(),
         last_surface_debug_edges: Vec::new(),
         refined_terrain_patch_cache: HashMap::new(),
         road_locked_terrain_patch_keys: Vec::new(),
@@ -111,6 +114,7 @@ fn test_core() -> SimCore {
         pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
         road_mesh_full_replace: true,
         cached_road_mesh_generation: 0,
+        road_ghost_lines: Default::default(),
         cached_network_node_positions: std::sync::Arc::new(Vec::new()),
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,

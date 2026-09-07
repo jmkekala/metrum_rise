@@ -184,6 +184,21 @@ class TestRoadTool:
 	func drain_pending_border_checks() -> void:
 		border_check_count += 1
 
+class MockGhostSimulation:
+	extends Node
+	var response: Dictionary = {}
+	var fetches: int = 0
+
+	func get_road_ghost_line_data() -> Dictionary:
+		fetches += 1
+		return response
+
+class GhostRoadTool:
+	extends RoadToolScript
+
+	func _ready() -> void:
+		set_process(false)
+
 class MockRoadCandidateSimulation:
 	extends MockSimulation
 	var zoning_revision: int = 1
@@ -249,10 +264,50 @@ class PointerRoadTool:
 
 var _failures: int = 0
 
+func _test_ghost_contention_retry() -> void:
+	var host := Node3D.new()
+	root.add_child(host)
+	var simulation := MockGhostSimulation.new()
+	simulation.name = "SimulationNode"
+	host.add_child(simulation)
+	var terrain := Node3D.new()
+	terrain.name = "Terrain"
+	host.add_child(terrain)
+	var tool := GhostRoadTool.new()
+	host.add_child(tool)
+	tool.ghost_mesh = MeshInstance3D.new()
+	tool.add_child(tool.ghost_mesh)
+	var previous_mesh := ImmediateMesh.new()
+	tool.ghost_mesh.mesh = previous_mesh
+	tool.ghost_mesh.visible = true
+	tool._ghost_render_generation = 4
+	tool._rebuild_ghost_lines_if_dirty()
+	_expect(tool._ghost_guides_dirty and tool._ghost_rebuild_queued, "unavailable ghost data must stay pending")
+	_expect(tool.ghost_mesh.visible and tool.ghost_mesh.mesh == previous_mesh, "contention must retain existing ghosts")
+	_expect(tool._ghost_render_generation == 4 and simulation.fetches == 1, "unavailable fetch must not publish or spin")
+	simulation.response = {
+		"generation": 5, "vertices": PackedVector3Array([Vector3.ZERO, Vector3.RIGHT]),
+		"colors": PackedColorArray([Color.WHITE, Color.WHITE]),
+	}
+	for _frame in range(5):
+		await process_frame
+		if not tool._ghost_guides_dirty:
+			break
+	_expect(not tool._ghost_guides_dirty and not tool._ghost_rebuild_queued, "available ghost data must complete retry")
+	_expect(tool._ghost_render_generation == 5 and tool._ghost_vertex_count == 2, "retry must publish exact generation and vertices")
+	_expect(simulation.fetches == 2, "retry must fetch once on the following frame")
+	simulation.response = {"generation": 6, "vertices": PackedVector3Array(), "colors": PackedColorArray()}
+	tool._ghost_guides_dirty = true
+	tool._rebuild_ghost_lines_if_dirty()
+	_expect(not tool.ghost_mesh.visible and not tool._ghost_guides_dirty, "a real empty world must clear guides")
+	_expect(tool._ghost_render_generation == 6 and tool._ghost_vertex_count == 0, "empty success must publish its generation")
+	host.free()
+
 func _initialize() -> void:
 	call_deferred("_run")
 
 func _run() -> void:
+	await _test_ghost_contention_retry()
 	_test_road_pointer_frame_updates()
 	await _test_native_road_cursor_contract()
 	_test_road_parcel_validation_cache()

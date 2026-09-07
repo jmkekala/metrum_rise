@@ -493,10 +493,14 @@ pub(crate) fn scan_intersection_candidates(graph: &RegionGraph, edge_id: usize) 
         max_z = max_z.max(p.z);
     }
     let pad = config::SNAP_TOLERANCE + 1.0;
-    graph.get_edges_near_aabb(
+    let mut candidates = graph.get_edges_near_aabb(
         godot::prelude::Vector3::new(min_x - pad, 0.0, min_z - pad),
         godot::prelude::Vector3::new(max_x + pad, 0.0, max_z + pad),
-    )
+    );
+    // Node allocation and snap precedence must not depend on R-tree traversal order.
+    // Sort only the indexed local candidates: O(K log K), no additional allocation.
+    candidates.sort_unstable();
+    candidates
 }
 
 /// Identifies all physical road crossings where edges intersect in 2D.
@@ -655,15 +659,19 @@ fn collect_endpoint_snap_splits(
 
 /// Applies all identified splits to the graph, handling node unification and edge splitting.
 fn apply_splits(
-    all_splits: HashMap<usize, Vec<(f32, u32)>>,
+    all_splits: impl IntoIterator<Item = (usize, Vec<(f32, u32)>)>,
     network: &mut TransitNetwork,
     graph: &mut RegionGraph,
     zoning: &mut crate::simulation::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
-    for (eid, mut splits) in all_splits {
+    // Split-created edge IDs feed later profile authority decisions. Hash-map iteration
+    // must not choose those IDs. O(K log K) time and O(K) temporary storage for touched edges.
+    let mut ordered_splits: Vec<_> = all_splits.into_iter().collect();
+    ordered_splits.sort_unstable_by_key(|(eid, _)| *eid);
+    for (eid, mut splits) in ordered_splits {
         let geo_len = graph.edge(eid).geometry.len();
-        splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap().then(a.1.cmp(&b.1)));
         splits.dedup_by(|a, b| a.1 == b.1);
 
         for (factor, junction_id) in splits {
@@ -1185,6 +1193,84 @@ mod tests {
             String::new(),
         );
         format!("{pack_id}:{asset_id}")
+    }
+
+    #[test]
+    fn deleted_edge_does_not_suppress_redrawn_connection() {
+        let mut graph = RegionGraph::new();
+        let mut network = TransitNetwork::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(40.0, 0.0, 0.0), NodeType::Junction);
+        for _ in 0..3 {
+            graph.add_edge(crate::simulation::network::build_surface_edge(
+                start,
+                end,
+                vec![graph.node(start).pos, graph.node(end).pos],
+                1,
+                1,
+                EdgeClass::Standard,
+            ));
+        }
+        graph.remove_from_spatial_index(0);
+        graph.edge_mut(0).deleted = true;
+        graph.rebuild_adjacency_list();
+
+        network.cleanup_duplicate_edges(&mut graph);
+
+        assert!(graph.edge(0).deleted);
+        assert!(
+            !graph.edge(1).deleted,
+            "the replacement must survive the tombstone"
+        );
+        assert!(
+            graph.edge(2).deleted,
+            "a second live duplicate must still be removed"
+        );
+        assert_eq!(graph.node_adjacency(start), &[1]);
+        assert_eq!(graph.node_adjacency(end), &[1]);
+    }
+
+    #[test]
+    fn split_edge_ids_do_not_depend_on_batch_iteration_order() {
+        for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+            let mut graph = RegionGraph::new();
+            let mut network = TransitNetwork::new();
+            let mut zoning = ZoningSystem::new(&WorldConfig::default());
+            let mut allocator = BuildingAllocator::new();
+            let mut junctions = Vec::new();
+            for index in 0..3 {
+                let z = index as f32 * 30.0;
+                let start = graph.add_node(Vector3::new(0.0, 0.0, z), NodeType::Junction);
+                let end = graph.add_node(Vector3::new(40.0, 0.0, z), NodeType::Junction);
+                junctions.push(graph.add_node(Vector3::new(20.0, 0.0, z), NodeType::Junction));
+                graph.add_edge(crate::simulation::network::build_surface_edge(
+                    start,
+                    end,
+                    vec![graph.node(start).pos, graph.node(end).pos],
+                    1,
+                    1,
+                    EdgeClass::Standard,
+                ));
+            }
+            graph.rebuild_adjacency_list();
+            apply_splits(
+                order.map(|edge_id| (edge_id, vec![(0.5, junctions[edge_id])])),
+                &mut network,
+                &mut graph,
+                &mut zoning,
+                &mut allocator,
+            );
+            assert_eq!(graph.edge_count(), 6);
+            for (index, &junction) in junctions.iter().enumerate() {
+                assert_eq!(graph.edge(index).end_node, junction);
+                assert_eq!(
+                    graph.edge(index + 3).start_node,
+                    junction,
+                    "order={order:?}"
+                );
+                assert_eq!(graph.edge(index + 3).geometry[0], graph.node(junction).pos);
+            }
+        }
     }
 
     #[test]

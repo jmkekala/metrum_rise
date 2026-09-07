@@ -2,12 +2,13 @@
 
 //! Customizable Contraction Hierarchy (CCH) pathfinding.
 //!
-//! Provides fast queries and O(E) metric customization for dynamic traffic.
+//! Provides fast queries and lower-triangle metric customization for dynamic traffic.
 //! Replaces HPA* as the primary routing engine for agents.
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::traffic_log;
+use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -49,7 +50,7 @@ pub struct CchGraph {
     pub node_rank: Vec<u32>,
     /// Mapping from rank to the corresponding original node ID.
     pub node_order: Vec<u32>,
-    /// Parent pointers in the elimination tree. O(E) customization follows this tree.
+    /// Parent pointers in the elimination tree, ordered by contraction rank.
     pub elimination_tree: Vec<Option<u32>>,
     /// All shortcuts formed during contraction.
     pub shortcuts: Vec<CchShortcut>,
@@ -67,6 +68,10 @@ pub struct CchGraph {
     shortcuts_by_start: Vec<Vec<usize>>,
     /// Per-node index of shortcuts whose `target_node` equals the index. Used during contraction.
     shortcuts_by_end: Vec<Vec<usize>>,
+    // One arc per endpoint/boundary-edge/mode state, with all lower-triangle alternatives.
+    // Retaining choices avoids both exponential path expansion and first-seen-path pruning.
+    shortcut_alternatives: Vec<Vec<(usize, usize)>>,
+    customization_order: Vec<usize>,
 }
 
 impl CchGraph {
@@ -83,6 +88,8 @@ impl CchGraph {
             build_generation: 0,
             shortcuts_by_start: vec![Vec::new(); n_nodes],
             shortcuts_by_end: vec![Vec::new(); n_nodes],
+            shortcut_alternatives: Vec::new(),
+            customization_order: Vec::new(),
         }
     }
 
@@ -111,88 +118,105 @@ impl CchGraph {
 
     fn compute_node_order(&mut self, graph: &RegionGraph) {
         let n = graph.node_count();
-        let mut adj: Vec<HashSet<u32>> = vec![HashSet::new(); n];
-        for edge in graph.edges() {
-            if edge.deleted {
-                continue;
+        let mut adj = vec![HashSet::new(); n];
+        for edge in graph.edges().iter().filter(|edge| !edge.deleted) {
+            if edge.start_node != edge.end_node {
+                adj[edge.start_node as usize].insert(edge.end_node);
+                adj[edge.end_node as usize].insert(edge.start_node);
             }
-            adj[edge.start_node as usize].insert(edge.end_node);
-            adj[edge.end_node as usize].insert(edge.start_node);
         }
 
-        let mut heap = BinaryHeap::new();
-        let mut priorities = vec![0; n];
-        for i in 0..n {
-            let p = self.calculate_importance(i as u32, &adj);
-            priorities[i] = p;
-            heap.push(NodePriority {
-                node: i as u32,
-                importance: p,
-            });
-        }
-
-        let mut rank = 0;
-        let mut contracted = vec![false; n];
+        // A node's exact fill score is choose(degree, 2) - neighbour triangles - degree.
+        // Count triangles once, then update only when a fill edge is actually inserted.
+        // Sequential elimination is dependent; independent initial counts use Rayon.
+        let mut triangles: Vec<u64> = adj
+            .par_iter()
+            .map(|neighbors| {
+                neighbors
+                    .iter()
+                    .map(|&v| {
+                        neighbors
+                            .iter()
+                            .filter(|&&w| v < w && adj[v as usize].contains(&w))
+                            .count() as u64
+                    })
+                    .sum()
+            })
+            .collect();
+        let mut priorities: Vec<i64> = adj
+            .iter()
+            .zip(&triangles)
+            .map(|(neighbors, &triangles)| fill_importance(neighbors.len(), triangles))
+            .collect();
+        let mut heap: BinaryHeap<_> = priorities
+            .iter()
+            .enumerate()
+            .map(|(node, &importance)| NodePriority {
+                node: node as u32,
+                importance,
+            })
+            .collect();
+        let mut neighbors = Vec::new();
+        let mut changed = Vec::new();
+        let mut marked = vec![false; n];
 
         while let Some(NodePriority { node, importance }) = heap.pop() {
             let u = node as usize;
-            if contracted[u] {
+            // Priorities can increase OR decrease. Both directions leave obsolete heap entries.
+            if self.node_rank[u] != u32::MAX || importance != priorities[u] {
                 continue;
             }
-            if importance > priorities[u] {
-                let real_p = self.calculate_importance(node, &adj);
-                priorities[u] = real_p;
-                heap.push(NodePriority {
-                    node,
-                    importance: real_p,
-                });
-                continue;
-            }
-
-            contracted[u] = true;
-            self.node_rank[u] = rank;
+            self.node_rank[u] = self.node_order.len() as u32;
             self.node_order.push(node);
-            rank += 1;
+            neighbors.clear();
+            neighbors.extend(adj[u].iter().copied());
+            neighbors.sort_unstable();
 
-            let neighbors: Vec<u32> = adj[u].iter().cloned().collect();
-            for &v in &neighbors {
-                if contracted[v as usize] {
-                    continue;
-                }
-
-                for &w in &neighbors {
-                    if v == w || contracted[w as usize] {
+            // O(d² + sum(min(deg(v), deg(w))) over newly inserted fill edges), instead of
+            // recounting every neighbour's O(deg²) score after every contraction.
+            // Scratch buffers are reused; adjacency storage grows only for new fill edges.
+            for (i, &v) in neighbors.iter().enumerate() {
+                mark_order_score_changed(v, &mut marked, &mut changed);
+                for &w in &neighbors[i + 1..] {
+                    if adj[v as usize].contains(&w) {
                         continue;
                     }
+                    let mut common_count = 0;
+                    for &common in adj[v as usize].intersection(&adj[w as usize]) {
+                        triangles[common as usize] += 1;
+                        common_count += 1;
+                        mark_order_score_changed(common, &mut marked, &mut changed);
+                    }
+                    triangles[v as usize] += common_count;
+                    triangles[w as usize] += common_count;
                     adj[v as usize].insert(w);
                     adj[w as usize].insert(v);
                 }
-
-                adj[v as usize].remove(&node);
-                let real_p = self.calculate_importance(v, &adj);
-                priorities[v as usize] = real_p;
-                heap.push(NodePriority {
-                    node: v,
-                    importance: real_p,
-                });
             }
-        }
-    }
 
-    fn calculate_importance(&self, u: u32, adj: &[HashSet<u32>]) -> i32 {
-        let neighbors = &adj[u as usize];
-        let mut shortcuts_needed = 0;
-        let neighborhood: Vec<u32> = neighbors.iter().cloned().collect();
-        for i in 0..neighborhood.len() {
-            for j in i + 1..neighborhood.len() {
-                let v = neighborhood[i];
-                let w = neighborhood[j];
-                if !adj[v as usize].contains(&w) {
-                    shortcuts_needed += 1;
+            // The surviving neighbours now form a clique. Removing u deletes exactly d-1
+            // triangles at each neighbour, including triangles introduced by the fill above.
+            for &v in &neighbors {
+                adj[v as usize].remove(&node);
+                triangles[v as usize] -= neighbors.len().saturating_sub(1) as u64;
+            }
+            adj[u].clear();
+            for v in changed.drain(..) {
+                let v_index = v as usize;
+                marked[v_index] = false;
+                if self.node_rank[v_index] != u32::MAX {
+                    continue;
+                }
+                let real_p = fill_importance(adj[v_index].len(), triangles[v_index]);
+                if priorities[v_index] != real_p {
+                    priorities[v_index] = real_p;
+                    heap.push(NodePriority {
+                        node: v,
+                        importance: real_p,
+                    });
                 }
             }
         }
-        shortcuts_needed as i32 - neighbors.len() as i32
     }
 
     fn contract(&mut self, graph: &RegionGraph) {
@@ -235,12 +259,19 @@ impl CchGraph {
             }
         }
 
+        let turn_restricted: Vec<bool> = (0..n)
+            .into_par_iter()
+            .map(|node| Self::node_has_vehicle_whitelist(graph.node(node as u32)))
+            .collect();
+        let mut compound_arcs: HashMap<(u32, u32, usize, usize, u8), usize> = HashMap::new();
+        let mut neighbors_in = Vec::new();
+        let mut neighbors_out = Vec::new();
         for rank in 0..n {
             let u = self.node_order[rank];
             let u_rank = self.node_rank[u as usize];
 
-            let mut neighbors_in = Vec::new();
-            let mut neighbors_out = Vec::new();
+            neighbors_in.clear();
+            neighbors_out.clear();
 
             // Use per-node index instead of scanning all shortcuts — O(degree) not O(S).
             for &idx in &self.shortcuts_by_end[u as usize] {
@@ -256,8 +287,10 @@ impl CchGraph {
                 }
             }
 
-            // Deduplicate (start, target) pairs within this contraction step to prevent
-            // exponential shortcut growth. Only one compound shortcut per node-pair is needed.
+            // These arcs have u as their lower-ranked endpoint. Their children have strictly
+            // lower endpoints, even if an alternative was appended after the parent arc.
+            self.customization_order.extend_from_slice(&neighbors_in);
+            self.customization_order.extend_from_slice(&neighbors_out);
             if crate::debug::is_traffic_enabled()
                 && (!neighbors_in.is_empty() || !neighbors_out.is_empty())
             {
@@ -281,7 +314,6 @@ impl CchGraph {
                     no.join(",")
                 );
             }
-            let mut added_pairs: HashSet<(u32, u32)> = HashSet::new();
 
             for &idx_in in &neighbors_in {
                 let (s_in_start, s_in_last, s_in_first, s_in_mask) = {
@@ -302,28 +334,6 @@ impl CchGraph {
                         continue;
                     }
 
-                    // Skip if we already have any shortcut (direct or compound) for this pair
-                    if added_pairs.contains(&(s_in_start, s_out_target)) {
-                        traffic_log!(
-                            "[CCH_CONTRACT] node={u} skip already-added {s_in_start}→{s_out_target}"
-                        );
-                        continue;
-                    }
-                    // Also skip if a direct shortcut between these nodes already exists
-                    if self.shortcuts_by_start[s_in_start as usize]
-                        .iter()
-                        .any(|&i| {
-                            self.shortcuts[i].target_node == s_out_target
-                                && self.shortcuts[i].base_edge != usize::MAX
-                        })
-                    {
-                        traffic_log!(
-                            "[CCH_CONTRACT] node={u} skip direct-exists {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
-                        );
-                        added_pairs.insert((s_in_start, s_out_target));
-                        continue;
-                    }
-
                     if !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first) {
                         traffic_log!(
                             "[CCH_BUILD] blocked shortcut: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})"
@@ -334,16 +344,37 @@ impl CchGraph {
                     traffic_log!(
                         "[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
                     );
-                    added_pairs.insert((s_in_start, s_out_target));
-                    self.add_compound_shortcut(
+                    let mask = s_in_mask & s_out_mask;
+                    if mask == 0 {
+                        continue;
+                    }
+                    // Boundary-edge identity only distinguishes legal continuations at restricted
+                    // endpoints. Merge equivalent open-end states, retaining all metric choices.
+                    let first_key = if turn_restricted[s_in_start as usize] {
+                        s_in_first
+                    } else {
+                        usize::MAX
+                    };
+                    let last_key = if turn_restricted[s_out_target as usize] {
+                        s_out_last
+                    } else {
+                        usize::MAX
+                    };
+                    let key = (s_in_start, s_out_target, first_key, last_key, mask);
+                    if let Some(&idx) = compound_arcs.get(&key) {
+                        self.shortcut_alternatives[idx].push((idx_in, idx_out));
+                        continue;
+                    }
+                    let idx = self.add_compound_shortcut(
                         s_in_start,
                         s_out_target,
                         idx_in,
                         idx_out,
                         s_in_first,
                         s_out_last,
-                        s_in_mask & s_out_mask,
+                        mask,
                     );
+                    compound_arcs.insert(key, idx);
                 }
             }
         }
@@ -385,6 +416,7 @@ impl CchGraph {
             last_edge: edge_idx,
             allowed_types: edge.allowed_types,
         });
+        self.shortcut_alternatives.push(Vec::new());
         self.shortcuts_by_start[start as usize].push(idx);
         self.shortcuts_by_end[end as usize].push(idx);
     }
@@ -398,7 +430,7 @@ impl CchGraph {
         first: usize,
         last: usize,
         mask: u8,
-    ) {
+    ) -> usize {
         let idx = self.shortcuts.len();
         self.shortcuts.push(CchShortcut {
             start_node: start,
@@ -412,8 +444,10 @@ impl CchGraph {
             last_edge: last,
             allowed_types: mask,
         });
+        self.shortcut_alternatives.push(vec![(l_idx, r_idx)]);
         self.shortcuts_by_start[start as usize].push(idx);
         self.shortcuts_by_end[end as usize].push(idx);
+        idx
     }
 
     /// Expands a shortcut into its sequence of concrete base-edge indices.
@@ -436,67 +470,40 @@ impl CchGraph {
         result
     }
 
-    /// Updates shortcut costs based on current dynamic edge costs.
+    /// Re-evaluates all retained lower-triangle alternatives for current dynamic edge costs.
     ///
-    /// Shortcuts are created in order (children before parents), so a single forward pass
-    /// correctly propagates costs bottom-up without needing to traverse `inner_edges`.
+    /// O(base edges + shortcuts + alternatives), allocation-free. Alternatives are evaluated in
+    /// increasing lower-endpoint rank, so every child is finalized before its parent.
     pub fn customize(&mut self, graph: &RegionGraph) {
-        let mut max_speed = 1.0_f32;
-        for edge in graph.edges() {
-            if !edge.deleted {
-                max_speed = max_speed.max(edge.speed_limit);
-            }
-        }
-        self.max_v = max_speed;
-
-        // Bottom-up cost propagation: direct shortcuts first, compound shortcuts after.
-        // Children always have lower indices than the compound shortcuts that reference them
-        // because shortcuts are appended in contraction order.
-        for idx in 0..self.shortcuts.len() {
-            if self.shortcuts[idx].mid_l == usize::MAX {
-                // Direct shortcut: cost comes from the base edge.
-                let e_idx = self.shortcuts[idx].base_edge;
-                let edge = graph.edge(e_idx);
-                let cost = edge.base_cost * (1.0 + edge.current_congestion);
-                let dist = edge.physical_length;
-                self.shortcuts[idx].cost = cost;
-                self.shortcuts[idx].dist = dist;
+        self.max_v = graph
+            .edges()
+            .iter()
+            .filter(|edge| !edge.deleted)
+            .fold(1.0_f32, |speed, edge| speed.max(edge.speed_limit));
+        for &idx in &self.customization_order {
+            if self.shortcuts[idx].base_edge != usize::MAX {
+                let edge = graph.edge(self.shortcuts[idx].base_edge);
+                self.shortcuts[idx].cost = edge.base_cost * (1.0 + edge.current_congestion);
+                self.shortcuts[idx].dist = edge.physical_length;
             } else {
-                // Compound shortcut: cost is the sum of the two children.
-                let l = self.shortcuts[idx].mid_l;
-                let r = self.shortcuts[idx].mid_r;
-                let cost = self.shortcuts[l].cost + self.shortcuts[r].cost;
-                let dist = self.shortcuts[l].dist + self.shortcuts[r].dist;
-                self.shortcuts[idx].cost = cost;
-                self.shortcuts[idx].dist = dist;
-            }
-        }
-
-        // Prune fwd_up and bwd_up following elimination tree order
-        for rank in 0..graph.node_count() {
-            let u = self.node_order[rank] as usize;
-
-            // Deduplicate fwd_up[u]: best shortcut per (target, first_edge, last_edge)
-            let mut best_fwd: HashMap<(u32, usize, usize), (usize, f32)> = HashMap::new();
-            for &idx in &self.fwd_up[u] {
-                let s = &self.shortcuts[idx];
-                let key = (s.target_node, s.first_edge, s.last_edge);
-                if s.cost < best_fwd.get(&key).map(|&(_, c)| c).unwrap_or(f32::MAX) {
-                    best_fwd.insert(key, (idx, s.cost));
+                let mut best = (f32::INFINITY, usize::MAX, usize::MAX);
+                for &(left, right) in &self.shortcut_alternatives[idx] {
+                    let cost = self.shortcuts[left].cost + self.shortcuts[right].cost;
+                    if cost < best.0 {
+                        best = (cost, left, right);
+                    }
+                }
+                let (_, left, right) = best;
+                self.shortcuts[idx].cost = best.0;
+                if left != usize::MAX {
+                    self.shortcuts[idx].dist =
+                        self.shortcuts[left].dist + self.shortcuts[right].dist;
+                    self.shortcuts[idx].mid_l = left;
+                    self.shortcuts[idx].mid_r = right;
+                    self.shortcuts[idx].first_edge = self.shortcuts[left].first_edge;
+                    self.shortcuts[idx].last_edge = self.shortcuts[right].last_edge;
                 }
             }
-            self.fwd_up[u] = best_fwd.values().map(|(idx, _)| *idx).collect();
-
-            // Deduplicate bwd_up[u]: best shortcut per (start, first_edge, last_edge)
-            let mut best_bwd: HashMap<(u32, usize, usize), (usize, f32)> = HashMap::new();
-            for &idx in &self.bwd_up[u] {
-                let s = &self.shortcuts[idx];
-                let key = (s.start_node, s.first_edge, s.last_edge);
-                if s.cost < best_bwd.get(&key).map(|&(_, c)| c).unwrap_or(f32::MAX) {
-                    best_bwd.insert(key, (idx, s.cost));
-                }
-            }
-            self.bwd_up[u] = best_bwd.values().map(|(idx, _)| *idx).collect();
         }
     }
 
@@ -553,10 +560,12 @@ impl CchGraph {
             // Forward expansion
             if let Some(state) = fwd_heap.pop() {
                 if state.cost >= min_total_cost {
-                    break;
+                    fwd_heap.clear();
                 }
                 let (cost, node, l_edge) = (state.cost, state.node, state.incoming_edge);
-                if let Some(&(best_cost, _, _, _)) = fwd_data.get(&(node, l_edge)) {
+                if cost < min_total_cost
+                    && let Some(&(best_cost, _, _, _)) = fwd_data.get(&(node, l_edge))
+                {
                     if cost > best_cost {
                         continue;
                     }
@@ -612,10 +621,12 @@ impl CchGraph {
             // Backward expansion
             if let Some(state) = bwd_heap.pop() {
                 if state.cost >= min_total_cost {
-                    break;
+                    bwd_heap.clear();
                 }
                 let (cost, node, outgoing_edge) = (state.cost, state.node, state.incoming_edge);
-                if let Some(&(best_cost, _, _, _)) = bwd_data.get(&(node, outgoing_edge)) {
+                if cost < min_total_cost
+                    && let Some(&(best_cost, _, _, _)) = bwd_data.get(&(node, outgoing_edge))
+                {
                     if cost > best_cost {
                         continue;
                     }
@@ -777,11 +788,7 @@ impl CchGraph {
     ) -> bool {
         // Global whitelist: if the node has any user vehicle connection, all unspecified
         // turns are blocked. If the node has no user connections, all turns are open.
-        let node_has_any_conn = node_data
-            .lane_connections
-            .keys()
-            .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
-        if !node_has_any_conn {
+        if !Self::node_has_vehicle_whitelist(node_data) {
             return true; // open node
         }
         // Whitelist mode: check explicit vehicle turns only.
@@ -799,6 +806,12 @@ impl CchGraph {
             "[TURN_BLOCKED] in_edge={in_edge} out_edge={out_edge} (whitelist active, no match)"
         );
         false
+    }
+
+    fn node_has_vehicle_whitelist(node: &crate::simulation::network::graph::data::Node) -> bool {
+        node.lane_connections
+            .keys()
+            .any(|&(_, lane)| lane != 100 && lane != -100)
     }
 
     /// Returns `true` if every turn in `path` is permitted under the current turn
@@ -829,10 +842,22 @@ impl CchGraph {
     }
 }
 
+fn fill_importance(degree: usize, triangles: u64) -> i64 {
+    let degree = degree as u64;
+    (degree * degree.saturating_sub(1) / 2 - triangles) as i64 - degree as i64
+}
+
+fn mark_order_score_changed(node: u32, marked: &mut [bool], changed: &mut Vec<u32>) {
+    if !marked[node as usize] {
+        marked[node as usize] = true;
+        changed.push(node);
+    }
+}
+
 #[derive(Copy, Clone, PartialEq)]
 struct NodePriority {
     node: u32,
-    importance: i32,
+    importance: i64,
 }
 
 impl Eq for NodePriority {}
@@ -876,6 +901,9 @@ impl PartialOrd for CchState {
         Some(self.cmp(other))
     }
 }
+
+#[cfg(test)]
+mod ordering_tests;
 
 #[cfg(test)]
 mod tests {

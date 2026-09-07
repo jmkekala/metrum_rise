@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Surface compilation kernels: explicit unchanged-input controls and actual mutations.
+
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::{Vector2, Vector3};
 use metrum_rise::config;
@@ -13,7 +15,7 @@ use std::time::Duration;
 
 const GRID_NODES_PER_AXIS: usize = 18;
 const GRID_SPACING_M: f32 = 36.0;
-const GRID_ORIGIN_M: f32 = 96.0;
+const GRID_ORIGIN_M: f32 = -306.0;
 const TERRAIN_CELLS: usize = 513;
 const TERRAIN_CELL_SIZE_M: f32 = 2.0;
 const SURFACE_CHUNK_SPAN_M: f32 = 128.0;
@@ -31,72 +33,140 @@ fn bench_surface_system(c: &mut Criterion) {
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(2));
 
+    // Borrow each prepared input so its graph/cache destruction stays outside the timer.
+    // These fixtures are large; keep one resident per sample instead of a batch of clones.
+
     group.bench_function("compile_all_grid", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             || RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M),
-            |mut surface| {
-                surface.compile_dirty(&setup.graph, &setup.terrain);
+            |surface| {
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 black_box(surface.compiled_sections().len());
                 black_box(surface.compiled_visual_span_pieces().len());
                 black_box(surface.compiled_visual_node_pieces().len());
             },
-            BatchSize::SmallInput,
+            BatchSize::PerIteration,
         );
     });
 
-    group.bench_function("compile_dirty_single_edge", |b| {
-        b.iter_batched(
+    group.bench_function("compile_dirty_unchanged_edge", |b| {
+        b.iter_batched_ref(
             || {
                 let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
-                surface.compile_dirty(&setup.graph, &setup.terrain);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 surface
             },
-            |mut surface| {
+            |surface| {
                 surface.mark_edge_dirty(&setup.graph, setup.dirty_edge);
-                surface.compile_dirty(&setup.graph, &setup.terrain);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 black_box(surface.compiled_sections().len());
                 black_box(surface.compiled_visual_span_pieces().len());
                 black_box(surface.compiled_visual_node_pieces().len());
             },
-            BatchSize::SmallInput,
+            BatchSize::PerIteration,
         );
     });
 
-    group.bench_function("compile_dirty_terrain_edit", |b| {
-        b.iter_batched(
+    group.bench_function("compile_dirty_unchanged_terrain", |b| {
+        b.iter_batched_ref(
             || {
                 let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
-                surface.compile_dirty(&setup.graph, &setup.terrain);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 surface
             },
-            |mut surface| {
+            |surface| {
                 surface.mark_terrain_edit_dirty(
                     &setup.graph,
                     setup.terrain_edit_center,
                     GRID_SPACING_M * 1.75,
                 );
-                surface.compile_dirty(&setup.graph, &setup.terrain);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
                 black_box(surface.compiled_sections().len());
                 black_box(surface.compiled_visual_span_pieces().len());
                 black_box(surface.compiled_visual_node_pieces().len());
             },
-            BatchSize::SmallInput,
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.bench_function("compile_dirty_lane_width_change", |b| {
+        b.iter_batched_ref(
+            || {
+                let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
+                let mut graph = setup.graph.clone();
+                // Isolated surface input mutation; x/z geometry and its spatial index stay fixed.
+                let edge = graph.edge_mut(setup.dirty_edge);
+                edge.fwd_lanes += 1;
+                edge.width += config::LANE_WIDTH;
+                assert_ne!(edge.width, setup.graph.edge(setup.dirty_edge).width);
+                (surface, graph)
+            },
+            |(surface, graph)| {
+                surface.mark_edge_dirty(graph, setup.dirty_edge);
+                assert!(surface.compile_dirty(graph, &setup.terrain));
+                black_box(surface.compiled_visual_node_pieces().len());
+            },
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.bench_function("compile_dirty_changed_terrain", |b| {
+        b.iter_batched_ref(
+            || {
+                let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
+                assert!(surface.compile_dirty(&setup.graph, &setup.terrain));
+                let mut terrain = setup.terrain.clone();
+                let half_extent = (TERRAIN_CELLS - 1) as f32 * TERRAIN_CELL_SIZE_M * 0.5;
+                let x =
+                    ((setup.terrain_edit_center.x + half_extent) / TERRAIN_CELL_SIZE_M) as usize;
+                let z =
+                    ((setup.terrain_edit_center.y + half_extent) / TERRAIN_CELL_SIZE_M) as usize;
+                for dz in z - 2..=z + 2 {
+                    for dx in x - 2..=x + 2 {
+                        terrain.set_height(dx, dz, terrain.get_height(dx, dz) + 0.01);
+                    }
+                }
+                assert_ne!(terrain.get_height(x, z), setup.terrain.get_height(x, z));
+                assert_ne!(
+                    terrain.sample_height_world(
+                        setup.terrain_edit_center.x,
+                        setup.terrain_edit_center.y
+                    ),
+                    setup.terrain.sample_height_world(
+                        setup.terrain_edit_center.x,
+                        setup.terrain_edit_center.y
+                    ),
+                    "changed source samples must lie inside the timed invalidation footprint",
+                );
+                (surface, terrain)
+            },
+            |(surface, terrain)| {
+                surface.mark_terrain_edit_dirty(
+                    &setup.graph,
+                    setup.terrain_edit_center,
+                    GRID_SPACING_M * 1.75,
+                );
+                assert!(surface.compile_dirty(&setup.graph, terrain));
+                black_box(surface.compiled_visual_node_pieces().len());
+            },
+            BatchSize::PerIteration,
         );
     });
 
     group.bench_function("rebuild_all_earthworks_grid", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             || {
                 let mut surface = RoadSurfaceSystem::new(SURFACE_CHUNK_SPAN_M);
                 let terrain = build_bench_terrain();
-                surface.compile_dirty(&setup.graph, &terrain);
+                assert!(surface.compile_dirty(&setup.graph, &terrain));
                 (surface, terrain)
             },
-            |(mut surface, mut terrain)| {
-                let chunks = surface.rebuild_all_earthworks(&setup.graph, &mut terrain);
+            |(surface, terrain)| {
+                let chunks = surface.rebuild_all_earthworks(&setup.graph, terrain);
                 black_box(chunks.len());
             },
-            BatchSize::SmallInput,
+            BatchSize::PerIteration,
         );
     });
 
@@ -140,6 +210,9 @@ fn build_surface_bench_setup() -> SurfaceBenchSetup {
         GRID_ORIGIN_M + GRID_SPACING_M * GRID_NODES_PER_AXIS as f32 * 0.5,
     );
 
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
     SurfaceBenchSetup {
         graph,
         terrain,
@@ -153,8 +226,9 @@ fn build_bench_terrain() -> TerrainSystem {
         TerrainSystem::with_chunking(TERRAIN_CELLS, TERRAIN_CELLS, TERRAIN_CELL_SIZE_M, 64, 0.0);
     for z in 0..TERRAIN_CELLS {
         for x in 0..TERRAIN_CELLS {
-            let world_x = x as f32 * TERRAIN_CELL_SIZE_M;
-            let world_z = z as f32 * TERRAIN_CELL_SIZE_M;
+            let half_extent = (TERRAIN_CELLS - 1) as f32 * TERRAIN_CELL_SIZE_M * 0.5;
+            let world_x = x as f32 * TERRAIN_CELL_SIZE_M - half_extent;
+            let world_z = z as f32 * TERRAIN_CELL_SIZE_M - half_extent;
             terrain.set_height(x, z, bench_raw_height(world_x, world_z));
         }
     }

@@ -5,6 +5,41 @@
 use super::*;
 
 #[test]
+fn long_road_terrain_exports_stay_local_and_preserve_sources() {
+    let terrain = TerrainSystem::with_chunking(2041, 2041, 10.0, 51, 100.0);
+    let mut graph = RegionGraph::new();
+    let a = Vector3::new(2048.0, 100.0, 2048.0);
+    let b = Vector3::new(4838.0, 100.0, 2048.0);
+    let start = graph.add_node(a, NodeType::Junction);
+    let end = graph.add_node(b, NodeType::Junction);
+    graph.add_edge(crate::simulation::network::build_surface_edge(
+        start,
+        end,
+        vec![a, b],
+        1,
+        1,
+        EdgeClass::Standard,
+    ));
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+    let mut surface = RoadSurfaceSystem::new(512.0);
+    assert!(surface.compile_dirty(&graph, &terrain));
+    for min_x in [1466.0, 1976.0, 2486.0, 2996.0, 3506.0, 4016.0, 4526.0] {
+        let (loops, _) = surface
+            .terrain_cdt_road_loops_for_world_bounds(&graph, min_x, 1976.0, min_x + 638.0, 2614.0)
+            .expect("ROAD-14: a patch query must not union a whole 2790 m footprint");
+        assert!(!loops.is_empty());
+        for road_loop in loops {
+            assert!(!road_loop.source_edges.is_empty());
+            for point in road_loop.vertices {
+                assert!((point.height_m - 100.0).abs() < 1.0);
+                assert!(point.x >= f64::from(min_x) - 128.0 && point.x <= f64::from(min_x) + 766.0);
+            }
+        }
+    }
+}
+
+#[test]
 fn terrain_clip_loops_include_standard_grounded_footprints() {
     let terrain = flat_terrain(97, 97);
     let mut graph = RegionGraph::new();

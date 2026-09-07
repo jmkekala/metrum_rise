@@ -591,9 +591,10 @@ impl SimCore {
             &self.transit_network.lane_system,
             &self.region_graph,
         );
+        // Rebuild the same closure we invalidated; a full rebuild renumbers distant live lanes.
         self.transit_network
             .lane_system
-            .rebuild(&mut self.region_graph);
+            .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
         self.agents.reattach_invalidated_lanes_for_edges(
             &affected_edges,
             &self.transit_network.lane_system,
@@ -2024,6 +2025,7 @@ mod tests {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_road_edit_metrics: Default::default(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
@@ -2040,6 +2042,7 @@ mod tests {
             pending_road_mesh_chunks: Arc::new(std::collections::BTreeSet::new()),
             road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
+            road_ghost_lines: Default::default(),
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
@@ -2211,6 +2214,36 @@ mod tests {
 
         assert!(core.region_graph.edge(0).no_building_spawn);
         assert!(core.zoning.parcels().is_empty());
+    }
+
+    #[test]
+    fn bulldoze_preserves_remote_lane_owners() {
+        let mut core = test_core();
+        for z in [0.0, 200.0] {
+            let start = core
+                .region_graph
+                .add_node(Vector3::new(-60.0, 0.0, z), NodeType::Junction);
+            let end = core
+                .region_graph
+                .add_node(Vector3::new(60.0, 0.0, z), NodeType::Junction);
+            add_test_road_edge(&mut core.region_graph, start, end);
+        }
+        core.region_graph.rebuild_adjacency_list();
+        core.transit_network
+            .lane_system
+            .rebuild(&mut core.region_graph);
+        let remote_lanes = core.transit_network.lane_system.edge_lanes[&1].clone();
+
+        assert!(core.bulldoze_road_edge(0));
+
+        assert_eq!(
+            core.transit_network.lane_system.edge_lanes[&1], remote_lanes,
+            "ROAD-13: local invalidation must not renumber a distant agent's live lane"
+        );
+        for id in remote_lanes {
+            assert_eq!(core.transit_network.lane_system.lanes[id].edge_id, 1);
+        }
+        assert!(!core.transit_network.lane_system.edge_lanes.contains_key(&0));
     }
 
     #[test]

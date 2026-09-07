@@ -7,6 +7,8 @@ use crate::nodes::simulation_node::SimulationNode;
 use godot::prelude::*;
 use std::time::Instant;
 
+pub(crate) mod road_edit;
+
 /// Reads the resident set size of this process in megabytes from `/proc/self/status`.
 pub(crate) fn rss_mb() -> u64 {
     std::fs::read_to_string("/proc/self/status")

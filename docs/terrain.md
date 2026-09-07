@@ -351,6 +351,9 @@ Current deterministic rules:
 - dirty acknowledgements clear only the exact uploaded patch/network revision; a mutation between
   upload and acknowledgement remains dirty, and live terrain brush steps advance touched patch
   revisions before their asynchronous payloads are requested
+- world replacement explicitly rebuilds renderer residency. Dirty flags reflect actual patch
+  ledgers: a new flat world with empty ledgers must not wait for nonexistent acknowledgements.
+  Residency/payload queues still gate renderer readiness.
 - renderer polling, ownership lookup, layout/border reads, and road-mesh retrieval consume immutable
   render snapshots or nonblocking job queues rather than waiting on the simulation mutex
 - terrain material shoreline/depth sampling reuses the Water renderer's resident patch depth
@@ -912,6 +915,11 @@ Deterministic transition rules:
     ordinary road seam carrier
   - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
     sidewalk render triangles are not reused as terrain ownership triangles
+  - span terrain-query footprints are closed in 64 m section-station runs using existing owned
+    regions and handoff sources. Internal caps cancel in the patch union; full render/earthwork
+    outlines remain unchanged. This bounds exported source loops before the micrometre i32 overlay,
+    fixing the 2,790 m `ROAD-14` overflow without reducing precision or relocating the fixture.
+    Construction adds one linear boundary pass and O(regions) source storage, not a new spatial index.
   - road-piece and terrain-patch ownership cleanup uses `i_overlay` before triangulation; boolean
     union / difference / hole handling must produce non-overlapping asphalt, sidewalk, and terrain
     regions before Spade receives constraints

@@ -470,9 +470,14 @@ grade policy. An ordinary continuation or T-junction producing it is a compiler 
 must include the failed required split spans or nodes with their lengths, clips, lane counts, and
 endpoints. Bounded validation graphs can also contain unchanged frontier/context nodes that are not
 part of the candidate's required topology. Their cold-compile failures do not reject the candidate:
-the transient compiler retains each successful artifact, and the gate independently requires every
+both full and incremental transient compilers retain each successful artifact while keeping the
+failed-generation latch, and the gate independently requires every
 candidate-owned span and changed endpoint node piece to exist. Authoritative simulation and render
 compiles remain transactional, so placement cannot publish a road whose required surface is missing.
+Deleting and redrawing a connection must ignore deleted edges in duplicate detection, matching the
+preview graph. Bulldozing uses the existing incremental lane-rebuild closure, identical to agent
+invalidation/reattachment; it must not renumber distant active lanes (`ROAD-13`). Lane construction
+is local to that closure; existing surviving-lane lookup and agent scans remain `O(L + A)`.
 Terrain CDT boundary ownership follows the same `1 mm` canonical vertex identity as its constraint
 graph: a junction seam may be physically shorter than `1 mm` while still joining two distinct
 canonical cells, and it retains its source until seam hardening deterministically merges or accepts
@@ -527,6 +532,25 @@ Visible-world queries use this precedence:
 2. intentionally surfaced road earthwork / structure
 3. visual terrain
 4. source terrain only for terrain-only APIs
+
+Visible road-height sampling reuses the existing immutable owner-local triangle grids after the
+query-chunk lookup. It tests only triangles in each owner's matching cell, retains the original
+renderability predicate and highest-top-surface rule, and leaves structural-earthwork fallback
+unchanged. Top-surface work is proportional to local owners, their node-visibility adjacency, and
+cell triangle candidates rather than every triangle in those owners; sampling allocates nothing
+and builds no extra index. The same sampler serves ghost guides, snapping, and other visible-height
+consumers. Exact scan-parity tests cover seams, overlapping heights, width edits, deletion, bridges,
+and tunnels.
+
+Ghost-guide CPU geometry is retained per edge. Exact physical geometry, immutable road-mesh
+chunk identities, and persistent terrain-patch revisions validate reuse over the bounds of the
+actual guide samples (including offset curves and ticks). Terrain source brushes and world resets
+invalidate the full guide cache. Multiple edits before a fetch cannot lose earlier invalidations;
+removed slots drop their lines. Independent refreshes use Rayon and reuse offset/line buffers.
+Full output assembly and Godot upload remain O(total guide vertices), in the original edge and
+outward/offset order. Validation costs O(source points + C log M), for C dependency chunks and M
+existing mesh chunks; height sampling is limited to changed edges. No new spatial index is added.
+The native fetch defers until surface and mesh publications match the requested generation.
 
 Road placement must not run heavy geometry synchronously from Godot mouse motion. Godot should
 enqueue or poll Rust-owned preview results and keep input/render code thin.
@@ -591,37 +615,130 @@ Required bounds:
   wall-clock comparisons are made between release runs on the same machine rather than encoded as
   test thresholds. `./run.sh --benchmark-road-chunk-upload` runs the Godot half without inheriting
   thermal/boost state from Criterion.
-- `./run.sh --profile-gameplay-roads` is the primary end-to-end CPU profile. It loads the authored
-  Kuopio world in a release window, moves the gameplay camera between deterministic sites, and
-  drives the production RoadTool through delayed compiled preview and commit for a controlled
-  matrix. Orthogonal two-lane bend, T, and four-way cases are the baselines; oblique T, mixed-width
-  four-way, curved bend, close double-T, and chunk-corner four-way cases each vary one named
-  complexity axis. A measured commit ends only after its newer network
-  generation is acknowledged and foreground terrain, road, water, border-check, ghost-guide, and
-  residency queues have settled; speculative prewarming and ready payload caches are not commit
-  fences, and node degree is then a correctness gate. The accompanying JSON records phase
-  wall-clock timestamps and p50/p95 preview, commit, and complete-fixture timings next to the Samply
-  capture. The harness disables gameplay input for the entire run and requires each scripted road
-  commit to advance the network generation exactly once; an unexpected external mutation aborts
-  the capture instead of contaminating later fixtures. Fixture centers use a `640 m` cadence so the
-  independent `180 m` workloads do not repeatedly align with the `510 m` terrain-patch grid; the
-  former `520 m` cadence exposed the tracked `ROAD-06` terrain-CDT correctness bug rather than a
-  stable profiling sample. The fixed controlled default contains 32 fixtures: one warmup and three
-  measured repetitions of eight cases. It reloads the authored world between cycles so each case
-  repeats at the same site against a clean network instead of mixing layout cost with accumulated
-  network size or new terrain. The `baseline` matrix retains the former growing site sweep; increasing
-  its repetition count can expose additional correctness sites, which are failures rather than
-  profiling samples. A rejected refined-terrain generation is reported immediately with its
-  patch, generation, CDT status, and error instead of waiting for the general timeout. Failure
-  cleanup cancels the active road preview before the process exits, and the wrapper validates the
-  metrics document because Samply may not propagate the recorded Godot process's nonzero status.
-  `./run.sh --profile-gameplay-roads-headless` replays exactly the same workload through Godot's
-  headless renderer as the CPU-only comparator. Exact previews now start after `25 ms` of pointer
+- Schema-3 measurements use `./run.sh --benchmark-gameplay-roads` or
+  `./run.sh --benchmark-gameplay-roads-headless`: release runs without Samply. Existing
+  `--profile-gameplay-roads[-headless]` commands profile the same selectable workloads for CPU
+  attribution. Old schema-2 timings are not directly comparable. The default `paired` matrix
+  resets the entire flat world **before every fixture**, holds the free anchor at `(100,100)`, and
+  changes only the corner variant's grid alignment. It covers the eight bend/T/four-way, oblique,
+  mixed-width, curved, close-double-T, and chunk-corner layouts. One warmup plus five measured
+  repetitions gives 48 fixtures; alternate measured cycles reverse case order deterministically.
+  Override counts with `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` / `..._WARMUP_REPETITIONS`.
+- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=scaling` holds the local T edit and terrain fixed while adding
+  a remote, internally connected grid. Default sides `0,4,8` contain `0,24,112` live background edges;
+  `METRUM_GAMEPLAY_BENCHMARK_GRID_SIDES=0,8,16` gives `0,112,480`. Sizes must be unique, zero or
+  `2..64`. Every setup road uses the ordinary async command outside measured edit phases; all grid
+  junction degrees and the live edge count are verified. The local component is intentionally
+  separate. This includes full edit routing/snapshot costs, not only local mesh emission.
+  Intersection candidates and split batches now use stable edge-ID order, with node-ID ties
+  resolved explicitly. This prevents hash/R-tree iteration from changing allocated edge IDs and
+  subsequent profile authority (`ROAD-16`). Sorting is limited to indexed local candidates and
+  touched edges, `O(K log K)` with `O(K)` split-batch storage, not a city-wide scan.
+  Side 32 verifies 1,984 edges and all 1,024 grid-junction degrees. Its formerly rejected first
+  2,790 m stroke (`ROAD-14`) now passes: terrain-query span footprints are exported in 64 m
+  section-station runs so a patch union does not receive an entire multi-kilometre owner loop.
+  A failed setup remains a failure, never a large-city performance result.
+- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=interaction` compares the same T with a completed preview,
+  a 24-point moving pointer trace (60 scheduled inputs/s, one 80 ms midpoint hold), and an immediate
+  click without exact preparation. This is scripted world-space motion, **not OS raycast/snapping**.
+  `pointer_idle_to_ready_ms` excludes intentional trace duration; immediate clicks have no
+  `preview_ready_ms`. Observed request counts and frame intervals accompany each operation.
+- `METRUM_GAMEPLAY_BENCHMARK_MATRIX=saved` reloads a paused city from
+  `METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH` before each T fixture. It requires
+  `METRUM_GAMEPLAY_BENCHMARK_ANCHORS_PATH`, a JSON object such as `{"t_90_2l":[100,100]}`.
+  Use matched saved states to vary actual population/building density; the suite does not fabricate
+  populations or measure running-simulation contention. Authored Kuopio `controlled`, historical
+  growing `baseline`, and targeted `double_t`/`road08` matrices remain diagnostic options. Authored
+  anchors can use the same manifest and are recorded in every capture. Different authored sites
+  confound terrain with topology: do not call these isolated complexity comparisons.
+- Milestones separate `preview_ready_ms` (exact readiness before the extra fence frame),
+  `generation_ready_ms`, `render_ack_ms` (matching atomic road/terrain acknowledgement),
+  `ghost_ready_ms` (guides uploaded for the committed generation), and `first_idle_ms`
+  (also foreground water/border/residency work). `commit_ms` retains the five
+  consecutive idle frames; `settle_tail_ms` isolates the final stable tail. These are CPU frame
+  observations, **not GPU presentation timestamps**. Headless is uncapped unless
+  `METRUM_GAMEPLAY_BENCHMARK_MAX_FPS` overrides it; cadence, viewport, engine, CPU/GPU names, worker
+  counts, and source/binary/world fingerprints are recorded. Do not interpret headless/windowed
+  differences as GPU execution cost. `state_after.command` exposes generation-matched core stages:
+  locking, add, finalization, surface/terrain, agents/lanes, buildings, routing, mesh, snapshot, and
+  refined-state work, plus dirty edges and rebuilt chunks. Finalization includes its maintenance
+  children; core work includes core stages but excludes context publication and renderer work.
+  Do not add inclusive parents and children. Cardinality scans occur outside segment clocks;
+  `nodes` counts storage including aliases. Fixture totals include bookkeeping/verification and
+  are not the primary response-time KPI.
+- Summaries separate `initial_road`, `edit_1`, and later edits. p95 is null below 100 observations;
+  p99 is null below 1,000. These are descriptive quantiles, not confidence intervals or independent
+  process replicates. The wrapper rejects existing outputs and validates full fixture coverage,
+  monotonic milestones, command generations, and visible generation-matched ghost output through
+  `tools/road_benchmark_report.py`. Paired captures must also agree on guide vertex counts and
+  pre/post-edit graph, lane, agent, and building cardinalities.
+  Unavailable native guide data preserves the existing mesh and retries once next frame; it is
+  not an empty world. A successful empty result explicitly carries its generation (`ROAD-15`).
+  Compare separate unprofiled pairs with
+  `python3 tools/road_benchmark_report.py --baseline a1.json a2.json --candidate b1.json b2.json`
+  (default `first_idle_ms`; also `--metric render_ack_ms` or `--metric command.routing_ms`).
+  Alternate A/B and B/A process order
+  without concurrent load, using identical inputs/settings. The report rejects incompatible or
+  profiled captures and reports paired process-median deltas/ranges without significance claims.
+  Start with unchanged-build A/A runs. Early captures without ghost-generation checks could
+  silently drop guide work on lock contention and are not valid baselines or noise controls.
+  Fewer than three process pairs are explicitly exploratory; even more pairs do not establish a
+  win without repeatability beyond the measured A/A variation. Do not use this suite's default
+  single process to gate small gains.
+  Geometry rejection, unexpected generations, missing fixtures, and degree mismatches remain
+  failures, never faster samples or reasons to relocate a pinned fixture.
+- The indexed visible-height sampler was validated with three matched unprofiled release/headless
+  process pairs, alternating A/B and B/A order. Each process ran sides `0,8,16` with one warmup and
+  two measured repetitions, verifying identical guide counts and pre/post-edit graph/lane totals.
+  Both binaries included the guide-retry and deterministic-split fixes; only the sampling path
+  differed. Local T click-to-first-idle process medians fell from `251.5` to `64.9 ms` at 112
+  background edges (paired reduction `72.5–79.1%`), and from `1139.9` to `139.2 ms` at 480 edges
+  (`87.1–88.4%`). Worst observed 480-edge edit frame intervals fell from `1050.3` to `108.1 ms`.
+  The empty-background T changed from `38.1` to `41.3 ms`, within the observed unchanged-build
+  variation: no small-network gain is claimed. These are road-tool CPU responsiveness results,
+  not whole-game FPS or GPU results. Captures and A/A controls are under the ignored
+  `benchmark-results/road-perf-pass-1/stable-*` paths; earlier captures in that folder are superseded.
+  That pass left full-network guide generation and CCH ordering as the next substantial costs.
+- The subsequent `ROAD-14`/guide/CCH pass uses three matched release/headless process triplets:
+  A = footprint fix only, B = exact CCH rebuild improvements, C = B plus per-edge guide reuse.
+  Each process runs sides `0,8,16,32` once, with no extra whole-fixture warmup; remote-grid setup
+  exercises the road pipeline before local measurements. Order is A1 B1 C1 C2 B2 A2 A3 B3 C3,
+  without competing compiler/test load. All guide counts and pre/post graph/lane cardinalities match.
+  At 1,984 background edges, local T click-to-first-idle medians are `3731 → 202 ms`
+  (paired reduction `93.6–94.6%`); the routing stage alone is `3437 → 21.4 ms`.
+  With the improved router held fixed, guide reuse reduces that edit from `359 → 202 ms`
+  (`40.2–43.9%`). The worst observed T frame interval falls from `3715 → 121 ms`.
+  At 480 background edges the same edit falls from `142 → 80 ms` (`28.1–54.9%`).
+  These are descriptive process medians and CPU frame observations, not GPU/FPS claims.
+  Isolated topology-only Criterion rebuilds also improve: side 8 `0.675 → 0.309 ms`,
+  side 16 `36.3 → 1.93 ms`, and side 32 `2419 → 14.4 ms`.
+  The faster order exposed discarded shortcut alternatives and premature query termination;
+  those correctness defects are fixed and independently oracle-tested (`ROAD-17`).
+  CCH still rebuilds globally; scoring is incremental within a rebuild. Complete guide packing
+  and upload still scale with total guide vertices.
+  Small-network results are not uniformly better. Three additional process pairs at sides `0,8`,
+  each with one warmup and five measured fixture repetitions, show the empty-world first stroke
+  regressing from `36.2 → 41.2 ms` (`13.9–17.3%`), while its following T is `48.2 → 48.1 ms`.
+  The 112-edge first stroke improves `63.1 → 58.4 ms`; its T result is inconclusive.
+  The first-road regression remains explicit follow-up `ROAD-18`, not a claimed noise-free win.
+  Captures, staged comparisons, superseded experiments and verification are under ignored
+  `benchmark-results/road-perf-pass-2/`.
+- Criterion now distinguishes `compile_dirty_unchanged_edge` / `compile_dirty_unchanged_terrain`
+  from real `compile_dirty_lane_width_change` / `compile_dirty_changed_terrain` kernels. The grid
+  is centered inside its terrain, sample/world coordinates agree, changed samples lie inside the
+  invalidation footprint, and every compile must publish successfully. Mutation and initial cache
+  construction and input destruction are outside the compile timer; only one large prepared
+  input is retained per iteration. `cargo bench --bench surface_benchmark -- --test`
+  smoke-executes all kernels. `./run.sh --test` checks all Criterion targets for API drift and runs
+  benchmark statistics/report regressions alongside existing tests.
+- Exact previews now start after `25 ms` of pointer
   idle instead of `100 ms`; pointer motion still resets the delay and the worker still coalesces
   queued requests. A completed exact rejection replaces the earlier cheap candidate verdict, so the
   tool turns invalid immediately rather than displaying a stale valid coarse preview. The targeted
-  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=road08` workload verifies that the formerly 90-second apparent
-  hang reports `surface_geometry_invalid` in the same bounded preview interval. Exact validation no
+  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=road08` workload keeps the formerly 90-second apparent-hang
+  site pinned. The old expected rejection is stale: current geometry accepts the exact preview and
+  commits the curve, so schema 3 requires successful settlement and a degree-two junction. Two
+  clean-world replays pass. Exact validation no
   longer invokes a cold full compile over every node copied into its bounded graph excerpt. It marks
   only the candidate-required edges/nodes and incident topology dirty, then runs the same incremental
   compiler used by authoritative edits; the existing required-piece checks and exact preview-to-commit

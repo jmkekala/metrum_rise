@@ -567,12 +567,15 @@ impl SimCore {
         self.terrain_payload_patch_generations.clear();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
-        self.terrain_dirty = true;
-        self.water_dirty = true;
+        // World replacement explicitly rebuilds renderer residency. Dirty flags describe actual
+        // patch ledgers; an empty flat world has no payload acknowledgements to clear a forced flag.
+        self.terrain_dirty = !self.heightmap.dirty_render_patches().is_empty();
+        self.water_dirty = !self.watermap.dirty_render_patches().is_empty();
         self.mark_network_render_dirty();
         self.last_tick_duration = 0.0;
         self.last_agent_tick_us = 0;
         self.last_road_timing.clear();
+        self.last_road_edit_metrics = Default::default();
         self.last_surface_debug_edges.clear();
         self.camera_aabb = (0.0, 0.0, 0.0, 0.0);
     }
@@ -1084,6 +1087,7 @@ mod tests {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_road_edit_metrics: Default::default(),
             last_surface_debug_edges: Vec::new(),
             refined_terrain_patch_cache: HashMap::new(),
             road_locked_terrain_patch_keys: Vec::new(),
@@ -1100,6 +1104,7 @@ mod tests {
             pending_road_mesh_chunks: std::sync::Arc::new(std::collections::BTreeSet::new()),
             road_mesh_full_replace: true,
             cached_road_mesh_generation: 0,
+            road_ghost_lines: Default::default(),
             cached_network_node_positions: std::sync::Arc::new(Vec::new()),
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
@@ -1168,6 +1173,15 @@ mod tests {
 
         core.create_blank_world_internal(40.0, 40.0, 8.0, 4.0, 0.0)
             .expect("the supported coarse-cell world should reset");
+
+        assert_eq!(
+            core.terrain_dirty,
+            !core.heightmap.dirty_render_patches().is_empty()
+        );
+        assert_eq!(
+            core.water_dirty,
+            !core.watermap.dirty_render_patches().is_empty()
+        );
 
         assert_eq!(core.config.terrain_render_chunk_span_m(), 8.0);
         assert_eq!(core.heightmap.chunk_span_m(), 8.0);

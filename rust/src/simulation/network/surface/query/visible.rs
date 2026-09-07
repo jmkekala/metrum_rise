@@ -3,8 +3,8 @@
 //! Visible-surface sampling, raycast, and section-range queries.
 
 use super::super::{
-    RoadLaneSurfaceQuery, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTriangleQueryIndex,
-    SurfaceChunkKey,
+    RoadLaneSurfaceQuery, RoadSurfaceIndexedTriangle, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceTriangleQueryIndex, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3, godot_vec3_to_road};
@@ -71,21 +71,25 @@ impl RoadSurfaceSystem {
         let node_ids = self.query_chunk_nodes.get(&chunk);
         let mut top_surface_height_m: Option<f32> = None;
 
-        self.visit_visible_top_surface_query_triangles(
-            graph,
-            terrain,
-            edge_indices
-                .into_iter()
-                .flat_map(|owners| owners.iter().copied()),
-            node_ids
-                .into_iter()
-                .flat_map(|owners| owners.iter().copied()),
-            &mut |triangle| {
-                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                    keep_max_height(&mut top_surface_height_m, height_m);
-                }
-            },
-        );
+        // Reuse the immutable owner-local triangle grids already built for lane queries.
+        // O(owners in query chunk + triangles in their matching cells), with no allocations.
+        for &node_id in node_ids.into_iter().flatten() {
+            if !self.node_uses_visible_surface(graph, terrain, node_id) {
+                continue;
+            }
+            if let Some(piece) = self.compiled_visual_node_pieces.get(&node_id)
+                && let Some(height_m) = piece.surface_query.sample_visible_height(point)
+            {
+                keep_max_height(&mut top_surface_height_m, height_m);
+            }
+        }
+        for &edge_idx in edge_indices.into_iter().flatten() {
+            if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx)
+                && let Some(height_m) = piece.surface_query.sample_visible_height(point)
+            {
+                keep_max_height(&mut top_surface_height_m, height_m);
+            }
+        }
 
         if top_surface_height_m.is_some() {
             return top_surface_height_m;
@@ -410,10 +414,24 @@ impl RoadLaneSurfaceQuery<'_> {
 
 impl RoadSurfaceTriangleQueryIndex {
     fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
+        self.sample_height_matching(point, |triangle| !carriageway_only || triangle.carriageway)
+    }
+
+    fn sample_visible_height(&self, point: RoadVec2) -> Option<f32> {
+        self.sample_height_matching(point, |triangle| {
+            RoadSurfaceSystem::top_surface_triangle_is_renderable_xz(triangle.triangle)
+        })
+    }
+
+    fn sample_height_matching(
+        &self,
+        point: RoadVec2,
+        accepts: impl Fn(&RoadSurfaceIndexedTriangle) -> bool,
+    ) -> Option<f32> {
         let mut surface_height_m = None;
         for &triangle_idx in self.cell_triangle_indices(point) {
             let indexed = self.triangles[triangle_idx as usize];
-            if carriageway_only && !indexed.carriageway {
+            if !accepts(&indexed) {
                 continue;
             }
             if let Some(height_m) =
@@ -590,4 +608,153 @@ fn road_ray_triangle_intersection_t(
 
     let t = edge_ac.dot(qvec) * inv_det;
     (t >= 0.0).then_some(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::build_surface_edge;
+    use crate::simulation::network::types::NodeType;
+
+    fn scanned_height(
+        surface: &RoadSurfaceSystem,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        point: RoadVec2,
+    ) -> Option<f32> {
+        let chunk = RoadSurfaceSystem::query_chunk_coords_for_world(point.x, point.y);
+        let edges = surface
+            .query_chunk_spans
+            .get(&chunk)
+            .into_iter()
+            .flatten()
+            .copied();
+        let nodes = surface
+            .query_chunk_nodes
+            .get(&chunk)
+            .into_iter()
+            .flatten()
+            .copied();
+        let mut result = None;
+        surface.visit_visible_top_surface_query_triangles(
+            graph,
+            terrain,
+            edges.clone(),
+            nodes.clone(),
+            &mut |triangle| {
+                if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(triangle, point) {
+                    keep_max_height(&mut result, height);
+                }
+            },
+        );
+        if result.is_none() {
+            surface.visit_visible_earthwork_query_triangles(
+                graph,
+                terrain,
+                edges,
+                nodes,
+                &mut |triangle| {
+                    if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(triangle, point)
+                    {
+                        keep_max_height(&mut result, height);
+                    }
+                },
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn indexed_visible_height_matches_scan_through_surface_edits() {
+        let terrain = TerrainSystem::with_chunking(129, 129, 1.0, 16, 0.0);
+        for class in [EdgeClass::Standard, EdgeClass::Bridge, EdgeClass::Tunnel] {
+            let mut graph = RegionGraph::new();
+            let height = if class == EdgeClass::Bridge { 6.0 } else { 0.0 };
+            let center = graph.add_node(Vector3::new(0.0, height, 0.0), NodeType::Junction);
+            for end in [
+                Vector3::new(-48.0, height, 0.0),
+                Vector3::new(48.0, height, 0.0),
+                Vector3::new(0.0, height, 48.0),
+            ] {
+                let node = graph.add_node(end, NodeType::Junction);
+                let middle_y = if class == EdgeClass::Tunnel {
+                    -6.0
+                } else {
+                    height
+                };
+                let middle = Vector3::new(end.x * 0.5, middle_y, end.z * 0.5);
+                graph.add_edge(build_surface_edge(
+                    center,
+                    node,
+                    vec![graph.node(center).pos, middle, end],
+                    1,
+                    1,
+                    class,
+                ));
+            }
+            graph.rebuild_adjacency_list();
+            graph.rebuild_intersection_clips();
+            let mut surface = RoadSurfaceSystem::new(16.0);
+            for edit in 0..3 {
+                if edit == 1 {
+                    graph.edge_mut(0).fwd_lanes = 2;
+                    graph.edge_mut(0).width += crate::config::LANE_WIDTH;
+                    surface.mark_edge_dirty(&graph, 0);
+                } else if edit == 2 {
+                    graph.edge_mut(0).deleted = true;
+                    surface.mark_edge_dirty(&graph, 0);
+                    graph.rebuild_adjacency_list();
+                    graph.rebuild_intersection_clips();
+                }
+                assert!(surface.compile_dirty(&graph, &terrain));
+                // Includes outside-road misses, chunk/grid boundaries and ±0.5 mm seam probes.
+                for x in (-52..=52).step_by(2) {
+                    for z in (-16..=52).step_by(2) {
+                        for delta in [-0.0005_f32, 0.0, 0.0005] {
+                            let (x, z) = (x as f32 + delta, z as f32 - delta);
+                            let expected = scanned_height(
+                                &surface,
+                                &graph,
+                                &terrain,
+                                RoadVec2::new(x as f64, z as f64),
+                            );
+                            assert_eq!(
+                                surface.sample_visible_surface_height(&graph, &terrain, x, z),
+                                expected,
+                                "{class:?} edit={edit} point=({x},{z})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn visible_index_keeps_highest_renderable_triangle_and_padded_cells() {
+        use super::super::super::RoadSurfaceVisualPolygon;
+        let triangle = [
+            RoadVec3::new(0.0, 1.0, 0.0),
+            RoadVec3::new(8.0, 1.0, 0.0),
+            RoadVec3::new(0.0, 1.0, 8.0),
+        ];
+        let upper = triangle.map(|point| RoadVec3::new(point.x, 3.0, point.z));
+        // Its area passes the sampler but its altitude fails the visible-render policy.
+        let thin = [
+            RoadVec3::new(0.0, 9.0, 0.0),
+            RoadVec3::new(100.0, 9.0, 0.0),
+            RoadVec3::new(0.0, 9.0, 0.001),
+        ];
+        let polygon = RoadSurfaceVisualPolygon::from_parts(Vec::new(), vec![triangle, upper, thin]);
+        let index = RoadSurfaceTriangleQueryIndex::from_surface_polygons(&[polygon], &[], &[]);
+        for point in [
+            RoadVec2::new(0.0, 0.0),
+            RoadVec2::new(4.0, -0.0005),
+            RoadVec2::new(4.0, 0.0005),
+            RoadVec2::new(4.0, 4.0),
+        ] {
+            assert_eq!(index.sample_visible_height(point), Some(3.0));
+        }
+        assert_eq!(index.sample_visible_height(RoadVec2::new(40.0, 0.0)), None);
+    }
 }

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Deterministic end-to-end road-building profiler workload for Samply captures.
+## Deterministic end-to-end road workloads for unprofiled measurements and Samply diagnostics.
 ##
-## Loads a real authored world, drives the production RoadTool preview and commit paths, waits for
+## Loads a controlled synthetic world or pinned authored state, drives production RoadTool paths, waits for
 ## the matching terrain/road/water render work to settle, and verifies a controlled layout matrix.
 ## The harness is only attached when `--gameplay-road-benchmark` is passed on the command line.
 extends Node
 
 const RoadToolScript = preload("res://scripts/tools/road_tool.gd")
+const Metrics = preload("res://scripts/benchmarks/road_benchmark_metrics.gd")
 const BENCHMARK_NAME := "gameplay_roads"
 const DEFAULT_WORLD_PATH := "res://../maps/processed/Kuopio/kuopio_324km2_10m.sqlite"
 const DEFAULT_RESULTS_PATH := "res://../benchmark-results/gameplay-roads-direct.json"
@@ -16,8 +17,8 @@ const DEFAULT_FIXTURE_SPACING_M := 640
 const FIXTURE_MARGIN_M := 260.0
 const CAMERA_RADIUS_M := 190.0
 const IDLE_STABLE_FRAMES := 5
-const MATRIX_SCHEMA_VERSION := 2
-const DEFAULT_MATRIX_NAME := "controlled"
+const MATRIX_SCHEMA_VERSION := 3
+const DEFAULT_MATRIX_NAME := "paired"
 
 var simulation_node: Node
 var terrain: Node
@@ -28,15 +29,82 @@ var camera: Node
 
 var mode := "windowed"
 var world_path := ""
+var save_path := ""
 var results_path := ""
 var run_id := ""
 var matrix_name := DEFAULT_MATRIX_NAME
-var repetitions := 3
+var repetitions := 5
 var warmup_repetitions := 1
 var settle_timeout_sec := 180.0
 var fixture_spacing_m := float(DEFAULT_FIXTURE_SPACING_M)
 var _metrics: Dictionary = {}
 var _phase_sequence := 0
+var _frame_samples: Array = []
+var _capture_frames := false
+var _last_frame_us := 0
+var _pinned_anchors: Dictionary = {}
+var _grid_sides: Array[int] = [0, 4, 8]
+var _last_preview_id := 0
+var _preview_requests := 0
+
+func _process(_delta: float) -> void:
+	if not _capture_frames:
+		return
+	var now := Time.get_ticks_usec()
+	if _last_frame_us > 0:
+		_frame_samples.append(float(now - _last_frame_us) / 1000.0)
+	_last_frame_us = now
+	var request_id: int = road_tool._preview_request_id
+	if request_id > 0 and request_id != _last_preview_id:
+		_preview_requests += 1
+		_last_preview_id = request_id
+
+func _uses_synthetic_world() -> bool:
+	return matrix_name in ["paired", "scaling", "interaction"]
+
+func _resets_each_fixture() -> bool:
+	return _uses_synthetic_world() or matrix_name == "saved"
+
+func _load_benchmark_world() -> bool:
+	if matrix_name == "saved":
+		return input_manager.menu_load_game_from_path(save_path)
+	if not _uses_synthetic_world():
+		return input_manager.menu_load_world_definition(world_path)
+	# Same terrain, grid origin, and local geometry for every paired/scaling fixture.
+	if not simulation_node.create_blank_world(20400.0, 20400.0, 10.0, 510.0, 100.0):
+		return false
+	input_manager._refresh_after_world_load()
+	input_manager.set_simulation_speed(0.0)
+	return true
+
+func _runtime_metadata() -> Dictionary:
+	var viewport_size := get_viewport().get_visible_rect().size
+	var diagnostic_environment := {}
+	for variable in ["METRUM_DEBUG", "METRUM_DEBUG_FILTER", "METRUM_DEBUG_PERF", "METRUM_DEBUG_SIM", "METRUM_DEBUG_TRAFFIC"]:
+		diagnostic_environment[variable] = OS.get_environment(variable)
+	return {
+		"godot": Engine.get_version_info(),
+		"cpu": OS.get_processor_name(), "logical_cpus": OS.get_processor_count(),
+		"video_adapter": RenderingServer.get_video_adapter_name(),
+		"max_fps": Engine.max_fps, "vsync": DisplayServer.window_get_vsync_mode(),
+		"viewport_size": [viewport_size.x, viewport_size.y],
+		"configured_renderer": ProjectSettings.get_setting("rendering/renderer/rendering_method"),
+		"rayon_num_threads_env": OS.get_environment("RAYON_NUM_THREADS"),
+		"profiled": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_PROFILED") == "1",
+		"git_revision": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION"),
+		"tracked_dirty_files": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GIT_DIRTY"),
+		"source_diff_sha256": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256"),
+		"binary_sha256": FileAccess.get_sha256("res://bin/libmetrum_rise.so"),
+		"harness_sha256": FileAccess.get_sha256(get_script().resource_path),
+		"metrics_helper_sha256": FileAccess.get_sha256("res://scripts/benchmarks/road_benchmark_metrics.gd"),
+		"diagnostic_environment": diagnostic_environment,
+		"world_sha256": "synthetic_flat_v1" if _uses_synthetic_world() else FileAccess.get_sha256(save_path if matrix_name == "saved" else world_path),
+		"world_contract": "flat_20400m_cell10m_chunk510m_height100m" if _uses_synthetic_world() else matrix_name,
+		"fixture_isolation": "reset_each_fixture" if _resets_each_fixture() else "reset_each_cycle",
+		"simulation_speed": 0.0,
+		"input_contract": "scripted world-space pointer (not OS raycast/snapping); per-segment preview_mode controls readiness",
+		"timing_contract": "CPU frame observations, not GPU presentation; render_ack excludes five-idle-frame settlement",
+	}
 
 func _ready() -> void:
 	# A profiling run owns the gameplay scene. Prevent UI/tool events from contaminating it before
@@ -48,11 +116,12 @@ func run() -> void:
 	_resolve_nodes()
 	var fixture_definitions := _fixture_definitions()
 	_metrics = {
-		"schema_version": 2,
+		"schema_version": 3,
 		"benchmark": BENCHMARK_NAME,
 		"mode": mode,
 		"run_id": run_id,
 		"world_path": world_path,
+		"save_path": save_path,
 		"matrix_name": matrix_name,
 		"matrix_schema_version": MATRIX_SCHEMA_VERSION,
 		"matrix_cases": _fixture_descriptors(fixture_definitions),
@@ -71,7 +140,10 @@ func run() -> void:
 	if fixture_definitions.is_empty():
 		_fail("unknown gameplay road benchmark matrix: %s" % matrix_name)
 		return
-	if not FileAccess.file_exists(world_path):
+	if matrix_name == "saved" and not FileAccess.file_exists(save_path):
+		_fail("saved matrix requires an existing METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH")
+		return
+	if not _uses_synthetic_world() and matrix_name != "saved" and not FileAccess.file_exists(world_path):
 		_fail("Kuopio world definition not found: %s" % world_path)
 		return
 	# InputManager polls the Input singleton for camera motion, so viewport event suppression alone
@@ -82,6 +154,26 @@ func run() -> void:
 	if mode == "headless":
 		# Headless mode is throughput-oriented and has no display cadence to preserve.
 		Engine.max_fps = 0
+	var fps_override := OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_MAX_FPS")
+	if not fps_override.is_empty():
+		if not fps_override.is_valid_int() or int(fps_override) < 0:
+			_fail("MAX_FPS must be a nonnegative integer")
+			return
+		Engine.max_fps = int(fps_override)
+	_metrics["runtime"] = _runtime_metadata()
+	var manifest_path := OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_ANCHORS_PATH")
+	if not manifest_path.is_empty():
+		var parsed = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
+		if not parsed is Dictionary:
+			_fail("anchor manifest must be a JSON object mapping case IDs to [x,z]")
+			return
+		_pinned_anchors = parsed
+		if _uses_synthetic_world():
+			_fail("synthetic matrices have fixed anchors; do not supply ANCHORS_PATH")
+			return
+	if matrix_name == "saved" and _pinned_anchors.is_empty():
+		_fail("saved matrix requires pinned ANCHORS_PATH; do not silently relocate city edits")
+		return
 
 	print(
 		"[GAMEPLAY_BENCH] START run_id=%s mode=%s repetitions=%d warmups=%d world=%s"
@@ -89,7 +181,7 @@ func run() -> void:
 	)
 	var load_phase := _phase_begin("world_load", {})
 	var load_call_start_us := Time.get_ticks_usec()
-	var loaded: bool = input_manager.menu_load_world_definition(world_path)
+	var loaded: bool = _load_benchmark_world()
 	var load_call_ms := _elapsed_ms(load_call_start_us)
 	if not loaded:
 		_phase_end(load_phase, {"ok": false, "load_call_ms": load_call_ms})
@@ -121,6 +213,9 @@ func run() -> void:
 		)
 		return
 
+	_metrics["anchors"] = {}
+	for index in range(workload.size()):
+		_metrics.anchors[workload[index].fixture.case_id] = _vector2_array(anchors[index])
 	input_manager._cancel_active_tool()
 	input_manager.current_tool = input_manager.Tool.ROAD
 	input_manager._activate_tool_logic(input_manager.Tool.ROAD, true)
@@ -131,7 +226,7 @@ func run() -> void:
 		if (
 			matrix_name != "baseline"
 			and active_cycle_index >= 0
-			and cycle_index != active_cycle_index
+			and (cycle_index != active_cycle_index or _resets_each_fixture())
 		):
 			var reload_result: Dictionary = await _reload_world_for_matrix_cycle(entry)
 			if not bool(reload_result.get("ok", false)):
@@ -151,7 +246,7 @@ func run() -> void:
 			return
 
 	_stop_scripted_tool()
-	_metrics["summary"] = _build_summary(fixture_definitions)
+	_metrics["summary"] = Metrics.summarize(_metrics.fixtures)
 	_metrics["success"] = true
 	_metrics["finished_unix_ms"] = _unix_time_ms()
 	if not _write_metrics():
@@ -168,6 +263,7 @@ func _resolve_configuration() -> void:
 	world_path = ProjectSettings.globalize_path(
 		_environment_or("METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH", DEFAULT_WORLD_PATH)
 	)
+	save_path = ProjectSettings.globalize_path(OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_SAVE_PATH"))
 	results_path = ProjectSettings.globalize_path(
 		_environment_or("METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH", DEFAULT_RESULTS_PATH)
 	)
@@ -179,7 +275,7 @@ func _resolve_configuration() -> void:
 		"METRUM_GAMEPLAY_BENCHMARK_MATRIX",
 		DEFAULT_MATRIX_NAME
 	).to_lower()
-	repetitions = _environment_int("METRUM_GAMEPLAY_BENCHMARK_REPETITIONS", 3, 1)
+	repetitions = _environment_int("METRUM_GAMEPLAY_BENCHMARK_REPETITIONS", 5, 1)
 	warmup_repetitions = _environment_int(
 		"METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS",
 		1,
@@ -195,6 +291,18 @@ func _resolve_configuration() -> void:
 			int(ROAD_HALF_SPAN_M * 2.0 + 20.0)
 		)
 	)
+	var sides_text := OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GRID_SIDES")
+	if not sides_text.is_empty():
+		_grid_sides.clear()
+		for token in sides_text.split(","):
+			var value := token.strip_edges()
+			if not value.is_valid_int() or int(value) < 0 or int(value) == 1 or int(value) > 64:
+				_grid_sides.clear()
+				return
+			if _grid_sides.has(int(value)):
+				_grid_sides.clear()
+				return
+			_grid_sides.append(int(value))
 
 func _resolve_nodes() -> void:
 	var main := get_parent()
@@ -226,7 +334,7 @@ func _reload_world_for_matrix_cycle(entry: Dictionary) -> Dictionary:
 	var reload_phase := _phase_begin("world_reload", identity)
 	_stop_scripted_tool()
 	var load_call_start_us := Time.get_ticks_usec()
-	var loaded: bool = input_manager.menu_load_world_definition(world_path)
+	var loaded: bool = _load_benchmark_world()
 	var load_call_ms := _elapsed_ms(load_call_start_us)
 	if not loaded:
 		var load_failure := identity.duplicate(true)
@@ -289,9 +397,31 @@ func _fixture_definitions() -> Array[Dictionary]:
 	]
 	if matrix_name == "baseline":
 		return baselines
+	if matrix_name == "saved":
+		return [baselines[1]]
+	if matrix_name == "interaction":
+		var interactions: Array[Dictionary] = []
+		for preview_mode in ["stationary", "drag", "immediate"]:
+			var fixture: Dictionary = baselines[1].duplicate(true)
+			fixture["case_id"] = "t_%s" % preview_mode
+			fixture["complexity_axis"] = "preview_readiness"
+			fixture["baseline_case"] = "" if preview_mode == "stationary" else "t_stationary"
+			fixture.segments[1]["preview_mode"] = preview_mode
+			interactions.append(fixture)
+		return interactions
 	if matrix_name == "road08":
 		return [_road08_regression_fixture()]
-	if matrix_name != DEFAULT_MATRIX_NAME and matrix_name != "double_t":
+	if matrix_name == "scaling":
+		var scaling: Array[Dictionary] = []
+		for side in _grid_sides:
+			var fixture: Dictionary = baselines[1].duplicate(true)
+			fixture["case_id"] = "t_grid_%d" % side
+			fixture["complexity_axis"] = "distant_connected_grid_size"
+			fixture["baseline_case"] = "" if side == 0 else "t_grid_0"
+			fixture["background_grid_side"] = side
+			scaling.append(fixture)
+		return scaling
+	if matrix_name not in ["controlled", "double_t", "paired"]:
 		return []
 
 	var definitions := baselines.duplicate(true) as Array[Dictionary]
@@ -389,11 +519,10 @@ func _road08_regression_fixture() -> Dictionary:
 				Vector2(0.0, 90.0),
 				Vector2(12.0, 45.0),
 				1,
-				1,
-				"surface_geometry_invalid"
+				1
 			),
 		],
-		"junctions": [_junction_check(Vector2.ZERO, 1)],
+		"junctions": [_junction_check(Vector2.ZERO, 2)],
 	}
 
 func _straight_segment(
@@ -450,7 +579,11 @@ func _fixture_workload(fixture_definitions: Array[Dictionary]) -> Array[Dictiona
 			})
 		cycle_index += 1
 	for repetition in range(repetitions):
-		for fixture in fixture_definitions:
+		# Alternate order without randomness. Synthetic cases reset their complete world per fixture.
+		var ordered := fixture_definitions.duplicate()
+		if _resets_each_fixture() and repetition % 2 == 1:
+			ordered.reverse()
+		for fixture in ordered:
 			workload.append({
 				"fixture": fixture,
 				"repetition": repetition,
@@ -468,6 +601,9 @@ func _select_fixture_anchors(workload: Array[Dictionary]) -> Array[Vector2]:
 	var used_anchors: Dictionary = {}
 	var active_cycle_index := -1
 	for entry in workload:
+		if _uses_synthetic_world():
+			anchors.append(_align_fixture_anchor(Vector2(100.0, 100.0), entry["fixture"]))
+			continue
 		var cycle_index: int = entry["cycle_index"]
 		if (
 			matrix_name != "baseline"
@@ -477,6 +613,12 @@ func _select_fixture_anchors(workload: Array[Dictionary]) -> Array[Vector2]:
 			used_anchors.clear()
 		active_cycle_index = cycle_index
 		var fixture: Dictionary = entry["fixture"]
+		if not _pinned_anchors.is_empty():
+			var pinned = _pinned_anchors.get(fixture["case_id"])
+			if not pinned is Array or pinned.size() != 2:
+				return []
+			fixture = fixture.duplicate(true)
+			fixture["anchor_override"] = Vector2(float(pinned[0]), float(pinned[1]))
 		var anchor_result := _find_fixture_anchor(
 			fixture,
 			used_anchors,
@@ -607,6 +749,15 @@ func _run_fixture(
 		"anchor_x": anchor.x,
 		"anchor_z": anchor.y,
 	}
+	var background_side := int(fixture_definition.get("background_grid_side", 0))
+	if background_side > 0:
+		var setup_phase := _phase_begin("background_setup", identity)
+		var setup: Dictionary = await _build_background_grid(background_side)
+		_phase_end(setup_phase, setup)
+		if not bool(setup.get("ok", false)):
+			return _fixture_failure(identity, "background grid setup failed", setup)
+	identity["background_grid_side"] = background_side
+	identity["state_before"] = simulation_node.get_road_benchmark_state()
 	var camera_phase := _phase_begin("camera_settle", identity)
 	var anchor_y := float(simulation_node.get_world_surface_height(anchor))
 	camera.focus_on(Vector3(anchor.x, anchor_y, anchor.y), CAMERA_RADIUS_M)
@@ -678,6 +829,46 @@ func _run_fixture(
 	)
 	return fixture
 
+func _build_background_grid(side: int) -> Dictionary:
+	# Fixture inputs only: all topology, validation, routing, snapshots, and rendering run
+	# through the ordinary asynchronous road command. Setup is outside measured edit phases.
+	# The remote grid is connected internally and disjoint from the fixed local edit.
+	var origin := Vector2(2048.0, 2048.0)
+	var spacing := 90.0
+	for axis in range(2):
+		for index in range(side):
+			var start := origin + Vector2(0.0, index * spacing)
+			var end := start + Vector2((side - 1) * spacing, 0.0)
+			if axis == 1:
+				start = origin + Vector2(index * spacing, 0.0)
+				end = start + Vector2(0.0, (side - 1) * spacing)
+			var generation: int = simulation_node.get_network_render_generation()
+			simulation_node.add_road(PackedVector3Array([
+				_surface_point(start), _surface_point(end),
+			]), 1, 1)
+			var settled: Dictionary = await _wait_for_generation(generation, settle_timeout_sec)
+			if not bool(settled.get("ok", false)):
+				settled["grid_axis"] = axis
+				settled["grid_stroke"] = index
+				settled["state_after"] = simulation_node.get_road_benchmark_state()
+				return settled
+	var state: Dictionary = simulation_node.get_road_benchmark_state()
+	var expected_edges := 2 * side * (side - 1)
+	var verified_nodes := {}
+	for z in range(side):
+		for x in range(side):
+			var point := _surface_point(origin + Vector2(x * spacing, z * spacing))
+			var node_id: int = simulation_node.get_closest_node(point, 1.0)
+			var expected_degree := 4 - int(x == 0 or x == side - 1) - int(z == 0 or z == side - 1)
+			if node_id < 0 or simulation_node.get_node_connection_count(node_id) != expected_degree:
+				return {"ok": false, "error": "background junction mismatch", "grid_x": x, "grid_z": z}
+			verified_nodes[node_id] = true
+	# Splitting/merging leaves alias node slots; verify live junctions, not storage length.
+	return {
+		"ok": int(state.live_edges) == expected_edges and verified_nodes.size() == side * side,
+		"expected_live_edges": expected_edges, "verified_grid_nodes": verified_nodes.size(), "state": state,
+	}
+
 func _run_segment(
 	fixture_definition: Dictionary,
 	repetition: int,
@@ -703,8 +894,19 @@ func _run_segment(
 	var bkw_lanes: int = segment["bkw_lanes"]
 	var preview_phase := _phase_begin("road_preview", identity)
 	var preview_start_us := Time.get_ticks_usec()
+	_frame_samples.clear()
+	_last_frame_us = 0
+	_last_preview_id = 0
+	_preview_requests = 0
+	_capture_frames = true
 	_begin_scripted_road(anchor, segment, start_pos, end_pos)
-	var preview_wait: Dictionary = await _wait_for_preview(settle_timeout_sec)
+	var preview_mode: String = segment.get("preview_mode", "stationary")
+	var last_pointer_us := preview_start_us
+	if preview_mode == "drag":
+		last_pointer_us = await _replay_pointer_trace(end_xz)
+	var preview_wait := {"ok": true}
+	if preview_mode != "immediate":
+		preview_wait = await _wait_for_preview(settle_timeout_sec, preview_start_us)
 	var preview_ms := _elapsed_ms(preview_start_us)
 	var expected_invalid_reason := String(
 		segment.get("expected_preview_invalid_reason", "")
@@ -772,8 +974,9 @@ func _run_segment(
 		return rejected
 
 	var expected_generation := generation_before + 1
-	var settle: Dictionary = await _wait_for_generation(generation_before, settle_timeout_sec)
+	var settle: Dictionary = await _wait_for_generation(generation_before, settle_timeout_sec, commit_start_us)
 	var commit_ms := _elapsed_ms(commit_start_us)
+	_capture_frames = false
 	var result := {
 		"ok": bool(settle.get("ok", false)),
 		"draw_mode": "spline" if draw_mode == 1 else "straight",
@@ -782,14 +985,27 @@ func _run_segment(
 		"surface_point_count": prepared_points.size(),
 		"surface_length_m": _polyline_length(prepared_points),
 		"preview_ms": preview_ms,
+		"preview_mode": preview_mode,
+		"observed_preview_requests": _preview_requests,
 		"commit_dispatch_ms": dispatch_ms,
 		"commit_ms": commit_ms,
 		"generation_before": generation_before,
 		"generation_expected": expected_generation,
 		"generation_after": simulation_node.get_network_render_generation(),
+		"ghost_generation": road_tool._ghost_render_generation,
+		"ghost_vertex_count": road_tool._ghost_vertex_count,
+		"ghost_visible": road_tool.ghost_mesh.visible,
 		"start": [start_pos.x, start_pos.y, start_pos.z],
 		"end": [end_pos.x, end_pos.y, end_pos.z],
+		"frame_time_ms": Metrics.distribution(_frame_samples),
+		"state_after": simulation_node.get_road_benchmark_state(),
 	}
+	if preview_wait.has("ready_ms"):
+		result["preview_ready_ms"] = preview_wait.ready_ms
+		result["pointer_idle_to_ready_ms"] = float(preview_wait.ready_ms) - float(last_pointer_us - preview_start_us) / 1000.0
+	for milestone in ["generation_ready_ms", "render_ack_ms", "ghost_ready_ms", "first_idle_ms", "settle_tail_ms"]:
+		if settle.has(milestone):
+			result[milestone] = settle[milestone]
 	if not result.ok:
 		result["error"] = settle.get(
 			"error",
@@ -807,6 +1023,20 @@ func _run_segment(
 		}
 	)
 	return result
+
+func _replay_pointer_trace(end_xz: Vector2) -> int:
+	var last_input_us := Time.get_ticks_usec()
+	# Fixed 24-point world-space trace, ~400 ms at 60 input samples/s, with one 80 ms
+	# midpoint hold to exercise exact preparation before motion resumes. Record actual latency;
+	# do not claim these scheduled inputs are physical OS mouse events or GPU presentation.
+	for index in range(24):
+		var remaining := float(23 - index) / 23.0
+		var pointer := end_xz + Vector2(24.0, 12.0) * remaining
+		last_input_us = Time.get_ticks_usec()
+		road_tool.set_scripted_pointer(true, _surface_point(pointer))
+		road_tool._queue_preview_update()
+		await get_tree().create_timer(0.080 if index == 12 else 1.0 / 60.0).timeout
+	return last_input_us
 
 func _begin_scripted_road(
 	anchor: Vector2,
@@ -834,8 +1064,9 @@ func _begin_scripted_road(
 	road_tool.add_child(road_tool.current_path)
 	road_tool._queue_preview_update()
 
-func _wait_for_preview(timeout_sec: float) -> Dictionary:
-	var start_us := Time.get_ticks_usec()
+func _wait_for_preview(timeout_sec: float, start_us: int = 0) -> Dictionary:
+	if start_us == 0:
+		start_us = Time.get_ticks_usec()
 	while _elapsed_ms(start_us) < timeout_sec * 1000.0:
 		await get_tree().process_frame
 		var validation: Dictionary = road_tool._candidate_cache_validation
@@ -865,19 +1096,23 @@ func _wait_for_preview(timeout_sec: float) -> Dictionary:
 			and not road_tool._preview_exact_waiting
 			and road_tool._preview_surface_generation_is_current(preview)
 		):
+			var ready_ms := _elapsed_ms(start_us)
 			await get_tree().process_frame
-			return {"ok": true, "elapsed_ms": _elapsed_ms(start_us)}
+			return {"ok": true, "elapsed_ms": _elapsed_ms(start_us), "ready_ms": ready_ms}
 	return {
 		"ok": false,
 		"elapsed_ms": _elapsed_ms(start_us),
 		"pending": _pending_work_snapshot(),
 	}
 
-func _wait_for_generation(previous_generation: int, timeout_sec: float) -> Dictionary:
-	var start_us := Time.get_ticks_usec()
+func _wait_for_generation(previous_generation: int, timeout_sec: float, start_us: int = 0) -> Dictionary:
+	if start_us == 0:
+		start_us = Time.get_ticks_usec()
 	var expected_generation := previous_generation + 1
 	var generation_advanced := false
 	var stable_frames := 0
+	var milestones := {}
+	var stable_start_ms := 0.0
 	while _elapsed_ms(start_us) < timeout_sec * 1000.0:
 		await get_tree().process_frame
 		if terrain.has_blocked_dirty_patch_failure():
@@ -895,7 +1130,7 @@ func _wait_for_generation(previous_generation: int, timeout_sec: float) -> Dicti
 		if current_generation > expected_generation:
 			return {
 				"ok": false,
-				"error": "unexpected concurrent network mutation",
+				"error": "unexpected generation advance (rollback or concurrent mutation)",
 				"elapsed_ms": _elapsed_ms(start_us),
 				"expected_generation": expected_generation,
 				"actual_generation": current_generation,
@@ -903,10 +1138,27 @@ func _wait_for_generation(previous_generation: int, timeout_sec: float) -> Dicti
 			}
 		if current_generation == expected_generation:
 			generation_advanced = true
-		if generation_advanced and _is_idle():
+			if not milestones.has("generation_ready_ms"):
+				milestones["generation_ready_ms"] = _elapsed_ms(start_us)
+		if (
+			generation_advanced and not milestones.has("render_ack_ms")
+			and road_tool._road_mesh_generation == expected_generation
+			and not simulation_node.is_network_dirty()
+		):
+			milestones["render_ack_ms"] = _elapsed_ms(start_us)
+		if generation_advanced and not milestones.has("ghost_ready_ms") and _ghosts_are_current():
+			milestones["ghost_ready_ms"] = _elapsed_ms(start_us)
+		if milestones.has("render_ack_ms") and _is_idle():
+			if stable_frames == 0:
+				stable_start_ms = _elapsed_ms(start_us)
+			if not milestones.has("first_idle_ms"):
+				milestones["first_idle_ms"] = stable_start_ms
 			stable_frames += 1
 			if stable_frames >= IDLE_STABLE_FRAMES:
-				return {"ok": true, "elapsed_ms": _elapsed_ms(start_us)}
+				milestones["ok"] = true
+				milestones["elapsed_ms"] = _elapsed_ms(start_us)
+				milestones["settle_tail_ms"] = float(milestones.elapsed_ms) - stable_start_ms
+				return milestones
 		else:
 			stable_frames = 0
 	return {
@@ -944,6 +1196,13 @@ func _wait_for_idle(timeout_sec: float) -> Dictionary:
 		"pending": _pending_work_snapshot(),
 	}
 
+func _ghosts_are_current() -> bool:
+	return not (road_tool.active and road_tool._ghost_enabled) or (
+		not road_tool._ghost_guides_dirty
+		and not road_tool._ghost_rebuild_queued
+		and road_tool._ghost_render_generation == simulation_node.get_network_render_generation()
+	)
+
 func _is_idle() -> bool:
 	return (
 		not simulation_node.is_network_dirty()
@@ -951,6 +1210,7 @@ func _is_idle() -> bool:
 		and not road_tool.needs_main_mesh_hydration()
 		and road_tool._pending_border_checks.is_empty()
 		and not road_tool._ghost_rebuild_queued
+		and _ghosts_are_current()
 		and not terrain.has_pending_render_work(false)
 		and not water.has_pending_render_work(false)
 	)
@@ -963,6 +1223,8 @@ func _pending_work_snapshot() -> Dictionary:
 		"road_hydration": road_tool.needs_main_mesh_hydration(),
 		"border_checks": road_tool._pending_border_checks.size(),
 		"ghost_rebuild": road_tool._ghost_rebuild_queued,
+		"ghost_dirty": road_tool._ghost_guides_dirty,
+		"ghost_generation": road_tool._ghost_render_generation,
 		"terrain": terrain.get_pending_render_work_counts(),
 		"terrain_failures": terrain.get_blocked_dirty_patch_failures(),
 		"water": water.get_pending_render_work_counts(),
@@ -974,59 +1236,6 @@ func _surface_point(position: Vector2) -> Vector3:
 		float(simulation_node.get_world_surface_height(position)),
 		position.y
 	)
-
-func _build_summary(fixture_definitions: Array[Dictionary]) -> Dictionary:
-	var cases := {}
-	for fixture_definition in fixture_definitions:
-		var case_id: String = fixture_definition["case_id"]
-		var preview_values: Array[float] = []
-		var commit_values: Array[float] = []
-		var total_values: Array[float] = []
-		for fixture_variant in _metrics.fixtures:
-			var fixture: Dictionary = fixture_variant
-			if bool(fixture.get("warmup", false)) or fixture.get("case_id", "") != case_id:
-				continue
-			total_values.append(float(fixture.get("total_ms", 0.0)))
-			for segment_variant in fixture.get("segments", []):
-				var segment: Dictionary = segment_variant
-				preview_values.append(float(segment.get("preview_ms", 0.0)))
-				if segment.has("commit_ms"):
-					commit_values.append(float(segment["commit_ms"]))
-		cases[case_id] = {
-			"topology": fixture_definition["topology"],
-			"complexity_axis": fixture_definition["complexity_axis"],
-			"baseline_case": fixture_definition["baseline_case"],
-			"fixture_count": total_values.size(),
-			"preview_ms": _distribution(preview_values),
-			"commit_ms": _distribution(commit_values),
-			"fixture_total_ms": _distribution(total_values),
-		}
-
-	var comparisons := {}
-	for fixture_definition in fixture_definitions:
-		var case_id: String = fixture_definition["case_id"]
-		var baseline_case: String = fixture_definition["baseline_case"]
-		if baseline_case.is_empty() or not cases.has(baseline_case):
-			continue
-		var current: Dictionary = cases[case_id]
-		var baseline: Dictionary = cases[baseline_case]
-		comparisons[case_id] = {
-			"baseline_case": baseline_case,
-			"preview_p50_ratio": _distribution_ratio(current, baseline, "preview_ms"),
-			"commit_p50_ratio": _distribution_ratio(current, baseline, "commit_ms"),
-			"fixture_total_p50_ratio": _distribution_ratio(
-				current,
-				baseline,
-				"fixture_total_ms"
-			),
-		}
-	return {"cases": cases, "comparisons": comparisons}
-
-func _distribution_ratio(current: Dictionary, baseline: Dictionary, field: String) -> float:
-	var baseline_p50 := float((baseline[field] as Dictionary).get("p50", 0.0))
-	if baseline_p50 <= 0.0:
-		return 0.0
-	return float((current[field] as Dictionary).get("p50", 0.0)) / baseline_p50
 
 func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dictionary]:
 	var descriptors: Array[Dictionary] = []
@@ -1043,6 +1252,7 @@ func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dicti
 			}
 			if segment.has("control_offset"):
 				descriptor["control_offset"] = _vector2_array(segment["control_offset"])
+			descriptor["preview_mode"] = segment.get("preview_mode", "stationary")
 			if segment.has("expected_preview_invalid_reason"):
 				descriptor["expected_preview_invalid_reason"] = (
 					segment["expected_preview_invalid_reason"]
@@ -1066,6 +1276,8 @@ func _fixture_descriptors(fixture_definitions: Array[Dictionary]) -> Array[Dicti
 		}
 		if fixture.has("anchor_override"):
 			fixture_descriptor["anchor_override"] = _vector2_array(fixture["anchor_override"])
+		if fixture.has("background_grid_side"):
+			fixture_descriptor["background_grid_side"] = fixture["background_grid_side"]
 		descriptors.append(fixture_descriptor)
 	return descriptors
 
@@ -1077,24 +1289,6 @@ func _polyline_length(points: PackedVector3Array) -> float:
 	for index in range(1, points.size()):
 		length_m += points[index - 1].distance_to(points[index])
 	return length_m
-
-func _distribution(values: Array[float]) -> Dictionary:
-	if values.is_empty():
-		return {"count": 0, "p50": 0.0, "p95": 0.0, "max": 0.0}
-	values.sort()
-	return {
-		"count": values.size(),
-		"p50": _percentile(values, 0.50),
-		"p95": _percentile(values, 0.95),
-		"max": values[values.size() - 1],
-	}
-
-func _percentile(sorted_values: Array[float], quantile: float) -> float:
-	var index := mini(
-		sorted_values.size() - 1,
-		maxi(0, int(ceil(quantile * float(sorted_values.size()))) - 1)
-	)
-	return sorted_values[index]
 
 func _phase_begin(phase: String, details: Dictionary) -> int:
 	_phase_sequence += 1
@@ -1153,6 +1347,7 @@ func _fail(message: String, details: Dictionary = {}) -> void:
 	get_tree().quit(1)
 
 func _stop_scripted_tool() -> void:
+	_capture_frames = false
 	if input_manager != null:
 		input_manager._cancel_active_tool()
 	if road_tool != null:

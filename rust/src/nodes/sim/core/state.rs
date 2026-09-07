@@ -177,6 +177,8 @@ pub struct SimCore {
     pub last_agent_tick_us: u64,
     /// Per-phase timing breakdown from the last road placement, for profiling.
     pub last_road_timing: String,
+    /// Fixed-size diagnostics; dictionary conversion happens only when explicitly requested.
+    pub(crate) last_road_edit_metrics: crate::nodes::sim::benchmark::road_edit::RoadEditMetrics,
     /// Edge ids touched by the most recent committed network edit and queued for one focused
     /// road-surface debug dump after the next terrain/mesh rebuild.
     pub(crate) last_surface_debug_edges: Vec<usize>,
@@ -215,6 +217,8 @@ pub struct SimCore {
     pub(crate) road_mesh_full_replace: bool,
     /// Road-tool surface generation represented by the cached road mesh.
     pub(crate) cached_road_mesh_generation: u64,
+    /// CPU guide geometry retained until its source geometry or sampled chunk inputs change.
+    pub(crate) road_ghost_lines: crate::nodes::sim::bridge::network::RoadGhostLineCache,
     /// Cached world-space positions of live canonical network nodes for render snapshots.
     pub(crate) cached_network_node_positions: Arc<Vec<Vector3>>,
     /// True when network topology changed and the cached node-position snapshot must rebuild.
@@ -368,6 +372,7 @@ impl SimCore {
     /// Marks network visuals and every terrain payload dirty after a world-wide reset.
     pub(crate) fn mark_network_render_dirty(&mut self) {
         self.bump_global_terrain_payload_generation();
+        self.road_ghost_lines = Default::default();
         self.cached_road_mesh_chunks.clear();
         self.published_road_mesh_chunks = Arc::new(BTreeMap::new());
         self.pending_road_mesh_chunks = Arc::new(BTreeSet::new());

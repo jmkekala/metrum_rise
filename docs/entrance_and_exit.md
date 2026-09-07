@@ -1372,6 +1372,19 @@ If a flow field stores `nearest_building`, equal-cost source competition must us
 
 In this redesign, CCH is the authoritative router. Flow fields are an optional fast path only.
 
+CCH construction maintains exact neighbour-triangle counts for minimum-fill ordering, rejects
+stale heap scores in both directions, and updates every affected score only after completing a
+contraction. Node-ID ties are deterministic. Independent initial counts use Rayon; dependent
+elimination stays sequential. A full-recount oracle checks the incremental accounting.
+
+Shortcut topology retains all lower-triangle alternatives instead of keeping the first path or
+discarding a detour merely because a direct arc exists. Boundary-edge states merge only where an
+unrestricted endpoint makes them equivalent; restricted endpoints and travel-mode masks remain
+distinct. Metric customization evaluates choices in lower-endpoint-rank order, restores the selected
+concrete boundary edges, and allocates nothing: O(base edges + shortcuts + retained alternatives).
+Queries stop each search frontier independently. All-pairs grid, weighted/mode/direction,
+re-customization and turn-aware Dijkstra regressions protect exact costs and turn legality.
+
 Use this exact precedence:
 
 1. Choose `target_building`, travel mode, origin endpoint, and destination endpoint first.

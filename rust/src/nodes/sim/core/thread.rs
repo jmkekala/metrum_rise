@@ -225,6 +225,8 @@ pub(crate) fn run_sim_thread(
                     commands_processed += 1;
                     add_road_commands += 1;
                     let road_total = Instant::now();
+                    let mut edit_metrics =
+                        crate::nodes::sim::benchmark::road_edit::RoadEditMetrics::default();
                     let lock_wait_start = Instant::now();
                     let (
                         road_snapshots,
@@ -276,6 +278,7 @@ pub(crate) fn run_sim_thread(
                                 clips_us: dt_clips_us,
                             } = c.finalize_bulk_road_geometry_for_dirty_edges();
                             let dirty_count = dirty.len();
+                            edit_metrics.dirty_edges = dirty_count;
                             if crate::debug::category_enabled("road")
                                 && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
                                     .map(|value| !value.is_empty() && value != "0")
@@ -305,6 +308,7 @@ pub(crate) fn run_sim_thread(
                                     &c.region_graph,
                                 );
                                 let dt_inv_us = t_inv.elapsed().as_micros();
+                                edit_metrics.agent_invalidate_ms = dt_inv_us as f64 / 1000.0;
 
                                 let t_lanes = Instant::now();
                                 record_crash_phase_for_core(c, "add road lane rebuild");
@@ -317,15 +321,22 @@ pub(crate) fn run_sim_thread(
                                     &c.region_graph,
                                 );
                                 let dt_lanes_us = t_lanes.elapsed().as_micros();
+                                edit_metrics.lanes_and_reattach_ms = dt_lanes_us as f64 / 1000.0;
+                                let buildings_start = Instant::now();
                                 record_crash_phase_for_core(c, "add road entrance rebuild");
                                 c.rebuild_building_entrances_internal();
+                                edit_metrics.buildings_ms =
+                                    buildings_start.elapsed().as_secs_f64() * 1000.0;
 
                                 // Rebuild CCH and run the connectivity check. This is the only
                                 // place the CCH is actually rebuilt for road placements — the
                                 // sim-tick path is gated on speed > 0.0 and would miss paused edits.
                                 record_crash_phase_for_core(c, "add road cch rebuild");
+                                let routing_start = Instant::now();
                                 c.transit_network.rebuild_cch_and_check(&c.region_graph);
                                 c.transit_network.cch_dirty_chunks.clear();
+                                edit_metrics.routing_ms =
+                                    routing_start.elapsed().as_secs_f64() * 1000.0;
 
                                 // Zone flush is deferred to the next simulate_tick_internal call
                                 // so it does not block road placement. zoning_dirty_edges accumulates.
@@ -370,6 +381,28 @@ pub(crate) fn run_sim_thread(
                             );
                         let collect_refined_ms =
                             collect_refined_start.elapsed().as_secs_f64() * 1000.0;
+                        edit_metrics.generation = c.road_tool_surface_generation;
+                        edit_metrics.committed = road_add.committed;
+                        edit_metrics.lock_wait_ms = road_lock_wait_ms;
+                        edit_metrics.core_work_ms =
+                            road_total.elapsed().as_secs_f64() * 1000.0 - road_lock_wait_ms;
+                        edit_metrics.add_ms = add_internal_ms;
+                        edit_metrics.finalize_ms = finalize_ms;
+                        edit_metrics.surface_ms = surface_ms;
+                        edit_metrics.mesh_ms = mesh_ms;
+                        edit_metrics.snapshot_ms = snapshot_ms;
+                        edit_metrics.refined_state_ms = collect_refined_ms;
+                        edit_metrics.rebuilt_surface_chunks = c
+                            .transit_network
+                            .road_surface
+                            .last_rebuilt_surface_chunks
+                            .len();
+                        edit_metrics.rebuilt_terrain_chunks = c
+                            .transit_network
+                            .road_surface
+                            .last_rebuilt_terrain_chunks
+                            .len();
+                        c.last_road_edit_metrics = edit_metrics;
                         (
                             road_snapshots,
                             road_lock_wait_ms,

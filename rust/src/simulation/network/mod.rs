@@ -627,6 +627,9 @@ impl TransitNetwork {
         let mut to_remove = Vec::new();
 
         for (i, edge) in graph.edges().iter().enumerate() {
+            if edge.deleted {
+                continue;
+            }
             let pair = if edge.start_node < edge.end_node {
                 (edge.start_node, edge.end_node)
             } else {

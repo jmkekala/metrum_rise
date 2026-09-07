@@ -278,8 +278,7 @@ fn sections_eq_ignoring_edge_identity(a: &[RoadSurfaceSection], b: &[RoadSurface
 /// Runtime caller category attached to road-surface compile timing logs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RoadSurfaceCompileReason {
-    /// Test helper compiled without a production caller category.
-    #[cfg(test)]
+    /// Direct compiler API used by tests and isolated benchmarks.
     Unspecified,
     /// Async road-tool preview worker compiled transient surface geometry.
     PreviewWorker,
@@ -296,7 +295,6 @@ pub(crate) enum RoadSurfaceCompileReason {
 impl RoadSurfaceCompileReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            #[cfg(test)]
             Self::Unspecified => "unspecified",
             Self::PreviewWorker => "preview_worker",
             Self::CommitValidator => "commit_validator",
@@ -527,10 +525,12 @@ impl RoadSurfaceSystem {
         &self.earthwork_chunk_cache
     }
 
-    /// Compiles the road-surface cache if it is dirty or has not been built yet.
-    #[cfg(test)]
-    pub fn compile_dirty(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
+    /// Compiles dirty surface inputs and reports whether a complete current generation is available.
+    ///
+    /// Direct compiler entry for isolated consumers; live edits use their owning network mutators.
+    pub fn compile_dirty(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) -> bool {
         self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::Unspecified);
+        self.published_generation_matches_source()
     }
 
     pub(crate) fn compile_dirty_with_reason(
@@ -573,6 +573,10 @@ impl RoadSurfaceSystem {
         let dirty_surface_chunk_count = self.dirty_surface_chunks.len();
         let dirty_terrain_chunk_count = self.dirty_terrain_chunks.len();
         let allow_node_reuse = dirty_terrain_chunk_count == 0;
+        // Bounded preview excerpts also use this incremental path. Keep successful local pieces
+        // for required-set validation, while authoritative compiles still publish atomically.
+        let allow_partial_validation_result = self.retain_partial_validation_artifacts;
+        let mut partial_failure_label = None;
 
         let ordering_start = road_debug.then(Instant::now);
         let mut edge_ids: Vec<usize> = self.dirty_edges.iter().copied().collect();
@@ -739,7 +743,10 @@ impl RoadSurfaceSystem {
                     elapsed_ms(total_start)
                 );
             }
-            return;
+            if !allow_partial_validation_result {
+                return;
+            }
+            partial_failure_label = Some(failure_label);
         }
 
         let nodes_start = road_debug.then(Instant::now);
@@ -921,7 +928,12 @@ impl RoadSurfaceSystem {
                     elapsed_ms(total_start)
                 );
             }
-            return;
+            if !allow_partial_validation_result {
+                return;
+            }
+            if partial_failure_label.is_none() {
+                partial_failure_label = Some(failure_label);
+            }
         }
         let reused_node_topology_count = node_results.iter().filter(|result| result.3).count();
         let reused_node_height_topology_count = node_results
@@ -992,10 +1004,17 @@ impl RoadSurfaceSystem {
         self.last_rebuilt_terrain_chunks = dirty_terrain_chunks;
         self.last_rebuilt_query_chunks = dirty_query_chunks;
         self.compiled_once = true;
-        self.failed_compile_generation = None;
-        self.last_compile_failure_label = None;
-        self.last_failed_span_ids.clear();
-        self.last_failed_node_ids.clear();
+        if let Some(failure_label) = partial_failure_label {
+            self.failed_compile_generation = Some(self.compile_invalidation_generation);
+            self.last_compile_failure_label = Some(failure_label);
+            self.last_failed_span_ids = failed_span_ids;
+            self.last_failed_node_ids = failed_node_ids;
+        } else {
+            self.failed_compile_generation = None;
+            self.last_compile_failure_label = None;
+            self.last_failed_span_ids.clear();
+            self.last_failed_node_ids.clear();
+        }
         self.clear_dirty_tracking();
 
         if road_debug {

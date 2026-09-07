@@ -14,8 +14,45 @@ use super::super::{
 use super::RoadSurfaceSpanOwnedRegion;
 use crate::simulation::network::types::EdgeClass;
 
+// Bound exported terrain footprints along the existing section station lattice. A patch must
+// not drag a kilometre-scale span into the micrometre i32 overlay. No section is resampled.
+const TERRAIN_CLIP_RUN_M: f32 = 64.0;
+
 impl RoadSurfaceSystem {
     pub(super) fn build_span_boundary_loops_from_regions(
+        regions: &[RoadSurfaceSpanOwnedRegion],
+        edge_class: EdgeClass,
+    ) -> Result<
+        (
+            Vec<RoadSurfaceVisualPolygon>,
+            Vec<RoadSurfaceTerrainClipLoop>,
+        ),
+        RoadSurfaceEarthworkGeometryError,
+    > {
+        let (outer_boundary_loops, mut terrain_clip_boundary_loops) =
+            Self::build_span_boundary_run(regions, edge_class)?;
+        let run_key = |region: &RoadSurfaceSpanOwnedRegion| {
+            (region.start_s_m / TERRAIN_CLIP_RUN_M).floor() as i64
+        };
+        let mut runs = regions.chunk_by(|a, b| run_key(a) == run_key(b));
+        let Some(first) = runs.next() else {
+            return Ok((outer_boundary_loops, terrain_clip_boundary_loops));
+        };
+        if first.len() != regions.len() {
+            // Preserve the full render/earthwork outline; only terrain-query footprints split.
+            // Existing handoff sources close each run and cancel at the subsequent union.
+            // One additional linear boundary pass, O(regions) retained source data.
+            terrain_clip_boundary_loops.clear();
+            for run in std::iter::once(first).chain(runs) {
+                terrain_clip_boundary_loops
+                    .extend(Self::build_span_boundary_run(run, edge_class)?.1);
+            }
+            Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
+        }
+        Ok((outer_boundary_loops, terrain_clip_boundary_loops))
+    }
+
+    fn build_span_boundary_run(
         regions: &[RoadSurfaceSpanOwnedRegion],
         edge_class: EdgeClass,
     ) -> Result<

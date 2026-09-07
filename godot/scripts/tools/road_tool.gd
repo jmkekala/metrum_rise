@@ -40,6 +40,8 @@ var _ghost_enabled: bool = true  # toggled with G key
 # Cached guide data so we only call Rust when the network changes.
 var _ghost_guides_dirty: bool = true
 var _ghost_rebuild_queued: bool = false
+var _ghost_render_generation: int = -1
+var _ghost_vertex_count: int = 0
 var _road_debug_enabled: bool = false
 var _preview_cache_points: PackedVector3Array = PackedVector3Array()
 var _preview_cache_surface: Dictionary = {}
@@ -1183,6 +1185,14 @@ func _rebuild_ghost_lines() -> void:
 	var fetch_start_us := Time.get_ticks_usec()
 	var guide_data: Dictionary = simulation_node.get_road_ghost_line_data()
 	var fetch_ms := float(Time.get_ticks_usec() - fetch_start_us) / 1000.0
+	if guide_data.is_empty():
+		# An unavailable core lock is not a successfully generated empty world. Retain the
+		# current mesh and retry once next frame; never drain an endless deferred-call loop.
+		_ghost_rebuild_queued = true
+		await get_tree().process_frame
+		_ghost_rebuild_queued = false
+		_request_deferred_ghost_rebuild()
+		return
 	var vertices: PackedVector3Array = (
 		guide_data.get("vertices", PackedVector3Array())
 		as PackedVector3Array
@@ -1193,6 +1203,8 @@ func _rebuild_ghost_lines() -> void:
 	)
 	if vertices.size() < 2:
 		ghost_mesh.visible = false
+		_ghost_render_generation = int(guide_data["generation"])
+		_ghost_vertex_count = vertices.size()
 		_ghost_guides_dirty = false
 		if _road_debug_enabled:
 			print(
@@ -1218,6 +1230,8 @@ func _rebuild_ghost_lines() -> void:
 	im.surface_end()
 	ghost_mesh.mesh = im
 	ghost_mesh.visible = true
+	_ghost_render_generation = int(guide_data["generation"])
+	_ghost_vertex_count = vertices.size()
 	_ghost_guides_dirty = false
 	var upload_ms := float(Time.get_ticks_usec() - upload_start_us) / 1000.0
 	if _road_debug_enabled:

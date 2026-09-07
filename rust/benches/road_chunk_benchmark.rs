@@ -188,7 +188,7 @@ fn build_road_chunk_fixture(distant_chunks: usize) -> RoadChunkBenchFixture {
 
     let mut network = TransitNetwork::new_for_world(&config);
     network.lane_system.rebuild(&mut graph);
-    network.road_surface.compile_dirty(&graph, &terrain);
+    assert!(network.road_surface.compile_dirty(&graph, &terrain));
 
     let target_chunks = network
         .road_surface

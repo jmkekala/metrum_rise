@@ -15,7 +15,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
 - **Zoning and building allocation**: Rust-owned road-aligned parcels, parcel occupancy, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
-- **Benchmark coverage**: Criterion measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling; the deterministic road-chunk suite separately compares local generation, full-network generation, dirty compilation, and fixed-payload Godot upload scaling. A Samply gameplay harness now loads Kuopio and profiles production road preview/commit/render settlement across controlled topology, angle, width, spline, density, and chunk-alignment cases in both a primary windowed run and a headless CPU-only comparison. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
+- **Benchmark coverage**: Criterion covers live agent access and isolated road kernels; the chunk suite measures generation and fixed-payload Godot upload. Release gameplay measurements separate paired flat layouts, remote-grid scaling, pointer interaction, and pinned saved-city edits; authored Kuopio replays and Samply runs provide diagnostics. Comparisons require matched inputs, complete generation-matched output, and independent process pairs. See [`roads.md`](roads.md).
 - **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household VAT, business profit tax, and daily property tax), live `CityFiscalPolicy` controls/save state, first city-owned service-building placement/funding, explicit field-backed grain farms, aggregate `service_store` commercial services, and the starter `grain -> packaged_food -> household_supplies` chain are all live. See [`economy.md`](economy.md).
 - **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs after existing unemployed adults are counted first, continuous forecast-only marginal commercial worker-equivalents from one candidate household after that same local labour pool is counted, and authored regional migration pressure; vacant homes only cap actual move-in execution. Job-driven admission prefers an adult-capable claimable household over a workerless front candidate. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households only for the remaining workforce shortfall, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents after existing unemployed adults are counted, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand is driven by commercial input coverage rather than household `goods_shortage`. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
@@ -112,8 +112,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   charging, with bounded rollback of graph and split building references. Complete-boundary dust
   cleanup fixes the latest iso `(23, 1)` failure; the 52-road save rebuilds all five engineered
   patches through save/load. All 1,535 Rust tests and both Godot bridges pass.
-  `ROAD-13` separately tracks a surface-preview rejection encountered
-  while deleting and redrawing that connector. See [`roads.md`](roads.md).
+  `ROAD-13` now fixes the connector's delete/redraw workflow: incremental preview retains valid
+  required pieces despite unrelated frontier failures, duplicate detection ignores deleted roads,
+  and bulldozing preserves distant lane identities. Exact/certified and uncached commits restore
+  52 roads, six road chunks, and five terrain patches through save/load, also with one Rayon worker.
+  All 1,555 Rust tests pass. See [`roads.md`](roads.md).
 
 - `SIM-01`: terrain/water payload jobs no longer block Rayon workers on the simulation mutex.
   Busy snapshots use the existing retry protocol; completed terrain waits for nonblocking cache
@@ -159,22 +162,37 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   also preserves ownership for junction boundary edges shorter than `1 mm` when their endpoints
   occupy distinct canonical cells, preventing a successful commit from being hidden by the atomic
   terrain/road upload guard. See [`roads.md`](roads.md).
-- Release Samply workflows now exercise actual gameplay road placement on the authored Kuopio map.
-  `./run.sh --profile-gameplay-roads` records the windowed path and
-  `./run.sh --profile-gameplay-roads-headless` records the CPU-only comparison. Both use the identical
-  controlled road-layout matrix: orthogonal bend/T/four-way baselines plus isolated approach-angle,
-  mixed-width, spline-curvature, close-junction-density, and render-chunk-alignment variants. The
-  default performs one warmup and three measured repetitions of all eight cases (32 fixtures), while
-  `METRUM_GAMEPLAY_BENCHMARK_MATRIX=baseline` retains the former 12-fixture workload for historical
-  comparisons. Both matrices wait for exact network/render settlement, block gameplay input, reject
-  unexpected concurrent network generations, verify every expected junction degree, fail immediately
-  with structured patch diagnostics when refined terrain rejects a generation, validate the metrics
-  success flag independently of Samply's child exit handling, and write a presymbolicated profile plus
-  phase/timing JSON under `benchmark-results/`. The controlled matrix reloads Kuopio between warmup
-  and measured cycles, giving every case the same site and clean network state in every repetition;
-  the chunk-corner case alone aligns deliberately with the `510 m` render grid. The `baseline` matrix
-  retains the former growing-network/site-sweep behavior for historical and correctness runs. The
-  optimization passes removed duplicate exact preview/commit validation, cached
+- Road benchmark schema 3 separates unprofiled release measurement from Samply diagnostics.
+  `./run.sh --benchmark-gameplay-roads[-headless]` defaults to 48 paired flat-terrain fixtures,
+  resetting the world per case. Select `scaling` for fixed local edits with larger remote grids,
+  `interaction` for prepared/dragged/immediate-click paths, or `saved` for pinned edits in a city.
+  Authored Kuopio matrices remain diagnostic options. Metrics separate readiness, atomic render
+  acknowledgement, idle settlement, frame intervals, and generation-matched command stages.
+  Summaries no longer pool initial roads with junction edits or report tiny-sample maxima as p95.
+  Strict paired reports reject mismatched inputs/settings and profiled captures. All Criterion
+  targets compile again, real mutations complement no-op controls, and normal tests check benchmark
+  API drift. Flat-world setup also fixed dirty flags with empty patch ledgers that prevented render
+  settlement. The side-32 stress fixture now completes: local span footprint exports fix the
+  `ROAD-14` integer-overlay overflow, preserving precision, authored endpoints, and full
+  render/earthwork outlines. All 1,024 grid degrees and 1,984 edges validate before local edits.
+  Contracts: [`roads.md`](roads.md).
+  The first measured optimization reuses existing triangle grids for visible road-height queries.
+  Across three matched release/headless process pairs, local T click-to-ready medians fell from
+  `252 → 65 ms` with 112 background edges and `1140 → 139 ms` with 480; empty-network results
+  remain within noise. Strict output checks also exposed and fixed dropped guides on lock
+  contention (`ROAD-15`) and nondeterministic split-created edge IDs (`ROAD-16`). Both comparison
+  binaries include those correctness fixes; guide counts and graph/lane cardinalities match.
+  All 1,544 Rust tests, eight report checks, three Godot bridge suites, 48 paired layout fixtures,
+  and interaction/authored-terrain replays passed for that first optimization.
+  The next pass retains per-edge guide geometry against exact mesh/terrain dependencies and
+  incrementally maintains CCH contraction scores. It also fixes discarded routing alternatives
+  and premature query termination (`ROAD-17`). Three matched process triplets at side 32 show
+  local T click-to-first-idle `3731 → 202 ms`, routing `3437 → 21 ms`, and an additional
+  `359 → 202 ms` response reduction from guide reuse with the router held fixed.
+  All 1,553 Rust tests and bridge/interaction/authored-terrain replays pass. These are headless
+  road-edit measurements, not whole-game FPS. A warmed empty-network first stroke regresses
+  `36.2 → 41.2 ms`; subsequent T latency is unchanged. That small-case cost remains `ROAD-18`.
+  Earlier schema-2 optimization passes removed duplicate exact preview/commit validation, cached
   target-group geometry and quantized ownership predicates, spatially indexed rail/seam coverage,
   eliminated repeated contour and source scans, and handed exact preview-produced junction
   rail/ownership/arrangement topology to the matching commit. On the same headless baseline
@@ -182,15 +200,16 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   `687/832/988 ms` to `422/442/442 ms` for bend/T/four-way, while commit p95 fell from
   `229/328/463 ms` to `96/83/83 ms`. Instrumented four-way commit compilation replays the
   junction rail stage in about `2.8 ms` and skips the prior height/arrangement/triangulation block;
-  road-triggered terrain regeneration, road-mesh precompute, and terrain visual refresh are now the
-  dominant end-to-end boundary. The matching windowed workload also passes: total runtime fell
+  road-triggered terrain regeneration, road-mesh precompute, and terrain visual refresh were the
+  dominant measured boundary in those fixtures. The matching windowed workload also passed: total runtime fell
   from `24.72 s` to `21.36 s`, four-way fixture p95 from `1,134 ms` to `823 ms`, and four-way commit
   p95 from `517 ms` to `244 ms`. The controlled matrix then exposed that the fixed `100 ms` exact
   preview debounce dominated every successful fixture and that an exact rejection did not replace
   the cheap synchronous verdict. Reducing the idle gate to `25 ms` and making the exact result
   authoritative cut controlled headless preview p50 by `52.7–60.5%`, fixture p50 by `29.1–40.2%`,
-  and total measured runtime from `29.96 s` to `24.72 s`. The exact ROAD-08 curve now rejects in
-  `41–75 ms` across four clean-world cycles instead of appearing pending beyond `90 s`. A follow-up
+  and total measured runtime from `29.96 s` to `24.72 s`. The exact ROAD-08 curve then rejected in
+  `41–75 ms` instead of appearing pending beyond `90 s`; current geometry accepts and commits it,
+  and schema 3 verifies that successful outcome at the same site. A follow-up
   profile found that each exact preview cold-compiled every node in its bounded validation graph.
   Exact validation now seeds the incremental compiler with only required edges/nodes and their local
   incidence closure: sampled preview node-compiler CPU fell `18.1%`, the hardest double-T local

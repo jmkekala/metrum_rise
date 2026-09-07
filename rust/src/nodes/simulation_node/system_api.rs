@@ -167,4 +167,24 @@ impl SimulationNode {
     pub fn get_perf_stats(&self) -> VarDictionary {
         self.get_perf_stats_internal()
     }
+
+    /// Captures road-workload cardinalities outside benchmark timing intervals.
+    ///
+    /// Counting live edges is O(edge slots), including tombstones. Do not poll this per frame.
+    #[func]
+    pub fn get_road_benchmark_state(&self) -> VarDictionary {
+        let core = self.lock_core();
+        vdict! {
+            "nodes": core.region_graph.node_count() as i64,
+            "edge_slots": core.region_graph.edge_count() as i64,
+            "live_edges": core.region_graph.edges().iter().filter(|edge| !edge.deleted).count() as i64,
+            "agents": core.agents.len() as i64,
+            "buildings": core.allocator.buildings.len() as i64,
+            "lanes": core.transit_network.lane_system.lanes.len() as i64,
+            "rayon_threads": rayon::current_num_threads() as i64,
+            "generation": core.road_tool_surface_generation as i64,
+            "simulation_speed": core.time.speed_multiplier,
+            "command": core.last_road_edit_metrics.to_dictionary(),
+        }
+    }
 }

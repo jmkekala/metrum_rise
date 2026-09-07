@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Isolated movement and building-access workloads, excluding gameplay construction setup.
+
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
 use metrum_rise::assets::AssetManifest;
 use metrum_rise::assets::asset::{
-    Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
+    Anchor, AnchorType, BuildingData, LodEntry, MeshPart, PlacementMode, ZoneClass,
 };
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
 use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
-    ACCESS_PLAN_VALID, AgentSystem, MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
-    TRANSIT_IN_BUILDING, TRANSIT_NETWORK, VEHICLE_SEDAN,
+    ACCESS_PLAN_VALID, AGE_ADULT, AgentSystem, MODE_CAR, TRANSIT_ACCESS_EGRESS,
+    TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING, TRANSIT_NETWORK, VEHICLE_SEDAN,
 };
 use metrum_rise::simulation::economy::households::HouseholdSystem;
 use metrum_rise::simulation::economy::logistics::ShipmentSystem;
@@ -114,6 +116,8 @@ fn register_test_asset(
         display_name: "Bench".to_owned(),
         asset_set: None,
         tags: vec![],
+        mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+        site_surfaces: vec![],
         thumbnail: None,
         lods: vec![LodEntry {
             file: "lod0.glb".to_owned(),
@@ -125,6 +129,9 @@ fn register_test_asset(
             name: "main".to_owned(),
             position: [0.0, 0.0, 0.5],
             forward: [0.0, 0.0, 1.0],
+            vehicle_class: None,
+            width_m: None,
+            length_m: None,
         }],
         building: Some(BuildingData {
             flat_size_m2: None,
@@ -151,12 +158,13 @@ fn register_test_asset(
             },
             service_class: None,
             economy_profile: None,
-            preview_scale: Some(1.0),
+            frontage_forward: None,
+            extractor: None,
+            field: None,
         }),
         prop: None,
         vehicle: None,
         character: None,
-        pivot_offset: None,
     };
     allocator
         .registry
@@ -315,6 +323,21 @@ fn build_access_shared() -> AccessSharedSetup {
         .push(metrum_rise::simulation::buildings::allocator::Building {
             center_x: 250.0,
             center_y: -10.0,
+            support_height_m: 0.0,
+            service_funding_override: -1.0,
+            construction_total_hours: 0,
+            construction_remaining_hours: 0,
+            profit_tax_budget_baseline: 500.0,
+            last_day_profit: 0.0,
+            daily_city_funded_input_cost: 0.0,
+            daily_household_sales_value: 0.0,
+            daily_power_service_units: 0.0,
+            daily_power_served_units: 0.0,
+            recent_power_service_units: 0.0,
+            recent_power_served_units: 0.0,
+            recent_household_sales_value: 0.0,
+            commercial_activity_floor_scale: 0.0,
+            work_area_scale: 1.0,
             width_cells: 1,
             depth_cells: 1,
             zone_profile_runtime_id: 0,
@@ -390,6 +413,10 @@ fn build_access_shared() -> AccessSharedSetup {
 
 fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
     Agent {
+        age_group: AGE_ADULT,
+        freight_shipment_id: u64::MAX,
+        freight_target_border_node: u32::MAX,
+        network_replan_failures: 0,
         home_building: 0,
         household_id: usize::MAX,
         pending_household_size: 0,
@@ -448,6 +475,10 @@ fn make_access_egress_agent(shared: &AccessSharedSetup) -> Agent {
 
 fn make_access_ingress_agent(shared: &AccessSharedSetup) -> Agent {
     Agent {
+        age_group: AGE_ADULT,
+        freight_shipment_id: u64::MAX,
+        freight_target_border_node: u32::MAX,
+        network_replan_failures: 0,
         home_building: 0,
         household_id: usize::MAX,
         pending_household_size: 0,
@@ -543,6 +574,10 @@ fn build_access_state(shared: &AccessSharedSetup, count: usize, phase: u8) -> Ac
 
 fn make_idle_agent(shared: &SharedSetup) -> Agent {
     Agent {
+        age_group: AGE_ADULT,
+        freight_shipment_id: u64::MAX,
+        freight_target_border_node: u32::MAX,
+        network_replan_failures: 0,
         home_building: usize::MAX,
         household_id: usize::MAX,
         pending_household_size: 0,
@@ -605,6 +640,10 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
 /// lane-traversal path with no destination-side entrance replanning.
 fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -> Agent {
     Agent {
+        age_group: AGE_ADULT,
+        freight_shipment_id: u64::MAX,
+        freight_target_border_node: u32::MAX,
+        network_replan_failures: 0,
         home_building: usize::MAX,
         household_id: usize::MAX,
         pending_household_size: 0,
@@ -801,5 +840,56 @@ fn bench_agent_tick(c: &mut Criterion) {
     access_group.finish();
 }
 
-criterion_group!(benches, bench_agent_tick);
+fn bench_cch_rebuild(c: &mut Criterion) {
+    use metrum_rise::simulation::pathing::cch::CchGraph;
+
+    let mut group = c.benchmark_group("CchRebuild");
+    group.sample_size(10);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(3));
+    for side in [8_u32, 16, 32] {
+        // Topology-only fixture: no surfaces, terrain, lanes, zoning or gameplay setup in timings.
+        let mut graph = RegionGraph::new();
+        for z in 0..side {
+            for x in 0..side {
+                graph.add_node(
+                    Vector3::new(x as f32 * 90.0, 0.0, z as f32 * 90.0),
+                    NodeType::Junction,
+                );
+            }
+        }
+        for z in 0..side {
+            for x in 0..side {
+                let a = z * side + x;
+                for b in [
+                    (x + 1 < side).then_some(a + 1),
+                    (z + 1 < side).then_some(a + side),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let mut edge = create_access_edge(a, b);
+                    edge.geometry = vec![graph.node(a).pos, graph.node(b).pos];
+                    edge.physical_geometry.clone_from(&edge.geometry);
+                    edge.physical_length = 90.0;
+                    edge.base_cost = edge.physical_length / edge.speed_limit;
+                    graph.add_edge(edge);
+                }
+            }
+        }
+        graph.rebuild_adjacency_list();
+        assert_eq!(graph.node_count(), (side * side) as usize);
+        assert_eq!(graph.edge_count(), (2 * side * (side - 1)) as usize);
+        group.bench_with_input(
+            BenchmarkId::new("connected_grid", side),
+            &graph,
+            |b, graph| {
+                b.iter(|| black_box(CchGraph::build(black_box(graph))));
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_agent_tick, bench_cch_rebuild);
 criterion_main!(benches);
