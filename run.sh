@@ -13,6 +13,8 @@
 #                        Profile the windowed controlled road workload with Samply
 #   --profile-gameplay-roads-headless
 #                        Profile the same workload with Godot's CPU-only headless renderer
+#   --replay-road-terrain / --replay-road-terrain-headless
+#                        Replay pinned Kuopio terrain cases and audit road profiles (diagnostic)
 #
 # Debug modes:
 #   --debug              General debug logging (stdout)
@@ -189,6 +191,13 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--benchmark-road-chunk-upload" ]; then
         ROAD_CHUNK_UPLOAD_BENCHMARK=1
+        RELEASE=1
+    elif [ "$arg" = "--replay-road-terrain" ] || [ "$arg" = "--replay-road-terrain-headless" ]; then
+        GAMEPLAY_ROAD_PROFILE_MODE="windowed"
+        if [ "$arg" = "--replay-road-terrain-headless" ]; then
+            GAMEPLAY_ROAD_PROFILE_MODE="headless"
+        fi
+        export METRUM_GAMEPLAY_BENCHMARK_MATRIX="terrain"
         RELEASE=1
     elif [ "$arg" = "--profile-gameplay-roads" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="windowed"
@@ -607,6 +616,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "scaling" ] && \
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "interaction" ] && \
        [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "saved" ] && \
+       [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" != "terrain" ] && \
        [ ! -f "$GAMEPLAY_WORLD_PATH" ]; then
         echo "Error: Kuopio world definition not found at $GAMEPLAY_WORLD_PATH" >&2
         exit 2
@@ -659,7 +669,19 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
             PROFILE_STATUS=1
         fi
     fi
-    if [ $PROFILE_STATUS -eq 0 ]; then
+    if [ "${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}" = "terrain" ]; then
+        if [ -s "$GAMEPLAY_METRICS_PATH" ]; then
+            python3 "$PROJECT_ROOT/tools/road_terrain_replay.py" --report "$GAMEPLAY_METRICS_PATH" \
+                --output "$GAMEPLAY_BASE.terrain-audit.json"
+            TERRAIN_AUDIT_STATUS=$?
+            if [ $PROFILE_STATUS -eq 0 ]; then
+                PROFILE_STATUS=$TERRAIN_AUDIT_STATUS
+            fi
+        else
+            echo "Error: terrain replay produced no capture." >&2
+            PROFILE_STATUS=1
+        fi
+    elif [ $PROFILE_STATUS -eq 0 ]; then
         if ! python3 "$PROJECT_ROOT/tools/road_benchmark_report.py" --validate "$GAMEPLAY_METRICS_PATH"; then
             echo "Error: gameplay benchmark did not produce a complete valid capture." >&2
             PROFILE_STATUS=1
@@ -687,6 +709,9 @@ if [ $ROAD_CHUNK_BENCHMARK -eq 1 ]; then
 fi
 
 if [ $TEST -eq 1 ]; then
+    if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_terrain_replay.py; then
+        exit 1
+    fi
     if ! python3 -m unittest discover -s "$PROJECT_ROOT/tools" -p test_road_benchmark_report.py; then
         exit 1
     fi

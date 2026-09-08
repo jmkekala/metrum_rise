@@ -24,6 +24,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
+- `ROAD-24`: the checked-in Kuopio terrain capture now drives 13 fixed-location replay cases
+  through the existing gameplay benchmark. The baseline reproduces near-vertical profiles,
+  up to 37.34 m source-height offsets, and the logged terrain-validation rejection. Numeric
+  profile audits and paired rendered captures are available; terrain coverage and shared
+  preview/commit `RoadEditPlan` corrections remain open. See [`roads.md`](roads.md#kuopio-terrain-regression-replay-road-24).
+
 - `ROAD-05`: fixed world-aligned refined-terrain CDT tiles and immutable prior-generation reuse are
   implemented, including cached tile render buffers, bounded incremental road undo with exact
   pre-edit surface-cache restoration, stable exact-XZ `JunctionN` contact reuse, and uniform-height

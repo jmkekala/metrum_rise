@@ -1,0 +1,1616 @@
+{
+  "schema_version": 1,
+  "input_contract": "recovered post-snap XZ endpoints of logged two-point strokes; source/visible Y resampled; not exact mouse replay",
+  "log_sha256": "3975f21e178588338837ed3628734b225fe34a73b25138d04b076b3ff406983b",
+  "reference_save_sha256": "e1d7e0baf4eefd23293f0a770345f50e455815124c0a0920aefe10cc7a1033c0",
+  "source_world_sha256": "07ae5ff39f9c905eccfec41b15ac4aa69de70fba50e96b34a19aeee991cabdbd",
+  "source_terrain_sha256": "3da7d12fa3b49e8239ae074518aad02a8776adc82d8f4918c6b4789207be87ae",
+  "reference_save": "benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite",
+  "source_world": "godot/bootstrap/worlds/kuopio_324km2_10m.sqlite",
+  "world_config": [
+    18000.0,
+    18000.0,
+    10.0,
+    512.0,
+    0.0,
+    40.0,
+    10.0
+  ],
+  "attempt_count": 37,
+  "accepted_attempt_count": 36,
+  "reference_live_edges": 70,
+  "quality_limits": {
+    "max_grade": 1.0,
+    "max_abs_source_delta_m": 5.0,
+    "max_pitch_change_deg": 30.0
+  },
+  "cases": [
+    {
+      "case_id": "kuopio_01",
+      "segments": [
+        {
+          "start_xz": [
+            31.454399,
+            -6.713409
+          ],
+          "end_xz": [
+            -37.419434,
+            -151.495987
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 1,
+          "log_line": 783,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "409",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(59.724,65.737)",
+            "run": "6.014",
+            "dy": "0.950",
+            "span_y": "(147.600,148.550)",
+            "span_terrain": "(149.111,150.119)",
+            "span_delta": "(-1.511,-1.569)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.073",
+            "baked_ms": "0.430",
+            "add_road_ms": "0.046",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.119",
+            "total_ms": "0.705"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -41.902809,
+            -43.898529
+          ],
+          "end_xz": [
+            1.348478,
+            -70.000336
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 2,
+          "log_line": 1919,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "161",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(5.684,6.000)",
+            "run": "0.316",
+            "dy": "0.050",
+            "span_y": "(145.545,145.595)",
+            "span_terrain": "(145.973,146.046)",
+            "span_delta": "(-0.428,-0.451)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-1.675)",
+            "committed": "true",
+            "preview_ms": "0.078",
+            "baked_ms": "0.200",
+            "add_road_ms": "0.049",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.089",
+            "total_ms": "0.455"
+          },
+          "expected_live_edges": 3
+        },
+        {
+          "start_xz": [
+            135.84317,
+            -142.053802
+          ],
+          "end_xz": [
+            1.348478,
+            -70.000336
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 3,
+          "log_line": 4433,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "401",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.108",
+            "allowed_grade": "0.160",
+            "span": "(17.696,23.599)",
+            "run": "5.903",
+            "dy": "0.640",
+            "span_y": "(143.375,144.015)",
+            "span_terrain": "(143.359,144.025)",
+            "span_delta": "(0.017,-0.010)",
+            "endpoint_snap": "(-1,3)",
+            "endpoint_delta": "(0.000,-1.675)",
+            "committed": "true",
+            "preview_ms": "0.082",
+            "baked_ms": "0.405",
+            "add_road_ms": "0.043",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.090",
+            "total_ms": "0.660"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_02",
+      "segments": [
+        {
+          "start_xz": [
+            85.786407,
+            121.107567
+          ],
+          "end_xz": [
+            255.548798,
+            145.33551
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 4,
+          "log_line": 8227,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "453",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(6.000,11.977)",
+            "run": "5.977",
+            "dy": "0.944",
+            "span_y": "(142.534,143.478)",
+            "span_terrain": "(142.592,143.542)",
+            "span_delta": "(-0.058,-0.063)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.077",
+            "baked_ms": "0.464",
+            "add_road_ms": "0.042",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.120",
+            "total_ms": "0.743"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            146.417267,
+            200.044418
+          ],
+          "end_xz": [
+            212.586548,
+            57.667282
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 5,
+          "log_line": 9747,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "407",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(41.222,47.111)",
+            "run": "5.889",
+            "dy": "0.930",
+            "span_y": "(146.792,147.722)",
+            "span_terrain": "(148.141,148.691)",
+            "span_delta": "(-1.349,-0.969)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.426",
+            "add_road_ms": "0.043",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.123",
+            "total_ms": "0.712"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_03",
+      "segments": [
+        {
+          "start_xz": [
+            583.700867,
+            376.950378
+          ],
+          "end_xz": [
+            478.956635,
+            135.152008
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 6,
+          "log_line": 13553,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "759",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(126.532,132.598)",
+            "run": "6.065",
+            "dy": "0.958",
+            "span_y": "(116.043,117.001)",
+            "span_terrain": "(116.137,118.686)",
+            "span_delta": "(-0.095,-1.685)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "6.507",
+            "baked_ms": "0.229",
+            "add_road_ms": "0.011",
+            "bookkeeping_ms": "0.002",
+            "cancel_ms": "0.073",
+            "total_ms": "6.832"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            588.663086,
+            141.813477
+          ],
+          "end_xz": [
+            528.91449,
+            250.478027
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 7,
+          "log_line": 15204,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "367",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(115.438,119.004)",
+            "run": "3.567",
+            "dy": "-0.563",
+            "span_y": "(119.115,118.551)",
+            "span_terrain": "(123.741,123.037)",
+            "span_delta": "(-4.626,-4.486)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-4.179)",
+            "committed": "true",
+            "preview_ms": "0.085",
+            "baked_ms": "0.404",
+            "add_road_ms": "0.049",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.141",
+            "total_ms": "0.721"
+          },
+          "expected_live_edges": 3
+        },
+        {
+          "start_xz": [
+            484.146362,
+            312.002716
+          ],
+          "end_xz": [
+            554.155396,
+            308.745636
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 8,
+          "log_line": 18719,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "197",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.108",
+            "allowed_grade": "0.160",
+            "span": "(46.771,52.646)",
+            "run": "5.875",
+            "dy": "0.633",
+            "span_y": "(115.682,116.315)",
+            "span_terrain": "(115.572,116.420)",
+            "span_delta": "(0.110,-0.105)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-0.757)",
+            "committed": "true",
+            "preview_ms": "0.141",
+            "baked_ms": "0.244",
+            "add_road_ms": "0.057",
+            "bookkeeping_ms": "0.008",
+            "cancel_ms": "0.136",
+            "total_ms": "0.637"
+          },
+          "expected_live_edges": 5
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_04",
+      "segments": [
+        {
+          "start_xz": [
+            399.856903,
+            -183.598633
+          ],
+          "end_xz": [
+            386.360138,
+            -504.558777
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 9,
+          "log_line": 23204,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "823",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.977",
+            "allowed_grade": "0.160",
+            "span": "(8.000,16.000)",
+            "run": "8.000",
+            "dy": "7.814",
+            "span_y": "(135.893,143.707)",
+            "span_terrain": "(128.072,128.066)",
+            "span_delta": "(7.820,15.641)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.768",
+            "add_road_ms": "0.047",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.120",
+            "total_ms": "1.056"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            294.092896,
+            -293.187256
+          ],
+          "end_xz": [
+            496.204651,
+            -291.909576
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 10,
+          "log_line": 25551,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "641",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.970",
+            "allowed_grade": "0.160",
+            "span": "(0.000,6.000)",
+            "run": "6.000",
+            "dy": "5.820",
+            "span_y": "(132.786,138.606)",
+            "span_terrain": "(132.786,132.788)",
+            "span_delta": "(0.000,5.818)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.077",
+            "baked_ms": "0.602",
+            "add_road_ms": "0.063",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.106",
+            "total_ms": "0.889"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_05",
+      "segments": [
+        {
+          "start_xz": [
+            -40.991028,
+            -1086.314941
+          ],
+          "end_xz": [
+            300.785095,
+            -998.461914
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 11,
+          "log_line": 30157,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "841",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(0.000,6.000)",
+            "run": "6.000",
+            "dy": "0.948",
+            "span_y": "(159.193,160.141)",
+            "span_terrain": "(159.193,160.613)",
+            "span_delta": "(0.000,-0.472)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.059",
+            "baked_ms": "0.526",
+            "add_road_ms": "0.034",
+            "bookkeeping_ms": "0.004",
+            "cancel_ms": "0.096",
+            "total_ms": "0.744"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            62.896835,
+            -900.710571
+          ],
+          "end_xz": [
+            71.984344,
+            -1057.27478
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 12,
+          "log_line": 32144,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "407",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(116.603,122.486)",
+            "run": "5.882",
+            "dy": "-0.929",
+            "span_y": "(184.362,183.433)",
+            "span_terrain": "(185.320,184.841)",
+            "span_delta": "(-0.958,-1.408)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-4.498)",
+            "committed": "true",
+            "preview_ms": "0.060",
+            "baked_ms": "0.293",
+            "add_road_ms": "0.038",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.080",
+            "total_ms": "0.502"
+          },
+          "expected_live_edges": 3
+        },
+        {
+          "start_xz": [
+            48.519302,
+            -1221.009521
+          ],
+          "end_xz": [
+            4.440837,
+            -1074.636841
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 13,
+          "log_line": 35976,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "401",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(147.812,153.812)",
+            "run": "6.000",
+            "dy": "-0.948",
+            "span_y": "(167.646,166.698)",
+            "span_terrain": "(170.240,169.963)",
+            "span_delta": "(-2.594,-3.265)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-3.265)",
+            "committed": "true",
+            "preview_ms": "0.074",
+            "baked_ms": "0.389",
+            "add_road_ms": "0.041",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.134",
+            "total_ms": "0.678"
+          },
+          "expected_live_edges": 5
+        },
+        {
+          "start_xz": [
+            132.064392,
+            -884.081848
+          ],
+          "end_xz": [
+            217.620331,
+            -1019.839294
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 14,
+          "log_line": 41887,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "409",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.107",
+            "allowed_grade": "0.160",
+            "span": "(35.740,41.717)",
+            "run": "5.977",
+            "dy": "0.638",
+            "span_y": "(195.916,196.554)",
+            "span_terrain": "(195.867,196.633)",
+            "span_delta": "(0.049,-0.079)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.068)",
+            "committed": "true",
+            "preview_ms": "0.085",
+            "baked_ms": "0.492",
+            "add_road_ms": "0.045",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.106",
+            "total_ms": "0.772"
+          },
+          "expected_live_edges": 7
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_06",
+      "segments": [
+        {
+          "start_xz": [
+            5.441711,
+            -1902.211182
+          ],
+          "end_xz": [
+            269.927887,
+            -1652.684326
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 15,
+          "log_line": 47594,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "845",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(59.673,65.710)",
+            "run": "6.037",
+            "dy": "0.954",
+            "span_y": "(158.005,158.959)",
+            "span_terrain": "(157.042,157.135)",
+            "span_delta": "(0.963,1.824)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.074",
+            "baked_ms": "0.740",
+            "add_road_ms": "0.041",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.121",
+            "total_ms": "1.015"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            37.488243,
+            -1699.082642
+          ],
+          "end_xz": [
+            108.742615,
+            -1804.75293
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 16,
+          "log_line": 49472,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "373",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(116.759,118.921)",
+            "run": "2.162",
+            "dy": "0.342",
+            "span_y": "(170.414,170.756)",
+            "span_terrain": "(167.143,167.077)",
+            "span_delta": "(3.271,3.679)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,4.509)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.373",
+            "add_road_ms": "0.048",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.107",
+            "total_ms": "0.646"
+          },
+          "expected_live_edges": 3
+        },
+        {
+          "start_xz": [
+            389.390533,
+            -1909.999756
+          ],
+          "end_xz": [
+            200.602753,
+            -1718.088501
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 17,
+          "log_line": 53395,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "767",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(261.288,264.805)",
+            "run": "3.518",
+            "dy": "-0.556",
+            "span_y": "(191.973,191.417)",
+            "span_terrain": "(199.524,199.022)",
+            "span_delta": "(-7.551,-7.605)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-6.918)",
+            "committed": "true",
+            "preview_ms": "0.081",
+            "baked_ms": "0.726",
+            "add_road_ms": "0.048",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.112",
+            "total_ms": "1.007"
+          },
+          "expected_live_edges": 5
+        },
+        {
+          "start_xz": [
+            -115.907082,
+            -1888.068604
+          ],
+          "end_xz": [
+            5.441711,
+            -1902.211182
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 18,
+          "log_line": 59384,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "367",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(5.875,9.500)",
+            "run": "3.625",
+            "dy": "0.573",
+            "span_y": "(140.024,140.597)",
+            "span_terrain": "(139.983,140.660)",
+            "span_delta": "(0.042,-0.063)",
+            "endpoint_snap": "(-1,29)",
+            "endpoint_delta": "(0.000,-0.083)",
+            "committed": "true",
+            "preview_ms": "0.112",
+            "baked_ms": "0.378",
+            "add_road_ms": "0.042",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.129",
+            "total_ms": "0.702"
+          },
+          "expected_live_edges": 6
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_07",
+      "segments": [
+        {
+          "start_xz": [
+            -935.103577,
+            -1393.789062
+          ],
+          "end_xz": [
+            -1225.839722,
+            -1312.69165
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 19,
+          "log_line": 64744,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "799",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(160.080,166.074)",
+            "run": "5.994",
+            "dy": "0.947",
+            "span_y": "(88.322,89.269)",
+            "span_terrain": "(88.207,90.234)",
+            "span_delta": "(0.114,-0.965)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.108",
+            "baked_ms": "0.840",
+            "add_road_ms": "0.061",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.152",
+            "total_ms": "1.214"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -976.75592,
+            -1218.245605
+          ],
+          "end_xz": [
+            -1175.573242,
+            -1394.60498
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 20,
+          "log_line": 66674,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "761",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(153.802,159.783)",
+            "run": "5.981",
+            "dy": "0.945",
+            "span_y": "(90.440,91.385)",
+            "span_terrain": "(90.401,92.091)",
+            "span_delta": "(0.039,-0.706)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.713",
+            "add_road_ms": "0.044",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.100",
+            "total_ms": "0.977"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_08",
+      "segments": [
+        {
+          "start_xz": [
+            -682.564209,
+            -785.05481
+          ],
+          "end_xz": [
+            -968.733032,
+            -867.886169
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 21,
+          "log_line": 71300,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "797",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(78.136,84.170)",
+            "run": "6.034",
+            "dy": "-0.953",
+            "span_y": "(130.863,129.910)",
+            "span_terrain": "(143.263,143.572)",
+            "span_delta": "(-12.400,-13.663)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.044",
+            "baked_ms": "0.418",
+            "add_road_ms": "0.025",
+            "bookkeeping_ms": "0.003",
+            "cancel_ms": "0.075",
+            "total_ms": "0.587"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -803.719482,
+            -946.639099
+          ],
+          "end_xz": [
+            -851.633301,
+            -833.991699
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 22,
+          "log_line": 75433,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "367",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(111.472,117.278)",
+            "run": "5.807",
+            "dy": "-0.917",
+            "span_y": "(116.960,116.043)",
+            "span_terrain": "(119.077,119.298)",
+            "span_delta": "(-2.117,-3.255)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-3.831)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.363",
+            "add_road_ms": "0.068",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.114",
+            "total_ms": "0.664"
+          },
+          "expected_live_edges": 3
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_09",
+      "segments": [
+        {
+          "start_xz": [
+            -951.929749,
+            -102.354813
+          ],
+          "end_xz": [
+            -564.456177,
+            -281.221527
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 23,
+          "log_line": 78963,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "877",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(83.586,89.588)",
+            "run": "6.003",
+            "dy": "0.948",
+            "span_y": "(122.216,123.164)",
+            "span_terrain": "(124.668,126.050)",
+            "span_delta": "(-2.452,-2.886)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.070",
+            "baked_ms": "0.658",
+            "add_road_ms": "0.034",
+            "bookkeeping_ms": "0.004",
+            "cancel_ms": "0.098",
+            "total_ms": "0.893"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -880.217651,
+            -280.812897
+          ],
+          "end_xz": [
+            -788.129028,
+            -74.215118
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 24,
+          "log_line": 81985,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "699",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.894",
+            "allowed_grade": "0.160",
+            "span": "(145.437,150.700)",
+            "run": "5.263",
+            "dy": "4.703",
+            "span_y": "(138.304,143.007)",
+            "span_terrain": "(140.099,140.356)",
+            "span_delta": "(-1.795,2.651)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.074",
+            "baked_ms": "0.609",
+            "add_road_ms": "0.044",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.112",
+            "total_ms": "0.878"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_10",
+      "segments": [
+        {
+          "start_xz": [
+            0.421509,
+            1206.277466
+          ],
+          "end_xz": [
+            171.660492,
+            1035.947998
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 25,
+          "log_line": 87158,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "727",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(6.000,11.932)",
+            "run": "5.932",
+            "dy": "0.937",
+            "span_y": "(117.512,118.449)",
+            "span_terrain": "(118.760,121.122)",
+            "span_delta": "(-1.248,-2.673)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.051",
+            "baked_ms": "0.352",
+            "add_road_ms": "0.042",
+            "bookkeeping_ms": "0.003",
+            "cancel_ms": "0.073",
+            "total_ms": "0.542"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            298.173248,
+            1276.059814
+          ],
+          "end_xz": [
+            60.406139,
+            1146.61145
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 26,
+          "log_line": 88709,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "769",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(135.616,141.577)",
+            "run": "5.960",
+            "dy": "0.942",
+            "span_y": "(128.329,129.270)",
+            "span_terrain": "(128.567,129.745)",
+            "span_delta": "(-0.238,-0.474)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-0.218)",
+            "committed": "true",
+            "preview_ms": "0.114",
+            "baked_ms": "0.897",
+            "add_road_ms": "0.063",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.163",
+            "total_ms": "1.294"
+          },
+          "expected_live_edges": 3
+        },
+        {
+          "start_xz": [
+            -67.15921,
+            1139.690674
+          ],
+          "end_xz": [
+            0.421509,
+            1206.277466
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 27,
+          "log_line": 92360,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "305",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.717",
+            "allowed_grade": "0.160",
+            "span": "(0.000,6.000)",
+            "run": "6.000",
+            "dy": "4.303",
+            "span_y": "(94.660,98.963)",
+            "span_terrain": "(94.660,94.753)",
+            "span_delta": "(0.000,4.210)",
+            "endpoint_snap": "(-1,50)",
+            "endpoint_delta": "(0.000,-1.570)",
+            "committed": "true",
+            "preview_ms": "0.098",
+            "baked_ms": "0.348",
+            "add_road_ms": "0.049",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.113",
+            "total_ms": "0.657"
+          },
+          "expected_live_edges": 4
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_11",
+      "segments": [
+        {
+          "start_xz": [
+            62.425659,
+            1763.682983
+          ],
+          "end_xz": [
+            -210.195831,
+            2033.981934
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 28,
+          "log_line": 97840,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "855",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(307.588,313.663)",
+            "run": "6.075",
+            "dy": "-0.960",
+            "span_y": "(141.919,140.960)",
+            "span_terrain": "(141.118,140.082)",
+            "span_delta": "(0.801,0.877)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.027",
+            "baked_ms": "0.212",
+            "add_road_ms": "0.015",
+            "bookkeeping_ms": "0.002",
+            "cancel_ms": "0.049",
+            "total_ms": "0.318"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            188.865753,
+            2065.472656
+          ],
+          "end_xz": [
+            -194.029022,
+            1826.737793
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 29,
+          "log_line": 99932,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "883",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(417.326,423.339)",
+            "run": "6.013",
+            "dy": "-0.950",
+            "span_y": "(141.032,140.082)",
+            "span_terrain": "(140.010,139.349)",
+            "span_delta": "(1.021,0.733)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "50.502",
+            "baked_ms": "0.206",
+            "add_road_ms": "0.017",
+            "bookkeeping_ms": "0.003",
+            "cancel_ms": "0.112",
+            "total_ms": "50.852"
+          },
+          "expected_live_edges": 4
+        },
+        {
+          "start_xz": [
+            -265.733612,
+            1898.330322
+          ],
+          "end_xz": [
+            -162.186005,
+            1986.381104
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 30,
+          "log_line": 105708,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "383",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(124.481,130.451)",
+            "run": "5.970",
+            "dy": "0.943",
+            "span_y": "(138.368,139.312)",
+            "span_terrain": "(138.078,138.741)",
+            "span_delta": "(0.291,0.571)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.860)",
+            "committed": "true",
+            "preview_ms": "0.077",
+            "baked_ms": "0.439",
+            "add_road_ms": "0.042",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.107",
+            "total_ms": "0.704"
+          },
+          "expected_live_edges": 6
+        },
+        {
+          "start_xz": [
+            -67.206772,
+            1751.938477
+          ],
+          "end_xz": [
+            -267.474762,
+            1970.97583
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 31,
+          "log_line": 114859,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "795",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(136.879,142.890)",
+            "run": "6.011",
+            "dy": "-0.950",
+            "span_y": "(142.360,141.411)",
+            "span_terrain": "(140.815,140.538)",
+            "span_delta": "(1.546,0.873)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.103",
+            "baked_ms": "1.001",
+            "add_road_ms": "0.045",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.116",
+            "total_ms": "1.309"
+          },
+          "expected_live_edges": 11
+        },
+        {
+          "start_xz": [
+            266.695312,
+            1894.495728
+          ],
+          "end_xz": [
+            -74.065948,
+            1984.43811
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 32,
+          "log_line": 128080,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "837",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(240.271,246.320)",
+            "run": "6.049",
+            "dy": "0.956",
+            "span_y": "(143.872,144.828)",
+            "span_terrain": "(143.453,144.439)",
+            "span_delta": "(0.419,0.390)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.078",
+            "baked_ms": "0.812",
+            "add_road_ms": "0.044",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.104",
+            "total_ms": "1.079"
+          },
+          "expected_live_edges": 14
+        },
+        {
+          "start_xz": [
+            -31.327492,
+            1789.229248
+          ],
+          "end_xz": [
+            204.039398,
+            2002.093262
+          ],
+          "fwd_lanes": 1,
+          "bkw_lanes": 1,
+          "attempt": 33,
+          "log_line": 141434,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "813",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.133",
+            "allowed_grade": "0.160",
+            "span": "(245.995,252.037)",
+            "run": "6.042",
+            "dy": "-0.806",
+            "span_y": "(131.731,130.926)",
+            "span_terrain": "(131.795,130.901)",
+            "span_delta": "(-0.064,0.024)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.756",
+            "add_road_ms": "0.042",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.108",
+            "total_ms": "1.028"
+          },
+          "expected_live_edges": 19
+        }
+      ]
+    },
+    {
+      "case_id": "kuopio_12_attempt_36",
+      "segments": [
+        {
+          "start_xz": [
+            -1384.281616,
+            2761.508057
+          ],
+          "end_xz": [
+            -1355.232544,
+            2284.143555
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 34,
+          "log_line": 156032,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "891",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.114",
+            "allowed_grade": "0.160",
+            "span": "(436.757,442.774)",
+            "run": "6.017",
+            "dy": "-0.687",
+            "span_y": "(125.639,124.953)",
+            "span_terrain": "(125.729,124.940)",
+            "span_delta": "(-0.090,0.013)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.887",
+            "add_road_ms": "0.056",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.120",
+            "total_ms": "1.184"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -1253.330078,
+            2374.375
+          ],
+          "end_xz": [
+            -1473.073853,
+            2387.132812
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 35,
+          "log_line": 160801,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "683",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(144.140,150.165)",
+            "run": "6.025",
+            "dy": "0.952",
+            "span_y": "(128.995,129.947)",
+            "span_terrain": "(129.643,130.744)",
+            "span_delta": "(-0.648,-0.797)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.108",
+            "baked_ms": "0.799",
+            "add_road_ms": "0.063",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.138",
+            "total_ms": "1.163"
+          },
+          "expected_live_edges": 4
+        },
+        {
+          "start_xz": [
+            -1592.918945,
+            2679.492432
+          ],
+          "end_xz": [
+            -1292.751709,
+            2555.563477
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 36,
+          "log_line": 167246,
+          "original_accepted": false,
+          "logged_validation": {
+            "raw_points": "821",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(9.500,11.959)",
+            "run": "2.459",
+            "dy": "-0.389",
+            "span_y": "(132.728,132.340)",
+            "span_terrain": "(131.333,130.649)",
+            "span_delta": "(1.396,1.691)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.778",
+            "add_road_ms": "0.051",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.137",
+            "total_ms": "1.088"
+          },
+          "expected_live_edges": 7
+        }
+      ],
+      "logged_rejection": "[DEBUG:road] road_commit_rejected reason=render_geometry_invalid detail=terrain_cdt_constraint_conflicts patch=(14,22) rollback=true"
+    },
+    {
+      "case_id": "kuopio_12",
+      "segments": [
+        {
+          "start_xz": [
+            -1384.281616,
+            2761.508057
+          ],
+          "end_xz": [
+            -1355.232544,
+            2284.143555
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 34,
+          "log_line": 156032,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "891",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.114",
+            "allowed_grade": "0.160",
+            "span": "(436.757,442.774)",
+            "run": "6.017",
+            "dy": "-0.687",
+            "span_y": "(125.639,124.953)",
+            "span_terrain": "(125.729,124.940)",
+            "span_delta": "(-0.090,0.013)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.079",
+            "baked_ms": "0.887",
+            "add_road_ms": "0.056",
+            "bookkeeping_ms": "0.006",
+            "cancel_ms": "0.120",
+            "total_ms": "1.184"
+          },
+          "expected_live_edges": 1
+        },
+        {
+          "start_xz": [
+            -1253.330078,
+            2374.375
+          ],
+          "end_xz": [
+            -1473.073853,
+            2387.132812
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 35,
+          "log_line": 160801,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "683",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(144.140,150.165)",
+            "run": "6.025",
+            "dy": "0.952",
+            "span_y": "(128.995,129.947)",
+            "span_terrain": "(129.643,130.744)",
+            "span_delta": "(-0.648,-0.797)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,0.000)",
+            "committed": "true",
+            "preview_ms": "0.108",
+            "baked_ms": "0.799",
+            "add_road_ms": "0.063",
+            "bookkeeping_ms": "0.007",
+            "cancel_ms": "0.138",
+            "total_ms": "1.163"
+          },
+          "expected_live_edges": 4
+        },
+        {
+          "start_xz": [
+            -1250.57373,
+            2534.266602
+          ],
+          "end_xz": [
+            -1372.789795,
+            2572.663086
+          ],
+          "fwd_lanes": 2,
+          "bkw_lanes": 2,
+          "attempt": 37,
+          "log_line": 176443,
+          "original_accepted": true,
+          "logged_validation": {
+            "raw_points": "375",
+            "points": "2",
+            "preview_empty": "false",
+            "preview_valid": "true",
+            "max_grade": "0.158",
+            "allowed_grade": "0.160",
+            "span": "(35.103,41.000)",
+            "run": "5.897",
+            "dy": "0.932",
+            "span_y": "(110.217,111.149)",
+            "span_terrain": "(110.195,111.150)",
+            "span_delta": "(0.023,-0.001)",
+            "endpoint_snap": "(-1,-1)",
+            "endpoint_delta": "(0.000,-0.032)",
+            "committed": "true",
+            "preview_ms": "0.083",
+            "baked_ms": "0.394",
+            "add_road_ms": "0.044",
+            "bookkeeping_ms": "0.005",
+            "cancel_ms": "0.116",
+            "total_ms": "0.679"
+          },
+          "expected_live_edges": 6
+        }
+      ]
+    }
+  ]
+}

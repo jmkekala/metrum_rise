@@ -6,6 +6,46 @@ use super::super::super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Exports physical road profiles with original terrain heights for offline regression audits.
+    ///
+    /// Each point is `[x, road_y, z, source_y]` in metres. This diagnostic is O(edge slots +
+    /// profile points), uses Rayon across edges, and must only run outside interaction timings.
+    #[func]
+    pub fn get_road_terrain_benchmark_snapshot(&self) -> GString {
+        use rayon::prelude::*;
+        let snapshot = {
+            let core = self.lock_core();
+            let edges: Vec<_> = core
+                .region_graph
+                .edges()
+                .par_iter()
+                .enumerate()
+                .filter(|(_, edge)| !edge.deleted)
+                .map(|(id, edge)| {
+                    let points: Vec<_> = edge
+                        .physical_geometry
+                        .iter()
+                        .map(|point| {
+                            [
+                                point.x,
+                                point.y,
+                                point.z,
+                                core.heightmap.sample_height_world(point.x, point.z)
+                                    * crate::config::HEIGHT_SCALE,
+                            ]
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "edge_id": id, "start_node": edge.start_node, "end_node": edge.end_node,
+                        "fwd_lanes": edge.fwd_lanes, "bkw_lanes": edge.bkw_lanes, "points": points,
+                    })
+                })
+                .collect();
+            serde_json::json!({"generation": core.road_tool_surface_generation, "edges": edges})
+        };
+        GString::from(&snapshot.to_string())
+    }
+
     /// Returns compiled road-surface debug line data for editor visualization.
     ///
     /// Uses `try_lock` because this is only a debug/editor helper and should never stall the

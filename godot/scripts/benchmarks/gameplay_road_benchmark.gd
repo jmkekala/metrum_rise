@@ -46,6 +46,7 @@ var _pinned_anchors: Dictionary = {}
 var _grid_sides: Array[int] = [0, 4, 8]
 var _last_preview_id := 0
 var _preview_requests := 0
+var _terrain_replay: RefCounted
 
 func _process(_delta: float) -> void:
 	if not _capture_frames:
@@ -114,6 +115,10 @@ func _ready() -> void:
 func run() -> void:
 	_resolve_configuration()
 	_resolve_nodes()
+	if matrix_name == "terrain":
+		_terrain_replay = preload("res://scripts/benchmarks/road_terrain_replay.gd").new()
+		await _terrain_replay.run(self)
+		return
 	var fixture_definitions := _fixture_definitions()
 	_metrics = {
 		"schema_version": 3,
@@ -908,6 +913,9 @@ func _run_segment(
 	if preview_mode != "immediate":
 		preview_wait = await _wait_for_preview(settle_timeout_sec, preview_start_us)
 	var preview_ms := _elapsed_ms(preview_start_us)
+	if _terrain_replay != null:
+		_capture_frames = false
+		await _terrain_replay.capture_preview(self)
 	var expected_invalid_reason := String(
 		segment.get("expected_preview_invalid_reason", "")
 	)

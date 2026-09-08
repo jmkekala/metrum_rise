@@ -1125,6 +1125,68 @@ nodes. Future final-node responsiveness work should retain these requirements:
 Do not reopen shipped `ROAD-01` geometry hardcuts for editor responsiveness unless the fix changes
 the roadbed ownership contract itself.
 
+## Kuopio Terrain Regression Replay (`ROAD-24`)
+
+`benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` is the immutable, version-59
+user capture with 70 saved road edges (about 27 MB). `placements.json` reconstructs 37 logged
+two-point placement attempts as 12 connected-site sequences plus a separate rejected-attempt
+case. The importer verifies the final accepted physical polylines against the save and every
+source-terrain sample against `godot/bootstrap/worlds/kuopio_324km2_10m.sqlite`. The processed
+Kuopio database is a different file and is not substituted. Runtime checks pin both asset hashes.
+
+```bash
+./run.sh --replay-road-terrain-headless
+./run.sh --replay-road-terrain
+# Select one location, including its preceding road edits:
+METRUM_GAMEPLAY_TERRAIN_CASE=kuopio_04 ./run.sh --replay-road-terrain
+```
+
+These commands select the existing gameplay harness's `terrain` matrix. One invocation runs
+each selected case once; use independent invocations for repeatability. Each case reloads clean
+source terrain, retains its ordered road edits, and drives production RoadTool preview/commit
+with the existing generation/render/guide settlement fences. Inputs use recovered post-snap
+XZ endpoints and recorded lane counts; heights are resampled from current source/visible
+surfaces, never copied from the broken committed profiles. This is **location reconstruction,
+not an exact mouse/control-point/Shift-key replay**. Unsupported or incomplete log imports fail;
+failing locations are neither relocated nor prefiltered. A failed step stops dependent steps,
+but independent cases continue. Rolled-back staged geometry never seeds subsequent inputs.
+
+The diagnostic helper exports prepared preview profiles and Rust-produced physical road/source
+height pairs after each step, records expected edge counts, and writes checkpointed metrics.
+The windowed path also captures paired `before`, `preview`, and `committed`/`failed` screenshots
+using the actual gameplay viewport. Outputs stay under ignored `benchmark-results/`: metrics,
+`.terrain-audit.json`, and a `*.metrics-artifacts/` image directory. Source saves are never written.
+The profile export is O(edge slots + profile points), parallel across edges with Rayon, and
+runs only at diagnostic boundaries, not in production per-frame paths.
+
+The Python audit explicitly checks severe profile budgets: grade ratio 1.0 (45 degrees),
+absolute source offset 5 m, and adjacent longitudinal pitch change 30 degrees. These are
+fixture acceptance budgets, **not new gameplay grade limits or a complete road design spec**.
+It reports offending positions, source grades, cut/fill, and pitch changes; nonfinite/vertical
+profiles, incomplete cases, and failed placement/render work fail the run. Exit 2 indicates a
+completed diagnostic with failed audit checks. Frozen reference-save profiles are reported
+separately, not treated as desired heights or required to change before repaired replays pass.
+Numeric coverage currently excludes watertightness, terrain caps, and complete rendered
+preview/commit mesh parity: screenshots still require visual review. `RoadEditPlan` and terrain
+geometry fixes remain outstanding, rather than being hidden by a green settlement-only test.
+
+Initial release/headless and Forward+ validation completed all 13 cases with identical profile
+audit results: 12 settled their full sequences and the recorded terrain-conflict case rejected
+again. The rendered run saved 117 before/preview/commit-or-failure images. Replays reached grade 11.76 (about 85 degrees),
+37.34 m source offset, and 117.78 degrees adjacent pitch change. These are reproduced defects,
+not accepted baseline quality. Dumps/screenshots run outside operation timers but perturb caches
+and preview dwell; these diagnostic timings are **not accepted performance measurements**.
+Keep using matched unprofiled schema-3 workloads for performance claims. Run launchers serially:
+`run.sh` redeploys the shared GDExtension library.
+
+To import a fresh capture without overwriting an existing manifest:
+
+```bash
+python3 tools/road_terrain_replay.py --import-log road-terrain-locations.log \
+  --output benchmark-results/kuopio-placements-check.json
+python3 -m unittest discover -s tools -p test_road_terrain_replay.py
+```
+
 ## Debug And Diagnostics
 
 `--debug road` must report enough data to locate ownership failures before rendering hides them:
