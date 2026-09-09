@@ -280,7 +280,7 @@ fn apply_same_xz_shared_height_raised_step_boundary_vertex_normalization(
                 Some((
                     context,
                     (
-                        height_keys[0].as_i64() as f64 / SURFACE_MM_PER_M,
+                        heights.into_iter().min_by(f64::total_cmp)?,
                         allows_unseamed_vertex,
                     ),
                 ))

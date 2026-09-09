@@ -2,9 +2,11 @@
 
 //! Side-join band generation between adjacent node mouths.
 
-use super::heights::endpoint_height_plane_for_band_kind;
+use super::heights::{
+    endpoint_height_plane_for_band_kind, endpoint_height_plane_for_outer_boundary,
+};
 use super::paths::{
-    mouth_layer_inner_world, mouth_layer_outer_world, reheight_side_join_path_world,
+    mouth_layer_inner_world, mouth_layer_outer_world, offset_side_join_path_world,
     side_join_boundary_path_world,
 };
 use super::*;
@@ -232,7 +234,10 @@ fn canonicalize_side_join_bands(join_bands: &mut Vec<NodeInputSideJoinBand>) {
     join_bands.retain(side_join_band_has_quantized_area);
 }
 
-fn side_join_layers(mouth: &NodeInputMouth, side: SideJoinProfileSide) -> Vec<SideJoinLayer> {
+pub(super) fn side_join_layers(
+    mouth: &NodeInputMouth,
+    side: SideJoinProfileSide,
+) -> Vec<SideJoinLayer> {
     let Some(first_carriageway) = mouth
         .band_intervals
         .iter()
@@ -297,7 +302,7 @@ fn side_join_bands(
         let height_plane = if path_mode == SideJoinPathMode::JunctionNonRoad {
             endpoint_height_plane_for_band_kind(mouths, from_layer.band_kind)?
         } else {
-            None
+            endpoint_height_plane_for_outer_boundary(mouths, from_layer.band_kind)
         };
 
         let Some(outer_start_world) = mouth_layer_outer_world(from_mouth, from_layer) else {
@@ -391,7 +396,9 @@ fn side_join_band_inner_path(
     height_plane: Option<SideJoinHeightPlane>,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
     if let Some(path_world) = previous_outer_path_world {
-        if path_mode != SideJoinPathMode::BendArc {
+        if path_mode != SideJoinPathMode::BendArc
+            || from_layer.band_kind == RoadSurfaceBandKind::Sidewalk
+        {
             return Ok(Some(path_world));
         }
         let Some(inner_start_world) = mouth_layer_inner_world(from_mouth, from_layer) else {
@@ -400,11 +407,7 @@ fn side_join_band_inner_path(
         let Some(inner_end_world) = mouth_layer_inner_world(to_mouth, to_layer) else {
             return Ok(None);
         };
-        // Sidewalk joins share the curb's generated seam; keep one canonical height path.
-        if from_layer.band_kind == RoadSurfaceBandKind::Sidewalk {
-            return Ok(Some(path_world));
-        }
-        return reheight_side_join_path_world(path_world, inner_start_world.y, inner_end_world.y);
+        return offset_side_join_path_world(path_world, inner_start_world.y, inner_end_world.y);
     }
     let Some(inner_start_world) = mouth_layer_inner_world(from_mouth, from_layer) else {
         return Ok(None);

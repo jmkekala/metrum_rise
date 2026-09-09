@@ -187,11 +187,11 @@ fn exact_preview_captures_all_nodes_on_adjacent_dirty_spans() {
     graph.rebuild_adjacency_list();
     let affected_nodes = HashSet::from([first_start, bend, second_end]);
     let mut affected_edges = HashSet::from([first_edge, second_edge]);
-    affected_edges
-        .extend(graph.solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges));
-    affected_edges.extend(
-        graph.regrade_junction_endpoint_profiles_for_nodes(&affected_nodes, &affected_edges),
-    );
+    affected_edges.extend(graph.finalize_junction_endpoint_profiles_for_edges(
+        &affected_nodes,
+        &affected_edges,
+        &affected_edges,
+    ));
     graph.rebuild_intersection_clips();
     for edge_idx in [first_edge, second_edge] {
         surface.mark_edge_dirty(&graph, edge_idx);
@@ -280,30 +280,27 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
         );
         network.bulk_load = false;
 
-        let mut dirty_edges = std::mem::take(&mut network.bulk_dirty_edges);
-        let affected_nodes = network.bulk_surface_profile_nodes(&graph, &dirty_edges);
-        let profile_changed_edges = network.solve_dirty_junction_endpoint_profiles(
-            &mut graph,
-            &affected_nodes,
-            &dirty_edges,
-        );
-        dirty_edges.extend(profile_changed_edges);
-        let regrade_changed_edges = network.regrade_dirty_junction_endpoint_profiles(
-            &mut graph,
-            &affected_nodes,
-            &dirty_edges,
-        );
-        dirty_edges.extend(regrade_changed_edges);
-        graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-        network.mark_surface_dirty_from_sets(&graph, &dirty_edges, &affected_nodes);
+        network.finalize_road_geometry(&mut graph);
         let mut cold_commit = network.road_surface.clone();
         cold_commit.compiled_visual_node_topologies.clear();
         cold_commit.enqueue_preview_topology_reuse(cold_reuse.unwrap());
-        cold_commit.compile_dirty(&graph, &terrain);
+        assert!(
+            cold_commit.compile_dirty(&graph, &terrain),
+            "stroke {stroke_idx}: {:?}",
+            cold_commit.last_compile_failure_label()
+        );
+        // Clip-only updates now preserve physical profiles, so unchanged owners can stay
+        // in the committed cache without consuming their equivalent preview artifacts.
+        let previous_spans = network.road_surface.compiled_visual_span_pieces.clone();
+        let previous_nodes = network.road_surface.compiled_visual_node_pieces.clone();
         network
             .road_surface
             .enqueue_preview_topology_reuse(topology_reuse);
-        network.road_surface.compile_dirty(&graph, &terrain);
+        assert!(
+            network.road_surface.compile_dirty(&graph, &terrain),
+            "stroke {stroke_idx}: {:?}",
+            network.road_surface.last_compile_failure_label()
+        );
 
         assert_eq!(
             network.road_surface.compiled_visual_node_pieces,
@@ -316,12 +313,34 @@ fn exact_preview_replays_close_double_t_bulk_profile_scope() {
         );
 
         assert_eq!(
-            network.road_surface.last_reused_span_topology_count, offered_spans,
-            "stroke {stroke_idx} must reuse every exact preview span"
+            network.road_surface.last_reused_span_topology_count
+                + network
+                    .road_surface
+                    .compiled_visual_span_pieces
+                    .iter()
+                    .filter(|(id, piece)| {
+                        previous_spans
+                            .get(id)
+                            .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, piece))
+                    })
+                    .count(),
+            network.road_surface.compiled_visual_span_pieces.len(),
+            "stroke {stroke_idx} must retain every final span from the {offered_spans} offered preview spans or unchanged committed cache"
         );
         assert_eq!(
-            network.road_surface.last_reused_node_topology_count, offered_nodes,
-            "stroke {stroke_idx} must reuse every exact preview node"
+            network.road_surface.last_reused_node_topology_count
+                + network
+                    .road_surface
+                    .compiled_visual_node_pieces
+                    .iter()
+                    .filter(|(id, piece)| {
+                        previous_nodes
+                            .get(id)
+                            .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, piece))
+                    })
+                    .count(),
+            network.road_surface.compiled_visual_node_pieces.len(),
+            "stroke {stroke_idx} must retain every final node from the {offered_nodes} offered preview nodes or unchanged committed cache"
         );
     }
 }

@@ -242,14 +242,68 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
 }
 
 pub(super) fn rebuild_loaded_graph_runtime(
-    graph: &RegionGraph,
+    graph: &mut RegionGraph,
     transit_network: &mut TransitNetwork,
     terrain: &mut TerrainSystem,
-) {
+) -> SaveLoadResult<()> {
     // Node positions, grades, physical lengths and junction clips are saved authority. Terrain
     // synchronization is an edit: running it here moves roads away from their restored parcels
     // and changes the boundary geometry consumed by the renderer.
     transit_network.rebuild_all_terrain_earthworks(graph, terrain);
+    if transit_network
+        .road_surface
+        .published_generation_matches_source()
+    {
+        return Ok(());
+    }
+    // Legacy saves can contain contradictory junction supports. Repair only rejected
+    // grounded junctions using the edit planner's finalizer, before lane/agent restoration.
+    // The source SQLite and terrain are not rewritten; valid saved profiles stay authoritative.
+    let nodes = transit_network
+        .road_surface
+        .failed_node_ids()
+        .iter()
+        .copied()
+        .filter(|&node| {
+            graph.node_adjacency(node).iter().all(|&edge| {
+                graph.edge(edge).deleted
+                    || graph.edge(edge).class
+                        == crate::simulation::network::types::EdgeClass::Standard
+            })
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let edges = nodes
+        .iter()
+        .flat_map(|&node| graph.node_adjacency(node).iter().copied())
+        .filter(|&edge| !graph.edge(edge).deleted)
+        .collect::<std::collections::HashSet<_>>();
+    if !edges.is_empty() {
+        let changed = graph.finalize_junction_endpoint_profiles_for_edges(&nodes, &edges, &edges);
+        transit_network.mark_surface_dirty_from_sets(graph, &changed, &nodes);
+        transit_network.rebuild_all_terrain_earthworks(graph, terrain);
+        crate::debug_log!(
+            "save",
+            "loaded_junction_profile_repair nodes={} changed_edges={} compiled={}",
+            nodes.len(),
+            changed.len(),
+            transit_network
+                .road_surface
+                .published_generation_matches_source()
+        );
+    }
+    if !transit_network
+        .road_surface
+        .published_generation_matches_source()
+    {
+        return Err(SaveLoadError::custom(format!(
+            "road surface load failed: {}",
+            transit_network
+                .road_surface
+                .last_compile_failure_label()
+                .unwrap_or("incomplete surface")
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {

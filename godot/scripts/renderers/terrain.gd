@@ -16,6 +16,10 @@
 ##   get_agriculture_field_overlay_revision()
 extends Node3D
 
+# Temporary render clients must restore their saved resources before a patch is changed/recycled.
+signal patch_render_will_change(key: Vector2i)
+signal patches_will_reset
+
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
@@ -1141,6 +1145,7 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 					]
 				)
 			return false
+		patch_render_will_change.emit(key)
 		_block_engineered_patch_until_valid_cdt(patch)
 		if _road_debug_enabled:
 			print(
@@ -1272,6 +1277,7 @@ func _commit_staged_patch_data(
 	total_start_us: int = 0,
 	fetch_ms: float = 0.0
 ) -> void:
+	patch_render_will_change.emit(key)
 	if total_start_us <= 0:
 		total_start_us = Time.get_ticks_usec()
 	var patch: Dictionary = patches[key]
@@ -1452,6 +1458,7 @@ func _deactivate_patch(key: Vector2i) -> void:
 func _remove_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
+	patch_render_will_change.emit(key)
 	var was_resident: bool = resident_patch_lookup.has(key)
 	var patch: Dictionary = patches[key]
 	_release_terrain_patch_resources(patch)
@@ -1506,6 +1513,7 @@ func _refresh_resident_patch_bounds() -> void:
 	_resident_max_patch_z = max_patch_z
 
 func _clear_patches() -> void:
+	patches_will_reset.emit()
 	for key in patches.keys():
 		var patch: Dictionary = patches[key]
 		_release_terrain_patch_resources(patch)
@@ -2251,7 +2259,8 @@ func _terrain_patch_payload_is_stageable(
 	key: Vector2i,
 	patch_data: Dictionary,
 	expected_generation: int,
-	expected_render_step_mm: int
+	expected_render_step_mm: int,
+	planned_ownership: bool = false
 ) -> bool:
 	if not patches.has(key):
 		return false
@@ -2332,7 +2341,9 @@ func _terrain_patch_payload_is_stageable(
 	]:
 		if patch_data.has(field) and typeof(patch_data[field]) != TYPE_BOOL:
 			return false
-	var engineered_patch := _patch_requires_engineered_refinement(key, patch_data)
+	# A planned patch may remove the last live contributor. Only preview callers use its
+	# explicit Rust-exported ownership; authoritative uploads retain the live ownership gate.
+	var engineered_patch := bool(patch_data.get("terrain_requires_engineered_refinement", false)) if planned_ownership else _patch_requires_engineered_refinement(key, patch_data)
 	if engineered_patch:
 		if (
 			typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
@@ -2349,7 +2360,7 @@ func _terrain_patch_payload_is_stageable(
 			patch_data.has("terrain_cdt_pathological_faces_omitted")
 			and (
 				typeof(patch_data["terrain_cdt_pathological_faces_omitted"]) != TYPE_INT
-				or int(patch_data["terrain_cdt_pathological_faces_omitted"]) < 0
+				or int(patch_data["terrain_cdt_pathological_faces_omitted"]) != 0
 			)
 		):
 			return false
@@ -2539,6 +2550,10 @@ func _terrain_patch_mesh_from_data(
 
 func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
 	# Failed CDT keeps diagnostic fields but must not replace the heightmap mesh with an empty bake.
+	var omitted = patch_data.get("terrain_cdt_pathological_faces_omitted", 0)
+	# Removing a bad face leaves a hole; an otherwise valid buffer is not a complete terrain product.
+	if typeof(omitted) != TYPE_INT or int(omitted) != 0:
+		return false
 	if (
 		typeof(patch_data.get("terrain_cdt_status", null)) != TYPE_STRING
 		or typeof(patch_data.get("terrain_cdt_contract_revision", null)) != TYPE_INT
@@ -3028,6 +3043,7 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> bool:
 		return false
 	if engineered_patch_lookup.has(key) and not _engineered_patch_data_is_renderable(patch_data):
 		return false
+	patch_render_will_change.emit(key)
 	patch["lod_step"] = target_lod_step
 	patch["subdivision_factor"] = target_subdivision_factor
 	var material: ShaderMaterial = patch["material"]

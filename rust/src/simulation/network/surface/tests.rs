@@ -45,6 +45,7 @@ mod preview;
 mod span;
 mod support;
 mod terrain_clip;
+mod terrain_profile;
 mod visibility_debug;
 
 use support::*;

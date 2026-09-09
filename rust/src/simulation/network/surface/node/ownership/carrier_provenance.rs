@@ -429,7 +429,11 @@ fn generated_side_join_surface_over_dust_near_source_carriers_origin(
                     *candidate,
                     owner,
                     source,
-                    NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+                    if source.0 == RoadSurfaceBandKind::Carriageway {
+                        NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+                    } else {
+                        NodeGeneratedContourPurpose::NonRoadBand
+                    },
                     NodeGeneratedContourClaimPriority::MouthBand,
                     rails,
                 )

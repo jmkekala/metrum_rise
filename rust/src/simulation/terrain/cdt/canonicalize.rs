@@ -58,7 +58,48 @@ pub(super) struct CanonicalTerrainCdtSourcedEdge {
 }
 
 pub(super) fn canonicalize_input(
+    input: TerrainCdtInput,
+) -> Result<CanonicalTerrainCdtInput, TerrainCdtError> {
+    let bounds = grading_query_bounds(&input);
+    canonicalize_input_with_grading_bounds(input, Some(bounds))
+}
+
+// A grade-limited tie-in cannot reach farther than the full input height range
+// divided by its slope limit. Boundary projections stay inside that same range.
+// This conservative bound excludes distant halo segments, never near-tile grading.
+fn grading_query_bounds(input: &TerrainCdtInput) -> TerrainCdtLoopBounds {
+    let corners = input.patch.corners_cw();
+    let (min, max) = corners
+        .iter()
+        .chain(&input.source_samples)
+        .chain(
+            input
+                .tie_in_guide_samples
+                .iter()
+                .map(|sample| &sample.vertex),
+        )
+        .chain(
+            input
+                .tie_in_guide_constraints
+                .iter()
+                .flat_map(|c| [&c.start, &c.end]),
+        )
+        .chain(input.road_loops.iter().flat_map(|road| &road.vertices))
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), p| {
+            (min.min(p.height_m), max.max(p.height_m))
+        });
+    let margin = f64::from((max - min) / MAX_TERRAIN_TIE_IN_SLOPE_RATIO) + CDT_EPSILON_M;
+    TerrainCdtLoopBounds {
+        min_x: input.patch.min_x - margin,
+        min_z: input.patch.min_z - margin,
+        max_x: input.patch.max_x + margin,
+        max_z: input.patch.max_z + margin,
+    }
+}
+
+pub(super) fn canonicalize_input_with_grading_bounds(
     mut input: TerrainCdtInput,
+    grading_bounds: Option<TerrainCdtLoopBounds>,
 ) -> Result<CanonicalTerrainCdtInput, TerrainCdtError> {
     let expected_vertex_count = 4usize
         .saturating_add(input.source_samples.len())
@@ -72,6 +113,7 @@ pub(super) fn canonicalize_input(
     let mut road_constraint_edges = Vec::new();
     let mut road_constraint_sources = BTreeMap::new();
     let mut road_loops = Vec::new();
+    let mut grading_loops = Vec::new();
     let mut source_sample_vertex_indices = Vec::new();
     let mut accepted_seam_edges = 0usize;
     let mut merged_subbudget_seam_edges = 0usize;
@@ -105,6 +147,39 @@ pub(super) fn canonicalize_input(
             || signed_area(&original_points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M
         {
             continue;
+        }
+        if original_source_edges.iter().all(|edge| {
+            !terrain_cdt_boundary_source_allows_retaining_wall(edge.source)
+                && !matches!(
+                    edge.source,
+                    TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. }
+                )
+        }) {
+            let edge_sources = terrain_cdt_loop_edge_sources_in_bounds(
+                &original_points,
+                &original_source_edges,
+                grading_bounds,
+            );
+            let bounds = terrain_cdt_loop_bounds(&original_points);
+            grading_loops.push(CanonicalTerrainCdtRoadLoop {
+                footprint_group_id: road_loop.footprint_group_id,
+                is_hole: road_loop.is_hole,
+                min_x: bounds.min_x,
+                min_z: bounds.min_z,
+                max_x: bounds.max_x,
+                max_z: bounds.max_z,
+                min_height_m: original_points
+                    .iter()
+                    .map(|p| p.height_m)
+                    .fold(f32::INFINITY, f32::min),
+                max_height_m: original_points
+                    .iter()
+                    .map(|p| p.height_m)
+                    .fold(f32::NEG_INFINITY, f32::max),
+                sourced_edges: canonical_terrain_cdt_sourced_edges(&original_points, &edge_sources),
+                vertices: original_points.clone(),
+                edge_sources,
+            });
         }
         let source_vertices_are_in_original_loop =
             road_loop_contains_source_edge_vertices(&original_points, &original_source_edges);
@@ -183,15 +258,41 @@ pub(super) fn canonicalize_input(
         }
     }
 
+    // Keep shared-side samples and grade them once against the uncut halo. Dropping
+    // them lets adjacent tile triangulations bridge different heights across the side.
+    // Structural retaining walls and building pads keep their own height authority.
+    let boundary_height = |mut vertex: TerrainCdtVertex| {
+        if vertex_on_patch_boundary(vertex, input.patch)
+            && let Some(sample) =
+                widening_tie_in_sample_against_any_road_loop(vertex, &grading_loops)
+        {
+            vertex.height_m = sample.seam_point.height_m
+                + (vertex.height_m - sample.seam_point.height_m).signum()
+                    * sample.distance_m
+                    * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+        }
+        vertex
+    };
+    for vertex in &mut vertices[..4] {
+        if !road_vertex_heights.contains_key(&terrain_cdt_vertex_xz_key(*vertex)) {
+            *vertex = boundary_height(*vertex);
+        }
+    }
     input
         .tie_in_guide_samples
         .sort_by_cached_key(|sample| terrain_cdt_vertex_key(sample.vertex));
     for sample in input.tie_in_guide_samples {
-        let vertex = sample.vertex;
-        if !tie_in_guide_vertex_is_valid(vertex, input.patch, &road_loops) {
+        let vertex = boundary_height(sample.vertex);
+        if !tie_in_guide_vertex_is_valid(vertex, input.patch, &road_loops, &grading_loops) {
             continue;
         }
-        insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+        // Guides touching a retained road seam need the same noding/height authority
+        // as DEM samples; otherwise seam simplification can leave a thin vertical face.
+        let previous_count = vertices.len();
+        let index = insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+        if vertices.len() > previous_count {
+            source_sample_vertex_indices.push(index);
+        }
     }
 
     input
@@ -202,22 +303,37 @@ pub(super) fn canonicalize_input(
                 terrain_cdt_vertex_key(constraint.end),
             )
         });
-    for constraint in input.tie_in_guide_constraints {
-        if !tie_in_guide_vertex_is_valid(constraint.start, input.patch, &road_loops)
-            || !tie_in_guide_vertex_is_valid(constraint.end, input.patch, &road_loops)
+    for mut constraint in input.tie_in_guide_constraints {
+        constraint.start = boundary_height(constraint.start);
+        constraint.end = boundary_height(constraint.end);
+        if !tie_in_guide_vertex_is_valid(constraint.start, input.patch, &road_loops, &grading_loops)
+            || !tie_in_guide_vertex_is_valid(
+                constraint.end,
+                input.patch,
+                &road_loops,
+                &grading_loops,
+            )
             || same_xz(constraint.start, constraint.end)
         {
             continue;
         }
-        let start = insert_vertex(constraint.start, &mut vertices, &mut vertex_lookup);
-        let end = insert_vertex(constraint.end, &mut vertices, &mut vertex_lookup);
+        let mut endpoints = [0; 2];
+        for (index, vertex) in endpoints.iter_mut().zip([constraint.start, constraint.end]) {
+            let previous_count = vertices.len();
+            *index = insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+            if vertices.len() > previous_count {
+                source_sample_vertex_indices.push(*index);
+            }
+        }
+        let [start, end] = endpoints;
         insert_constraint([start, end], &mut constraint_set);
     }
 
     input
         .source_samples
         .sort_by_cached_key(|sample| terrain_cdt_vertex_key(*sample));
-    for sample in input.source_samples {
+    for mut sample in input.source_samples {
+        sample = boundary_height(sample);
         if !patch_contains(sample, input.patch) {
             continue;
         }
@@ -226,6 +342,11 @@ pub(super) fn canonicalize_input(
         }
         if let Some(tie_in_sample) =
             widening_tie_in_sample_against_any_road_loop(sample, &road_loops)
+                .or_else(|| widening_tie_in_sample_against_any_road_loop(sample, &grading_loops))
+                .filter(|tie| {
+                    !vertex_on_patch_boundary(sample, input.patch)
+                        || terrain_cdt_boundary_source_allows_retaining_wall(tie.seam_source)
+                })
         {
             tie_in_widened_source_samples += 1;
             tie_in_widened_max_y_delta_m =
@@ -329,10 +450,20 @@ fn tie_in_guide_vertex_is_valid(
     vertex: TerrainCdtVertex,
     patch: TerrainCdtPatch,
     road_loops: &[CanonicalTerrainCdtRoadLoop],
+    grading_loops: &[CanonicalTerrainCdtRoadLoop],
 ) -> bool {
     patch_contains(vertex, patch)
         && !point_inside_any_road_footprint(vertex, road_loops)
-        && widening_tie_in_sample_against_any_road_loop(vertex, road_loops).is_none()
+        && (vertex_on_patch_boundary(vertex, patch)
+            || (widening_tie_in_sample_against_any_road_loop(vertex, road_loops).is_none()
+                && widening_tie_in_sample_against_any_road_loop(vertex, grading_loops).is_none()))
+}
+
+fn vertex_on_patch_boundary(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> bool {
+    vertex.x == patch.min_x
+        || vertex.x == patch.max_x
+        || vertex.z == patch.min_z
+        || vertex.z == patch.max_z
 }
 
 #[derive(Clone, Copy)]

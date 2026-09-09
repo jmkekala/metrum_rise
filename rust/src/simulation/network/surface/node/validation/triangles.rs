@@ -359,6 +359,28 @@ fn triangle_adjacent_normal_angles(region: &NodeTriangulatedRegion) -> BTreeMap<
         let points = triangle
             .vertices
             .map(|index| region.vertices[index].point_world);
+        // A curved longitudinal profile can bound an XZ sliver below source precision.
+        // Its normal is unresolved at the f32 input/topology precision: treating it as a transverse
+        // grade would reject the adjacent, well-resolved road face. Coverage and seam-height
+        // checks still include the sliver; only its ill-conditioned normal is excluded.
+        let max_edge_m = [
+            xz_distance(points[0], points[1]),
+            xz_distance(points[1], points[2]),
+            xz_distance(points[2], points[0]),
+        ]
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+        let coordinate_scale = points
+            .iter()
+            .map(|point| point.x.abs().max(point.z.abs()))
+            .fold(0.0_f64, f64::max);
+        // Source center/offset construction uses f32; four roundoff contributions bound
+        // the difference of two independently constructed section-boundary coordinates.
+        let unresolved_width_m = 4.0 * f64::from(f32::EPSILON) * coordinate_scale
+            + 1.0 / super::super::keys::SURFACE_XZ_KEY_SCALE;
+        if 2.0 * triangle_xz_area_m2(points) <= max_edge_m * unresolved_width_m {
+            continue;
+        }
         let Some(normal) = normalized_triangle_normal(points) else {
             continue;
         };

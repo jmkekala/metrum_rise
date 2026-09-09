@@ -34,6 +34,7 @@ use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::render::NetworkMeshData;
+use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::surface::{RoadSurfaceCompileReason, SurfaceChunkKey};
 use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
@@ -58,15 +59,6 @@ pub(crate) struct PendingDemandSpawnAction {
     pub(crate) planned_day_index: u32,
     /// Minute of day when demand originally planned the spawn.
     pub(crate) planned_minute_of_day: u16,
-}
-
-#[derive(Debug)]
-pub(super) struct BulkRoadGeometryFinalize {
-    pub(super) dirty_edges: HashSet<usize>,
-    pub(super) affected_nodes: HashSet<u32>,
-    pub(super) profile_us: u128,
-    pub(super) regrade_us: u128,
-    pub(super) clips_us: u128,
 }
 
 pub(super) fn absolute_operational_minute(day_index: u32, minute_of_day: u16) -> u64 {
@@ -95,14 +87,15 @@ pub(super) fn demand_plan_without_spawns(
 
 /// All simulation state — owned exclusively by the background sim thread when running.
 ///
-/// The main thread accesses this via `Arc<Mutex<SimCore>>`. The lock is held for at
-/// most one tick duration (~7 ms at 100 k agents) per mutation.
+/// The main thread accesses this via `Arc<Mutex<SimCore>>`. Transactional edits and
+/// missing/stale click-plan compilation may hold the lock longer than a simulation tick;
+/// pointer previews use immutable worker snapshots and nonblocking local dependency capture.
 pub struct SimCore {
     /// Simulation clock and day counter.
     pub time: TimeSystem,
     /// Terrain heightmap.
     pub heightmap: TerrainSystem,
-    /// Shallow-water simulation.
+    /// Authored baseline water depths and derived rendering state.
     pub watermap: WaterSystem,
     /// Road topology graph.
     pub region_graph: crate::simulation::network::graph::RegionGraph,
@@ -398,52 +391,9 @@ impl SimCore {
         true
     }
 
-    pub(super) fn finalize_bulk_road_geometry_for_dirty_edges(
-        &mut self,
-    ) -> BulkRoadGeometryFinalize {
-        let mut dirty_edges = std::mem::take(&mut self.transit_network.bulk_dirty_edges);
-        let affected_nodes = self
-            .transit_network
-            .bulk_surface_profile_nodes(&self.region_graph, &dirty_edges);
-
-        let profile_start = Instant::now();
-        let profile_changed_edges = self.transit_network.solve_dirty_junction_endpoint_profiles(
-            &mut self.region_graph,
-            &affected_nodes,
-            &dirty_edges,
-        );
-        let profile_us = profile_start.elapsed().as_micros();
-        dirty_edges.extend(profile_changed_edges);
-
-        let regrade_start = Instant::now();
-        let regrade_changed_edges = self
-            .transit_network
-            .regrade_dirty_junction_endpoint_profiles(
-                &mut self.region_graph,
-                &affected_nodes,
-                &dirty_edges,
-            );
-        let regrade_us = regrade_start.elapsed().as_micros();
-        dirty_edges.extend(regrade_changed_edges);
-
-        self.transit_network.mark_surface_dirty_from_sets(
-            &self.region_graph,
-            &dirty_edges,
-            &affected_nodes,
-        );
-
-        let clips_start = Instant::now();
-        self.region_graph
-            .rebuild_intersection_clips_for_nodes(&affected_nodes);
-        let clips_us = clips_start.elapsed().as_micros();
-
-        BulkRoadGeometryFinalize {
-            dirty_edges,
-            affected_nodes,
-            profile_us,
-            regrade_us,
-            clips_us,
-        }
+    pub(super) fn finalize_bulk_road_geometry_for_dirty_edges(&mut self) -> FinalizedRoadGeometry {
+        self.transit_network
+            .finalize_road_geometry(&mut self.region_graph)
     }
 }
 

@@ -221,6 +221,13 @@ impl RoadSurfaceSystem {
         for face in &mut piece.render_earthwork_faces {
             face.source = face.source.with_node_identity(node_id, input.kind);
         }
+        // Cutout ownership travels with the compiled piece too; validation-local node IDs
+        // must never reach authoritative terrain/CDT queries after an identity remap.
+        for boundary in &mut piece.terrain_clip_boundary_loops {
+            for edge in &mut boundary.source_edges {
+                edge.source = edge.source.with_node_identity(node_id, input.kind);
+            }
+        }
         let (mut earthwork_boundaries, boundaries_zero_copy) =
             match Arc::try_unwrap(preview_earthwork_boundaries) {
                 Ok(boundaries) => (boundaries, true),

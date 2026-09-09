@@ -39,12 +39,12 @@ pub use system::RoadSurfaceSystem;
 
 pub(crate) use cache::ChunkCacheKind;
 pub(crate) use cache::RoadSurfaceTopologyUndo;
+pub(crate) use earthwork::RoadEarthworkPlan;
 pub(crate) use earthwork::{
     RoadSurfaceEarthworkBoundarySegment, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceEarthworkFaceSource, RoadSurfaceEarthworkRenderFace,
     RoadSurfaceEarthworkSupportPolicy,
 };
-#[cfg(test)]
 pub(crate) use edge::PreparedRoadInput;
 pub(crate) use edge::{CURB_STEP_HEIGHT_M, RoadExtensionReprofile};
 pub(crate) use incident::{
@@ -60,6 +60,7 @@ pub(crate) use node::{
 pub(crate) use node::{arrangement, height};
 #[cfg(test)]
 pub(crate) use node::{input, ownership, rails, terminal, triangulation, validation};
+pub(crate) use query::{PlannedRoadSurfaceQuery, RoadSurfaceView};
 pub(crate) use span::{
     RoadSurfaceSpanBandOwner, RoadSurfaceSpanOwnedRegion, RoadSurfaceSpanRegionRole,
 };
@@ -207,6 +208,7 @@ struct RoadSurfaceTriangleQueryIndex {
 #[derive(Clone)]
 struct RoadSurfaceTerrainLoopGradingCacheEntry {
     terrain_source_generation: u64,
+    terrain_visual_generation: u64,
     render_step_bits: u32,
     points_world: Arc<Vec<RoadVec3>>,
     influence_bounds: Option<(f32, f32, f32, f32)>,

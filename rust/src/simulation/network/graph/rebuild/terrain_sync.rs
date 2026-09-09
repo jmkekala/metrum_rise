@@ -91,6 +91,9 @@ impl RegionGraph {
                     }
                 }
             }
+            // Terrain authoring changes both source and physical heights explicitly. Clip
+            // rebuilds preserve physical profiles and no longer perform an implicit copy.
+            edge.physical_geometry.clone_from(&edge.geometry);
         }
         self.rebuild_intersection_clips();
     }

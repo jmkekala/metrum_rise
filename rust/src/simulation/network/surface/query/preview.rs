@@ -42,6 +42,15 @@ impl RoadSurfaceSystem {
                 previous.extend(piece.terrain_clip_boundary_loops.iter());
             }
         }
+        // With no old cutout there is nothing to uncover, regardless of the planned footprint.
+        // First/isolated strokes must not union their entire new outline just to subtract it
+        // from an empty set. They also have no old terrain contacts to preserve during lifting.
+        if previous.is_empty() {
+            return Some(RoadPreviewGround {
+                triangles: Vec::new(),
+                boundaries: Vec::new(),
+            });
+        }
         let mut next: Vec<&RoadSurfaceTerrainClipLoop> = planned
             .compiled_visual_span_pieces
             .values()

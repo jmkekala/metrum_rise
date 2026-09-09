@@ -63,7 +63,52 @@ fn push_constraint(start: usize, end: usize, constraints: &mut BTreeSet<[usize; 
     }
 }
 
-fn clean_triangulation_constraint_loop(
+/// Removes discarded loop vertices before they can become unintended CDT interior guides.
+pub(super) fn retain_constraint_vertices(
+    vertices: &mut Vec<NodeTriangulatedVertex>,
+    vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
+    constraints: &mut BTreeSet<[usize; 2]>,
+) {
+    let mut retained = vec![false; vertices.len()];
+    for edge in constraints.iter() {
+        retained[edge[0]] = true;
+        retained[edge[1]] = true;
+    }
+    if retained.iter().all(|&keep| keep) {
+        return;
+    }
+    // Canonical loop cleanup can remove dust spurs. Feeding their unused vertices
+    // to CDT would recreate them as unconstrained guides and expose orphan edges.
+    // Compact before adding intentional interior guides, preserving source order.
+    let mut remap = vec![0; vertices.len()];
+    let mut next = 0;
+    for (index, &keep) in retained.iter().enumerate() {
+        if keep {
+            remap[index] = next;
+            next += 1;
+        }
+    }
+    let mut index = 0;
+    vertices.retain(|_| {
+        let keep = retained[index];
+        index += 1;
+        keep
+    });
+    vertex_lookup.retain(|_, (index, _)| {
+        if !retained[*index] {
+            return false;
+        }
+        *index = remap[*index];
+        true
+    });
+    *constraints = std::mem::take(constraints)
+        .into_iter()
+        .map(|edge| edge.map(|index| remap[index]))
+        .collect();
+}
+
+/// Canonicalizes equivalent loop vertices and removes zero-area out-and-back constraints.
+pub(super) fn clean_triangulation_constraint_loop(
     indices: &mut Vec<usize>,
     vertices: &[NodeTriangulatedVertex],
 ) {

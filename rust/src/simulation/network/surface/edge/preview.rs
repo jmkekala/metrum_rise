@@ -14,6 +14,9 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::render::road::preview::RoadPreviewRenderInput;
+use crate::simulation::network::road_edit::{
+    FinalizedRoadGeometry, PlannedRoadSplit, RoadTopologyPlan,
+};
 use crate::simulation::network::types::{EdgeClass, NodeType};
 use crate::simulation::network::{
     TransitNetwork, build_surface_edge, road_insert_surface_dirty_nodes, topology,
@@ -40,6 +43,8 @@ struct SurfaceValidationGraph {
     required_node_ids: Vec<u32>,
     source_node_ids: HashMap<u32, u32>,
     source_edge_ids: HashMap<usize, usize>,
+    finalized: FinalizedRoadGeometry,
+    splits: Vec<PlannedRoadSplit>,
 }
 
 /// Machine-readable road-preview validation state shared by the UI and commit guard.
@@ -264,6 +269,7 @@ impl RoadSurfaceSystem {
     }
 
     /// Compiles exact validation and returns canonical node topology eligible for one exact commit.
+    #[cfg(test)]
     pub(crate) fn compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
         &self,
         raw_points: &[Vector3],
@@ -285,6 +291,33 @@ impl RoadSurfaceSystem {
             existing_surface,
             snap_to_existing_roads,
         );
+        let (preview, reuse, render, _) = self
+            .compile_prepared_preview_surface_with_topology_reuse(
+                &prepared_input,
+                fwd_lanes,
+                bkw_lanes,
+                terrain,
+                existing_graph,
+                existing_surface,
+            );
+        (preview, reuse, render)
+    }
+
+    /// Compiles a planned profile without resampling terrain or resolving terminal extensions again.
+    pub(crate) fn compile_prepared_preview_surface_with_topology_reuse(
+        &self,
+        prepared_input: &PreparedRoadInput,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        terrain: &TerrainSystem,
+        existing_graph: &RegionGraph,
+        existing_surface: &RoadSurfaceSystem,
+    ) -> (
+        PreviewRoadSurfaceResult,
+        Option<RoadPreviewTopologyReuse>,
+        Option<RoadPreviewRenderInput>,
+        Option<RoadTopologyPlan>,
+    ) {
         let mut preview = self.compile_preview_surface_mesh_only_from_prepared(
             prepared_input.points.clone(),
             prepared_input.class,
@@ -292,9 +325,9 @@ impl RoadSurfaceSystem {
             bkw_lanes,
             terrain,
         );
-        let (validation, topology_reuse, render_input) = existing_surface
+        let (validation, topology_reuse, render_input, topology_plan) = existing_surface
             .validate_prepared_road_input_against_graph_with_compile_reason_and_topology_reuse(
-                &prepared_input,
+                prepared_input,
                 fwd_lanes,
                 bkw_lanes,
                 terrain,
@@ -304,7 +337,7 @@ impl RoadSurfaceSystem {
             );
         preview.is_valid = validation.is_valid;
         preview.validation = validation;
-        (preview, topology_reuse, render_input)
+        (preview, topology_reuse, render_input, topology_plan)
     }
 
     fn compile_preview_surface_mesh_only_from_prepared(
@@ -450,6 +483,7 @@ impl RoadSurfaceSystem {
         RoadPreviewValidation,
         Option<RoadPreviewTopologyReuse>,
         Option<RoadPreviewRenderInput>,
+        Option<RoadTopologyPlan>,
     ) {
         if prepared_input.validation_points == prepared_input.points {
             return self
@@ -475,7 +509,7 @@ impl RoadSurfaceSystem {
             terrain,
         );
         if !corridor_validation.is_valid {
-            return (corridor_validation, None, None);
+            return (corridor_validation, None, None, None);
         }
 
         self.validate_prepared_surface_geometry_against_graph_with_extension_and_topology_reuse(
@@ -866,6 +900,7 @@ impl RoadSurfaceSystem {
         RoadPreviewValidation,
         Option<RoadPreviewTopologyReuse>,
         Option<RoadPreviewRenderInput>,
+        Option<RoadTopologyPlan>,
     ) {
         let mut validation = validation;
         let (start_existing, end_existing) =
@@ -877,11 +912,12 @@ impl RoadSurfaceSystem {
                 endpoint_snap_enabled,
             );
         if !validation.is_valid || prepared_points.len() < 2 {
-            return (validation, None, None);
+            return (validation, None, None, None);
         }
         if start_existing.is_some() && start_existing == end_existing {
             return (
                 validation.with_invalid_reason(PREVIEW_SAME_NODE_REASON),
+                None,
                 None,
                 None,
             );
@@ -894,6 +930,8 @@ impl RoadSurfaceSystem {
             required_node_ids,
             source_node_ids,
             source_edge_ids,
+            finalized,
+            splits,
         }) = self.build_surface_validation_graph(
             prepared_points,
             edge_class,
@@ -908,6 +946,7 @@ impl RoadSurfaceSystem {
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
                 None,
                 None,
+                None,
             );
         };
         if new_edge_idx >= validation_graph.edge_count()
@@ -916,6 +955,7 @@ impl RoadSurfaceSystem {
         {
             return (
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
+                None,
                 None,
                 None,
             );
@@ -987,6 +1027,7 @@ impl RoadSurfaceSystem {
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
                 None,
                 None,
+                None,
             );
         }
 
@@ -1015,11 +1056,11 @@ impl RoadSurfaceSystem {
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
                 None,
                 None,
+                None,
             );
         }
 
         let mut missing_required_node_ids = Vec::new();
-        let mut has_connected_surface_node = false;
         if edge_class == EdgeClass::Standard {
             for &node_id in &required_node_ids {
                 let node_id = validation_graph.get_valid_node(node_id);
@@ -1028,7 +1069,6 @@ impl RoadSurfaceSystem {
                 else {
                     continue;
                 };
-                has_connected_surface_node |= kind != super::super::CompiledNodeKind::Terminal;
                 match kind {
                     super::super::CompiledNodeKind::PassThrough => {}
                     super::super::CompiledNodeKind::Terminal
@@ -1060,6 +1100,30 @@ impl RoadSurfaceSystem {
                 validation.with_invalid_reason(PREVIEW_SURFACE_GEOMETRY_REASON),
                 None,
                 None,
+                None,
+            );
+        }
+
+        let mut topology_plan = (compile_reason == RoadSurfaceCompileReason::PreviewWorker)
+            .then(|| {
+                RoadTopologyPlan::capture(
+                    &validation_graph,
+                    existing_graph,
+                    &source_node_ids,
+                    &source_edge_ids,
+                    finalized,
+                    splits,
+                )
+            })
+            .flatten();
+
+        if let Some(plan) = &mut topology_plan {
+            plan.compile_earthworks(
+                &validation_graph,
+                &validation_surface,
+                existing_graph,
+                self,
+                terrain,
             );
         }
 
@@ -1076,41 +1140,37 @@ impl RoadSurfaceSystem {
             terrain,
             &reusable_node_ids,
         );
-        // Any connected surface node changes the existing road, including a terminal whose cap
-        // disappears into a straight continuation. Isolated strokes keep the lightweight ribbon.
-        // Reuse the classification already required for validation, with no second incidence walk.
-        let render_input = (compile_reason == RoadSurfaceCompileReason::PreviewWorker
-            && has_connected_surface_node)
-            .then(|| {
-                let removed_nodes = source_node_ids
-                    .into_iter()
-                    .filter_map(|(source, local)| {
-                        let node = validation_graph.get_valid_node(local);
-                        let retired_cap =
-                            validation_surface.classify_surface_node_kind_from_graph_geometry(
-                                &validation_graph,
-                                node,
-                            ) == Some(super::super::CompiledNodeKind::PassThrough)
-                                && validation_graph.node_adjacency(node).iter().any(|edge| {
-                                    validation_surface
-                                        .compiled_visual_span_pieces
-                                        .contains_key(edge)
-                                });
-                        (retired_cap
-                            || validation_surface
-                                .compiled_visual_node_pieces
-                                .contains_key(&node))
-                        .then_some(source)
-                    })
-                    .collect();
-                RoadPreviewRenderInput::new(
-                    validation_graph,
-                    validation_surface,
-                    source_edge_ids,
-                    removed_nodes,
-                )
-            });
-        (validation, topology_reuse, render_input)
+        // Every road plan needs its compiled terminals, lanes and support geometry,
+        // including the first isolated stroke. Move the already compiled local neighborhood;
+        // no second compiler or wider graph lookup is needed for paired terrain presentation.
+        let render_input = (compile_reason == RoadSurfaceCompileReason::PreviewWorker).then(|| {
+            let removed_nodes = source_node_ids
+                .into_iter()
+                .filter_map(|(source, local)| {
+                    let node = validation_graph.get_valid_node(local);
+                    let retired_cap = validation_surface
+                        .classify_surface_node_kind_from_graph_geometry(&validation_graph, node)
+                        == Some(super::super::CompiledNodeKind::PassThrough)
+                        && validation_graph.node_adjacency(node).iter().any(|edge| {
+                            validation_surface
+                                .compiled_visual_span_pieces
+                                .contains_key(edge)
+                        });
+                    (retired_cap
+                        || validation_surface
+                            .compiled_visual_node_pieces
+                            .contains_key(&node))
+                    .then_some(source)
+                })
+                .collect();
+            RoadPreviewRenderInput::new(
+                validation_graph,
+                validation_surface,
+                source_edge_ids,
+                removed_nodes,
+            )
+        });
+        (validation, topology_reuse, render_input, topology_plan)
     }
 
     fn compile_validation_neighborhood_with_reason(
@@ -1450,13 +1510,13 @@ impl RoadSurfaceSystem {
         validation_graph.edge_mut(new_edge_idx).physical_length = physical_length;
         let reprofiled_edge =
             extension.and_then(|extension| copied_edges.get(&extension.existing_edge_idx).copied());
-        self.process_validation_graph_intersections(
+        let (finalized, splits) = self.process_validation_graph_intersections(
             &mut validation_graph,
             new_edge_idx,
             reprofiled_edge,
         );
 
-        let required_edge_ids = validation_graph
+        let mut required_edge_ids = validation_graph
             .edges()
             .iter()
             .enumerate()
@@ -1465,7 +1525,15 @@ impl RoadSurfaceSystem {
                 (!edge.deleted && Self::is_surface_edge(edge)).then_some(edge_idx)
             })
             .collect::<Vec<_>>();
+        // Junction finalization can change another approach beyond the inserted stroke.
+        // Compile that same dirty ledger now; commit must not discover additional pieces.
+        required_edge_ids.extend(finalized.dirty_edges.iter().copied().filter(|&id| {
+            !validation_graph.edge(id).deleted && Self::is_surface_edge(validation_graph.edge(id))
+        }));
+        required_edge_ids.sort_unstable();
+        required_edge_ids.dedup();
         let mut required_node_ids = vec![start_node, end_node];
+        required_node_ids.extend(finalized.affected_nodes.iter().copied());
         required_node_ids.extend(
             (topology_node_count_before..validation_graph.node_count())
                 .filter_map(|node_id| u32::try_from(node_id).ok()),
@@ -1476,6 +1544,27 @@ impl RoadSurfaceSystem {
         required_node_ids.sort_unstable();
         required_node_ids.dedup();
 
+        // Profile-solving nodes must already have complete incidence. A later read-only halo
+        // must not disguise an incomplete solve as a valid plan.
+        if node_map.iter().any(|(&source, &local)| {
+            finalized.affected_nodes.contains(&local)
+                && existing_graph
+                    .node_adjacency(source)
+                    .iter()
+                    .any(|id| !existing_graph.edge(*id).deleted && !copied_edges.contains_key(id))
+        }) {
+            return None;
+        }
+        Self::complete_validation_surface_context(
+            &mut validation_graph,
+            existing_graph,
+            &mut node_map,
+            &mut copied_edges,
+            &required_edge_ids,
+            &required_node_ids,
+            extension,
+        );
+
         Some(SurfaceValidationGraph {
             graph: validation_graph,
             new_edge_idx,
@@ -1483,7 +1572,61 @@ impl RoadSurfaceSystem {
             required_node_ids,
             source_node_ids: node_map,
             source_edge_ids: copied_edges,
+            finalized,
+            splits,
         })
+    }
+
+    // Mirror the compiler's explicit incidence frontier, then import read-only endpoint
+    // context for its spans. A remote JunctionN must not become a terminal just because only
+    // one of its approaches is recompiled. Halo edges are never added to the dirty ledger.
+    // Two fixed adjacency layers, O(local incidence), not a recursive world traversal.
+    fn complete_validation_surface_context(
+        local: &mut RegionGraph,
+        source: &RegionGraph,
+        nodes: &mut HashMap<u32, u32>,
+        edges: &mut HashMap<usize, usize>,
+        required_edges: &[usize],
+        required_nodes: &[u32],
+        extension: Option<&RoadExtensionReprofile>,
+    ) {
+        let copy_incidence = |local: &mut RegionGraph,
+                              nodes: &mut HashMap<u32, u32>,
+                              edges: &mut HashMap<usize, usize>,
+                              selected: &HashSet<u32>| {
+            let mut ids = Vec::new();
+            for (&source_id, &local_id) in nodes.iter() {
+                if selected.contains(&local.get_valid_node(local_id)) {
+                    Self::push_incident_validation_edges(source, source_id, &mut ids);
+                }
+            }
+            ids.sort_unstable();
+            ids.dedup();
+            for id in ids {
+                Self::copy_validation_graph_edge(local, source, nodes, edges, id, extension);
+            }
+        };
+        let mut dirty: HashSet<_> = required_edges.iter().copied().collect();
+        for &node in required_nodes {
+            dirty.extend(local.node_adjacency(node).iter().copied());
+        }
+        let mut compile_nodes: HashSet<_> = required_nodes.iter().copied().collect();
+        for &id in &dirty {
+            let edge = local.edge(id);
+            compile_nodes.insert(local.get_valid_node(edge.start_node));
+            compile_nodes.insert(local.get_valid_node(edge.end_node));
+        }
+        copy_incidence(local, nodes, edges, &compile_nodes);
+        for &node in &compile_nodes {
+            dirty.extend(local.node_adjacency(node).iter().copied());
+        }
+        let mut span_endpoints = HashSet::new();
+        for id in dirty {
+            let edge = local.edge(id);
+            span_endpoints.insert(local.get_valid_node(edge.start_node));
+            span_endpoints.insert(local.get_valid_node(edge.end_node));
+        }
+        copy_incidence(local, nodes, edges, &span_endpoints);
     }
 
     fn validation_candidate_existing_edge_ids(
@@ -1569,7 +1712,7 @@ impl RoadSurfaceSystem {
         validation_graph: &mut RegionGraph,
         new_edge_idx: usize,
         reprofiled_edge: Option<usize>,
-    ) {
+    ) -> (FinalizedRoadGeometry, Vec<PlannedRoadSplit>) {
         let mut network = TransitNetwork::new_with_surface_chunk_grid(
             self.chunk_span_m,
             self.chunk_origin_x_m,
@@ -1585,12 +1728,15 @@ impl RoadSurfaceSystem {
         // Production commits batch intersection edits and profile every edge touched by splitting.
         // Populate the same bulk ledger here so preview sections are commit-identical.
         network.bulk_load = true;
+        network.recorded_road_splits = Some(Vec::new());
         network.bulk_dirty_edges.insert(new_edge_idx);
+        network.mark_road_profile_authored(new_edge_idx);
         // Terminal extensions already replaced the source edge's profile in the excerpt.
         // Commit adds that edge to the bulk ledger too; omitting it re-solves sloped bends
         // with a different set of pinned/adjustable endpoints than authoritative insertion.
         if let Some(edge_idx) = reprofiled_edge {
             network.bulk_dirty_edges.insert(edge_idx);
+            network.mark_road_profile_authored(edge_idx);
         }
         topology::process_intersections(
             &mut network,
@@ -1611,15 +1757,8 @@ impl RoadSurfaceSystem {
         );
         network.mark_surface_dirty_for_nodes(validation_graph, &surface_dirty_nodes);
 
-        let mut affected_edges = std::mem::take(&mut network.bulk_dirty_edges);
-        let affected_nodes = network.bulk_surface_profile_nodes(validation_graph, &affected_edges);
-        let profile_changed_edges = validation_graph
-            .solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges);
-        affected_edges.extend(profile_changed_edges);
-        let regrade_changed_edges = validation_graph
-            .regrade_junction_endpoint_profiles_for_nodes(&affected_nodes, &affected_edges);
-        affected_edges.extend(regrade_changed_edges);
-        validation_graph.rebuild_intersection_clips();
+        let finalized = network.finalize_road_geometry(validation_graph);
+        (finalized, network.recorded_road_splits.take().unwrap())
     }
 
     fn cleanup_validation_duplicate_edges(graph: &mut RegionGraph) {
@@ -1732,8 +1871,10 @@ impl RoadSurfaceSystem {
         {
             copied_edge.geometry = extension.existing_points.clone();
             copied_edge.physical_geometry = extension.existing_points.clone();
-            copied_edge.physical_length =
-                validation_graph.calculate_length(&copied_edge.physical_geometry);
+            let (cost, length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(&copied_edge);
+            copied_edge.base_cost = cost;
+            copied_edge.physical_length = length;
         }
         let local_edge = validation_graph.add_edge(copied_edge);
         copied_edges.insert(edge_idx, local_edge);

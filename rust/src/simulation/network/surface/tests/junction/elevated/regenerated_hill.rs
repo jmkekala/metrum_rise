@@ -104,6 +104,11 @@ fn logged_regenerated_elevated_hill_same_mm_source_segment_three_way_compiles_fu
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
+    graph.finalize_junction_endpoint_profiles_for_edges(
+        &HashSet::from([center]),
+        &HashSet::from([0, 1, 2]),
+        &HashSet::from([0, 1, 2]),
+    );
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -296,6 +301,11 @@ fn logged_latest_elevated_hill_right_angle_three_way_compiles_full_pipeline() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
+    graph.finalize_junction_endpoint_profiles_for_edges(
+        &HashSet::from([center]),
+        &HashSet::from([0, 1, 2]),
+        &HashSet::from([0, 1, 2]),
+    );
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);

@@ -33,13 +33,13 @@ pub(crate) struct BuildingSiteClient {
 }
 
 /// Minimal immutable building-site data needed by asynchronous terrain jobs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BuildingSiteTerrainSnapshot {
     pub(super) sites: Vec<BuildingSiteTerrainClient>,
 }
 
 /// One stable building-site footprint detached from the authoritative allocator.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct BuildingSiteTerrainClient {
     pub(super) building_idx: usize,
     pub(super) footprint_world: Vec<Vector2>,

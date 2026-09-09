@@ -7,7 +7,7 @@ use super::super::{RoadSurfaceBand, RoadSurfaceBandKind, RoadSurfaceSection, Roa
 use crate::config;
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::graph::rebuild::JunctionEndpointProfilePlane;
-use crate::simulation::network::types::{TransitFlags, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 
 // Standard roadbed lateral shaping.
 const CURB_BAND_WIDTH_M: f32 = 0.15;
@@ -31,14 +31,27 @@ impl EdgeProfilePlaneBlend {
         })
     }
 
-    pub(in crate::simulation::network::surface::edge) fn height_at_xz(
+    pub(in crate::simulation::network::surface::edge) fn lateral_height_at_xz(
+        &self,
+        center: RoadVec3,
+        x: f32,
+        z: f32,
+    ) -> f32 {
+        // Crossfall is relative to the already-solved physical centerline, not a second
+        // longitudinal blend onto the junction plane.
+        center.y as f32
+            + self.weight
+                * (self.plane.height_at_xz(x, z)
+                    - self.plane.height_at_xz(center.x as f32, center.z as f32))
+    }
+
+    pub(in crate::simulation::network::surface::edge) fn structural_height_at_xz(
         &self,
         x: f32,
         z: f32,
-        fallback_height_m: f32,
+        height: f32,
     ) -> f32 {
-        let plane_height_m = self.plane.height_at_xz(x, z);
-        fallback_height_m * (1.0 - self.weight) + plane_height_m * self.weight
+        height * (1.0 - self.weight) + self.plane.height_at_xz(x, z) * self.weight
     }
 }
 
@@ -63,10 +76,17 @@ impl RoadSurfaceSystem {
         let boundary_height_m = |lateral_m: f32, offset_m: f32| {
             let flat_height_m = center.y as f32;
             let base_height_m = profile_blend.map_or(flat_height_m, |blend| {
-                blend.height_at_xz(
+                if edge.class != EdgeClass::Standard {
+                    return blend.structural_height_at_xz(
+                        (center.x + lateral_xz.x * f64::from(lateral_m)) as f32,
+                        (center.z + lateral_xz.y * f64::from(lateral_m)) as f32,
+                        flat_height_m,
+                    );
+                }
+                blend.lateral_height_at_xz(
+                    center,
                     (center.x + lateral_xz.x * f64::from(lateral_m)) as f32,
                     (center.z + lateral_xz.y * f64::from(lateral_m)) as f32,
-                    flat_height_m,
                 )
             });
             base_height_m + offset_m

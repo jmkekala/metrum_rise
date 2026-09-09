@@ -4,6 +4,7 @@
 
 use super::super::super::*;
 use crate::simulation::core::round_f64_to_i64;
+use crate::simulation::terrain::TerrainVisualSource;
 use crate::simulation::terrain::cdt::{
     TerrainCdtTieInGuideConstraint, TerrainCdtTieInGuideSample,
     clip_terrain_cdt_road_loop_to_patch, clip_terrain_cdt_segment_to_patch,
@@ -63,8 +64,95 @@ pub(in crate::nodes::simulation_node) struct TerrainCdtWindowBuildPlan {
 }
 
 impl SimulationNode {
+    /// Assembles planned road and captured site inputs for production CDT/patch compilation.
+    /// This is a candidate: fresh ownership/site inputs still govern commit acceptance.
+    pub(crate) fn planned_road_terrain_patch_input(
+        terrain: &impl TerrainVisualSource,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        loops: &[TerrainCdtRoadLoop],
+        source_count: usize,
+        road_owned: bool,
+        query_margin_m: f32,
+        render_step_m: f32,
+        sites: Option<&BuildingSiteTerrainSnapshot>,
+        roads: crate::simulation::network::surface::RoadSurfaceView<'_>,
+    ) -> RefinedTerrainPatchBuildInput {
+        let site_margin_m = crate::simulation::terrain::terrain_cdt_local_sample_margin_m(
+            terrain.terrain(),
+            render_step_m,
+        );
+        let site_owned = sites.is_some_and(|sites| {
+            sites.has_building_site_for_world_bounds(
+                patch.world_origin_x - site_margin_m,
+                patch.world_origin_z - site_margin_m,
+                patch.world_origin_x + patch.world_size_x + site_margin_m,
+                patch.world_origin_z + patch.world_size_z + site_margin_m,
+            )
+        });
+        // Fresh commit sends ordinary patches directly to the regular-terrain exporter. A
+        // padded query hit must not claim them, nor may empty CDT output release actual owners.
+        let engineered = road_owned || site_owned;
+        let (loops, source_count) = if engineered {
+            (loops, source_count)
+        } else {
+            (&[][..], 0)
+        };
+        let site_loops = sites
+            .filter(|_| engineered)
+            .map(|sites| {
+                sites.terrain_cdt_site_loops_for_world_bounds(
+                    patch.world_origin_x - query_margin_m,
+                    patch.world_origin_z - query_margin_m,
+                    patch.world_origin_x + patch.world_size_x + query_margin_m,
+                    patch.world_origin_z + patch.world_size_z + query_margin_m,
+                )
+            })
+            .unwrap_or_default();
+        let site_loop_count = site_loops.len();
+        let combined;
+        let all_loops = if site_loops.is_empty() {
+            loops
+        } else {
+            combined = loops.iter().cloned().chain(site_loops).collect::<Vec<_>>();
+            &combined
+        };
+        let plan = Self::terrain_cdt_window_build_inputs(
+            terrain,
+            patch,
+            all_loops,
+            render_step_m,
+            sites.map(|sites| TerrainCdtSiteGradingContext {
+                source: TerrainCdtSiteGradingSource::Snapshot(sites),
+                roads,
+            }),
+            None,
+        );
+        RefinedTerrainPatchBuildInput {
+            key: Self::refined_patch_cache_key(patch.patch_x, patch.patch_z, render_step_m),
+            // The authoritative patch payload revision is assigned after exact commit matching.
+            surface_generation: 0,
+            patch: patch.clone(),
+            previous_patch: None,
+            windows: plan.windows,
+            reused_windows: plan.reused_windows,
+            input_clip_loop_count: plan.represented_road_loop_count,
+            omitted_margin_clip_loop_count: plan.omitted_margin_loop_count,
+            expected_road_clip_fingerprints: plan.expected_road_clip_fingerprints,
+            expected_site_clip_fingerprints: plan.expected_site_clip_fingerprints,
+            requires_engineered_refinement: engineered,
+            requires_road_clipping: road_owned || source_count > 0 || !loops.is_empty(),
+            clip_source_count: source_count + site_loop_count,
+            road_clip_source_count: source_count,
+            road_clip_loop_count: loops.len(),
+            site_clip_loop_count: site_loop_count,
+            clip_error_label: None,
+            clip_query_margin_m: query_margin_m,
+            derive_clip_counts_from_windows: false,
+        }
+    }
+
     pub(in crate::nodes::simulation_node) fn terrain_cdt_window_build_inputs(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
@@ -211,7 +299,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_incremental_window_build_inputs(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         graph: &crate::simulation::network::graph::RegionGraph,
         road_surface: &RoadSurfaceSystem,
@@ -348,8 +436,10 @@ impl SimulationNode {
                     safe_render_step_m,
                     Some(TerrainCdtSiteGradingContext {
                         source: TerrainCdtSiteGradingSource::Snapshot(sites),
-                        graph,
-                        road_surface,
+                        roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                            graph,
+                            road_surface,
+                        ),
                     }),
                     previous_by_tile.get(&tile_id).cloned(),
                 )
@@ -433,7 +523,7 @@ impl SimulationNode {
     }
 
     fn terrain_cdt_tile_contributor(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loop: TerrainCdtRoadLoop,
         render_step_m: f32,
@@ -517,7 +607,7 @@ impl SimulationNode {
     }
 
     fn terrain_cdt_planned_window_for_tile(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         tile_id: TerrainCdtTileId,
         contributors: &[TerrainCdtTileContributor],
@@ -587,7 +677,7 @@ impl SimulationNode {
 
     #[cfg(test)]
     pub(in crate::nodes::simulation_node) fn terrain_cdt_input_for_bounds(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
@@ -624,18 +714,52 @@ impl SimulationNode {
         )
     }
 
-    // Road loops are already core-clipped. All terrain and site-dependent inputs stay fresh.
+    // Retain halo grading contributors; the CDT clips ownership to these core bounds.
+    // All terrain and site-dependent inputs stay fresh.
     fn terrain_cdt_input_for_bounds_with_guides(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: Vec<TerrainCdtRoadLoop>,
         render_step_m: f32,
         bounds: (f32, f32, f32, f32),
         mut tie_in_guide_samples: Vec<TerrainCdtTieInGuideSample>,
-        tie_in_guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
+        mut tie_in_guide_constraints: Vec<TerrainCdtTieInGuideConstraint>,
         site_grading: Option<TerrainCdtSiteGradingContext<'_>>,
     ) -> TerrainCdtInput {
         let (min_x, min_z, max_x, max_z) = bounds;
+        // Guides choose sample positions, not a second height authority. Independent
+        // parent-edge offsets can meet at the same XZ with different elevations. Sample
+        // the common terrain here; CDT applies the same seam/widening rules as for DEM
+        // samples. Shared-side samples get canonical halo grading instead of removal.
+        // Site-owned guides are appended afterwards and retain their pad authority.
+        let prepare_guide = |vertex: &mut TerrainCdtVertex| {
+            // Weld guide coordinates in the boundary's canonical 1 mm identity cell.
+            // Keeping a sub-millimetre interior offset creates a sliver with a separate
+            // guide height, even though both points represent the same tile-side sample.
+            for bound in [min_x, max_x] {
+                if round_f64_to_i64(vertex.x * TERRAIN_CDT_SAMPLE_KEY_SCALE)
+                    == round_f64_to_i64(f64::from(bound) * TERRAIN_CDT_SAMPLE_KEY_SCALE)
+                {
+                    vertex.x = f64::from(bound);
+                }
+            }
+            for bound in [min_z, max_z] {
+                if round_f64_to_i64(vertex.z * TERRAIN_CDT_SAMPLE_KEY_SCALE)
+                    == round_f64_to_i64(f64::from(bound) * TERRAIN_CDT_SAMPLE_KEY_SCALE)
+                {
+                    vertex.z = f64::from(bound);
+                }
+            }
+            vertex.height_m = terrain.sample_visual_height_world(vertex.x as f32, vertex.z as f32)
+                * crate::config::HEIGHT_SCALE;
+        };
+        for sample in &mut tie_in_guide_samples {
+            prepare_guide(&mut sample.vertex);
+        }
+        for constraint in &mut tie_in_guide_constraints {
+            prepare_guide(&mut constraint.start);
+            prepare_guide(&mut constraint.end);
+        }
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
@@ -842,10 +966,9 @@ impl SimulationNode {
                 .map(|&index| Arc::clone(&contributors[index].road_loop))
                 .collect(),
             halo_loop_count: halo_loops.len(),
-            road_loops: halo_loops
-                .iter()
-                .flat_map(|road_loop| clip_terrain_cdt_road_loop_to_patch(road_loop, core_patch))
-                .collect(),
+            // The CDT clips ownership to the core, but grading at a shared side must
+            // still see the source roads on both sides of that side.
+            road_loops: halo_loops,
             road_clip_fingerprints,
             site_clip_fingerprints,
         })
@@ -1428,7 +1551,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn terrain_cdt_patch_for_bounds(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         min_x: f32,
         min_z: f32,
         max_x: f32,
@@ -1450,7 +1573,7 @@ impl SimulationNode {
 
     #[cfg(test)]
     pub(in crate::nodes::simulation_node) fn terrain_cdt_local_sample_bounds(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
@@ -1471,7 +1594,7 @@ impl SimulationNode {
     /// Returns the exact road-grading influence clipped to fixed world bounds.
     #[cfg(test)]
     pub(in crate::nodes::simulation_node) fn terrain_cdt_local_sample_bounds_for_world_bounds(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch_bounds: (f32, f32, f32, f32),
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
@@ -1543,7 +1666,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn append_terrain_cdt_grid_samples(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         min_x: f32,
         min_z: f32,
@@ -1587,7 +1710,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn append_terrain_cdt_window_boundary_samples(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         min_x: f32,
         min_z: f32,
         max_x: f32,
@@ -1634,7 +1757,7 @@ impl SimulationNode {
     }
 
     pub(in crate::nodes::simulation_node) fn push_terrain_cdt_source_sample(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         world_x: f32,
         world_z: f32,
         source_samples: &mut Vec<TerrainCdtVertex>,

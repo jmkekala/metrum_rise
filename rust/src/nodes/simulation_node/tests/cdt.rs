@@ -355,6 +355,72 @@ fn terrain_cdt_constraint_conflicts_ignore_unpreserved_site_only_edges() {
 }
 
 #[test]
+fn cached_refined_patch_requires_valid_final_render_buffers() {
+    let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    // An ordinary patch needs no clipped render product.
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        None
+    );
+    cached.requires_road_clipping = true;
+    cached.clip_source_count = 1;
+    cached.road_clip_source_count = 1;
+    cached.road_clip_loop_count = 1;
+    cached.input_road_loops = 1;
+    let window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    let mut buffers = SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+        &cached.patch,
+        &[(&window, window.mesh_result.as_ref().unwrap())],
+        2.0,
+    );
+    assert!(buffers.variant_payload_valid);
+    cached.windows = vec![Arc::new(window)];
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_window_failure_label(&cached),
+        None
+    );
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        Some("missing_terrain_cdt_render_buffers")
+    );
+    buffers.variant_payload_valid = false;
+    cached.mesh_buffers = Some(Arc::new(buffers));
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        Some("invalid_terrain_cdt_render_buffers")
+    );
+    Arc::make_mut(cached.mesh_buffers.as_mut().unwrap()).variant_payload_valid = true;
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        None
+    );
+}
+
+#[test]
+fn cached_refined_patch_rejects_discarded_terrain_faces() {
+    let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
+    cached.requires_road_clipping = true;
+    cached.clip_source_count = 1;
+    cached.road_clip_source_count = 1;
+    cached.road_clip_loop_count = 1;
+    cached.input_road_loops = 1;
+    let window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
+    let mut buffers = SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
+        &cached.patch,
+        &[(&window, window.mesh_result.as_ref().unwrap())],
+        2.0,
+    );
+    // Export metrics only describe surviving triangles. They cannot authorize a hole.
+    buffers.omitted_pathological_terrain_faces = 1;
+    cached.mesh_buffers = Some(Arc::new(buffers));
+    cached.windows = vec![Arc::new(window)];
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&cached),
+        Some("terrain_cdt_pathological_output")
+    );
+}
+
+#[test]
 fn cached_refined_patch_rejects_partial_window_success() {
     let mut cached = test_cached_refined_terrain_patch(TERRAIN_CDT_CONTRACT_REVISION, 1);
     cached.requires_road_clipping = true;
@@ -924,6 +990,119 @@ fn road_clip_query_metadata_keeps_clip_failure_visible_without_loops() {
         query.cdt_road_loops.is_empty(),
         "the failure status must survive even when there are no loops to upload"
     );
+}
+
+#[test]
+fn planned_terrain_ownership_cannot_be_released_by_missing_clip_inputs() {
+    let terrain = TerrainSystem::with_chunking(129, 129, 1.0, 65, 0.0);
+    let patch = planner_test_patch(32.0, 32.0);
+    let graph = crate::simulation::network::graph::RegionGraph::new();
+    let surface = RoadSurfaceSystem::new(64.0);
+    let roads = crate::simulation::network::surface::RoadSurfaceView::new(&graph, &surface);
+    let margin_only = vec![planner_test_loop(1, 50.0, 0.0, 54.0, 4.0)];
+    for (source_count, loops, road_owned, failure) in [
+        (0, &[][..], false, None),
+        (1, margin_only.as_slice(), false, None),
+        (0, &[][..], true, Some("missing_road_clip_sources")),
+        (1, &[][..], true, Some("missing_road_clip_loops")),
+        (
+            1,
+            margin_only.as_slice(),
+            true,
+            Some("missing_terrain_clip_loops"),
+        ),
+    ] {
+        let input = SimulationNode::planned_road_terrain_patch_input(
+            &terrain,
+            &patch,
+            loops,
+            source_count,
+            road_owned,
+            26.0,
+            2.0,
+            None,
+            roads,
+        );
+        let entries = SimCore::build_refined_terrain_patch_cache_entries(vec![input]);
+        assert_eq!(entries[0].requires_engineered_refinement, road_owned);
+        assert_eq!(entries[0].requires_road_clipping, road_owned);
+        assert_eq!(
+            SimulationNode::cached_refined_cdt_failure_label(&entries[0]),
+            failure
+        );
+    }
+}
+
+#[test]
+fn planned_visual_samples_drive_cdt_grading_boundaries_and_composed_buffers() {
+    use crate::simulation::terrain::{TerrainVisualOverlay, TerrainVisualSource};
+
+    let base = TerrainSystem::with_chunking(129, 129, 1.0, 65, 0.0);
+    let mut live = base.clone(); // Test oracle, not part of planning.
+    let mut overlay = TerrainVisualOverlay::new(&base);
+    let writes: Vec<_> = (64..=96)
+        .flat_map(|z| (70..=90).map(move |x| (x, z, 0.01)))
+        .collect();
+    overlay.set_heights(&base, &writes, |sample| *sample);
+    live.set_visual_heights_at_grid_unmarked(&writes, |sample| *sample);
+    // A later chunk reset must affect all consumers, not just the exported patch texture.
+    overlay.reset_region_from_source_world(&base, 20.0, 16.0, 32.0, 32.0);
+    live.reset_visual_region_from_source_world(20.0, 16.0, 32.0, 32.0);
+    overlay.discard_unchanged(&base);
+    let graph = crate::simulation::network::graph::RegionGraph::new();
+    let surface = RoadSurfaceSystem::new(64.0);
+    let roads = crate::simulation::network::surface::RoadSurfaceView::new(&graph, &surface);
+    let loops = [planner_test_loop(1, 8.0, 8.0, 20.0, 12.0)];
+    let patch = base.visual_patch_snapshot(1, 1).unwrap();
+    fn prepare(
+        terrain: &impl TerrainVisualSource,
+        patch: &TerrainPatchSnapshot,
+        loops: &[TerrainCdtRoadLoop],
+        roads: crate::simulation::network::surface::RoadSurfaceView<'_>,
+    ) -> RefinedTerrainPatchBuildInput {
+        SimulationNode::planned_road_terrain_patch_input(
+            terrain, patch, loops, 1, true, 26.0, 2.0, None, roads,
+        )
+    }
+    let old = prepare(&base, &patch, &loops, roads);
+    let planned = prepare(
+        &overlay.view(&base),
+        &overlay.patch_snapshot(&base, &patch),
+        &loops,
+        roads,
+    );
+    let actual = prepare(
+        &live,
+        &live.visual_patch_snapshot(1, 1).unwrap(),
+        &loops,
+        roads,
+    );
+    assert_eq!(planned.patch, actual.patch);
+    assert_ne!(planned.patch, old.patch);
+    assert!(!planned.windows.is_empty());
+    assert_eq!(planned.windows.len(), actual.windows.len());
+    let mut changed_samples = false;
+    for (expected, current) in planned.windows.iter().zip(&actual.windows) {
+        assert_eq!(expected.key, current.key);
+        assert_eq!(expected.cdt_input, current.cdt_input);
+        assert_eq!(expected.road_input, current.road_input);
+        changed_samples |= old
+            .windows
+            .iter()
+            .all(|old| old.cdt_input != expected.cdt_input);
+    }
+    assert!(
+        changed_samples,
+        "must exercise post-write CDT samples, not only texture changes"
+    );
+    let planned = SimCore::build_refined_terrain_patch_cache_entries(vec![planned]);
+    let actual = SimCore::build_refined_terrain_patch_cache_entries(vec![actual]);
+    assert_eq!(
+        SimulationNode::cached_refined_cdt_failure_label(&planned[0]),
+        None
+    );
+    assert!(planned[0].mesh_buffers.is_some());
+    assert_eq!(planned[0].mesh_buffers, actual[0].mesh_buffers);
 }
 
 #[test]
@@ -1765,7 +1944,7 @@ fn terrain_cdt_local_bounds_skip_margin_only_loop_outside_patch() {
 }
 
 #[test]
-fn terrain_cdt_input_adds_grade_limited_guides_for_grounded_standard_roads() {
+fn terrain_cdt_guides_use_shared_source_height_and_final_grade_limits() {
     let terrain = TerrainSystem::with_chunking(8, 8, 10.0, 4, 0.0);
     let patch = TerrainPatchSnapshot {
         patch_x: 0,
@@ -1814,9 +1993,9 @@ fn terrain_cdt_input_adds_grade_limited_guides_for_grounded_standard_roads() {
         input.tie_in_guide_samples.iter().any(|sample| {
             (sample.vertex.x - 10.0).abs() <= 0.001
                 && (sample.vertex.z - 8.0).abs() <= 0.001
-                && (sample.vertex.height_m - 2.0).abs() <= 0.001
+                && sample.vertex.height_m.abs() <= 0.001
         }),
-        "grounded Standard road tie-ins should add explicit guide vertices at the slope budget"
+        "road guides densify the shared source terrain instead of introducing parent-edge heights"
     );
     assert!(
         input.tie_in_guide_samples.iter().any(|sample| {
@@ -1831,7 +2010,7 @@ fn terrain_cdt_input_adds_grade_limited_guides_for_grounded_standard_roads() {
         input.tie_in_guide_samples.iter().any(|sample| {
             (sample.vertex.x - (10.0 - corner_offset)).abs() <= 0.001
                 && (sample.vertex.z - (10.0 - corner_offset)).abs() <= 0.001
-                && (sample.vertex.height_m - 2.0).abs() <= 0.001
+                && sample.vertex.height_m.abs() <= 0.001
         }),
         "grounded Standard road corners should get diagonal tie-in guides"
     );
@@ -1849,6 +2028,15 @@ fn terrain_cdt_input_adds_grade_limited_guides_for_grounded_standard_roads() {
         .expect("grade-limited grounded road tie-in should triangulate");
     assert_eq!(mesh.stats.retaining_wall_faces, 0);
     assert!(mesh.retaining_wall_triangles.is_empty());
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    // Two perpendicular 1:2 tie-ins can combine at a corner. Interior guides inside
+    // that envelope must not pin the terrain back to zero beside the raised road.
+    assert!(
+        mesh.stats.max_face_slope_ratio <= 0.5 * 2.0_f32.sqrt() + 0.001,
+        "final terrain slope: {}",
+        mesh.stats.max_face_slope_ratio
+    );
 }
 
 #[test]

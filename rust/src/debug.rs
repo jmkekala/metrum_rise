@@ -15,7 +15,8 @@
 //! - `METRUM_HANG_ABORT=1` — abort after writing the first hang dump
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
-//! Use [`debug_log!`] and [`traffic_log!`] throughout the codebase — both are
+//! Use [`debug_log!`](crate::debug_log!) and [`traffic_log!`](crate::traffic_log!)
+//! throughout the codebase — both are
 //! no-ops when the respective flag is off, with only an atomic bool check overhead.
 
 mod crash;
@@ -29,7 +30,7 @@ pub(crate) use crash::{
     record_crash_frame, record_crash_phase, suspend_hang_watchdog,
 };
 
-/// General debug flag — set once at startup by [`init`], read by [`debug_log!`].
+/// General debug flag — set once at startup by [`init`], read by [`debug_log!`](crate::debug_log!).
 pub static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Traffic/routing debug flag — set by `METRUM_DEBUG_TRAFFIC=1` / `./run.sh --debug traffic`.

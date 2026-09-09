@@ -13,11 +13,23 @@ impl SimulationNode {
     pub(crate) fn validate_staged_road_terrain(
         core: &mut SimCore,
         patch_keys: &[(usize, usize)],
+        plan: Option<&crate::nodes::sim::core::RoadTerrainPlan>,
     ) -> Result<Vec<Arc<CachedRefinedTerrainPatch>>, String> {
+        if let Some(plan) = plan {
+            if !plan.adopted_dependencies_match(core) {
+                return Err("road_plan_post_topology_mismatch".to_owned());
+            }
+            if !plan.coverage_matches(patch_keys) {
+                return Err("road_plan_coverage_mismatch".to_owned());
+            }
+        }
         core.refresh_engineered_terrain_patch_ownership_for_keys(
             ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
             patch_keys,
         );
+        if let Some(plan) = plan {
+            return plan.adopt_products(core);
+        }
         let mut sources = Vec::with_capacity(patch_keys.len());
         for &(patch_x, patch_z) in patch_keys {
             if !core.terrain_patch_requires_engineered_refinement(patch_x, patch_z) {
@@ -519,8 +531,10 @@ impl SimulationNode {
                     render_step_m,
                     Some(TerrainCdtSiteGradingContext {
                         source: TerrainCdtSiteGradingSource::Snapshot(&source.sites),
-                        graph: graph,
-                        road_surface: road_surface,
+                        roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                            graph,
+                            road_surface,
+                        ),
                     }),
                     source.previous.as_deref(),
                 );

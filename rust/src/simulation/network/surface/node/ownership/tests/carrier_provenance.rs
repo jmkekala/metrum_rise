@@ -259,8 +259,18 @@ fn carrier_provenance_closure_rejects_independent_second_rail_on_boolean_key() {
 
 #[test]
 fn carrier_provenance_uses_exact_generated_side_join_over_dust_near_mouth_carrier() {
-    let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2);
-    let source = (RoadSurfaceBandKind::Carriageway, 1, 2);
+    for kind in [
+        RoadSurfaceBandKind::Carriageway,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        RoadSurfaceBandKind::Sidewalk,
+    ] {
+        assert_generated_side_join_authority(kind);
+    }
+}
+
+fn assert_generated_side_join_authority(kind: RoadSurfaceBandKind) {
+    let owner = NodeBandOwner::new(kind, 2);
+    let source = (kind, 1, 2);
     let point = (0, 0);
     let side_join_start = (-1_000, 0);
     let side_join_end = (1_000, 0);
@@ -277,9 +287,7 @@ fn carrier_provenance_uses_exact_generated_side_join_over_dust_near_mouth_carrie
             .map(road_point_from_key)
             .collect::<Vec<_>>();
         NodeGeneratedContour {
-            kind: NodeGeneratedContourKind::Band {
-                kind: RoadSurfaceBandKind::Carriageway,
-            },
+            kind: NodeGeneratedContourKind::Band { kind },
             purpose,
             source_mouth_order_index: source.1,
             source_band_index: Some(source.2),
@@ -296,7 +304,11 @@ fn carrier_provenance_uses_exact_generated_side_join_over_dust_near_mouth_carrie
     };
     let contours = vec![
         contour(
-            NodeGeneratedContourPurpose::CarriagewayOwnerCarrier,
+            if kind == RoadSurfaceBandKind::Carriageway {
+                NodeGeneratedContourPurpose::CarriagewayOwnerCarrier
+            } else {
+                NodeGeneratedContourPurpose::NonRoadBand
+            },
             NodeGeneratedContourClaimPriority::MouthBand,
             vec![mouth_start, mouth_end, (2_000, 1_000)],
             0.00049,

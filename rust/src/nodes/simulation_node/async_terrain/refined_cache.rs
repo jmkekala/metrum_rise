@@ -6,6 +6,52 @@ use super::super::*;
 use std::collections::BTreeSet;
 
 impl SimCore {
+    /// Builds one canonical CDT tile and its patch-local buffers, shared by preview and commit.
+    pub(crate) fn build_refined_terrain_cdt_window(
+        window: RefinedTerrainCdtWindowBuildInput,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        boundary_step_m: f32,
+    ) -> (Arc<CachedRefinedTerrainCdtWindow>, bool) {
+        if let Some(previous) = window
+            .previous
+            .filter(|previous| previous.mesh_result.is_ok())
+        {
+            return (previous, true);
+        }
+        let input_road_loops = window.cdt_input.road_loops.len();
+        let input_source_samples = window.cdt_input.source_samples.len();
+        let cdt_patch = window.cdt_input.patch;
+        let cdt_start = Instant::now();
+        let mesh_result = build_road_touched_terrain_patch(window.cdt_input);
+        let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+        let mesh_buffers = mesh_result.as_ref().ok().map(|mesh| {
+            Arc::new(
+                SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
+                    patch,
+                    cdt_patch,
+                    boundary_step_m,
+                    mesh,
+                ),
+            )
+        });
+        (
+            Arc::new(CachedRefinedTerrainCdtWindow {
+                key: window.key,
+                input_road_loops,
+                input_source_samples,
+                cdt_patch,
+                road_input: window.road_input,
+                mesh_result,
+                mesh_buffers,
+                cdt_ms,
+                has_engineered_contributor: window.has_engineered_contributor,
+                road_clip_fingerprints: window.road_clip_fingerprints,
+                site_clip_fingerprints: window.site_clip_fingerprints,
+            }),
+            false,
+        )
+    }
+
     pub(crate) fn terrain_patch_requires_engineered_refinement(
         &self,
         patch_x: usize,
@@ -254,8 +300,10 @@ impl SimCore {
                 safe_render_step_m,
                 Some(TerrainCdtSiteGradingContext {
                     source: TerrainCdtSiteGradingSource::Snapshot(&sites),
-                    graph: &self.region_graph,
-                    road_surface: &self.transit_network.road_surface,
+                    roads: crate::simulation::network::surface::RoadSurfaceView::new(
+                        &self.region_graph,
+                        &self.transit_network.road_surface,
+                    ),
                 }),
                 previous.as_deref(),
             );
@@ -389,44 +437,7 @@ impl SimCore {
                     .windows
                     .into_par_iter()
                     .map(|window| {
-                        if let Some(previous) = window
-                            .previous
-                            .filter(|previous| previous.mesh_result.is_ok())
-                        {
-                            return (previous, true);
-                        }
-                        let input_road_loops = window.cdt_input.road_loops.len();
-                        let input_source_samples = window.cdt_input.source_samples.len();
-                        let cdt_patch = window.cdt_input.patch;
-                        let cdt_start = Instant::now();
-                        let mesh_result = build_road_touched_terrain_patch(window.cdt_input);
-                        let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
-                        let mesh_buffers = mesh_result.as_ref().ok().map(|mesh| {
-                            Arc::new(
-                                SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
-                                    patch,
-                                    cdt_patch,
-                                    boundary_step_m,
-                                    mesh,
-                                ),
-                            )
-                        });
-                        (
-                            Arc::new(CachedRefinedTerrainCdtWindow {
-                                key: window.key,
-                                input_road_loops,
-                                input_source_samples,
-                                cdt_patch,
-                                road_input: window.road_input,
-                                mesh_result,
-                                mesh_buffers,
-                                cdt_ms,
-                                has_engineered_contributor: window.has_engineered_contributor,
-                                road_clip_fingerprints: window.road_clip_fingerprints,
-                                site_clip_fingerprints: window.site_clip_fingerprints,
-                            }),
-                            false,
-                        )
+                        Self::build_refined_terrain_cdt_window(window, patch, boundary_step_m)
                     })
                     .collect::<Vec<_>>();
                 window_results.extend(
@@ -540,7 +551,7 @@ impl SimCore {
                     reused_windows,
                 };
                 if entry.input_road_loops > 0
-                    && SimulationNode::cached_refined_cdt_failure_label(&entry).is_none()
+                    && SimulationNode::cached_refined_cdt_window_failure_label(&entry).is_none()
                 {
                     entry.mesh_buffers = reusable_mesh_buffers.or_else(|| {
                         let successful_windows = entry

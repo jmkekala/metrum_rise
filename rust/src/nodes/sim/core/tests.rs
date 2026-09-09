@@ -3,6 +3,8 @@
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 mod ghost_lines;
+mod road_plan_scaling;
+mod road_terrain_plan;
 
 use super::{
     CityTreasury, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, SimCore,
@@ -678,11 +680,19 @@ fn failed_junction_precompute_retains_matching_render_and_road_tool_generation()
         edge.geometry = points.clone();
         edge.physical_geometry = points;
     }
-    core.transit_network.solve_dirty_junction_endpoint_profiles(
-        &mut core.region_graph,
-        &HashSet::from([center]),
-        &edge_ids.iter().copied().collect(),
-    );
+    core.region_graph
+        .finalize_junction_endpoint_profiles_for_edges(
+            &HashSet::from([center]),
+            &edge_ids.iter().copied().collect(),
+            &edge_ids.iter().copied().collect(),
+        );
+    // Steep planar roads alone are not a contradiction. Break the actual shared seam.
+    core.region_graph
+        .edge_mut(edge_ids[0])
+        .physical_geometry
+        .last_mut()
+        .unwrap()
+        .y += 1.0;
     core.region_graph.rebuild_intersection_clips();
     for &edge_idx in &edge_ids {
         core.transit_network
@@ -745,6 +755,7 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
             .add_edge(test_road_edge(center, north, vec![center_pos, north_pos]));
 
     core.transit_network.bulk_dirty_edges.insert(new_edge);
+    core.transit_network.mark_road_profile_authored(new_edge);
     core.transit_network
         .road_surface
         .mark_edge_dirty(&core.region_graph, new_edge);
@@ -767,8 +778,12 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
         "stable bend authority edge must not be rewritten by bulk finalization"
     );
     assert!(
-        core.region_graph.edge(new_edge).geometry.len() >= 8,
-        "bulk finalization must adapt the new junction mouth before surface compilation"
+        core.region_graph
+            .edge(new_edge)
+            .physical_geometry
+            .iter()
+            .all(|point| { (point.y - (10.0 + point.z * 0.25)).abs() < 1.0e-4 }),
+        "the supported bend must retain its hillside grade instead of adding a flat platform"
     );
     assert!(
         core.transit_network
@@ -777,6 +792,123 @@ fn bulk_road_finalizer_solves_profiles_before_surface_compile() {
             .contains(&new_edge),
         "changed profile edge must stay marked for the following road-surface compile"
     );
+}
+
+#[test]
+fn planned_topology_terrain_rejection_restores_split_dependents() {
+    use crate::simulation::buildings::allocator::EdgeOccupancy;
+    let mut core = test_core();
+    core.benchmark_mode = false;
+    core.treasury.balance = 10_000.0;
+    assert!(
+        core.add_road_internal(
+            vec![
+                Vector3::new(-100.0, 0.0, 0.0),
+                Vector3::new(100.0, 0.0, 0.0)
+            ],
+            1,
+            1,
+        )
+        .committed
+    );
+    core.precompute_road_mesh_data();
+    add_test_complete_building(&mut core, "plan-rollback".into(), ZoneType::Residential);
+    let building = &mut core.allocator.buildings[0];
+    building.cell_x = 20;
+    building.frontage_t = 0.85;
+    let original = building.clone();
+    core.allocator.edge_occupancy.insert(
+        0,
+        EdgeOccupancy {
+            cells_long: 32,
+            left: vec![false; 32],
+            right: vec![true; 32],
+        },
+    );
+    let profile = core.region_graph.edge(0).physical_geometry.clone();
+    let terrain_before = core
+        .heightmap
+        .render_patch_keys_for_world_bounds(-120.0, -100.0, 120.0, 120.0)
+        .into_iter()
+        .map(|(x, z)| ((x, z), core.heightmap.visual_patch_snapshot(x, z)))
+        .collect::<Vec<_>>();
+    let undo_count = core.undo_stack.len();
+    let lane_count = core.transit_network.lane_system.lanes.len();
+    let points = vec![Vector3::new(0.0, 0.0, -80.0), Vector3::ZERO];
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    let preview = super::road_preview::compile_road_preview_with_sites(
+        &context,
+        RoadPreviewRequest {
+            request_id: 1,
+            surface_generation: query.surface_generation,
+            points: points.clone(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+        &mut core,
+    );
+    let plan = preview.edit_plan().unwrap();
+    assert!(plan.topology_for(&core.region_graph).is_some());
+    core.transit_network.begin_road_edit();
+    core.transit_network.bulk_load = true;
+    let result = core.add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan));
+    assert!(result.committed && result.finalized_geometry.is_some());
+    assert_ne!(core.allocator.buildings[0].edge_idx, original.edge_idx);
+    core.transit_network.bulk_load = false;
+    core.terrain_stroke_active = true;
+    assert!(!core.validate_staged_road_render_with_plan(plan.terrain()));
+    assert!(
+        core.last_road_timing
+            .contains("road_plan_post_topology_mismatch")
+    );
+    assert_eq!(core.region_graph.edge_count(), 1);
+    assert_eq!(core.region_graph.edge(0).physical_geometry, profile);
+    let restored = &core.allocator.buildings[0];
+    assert_eq!(
+        (restored.edge_idx, restored.cell_x, restored.frontage_t),
+        (original.edge_idx, original.cell_x, original.frontage_t)
+    );
+    assert_eq!(core.allocator.edge_occupancy[&0].cells_long, 32);
+    assert_eq!(core.allocator.edge_occupancy[&0].right, vec![true; 32]);
+    assert_eq!(core.allocator.edge_occupancy.len(), 1);
+    assert_eq!(core.undo_stack.len(), undo_count);
+    assert_eq!(core.transit_network.lane_system.lanes.len(), lane_count);
+    assert_eq!(core.treasury.balance, 10_000.0);
+    assert!(!core.transit_network.road_edit_is_staged());
+    for ((x, z), before) in terrain_before {
+        assert_eq!(core.heightmap.visual_patch_snapshot(x, z), before);
+    }
+}
+
+#[test]
+fn stale_topology_plan_is_rejected_before_authoritative_mutation() {
+    let mut core = test_core();
+    core.precompute_road_mesh_data();
+    let points = vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
+    let (context, query) = road_tool_snapshots_from_core(&core).unwrap();
+    let preview = super::road_preview::compile_road_preview_from_context(
+        &context,
+        RoadPreviewRequest {
+            request_id: 1,
+            surface_generation: query.surface_generation,
+            points: points.clone(),
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            snap_to_existing_roads: true,
+        },
+    );
+    let plan = preview.edit_plan().unwrap();
+    assert!(plan.topology_for(&core.region_graph).is_some());
+    core.road_tool_surface_generation += 1;
+    core.transit_network.bulk_load = true;
+    let result = core.add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan));
+    assert!(!result.committed);
+    assert!(result.finalized_geometry.is_none());
+    assert!(core.transit_network.bulk_dirty_edges.is_empty());
+    assert_eq!(core.region_graph.edge_count(), 0);
 }
 
 fn add_test_border_road(core: &mut SimCore) {

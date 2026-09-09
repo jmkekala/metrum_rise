@@ -57,6 +57,9 @@ pub struct RoadSurfaceSystem {
     pub(crate) compiled_visual_node_topologies: HashMap<u32, Arc<NodeCanonicalTopologyCache>>,
     pub(in crate::simulation::network::surface) pending_preview_topology_reuse:
         Option<RoadPreviewTopologyReuse>,
+    pub(in crate::simulation::network::surface) pending_planned_earthworks:
+        Option<Arc<super::RoadEarthworkPlan>>,
+    pub(crate) last_reused_earthwork_chunk_count: usize,
     pub(crate) surface_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
     pub(crate) surface_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
     pub(crate) earthwork_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
@@ -350,6 +353,8 @@ impl RoadSurfaceSystem {
             compiled_visual_node_earthwork_boundaries: HashMap::new(),
             compiled_visual_node_topologies: HashMap::new(),
             pending_preview_topology_reuse: None,
+            pending_planned_earthworks: None,
+            last_reused_earthwork_chunk_count: 0,
             surface_span_chunks: HashMap::new(),
             surface_node_chunks: HashMap::new(),
             earthwork_span_chunks: HashMap::new(),
@@ -498,6 +503,11 @@ impl RoadSurfaceSystem {
     /// Returns the last compiler failure summary for the currently latched generation.
     pub(crate) fn last_compile_failure_label(&self) -> Option<&str> {
         self.last_compile_failure_label.as_deref()
+    }
+
+    /// Failed node owners from the current latched compile, for explicit load-time repair.
+    pub(crate) fn failed_node_ids(&self) -> &[u32] {
+        &self.last_failed_node_ids
     }
 
     /// Returns the currently cached compiled sections by edge id.

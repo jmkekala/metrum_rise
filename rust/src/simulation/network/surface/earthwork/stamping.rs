@@ -16,7 +16,7 @@ const EARTHWORK_MIN_TRIANGLE_ALTITUDE_M: f64 = 0.01;
 const EARTHWORK_STAMP_TILE_CELLS: usize = 8;
 
 /// One final visual-terrain sample write produced by a chunk-local earthwork stamp pass.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct EarthworkStampWrite {
     pub(super) grid_x: usize,
     pub(super) grid_z: usize,
@@ -29,7 +29,6 @@ pub(super) struct EarthworkChunkStampResult {
     pub(super) chunk: SurfaceChunkKey,
     pub(super) writes: Vec<EarthworkStampWrite>,
     pub(super) stats: EarthworkStampStats,
-    pub(super) collect_ms: f64,
 }
 
 /// Counters for road-earthwork stamp performance diagnostics.
@@ -78,8 +77,8 @@ struct EarthworkStampCandidate {
     height_sample: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct EarthworkStampTriangle {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct EarthworkStampTriangle {
     triangle: [RoadVec3; 3],
     triangle_xz: [RoadVec2; 3],
     area_xz: f64,
@@ -258,17 +257,17 @@ impl EarthworkStampTriangle {
     }
 }
 
-struct EarthworkChunkStampBuilder<'a> {
+pub(super) struct EarthworkChunkStampBuilder<'a> {
     system: &'a RoadSurfaceSystem,
     terrain: &'a TerrainSystem,
     chunk: SurfaceChunkKey,
     conservative_margin_m: f32,
-    triangles: Vec<EarthworkStampTriangle>,
+    pub(super) triangles: Vec<EarthworkStampTriangle>,
     stats: EarthworkStampStats,
 }
 
 impl<'a> EarthworkChunkStampBuilder<'a> {
-    fn new(
+    pub(super) fn new(
         system: &'a RoadSurfaceSystem,
         terrain: &'a TerrainSystem,
         chunk: SurfaceChunkKey,
@@ -286,7 +285,7 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
         }
     }
 
-    fn mark_cache_present(&mut self) {
+    pub(super) fn mark_cache_present(&mut self) {
         self.stats.chunks_with_cache += 1;
     }
 
@@ -312,13 +311,12 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
         self.stats.regions_visited += 1;
     }
 
-    fn finish(mut self) -> EarthworkChunkStampResult {
+    pub(super) fn finish(mut self) -> EarthworkChunkStampResult {
         if self.triangles.is_empty() {
             return EarthworkChunkStampResult {
                 chunk: self.chunk,
                 writes: Vec::new(),
                 stats: self.stats,
-                collect_ms: 0.0,
             };
         }
 
@@ -443,7 +441,6 @@ impl<'a> EarthworkChunkStampBuilder<'a> {
             chunk: self.chunk,
             writes,
             stats: self.stats,
-            collect_ms: 0.0,
         }
     }
 
@@ -513,64 +510,80 @@ impl RoadSurfaceSystem {
         self.section_is_tunnel_surface_visible(section, terrain)
     }
 
-    pub(super) fn collect_earthwork_chunk_stamp_writes(
-        &self,
+    pub(super) fn prepare_earthwork_chunk_stamp<'a>(
+        &'a self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
+        terrain: &'a TerrainSystem,
         chunk: SurfaceChunkKey,
-    ) -> EarthworkChunkStampResult {
+    ) -> EarthworkChunkStampBuilder<'a> {
         let mut builder = EarthworkChunkStampBuilder::new(self, terrain, chunk);
         let Some(entry) = self.earthwork_chunk_cache.get(&chunk) else {
-            return builder.finish();
+            return builder;
         };
         builder.mark_cache_present();
 
         for &edge_idx in &entry.edge_indices {
-            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
-                continue;
-            };
-            if !self.span_piece_uses_visible_earthwork(piece) {
-                continue;
-            }
-            builder.stats.span_owners += 1;
-            let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
-            for region in piece.span_earthwork_support_regions.iter() {
-                builder.collect_polygon(&region.polygon, height_offset_m);
-            }
+            self.collect_span_stamp_input(edge_idx, &mut builder);
         }
 
         for &node_id in &entry.node_ids {
-            if node_id as usize >= graph.node_count() {
-                continue;
-            }
-            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
-                continue;
-            };
-            if !self.node_piece_uses_earthworks(graph, node_id, terrain)
-                || !self.node_piece_uses_visible_earthwork(graph, node_id, terrain)
-            {
-                continue;
-            }
-            builder.stats.node_owners += 1;
-            let height_offset_m =
-                self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
-            for region in &piece.owned_regions {
-                if self.node_earthwork_owner_uses_visible_earthwork(
-                    graph,
-                    terrain,
-                    node_id,
-                    piece,
-                    region.kind,
-                    region.owner_index,
-                ) {
-                    builder.collect_polygon(&region.polygon, height_offset_m);
-                } else {
-                    builder.skip_region();
-                }
+            self.collect_node_stamp_input(graph, terrain, node_id, &mut builder);
+        }
+        builder
+    }
+
+    pub(super) fn collect_span_stamp_input(
+        &self,
+        edge_idx: usize,
+        builder: &mut EarthworkChunkStampBuilder<'_>,
+    ) {
+        let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+            return;
+        };
+        if !self.span_piece_uses_visible_earthwork(piece) {
+            return;
+        }
+        builder.stats.span_owners += 1;
+        let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
+        for region in piece.span_earthwork_support_regions.iter() {
+            builder.collect_polygon(&region.polygon, height_offset_m);
+        }
+    }
+
+    pub(super) fn collect_node_stamp_input(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        builder: &mut EarthworkChunkStampBuilder<'_>,
+    ) {
+        if node_id as usize >= graph.node_count() {
+            return;
+        }
+        let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+            return;
+        };
+        if !self.node_piece_uses_earthworks(graph, node_id, terrain)
+            || !self.node_piece_uses_visible_earthwork(graph, node_id, terrain)
+        {
+            return;
+        }
+        builder.stats.node_owners += 1;
+        let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
+        for region in &piece.owned_regions {
+            if self.node_earthwork_owner_uses_visible_earthwork(
+                graph,
+                terrain,
+                node_id,
+                piece,
+                region.kind,
+                region.owner_index,
+            ) {
+                builder.collect_polygon(&region.polygon, height_offset_m);
+            } else {
+                builder.skip_region();
             }
         }
-
-        builder.finish()
     }
 
     fn top_surface_support_candidate_replaces(existing: (f32, f32), candidate: (f32, f32)) -> bool {

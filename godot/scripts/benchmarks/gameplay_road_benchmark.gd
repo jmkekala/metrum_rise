@@ -33,6 +33,7 @@ var save_path := ""
 var results_path := ""
 var run_id := ""
 var matrix_name := DEFAULT_MATRIX_NAME
+var selected_case_ids := PackedStringArray()
 var repetitions := 5
 var warmup_repetitions := 1
 var settle_timeout_sec := 180.0
@@ -280,6 +281,9 @@ func _resolve_configuration() -> void:
 		"METRUM_GAMEPLAY_BENCHMARK_MATRIX",
 		DEFAULT_MATRIX_NAME
 	).to_lower()
+	selected_case_ids = OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_CASES").split(",", false)
+	for index in selected_case_ids.size():
+		selected_case_ids[index] = selected_case_ids[index].strip_edges()
 	repetitions = _environment_int("METRUM_GAMEPLAY_BENCHMARK_REPETITIONS", 5, 1)
 	warmup_repetitions = _environment_int(
 		"METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS",
@@ -362,6 +366,8 @@ func _reload_world_for_matrix_cycle(entry: Dictionary) -> Dictionary:
 	return result
 
 func _fixture_definitions() -> Array[Dictionary]:
+	if not selected_case_ids.is_empty() and matrix_name != "paired":
+		return []
 	var baselines: Array[Dictionary] = [
 		{
 			"case_id": "bend_90_2l",
@@ -507,6 +513,14 @@ func _fixture_definitions() -> Array[Dictionary]:
 				targeted_fixture["anchor_override"] = Vector2(-640.0, 640.0)
 				return [targeted_fixture]
 		return []
+	if not selected_case_ids.is_empty():
+		# Keep the original fixture order, geometry and anchors. Unknown/duplicate IDs
+		# fail the workload instead of silently reducing a requested regression matrix.
+		var selected: Array[Dictionary] = []
+		for fixture in definitions:
+			if fixture["case_id"] in selected_case_ids:
+				selected.append(fixture)
+		return selected if selected.size() == selected_case_ids.size() else []
 	return definitions
 
 func _road08_regression_fixture() -> Dictionary:

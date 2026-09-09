@@ -53,7 +53,13 @@ fn flat_logged_curve_bend_compiles_with_explicit_point_contact_curb_ownership() 
 }
 
 #[test]
-fn hillside_curve_bend_blends_from_short_horizontal_pin() {
+fn hillside_curve_bend_preserves_its_fitted_grade_inside_node_ownership() {
+    for segment_count in [1, 24] {
+        assert_hillside_bend_grade(segment_count);
+    }
+}
+
+fn assert_hillside_bend_grade(segment_count: usize) {
     let terrain = flat_terrain(128, 128);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(0.0, 10.0, 0.0);
@@ -66,7 +72,9 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
     graph.add_edge(test_edge(
         west,
         bend,
-        vec![west_pos, center_pos],
+        (0..=segment_count)
+            .map(|i| west_pos.lerp(center_pos, i as f32 / segment_count as f32))
+            .collect(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -75,7 +83,9 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
     graph.add_edge(test_edge(
         bend,
         north,
-        vec![center_pos, north_pos],
+        (0..=segment_count)
+            .map(|i| center_pos.lerp(north_pos, i as f32 / segment_count as f32))
+            .collect(),
         7.0,
         EdgeClass::Standard,
         TransitType::Road,
@@ -90,8 +100,8 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
     let piece = assert_compiled_bend_piece(&surface, &graph, bend);
     let asphalt_y_range_m = visual_polygon_y_range_m(&piece.road_surface_polygons);
     assert!(
-        asphalt_y_range_m <= 0.75,
-        "Bend asphalt should curve gently through the owned bend footprint instead of forming a hard ramp: range={asphalt_y_range_m:.6}"
+        asphalt_y_range_m > 0.75,
+        "a hillside bend must not impose a horizontal height-range limit: range={asphalt_y_range_m:.6}"
     );
 
     let edge = graph.edge(1);
@@ -116,13 +126,6 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
     let (start_handoff_m, _) = mouth_policy
         .ownership_range
         .expect("bend edge should expose a visible ownership handoff");
-    let (start_profile_m, _) = mouth_policy
-        .profile_range
-        .expect("bend edge should expose an active profile range");
-    assert!(
-        (start_profile_m - hard_pin_m).abs() <= SAMPLE_EPSILON_M,
-        "sparse grounded Bend profile range should start at the shared hard pin: profile={start_profile_m:.3} hard_pin={hard_pin_m:.3}"
-    );
     assert!(
         start_handoff_m > hard_pin_m + 4.0,
         "test setup must keep ownership handoff farther than the profile hard pin: handoff={start_handoff_m:.3} hard_pin={hard_pin_m:.3}"
@@ -136,15 +139,12 @@ fn hillside_curve_bend_blends_from_short_horizontal_pin() {
         .first()
         .expect("outbound edge should have an endpoint section")
         .center_height_m;
-    let hard_pin_section = sections
-        .iter()
-        .find(|section| (section.s_m - hard_pin_m).abs() <= SAMPLE_EPSILON_M)
-        .expect("profile hard pin should be an explicit section sample");
-    assert!(
-        (hard_pin_section.center_height_m - endpoint_height_m).abs() <= 0.01,
-        "Bend profile must keep only the short hard pin horizontal: endpoint={endpoint_height_m:.3} hard_pin={:.3}",
-        hard_pin_section.center_height_m
-    );
+    for section in sections.iter() {
+        assert!(
+            (section.center_height_m - (10.0 + 0.25 * section.center_xz.y as f32)).abs() < 0.0001,
+            "the span and node must consume the same fitted hillside grade"
+        );
+    }
 
     let handoff_section = sections
         .iter()

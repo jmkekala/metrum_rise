@@ -7,7 +7,7 @@ use super::super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource,
 };
 use super::super::backend::{RoadVec2, quantize_road_vec2_to_overlay_grid};
-use super::super::keys::{SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey};
+use super::super::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 use super::super::segments::key_lies_on_segment;
 use super::model::{
     NodeHeightAuthoritySource, NodeHeightCarrierProvenanceKey, NodeHeightFieldError,

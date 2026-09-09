@@ -135,7 +135,7 @@ impl NodeOwnedRegionArrangement {
                 {
                     opposite_owner
                         .map(|opposite_owner| {
-                            source_authorized_junction_side_join_asphalt_boundary_indices(
+                            source_authorized_junction_side_join_boundary_indices(
                                 piece_kind,
                                 edge_key.start,
                                 edge_key.end,
@@ -286,7 +286,7 @@ fn endpoint_pair_constraint_indices_from_region_seams(
     canonical_source_indices(start_indices.into_iter().chain(end_indices))
 }
 
-fn source_authorized_junction_side_join_asphalt_boundary_indices(
+fn source_authorized_junction_side_join_boundary_indices(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     start: (i64, i64),
     end: (i64, i64),
@@ -296,7 +296,7 @@ fn source_authorized_junction_side_join_asphalt_boundary_indices(
     opposite_owner: NodeBandOwner,
 ) -> Vec<usize> {
     if piece_kind != RoadSurfaceVisualNodePieceKind::JunctionN
-        || !owners_form_carriageway_sidewalk_boundary(edge_ref.owner, opposite_owner)
+        || !owners_form_paved_sidewalk_boundary(edge_ref.owner, opposite_owner)
     {
         return Vec::new();
     }
@@ -313,13 +313,12 @@ fn source_authorized_junction_side_join_asphalt_boundary_indices(
     else {
         return Vec::new();
     };
-    let (carriageway_region, sidewalk_region) =
-        if region.owner.kind() == RoadSurfaceBandKind::Carriageway {
-            (region, opposite_region)
-        } else {
-            (opposite_region, region)
-        };
-    if carriageway_region.claim_priority != NodeGeneratedContourClaimPriority::SideJoin
+    let (paved_region, sidewalk_region) = if region.owner.kind() != RoadSurfaceBandKind::Sidewalk {
+        (region, opposite_region)
+    } else {
+        (opposite_region, region)
+    };
+    if paved_region.claim_priority != NodeGeneratedContourClaimPriority::SideJoin
         || sidewalk_region.owner.kind() != RoadSurfaceBandKind::Sidewalk
         || !matches!(
             sidewalk_region.claim_priority,
@@ -343,18 +342,18 @@ fn source_authorized_junction_side_join_asphalt_boundary_indices(
     canonical_source_indices(start_indices.into_iter().chain(end_indices))
 }
 
-fn owners_form_carriageway_sidewalk_boundary(
+fn owners_form_paved_sidewalk_boundary(
     owner: NodeBandOwner,
     opposite_owner: NodeBandOwner,
 ) -> bool {
     matches!(
         (owner.kind(), opposite_owner.kind()),
         (
-            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::CurbOrShoulder,
             RoadSurfaceBandKind::Sidewalk
         ) | (
             RoadSurfaceBandKind::Sidewalk,
-            RoadSurfaceBandKind::Carriageway
+            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::CurbOrShoulder
         )
     )
 }

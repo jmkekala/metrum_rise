@@ -201,7 +201,8 @@ impl BuildingAllocator {
     /// Returns `(endpoint_node, building_index)` pairs for all buildings of `zone`
     /// that are legal destinations for the requested transit mode.
     ///
-    /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the exact entrance-model
+    /// Used by [`FlowFieldSystem::rebuild_dirty`](crate::simulation::pathing::flow_field::FlowFieldSystem::rebuild_dirty)
+    /// to seed the exact entrance-model
     /// multi-source Dijkstra without falling back to a legacy endpoint proxy.
     pub fn get_sources_for_zone(
         &self,

@@ -31,6 +31,8 @@ pub(crate) struct RoadPreviewRenderInput {
 pub(crate) struct RoadJunctionPreview {
     pub(crate) source_mesh_generation: u64,
     pub(crate) planned: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
+    /// Unlifted production meshes, used only together with the planned terrain replacement.
+    pub(crate) canonical_planned: BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>,
     pub(crate) retained: Arc<BTreeMap<SurfaceChunkKey, Arc<NetworkMeshData>>>,
     pub(crate) retained_revision: u64,
     pub(crate) replacement_chunks: BTreeSet<SurfaceChunkKey>,
@@ -112,6 +114,12 @@ impl RoadPreviewRenderInput {
             &chunks,
         );
         let (origin_x, origin_z) = self.surface.chunk_origin_m();
+        // Keep the production output before road-only presentation adds clearance and infill.
+        // Both variants are bounded by this validation excerpt; no resident meshes are copied.
+        let canonical_planned = planned
+            .iter()
+            .map(|(key, mesh)| (*key, Arc::new(mesh.without_owners(&HashSet::new()))))
+            .collect();
         // Committed terrain is cut out beneath existing roads and stitched to their edges.
         // Those contacts must not hover. Only new coverage needs terrain clearance; adjacent
         // layers share one decision at equal world-XZ positions.
@@ -154,6 +162,7 @@ impl RoadPreviewRenderInput {
         }
         Some(RoadJunctionPreview {
             source_mesh_generation: 0,
+            canonical_planned,
             planned: planned
                 .into_iter()
                 .map(|(key, mesh)| (key, Arc::new(mesh)))

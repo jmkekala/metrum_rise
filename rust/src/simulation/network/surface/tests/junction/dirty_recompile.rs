@@ -222,6 +222,18 @@ fn assert_all_spans_compile_but_junction_fails(
     );
 }
 
+fn break_shared_endpoint(graph: &mut RegionGraph, center: u32, edge_id: usize) {
+    // A steep but planar crossing is now supported. Exercise failed publication with
+    // a real contradiction: one incident profile no longer meets the shared node.
+    let edge = graph.edge_mut(edge_id);
+    let point = if edge.start_node == center {
+        edge.physical_geometry.first_mut().unwrap()
+    } else {
+        edge.physical_geometry.last_mut().unwrap()
+    };
+    point.y += 1.0;
+}
+
 #[test]
 fn terrain_only_junction_recompile_reuses_canonical_topology_and_refreshes_earthwork() {
     let mut graph = RegionGraph::new();
@@ -446,6 +458,7 @@ fn failed_dirty_junction_compile_preserves_published_generation_and_pending_eart
         &edge_ids,
         [80.0, -80.0, 64.0, -64.0],
     );
+    break_shared_endpoint(&mut graph, center, edge_ids[0]);
     assert_all_spans_compile_but_junction_fails(&graph, &terrain, center, &edge_ids);
     for &edge_idx in &edge_ids {
         surface.mark_edge_dirty(&graph, edge_idx);
@@ -567,6 +580,7 @@ fn failed_initial_node_compile_publishes_nothing_until_newer_invalidation() {
         &edge_ids,
         [80.0, -80.0, 64.0, -64.0],
     );
+    break_shared_endpoint(&mut graph, center, edge_ids[0]);
     assert_all_spans_compile_but_junction_fails(&graph, &terrain, center, &edge_ids);
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -623,6 +637,7 @@ fn preview_validation_retains_exact_artifacts_outside_a_failed_context_node() {
         &edge_ids,
         [80.0, -80.0, 64.0, -64.0],
     );
+    break_shared_endpoint(&mut graph, center, edge_ids[0]);
     let candidate_start = graph.add_node(Vector3::new(-24.0, 0.0, -120.0), NodeType::Junction);
     let candidate_end = graph.add_node(Vector3::new(24.0, 0.0, -120.0), NodeType::Junction);
     let candidate_edge = graph.add_edge(test_edge(
@@ -692,6 +707,7 @@ fn mesh_generation_refuses_a_failed_surface_generation() {
         &edge_ids,
         [80.0, -80.0, 64.0, -64.0],
     );
+    break_shared_endpoint(&mut graph, center, edge_ids[0]);
     for &edge_idx in &edge_ids {
         network.road_surface.mark_edge_dirty(&graph, edge_idx);
     }
@@ -888,8 +904,8 @@ fn graded_elevated_junction_height_topology_reuse_matches_cold_and_xz_change_mis
         "Y-only JunctionN input changes must reuse rail/contact topology"
     );
     assert_eq!(
-        warm.last_reused_node_ownership_topology_count, 0,
-        "ownership must rebuild when canonical millimetre deltas are not exactly uniform"
+        warm.last_reused_node_ownership_topology_count, 1,
+        "a uniform height translation must retain ownership when source precision is preserved"
     );
     let mut cold = RoadSurfaceSystem::new(16.0);
     cold.compile_dirty(&graph, &terrain);

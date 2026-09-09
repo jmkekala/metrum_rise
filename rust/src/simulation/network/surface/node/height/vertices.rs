@@ -104,6 +104,8 @@ pub(super) fn push_height_contour_edge(
         end: end_key,
         start_height_mm: SurfaceHeightMmKey::from_m_f64(start.1).as_i64(),
         end_height_mm: SurfaceHeightMmKey::from_m_f64(end.1).as_i64(),
+        start_height_m: start.1,
+        end_height_m: end.1,
     };
     if !edges.iter().any(|existing| {
         existing.start == edge.start

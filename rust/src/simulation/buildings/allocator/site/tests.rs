@@ -20,7 +20,7 @@ use super::{BuildingSiteClient, building_site_support_tie_in_is_valid};
 use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurfaceMaterial};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceView};
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::terrain::cdt::{
@@ -167,8 +167,13 @@ fn site_grading_target_uses_visible_road_surface() {
     let expected_height_m = road_surface
         .sample_visible_surface_height(&graph, &terrain, pos.x, pos.y)
         .expect("bridge surface should own the grading sample");
-    let graded_height_m =
-        building_site_grading_target_height(10.0, pos, 100.0, &terrain, &graph, &road_surface);
+    let graded_height_m = building_site_grading_target_height(
+        10.0,
+        pos,
+        100.0,
+        &terrain,
+        RoadSurfaceView::new(&graph, &road_surface),
+    );
 
     assert!(
         (graded_height_m - expected_height_m).abs() <= 0.001,
@@ -256,8 +261,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
     snapshot.append_terrain_cdt_site_grading_guides_for_world_bounds(
         BuildingSiteGradingRequest::new(
             &terrain,
-            &graph,
-            &road_surface,
+            RoadSurfaceView::new(&graph, &road_surface),
             (64.0, 0.0, 128.0, 64.0),
             2.0,
         ),
@@ -284,6 +288,12 @@ fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
     let detached = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
 
     assert_eq!(detached, direct);
+    for bounds in [(-8.0, -8.0, 8.0, 8.0), (20.0, 20.0, 30.0, 30.0)] {
+        assert_eq!(
+            snapshot.has_building_site_for_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3),
+            allocator.has_building_site_for_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3),
+        );
+    }
 }
 
 #[test]
@@ -535,8 +545,7 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
 
     let (probe, height_m) = nearest_building_site_road_surface_sample(
         &terrain,
-        &graph,
-        &network.road_surface,
+        RoadSurfaceView::new(&graph, &network.road_surface),
         apron_probe,
         BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M,
     )
@@ -544,4 +553,58 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
 
     assert!(probe.distance_to(road_edge_probe) <= 0.001);
     assert!((height_m - expected_height_m).abs() <= 0.001);
+}
+
+#[test]
+fn site_grading_consumes_planned_visual_writes_and_resets() {
+    use crate::simulation::terrain::{TerrainVisualOverlay, TerrainVisualSource};
+
+    let base = TerrainSystem::with_chunking(129, 129, 1.0, 16, 0.0);
+    let mut live = base.clone(); // Independent test oracle.
+    let mut overlay = TerrainVisualOverlay::new(&base);
+    let writes: Vec<_> = (52..=76)
+        .flat_map(|z| (52..=76).map(move |x| (x, z, 0.01)))
+        .collect();
+    overlay.set_heights(&base, &writes, |sample| *sample);
+    live.set_visual_heights_at_grid_unmarked(&writes, |sample| *sample);
+    overlay.reset_region_from_source_world(&base, 0.0, 0.0, 16.0, 16.0);
+    live.reset_visual_region_from_source_world(0.0, 0.0, 16.0, 16.0);
+    overlay.discard_unchanged(&base);
+    let sites = BuildingSiteTerrainSnapshot {
+        sites: vec![BuildingSiteTerrainClient {
+            building_idx: 0,
+            footprint_world: vec![
+                Vector2::new(-2.0, -2.0),
+                Vector2::new(2.0, -2.0),
+                Vector2::new(2.0, 2.0),
+                Vector2::new(-2.0, 2.0),
+            ],
+            support_height_m: 0.0,
+        }],
+    };
+    let graph = RegionGraph::new();
+    let surface = RoadSurfaceSystem::new(64.0);
+    let roads = RoadSurfaceView::new(&graph, &surface);
+    let guides = |terrain: &dyn TerrainVisualSource| {
+        let mut samples = Vec::new();
+        sites.append_terrain_cdt_site_grading_guides_for_world_bounds(
+            BuildingSiteGradingRequest::new(terrain, roads, (-32.0, -32.0, 32.0, 32.0), 2.0),
+            &mut samples,
+            &mut HashSet::new(),
+        );
+        samples
+    };
+    let planned = guides(&overlay.view(&base));
+    assert!(!planned.is_empty());
+    assert_ne!(
+        planned,
+        guides(&base),
+        "site guides must sample the changed visual ground"
+    );
+    assert_eq!(planned, guides(&live));
+    assert!(
+        base.clone_visual_dense()
+            .iter()
+            .all(|height| *height == 0.0)
+    );
 }

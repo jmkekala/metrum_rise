@@ -535,10 +535,12 @@ fn clamp_to_patch(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> TerrainCd
 }
 
 pub(super) fn patch_contains(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> bool {
-    vertex.x >= patch.min_x - CDT_EPSILON_M
-        && vertex.x <= patch.max_x + CDT_EPSILON_M
-        && vertex.z >= patch.min_z - CDT_EPSILON_M
-        && vertex.z <= patch.max_z + CDT_EPSILON_M
+    // Identity tolerance is not an expansion of the tile's triangulation domain. An
+    // outside guide/sample creates a sliver fan beyond the shared boundary constraints.
+    vertex.x >= patch.min_x
+        && vertex.x <= patch.max_x
+        && vertex.z >= patch.min_z
+        && vertex.z <= patch.max_z
 }
 
 pub(super) fn ensure_ccw(mut points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {

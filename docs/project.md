@@ -24,11 +24,30 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
-- `ROAD-24`: the checked-in Kuopio terrain capture now drives 13 fixed-location replay cases
-  through the existing gameplay benchmark. The baseline reproduces near-vertical profiles,
-  up to 37.34 m source-height offsets, and the logged terrain-validation rejection. Numeric
-  profile audits and paired rendered captures are available; terrain coverage and shared
-  preview/commit `RoadEditPlan` corrections remain open. See [`roads.md`](roads.md#kuopio-terrain-regression-replay-road-24).
+- `ROAD-24` completed: RoadEditPlan's local topology/profile/site/terrain ownership, explicit readiness,
+  atomic adoption, rollback and undo are implemented. Ownership is separate from elevation;
+  approaches can rise inside junctions without shortening the 32 m transition. Terrain gaps
+  are fixed at their source: shared-side grading uses uncut halo contributors, guide heights
+  share one terrain authority, and metric constraint incidence and strict tile bounds prevent
+  slivers. Missing/discarded terrain faces block paired publication in both Rust and Godot.
+  The complete profile-finalizer dirty ledger now feeds both planning and commit. Load repairs
+  only rejected grounded junctions using that same finalizer; saved node 34 and all 27 reference
+  terrain patches compile, without changing the checked-in SQLite or valid nonincident profiles.
+  Windowed and headless replays pass all 39 strokes / 158 profiles with zero audit failures;
+  117 rendered captures retain the before/preview/committed evidence. All 1,634 Rust tests
+  (3 ignored), 15 Python checks, five Godot suites and the 15-test single-worker replay pass.
+  Populated-worker measurements pass three processes × 100 observations per level: growing
+  remote state to 100,000 buildings / 600,024 agents changes worker p50 from 20.19 to 20.52 ms
+  with identical local terrain; readiness stays below 0.019 ms. Source recovery and guide
+  incidence now use bounded local queries. Three larger matched timing pairs (20 repetitions,
+  three warmups) put second-T preview readiness at 50.89→53.98 ms and mixed-width crossing at
+  67.37→69.70 ms, with first-idle effectively unchanged. This small cost for complete terrain is
+  accepted explicitly; no general speedup or 60 FPS guarantee is claimed. Details and historical runs:
+  [`roads.md`](roads.md#kuopio-terrain-regression-replay-road-24).
+  The September 9 audit separates CDT pre-composition checks from final buffer acceptance,
+  rejects missing/invalid render products in the common validator, and removes obsolete two-pass
+  regrade APIs/telemetry. Rustdoc links and load/site/undo/readiness documentation are corrected;
+  historical intermediate failures are explicitly separated from current acceptance.
 
 - `ROAD-05`: fixed world-aligned refined-terrain CDT tiles and immutable prior-generation reuse are
   implemented, including cached tile render buffers, bounded incremental road undo with exact
@@ -78,15 +97,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   an old exact preview. Cursor sweeps, input bursts, camera-only movement, stale targets/results,
   native cursor payloads, and click-before-frame behaviour have targeted regression coverage.
   Moving and settled previews now show shared asphalt/sidewalk textures and lane dividers.
-  Valid placement is untinted; checking/rejection feedback remains amber/red. A display-only
-  terrain-draped mesh with 15 cm clearance replaces raw endpoint-height ribbons; prepared
-  placement heights remain authoritative. Full-width hill,
+  Valid placement is untinted; checking/rejection feedback remains amber/red. Coarse moving
+  ribbons use display-only terrain draping with 15 cm clearance; completed paired previews use
+  canonical unlifted road/terrain products. Prepared placement heights remain authoritative. Full-width hill,
   elevated-road, walkway-width, native payload, and rendered-material checks cover the change.
-- `ROAD-06`: a deterministic Kuopio T-junction can pass RoadTool validation but produce
-  incompatible-height road-owned terrain-CDT constraints after the authoritative graph mutation.
-  Atomic rendering correctly retains the prior complete generation, but the graph then remains
-  dirty. The gameplay profiler now reports this state immediately; the road/terrain generation bug
-  remains open without a geometry or height-repair fallback.
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `WATER-01`: harden baseline-water rendering and remove remaining dense compatibility boundaries.
 - `MOB-01`: ship bicycle support as the next transport mode.
@@ -94,6 +108,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
 
 `QA-01` is now parked in [`roadmap.md`](roadmap.md): the old long-run sim-thread panic has not reproduced recently, including at least one overnight run, so it is no longer treated as an active blocker.
+
+`ROAD-06` / `ROAD-07` are [parked historical reports](roadmap.md#parked-historical-reports),
+not current blockers. Their original commit-safety gap is superseded by `ROAD-12` / `ROAD-24`;
+reopening requires a current reproduction, not an assumption that the old geometry still fails.
 
 ## System Ownership
 

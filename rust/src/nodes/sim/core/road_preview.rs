@@ -8,6 +8,8 @@ pub(crate) use requests::{RoadPreviewSender, road_preview_channel};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
+use super::road_edit_plan::RoadEditPlan;
+use super::road_terrain_plan::RoadTerrainSiteInputs;
 use super::state::SimCore;
 use crate::debug_log;
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
@@ -16,7 +18,7 @@ use crate::simulation::network::render::road::preview::{
     RoadJunctionPreview, RoadPreviewRetainedCache,
 };
 use crate::simulation::network::surface::{
-    RoadPreviewTopologyReuse, RoadPreviewValidation, RoadPreviewVisualMesh, RoadSurfaceSystem,
+    RoadPreviewValidation, RoadPreviewVisualMesh, RoadSurfaceSystem,
 };
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
@@ -29,71 +31,20 @@ pub(crate) struct RoadPreviewSnapshot {
     pub(crate) fwd_lanes: u8,
     /// Backward vehicle lanes used for live parcel-clearance validation when publishing the result.
     pub(crate) bkw_lanes: u8,
-    snap_to_existing_roads: bool,
     pub(crate) prepared_points: Vec<godot::prelude::Vector3>,
     pub(crate) visual_mesh: RoadPreviewVisualMesh,
     pub(crate) junction_preview: Option<RoadJunctionPreview>,
     pub(crate) validation: RoadPreviewValidation,
     pub(crate) is_valid: bool,
-    topology_reuse: Option<Arc<Mutex<Option<RoadPreviewTopologyReuse>>>>,
-}
-
-/// Exact road validation that can be reused while its source generation and inputs still match.
-#[derive(Debug)]
-pub(crate) struct RoadPreviewValidationCertificate {
-    surface_generation: u64,
-    fwd_lanes: u8,
-    bkw_lanes: u8,
-    snap_to_existing_roads: bool,
-    prepared_points: Vec<godot::prelude::Vector3>,
-    validation: RoadPreviewValidation,
-    topology_reuse: Mutex<Option<RoadPreviewTopologyReuse>>,
+    edit_plan: Option<Arc<RoadEditPlan>>,
 }
 
 impl RoadPreviewSnapshot {
-    /// Moves a successful exact preview artifact into a certificate for one authoritative commit.
-    pub(crate) fn validation_certificate(&self) -> Option<RoadPreviewValidationCertificate> {
-        (self.is_valid && self.surface_generation > 0).then(|| RoadPreviewValidationCertificate {
-            surface_generation: self.surface_generation,
-            fwd_lanes: self.fwd_lanes,
-            bkw_lanes: self.bkw_lanes,
-            snap_to_existing_roads: self.snap_to_existing_roads,
-            prepared_points: self.prepared_points.clone(),
-            validation: self.validation.clone(),
-            topology_reuse: Mutex::new(self.topology_reuse.as_ref().and_then(|topology_reuse| {
-                topology_reuse
-                    .lock()
-                    .expect("road preview topology lock poisoned")
-                    .take()
-            })),
-        })
-    }
-}
-
-impl RoadPreviewValidationCertificate {
-    /// Returns the cached validation only when every authoritative input remains identical.
-    pub(crate) fn validation_for(
-        &self,
-        surface_generation: u64,
-        prepared_points: &[godot::prelude::Vector3],
-        fwd_lanes: u8,
-        bkw_lanes: u8,
-        snap_to_existing_roads: bool,
-    ) -> Option<&RoadPreviewValidation> {
-        (self.surface_generation == surface_generation
-            && self.fwd_lanes == fwd_lanes
-            && self.bkw_lanes == bkw_lanes
-            && self.snap_to_existing_roads == snap_to_existing_roads
-            && self.prepared_points == prepared_points)
-            .then_some(&self.validation)
-    }
-
-    /// Takes preview-produced topology after `validation_for` accepted the exact certificate.
-    pub(crate) fn topology_reuse(&self) -> Option<RoadPreviewTopologyReuse> {
-        self.topology_reuse
-            .lock()
-            .expect("road preview certificate topology lock poisoned")
-            .take()
+    /// Shares a successful plan without consuming its products before the exact click check.
+    pub(crate) fn edit_plan(&self) -> Option<Arc<RoadEditPlan>> {
+        (self.is_valid && self.surface_generation > 0)
+            .then(|| self.edit_plan.clone())
+            .flatten()
     }
 }
 
@@ -110,6 +61,7 @@ pub(crate) struct RoadPreviewWorkerContext {
     source_mesh_generation: u64,
 }
 
+#[derive(Debug)]
 pub(crate) struct RoadPreviewRequest {
     pub(crate) request_id: u64,
     pub(crate) surface_generation: u64,
@@ -206,38 +158,52 @@ pub(crate) fn run_road_preview_worker(
         let road_debug = crate::debug::category_enabled("road");
         let total_start = road_debug.then(Instant::now);
         let point_count = request.points.len();
-        let mut preview = {
-            // O(1) immutable Arc snapshot; compiling/exporting must not delay a newer context.
-            let context = context
-                .read()
-                .expect("road preview context lock poisoned")
-                .clone();
-            compile_road_preview_from_context(&context, request)
-        };
-        if let Some(scene) = &mut preview.junction_preview
-            && !retained_cache.reuse(scene)
-        {
+        // O(1) immutable Arc snapshot; compiling/exporting must not delay a newer context.
+        let context = context
+            .read()
+            .expect("road preview context lock poisoned")
+            .clone();
+        let mut preview = prepare_road_preview_from_context(&context, request);
+        let retained_reused = preview
+            .junction_preview
+            .as_mut()
+            .is_some_and(|scene| retained_cache.reuse(scene));
+        if preview.edit_plan.is_some() || (preview.junction_preview.is_some() && !retained_reused) {
             // Snapshot only the affected chunk Arcs. Never hold SimCore while filtering meshes
             // or doing Rayon work, and never wait for it while retaining the context read lock.
-            let meshes = loop {
+            let inputs = loop {
                 match core.try_lock() {
                     Ok(core) => {
-                        if core.cached_road_mesh_generation != scene.source_mesh_generation
-                            || core.road_tool_surface_generation != preview.surface_generation
+                        if core.road_tool_surface_generation != preview.surface_generation
+                            || core.terrain_stroke_active
+                            || preview.junction_preview.as_ref().is_some_and(|scene| {
+                                core.cached_road_mesh_generation != scene.source_mesh_generation
+                            })
                         {
                             break None;
                         }
-                        break Some(
-                            scene
-                                .replacement_chunks
-                                .iter()
-                                .filter_map(|key| {
-                                    core.cached_road_mesh_chunks
-                                        .get(key)
-                                        .map(|mesh| (*key, Arc::clone(mesh)))
-                                })
-                                .collect(),
-                        );
+                        let sites = preview
+                            .edit_plan
+                            .as_ref()
+                            .and_then(|plan| plan.topology_for(&context.region_graph))
+                            .and_then(|plan| plan.earthworks())
+                            .and_then(|plan| RoadTerrainSiteInputs::capture(&core, plan));
+                        let meshes = preview
+                            .junction_preview
+                            .as_ref()
+                            .filter(|_| !retained_reused)
+                            .map(|scene| {
+                                scene
+                                    .replacement_chunks
+                                    .iter()
+                                    .filter_map(|key| {
+                                        core.cached_road_mesh_chunks
+                                            .get(key)
+                                            .map(|mesh| (*key, Arc::clone(mesh)))
+                                    })
+                                    .collect()
+                            });
+                        break Some((sites, meshes));
                     }
                     Err(TryLockError::Poisoned(_)) => panic!("simulation core lock poisoned"),
                     Err(TryLockError::WouldBlock) => {}
@@ -252,9 +218,14 @@ pub(crate) fn run_road_preview_worker(
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                 }
             };
-            if let Some(meshes) = meshes {
-                scene.retain_existing(&meshes);
-                retained_cache.store(scene);
+            if let Some((sites, meshes)) = inputs {
+                compile_preview_terrain(&mut preview, &context, sites);
+                if let Some(scene) = &mut preview.junction_preview
+                    && let Some(meshes) = meshes
+                {
+                    scene.retain_existing(&meshes);
+                    retained_cache.store(scene);
+                }
             } else {
                 preview.junction_preview = None;
                 preview.surface_generation = 0;
@@ -301,7 +272,52 @@ pub(crate) fn run_road_preview_worker(
     }
 }
 
+#[cfg(test)]
+/// Compiles the immutable test context without authoritative local site inputs.
 pub(crate) fn compile_road_preview_from_context(
+    context: &RoadPreviewWorkerContext,
+    request: RoadPreviewRequest,
+) -> RoadPreviewSnapshot {
+    let mut preview = prepare_road_preview_from_context(context, request);
+    compile_preview_terrain(&mut preview, context, None);
+    preview
+}
+
+#[cfg(test)]
+/// Exercises production site capture and off-lock compilation against a test core.
+pub(crate) fn compile_road_preview_with_sites(
+    context: &RoadPreviewWorkerContext,
+    request: RoadPreviewRequest,
+    core: &mut SimCore,
+) -> RoadPreviewSnapshot {
+    let mut preview = prepare_road_preview_from_context(context, request);
+    let sites = preview
+        .edit_plan
+        .as_ref()
+        .and_then(|plan| plan.topology_for(&context.region_graph))
+        .and_then(|plan| plan.earthworks())
+        .and_then(|plan| RoadTerrainSiteInputs::capture(core, plan));
+    compile_preview_terrain(&mut preview, context, sites);
+    preview
+}
+
+fn compile_preview_terrain(
+    preview: &mut RoadPreviewSnapshot,
+    context: &RoadPreviewWorkerContext,
+    sites: Option<RoadTerrainSiteInputs>,
+) {
+    // The unpublished result is exclusively worker-owned; no shared plan is mutated after export.
+    if let Some(plan) = preview.edit_plan.as_mut().and_then(Arc::get_mut) {
+        plan.compile_terrain(
+            &context.terrain,
+            &context.region_graph,
+            &context.road_surface,
+            sites,
+        );
+    }
+}
+
+fn prepare_road_preview_from_context(
     context: &RoadPreviewWorkerContext,
     request: RoadPreviewRequest,
 ) -> RoadPreviewSnapshot {
@@ -313,15 +329,21 @@ pub(crate) fn compile_road_preview_from_context(
     );
     let fwd_lanes = request.fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
     let bkw_lanes = request.bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-    let (mut preview, topology_reuse, render_input) = preview_surface
-        .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
-            &request.points,
+    let prepared = RoadSurfaceSystem::prepare_road_input_for_tool(
+        &request.points,
+        &context.terrain,
+        &context.region_graph,
+        &context.road_surface,
+        request.snap_to_existing_roads,
+    );
+    let (mut preview, topology_reuse, render_input, topology_plan) = preview_surface
+        .compile_prepared_preview_surface_with_topology_reuse(
+            &prepared,
             fwd_lanes,
             bkw_lanes,
             context.terrain.as_ref(),
             context.region_graph.as_ref(),
             context.road_surface.as_ref(),
-            request.snap_to_existing_roads,
         );
     preview.validation = validate_road_candidate_against_water(
         preview.edge_class,
@@ -367,79 +389,29 @@ pub(crate) fn compile_road_preview_from_context(
             context.terrain.as_ref(),
         )
     };
+    let request_id = request.request_id;
+    let edit_plan = (preview.is_valid && generation_matches).then(|| {
+        Arc::new(RoadEditPlan::new(
+            request,
+            context.terrain.source_generation(),
+            prepared,
+            preview.validation.clone(),
+            topology_reuse,
+            topology_plan,
+        ))
+    });
     RoadPreviewSnapshot {
-        request_id: request.request_id,
+        request_id,
         surface_generation: generation_matches
             .then_some(context.surface_generation)
             .unwrap_or(0),
         fwd_lanes,
         bkw_lanes,
-        snap_to_existing_roads: request.snap_to_existing_roads,
         prepared_points: preview.prepared_points,
         visual_mesh,
         junction_preview,
         validation: preview.validation,
         is_valid: preview.is_valid,
-        topology_reuse: topology_reuse
-            .map(|topology_reuse| Arc::new(Mutex::new(Some(topology_reuse)))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use godot::prelude::Vector3;
-
-    #[test]
-    fn validation_certificate_requires_exact_generation_and_inputs() {
-        let points = vec![Vector3::ZERO, Vector3::new(8.0, 0.0, 0.0)];
-        let snapshot = RoadPreviewSnapshot {
-            request_id: 7,
-            surface_generation: 11,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            snap_to_existing_roads: true,
-            prepared_points: points.clone(),
-            visual_mesh: RoadPreviewVisualMesh::default(),
-            junction_preview: None,
-            validation: RoadPreviewValidation::valid(0.0),
-            is_valid: true,
-            topology_reuse: None,
-        };
-        let certificate = snapshot
-            .validation_certificate()
-            .expect("valid preview should produce a certificate");
-
-        assert!(
-            certificate
-                .validation_for(11, &points, 1, 1, true)
-                .is_some()
-        );
-        assert!(
-            certificate
-                .validation_for(12, &points, 1, 1, true)
-                .is_none()
-        );
-        assert!(
-            certificate
-                .validation_for(
-                    11,
-                    &[Vector3::ZERO, Vector3::new(9.0, 0.0, 0.0)],
-                    1,
-                    1,
-                    true
-                )
-                .is_none()
-        );
-        assert!(
-            certificate
-                .validation_for(11, &points, 2, 1, true)
-                .is_none()
-        );
-        assert!(
-            certificate
-                .validation_for(11, &points, 1, 1, false)
-                .is_none()
-        );
+        edit_plan,
     }
 }

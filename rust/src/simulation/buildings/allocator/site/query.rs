@@ -49,6 +49,14 @@ impl BuildingSiteClient {
 }
 
 impl BuildingAllocator {
+    /// Whether bounded site queries can run without rebuilding or scanning the building store.
+    /// Preview workers must defer unprepared inputs to normal allocator/terrain maintenance.
+    pub(crate) fn building_site_query_index_ready(&self) -> bool {
+        self.building_sites.len() == self.buildings.len()
+            && (self.buildings.is_empty()
+                || (!self.dirty_index && !self.building_chunks.is_empty()))
+    }
+
     /// Rebuilds the derived site clients and shared building index when a site query needs them.
     pub(crate) fn prepare_building_site_query_index(&mut self, zone_cell_m: f32) {
         if self.building_sites.len() != self.buildings.len() {

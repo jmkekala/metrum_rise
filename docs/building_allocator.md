@@ -224,8 +224,14 @@ Important invariant:
 
 - parcel occupancy is rebuilt from saved building parcel ids
 - `update_edge_indices()` remaps `Building.edge_idx` and parcel road attachments after road compaction
-- `recompute_derived_transforms()` rebuilds `center_x`, `center_y`, and `facing_dir` from saved
-  attachment data plus live road geometry
+- save/load uses `recompute_derived_transforms()` to rebuild `center_x`, `center_y`, and `facing_dir`
+  from saved attachment data plus live road geometry
+- live road splits and `repair_road_attachments_after_topology_edit()` instead preserve the placed
+  world pose and `support_height_m`, changing attachment references rather than moving the site;
+  entrance caches then rebuild against those repaired references
+- `RoadEditPlan` captures nearby site footprints/support heights through the prepared building index
+  and grades against final planned roads. Readiness never rebuilds that index; changed local sites
+  invalidate the plan, and adoption checks the site set again after topology changes.
 - Explicit sites (`parcel_id = 0`), including farms, use the saved `edge_idx`, `frontage_t`,
   `side`, and depth. `frontage_t` locates the frontage center along the physical road polyline;
   `cell_x = 0` is not a road station. Placement and load share the same position/tangent sampler,

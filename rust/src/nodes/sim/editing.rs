@@ -5,7 +5,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{
-    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadPreviewValidationCertificate,
+    ROAD_BUILD_COST_PER_METER, ROAD_LOCKED_TERRAIN_RENDER_STEP_M, RoadEditPlan,
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
@@ -15,6 +15,7 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
+use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::surface::{
     RoadExtensionReprofile, RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
@@ -35,8 +36,10 @@ pub(crate) struct RoadAddOutcome {
     pub(crate) committed: bool,
     /// Deferred treasury charge for the committed physical road length.
     pub(crate) build_cost: f64,
-    /// Preview-produced canonical topology offered only after exact certificate validation.
+    /// Preview-produced canonical topology offered only after exact edit-plan matching.
     pub(crate) preview_topology_reuse: Option<RoadPreviewTopologyReuse>,
+    /// Already adopted local geometry; absent when authoritative preparation must finalize it.
+    pub(crate) finalized_geometry: Option<FinalizedRoadGeometry>,
 }
 
 impl RoadAddOutcome {
@@ -45,13 +48,23 @@ impl RoadAddOutcome {
             committed: false,
             build_cost: 0.0,
             preview_topology_reuse: None,
+            finalized_geometry: None,
         }
     }
 }
 
 impl SimCore {
     /// Accepts a road only after the road surface and every affected terrain payload succeed.
+    #[cfg(test)]
     pub(crate) fn validate_staged_road_render(&mut self) -> bool {
+        self.validate_staged_road_render_with_plan(None)
+    }
+
+    /// Adopts complete planned products after local dependency checks, with checkpoint rollback.
+    pub(crate) fn validate_staged_road_render_with_plan(
+        &mut self,
+        plan: Option<&super::core::RoadTerrainPlan>,
+    ) -> bool {
         let patches = self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
         let validation = if self
             .transit_network
@@ -59,7 +72,7 @@ impl SimCore {
             .published_generation_matches_source()
         {
             crate::nodes::simulation_node::SimulationNode::validate_staged_road_terrain(
-                self, &patches,
+                self, &patches, plan,
             )
         } else {
             Err(self
@@ -932,24 +945,66 @@ impl SimCore {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-        validation_certificate: Option<&RoadPreviewValidationCertificate>,
+        edit_plan: Option<&RoadEditPlan>,
     ) -> RoadAddOutcome {
+        if let Some(plan) = edit_plan
+            && (plan.status(self) != "ready"
+                || plan
+                    .prepared_input_for(
+                        self.road_tool_surface_generation,
+                        self.heightmap.source_generation(),
+                        &points,
+                        fwd_lanes,
+                        bkw_lanes,
+                        snap_to_existing_roads,
+                    )
+                    .is_none())
+        {
+            self.last_road_timing = format!("rejected=road_plan_{}", plan.status(self));
+            return RoadAddOutcome::rejected();
+        }
         let fwd_lanes_u8 = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
         let bkw_lanes_u8 = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
-        let prepared_input = RoadSurfaceSystem::prepare_road_input_for_tool(
-            &points,
-            &self.heightmap,
-            &self.region_graph,
-            &self.transit_network.road_surface,
-            snap_to_existing_roads,
-        );
+        let planned_input = edit_plan.and_then(|plan| {
+            plan.prepared_input_for(
+                self.road_tool_surface_generation,
+                self.heightmap.source_generation(),
+                &points,
+                fwd_lanes,
+                bkw_lanes,
+                snap_to_existing_roads,
+            )
+        });
+        // Borrow the exact ready solve. Interactive stale/missing plans are rebuilt by the
+        // command handler before mutation; plan-less subsystem callers retain full validation.
+        let fresh_input;
+        let prepared_input = if let Some(prepared) = planned_input {
+            prepared
+        } else {
+            fresh_input = RoadSurfaceSystem::prepare_road_input_for_tool(
+                &points,
+                &self.heightmap,
+                &self.region_graph,
+                &self.transit_network.road_surface,
+                snap_to_existing_roads,
+            );
+            &fresh_input
+        };
         let fixed_points = prepared_input.points.clone();
+        debug_log!(
+            "road",
+            "road_edit_plan reused={} raw_points={} prepared_points={} generation={}",
+            planned_input.is_some(),
+            points.len(),
+            fixed_points.len(),
+            self.road_tool_surface_generation
+        );
 
         let fast_validation = self
             .transit_network
             .road_surface
             .validate_prepared_road_candidate_fast(
-                &prepared_input,
+                prepared_input,
                 fwd_lanes_u8,
                 bkw_lanes_u8,
                 &self.heightmap,
@@ -964,21 +1019,9 @@ impl SimCore {
             fast_validation,
         );
         let mut validation = fast_validation.clone();
-        let mut preview_topology_reuse = None;
         if validation.is_valid {
-            let certified_validation = validation_certificate.and_then(|certificate| {
-                certificate.validation_for(
-                    self.road_tool_surface_generation,
-                    &prepared_input.points,
-                    fwd_lanes_u8,
-                    bkw_lanes_u8,
-                    snap_to_existing_roads,
-                )
-            });
-            if let Some(certified_validation) = certified_validation {
-                validation = certified_validation.clone();
-                preview_topology_reuse = validation_certificate
-                    .and_then(RoadPreviewValidationCertificate::topology_reuse);
+            if let Some(plan) = edit_plan.filter(|_| planned_input.is_some()) {
+                validation = plan.validation().clone();
             } else {
                 let full_validation_start = Instant::now();
                 let new_edge_validation = self
@@ -995,7 +1038,7 @@ impl SimCore {
                     .transit_network
                     .road_surface
                     .validate_prepared_road_input_against_graph_with_compile_reason(
-                        &prepared_input,
+                        prepared_input,
                         fwd_lanes_u8,
                         bkw_lanes_u8,
                         &self.heightmap,
@@ -1103,13 +1146,32 @@ impl SimCore {
             return RoadAddOutcome::rejected();
         }
 
+        // Claim the products only after every preflight check; a rejection must not consume them.
+        let preview_topology_reuse = edit_plan.and_then(|plan| plan.take_topology_reuse());
         let t_undo = Instant::now();
+        let topology_plan = edit_plan
+            .filter(|_| planned_input.is_some())
+            .and_then(|plan| plan.topology_for(&self.region_graph));
         if !self.benchmark_mode || self.transit_network.road_edit_is_staged() {
-            self.push_network_undo_for_polyline(&fixed_points, ROAD_UNDO_TOPOLOGY_MARGIN_M);
+            if let Some(plan) = topology_plan {
+                let (edges, nodes) = plan.source_topology_ids();
+                self.push_network_undo_for_local_topology(edges, nodes);
+            } else {
+                self.push_network_undo_for_polyline(&fixed_points, ROAD_UNDO_TOPOLOGY_MARGIN_M);
+            }
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
-        self.apply_road_extension_reprofile(prepared_input.extension.as_ref());
+        if let Some(terrain) = edit_plan.and_then(|plan| plan.terrain())
+            && (!self.benchmark_mode || self.transit_network.road_edit_is_staged())
+            && let Some(checkpoint) = self.undo_stack.back_mut()
+        {
+            checkpoint.road_visual_terrain = Some(terrain.visual_checkpoint(&self.heightmap));
+        }
+
+        if topology_plan.is_none() {
+            self.apply_road_extension_reprofile(prepared_input.extension.as_ref());
+        }
 
         // Compute polyline length before fixed_points is moved into add_road.
         let build_length_m: f64 = fixed_points
@@ -1123,29 +1185,46 @@ impl SimCore {
             .sum();
 
         let t_topo = Instant::now();
-        self.transit_network.add_road(
-            &mut self.region_graph,
-            fixed_points,
-            fwd_lanes_u8,
-            bkw_lanes_u8,
-            prepared_input.class,
-            &mut self.zoning,
-            &mut self.allocator,
+        let finalized_geometry = if let Some(plan) = topology_plan {
+            Some(
+                self.transit_network
+                    .adopt_road_topology_plan(
+                        &mut self.region_graph,
+                        plan,
+                        &self.zoning,
+                        &mut self.allocator,
+                    )
+                    .expect("plan source identities checked under the same simulation lock"),
+            )
+        } else {
+            self.transit_network.add_road(
+                &mut self.region_graph,
+                fixed_points,
+                fwd_lanes_u8,
+                bkw_lanes_u8,
+                prepared_input.class,
+                &mut self.zoning,
+                &mut self.allocator,
+            );
+            None
+        };
+        debug_log!(
+            "road",
+            "road_edit_topology adopted={}",
+            finalized_geometry.is_some()
         );
         let dt_topo_us = t_topo.elapsed().as_micros();
 
         self.mark_local_network_render_dirty();
 
-        // Store partial timing so the AddRoad handler can append the remaining phases.
-        // Zoning is NOT flushed here — create_edge_internal already called
-        // invalidate_zoning_near_edge (125 m radius) for every new/split edge.
-        // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
-        // batching all dirty edges into a single pass instead of N separate passes.
+        // The AddRoad handler validates staged road/terrain products before refreshing lanes,
+        // agents, routing and building references, for both adopted and freshly solved edits.
         self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
         RoadAddOutcome {
             committed: true,
             build_cost: build_length_m * ROAD_BUILD_COST_PER_METER,
             preview_topology_reuse,
+            finalized_geometry,
         }
     }
 
@@ -1210,6 +1289,7 @@ impl SimCore {
         self.transit_network
             .mark_surface_point_dirty(extension.snapped_node_pos);
 
+        self.transit_network.mark_road_profile_authored(edge_idx);
         if self.transit_network.bulk_load {
             self.transit_network.bulk_dirty_edges.insert(edge_idx);
         } else {
@@ -1784,7 +1864,7 @@ impl SimCore {
     /// Returns the ID of the nearest node to `pos` if `pos` is within
     /// [`config::BORDER_DETECTION_THRESHOLD`] metres of any map edge, or `-1` if not.
     ///
-    /// Call this after [`add_road_internal`] with the road's start or end position to find
+    /// Call this after road insertion with the road's start or end position to find
     /// out whether a border-connection dialog should be presented to the player.
     pub fn check_border_candidate_internal(&self, pos: Vector3) -> i64 {
         // The actual world-space boundary is derived from the heightmap dimensions, not
@@ -1829,8 +1909,8 @@ impl SimCore {
 
     /// Designates the node at `node_id` as an external border connection.
     ///
-    /// After this call the node's type becomes [`NodeType::Border`] and it will be used as an
-    /// immigrant spawn point by [`BuildingAllocator::tick`] as long as the road remains connected.
+    /// Marks the node as [`Border`](crate::simulation::network::types::NodeType::Border),
+    /// making a live connected road eligible for demand-driven household arrivals and external trips.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
         if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
             debug_log!(

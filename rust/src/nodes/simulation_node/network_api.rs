@@ -102,12 +102,12 @@ impl SimulationNode {
         let clone_ms = clone_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
             .unwrap_or(0.0);
-        let validation_certificate = self
+        let edit_plan = self
             .road_preview_result
             .read()
             .expect("road preview result lock poisoned")
             .as_ref()
-            .and_then(RoadPreviewSnapshot::validation_certificate);
+            .and_then(RoadPreviewSnapshot::edit_plan);
         let send_start = road_debug.then(Instant::now);
         let send_ok = self
             .cmd_tx
@@ -116,7 +116,7 @@ impl SimulationNode {
                 fwd_lanes,
                 bkw_lanes,
                 snap_to_existing_roads,
-                validation_certificate,
+                edit_plan,
                 enqueued_at: Instant::now(),
             })
             .is_ok();

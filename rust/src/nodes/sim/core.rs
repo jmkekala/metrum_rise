@@ -8,7 +8,9 @@
 //! and locks the `Arc<Mutex<SimCore>>` briefly for mutations (road edits, etc.).
 
 mod budget;
+mod road_edit_plan;
 mod road_preview;
+mod road_terrain_plan;
 mod snapshot;
 mod state;
 mod terrain_payloads;
@@ -17,6 +19,8 @@ mod water_preview;
 
 pub(crate) use budget::CityServicePolicy;
 pub use budget::CityTreasury;
+pub(crate) use road_edit_plan::RoadEditPlan;
+pub(crate) use road_terrain_plan::RoadTerrainPlan;
 pub use snapshot::RenderSnapshot;
 pub use state::SimCore;
 pub(crate) use thread::SimCommand;
@@ -26,9 +30,9 @@ pub(crate) use budget::{
     SERVICE_POLICY_ELECTRICITY,
 };
 pub(crate) use road_preview::{
-    RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewValidationCertificate,
-    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_preview_channel,
-    road_tool_snapshots_from_core, run_road_preview_worker,
+    RoadPreviewRequest, RoadPreviewSender, RoadPreviewSnapshot, RoadPreviewWorkerContext,
+    RoadToolQuerySnapshot, road_preview_channel, road_tool_snapshots_from_core,
+    run_road_preview_worker,
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, WaterRuntimeSnapshot,

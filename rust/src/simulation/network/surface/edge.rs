@@ -16,7 +16,6 @@ use handoff::EdgeMouthPolicy;
 /// Standard vertical step from carriageway/asphalt to raised curb or sidewalk top.
 pub(crate) const CURB_STEP_HEIGHT_M: f32 = profile::CURB_STEP_HEIGHT_M;
 
-#[cfg(test)]
 pub(crate) use input::PreparedRoadInput;
 pub(crate) use input::RoadExtensionReprofile;
 pub use preview::{PreviewRoadSurfaceResult, RoadPreviewValidation};

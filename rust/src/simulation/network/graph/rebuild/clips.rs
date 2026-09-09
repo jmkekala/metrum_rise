@@ -44,9 +44,8 @@ impl RegionGraph {
             edge.start_clip = start_clip;
             edge.end_clip = end_clip;
 
-            // Keep physical_geometry in sync with geometry (which may have updated Y values
-            // from terrain height re-interpolation). The renderer trims it via start_clip/end_clip.
-            edge.physical_geometry = edge.geometry.clone();
+            // Clips describe ownership only. Control geometry includes hard profile-plane
+            // supports that must never overwrite the separately eased physical road profile.
         }
 
         // Re-index all roads after a massive batch clip rebuild (e.g. after terrain sync)
@@ -94,8 +93,6 @@ impl RegionGraph {
             if affected_nodes.contains(&end_node) {
                 edge.end_clip = end_clip;
             }
-
-            edge.physical_geometry = edge.geometry.clone();
         }
 
         // Update the spatial R-tree only for the affected edges (not full rebuild).

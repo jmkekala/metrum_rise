@@ -154,8 +154,10 @@ fn collect_path_height_candidate(
     candidate_height_m: f64,
 ) -> Result<(), PathHeightResolutionError> {
     let candidate_key = SurfaceHeightMmKey::from_m_f64(candidate_height_m);
-    if let Some((existing_key, _)) = selected_height {
-        if *existing_key != candidate_key {
+    if let Some((existing_key, existing_height_m)) = selected_height {
+        if *existing_key != candidate_key
+            && !heights_agree_at_source_precision(*existing_height_m, candidate_height_m)
+        {
             let point = SurfaceXzKey::from_road_xz(point_xz);
             return Err(PathHeightResolutionError {
                 point_x_key: point.x_key(),
@@ -176,7 +178,7 @@ fn reject_conflicting_path_height(
 ) -> Result<(), PathHeightResolutionError> {
     let existing_key = SurfaceHeightMmKey::from_m_f64(existing.y);
     let incoming_key = SurfaceHeightMmKey::from_m_f64(incoming.y);
-    if existing_key == incoming_key {
+    if existing_key == incoming_key || heights_agree_at_source_precision(existing.y, incoming.y) {
         return Ok(());
     }
     let point = SurfaceXzKey::from_road_xz(road_vec3_xz(incoming));
@@ -188,9 +190,36 @@ fn reject_conflicting_path_height(
     })
 }
 
+fn heights_agree_at_source_precision(a: f64, b: f64) -> bool {
+    // Section heights originate in f32, including independently evaluated crossing-plane
+    // offsets. Their roundoff can straddle a millimetre bucket boundary. Do not turn that
+    // boundary into a height conflict; this bound remains far below an actual curb step.
+    (a - b).abs() <= 4.0 * f64::from(f32::EPSILON) * a.abs().max(b.abs()).max(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_roundoff_across_a_millimetre_boundary_is_not_a_height_step() {
+        let height = 150.1724938135628;
+        for (other, conflicts) in [
+            (150.17251586914063, false),
+            (height + 0.001, true),
+            (height + 0.12, true),
+        ] {
+            let path = [
+                RoadVec3::new(0.0, height, 0.0),
+                RoadVec3::new(1.0, height, 0.0),
+                RoadVec3::new(0.0, other, 0.0),
+            ];
+            assert_eq!(
+                height_on_world_path(RoadVec2::ZERO, &path).is_err(),
+                conflicts
+            );
+        }
+    }
 
     #[test]
     fn exact_quantized_endpoint_height_wins_before_segment_projection() {

@@ -12,8 +12,7 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 
-/// Fine render step used for terrain patches whose topology is clipped by visible road surfaces.
-pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
+pub(crate) use crate::simulation::terrain::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 
 /// Pending refined-terrain invalidation stamps for one render patch.
 #[derive(Clone, Debug, Default)]
@@ -129,7 +128,7 @@ pub(crate) struct CachedTerrainCdtRoadInput {
     pub(crate) source_loops: Vec<Arc<TerrainCdtRoadLoop>>,
     /// Halo loop count before core clipping; controls the grading-constraint contract.
     pub(crate) halo_loop_count: usize,
-    /// Rekeyed loops clipped to the tile core, ready for fresh terrain sampling.
+    /// Rekeyed halo loops; canonicalization clips ownership but retains boundary grading.
     pub(crate) road_loops: Vec<TerrainCdtRoadLoop>,
     /// Halo road contributors represented by this tile.
     pub(crate) road_clip_fingerprints: Vec<u64>,

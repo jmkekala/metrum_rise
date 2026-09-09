@@ -371,6 +371,39 @@ impl SimulationNode {
             "surface_generation",
             i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
         );
+        // Backend readiness is exported only alongside the complete paired render products.
+        let valid = dict.get("is_valid").is_some_and(|value| value.to::<bool>());
+        dict.set("plan_state", if valid { "provisional" } else { "invalid" });
+        let plan = preview.edit_plan();
+        let mut terrain_patches = None;
+        if let Some(terrain) = plan.as_ref().and_then(|plan| plan.terrain()) {
+            let Some(core) = self.try_lock_core() else {
+                return Variant::nil();
+            };
+            let state = plan.as_ref().unwrap().status(&core);
+            dict.set("terrain_plan_state", terrain.status(&core));
+            dict.set("plan_state", if valid { state } else { "invalid" });
+            if valid && state == "invalid" {
+                // Full-plan rejection overrides the earlier cheap road-only verdict.
+                dict.set("is_valid", false);
+                dict.set(
+                    "invalid_reason",
+                    terrain.failure_reason().unwrap_or("road_plan_invalid"),
+                );
+            }
+            if valid && state == "ready" && preview.junction_preview.is_some() {
+                terrain_patches = terrain.preview_patches();
+            }
+            if state == "ready" && terrain_patches.is_none() {
+                dict.set("plan_state", "provisional");
+            }
+            dict.set(
+                "terrain_plan_reason",
+                terrain.failure_reason().unwrap_or(""),
+            );
+        } else {
+            dict.set("terrain_plan_state", "pending");
+        }
         Self::append_road_preview_visual_mesh(&mut dict, &preview.visual_mesh);
         if let Some(scene) = &preview.junction_preview {
             let empty = BTreeSet::new();
@@ -412,6 +445,42 @@ impl SimulationNode {
                         .flat_map(|key| [key.0, key.1]),
                 ),
             );
+            if let Some(patches) = terrain_patches {
+                // Reuse the normal buffer exporter off the core lock. Godot stages this entire
+                // batch before selecting the canonical (unlifted, no-infill) road mesh variant.
+                let mut batch = VarDictionary::new();
+                let mut payloads = Array::<VarDictionary>::new();
+                for patch in patches {
+                    let mut data = if patch.input_road_loops == 0 {
+                        Self::terrain_patch_dict(&patch.patch)
+                    } else {
+                        Self::cached_refined_terrain_patch_dict(&patch, false)
+                    };
+                    data.set(
+                        "surface_generation",
+                        i64::try_from(preview.surface_generation).unwrap_or(i64::MAX),
+                    );
+                    data.set("render_step_mm", i64::from(patch.key.render_step_mm));
+                    // Planned ownership can retire the last live cutout in a patch.
+                    data.set(
+                        "terrain_requires_engineered_refinement",
+                        patch.input_road_loops > 0,
+                    );
+                    payloads.push(&data);
+                }
+                batch.set("patches", payloads);
+                let canonical = SimCore::road_mesh_chunks_dict(
+                    &scene.canonical_planned,
+                    &empty,
+                    true,
+                    preview.surface_generation,
+                    scene.chunk_span_m,
+                    scene.chunk_origin_x_m,
+                    scene.chunk_origin_z_m,
+                );
+                batch.set("road_chunks", canonical.get("chunks").unwrap());
+                dict.set("terrain_preview", batch);
+            }
             dict.set("junction_preview", replacement);
         }
         dict.to_variant()

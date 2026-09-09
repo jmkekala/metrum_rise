@@ -86,21 +86,7 @@ impl Fixture {
             &mut self.allocator,
         );
         self.network.bulk_load = false;
-        let mut edges = std::mem::take(&mut self.network.bulk_dirty_edges);
-        let nodes = self.network.bulk_surface_profile_nodes(&self.graph, &edges);
-        edges.extend(self.network.solve_dirty_junction_endpoint_profiles(
-            &mut self.graph,
-            &nodes,
-            &edges,
-        ));
-        edges.extend(self.network.regrade_dirty_junction_endpoint_profiles(
-            &mut self.graph,
-            &nodes,
-            &edges,
-        ));
-        self.graph.rebuild_intersection_clips_for_nodes(&nodes);
-        self.network
-            .mark_surface_dirty_from_sets(&self.graph, &edges, &nodes);
+        self.network.finalize_road_geometry(&mut self.graph);
         self.network
             .road_surface
             .compile_dirty(&self.graph, &self.terrain);
@@ -265,6 +251,14 @@ fn verify_connection(mut fixture: Fixture, points: [Vector3; 2], forward: u8) {
         "negative/positive chunk boundaries must be covered"
     );
     let mut anchored_vertices = 0;
+    assert_eq!(scene.canonical_planned.len(), unlifted.len());
+    for (key, mesh) in &scene.canonical_planned {
+        assert_eq!(
+            signature(mesh),
+            signature(&unlifted[key]),
+            "canonical output must have no display lift or vacated-cap infill"
+        );
+    }
     let mut cleared_vertices = 0;
     let flat = exact.road_vertices.iter().all(|point| point.y == 0.0);
     let empty = NetworkMeshData::new();
@@ -432,22 +426,89 @@ fn straight_continuation_removes_terminal_without_a_junction_n() {
 }
 
 #[test]
-fn isolated_stroke_does_not_export_a_replacement_scene() {
-    let fixture = Fixture::new(false);
-    let (preview, _, input) = fixture
-        .network
-        .road_surface
-        .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
-            &[fixture.point(-48.0, 0.0), fixture.point(48.0, 0.0)],
-            1,
-            1,
-            &fixture.terrain,
-            &fixture.graph,
-            &fixture.network.road_surface,
-            true,
+fn isolated_strokes_export_canonical_cold_commit_meshes_and_retain_neighbors() {
+    for (sloped, neighbor) in [(false, false), (true, false), (true, true)] {
+        let mut fixture = Fixture::new(sloped);
+        if neighbor {
+            fixture.add(
+                &[fixture.point(24.0, 72.0), fixture.point(60.0, 72.0)],
+                1,
+                1,
+            );
+        }
+        let points = [fixture.point(-48.0, 0.0), fixture.point(48.0, 0.0)];
+        let (preview, _, input) = fixture
+            .network
+            .road_surface
+            .compile_preview_surface_mesh_only_with_existing_surface_snap_and_topology_reuse(
+                &points,
+                1,
+                1,
+                &fixture.terrain,
+                &fixture.graph,
+                &fixture.network.road_surface,
+                true,
+            );
+        assert!(preview.is_valid);
+        let input = input.expect("isolated standard roads need the same canonical render scene");
+        assert!(input.removed.is_empty(), "isolated roads replace no owners");
+        let mut scene = input
+            .render(
+                &fixture.terrain,
+                &fixture.graph,
+                &fixture.network.road_surface,
+            )
+            .expect("isolated scenes require no vacated cutout infill");
+        assert!(
+            scene.replacement_chunks.len() >= 2,
+            "cross a chunk boundary"
         );
-    assert!(preview.is_valid);
-    assert!(input.is_none());
+        let originals = RoadRenderer.generate_mesh_chunks_with_surface(
+            &fixture.graph,
+            &mut fixture.network.lane_system,
+            &fixture.terrain,
+            &fixture.network.road_surface,
+            &scene.replacement_chunks,
+        );
+        scene.retain_existing(
+            &originals
+                .into_iter()
+                .map(|(key, mesh)| (key, Arc::new(mesh)))
+                .collect(),
+        );
+        assert_eq!(!scene.retained.is_empty(), neighbor);
+        fixture.add(&points, 1, 1);
+        let committed = RoadRenderer.generate_mesh_chunks_with_surface(
+            &fixture.graph,
+            &mut fixture.network.lane_system,
+            &fixture.terrain,
+            &fixture.network.road_surface,
+            &scene.replacement_chunks,
+        );
+        let empty = NetworkMeshData::new();
+        for key in &scene.replacement_chunks {
+            let mut displayed = signature(
+                scene
+                    .canonical_planned
+                    .get(key)
+                    .map(Arc::as_ref)
+                    .unwrap_or(&empty),
+            );
+            let retained = signature(scene.retained.get(key).map(Arc::as_ref).unwrap_or(&empty));
+            for (layer, retained) in displayed.iter_mut().zip(retained) {
+                layer.extend(retained);
+                layer.sort_unstable();
+            }
+            let mut expected = signature(committed.get(key).unwrap_or(&empty));
+            for layer in &mut expected {
+                layer.sort_unstable();
+            }
+            assert_eq!(
+                displayed, expected,
+                "isolated canonical roads plus retained neighbors must match cold commit in {key:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -455,6 +516,7 @@ fn retained_cache_requires_exact_source_ownership_but_not_planned_positions() {
     let mut scene = RoadJunctionPreview {
         source_mesh_generation: 7,
         planned: BTreeMap::new(),
+        canonical_planned: BTreeMap::new(),
         retained: Arc::new(BTreeMap::from([((0, 0), Arc::new(NetworkMeshData::new()))])),
         retained_revision: 0,
         replacement_chunks: BTreeSet::from([(0, 0)]),

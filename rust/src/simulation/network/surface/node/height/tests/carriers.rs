@@ -5,6 +5,22 @@
 use super::*;
 
 #[test]
+fn boundary_height_preserves_the_same_precision_as_the_surface_interior() {
+    let interval = manual_interval(0, RoadSurfaceBandKind::Carriageway, 2.0004, 4.0004);
+    let field = NodeBandHeightField::from_interval(0, &interval, None).unwrap();
+    let boundary = field.evaluate_height(RoadVec2::new(5.0, 0.0)).unwrap();
+    let interior = field.evaluate_height(RoadVec2::new(5.0, 0.001)).unwrap();
+    assert!(
+        (boundary - 3.0004).abs() <= 1.0e-6,
+        "boundary height was rounded away from its source profile: {boundary}"
+    );
+    assert!(
+        (boundary - interior).abs() <= 1.0e-6,
+        "a straight grade must not form a step at its boundary: {boundary} != {interior}"
+    );
+}
+
+#[test]
 fn evaluates_owned_region_vertices_from_band_height_fields() {
     let input = solved_input();
     let ownership = solved_ownership(&input);

@@ -3,6 +3,7 @@
 //! Terrain render patch discovery and terrain-clip loop collection.
 
 use super::*;
+use crate::simulation::terrain::TerrainVisualSource;
 
 const TERRAIN_CDT_MIN_PATCH_OVERLAP_M: f32 = 0.001;
 
@@ -123,16 +124,38 @@ impl RoadSurfaceSystem {
     pub(crate) fn terrain_render_patch_grading_margins_for_patches(
         &self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         render_step_m: f32,
         patch_keys: &[(usize, usize)],
     ) -> BTreeMap<(usize, usize), f32> {
-        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        self.terrain_render_patch_grading_margins_for_filtered_patches(
+            graph,
+            terrain,
+            render_step_m,
+            patch_keys,
+            |_| true,
+            |_| true,
+        )
+    }
+
+    /// Uses the live ownership calculation on an overlay's retained owners only. Filters run on
+    /// spatial-query candidates; grading samples remain cached once per local boundary loop.
+    pub(in crate::simulation::network::surface) fn terrain_render_patch_grading_margins_for_filtered_patches(
+        &self,
+        graph: &RegionGraph,
+        terrain: &impl TerrainVisualSource,
+        render_step_m: f32,
+        patch_keys: &[(usize, usize)],
+        include_edge: impl Fn(usize) -> bool,
+        include_node: impl Fn(u32) -> bool,
+    ) -> BTreeMap<(usize, usize), f32> {
+        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
         let query_margin_m = EARTHWORK_MAX_MARGIN_M + base_margin_m;
         let target_patches = patch_keys
             .iter()
             .filter_map(|&key| {
                 terrain
+                    .terrain()
                     .render_patch_world_bounds(key.0, key.1)
                     .map(|bounds| (key, bounds))
             })
@@ -154,8 +177,8 @@ impl RoadSurfaceSystem {
                 f64::from(max_x + query_margin_m),
                 f64::from(max_z + query_margin_m),
             );
-            edge_indices.extend(patch_edges);
-            node_ids.extend(patch_nodes);
+            edge_indices.extend(patch_edges.into_iter().filter(|&id| include_edge(id)));
+            node_ids.extend(patch_nodes.into_iter().filter(|&id| include_node(id)));
         }
 
         let mut patch_margins = BTreeMap::new();
@@ -163,7 +186,15 @@ impl RoadSurfaceSystem {
         let node_count = node_ids.len();
         let mut evaluated_loop_count = 0usize;
         let mut cached_loop_count = 0usize;
-        let grading_cache = Arc::clone(&self.terrain_grading_cache);
+        // Staged samples share the production calculation, never the resident cache. Batch-local
+        // caching still evaluates each spatially discovered boundary once, not once per patch.
+        let local_cache =
+            std::sync::Mutex::new(super::super::super::RoadSurfaceTerrainGradingCache::default());
+        let grading_cache = if terrain.visual_cache_generation().is_some() {
+            self.terrain_grading_cache.as_ref()
+        } else {
+            &local_cache
+        };
         let mut grading_cache = grading_cache
             .lock()
             .expect("road terrain grading cache lock poisoned");
@@ -238,7 +269,7 @@ impl RoadSurfaceSystem {
         owner_cache: &mut HashMap<Owner, Vec<Option<RoadSurfaceTerrainLoopGradingCacheEntry>>>,
         owner: Owner,
         loop_index: usize,
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         boundary_loop: &RoadSurfaceTerrainClipLoop,
         render_step_m: f32,
         base_margin_m: f32,
@@ -267,7 +298,8 @@ impl RoadSurfaceSystem {
             owner_loops.resize_with(loop_index + 1, || None);
         }
         let cache_matches = owner_loops[loop_index].as_ref().is_some_and(|cached| {
-            cached.terrain_source_generation == terrain.source_generation()
+            cached.terrain_source_generation == terrain.terrain().source_generation()
+                && Some(cached.terrain_visual_generation) == terrain.visual_cache_generation()
                 && cached.render_step_bits == render_step_m.to_bits()
                 && cached.points_world.as_slice() == boundary_loop.points_world
         });
@@ -282,7 +314,8 @@ impl RoadSurfaceSystem {
                 None,
             );
             owner_loops[loop_index] = Some(RoadSurfaceTerrainLoopGradingCacheEntry {
-                terrain_source_generation: terrain.source_generation(),
+                terrain_source_generation: terrain.terrain().source_generation(),
+                terrain_visual_generation: terrain.visual_cache_generation().unwrap_or_default(),
                 render_step_bits: render_step_m.to_bits(),
                 points_world: Arc::new(boundary_loop.points_world.clone()),
                 influence_bounds,
@@ -327,7 +360,26 @@ impl RoadSurfaceSystem {
         has_exact_influence.then_some(target_margin_m).flatten()
     }
 
-    pub(super) fn terrain_clip_boundary_loops_for_world_bounds<'a>(
+    /// Compares exact indexed contributors when two broad-phase query margins differ. This
+    /// does not union/recompile cutouts or tolerate changed geometry; it only checks whether
+    /// the two query rectangles select the same ordered boundary loops.
+    pub(crate) fn terrain_clip_contributors_match_world_bounds(
+        &self,
+        graph: &RegionGraph,
+        expected: (f32, f32, f32, f32),
+        actual: (f32, f32, f32, f32),
+    ) -> bool {
+        expected == actual
+            || self.terrain_clip_boundary_loops_for_world_bounds(
+                graph, expected.0, expected.1, expected.2, expected.3,
+            ) == self.terrain_clip_boundary_loops_for_world_bounds(
+                graph, actual.0, actual.1, actual.2, actual.3,
+            )
+    }
+
+    pub(in crate::simulation::network::surface) fn terrain_clip_boundary_loops_for_world_bounds<
+        'a,
+    >(
         &'a self,
         graph: &RegionGraph,
         min_x: f32,
@@ -430,7 +482,7 @@ impl RoadSurfaceSystem {
     }
 
     fn insert_terrain_patch_grading_margins_for_loop(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         boundary_loop: &RoadSurfaceTerrainClipLoop,
         render_step_m: f32,
         base_margin_m: f32,
@@ -450,7 +502,7 @@ impl RoadSurfaceSystem {
         let base_margin_m = base_margin_m.max(0.0);
         let mut required_margin_m = base_margin_m;
         let mut target_margin_m = Self::insert_terrain_patch_grading_margins_for_bounds(
-            terrain,
+            terrain.terrain(),
             vertices.iter().map(|vertex| (vertex.x, vertex.z)),
             base_margin_m,
             patch_margins,
@@ -468,7 +520,7 @@ impl RoadSurfaceSystem {
                 base_margin_m,
             );
             if Self::insert_terrain_patch_grading_margins_for_bounds(
-                terrain,
+                terrain.terrain(),
                 vertices.iter().map(|vertex| (vertex.x, vertex.z)),
                 fallback_margin_m,
                 patch_margins,
@@ -517,7 +569,7 @@ impl RoadSurfaceSystem {
                 );
                 required_margin_m = required_margin_m.max(margin_m);
                 if Self::insert_terrain_patch_grading_margins_for_ray(
-                    terrain,
+                    terrain.terrain(),
                     seam_x,
                     seam_z,
                     outward_x,
@@ -562,7 +614,7 @@ impl RoadSurfaceSystem {
             );
             required_margin_m = required_margin_m.max(margin_m);
             if Self::insert_terrain_patch_grading_margins_for_ray(
-                terrain,
+                terrain.terrain(),
                 vertex.x,
                 vertex.z,
                 bisector_x / bisector_length_m,
@@ -730,6 +782,84 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_stamp_ownership_isolated_from_resident_cache_and_invalidated_by_visual_edits() {
+        use crate::simulation::network::{build_surface_edge, types::NodeType};
+        use crate::simulation::terrain::TerrainVisualOverlay;
+        use godot::prelude::Vector3;
+
+        let mut terrain = TerrainSystem::with_chunking(129, 129, 1.0, 33, 0.0);
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(build_surface_edge(
+            a,
+            b,
+            vec![graph.node(a).pos, graph.node(b).pos],
+            1,
+            1,
+            EdgeClass::Standard,
+        ));
+        let mut surface = RoadSurfaceSystem::new(32.0);
+        assert!(surface.compile_dirty(&graph, &terrain));
+        assert!(surface.terrain_clip_contributors_match_world_bounds(
+            &graph,
+            (-30.0, -10.0, 30.0, 10.0),
+            (-32.0, -12.0, 32.0, 12.0),
+        ));
+        assert!(!surface.terrain_clip_contributors_match_world_bounds(
+            &graph,
+            (-30.0, 16.0, 30.0, 24.0),
+            (-32.0, -12.0, 32.0, 24.0),
+        ));
+        let keys = terrain.render_patch_keys_for_world_bounds(-64.0, -64.0, 64.0, 64.0);
+        let clean =
+            surface.terrain_render_patch_grading_margins_for_patches(&graph, &terrain, 2.0, &keys);
+        let source_generation = terrain.source_generation();
+        terrain
+            .replace_visual_from_dense(&vec![0.5; 129 * 129])
+            .unwrap();
+        assert_eq!(terrain.source_generation(), source_generation);
+        let stamped =
+            surface.terrain_render_patch_grading_margins_for_patches(&graph, &terrain, 2.0, &keys);
+        assert_ne!(
+            clean, stamped,
+            "visual-only changes must invalidate cached grading"
+        );
+        let resident = Arc::clone(
+            &surface.terrain_grading_cache.lock().unwrap().span_loops[&0][0]
+                .as_ref()
+                .unwrap()
+                .patch_margins,
+        );
+        let mut overlay = TerrainVisualOverlay::new(&terrain);
+        overlay.reset_region_from_source_world(&terrain, -64.0, -64.0, 64.0, 64.0);
+        overlay.discard_unchanged(&terrain);
+        let planned = surface.terrain_render_patch_grading_margins_for_patches(
+            &graph,
+            &overlay.view(&terrain),
+            2.0,
+            &keys,
+        );
+        assert_eq!(planned, clean);
+        assert_eq!(
+            surface.terrain_render_patch_grading_margins_for_patches(&graph, &terrain, 2.0, &keys),
+            stamped
+        );
+        assert!(Arc::ptr_eq(
+            &resident,
+            &surface.terrain_grading_cache.lock().unwrap().span_loops[&0][0]
+                .as_ref()
+                .unwrap()
+                .patch_margins
+        ));
+        terrain.reset_visual_region_from_source_world(-64.0, -64.0, 64.0, 64.0);
+        assert_eq!(
+            surface.terrain_render_patch_grading_margins_for_patches(&graph, &terrain, 2.0, &keys),
+            planned
+        );
+    }
 
     #[test]
     fn grading_rect_does_not_claim_a_patch_at_zero_area_contact() {

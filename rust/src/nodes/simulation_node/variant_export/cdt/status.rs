@@ -95,7 +95,33 @@ impl SimulationNode {
         dict.set("terrain_cdt_pathological_output", pathological_output);
     }
 
-    pub(in crate::nodes::simulation_node) fn cached_refined_cdt_failure_label(
+    /// Applies the common contributor-coverage and final terrain-geometry acceptance checks.
+    pub(crate) fn cached_refined_cdt_failure_label(
+        cached: &CachedRefinedTerrainPatch,
+    ) -> Option<&'static str> {
+        if let Some(error) = Self::cached_refined_cdt_window_failure_label(cached) {
+            return Some(error);
+        }
+        if cached.input_road_loops == 0 {
+            return None;
+        }
+        let Some(buffers) = cached.mesh_buffers.as_deref() else {
+            return Some("missing_terrain_cdt_render_buffers");
+        };
+        if buffers.omitted_pathological_terrain_faces > 0
+            || Self::terrain_cdt_output_is_pathological(
+                buffers.terrain_max_face_slope_ratio,
+                buffers.terrain_longest_triangle_edge_m,
+            )
+        {
+            return Some("terrain_cdt_pathological_output");
+        }
+        (!buffers.variant_payload_valid).then_some("invalid_terrain_cdt_render_buffers")
+    }
+
+    /// Checks contributors and triangulated windows before final buffer composition.
+    /// Success authorizes composition, not publication; final products need the check above.
+    pub(crate) fn cached_refined_cdt_window_failure_label(
         cached: &CachedRefinedTerrainPatch,
     ) -> Option<&'static str> {
         if let Some(error_label) = Self::terrain_clip_input_failure_label(
@@ -131,15 +157,6 @@ impl SimulationNode {
                         })
                     })
                     .then_some("terrain_cdt_constraint_conflicts")
-            })
-            .or_else(|| {
-                cached.mesh_buffers.as_ref().and_then(|buffers| {
-                    Self::terrain_cdt_output_is_pathological(
-                        buffers.terrain_max_face_slope_ratio,
-                        buffers.terrain_longest_triangle_edge_m,
-                    )
-                    .then_some("terrain_cdt_pathological_output")
-                })
             })
     }
 

@@ -58,6 +58,7 @@ The graph is authoritative for:
 - lane counts and modal permissions
 - authored road class: `Standard`, `Bridge`, or `Tunnel`
 - authored plan polyline control points in world XZ
+- finalized physical profiles retained on edges after the shared `RoadEditPlan` finalizer
 
 The graph is not the final visible road surface, final terrain clip carrier, final earthwork
 boundary, or final node polygon carrier.
@@ -66,7 +67,7 @@ boundary, or final node polygon carrier.
 
 `RoadSurfaceSystem` owns:
 
-- edge longitudinal grade solutions
+- source-profile preparation and compilation of the graph's finalized longitudinal profiles
 - ordered edge sections and lateral band profiles
 - visual piece classification
 - compiled road top-surface meshes
@@ -220,12 +221,14 @@ distance from the graph node, so ordinary orthogonal junction mouths stay close 
 centre without producing exact tangencies in node ownership. Acute-angle and near-parallel conflicts
 may still expand the clip distance deterministically from incident roadbed widths and angular
 separation. Same-width conflicts cap that expansion to a small multiplier of the incident roadbed
-half-width so ordinary acute mouths do not become long flat platforms; mixed-width conflicts may
+half-width so ordinary acute mouths do not become long node-owned approach regions; mixed-width conflicts may
 expand farther when needed for canonical side-join ownership. That expansion is geometry ownership,
 not visual padding.
 Edge span sampling, visible-surface section queries, and grounded `Standard` road earthwork ranges
-must consume the same node-mouth ownership policy. Profile blending may use a shorter range than
-ownership only for the explicit sparse grounded `Standard` `Bend` hard-pin case described below.
+must consume the same node-mouth ownership policy. Ownership answers which piece renders a surface,
+not where elevation may change. Grounded approach profiles may rise or fall inside node ownership;
+the shared crossing core and all material/terrain seams still require compatible heights and grades.
+This rule is independent of source sampling density.
 
 Degree-two `PassThrough` nodes own no node platform and therefore never run the `Bend` /
 `JunctionN` endpoint-profile rewrite. Their incident spans preserve the already validated authored
@@ -235,30 +238,37 @@ without a transverse cap, terrain slit, or overlapping roadbed.
 
 Incident `Bend` / `JunctionN` rails use a shared graph endpoint profile plane before section, span,
 and node compilation. Profile distances are measured in horizontal XZ metres because the cap is a
-road grade rule, not a 3-D polyline-length rule. The conservative solve may grade-limit only when
+road grade rule, not a 3-D polyline-length rule. The source-fit and final plan solve may grade-limit only when
 limiting stays close to the incident road samples; otherwise the original source-supported plane is
 preserved.
-For a true two-mouth `Bend`, that endpoint plane is a horizontal node-local anchor at the graph node
-height. Sparse, two-control-point grounded `Standard` Bend edges force only the small width-scaled
-profile hard pin exactly onto that plane. If the ownership mouth has to sit farther away to prevent
-material overlap, the Bend mouth section samples the vertical-curve blend instead of extending the
-horizontal platform all the way to that far handoff. Uphill or downhill change therefore starts
-after the short hard pin and blends through the owned footprint / adjacent edge profile instead of
-tilting the whole bend as one plane. Dense source-sampled, elevated, or structural Bend edges keep
-exact mouth-height authority for their existing support-rich vertical-face contracts, and
-`JunctionN` keeps the multi-mouth solve and mouth-authority contract described below.
+Clip rebuilds update ownership distances only: they must not copy hard-pinned control geometry
+over the independently eased physical profile. Junction support materialization and edge splits
+sample the existing physical profile at control stations in a linear monotonic walk. Explicit
+terrain authoring remains responsible for synchronizing both profiles after a terrain edit.
+On a link to another connected endpoint, endpoint blending is bounded to its half of the link;
+it must not overwrite the opposite endpoint's profile supports. An open terminal keeps the full
+transition length because it has no competing endpoint profile.
+For a true two-mouth `Bend`, fit the node-local plane to the incident source grades rather than
+requiring a horizontal platform. The compatible crossing core is determined by incident roadbed
+overlap, independently of the more distant visual ownership handoff. The 32 m transition outside
+that core is retained: reducing its length is not the remedy for an unnecessarily constrained area.
+Grounded road edits resolve grade limits and the final physical profile once in the shared
+`RoadEditPlan` topology finalizer. Road and terrain compilation consume that physical solution;
+surface compilation may construct lateral crossfall and material offsets, but must not apply
+another longitudinal flattening blend. Structural approach integration remains tracked separately.
 
-Road-edit rebuilds preserve that conservative solve for the edited edge set, then use the stronger
-profile path only when an affected `JunctionN` still solves to an over-limit platform, or when an
-adaptable `Bend` leg still deviates from its horizontal platform at the profile control sample.
 For any `JunctionN`, the endpoint profile solve first looks for deterministic opposite-mouth
 authority corridors. Existing stable corridor mouths score above edited branch mouths, and the
 highest-scored corridor owns the node base plane. Secondary opposite branch pairs must not rotate
 that base plane when another road is added to the same `JunctionN`. When such a corridor exists,
-the authority mouths keep their original edge profile and only non-authority branch mouths are
-blended into that plane. When no compatible authority corridor exists, the node falls back to the
-all-mouth least-squares plane. Any changed mouth is capped to the mouth-grade limit, uses a small
-width-scaled hard mouth pin (`~1..2 m` for current standard roads), and blends back to source grade
+the authority mouths retain their original control-grade authority. All affected physical crossing
+profiles must nevertheless agree with the selected solution. When no compatible authority corridor
+exists, the node falls back to the all-mouth least-squares plane. Finalization must not exclude a
+prepared steep through-road from authority selection merely because its grade exceeds the
+conservative raw-input fit limit; a later flat branch must not take over that hillside. The final
+16% mouth-grade target applies only when it moves the fitted 12 m samples by at most 0.5 m.
+Otherwise the supported plane is retained, including its crossfall during surface reconstruction.
+Any changed mouth preserves the compatible crossing core and blends back to source grade
 over a bounded transition. The 12 m profile sample is only a stable solve/control sample, not a
 visible hard platform extent; it may anchor the source profile plane, but physical road geometry
 must receive the same vertical-curve blend as other post-mouth support points. Support vertices are
@@ -267,10 +277,27 @@ reads a gradual source-grade transition instead of one large planar ramp back to
 Visible road-surface sections inside an active profile fade use a denser transition cadence than
 ordinary road spans, so the rendered asphalt approximates the vertical curve instead of exposing
 long planar facets.
-Incremental regrade receives the edit's adaptable edge set; adding one road must not make
-already-stable incident roads adaptable simply because they touch the same junction. Section
+The edit's adaptable edge set controls authored control-profile changes; any stable physical profile
+changed to maintain crossing agreement becomes an explicit plan output and dependency. Section
 sampling must also suppress sub-decimetre protected-handoff slivers so a support point cannot
 create a visible near-vertical roadbed face immediately outside node ownership.
+
+Topology dirtiness is not profile authorship. A local edit ledger records newly authored or
+explicitly reprofiled roads; splitting an existing road does not make either retained half a new
+grade authority. Split children inherit profile authorship only from an authored parent. Preview
+and cold commit drain the same ledger, while adoption/rollback/load reset it. At an existing
+junction dirtied only by a remote split, preserve control geometry and apply only the change from
+the previously solved plane to its physical transition. Reapplying the entire blend accumulates
+cut/fill with each nearby edit. New junctions still receive one complete final-profile solve.
+This adds O(local authored edges) bookkeeping and O(local incident profile points) work, with
+no resident-city scan.
+
+Straight side joins retain both incident approach profiles, including their interior stations;
+an extrapolated collinear miter must not send the path past its endpoint and back. After canonical
+boundary-loop cleanup, discarded spur vertices must not reenter CDT as unconstrained guides.
+Compact the local vertex/lookup/constraint set before adding intentional interior guides;
+repair contours use the same loop cleanup. This stays bounded to one owned node region
+(O(vertices + lookup entries + constraints log constraints)); height and coverage checks are unchanged.
 
 ### `ROAD-04` Node Top-Surface Quality
 
@@ -287,11 +314,11 @@ The implemented contract:
   vertices before Spade CDT input; guides are inserted only inside the final road-owned region,
   require a verified road-owned grade plane from the region boundary, and carry canonical key /
   owner / height-field / grade authority
-- road-edit junction profile solving first applies the conservative edited-edge fit; true
-  two-mouth `Bend` nodes use a horizontal node-local platform, while affected `JunctionN` mouths
+- road-edit junction profile solving resolves its final grade target before applying the physical
+  transition; true two-mouth `Bend` nodes fit the incident grades, while affected `JunctionN` mouths
   solve through deterministic authority-corridor selection; stable opposite-mouth corridors are
   scored deterministically, the best corridor keeps the node base grade for the whole `JunctionN`,
-  non-authority edited branches adapt into that plane, and no-compatible-corridor cases fall back
+  physical crossing profiles adapt into that plane, and no-compatible-corridor cases fall back
   to the all-mouth solve;
   this is the source grade solution, not a render-time repair, it must use horizontal profile
   distances, keep the hard mouth pin small, materialize the solve/control sample plus sparse outer
@@ -321,9 +348,11 @@ or hidden compatibility fallback.
 Grounded `Standard` roads replace visible terrain inside the road-owned footprint. Terrain under
 asphalt, curb / shoulder, or sidewalk is not an independent visible carrier.
 
-Save/load preserves saved node positions, road grades, physical lengths, and junction clips.
-It rebuilds derived road surfaces, terrain earthworks, and lanes without running terrain-authoring
-resynchronization over the saved roads.
+Save/load first compiles saved node positions, road grades, physical lengths, and junction clips
+unchanged. Only rejected grounded junctions receive one local pass of the shared profile finalizer;
+load fails if the detached graph still cannot compile. Valid nonincident profiles remain unchanged.
+Derived road surfaces, terrain earthworks, and lanes rebuild without city-wide terrain-authoring
+resynchronization. See [saved-reference validation](#coverage-and-saved-reference-completion).
 
 Road-touched terrain patches obey this contract:
 
@@ -428,7 +457,7 @@ redisplay an old result within the former 5 cm tolerance. Clicks resolve their c
 building the committed curve, including clicks arriving before the next frame. Shift angle/length rules and capture/release
 distances are unchanged by this scheduling/snap-target change.
 
-The moving and ordinary settled stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
+The moving and fallback stroke previews render asphalt, lane dividers, curbs, and sidewalks rather than a
 uniform blue ribbon. They share committed-road texture resources and Rust's lateral band widths;
 zero vehicle lanes render the actual 2 m walkway. Valid placement uses untinted materials with no
 outline; pending validation is amber, and rejection is red. Lane coordinates remain in metres through curves.
@@ -452,15 +481,18 @@ a changed source generation. GDScript performs no per-vertex terrain calls. A ma
 is consumed before hover validation, avoiding both a redundant validity check and unused fallback
 construction. Retaining a compiled pose during motion likewise builds no ribbon.
 
-When the exact worker compiles an affected `Bend`, `JunctionN` or `PassThrough`, moving and settled
-feedback show the resulting local connection and spans through the committed road renderer: asphalt, sidewalks, curb/step
+When the exact worker compiles a standard road, including an isolated stroke or an affected
+`Bend`, `JunctionN` or `PassThrough`, feedback shows the local terminals, connections and spans
+through the committed road renderer: asphalt, sidewalks, curb/step
 faces, crosswalks and lane dividers. It exports the already-compiled validation neighborhood,
 reconstructing lanes only inside that excerpt for the normal marking rules. It does not compile
 the junction again, rebuild city routing or modify the live graph. Before display-only lifting,
 all vertex attributes must match an independent cold commit, including unequal widths, slopes,
 four-way crossings and an old terminal that becomes a pass-through without a nearby junction.
-The export decision reuses node classification already required by validation; isolated strokes
-retain their lightweight ribbon. Terminal-extension previews include the reprofiled existing edge
+Isolated strokes move the same already-compiled neighborhood into this path, with no removed
+source owners. The retained chunk batch may be empty on a blank map; unrelated roads sharing
+those chunks retain their exact geometry. Empty old cutout sets bypass vacated-ground boolean
+work entirely. Terminal-extension previews include the reprofiled existing edge
 in the same changed-edge ledger as commit, keeping sloped bend heights and mouths identical.
 
 Cached road chunks retain compact source-owner ranges alongside their existing vertex buffers.
@@ -531,14 +563,102 @@ candidate's local post-split topology before acceptance, including interior cros
 road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /
 `Bend` / `JunctionN` pieces is rejected before it reaches the live graph; tight switchbacks are
 allowed only when the compiled surface topology can actually represent them.
-The exact async preview is also a validation certificate for its matching commit. Godot may reuse
-it only for identical road points, lanes, snap mode, and current surface generation; the simulation
-thread independently checks the prepared points and the same generation before skipping its exact
-candidate replay. The accepted certificate also carries immutable node-topology candidates from
-the validation surface. Commit compilation matches them by quantized world position, piece kind,
+The exact async preview carries a shared `RoadEditPlan` for its matching commit. The simulation
+thread requires identical raw road points, lanes, snap mode, surface generation and source-terrain
+revision before borrowing the prepared profile and skipping its exact candidate replay. The plan
+also retains the finalized local graph delta: resolved connections, splits and merges, terminal
+extensions, junction-adjusted profiles, clip distances and affected edge/node scope. Preview and
+unplanned commit use the same finalizer. Matching commits install the solved delta through
+`TransitNetwork`, mapping preview-local identities to existing or appended live slots without
+repeating intersections, junction solving, regrading or clipping. An incomplete mutation frontier
+cannot be adopted. Stale/missing click plans are rebuilt through the same local compiler against
+borrowed live inputs before opening the transaction; no whole-city snapshot is copied at click.
+
+The plan also retains local road/site terrain CDT tiles and joined patch render buffers. Planned
+cutout queries remove replaced source owners **before** union and remap local provenance to the
+same live IDs that topology adoption will allocate. Existing road contributors outside the graph
+excerpt are retained through the existing chunk/query indices. The worker uses the production
+grading, fixed-tile CDT and buffer builders; there is no second terrain compiler. Nearby site
+footprints/support heights are captured through the allocator's existing 512 m chunk index under
+a short core lock, then compiled after releasing it. An unprepared index leaves the terrain
+candidate provisional: pointer work never rebuilds or scans the resident building store.
+Site grading queries the finalized local roads over the immutable resident world, excluding
+replaced owners and preserving unmapped neighbors, global road-top precedence and prospective
+live-ID nearest-edge ties. This adds only a bounded validation-excerpt copy, not a city snapshot.
+Road splits and attachment repair change reference coordinates, not the authored world pose or
+support height from which site geometry is derived. Captured site inputs therefore remain the
+post-topology inputs; their grading already uses final planned roads. Commit verifies this exact
+site set again, remapped road products, source and structural visual samples, affected-patch
+coverage, bordered textures, ownership and exact query contributors. Different broad-phase margins
+must select the identical road/site sets; no floating-point tolerance is used. It then adopts the complete planned
+terrain batch, rebinding only payload generation metadata and sharing tile/seam/mesh buffers by
+Arc. It does not assemble new CDT inputs or choose geometry from the previous live tile cache.
+A mismatch rolls back the edit instead of compiling a different result after readiness.
+
+Terrain validation separates pre-composition contributor/window checks from final publication.
+Successful triangulation alone is insufficient: every clipped patch must retain valid final render
+buffers with zero discarded faces. Missing or invalid buffers report a concrete failure, not an
+indefinitely provisional plan. Cache insertion, cold validation and planned adoption share this
+final gate. Explicit loop-free ordinary patches need no clipped render buffers.
+
+Structural visual-height stamps use the same pattern: retain ordered support inputs and grid
+writes, compare source/grid dependencies and actual triangles, then consume the offer once.
+The plan materializes their final visual result in a bounded copy-on-write overlay using the
+existing terrain storage chunks. Source resets and writes stay interleaved in live sorted chunk
+order, including inclusive shared borders. Patch textures (with clamped border rings), CDT source
+and boundary samples, road grading guides and site grading all consume this same visual view.
+Untouched chunks borrow resident samples; source heights never change. Unchanged edits retain
+the live sampling path. Overlay construction costs O(touched storage chunks + copied samples +
+stamp writes), with O(1) indexed sampling and no full-map copy. Dense road/terrain sampling is
+statically dispatched for resident versus planned inputs. Exact dependencies govern direct
+tile/buffer adoption. Ownership and clip discovery now run after the ordered resets/writes,
+using the same final visual view as compilation. Resident grading caches check both source and
+visual-only revisions; changed overlays use a batch-local cache and cannot poison resident entries.
+This keeps discovery bounded to indexed local owners and grades each boundary once per batch.
+Ordinary grounded roads remain CDT-only; empty stamp reuse is not terrain-mesh reuse. Neither
+product changes authored terrain or skips rollback. Exported `terrain_plan_state` distinguishes
+compiled, invalid, stale, pending and provisional candidates, retaining deterministic failure
+reasons and comparing exact local site inputs. Eligible road previews now export the
+complete local terrain batch together with the canonical, unlifted road meshes. Godot stages all
+required terrain patches before selecting those roads; no road-only clearance lift or vacated-cap
+infill is included in this paired display. Rust exports planned ownership explicitly, including
+regular terrain where the last cutout disappears. Display eligibility requires complete buffers,
+current source/visual/road/site inputs, including post-stamp ownership and clip queries.
+All required patches must already have renderer resources; ineligible or incomplete batches
+retain the road-only preview. Isolated strokes use the same paired path as connected roads.
+A missing-resource failure is retried on a new
+preview request, not by rebuilding meshes every idle frame.
+
+The temporary terrain meshes inherit each resident patch's transform and visibility. Original
+mesh resources are saved and restored exactly on cancellation, invalidation or tool disposal;
+patch update, LOD replacement, recycling and reset invalidate both halves before changing those
+resources. This presentation never changes terrain samples, payload caches or renderer
+acknowledgments. Work is O(local patch samples + exported road/terrain vertices + P log P) for P
+affected patches, plus existing local terrain mesh construction/upload; no resident-world scan is added. Canonical road attributes
+are copied once from the local production output before road-only display adjustments, not
+compiled again. `plan_state` distinguishes pending, provisional, invalid, stale, consumed and
+ready. Ready requires a complete local topology/product set, exact raw inputs/lanes/snap mode,
+road/source/visual dependencies, a prepared site index and live water/parcel clearance. Product
+claims are single-use and happen only after preflight. Godot still labels missing-resource or
+road-only displays provisional; only a successfully staged pair exposes full readiness. An explicit
+empty terrain batch (no affected terrain) is complete; missing/failed nonempty batches are not.
+Known-invalid plans override the earlier road-only valid verdict rather than appearing pending.
+An older pointer's rejected result cannot clear a retained pose for a newer provisionally valid
+input. Retained older poses and coarse ribbons remain explicitly provisional even when their
+underlying geometry is complete; only an exact current paired display claims readiness.
+The existing simulation mutex encloses topology adoption, product validation, lane/agent/entrance
+and routing maintenance, charging and matching render-snapshot preparation; publication retains
+the existing generation fences. Failure before acceptance
+restores the bounded graph/split-reference journal and exact visual storage chunks; successful
+undo retains the same visual checkpoint. No new full-city snapshot or per-pointer index rebuild
+is introduced. Plan-less subsystem diagnostics retain the cold compiler, but interactive commits
+always require a complete plan.
+
+Immutable surface candidates still feed commit compilation, which matches them by world position, piece kind,
 and mouth count, then independently requires exact canonical node-local rail topology. Exact rail
 height values additionally permit boolean ownership and the already validated, triangulated
-arrangement to be rebound from preview-local node IDs to authoritative node IDs. Any metadata,
+arrangement to be rebound from preview-local node IDs to authoritative node IDs, including terrain
+cutout boundary ownership. Any metadata,
 topology, carrier, source-authority, or exact-height mismatch takes the full deterministic compiler
 path.
 Preview validation also seeds that same compiler with immutable committed-node topology candidates,
@@ -1113,19 +1233,23 @@ paired same-material owners only when an exact same-height, same-source-band bri
 the whole edge; and longitudinal curb/sidewalk seam endpoint drift is accepted only inside the
 deterministic overlay-dust envelope.
 
-Topology-changing final `JunctionN` compilation is still synchronous on very large multi-mouth
-nodes. Future final-node responsiveness work should retain these requirements:
-
-- async final compile with versioned jobs
-- immutable compile snapshots
-- deterministic latest-result publication
-- old-mesh / pending-mesh visual state
-- incremental `JunctionN` compile or stronger contact/export indexing
+Interactive `RoadEditPlan` previews perform final local `JunctionN` compilation on the preview
+worker; ready adoption consumes those products. The compiler itself remains synchronous, so
+missing/stale click plans and cold subsystem callers can still block while rebuilding a large
+multi-mouth node. Further responsiveness work must retain immutable versioned inputs,
+deterministic latest-result publication and the last complete visible generation. More incremental
+`JunctionN` compilation or stronger contact/export indexing remains separate from plan readiness.
 
 Do not reopen shipped `ROAD-01` geometry hardcuts for editor responsiveness unless the fix changes
 the roadbed ownership contract itself.
 
 ## Kuopio Terrain Regression Replay (`ROAD-24`)
+
+Current status: the planning/adoption contract and captured geometry/performance acceptance are
+complete. See [coverage and saved-reference completion](#coverage-and-saved-reference-completion)
+and [controlled performance acceptance](#controlled-performance-acceptance) for the latest evidence.
+The historical milestone results below are retained for comparison, not as pending work or current
+failure counts. The capture is a regression fixture, not proof for all possible road geometry.
 
 `benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` is the immutable, version-59
 user capture with 70 saved road edges (about 27 MB). `placements.json` reconstructs 37 logged
@@ -1166,12 +1290,493 @@ It reports offending positions, source grades, cut/fill, and pitch changes; nonf
 profiles, incomplete cases, and failed placement/render work fail the run. Exit 2 indicates a
 completed diagnostic with failed audit checks. Frozen reference-save profiles are reported
 separately, not treated as desired heights or required to change before repaired replays pass.
-Numeric coverage currently excludes watertightness, terrain caps, and complete rendered
-preview/commit mesh parity: screenshots still require visual review. `RoadEditPlan` and terrain
-geometry fixes remain outstanding, rather than being hidden by a green settlement-only test.
+The Python audit alone does not prove surface coverage. The Rust replay also exercises actual
+atomic adoption, exact retained/cold patch agreement, zero omitted terrain faces, strict tile
+containment, matching shared-side heights and retained road constraints. The saved reference's
+27 terrain patches are compiled as well. Screenshots still require visual review; settlement
+alone is not a universal watertightness proof.
 
-Initial release/headless and Forward+ validation completed all 13 cases with identical profile
-audit results: 12 settled their full sequences and the recorded terrain-conflict case rejected
+### Current replay and plan contract
+
+`RoadEditPlan` replaces the preview validation certificate with an immutable,
+shared prepared input: authored points, source/surface revisions, lane counts, snap mode, road
+class, prepared longitudinal profile, validation result and terminal-extension changes. Exact
+matching costs O(raw points) and lets commit borrow the worker's solve instead of preparing it
+again. It retains the already finalized validation graph as a bounded delta, copying
+changed profiles only. Explicit local-to-live maps preserve the planned split order and final
+topology; split-dependent building/occupancy migration uses the existing journal with captured
+pre-finalization split lengths. Live congestion, speed and frontage metadata survive adoption;
+changed speed costs are recalculated without altering profiles. Merge survivors clear obsolete
+turn restrictions. Solved junctions and moved/merged source nodes require complete live incidence
+in the excerpt, even when the source node's position is unchanged.
+
+Capture is O(local records + profile points). Adoption is O(local profile points + summed local
+degree * log(degree) + changed edges * log(resident edges)), plus existing split-dependent
+migration costs. There is no new city-wide scan or clone. The bounded source scope feeds the
+existing undo checkpoint. Live water/parcel checks, exact road-product matching and terrain adoption,
+rollback, lane/agent updates, routing, building references and charging still run in their existing
+order. Optional compiled surface products transfer only after matching. The terrain-product slice
+now precompiles road cutouts, local site grading, CDT tiles, joined patch buffers and structural stamps against the local old/new
+ownership footprint. Work is bounded by local owner coverage, indexed patch contributors, source
+samples and the existing CDT/raster/patch-composition cost; independent patch/tile builds use Rayon. Commit's exact
+adoption checks are linear in local samples/products and borrow immutable terrain buffers.
+Local site capture/validation costs O(queried index cells + local candidates log(local candidates) +
+captured footprint vertices), summed over affected patches. Visible-height probes retain the
+existing allocation-free owner-local triangle grids; nearest-road probes use the existing R-tree.
+Exact site changes invalidate readiness; commit checks the post-topology site set independently.
+Structural writes/resets now feed ownership/clip discovery, planned patch samples and all
+CDT/grading samplers. Site snapshots use each patch's final production query margin. Visual-only
+edits stale the terrain candidate even without a source revision change. Post-topology site
+changes and full commit readiness/dependencies are now covered by the contract above. Complete paired
+previews share the accepted geometry; incomplete displays remain explicitly provisional.
+
+The source-profile solve uses a per-interval grade envelope: the greater of the 16% design target
+and the sampled source/support grade at that interval. Net endpoint slope does not describe an
+interior hill or valley; pin-to-pin feasibility alone must not flatten that relief. Local bounds
+also prevent a steep interval from relaxing an entire otherwise gentle road. Envelope construction
+is O(profile points); the existing fixed-count smoothing/curvature solve stays O(points), with
+unchanged pinned heights. Source terrain and the captured save remain unchanged.
+
+### Historical implementation milestones
+
+The intermediate failures, missing features and test counts in this section describe their named
+runs only. Later completion results supersede them; no historical failure budget is accepted today.
+
+The initial profile-plan fixes make all 13 sequences place, including the formerly rejected
+crossing. `kuopio_04`'s first stroke now stays within 0.23 m of source terrain instead of 37.34 m;
+both `kuopio_04` and `kuopio_07` pass the diagnostic profile budgets. Across all 158 audited edge
+profiles, maximum grade falls from 11.76 (about 85 degrees) to 0.80 (about 39 degrees). The full
+audit deliberately remains failing: 32 edge/checkpoint entries exceed the source-offset budget
+(up to 16.13 m), and one also exceeds the pitch-change budget (36.03 degrees). These entries are
+not 32 independent roads. Terrain gaps still require the next coverage/terrain-plan stage.
+Targeted Rust regressions check source preparation, junction solve/regrade and clip rebuild
+separately; repeated support materialization and edge splits must preserve physical heights.
+`--debug road` reports `road_edit_plan reused=...` and `road_edit_topology adopted=...` to stdout.
+Targeted regressions assert exact planned/cold-commit profiles, clips, costs and compiled node/span
+products for crossings, close double-Ts and terminal extensions. Further tests cover ID remapping,
+remote geometry/index preservation, live metadata, merge restrictions, incomplete frontiers,
+stale-plan fallback and terrain-rejection rollback of split-dependent buildings/occupancy.
+The Godot log file alone excludes Rust stdout.
+
+Verification: 1,599 Rust tests pass (two ignored), all five headless Godot bridge suites and 15
+Python checks pass, and benchmark targets compile. New tests cover exact CDT mesh/buffer equality
+and Arc reuse, changed source/input/frame/site-manifest rejection, nonempty structural stamps,
+unmapped neighboring ownership and affected visual-terrain restoration after rejection. The patch
+follow-up adds multi-tile joined-buffer identity/parity, missing-tile and fresh-manifest/error gates,
+and a real newly derived building site: its affected patch recompiles while unaffected neighbors
+may still reuse. Fresh patch metadata and payload revisions match cold compilation.
+The site follow-up proves exact joined-buffer reuse for an actually site-influenced patch,
+planned/live height and candidate-ID equality including unmapped neighbors, source/site staleness,
+and pending status without rebuilding a dirty allocator index. Godot checks the visible provisional
+label and stale terrain status after a road revision. The display follow-up checks canonical
+unlifted road/cold-commit mesh parity, deterministic terrain batches, exact terrain-buffer parity
+and deferral of structural display. Structural sample regressions additionally compare ordered
+overlapping resets/writes, sparse-default resets, border/interpolation samples, nonempty tunnel
+stamps, road/site grading guides, composed CDT buffers and exact post-reset commit reuse. A huge
+sparse-world test verifies that the overlay only captures touched storage chunks.
+Flat/sloped Godot fixtures verify paired publication, malformed
+batch atomicity, exact cancellation restoration, invalidation before patch recycling and
+provisional fallback for missing resident patches. Isolated-road regressions now cover flat/sloped
+cold-commit mesh parity across chunk boundaries, preservation of an unrelated same-chunk road,
+empty retained batches on a blank map, curved native previews and unchanged-preview upload reuse.
+The moving-ribbon diagnostic explicitly requests fallback geometry after exact chunk display.
+Fresh-world reference patch loading honors native retry requests; ignoring these caused an
+intermittent first-road test timeout, now fixed by sharing the existing capture retry protocol.
+Rustdoc builds without missing-doc warnings
+(11 pre-existing broken/private intra-doc links remain).
+The `terrain-plan-products-01` headless and `terrain-plan-products-render-01` Forward+ runs complete
+all 13 cases / 39 strokes. The headless debug log confirms topology adoption on every stroke and
+719 planned CDT tiles reused across 30 strokes; nine use fresh compilation. Their 158-profile
+audits match each other and the previous `terrain-plan-topology-02` audit exactly. The rendered run saved 117 screenshots;
+spot checks still show blue terrain gaps and junction bumps. Both diagnostics intentionally exit
+2 for the same 32 quality failures, not placement failures. The earlier `terrain-plan-topology-01`
+debug run hit a settlement timeout with water work pending after a successful commit; it is retained
+as a failed run, not counted as acceptance. The final headless and Forward+ runs did not repeat it.
+
+The patch-composition follow-up `terrain-plan-patches-01` completes 13 cases / 39 strokes and
+reuses 815 tiles across 33 strokes; 26 strokes reuse 42 complete patch buffers. Its profile audit is byte-identical
+to `terrain-plan-products-01`, including the 32 quality failures and diagnostic exit 2. The pinned
+save checksum remains unchanged. `--debug road` now reports actual `reused_patch_buffers` identity
+reuse separately from tile reuse. This follow-up has no new rendered capture or watertightness
+certification.
+
+The local-site follow-up `terrain-plan-sites-01` also completes 13 cases / 39 strokes, with the
+same 815 reused tiles and 42 complete patch buffers. Its 158-profile audit is byte-identical to
+`terrain-plan-patches-01`: 32 failures and diagnostic exit 2, with the pinned save unchanged.
+No new rendered capture or terrain-gap fix is claimed. The matched unprofiled
+`terrain-plan-sites-after-01` / `terrain-plan-patches-after-01` pair validates all 32 fixtures.
+Per-operation preview-ready median deltas span -6.75 to +6.81 ms (candidate 13.57–47.92 ms);
+first-idle deltas span -6.97 to +6.93 ms. This is one exploratory pair, not a speedup/regression
+claim. These fixtures have no buildings: they measure the empty-site path, not populated-site
+scaling. Populated-site geometry is covered by targeted parity tests; scaling measurements remain
+necessary before full-plan performance sign-off.
+
+The paired-display follow-up `terrain-plan-display-render-01` completes all 13 cases / 39 strokes
+and saves 117 Forward+ screenshots. Debug output confirms actual paired terrain publication for
+23 strokes; the other previews remain provisional road-only displays. The 158-profile audit is
+byte-identical to `terrain-plan-sites-01`: the same 32 failures and diagnostic exit 2. Spot checks
+of `kuopio_04` and `kuopio_07` still show junction bumps/blue gaps, not a geometry-quality fix.
+The pinned save checksum is unchanged. The matched unprofiled `terrain-plan-display-after-02` /
+`terrain-plan-sites-after-01` pair validates all 32 fixtures. Per-operation preview-ready medians
+are 20.20–48.44 ms, with deltas -0.17 to +6.85 ms; first-idle medians are 20.49–34.38 ms, with deltas
+-6.93 to +13.89 ms. This is one exploratory pair, not a performance sign-off. The preliminary
+`terrain-plan-display-after-01` instrumentation run recorded 32 paired displays across 68 placements
+(warmups included), but changed the benchmark harness and is excluded from timing comparisons;
+the final timing run restores the original harness and keeps display counts behind `--debug road`.
+
+The isolated-road follow-up `terrain-plan-isolated-render-01` completes 13 cases / 39 strokes and
+saves 117 Forward+ captures. Paired terrain is actually displayed on 35 strokes, versus 23 in the
+connected-only run. The 158-profile audit remains byte-identical, with the same 32 quality failures
+and diagnostic exit 2; the pinned save is unchanged. `kuopio_04`'s first stroke now displays the
+canonical terrain-following road/terrain pair. Four previews remained road-only because their planned
+terrain reports `missing_terrain_clip_loops`: `kuopio_02` attempt 4 in patches `(17,18)` / `(18,18)`,
+and `kuopio_11` attempts 31–33 in `(17,20)`. These were candidate ownership failures despite
+successful fresh commit compilation, not placement failures.
+
+The ownership follow-up `terrain-plan-ownership-render-01` resolves all four: all 39 strokes now
+display paired terrain, with 13 completed cases and 117 Forward+ captures. Planning now uses the
+live cached per-loop grading ownership calculation, excluding superseded owners before merging
+the planned contribution, and the live site-overlap rule. Clip queries use actual per-patch grading
+margins. Padded query hits no longer claim ordinary patches, independently of CDT output; genuinely
+owned patches still fail on missing sources, loops or windows. Targeted regressions reproduce the
+original failure, verify exact planned/cold patch ownership, margins and buffers through a branch,
+and prove vacated patches lose replaced-road ownership. The coverage validator is unchanged.
+The 158-profile audit is byte-identical to the isolated run (32 quality failures, diagnostic exit 2),
+and the pinned save checksum is unchanged. Spot checks of `kuopio_02` and `kuopio_11` show matching
+road/terrain poses, but junction bumps and blue gaps remain. This is not watertightness certification.
+Structural stamp presentation, post-topology site changes and full readiness remained at this milestone;
+the later structural/readiness passes below complete those contract items.
+
+The approach-profile follow-up separates ownership handoffs from the geometric crossing core.
+`RoadEditPlan` and direct insertion finalize the physical profile through one shared solve;
+grounded section compilation no longer adds a second longitudinal flattening blend. Bends fit
+incident grades. Node-owned straight approach boundaries retain physical-profile stations, and
+rounded corners carry their endpoint heights and grades. Material offsets and source-height
+precision survive contour cleanup, reuse and triangulation; topology identity rounding is not a
+replacement height source. Adjacent-face normal checks exclude only triangles whose XZ altitude
+is unresolved at source-coordinate precision; coverage and direct face validation still inspect
+those triangles. There is no new global scan or spatial index.
+
+The first rendered run, `approach-profile-render-01`, exposed two terrain constraint rejections
+(`kuopio_11` attempt 33 and `kuopio_12` attempt 37). Both are now targeted production-pipeline
+Rust regressions. Terrain noding had interpreted distinct near-parallel approach segments as
+collinear overlap using its millimetre identity tolerance. Incidence now uses the micrometre
+contour resolution; actual overlap and conflicting-height regressions remain enforced. The
+approach contract and its seam follow-up pass 1,606 Rust tests (2 ignored), 15 Python tests and
+all five headless Godot bridge suites. The full quality/performance follow-up is separate from
+these correctness checks; structural writes/resets and full ready/atomic adoption were still open
+at this milestone and are completed by the later passes below.
+
+`approach-profile-render-02` places all 39 strokes across 13 cases and displays all 39 paired
+previews, retaining 117 captures. Commit reuses 1,027 CDT tiles on 34 strokes and 58 joined patch
+buffers on 31 strokes. All 158 physical profiles are audited: worst pitch change falls from
+36.03 to 6.78 degrees, and maximum grade from 0.80 to 0.7568. However, 34 profile entries exceed
+the 5 m source-offset budget (previously 32); two `kuopio_04` crossing profiles now reach 5.35 m
+and 5.61 m. Maximum source offset remains 16.13 m. The saved reference fails node 34 compilation
+and its render settlement fence, adding a separate audit failure (35 total, diagnostic exit 2).
+The SQLite checksum is unchanged. Spot checks show successful previously rejected placements,
+but blue terrain gaps remain. This is a validated profile-contract slice, not geometry-quality
+or saved-map migration sign-off.
+
+The unprofiled `approach-profile-after-01` run passes all 32 fixtures with 3 measured repetitions
+and 1 warmup. Per-operation preview-ready medians are 20.29–47.94 ms; first-idle medians are
+27.31–34.26 ms. The strict report refuses comparison with `terrain-plan-ownership-after-01`:
+the harness, inputs and state cardinalities match, but additional profile supports change
+ghost-guide vertex counts. That guard remains intact; no matched A/B improvement is claimed.
+
+The source-relief follow-up, `relief-profile-render-01`, clears all 34 cut/fill failures without
+changing locations, the SQLite reference, source terrain or quality budgets. All 39 strokes place,
+all 39 paired road/terrain previews display, and 117 captures are retained. Across 158 physical
+profiles, maximum absolute source offset falls 16.1289→3.9450 m and maximum grade
+0.7568→0.6296. The two `kuopio_04` attempt-10 failures (edges 0/2) fall 5.3471/5.6130→0.4581/0.2234 m;
+every profile in that case is below 1.82 m. Worst pitch change rises 6.7805→11.9874 degrees,
+remaining below the unchanged 30-degree diagnostic limit. The audit still exits 2 solely because
+the unchanged saved reference fails node 34 compilation/settlement. Spot checks still show small
+blue terrain gaps; longitudinal acceptance does not certify watertight terrain or saved-map repair.
+
+The complete Rust replay regression now covers every recorded stroke and all 158 checkpoints,
+including cold terrain constraints. Additional tests cover interior hills/valleys with feasible
+endpoints, steep corridor authority through splits, exact planned/cold geometry, non-accumulating
+topology-only profile updates, both straight-join approach domains and discarded CDT spurs.
+The three flat-node polygon goldens reflect CDT retessellation after unused vertex removal;
+polygon/carrier counts and source-authority identities are unchanged. All 1,612 Rust tests
+(2 ignored), 15 Python tests and five Godot bridge suites pass with `./run.sh --test --release`.
+
+`relief-profile-after-01` passes the unprofiled 32-fixture matrix (3 repetitions, 1 warmup) and
+strict matched comparison with `approach-profile-after-01`. Per-operation preview-ready medians
+are 20.19–48.07 ms (deltas -0.53 to +6.64 ms); first-idle medians are 27.22–34.34 ms
+(deltas -6.84 to +6.96 ms). The harness, inputs and work-cardinality checks remain unchanged.
+This single process pair is exploratory evidence, not a speedup claim or completed-plan
+performance certification.
+
+The structural-sample follow-up passes 1,616 Rust tests (2 ignored), including the unchanged
+158-profile Kuopio regression. Ordered resets/nonempty stamps, sparse-default coverage, clamped
+texture borders, road/site grading, composed CDT buffers and exact post-reset reuse are tested.
+The final `structural-samples-static-01` unprofiled capture validates all 32 fixtures with the same
+harness, inputs and cardinalities as `relief-profile-after-01`. Preview-ready medians are
+13.51–47.85 ms (deltas -6.84 to +0.54 ms); first-idle medians are 20.53–34.48 ms
+(deltas -6.97 to +7.06 ms). Initial dynamically dispatched captures `structural-samples-after-01`
+and `after-02` were slower and are not the final implementation. The final comparison remains
+one exploratory process pair, not a speedup claim or full-plan/populated-site performance sign-off.
+The subsequent post-stamp ownership slice removes the structural paired-display gate by moving
+ownership/clip discovery onto the same final samples. Regressions cover visual-only cache
+invalidation, preview cache isolation, nonempty tunnel stamps and post-reset patch reuse.
+All 1,618 Rust tests (2 ignored), including the 158-profile Kuopio replay, and five Godot suites pass.
+Three unchanged-build unprofiled captures (`poststamp-ownership-01/02/03`) validate 32 fixtures each
+and strict matching against `structural-samples-static-01`. Preview-ready medians are respectively
+27.22–68.19 / 20.26–49.61 / 13.50–48.03 ms; per-operation deltas against that baseline span
++6.55 to +22.12 / -6.89 to +6.90 / -6.85 to +13.01 ms. First-idle medians are respectively
+27.17–34.34 / 27.39–34.32 / 20.52–34.38 ms. The repeated candidate runs expose substantial
+run-to-run variation; these are not three independent baseline/candidate pairs or performance
+sign-off. That milestone did not claim full readiness, atomic commit or watertight terrain coverage.
+
+The readiness/adoption pass completes post-topology site dependencies and the transaction contract.
+Building splits/attachment repair preserve authored site pose and support; grading uses final planned
+roads. Ready plans pin exact inputs and road/source/visual/site dependencies and recheck live water
+and parcel clearance under the simulation lock. Stale/missing click plans rebuild locally before
+mutation. Commit checks remapped road products, final visual samples, patch coverage/ownership and
+exact query contributor sets, then installs the existing terrain buffers with new payload metadata.
+It never runs another CDT/input assembly to replace a ready plan's result. A mismatch restores local
+graph/split references and exact visual storage chunks; undo retains that same visual checkpoint.
+The bounded compiler halo now includes complete incidence at span endpoints: a remote four-way
+approach can no longer compile as a preview terminal. This adds two fixed adjacency layers, not a
+recursive graph expansion. Surface-valid bridge/tunnel candidates use canonical scene export too;
+an explicit empty terrain batch is ready, while failed/nonresident batches remain provisional.
+All 1,625 Rust tests (2 ignored) and 15 Python checks pass, including actual terrain adoption for
+all 39 Kuopio strokes / 158 profile checkpoints, crossing/extension/close-double-T, site repair,
+water/parcel invalidation and exact rollback/undo. Benchmark targets compile; rustdoc has no
+missing-doc warnings (11 pre-existing link warnings). All five Godot suites pass, including bridge
+readiness with unchanged terrain, empty batches, paired display and stale-plan invalidation.
+The 14 terrain-plan tests also pass with one Rayon worker, including the full Kuopio replay.
+This completes the planning contract, not
+the separately tracked blue-gap/saved-reference geometry repair.
+
+The initial unprofiled `ready-adoption-01/02/03` runs validate 32 fixtures each and strict matching against
+`poststamp-ownership-01/02/03` (same harness, inputs, cadence and output cardinalities). Preview-ready
+medians are 13.54–48.08 / 13.42–47.90 / 20.30–48.02 ms; first-idle medians are respectively
+20.56–34.33 / 27.34–34.36 / 27.05–41.29 ms. Across process-median aggregates, preview deltas are
+-19.85 to +0.06 ms and first-idle deltas -6.87 to +6.91 ms. First-idle is not uniformly faster;
+the earlier unchanged-build variance prevents a general speedup claim. These runs precede the
+final invalid-verdict propagation and retained-provisional-display fixes.
+
+The final-behavior `ready-adoption-04/05/06` captures also validate all 32 fixtures each and strict
+matching, but their aggregate preview medians are higher: 32.81–67.09 ms (deltas -0.19 to +25.71 ms
+against the three poststamp baselines). First-idle remains 27.17–34.28 ms (deltas -6.86 to +6.84 ms).
+Unchanged-build repeat `ready-adoption-07` retains the increase (preview medians 29.91–65.91 ms).
+The formatting-only final rebuild, `ready-adoption-08`, measures 26.28–66.99 ms preview medians
+and 27.18–41.19 ms first-idle medians; all 32 fixtures pass.
+A performance-core-only diagnostic (`ready-adoption-pcore-diagnostic-01`, 16 Rayon workers) does
+not consistently recover earlier latency; it is not a matched comparison or a game-default change.
+`ready-adoption-diagnostic-01` retains a CPU profile for investigation, not headline latency evidence.
+Two temporary valid-road-only controls also remain slower: omitting rejection propagation recreates
+the exact `ready-adoption-01` binary hash but measures 32.63–68.33 ms preview medians;
+restoring the old display-clearing/label path measures 25.89–61.50 ms. Neither control isolates
+the increase to the final presentation fixes. Both complete behaviors are restored afterward;
+these controls are diagnostic captures, not alternate supported implementations.
+At that milestone, the slower captures were not dismissed as noise: correctness/readiness/adoption
+was implemented, but preview-latency acceptance remained open. The completion investigation below
+supersedes that status; the historical captures remain available for comparison.
+
+### Coverage and saved-reference completion
+
+The coverage investigation identified input and ownership defects, not a need for another
+RoadEditPlan abstraction. Terrain CDT now keeps the uncut grading halo separate from the clipped
+ownership polygon. Shared tile sides use the same grade-limited height authority; road guides
+use the common visual/source terrain field instead of independently conflicting parent-edge
+heights. Strict tile bounds exclude outside sliver vertices, and retained guides touching road
+seams participate in constraint noding. Constraint intersections use metric incidence tolerance,
+not a fraction of segment length that falsely extended long edges. Neither Rust nor Godot may
+publish a terrain patch after discarding pathological faces: an incomplete patch invalidates the
+whole paired publication. The original slope and cut/fill budgets are unchanged.
+
+The Kuopio test now runs the actual atomic-adoption validator at every stroke. This exposed a
+missing dirty approach in `kuopio_06`: the plan compiler now consumes the final profile solver's
+entire dirty ledger, matching commit's products and terrain coverage exactly. The regression
+also checks cold/retained patch agreement, zero omitted faces, strict tile containment, shared
+tile-side heights and retained constraints. The rendered `completion-coverage-final` replay passes
+all 39 placements and 158 profile checks with zero audit failures, including saved-reference
+settlement, and retains 117 before/preview/committed captures. Reviewed hill junctions no longer
+show the previously observed blue gaps or vertical end ramps. This is coverage of the captured
+regressions, not a claim that arbitrary future inputs are mathematically watertight.
+
+The immutable saved reference failed at node 34 because an old approach contained a 17 cm height
+jump over roughly 3.5 cm. Load now first compiles saved geometry unchanged; only rejected grounded
+junctions enter one bounded pass of the shared junction-profile finalizer. The detached loaded
+graph must then compile successfully before publication, or load returns an error. Valid saved
+roads retain authority; this is not a city-wide source-terrain regrade. The regression proves
+every nonincident road profile remains exactly unchanged, and all 27 saved terrain patches pass.
+The checked-in SQLite checksum remains
+`e1d7e0baf4eefd23293f0a770345f50e455815124c0a0920aefe10cc7a1033c0`.
+
+Source provenance recovery uses the existing R-tree dependency for bounded loop-local queries,
+with deterministic semantic source selection. Halo grading excludes only segments beyond the
+maximum input height range divided by the existing slope limit; exhaustive/bounded regressions
+compare identical canonical results. For V input vertices, S local source edges, P queried
+segments and H candidates, cost is O(V + S log S + P log S + H), with no new resident city-wide
+spatial structure.
+Guide/DEM constraint noding likewise queries a tile-local R-tree and reuses its hit buffer;
+sorting hits by original edge index preserves the exhaustive path's height authority exactly.
+The existing edge/edge incidence pass remains bounded to that tile, not the city graph.
+
+The populated-neighborhood measurement is an ignored, release-only Rust benchmark:
+
+```bash
+cd rust
+cargo test --release --lib populated_road_plan_scaling -- --ignored --nocapture --test-threads=1
+```
+
+It retains four occupied local sites and grows remote background state through 0 / 1,000 /
+10,000 / 100,000 buildings, with real indexed parcels, six housed agents per building and
+4 / 40 / 391 remote streets. Each level measures 100 observations after three warmups. It
+separately reports borrowed-core plan compilation, readiness and the preview worker's local
+road-mesh/site/terrain preparation, while proving identical local terrain products. Fixture
+construction, global index preparation and the once-per-edit immutable context snapshot are
+outside cursor-work timing; snapshot cost is reported explicitly. This is a locality test,
+not Godot upload timing or a claim about actively ticking 600,024 full-FSM agents. Run it
+alone, repeat in separate processes, and use the matched Godot matrix for end-to-end latency.
+
+`road-plan-populated-completion-01/02/03.log` all pass with 24 Rayon workers. The table reports
+the median of the three process-specific statistics, not a pooled latency distribution:
+
+| Remote buildings | Plan p50 (ms) | Worker p50 (ms) | Worker p95 (ms) |
+| ---: | ---: | ---: | ---: |
+| 0 | 19.08 | 20.19 | 25.31 |
+| 1,000 | 19.10 | 20.13 | 25.60 |
+| 10,000 | 18.97 | 20.05 | 25.57 |
+| 100,000 | 19.45 | 20.52 | 26.45 |
+
+At 100,000 remote buildings, plan and worker medians grow about 2.0% and 1.6%, respectively;
+readiness medians remain below 0.019 ms in every process. The one-time context snapshot grows
+from roughly 0.01 ms to 3.37–3.47 ms as the road background grows, and is not hidden inside a
+claim of constant snapshot cost. Local terrain products are identical at every level.
+
+For larger timing samples of specific paired fixtures, set
+`METRUM_GAMEPLAY_BENCHMARK_CASES=double_t_close_2l,four_way_mixed_8l_2l` with
+`METRUM_GAMEPLAY_BENCHMARK_MATRIX=paired`. Selection preserves the original fixture order,
+geometry and synthetic-world anchors; unknown or duplicate case IDs fail the workload. The
+recorded matrix descriptors and harness hash keep baseline/candidate workload matching strict.
+Other matrix modes do not accept this selector. The default remains the complete eight-case matrix.
+
+### Controlled performance acceptance
+
+The preserved pre-completion `ready-adoption-08` binary is the baseline (SHA-256
+`e7db00089ff4f671ed567d45eff2f2aec0fda6a37e959280818b20e1cf17ac94`). Both sides use the same
+Godot runtime, hardware, fixture definitions, cadence and guide cardinalities, with diagnostics
+disabled. Each comparison uses three independent process pairs in AB / BA / AB order. CPU
+profiles are separate diagnostics: they identified extra canonicalization work in full-halo source
+recovery and grading queries. Those queries are now indexed/bounded; no thresholds or required
+terrain products were removed to improve timings. Unchanged baseline runs also exhibit large
+variation, so the historical 20–25 ms jumps cannot be assigned to RoadEditPlan from those samples.
+
+The final complete-matrix `completion-local-{baseline,candidate}-01/02/03` runs validate 32
+fixtures each (three measured repetitions, one warmup). Per-operation candidate preview medians
+range 32.53–77.89 ms, and first-idle medians 27.06–34.35 ms. This small-sample screen retains a
+10.52 ms wide-junction delta, so it was not used alone to dismiss the earlier regression.
+
+The larger `completion-targeted-{baseline,candidate}-01/02/03` comparison keeps the two variable
+fixtures at their original locations, with 20 measured repetitions and three warmups per process;
+all 46 fixtures pass in every process. Median-of-process-median preview readiness is:
+
+| Operation | Baseline (ms) | Completed plan (ms) |
+| --- | ---: | ---: |
+| Close double-T: initial road | 33.50 | 35.58 |
+| Close double-T: first branch | 46.94 | 47.26 |
+| Close double-T: second branch | 50.89 | 53.98 |
+| Mixed-width crossing: initial road | 38.74 | 39.64 |
+| Mixed-width crossing: crossing | 67.37 | 69.70 |
+
+The remaining cost is real, not a speedup: approximately 3.09 ms for the second T and 2.33 ms
+for the wide crossing. First-idle changes across these operations are only -0.05 to +0.09 ms
+in the process-median aggregates. Reports use the pattern
+`benchmark-results/road-plan-completion-{local,targeted}-{preview,idle}-comparison.json`.
+There are insufficient observations for
+end-to-end p95/p99 claims; the populated benchmark above has its own 100-observation p95s.
+
+For this completion pass, that small measured increase is accepted for the
+correct shared terrain solution: the expensive work is asynchronous and bounded to the edit,
+ready-plan adoption does not introduce another terrain solve, and the 100,000-building worker
+measurement stays near 20 ms with roughly 2% background-growth cost. This is not a promise of
+60 FPS, a general speedup, or zero cost for a more complete geometric solution. The former
+unexplained large-regression blocker is replaced by reproducible controlled measurements and an
+explicitly recorded tradeoff. Reference fixtures and quality limits are unchanged; historical
+failures remain recorded.
+
+All 1,633 active Rust tests, 15 Python checks and five Godot bridge suites pass; the 15 terrain-plan
+tests pass with one Rayon worker too. Release benchmark targets compile. The final optimized
+headless `completion-local-validation` replay again passes 39 placements / 158 profiles and saved
+reference settlement with zero audit failures. Together with the rendered capture and exhaustive
+query-parity tests, this closes the four RoadEditPlan completion items for the captured workload.
+
+### September 9 audit follow-up
+
+The combined staged/unstaged audit checked topology/profile ownership, local invalidation,
+source/visual/site dependencies, atomic adoption/rollback, terrain coverage and Godot presentation.
+It found a common-validation gap: successful CDT windows could pass without present, valid final
+render buffers. Pre-composition checks now remain separate from final acceptance; clipped patches
+cannot enter the cache or publication through missing/invalid buffers. This adds constant-time
+checks per patch, with no extra spatial query, geometry solve or city scan. The regression also
+proves ordinary loop-free patches remain valid without clipped buffers.
+
+Obsolete two-pass regrade APIs, the zero-valued `regrade` timing field and the old bulk-finalizer
+alias are removed. The remaining conservative source-fit helper is test-only; production profile
+finalization is shared. Cold subsystem compilation and test-only cold/reuse parity oracles remain
+intentional, not alternate interactive commit paths. Rustdoc's 11 broken/private links and stale
+load, site, undo, lock-duration and final-worker descriptions are corrected. Historical measurements
+above remain evidence for their original binaries, not new performance claims for this audit.
+
+Verification: 1,634 Rust tests pass (3 ignored), all 15 terrain-plan tests pass with one Rayon
+worker, 15 Python checks and five Godot bridge suites pass. Release build, benchmark-target check
+and rustdoc complete without warnings; formatting, source headers and diff whitespace checks pass.
+The pinned SQLite checksum is unchanged. The unprofiled audit locality run, retained in
+`benchmark-results/road-plan-audit-scaling-20260909.log`, keeps identical local products across
+0 / 1,000 / 10,000 / 100,000 remote buildings (100 observations per level, 24 Rayon workers).
+Worker p50 at the endpoints is 20.41 / 20.27 ms; readiness p50 is 0.0157 / 0.0169 ms and the
+one-time context snapshot is 0.007 / 3.427 ms. This single-process recheck supports locality,
+not a fresh matched A/B speedup claim. The separate historical `ROAD-06`/`ROAD-07` reports are
+[parked](roadmap.md#parked-historical-reports), not current blockers or pending acceptance work.
+Their geometry is not declared repaired by this capture; reopening requires a current reproduction.
+
+### Historical exploratory timing runs
+
+These earlier measurements do not supersede the completed matched acceptance above.
+
+The matched unprofiled `terrain-plan-ownership-after-01` / `terrain-plan-isolated-after-03`
+comparison validates all 32 fixtures. Per-operation preview-ready medians are 25.34–78.05 ms,
+with deltas -16.41 to +8.53 ms; first-idle medians are 20.89–34.78 ms, with deltas -6.82 to +7.25 ms.
+The harness and input matrix are unchanged. This is one exploratory pair, not a speedup or
+full-plan performance sign-off; populated-site scaling remains unmeasured by this matrix.
+
+The isolated-road timing runs `terrain-plan-isolated-after-01` / `after-02` validate all 32
+fixtures but show preview-ready medians 8–30 ms above the older `terrain-plan-display-after-02`
+baseline. A same-session `terrain-plan-isolated-control-01` temporarily restores only the old
+connected-only export gate and also rises to 26.09–74.95 ms, so the earlier increase cannot be
+attributed to isolated export alone. The gate is restored for `terrain-plan-isolated-after-03`,
+which validates all 32 fixtures with the same binary hash as `after-02`: preview-ready medians
+25.67–69.53 ms, deltas -15.59 to +15.65 ms versus the control; first-idle medians 23.27–34.44 ms,
+deltas -7.07 to +7.19 ms. These unprofiled runs keep the same harness and input matrix, but provide
+only one disabled-gate control, not repeated process pairs or full-plan performance sign-off.
+
+The patch-composition slice's unprofiled `terrain-plan-patches-after-01`, matched against
+`terrain-plan-products-after-01`, validates all 32 fixtures. Per-operation preview-ready medians are
+5.5–26.2 ms lower; first-idle deltas range from 11.4 ms lower to 7.6 ms higher. This is one exploratory
+pair, not a demonstrated speedup or a performance sign-off for the still-incomplete full preview.
+
+The earlier terrain-product slice's matched unprofiled `terrain-plan-stamps-before-01` /
+`terrain-plan-products-after-01` captures both validate all 32 fixtures. Per-operation preview-ready
+medians range from 5.5 ms lower to 20.6 ms higher (most rise by 6–21 ms as CDT work moves before
+click); first-idle medians range from 19.1 ms lower to 9.0 ms higher. This single pair exposes the
+tradeoff, not a speedup or city-scale performance certification. Further preview-cache/locality
+work must preserve exact dependency checks.
+
+The topology-only milestone's matched, unprofiled schema-3 `terrain-plan-topology-before-01` / `after-01` captures both
+validate all 32 fixtures (eight cases, three measured repetitions plus one warmup). In this single
+process pair, per-operation backend core-work medians are 14–78% lower, while first-idle medians
+range from 39% lower to 25% higher. These are exploratory observations only: frame cadence and
+noise matter, and three or more process pairs plus unchanged-build A/A measurements are still
+required for a performance claim. No city-scale performance certification is implied.
+
+Before these fixes, release/headless and Forward+ validation completed all 13 cases with identical
+profile audit results: 12 settled their full sequences and the recorded terrain-conflict case rejected
 again. The rendered run saved 117 before/preview/commit-or-failure images. Replays reached grade 11.76 (about 85 degrees),
 37.34 m source offset, and 117.78 degrees adjacent pitch change. These are reproduced defects,
 not accepted baseline quality. Dumps/screenshots run outside operation timers but perturb caches
@@ -1264,7 +1869,8 @@ Maintained coverage must continue to prove:
 - a missing, empty, failed, conflicted, still-pathological, wrong-contract, or malformed engineered
   terrain payload prevents all sibling terrain uploads, road-chunk swaps, and network
   acknowledgement for that generation; production-shaped Godot coverage exercises the real
-  prepare/stage/commit transaction, while `ok` contained output remains a baked clipped mesh
+  prepare/stage/commit transaction; only complete `ok` output with zero omitted faces remains a
+  baked clipped mesh
 - road render chunk partitioning preserves the complete global triangle multiset across shifted,
   positive, and negative chunk boundaries, with no duplicate triangle ownership
 - the terrain-aligned road grid keeps a representative central local road in one render chunk

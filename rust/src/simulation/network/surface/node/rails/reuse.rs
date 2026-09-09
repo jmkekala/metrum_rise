@@ -619,7 +619,7 @@ fn project_contour_heights(
         .collect::<Vec<_>>();
     let mut projected = Vec::with_capacity(cached.points_xz.len());
     for target in cached.points_xz.iter().copied().map(road_point_key) {
-        let mut height_mm = None;
+        let mut height_m: Option<f64> = None;
         for index in 0..base_keys.len() {
             let next = (index + 1) % base_keys.len();
             let Some(height) = height_for_key_on_generated_edge(
@@ -632,14 +632,16 @@ fn project_contour_heights(
                 continue;
             };
             let candidate = SurfaceHeightMmKey::from_m_f64(height).as_i64();
-            if height_mm.is_some_and(|existing| existing != candidate) {
+            if height_m.is_some_and(|existing| {
+                SurfaceHeightMmKey::from_m_f64(existing).as_i64() != candidate
+            }) {
                 return None;
             }
-            height_mm = Some(candidate);
+            height_m = Some(height_m.map_or(height, |existing| existing.min(height)));
         }
-        let height_mm = height_mm?;
+        let height_m = height_m?;
         let point = road_point_from_key(target);
-        projected.push(RoadVec3::new(point.x, height_mm as f64 / 1000.0, point.y));
+        projected.push(RoadVec3::new(point.x, height_m, point.y));
     }
     Some(Some(projected))
 }

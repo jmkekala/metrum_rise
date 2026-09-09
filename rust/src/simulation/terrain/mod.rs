@@ -9,6 +9,9 @@
 
 pub(crate) mod cdt;
 pub mod chunks;
+mod visual;
+
+pub(crate) use visual::{TerrainVisualOverlay, TerrainVisualSource};
 
 pub use chunks::{
     TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,
@@ -27,6 +30,9 @@ const TERRAIN_RENDER_PATCH_BORDER_TEXELS: usize = 4;
 const TERRAIN_CDT_LOCAL_MIN_SAMPLE_MARGIN_M: f32 = 8.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_RENDER_STEPS: f32 = 4.0;
 const TERRAIN_CDT_LOCAL_SAMPLE_MARGIN_TERRAIN_CELLS: f32 = 2.0;
+
+/// Fine render step used by planned and committed road-clipped terrain patches.
+pub(crate) const ROAD_LOCKED_TERRAIN_RENDER_STEP_M: f32 = 2.0;
 
 /// Returns the deterministic seam margin used by local terrain-CDT windows.
 pub(crate) fn terrain_cdt_local_sample_margin_m(
@@ -102,6 +108,8 @@ pub struct TerrainSystem {
     source_data: SparseChunkGrid<f32>,
     /// Monotonic revision of authoritative terrain samples used by derived-query caches.
     source_generation: u64,
+    /// Revision of visual-only resets/writes; source edits are covered by source_generation.
+    visual_generation: u64,
     /// Render patches whose visible terrain textures must be refreshed.
     dirty_render_patches: HashSet<(usize, usize)>,
 }
@@ -131,6 +139,7 @@ impl TerrainSystem {
             data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
             source_data: SparseChunkGrid::new(width, height, safe_chunk_size, base_elevation),
             source_generation: 0,
+            visual_generation: 0,
             dirty_render_patches: HashSet::new(),
         }
     }
@@ -198,6 +207,11 @@ impl TerrainSystem {
         self.source_generation
     }
 
+    /// Visual-only revision, checked together with the authoritative source revision.
+    pub(crate) fn visual_generation(&self) -> u64 {
+        self.visual_generation
+    }
+
     /// Calculates the surface normal at a fractional coordinate using gradient sampling.
     pub fn get_normal_interpolated(&self, x: f32, z: f32) -> Vector3 {
         let eps = 0.1;
@@ -215,6 +229,17 @@ impl TerrainSystem {
     }
 
     fn interpolate_grid_height(&self, grid: &SparseChunkGrid<f32>, x: f32, z: f32) -> f32 {
+        self.interpolate_height_cells(x, z, |x0, x1, z0, z1| {
+            grid.get_bilinear_cells(x0, x1, z0, z1)
+        })
+    }
+
+    fn interpolate_height_cells(
+        &self,
+        x: f32,
+        z: f32,
+        cells: impl FnOnce(usize, usize, usize, usize) -> [f32; 4],
+    ) -> f32 {
         let x_clamped = x.clamp(0.0, (self.width - 1) as f32);
         let z_clamped = z.clamp(0.0, (self.height - 1) as f32);
 
@@ -226,7 +251,7 @@ impl TerrainSystem {
         let fx = x_clamped.fract();
         let fz = z_clamped.fract();
 
-        let [h00, h10, h01, h11] = grid.get_bilinear_cells(x0, x1, z0, z1);
+        let [h00, h10, h01, h11] = cells(x0, x1, z0, z1);
 
         let h0 = h00 * (1.0 - fx) + h10 * fx;
         let h1 = h01 * (1.0 - fx) + h11 * fx;
@@ -556,6 +581,7 @@ impl TerrainSystem {
 
     /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
+        self.visual_generation = self.visual_generation.wrapping_add(1);
         self.data = self.source_data.clone();
         self.mark_all_render_patches_dirty();
     }
@@ -576,6 +602,7 @@ impl TerrainSystem {
 
         self.mark_render_patches_for_grid_rect(min_grid_x, max_grid_x, min_grid_z, max_grid_z);
 
+        self.visual_generation = self.visual_generation.wrapping_add(1);
         self.data.copy_rect_from(
             &self.source_data,
             min_grid_x,
@@ -607,6 +634,7 @@ impl TerrainSystem {
     /// Replaces the visual terrain buffer from a dense row-major snapshot.
     pub(crate) fn replace_visual_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.data.replace_from_dense(dense)?;
+        self.visual_generation = self.visual_generation.wrapping_add(1);
         self.mark_all_render_patches_dirty();
         Ok(())
     }
@@ -625,6 +653,9 @@ impl TerrainSystem {
         sample: impl FnMut(&U) -> (usize, usize, f32),
     ) {
         self.data.set_cells_grouped_by_chunk(writes, sample);
+        if !writes.is_empty() {
+            self.visual_generation = self.visual_generation.wrapping_add(1);
+        }
     }
 
     /// Returns the sparse terrain storage-chunk extent in samples.
@@ -764,6 +795,20 @@ impl TerrainSystem {
                 self.dirty_render_patches.insert((patch_x, patch_z));
             }
         }
+    }
+
+    /// Whether a patch's visual samples (including its halo) are still authored source samples.
+    /// Test oracle for pre-edit visual samples in structural reset regressions.
+    #[cfg(test)]
+    pub(crate) fn visual_patch_matches_source(&self, patch_x: usize, patch_z: usize) -> bool {
+        let Some((x0, x1, z0, z1)) = self.render_patch_sample_bounds(patch_x, patch_z) else {
+            return false;
+        };
+        let border = TERRAIN_RENDER_PATCH_BORDER_TEXELS;
+        (z0.saturating_sub(border)..=z1.saturating_add(border).min(self.height - 1)).all(|z| {
+            (x0.saturating_sub(border)..=x1.saturating_add(border).min(self.width - 1))
+                .all(|x| self.data.get(x, z) == self.source_data.get(x, z))
+        })
     }
 
     /// Returns one visual-terrain render patch with a neighboring-sample border ring.

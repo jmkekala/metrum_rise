@@ -581,7 +581,8 @@ fi
 
 echo "Deploying library..."
 mkdir -p ../godot/bin
-cp "$LIB" ../godot/bin/libmetrum_rise.so
+# Replace the inode: an older Godot process may still have the previous library mapped.
+cp --remove-destination "$LIB" ../godot/bin/libmetrum_rise.so
 
 echo "Registering GDExtension..."
 mkdir -p ../godot/.godot

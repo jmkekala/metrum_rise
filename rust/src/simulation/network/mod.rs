@@ -18,6 +18,7 @@ pub use render::NetworkMeshData;
 pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
+pub(crate) mod road_edit;
 pub mod topology;
 use crate::config;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -133,7 +134,10 @@ pub struct TransitNetwork {
     /// Edge IDs that were added or modified during the current bulk-load sequence.
     /// Drained by `finalize_bulk_load` to drive `rebuild_edges_incremental`.
     pub bulk_dirty_edges: HashSet<usize>,
+    // New/reprofiled roads, distinct from existing roads dirtied only by splitting.
+    profile_authored_edges: HashSet<usize>,
     road_edit_split_undo: Option<Vec<topology::RoadSplitDependentsUndo>>,
+    recorded_road_splits: Option<Vec<road_edit::PlannedRoadSplit>>,
     /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
     pub flow_fields: FlowFieldSystem,
     /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
@@ -176,7 +180,9 @@ impl TransitNetwork {
             lane_system: lanes::LaneSystem::new(),
             bulk_load: false,
             bulk_dirty_edges: HashSet::new(),
+            profile_authored_edges: HashSet::new(),
             road_edit_split_undo: None,
+            recorded_road_splits: None,
             flow_fields: FlowFieldSystem::new(),
             frontage_delay_elapsed_s: 0.0,
             road_surface: RoadSurfaceSystem::new_with_chunk_grid(
@@ -191,7 +197,7 @@ impl TransitNetwork {
     ///
     /// Rebuilds intersection clips incrementally for the dirty edge set. Returns the set of
     /// edges that were rebuilt so the caller can pass it to
-    /// [`AgentSystem::invalidate_lane_ids_for_edges`].
+    /// [`AgentSystem::invalidate_lane_ids_for_edges`](crate::simulation::economy::agents::AgentSystem::invalidate_lane_ids_for_edges).
     ///
     /// **Callers that need agent invalidation** should call
     /// `agent_system.invalidate_lane_ids_for_edges(&dirty, &self.lane_system, graph)` **before**
@@ -206,6 +212,7 @@ impl TransitNetwork {
         self.bulk_load = false;
         graph.rebuild_intersection_clips();
         let dirty = std::mem::take(&mut self.bulk_dirty_edges);
+        self.profile_authored_edges.clear();
         self.lane_system.rebuild_edges_incremental(graph, &dirty);
         allocator.rebuild_entrance_cache(graph, &self.lane_system);
         dirty
@@ -223,6 +230,7 @@ impl TransitNetwork {
         self.lane_system.clear();
         self.frontage_delay_elapsed_s = 0.0;
         self.road_surface.clear();
+        self.profile_authored_edges.clear();
         zoning.clear();
         allocator.clear();
     }
@@ -316,6 +324,7 @@ impl TransitNetwork {
         self.mark_point_dirty(graph.node(start).pos);
         self.mark_point_dirty(graph.node(end).pos);
 
+        self.mark_road_profile_authored(edge_id);
         if self.bulk_load {
             self.bulk_dirty_edges.insert(edge_id);
         }
@@ -356,12 +365,13 @@ impl TransitNetwork {
                     affected_edges.insert(new_eid);
                 }
             }
-            let profile_changed_edges =
-                graph.solve_junction_endpoint_profiles_for_edges(&affected_nodes, &affected_edges);
+            let authored_edges = std::mem::take(&mut self.profile_authored_edges);
+            let profile_changed_edges = graph.finalize_junction_endpoint_profiles_for_edges(
+                &affected_nodes,
+                &affected_edges,
+                &authored_edges,
+            );
             affected_edges.extend(profile_changed_edges);
-            let regrade_changed_edges = graph
-                .regrade_junction_endpoint_profiles_for_nodes(&affected_nodes, &affected_edges);
-            affected_edges.extend(regrade_changed_edges);
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
             self.lane_system
                 .rebuild_edges_incremental(graph, &affected_edges);
@@ -584,26 +594,6 @@ impl TransitNetwork {
             affected_nodes.insert(graph.get_valid_node(edge.end_node));
         }
         affected_nodes
-    }
-
-    /// Adapts newly changed edge endpoints to the local junction profile.
-    pub(crate) fn solve_dirty_junction_endpoint_profiles(
-        &self,
-        graph: &mut RegionGraph,
-        affected_nodes: &HashSet<u32>,
-        dirty_edges: &HashSet<usize>,
-    ) -> HashSet<usize> {
-        graph.solve_junction_endpoint_profiles_for_edges(affected_nodes, dirty_edges)
-    }
-
-    /// Regrades changed junction mouths that still exceed the profile grade cap.
-    pub(crate) fn regrade_dirty_junction_endpoint_profiles(
-        &self,
-        graph: &mut RegionGraph,
-        affected_nodes: &HashSet<u32>,
-        dirty_edges: &HashSet<usize>,
-    ) -> HashSet<usize> {
-        graph.regrade_junction_endpoint_profiles_for_nodes(affected_nodes, dirty_edges)
     }
 
     /// Marks terrain-edit-adjacent roads and affected chunks dirty in the road-surface shell.

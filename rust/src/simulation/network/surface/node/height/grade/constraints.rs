@@ -543,7 +543,7 @@ pub(super) fn set_vertex_grade_height(
     height_m: f64,
     decision: NodeGradeCarrierDecision,
 ) {
-    let height_m = canonical_height_m(height_m);
+    let height_m = super::super::seams::quantize_source_height_m(height_m);
     vertex.height_m = height_m;
     vertex.grade_authority = Some(NodeGradeVertexAuthority::new_with_source_provenance(
         vertex.point_xz,
@@ -553,8 +553,4 @@ pub(super) fn set_vertex_grade_height(
         decision,
         vertex.source_provenance,
     ));
-}
-
-fn canonical_height_m(height_m: f64) -> f64 {
-    SurfaceHeightMmKey::from_m_f64(height_m).as_i64() as f64 / SURFACE_MM_PER_M
 }

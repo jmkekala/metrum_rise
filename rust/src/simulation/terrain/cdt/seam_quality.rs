@@ -3,6 +3,8 @@
 //! Road-seam source recovery, quality budgets, and deterministic simplification.
 
 use super::*;
+use rstar::primitives::{GeomWithData, Line};
+use rstar::{AABB, RTree};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct TerrainCdtLoopSeamQuality {
@@ -405,25 +407,76 @@ pub(super) fn normalized_road_loop_source_edges(
         .collect()
 }
 
-fn terrain_cdt_loop_edge_sources(
+pub(super) fn terrain_cdt_loop_edge_sources(
     points: &[TerrainCdtVertex],
     source_edges: &[TerrainCdtRoadLoopSourceEdge],
+) -> Vec<Option<TerrainCdtRoadBoundarySource>> {
+    terrain_cdt_loop_edge_sources_in_bounds(points, source_edges, None)
+}
+
+pub(super) fn terrain_cdt_loop_edge_sources_in_bounds(
+    points: &[TerrainCdtVertex],
+    source_edges: &[TerrainCdtRoadLoopSourceEdge],
+    query_bounds: Option<TerrainCdtLoopBounds>,
 ) -> Vec<Option<TerrainCdtRoadBoundarySource>> {
     if points.is_empty() {
         return Vec::new();
     }
+    let relevant = |start: TerrainCdtVertex, end: TerrainCdtVertex| {
+        query_bounds.is_none_or(|bounds| {
+            start.x.max(end.x) + CDT_EPSILON_M >= bounds.min_x
+                && start.x.min(end.x) - CDT_EPSILON_M <= bounds.max_x
+                && start.z.max(end.z) + CDT_EPSILON_M >= bounds.min_z
+                && start.z.min(end.z) - CDT_EPSILON_M <= bounds.max_z
+        })
+    };
+    // One bounded loop-local index, using the same R-tree library as road queries.
+    // O(S log S + P log S + overlapping candidates), instead of P*S source tests.
+    // Source selection is a semantic minimum, independent of tree traversal order.
+    let index = RTree::bulk_load(
+        source_edges
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| relevant(edge.start, edge.end))
+            .map(|(id, edge)| {
+                GeomWithData::new(
+                    Line::new([edge.start.x, edge.start.z], [edge.end.x, edge.end.z]),
+                    id,
+                )
+            })
+            .collect(),
+    );
     (0..points.len())
-        .map(|index| {
-            terrain_cdt_loop_segment_source(
-                points[index],
-                points[(index + 1) % points.len()],
-                source_edges,
-            )
+        .map(|point_index| {
+            let start = points[point_index];
+            let end = points[(point_index + 1) % points.len()];
+            if same_xz(start, end) || !relevant(start, end) {
+                return None;
+            }
+            let bounds = AABB::from_corners(
+                [
+                    start.x.min(end.x) - CDT_EPSILON_M,
+                    start.z.min(end.z) - CDT_EPSILON_M,
+                ],
+                [
+                    start.x.max(end.x) + CDT_EPSILON_M,
+                    start.z.max(end.z) + CDT_EPSILON_M,
+                ],
+            );
+            let mut source = None;
+            for candidate in index.locate_in_envelope_intersecting(&bounds) {
+                let edge = source_edges[candidate.data];
+                if terrain_cdt_segment_lies_on_source_edge(start, end, edge) {
+                    merge_terrain_cdt_boundary_source(&mut source, edge.source);
+                }
+            }
+            source
         })
         .collect()
 }
 
-fn terrain_cdt_loop_segment_source(
+#[cfg(test)]
+pub(super) fn terrain_cdt_loop_segment_source(
     start: TerrainCdtVertex,
     end: TerrainCdtVertex,
     source_edges: &[TerrainCdtRoadLoopSourceEdge],

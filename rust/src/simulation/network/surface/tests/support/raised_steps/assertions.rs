@@ -241,6 +241,23 @@ pub(in crate::simulation::network::surface::tests) fn assert_surface_no_unfaced_
             let Some(overlap) = test_top_boundary_overlap_interval(lower_edge, raised_edge) else {
                 continue;
             };
+            // Unequal-length edges on the same slope have different average heights.
+            // A step exists only if their heights differ at the *shared* XZ interval.
+            let (start, end, denominator) = overlap;
+            let raised_axis = super::backend::road_vec3_xz(raised_edge.end - raised_edge.start);
+            let has_height_gap = [start, end].into_iter().any(|station| {
+                let point = lower_edge
+                    .start
+                    .lerp(lower_edge.end, station as f64 / denominator as f64);
+                let t = super::backend::road_vec3_xz(point - raised_edge.start).dot(raised_axis)
+                    / raised_axis.length_squared();
+                (point.y - (raised_edge.start.y + t * (raised_edge.end.y - raised_edge.start.y)))
+                    .abs()
+                    > f64::from(SAMPLE_EPSILON_M)
+            });
+            if !has_height_gap {
+                continue;
+            }
             if !test_top_edges_form_raised_step(lower_edge, raised_edge) {
                 continue;
             }

@@ -40,6 +40,7 @@ impl SimCore {
         inc_runtime: bool,
     ) {
         self.push_undo_snapshot(SimulationSnapshot {
+            road_visual_terrain: None,
             terrain: if inc_terrain {
                 Some(self.heightmap.clone_visual_dense())
             } else {
@@ -114,6 +115,7 @@ impl SimCore {
             .road_surface
             .capture_topology_undo(&edge_ids, &node_ids);
         self.push_undo_snapshot(SimulationSnapshot {
+            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: Some(graph),
@@ -149,6 +151,9 @@ impl SimCore {
         self.transit_network.bulk_dirty_edges.clear();
         self.reset_local_network_render_state(&edge_ids, &node_ids, state.road_surface_topology);
         self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+        if let Some(visual) = state.road_visual_terrain {
+            visual.restore(&mut self.heightmap);
+        }
     }
 
     /// Accepts a staged road and only then applies the undo-history size limit.
@@ -167,6 +172,7 @@ impl SimCore {
             return false;
         };
         self.push_undo_snapshot(SimulationSnapshot {
+            road_visual_terrain: None,
             terrain: None,
             water: None,
             trans_graph: None,
@@ -327,6 +333,7 @@ impl SimCore {
             }
             let SimulationSnapshot {
                 terrain,
+                road_visual_terrain,
                 water,
                 trans_graph,
                 road_surface_topology,
@@ -394,6 +401,10 @@ impl SimCore {
                         road_surface_topology,
                     );
                 }
+            }
+            if let Some(visual) = road_visual_terrain {
+                self.rebuild_network_surface_terrain_internal_with_entrance_rebuild(false);
+                visual.restore(&mut self.heightmap);
             }
             return true;
         }

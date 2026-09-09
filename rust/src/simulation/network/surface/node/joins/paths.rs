@@ -4,11 +4,17 @@
 
 use super::*;
 
-pub(super) fn reheight_side_join_path_world(
+/// Applies material-height offsets without replacing the retained longitudinal grade.
+pub(super) fn offset_side_join_path_world(
     mut path_world: Vec<RoadVec3>,
     start_height_m: f64,
     end_height_m: f64,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
+    let Some(first) = path_world.first() else {
+        return Ok(None);
+    };
+    let start_offset_m = start_height_m - first.y;
+    let end_offset_m = end_height_m - path_world.last().unwrap().y;
     let total_length_m = path_world
         .windows(2)
         .map(|segment| xz_from_road_vec3(segment[0]).distance(xz_from_road_vec3(segment[1])))
@@ -24,7 +30,9 @@ pub(super) fn reheight_side_join_path_world(
         } else {
             0.0
         };
-        path_world[index].y = start_height_m + (end_height_m - start_height_m) * t;
+        // Raised curb bands have an intentional step. Apply that offset to the shared
+        // solved grade instead of replacing the grade with a mouth-to-mouth chord.
+        path_world[index].y += start_offset_m + (end_offset_m - start_offset_m) * t;
     }
     clean_side_join_path_world(path_world).map_err(SideJoinGenerationError::from_path_height_error)
 }
@@ -56,10 +64,10 @@ pub(super) fn side_join_boundary_path_world(
     };
     let rounded_world = side_join_path_points_to_world(
         path_xz,
-        from_xz,
-        from_world.y,
-        to_xz,
-        to_world.y,
+        from_mouth,
+        from_world,
+        to_mouth,
+        to_world,
         height_plane,
     )?;
     let Some(rounded_world) = rounded_world else {
@@ -71,10 +79,10 @@ pub(super) fn side_join_boundary_path_world(
     );
     let miter_world = side_join_path_points_to_world(
         miter_xz,
-        from_xz,
-        from_world.y,
-        to_xz,
-        to_world.y,
+        from_mouth,
+        from_world,
+        to_mouth,
+        to_world,
         height_plane,
     )?;
     let Some(miter_world) = miter_world else {
@@ -120,32 +128,118 @@ fn rounded_side_join_path_xz(
 
 fn side_join_path_points_to_world(
     points_xz: Vec<RoadVec2>,
-    from_xz: RoadVec2,
-    from_height_m: f64,
-    to_xz: RoadVec2,
-    to_height_m: f64,
+    from_mouth: &NodeInputMouth,
+    from_world: RoadVec3,
+    to_mouth: &NodeInputMouth,
+    to_world: RoadVec3,
     height_plane: Option<SideJoinHeightPlane>,
 ) -> Result<Option<Vec<RoadVec3>>, SideJoinGenerationError> {
+    let from_xz = xz_from_road_vec3(from_world);
+    let to_xz = xz_from_road_vec3(to_world);
+    let on_tangent = |point: RoadVec2, origin: RoadVec2, direction: RoadVec2| {
+        (point - origin).perp_dot(direction).abs() <= 1.0 / super::super::keys::SURFACE_XZ_KEY_SCALE
+    };
+    let from_anchor = points_xz
+        .iter()
+        .take_while(|&&p| on_tangent(p, from_xz, from_mouth.direction_xz))
+        .count()
+        .saturating_sub(1);
+    let to_anchor = points_xz.len().saturating_sub(
+        points_xz
+            .iter()
+            .rev()
+            .take_while(|&&p| on_tangent(p, to_xz, to_mouth.direction_xz))
+            .count(),
+    );
+    // Opposite mouths can describe the same tangent. Their line intersection may
+    // lie beyond a mouth because of coordinate roundoff; it is not a real corner.
+    // Keep the bounded straight join, then recover BOTH incident profile domains.
+    let chord = to_xz - from_xz;
+    let chord_length = chord.length();
+    let straight_join = chord_length > f64::EPSILON
+        && points_xz.iter().all(|point| {
+            // Bound incidence by endpoint/vertex coordinate rounding, not a height
+            // tolerance. A genuine corner must keep its rounded or miter geometry.
+            (*point - from_xz).perp_dot(chord).abs()
+                <= 4.0 / super::super::keys::SURFACE_XZ_KEY_SCALE * chord_length
+        });
+    let (points_xz, from_anchor, to_anchor) = if straight_join {
+        (vec![from_xz, to_xz], 1, 0)
+    } else {
+        (points_xz, from_anchor, to_anchor)
+    };
+    let (points_xz, from_anchor, to_anchor) = if height_plane.is_some() {
+        retain_approach_profile_stations(
+            points_xz,
+            from_mouth,
+            from_xz,
+            to_mouth,
+            to_xz,
+            from_anchor,
+            to_anchor,
+        )
+    } else {
+        (points_xz, from_anchor, to_anchor)
+    };
+    let mut distances = vec![0.0; points_xz.len()];
+    for i in 1..points_xz.len() {
+        distances[i] = distances[i - 1] + points_xz[i].distance(points_xz[i - 1]);
+    }
+    let residual_curve = height_plane.and_then(|plane| {
+        if from_anchor >= to_anchor || to_anchor >= points_xz.len() {
+            return None;
+        }
+        let (from_height, from_grade) =
+            approach_height_residual(from_mouth, from_world, points_xz[from_anchor], plane)?;
+        let (to_height, to_grade) =
+            approach_height_residual(to_mouth, to_world, points_xz[to_anchor], plane)?;
+        Some((
+            from_height,
+            -from_grade,
+            to_height,
+            to_grade,
+            distances[to_anchor] - distances[from_anchor],
+        ))
+    });
     let path_world = points_xz
         .into_iter()
-        .map(|point_xz| {
+        .enumerate()
+        .map(|(index, point_xz)| {
             let height_m = height_plane.map_or_else(
-                || {
-                    height_on_linear_height_path(
-                        point_xz,
-                        from_xz,
-                        from_height_m,
-                        to_xz,
-                        to_height_m,
-                    )
-                },
+                || height_on_linear_height_path(point_xz, from_xz, from_world.y, to_xz, to_world.y),
                 |plane| {
                     if same_surface_xz_key(point_xz, from_xz) {
-                        from_height_m
+                        from_world.y
                     } else if same_surface_xz_key(point_xz, to_xz) {
-                        to_height_m
+                        to_world.y
                     } else {
-                        plane.height_at_xz(point_xz)
+                        let residual = if straight_join {
+                            approach_height_residual(from_mouth, from_world, point_xz, plane)
+                                .or_else(|| {
+                                    approach_height_residual(to_mouth, to_world, point_xz, plane)
+                                })
+                                .map(|sample| sample.0)
+                                .unwrap_or(0.0)
+                        } else if index <= from_anchor {
+                            approach_height_residual(from_mouth, from_world, point_xz, plane)
+                                .map(|sample| sample.0)
+                                .unwrap_or(0.0)
+                        } else if index >= to_anchor {
+                            approach_height_residual(to_mouth, to_world, point_xz, plane)
+                                .map(|sample| sample.0)
+                                .unwrap_or(0.0)
+                        } else if let Some((a, da, b, db, length)) = residual_curve {
+                            let t = (distances[index] - distances[from_anchor]) / length;
+                            let t2 = t * t;
+                            let t3 = t2 * t;
+                            (2.0 * t3 - 3.0 * t2 + 1.0) * a
+                                + (t3 - 2.0 * t2 + t) * length * da
+                                + (-2.0 * t3 + 3.0 * t2) * b
+                                + (t3 - t2) * length * db
+                        } else {
+                            0.0
+                        };
+                        plane.height_at_xz(point_xz) + residual
                     }
                 },
             );
@@ -153,6 +247,131 @@ fn side_join_path_points_to_world(
         })
         .collect();
     clean_side_join_path_world(path_world).map_err(SideJoinGenerationError::from_path_height_error)
+}
+
+// Ownership paths may be straight in XZ without being straight in elevation. Retain
+// physical-profile stations on their straight approach portions, before assigning heights.
+// Work is bounded to the two incident profiles and the local corner path.
+fn retain_approach_profile_stations(
+    points: Vec<RoadVec2>,
+    from: &NodeInputMouth,
+    from_xz: RoadVec2,
+    to: &NodeInputMouth,
+    to_xz: RoadVec2,
+    from_anchor: usize,
+    to_anchor: usize,
+) -> (Vec<RoadVec2>, usize, usize) {
+    let mut result = Vec::with_capacity(points.len());
+    let mut stations = Vec::new();
+    let mut new_from_anchor = from_anchor;
+    let mut new_to_anchor = to_anchor;
+    for (index, segment) in points.windows(2).enumerate() {
+        if index == from_anchor {
+            new_from_anchor = result.len();
+        }
+        if index == to_anchor {
+            new_to_anchor = result.len();
+        }
+        result.push(segment[0]);
+        let axis = segment[1] - segment[0];
+        let length2 = axis.length_squared();
+        if length2 <= f64::EPSILON {
+            continue;
+        }
+        stations.clear();
+        for (mouth, origin, in_approach) in [
+            (from, from_xz, index < from_anchor),
+            (to, to_xz, index >= to_anchor),
+        ] {
+            if !in_approach {
+                continue;
+            }
+            let Some(rail) = mouth
+                .boundary_rails
+                .iter()
+                .find(|rail| same_surface_xz_key(xz_from_road_vec3(rail.mouth_world), origin))
+            else {
+                continue;
+            };
+            if !path_has_vertical_curve(&rail.path_world) {
+                continue;
+            }
+            for point in &rail.path_world {
+                let t = (xz_from_road_vec3(*point) - segment[0]).dot(axis) / length2;
+                if t > 0.0 && t < 1.0 {
+                    stations.push((t, xz_from_road_vec3(*point)));
+                }
+            }
+        }
+        stations.sort_by(|a, b| a.0.total_cmp(&b.0));
+        stations.dedup();
+        result.extend(stations.iter().map(|(_, point)| *point));
+    }
+    if from_anchor == points.len().saturating_sub(1) {
+        new_from_anchor = result.len();
+    }
+    if to_anchor == points.len().saturating_sub(1) {
+        new_to_anchor = result.len();
+    }
+    if let Some(last) = points.last() {
+        result.push(*last);
+    }
+    (result, new_from_anchor, new_to_anchor)
+}
+
+fn path_has_vertical_curve(path: &[RoadVec3]) -> bool {
+    let (Some(start), Some(end)) = (path.first(), path.last()) else {
+        return false;
+    };
+    path.iter().any(|point| {
+        let height = height_on_linear_height_path(
+            xz_from_road_vec3(*point),
+            xz_from_road_vec3(*start),
+            start.y,
+            xz_from_road_vec3(*end),
+            end.y,
+        );
+        (height - point.y).abs()
+            > 4.0
+                * f64::from(f32::EPSILON)
+                * point.y.abs().max(start.y.abs()).max(end.y.abs()).max(1.0)
+    })
+}
+
+// Evaluate the retained incident profile, not a new target grade. Straight approach portions
+// use it verbatim; the rounded corner interpolates its residual from the common crossing plane
+// with endpoint height/grade continuity. A planar profile therefore remains exactly planar.
+fn approach_height_residual(
+    mouth: &NodeInputMouth,
+    mouth_world: RoadVec3,
+    point: RoadVec2,
+    plane: SideJoinHeightPlane,
+) -> Option<(f64, f64)> {
+    let rail = mouth.boundary_rails.iter().find(|rail| {
+        same_surface_xz_key(
+            xz_from_road_vec3(rail.mouth_world),
+            xz_from_road_vec3(mouth_world),
+        )
+    })?;
+    let offset = mouth_world.y - rail.mouth_world.y;
+    let station = (point - xz_from_road_vec3(rail.endpoint_world)).dot(mouth.direction_xz);
+    for segment in rail.path_world.windows(2) {
+        let a = xz_from_road_vec3(segment[0]);
+        let b = xz_from_road_vec3(segment[1]);
+        let sa = (a - xz_from_road_vec3(rail.endpoint_world)).dot(mouth.direction_xz);
+        let sb = (b - xz_from_road_vec3(rail.endpoint_world)).dot(mouth.direction_xz);
+        if station < sa.min(sb) - 0.000001
+            || station > sa.max(sb) + 0.000001
+            || (sb - sa).abs() <= f64::EPSILON
+        {
+            continue;
+        }
+        let ra = segment[0].y + offset - plane.height_at_xz(a);
+        let rb = segment[1].y + offset - plane.height_at_xz(b);
+        let t = ((station - sa) / (sb - sa)).clamp(0.0, 1.0);
+        return Some((ra + (rb - ra) * t, (rb - ra) / (sb - sa)));
+    }
+    None
 }
 
 fn same_surface_xz_key(a: RoadVec2, b: RoadVec2) -> bool {
@@ -499,6 +718,25 @@ fn clean_side_join_path_world(
     let Some(cleaned_world) = reheight_road_points_from_world_path(points_xz, &path_world)? else {
         return Ok(None);
     };
+    // XZ simplification is allowed only when it also preserves the physical grade.
+    let removes_height_support = path_world.iter().any(|point| {
+        !cleaned_world.windows(2).any(|segment| {
+            let axis = xz_from_road_vec3(segment[1]) - xz_from_road_vec3(segment[0]);
+            let t = (xz_from_road_vec3(*point) - xz_from_road_vec3(segment[0])).dot(axis)
+                / axis.length_squared();
+            t >= 0.0
+                && t <= 1.0
+                && xz_from_road_vec3(*point).distance(xz_from_road_vec3(segment[0]) + axis * t)
+                    <= SIDE_JOIN_POLYLINE_POINT_EQUAL_EPS_M
+                && (point.y - (segment[0].y + (segment[1].y - segment[0].y) * t)).abs()
+                    <= 4.0 * f64::from(f32::EPSILON) * point.y.abs().max(1.0)
+        })
+    });
+    if removes_height_support {
+        let mut retained = path_world;
+        remove_repeated_road_vec3_xz_points(&mut retained)?;
+        return Ok(Some(retained));
+    }
     Ok((cleaned_world.len() >= 2).then_some(cleaned_world))
 }
 
@@ -541,6 +779,100 @@ fn mouth_layer_boundary_world(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::node::input::{
+        NodeInputBoundaryRail, NodeInputBoundaryRailRole,
+    };
+
+    #[test]
+    fn straight_join_preserves_both_approaches_and_removes_extrapolated_miter() {
+        let mouth = |direction: RoadVec2, path: Vec<RoadVec3>| NodeInputMouth {
+            order_index: 0,
+            edge_idx: 0,
+            side: IncidentEdgeSide::Start,
+            direction_xz: direction,
+            direction_angle_ccw: direction.y.atan2(direction.x),
+            conflict_handoff_distance_m: 10.0,
+            mouth_rails: Vec::new(),
+            endpoint_rails: Vec::new(),
+            band_intervals: Vec::new(),
+            uses_explicit_band_domain_paths: false,
+            boundary_rails: vec![NodeInputBoundaryRail {
+                boundary_index: 0,
+                role: NodeInputBoundaryRailRole::OuterFootprint {
+                    adjacent_kind: RoadSurfaceBandKind::Sidewalk,
+                },
+                endpoint_world: path[0],
+                mouth_world: *path.last().unwrap(),
+                path_world: path,
+            }],
+        };
+        let left = mouth(
+            -RoadVec2::X,
+            vec![
+                RoadVec3::new(0.0, 10.0, 0.0),
+                RoadVec3::new(-5.0, 8.6, 0.0),
+                RoadVec3::new(-10.0, 7.3, 0.0),
+            ],
+        );
+        let right = mouth(
+            RoadVec2::X,
+            vec![
+                RoadVec3::new(0.0, 10.0, 0.0),
+                RoadVec3::new(5.0, 11.7, 0.0),
+                RoadVec3::new(10.0, 13.6, 0.0),
+            ],
+        );
+        let plane = SideJoinHeightPlane {
+            origin: RoadVec3::new(0.0, 10.0, 0.0),
+            grade_x: 0.3,
+            grade_z: 0.0,
+        };
+        for (from, to) in [(&left, &right), (&right, &left)] {
+            let start = from.boundary_rails[0].mouth_world;
+            let end = to.boundary_rails[0].mouth_world;
+            for with_miter in [false, true] {
+                let mut points = vec![xz_from_road_vec3(start)];
+                if with_miter {
+                    points.push(xz_from_road_vec3(end) + to.direction_xz);
+                }
+                points.push(xz_from_road_vec3(end));
+                let path =
+                    side_join_path_points_to_world(points, from, start, to, end, Some(plane))
+                        .unwrap()
+                        .unwrap();
+                assert!(path.iter().all(|p| p.x.abs() <= 10.0));
+                for expected in left.boundary_rails[0]
+                    .path_world
+                    .iter()
+                    .chain(&right.boundary_rails[0].path_world)
+                {
+                    let actual = path.iter().find(|p| p.x == expected.x).unwrap();
+                    assert!((actual.y - expected.y).abs() < 1.0e-9, "{path:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn straight_ownership_path_retains_vertical_curve_supports() {
+        let curved = vec![
+            RoadVec3::new(0.0, 10.0, 0.0),
+            RoadVec3::new(1.0, 10.25, 0.0),
+            RoadVec3::new(2.0, 11.0, 0.0),
+        ];
+        let retained = clean_side_join_path_world(curved.clone()).unwrap().unwrap();
+        assert_eq!(
+            retained, curved,
+            "XZ-collinear stations still carry the solved vertical curve"
+        );
+        let planar = vec![curved[0], RoadVec3::new(1.0, 10.5, 0.0), curved[2]];
+        let cleaned = clean_side_join_path_world(planar).unwrap().unwrap();
+        assert_eq!(
+            cleaned,
+            vec![curved[0], curved[2]],
+            "a truly linear grade needs no extra station"
+        );
+    }
 
     #[test]
     fn logged_bend_side_join_uses_short_arc_instead_of_miter() {

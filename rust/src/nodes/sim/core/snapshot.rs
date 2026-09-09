@@ -168,6 +168,8 @@ pub(crate) struct BuildingRemovalUndo {
 pub(crate) struct SimulationSnapshot {
     /// Terrain heightmap data.
     pub(crate) terrain: Option<Vec<f32>>,
+    /// Exact bounded visual samples overwritten by a planned road's structural resets/writes.
+    pub(crate) road_visual_terrain: Option<crate::simulation::terrain::TerrainVisualOverlay>,
     /// Water runtime state.
     pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.

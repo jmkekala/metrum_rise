@@ -5,6 +5,132 @@
 use super::*;
 
 #[test]
+fn bounded_halo_grading_matches_complete_halo() {
+    for offset in [0.2, 2.0, 12.0, -4.0] {
+        for slope in [0.0, 0.1, -0.1] {
+            let points =
+                (-128..=128)
+                    .map(|x| TerrainCdtVertex::new(f64::from(x), offset + slope * x as f32, 2.0))
+                    .chain((-128..=128).rev().map(|x| {
+                        TerrainCdtVertex::new(f64::from(x), offset + slope * x as f32, 4.0)
+                    }))
+                    .collect();
+            let source = test_span_boundary_source(3, TerrainCdtRoadBandKind::Sidewalk, 5);
+            let input = TerrainCdtInput::new(
+                TerrainCdtPatch::new(-8.0, -8.0, 8.0, 8.0, [0.0; 4]),
+                vec![sourced_road_loop(3, 0, points, source)],
+                (-8..=8)
+                    .flat_map(|x| {
+                        (-8..=8).map(move |z| {
+                            TerrainCdtVertex::new(f64::from(x), x as f32 * 0.1, f64::from(z))
+                        })
+                    })
+                    .collect(),
+            );
+            let complete = canonicalize_input_with_grading_bounds(input.clone(), None).unwrap();
+            let bounded = canonicalize_input(input).unwrap();
+            assert_eq!(bounded.vertices, complete.vertices);
+            assert_eq!(bounded.constraints, complete.constraints);
+            assert_eq!(
+                bounded.road_constraint_edges,
+                complete.road_constraint_edges
+            );
+            assert_eq!(
+                bounded.road_constraint_sources,
+                complete.road_constraint_sources
+            );
+            assert_eq!(bounded.road_loops, complete.road_loops);
+            assert_eq!(
+                bounded.tie_in_widened_samples,
+                complete.tie_in_widened_samples
+            );
+        }
+    }
+}
+
+#[test]
+fn indexed_source_recovery_matches_exhaustive_recovery() {
+    let points = (0..256)
+        .map(|i| {
+            let angle = f64::from(i) * std::f64::consts::TAU / 256.0;
+            TerrainCdtVertex::new(angle.cos() * 30.0, 0.0, angle.sin() * 30.0)
+        })
+        .collect::<Vec<_>>();
+    let mut sources = points
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| TerrainCdtRoadLoopSourceEdge {
+            start,
+            end: points[(i + 1) % points.len()],
+            source: test_span_boundary_source(i as u64, TerrainCdtRoadBandKind::Sidewalk, 5),
+        })
+        .collect::<Vec<_>>();
+    // Duplicate ownership and opposite winding retain the
+    // exact old source choice; the spatial index cannot decide semantic ownership.
+    sources.push(TerrainCdtRoadLoopSourceEdge {
+        start: points[1],
+        end: points[0],
+        source: test_span_boundary_source(999, TerrainCdtRoadBandKind::Sidewalk, 5),
+    });
+    let expected = (0..points.len())
+        .map(|i| {
+            terrain_cdt_loop_segment_source(points[i], points[(i + 1) % points.len()], &sources)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terrain_cdt_loop_edge_sources(&points, &sources), expected);
+    sources.reverse();
+    assert_eq!(terrain_cdt_loop_edge_sources(&points, &sources), expected);
+}
+
+#[test]
+fn grading_guide_on_a_road_seam_uses_the_retained_constraint_height() {
+    let a = TerrainCdtVertex::new(21.905579, 149.79, -86.685809);
+    let b = TerrainCdtVertex::new(23.668523, 149.605, -87.630283);
+    let guide = TerrainCdtVertex::new(23.663910713398757, 149.61066, -87.62781685177423);
+    let road = sourced_road_loop(
+        3,
+        0,
+        vec![
+            a,
+            b,
+            TerrainCdtVertex::new(b.x, b.height_m, b.z + 5.0),
+            TerrainCdtVertex::new(a.x, a.height_m, a.z + 5.0),
+        ],
+        test_span_boundary_source(3, TerrainCdtRoadBandKind::Sidewalk, 5),
+    );
+    let mesh = build_road_touched_terrain_patch(
+        TerrainCdtInput::new(
+            TerrainCdtPatch::new(16.0, -96.0, 32.0, -80.0, [149.0; 4]),
+            vec![road],
+            Vec::new(),
+        )
+        .with_tie_in_guide_samples(vec![TerrainCdtTieInGuideSample { vertex: guide }]),
+    )
+    .unwrap();
+    let retained = mesh.vertices.iter().find(|v| same_xz(**v, guide)).unwrap();
+    let t = segment_parameter(a, b, guide.x, guide.z);
+    assert!((retained.height_m - interpolated_segment_height(a, b, t)).abs() < 0.001);
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert!(mesh.stats.max_face_slope_ratio < 256.0);
+}
+
+#[test]
+fn near_boundary_samples_do_not_expand_the_triangulation_domain() {
+    let patch = TerrainCdtPatch::new(576.0, 180.0, 640.0, 192.0, [100.0; 4]);
+    let outside = TerrainCdtVertex::new(613.174024, 117.694466, 179.999886);
+    let input = TerrainCdtInput::new(patch, Vec::new(), vec![outside])
+        .with_tie_in_guide_samples(vec![TerrainCdtTieInGuideSample { vertex: outside }]);
+    let mesh = build_road_touched_terrain_patch(input).unwrap();
+    assert!(
+        mesh.vertices
+            .iter()
+            .all(|vertex| patch_contains(*vertex, patch))
+    );
+    assert_eq!(mesh.triangles.len(), 2);
+    assert_eq!(mesh.stats.max_face_y_delta_m, 0.0);
+}
+
+#[test]
 fn cdt_splits_loop_segments_through_source_vertices_before_source_mapping() {
     let source_a = test_span_boundary_source_range(
         92,

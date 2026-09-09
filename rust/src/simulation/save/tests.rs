@@ -152,7 +152,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
         .restore_parcel_from_attachment(1, edge_idx, 1, 0.85, 20.0, 20.0, 0, &graph)
         .unwrap();
     let mut network = TransitNetwork::new_for_world(&config);
-    network::rebuild_loaded_graph_runtime(&graph, &mut network, &mut terrain);
+    network::rebuild_loaded_graph_runtime(&mut graph, &mut network, &mut terrain).unwrap();
     network.lane_system.rebuild(&mut graph);
     assert_eq!(graph.node(start).pos, points[0]);
     assert_eq!(graph.node(end).pos, points[1]);

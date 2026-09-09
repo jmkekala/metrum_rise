@@ -293,6 +293,8 @@ pub(super) struct NodeBandHeightContourEdge {
     pub(super) end: NodeHeightSourcePointKey,
     pub(super) start_height_mm: i64,
     pub(super) end_height_mm: i64,
+    pub(super) start_height_m: f64,
+    pub(super) end_height_m: f64,
 }
 
 #[derive(Clone, Copy, Debug)]

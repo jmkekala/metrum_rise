@@ -124,6 +124,12 @@ Required rule:
   - terrain fragments under those road-owned bands must not be rendered
   - the road-owned top surface follows the client-owned solved profile rather than a separate
     world-horizontal terrain plane
+  - physical road profiles remain distinct from hard-pinned junction solver controls; clipping,
+    splitting and support materialization must not substitute those controls as visible heights
+  - node/span footprint ownership does not define an elevation plateau: junction approaches may
+    change elevation inside node-owned surfaces, using the final `RoadEditPlan` physical profile
+  - bends preserve their fitted grade; crossing cores and material seams use matching heights,
+    and straight footprint boundaries retain any non-linear elevation supports
   - source terrain is not blended or drawn there; the client-owned support surface replaces visual
     terrain locally inside the owned footprint
 - outside the footprint but inside the earthwork margin, the visible world surface transitions back
@@ -265,12 +271,15 @@ Deterministic seam contract:
 For roads, that means:
 
 - grounded road footprint support is owned by the committed road top surface
+- the planned longitudinal profile preserves a local source-supported grade envelope; endpoint
+  slope alone must not erase an interior hill or valley. Junction finalization keeps a supported
+  hillside corridor authoritative, and terrain compilation consumes that same final profile
 - when multiple committed road-owned top surfaces overlap at the same XZ, terrain support clearance
   uses the lower top-surface envelope so terrain remains below every visible road-owned face; this
   does not change visible-surface picking, which still resolves the topmost rendered surface
-- the committed road top surface is intentionally laterally flat at each section station:
-  carriageway, left edge, and right edge share the same road height, while sidewalks use
-  `road_height + curb_step`
+- away from junction transitions, committed road sections are laterally flat and sidewalks use
+  `road_height + curb_step`; near crossings, lateral offsets follow the shared solved crossing
+  plane relative to the physical centerline, without replacing its longitudinal height
 - drainage crown, banking, and terrain-derived crossfall are not part of the road support surface
 - bridges limit that support to abutment-owned grounded regions
 - tunnels limit that support to visible portal-owned grounded regions
@@ -318,6 +327,61 @@ Required rule:
 
 The shared subsystem must not fall back to whole-map terrain flattening for one local support
 surface edit.
+
+Road edit plans retain local structural stamp writes, road/site CDT tiles and joined patch buffers.
+Preview compilation reads source terrain and existing indexed contributors without modifying the
+resident visual grid. A local copy-on-write overlay applies source resets and stamp writes in the
+same interleaved sorted-chunk order as commit. Planned bordered textures, CDT boundary/background
+samples, road grading and building-site grading all read that final visual result. Explicit chunk
+coverage preserves reset-to-default samples; untouched chunks still read the pinned resident grid.
+Work/storage is bounded by touched storage chunks and stamp samples, not total map size. Commit
+checks exact road/site/source/visual dependencies, coverage, patch snapshots and ownership before
+adopting the entire planned mesh batch. Structural stamps separately require matching source/grid
+dependencies and ordered support triangles. Complete patch/tile/seam buffers retain Arc identity;
+only payload generation metadata changes. A different query margin must select the identical
+road/site contributors. Mismatches roll back, rather than replacing ready geometry through fresh
+tile or patch assembly. Plan-less subsystem callers retain the cold compiler.
+Ordinary grounded roads are CDT-only, not height-stamped. The worker captures local building-site
+footprints/support heights using the prepared allocator index, then compiles grading off-lock
+against planned roads plus unchanged resident owners. Neither capture nor status checking may
+rebuild the city index; unprepared inputs remain provisional/pending. Exact local site comparisons
+detect added/removed footprints and height/ID changes. Planned building grading, coverage and final
+quality validation govern readiness, with exact post-topology checks at adoption. Eligible road
+previews now stage the complete local patch batch with canonical unlifted road meshes using the
+production exporters/builders. Planned ownership can restore regular terrain where a cutout
+disappears. Ownership is resolved before CDT assembly using the same cached per-loop grading
+calculation as live patches, combining retained owners with planned replacements. Superseded
+owners contribute only to the dirty envelope, not final ownership. Padded query hits cannot claim
+ordinary patches; missing clipping inputs cannot release genuinely owned patches. Captured sites
+use the live footprint-overlap rule and grading margin. Patch clip queries then use the resulting
+production margin. Work remains bounded to affected patches and indexed local owners: O(local
+query/ordering work + unique local loops × affected patches + uncached grading samples), with
+cached grading evaluated once per loop and patch compilation parallelized through Rayon.
+Structural ownership/clip discovery now consumes the final ordered resets/writes before CDT
+assembly. Resident per-loop caches depend on source and visual-only revisions; changed overlays
+use a local cache without replacing live entries. Unchanged overlays retain resident cache reuse.
+Site dependencies are captured using each patch's final clip-query margin, not a fixed margin.
+Visual-only changes stale the candidate. Incomplete or missing resident patches still defer
+the paired display; isolated and connected roads use the same path. Temporary meshes inherit resident
+patch visibility and restore the exact original resources on cancellation or invalidation before
+patch updates/recycling/LOD/reset. No terrain samples, payload caches or acknowledgments change.
+Road splits/attachment repair preserve authored site pose and support height; the captured site
+set is checked again after topology adoption. Complete ready plans publish their existing terrain
+buffers directly after road, visual-sample, coverage and ownership checks, without a second CDT
+assembly. Failure restores exact local visual samples as well as graph/split references. A staged
+road/terrain pair may now show readiness; road-only or missing-resource displays remain explicitly
+provisional (`terrain preview pending`). See the readiness/adoption contract in `roads.md`.
+
+The local compiler frontier includes every edge dirtied by final profile solving and every affected
+node, not only the inserted stroke. This same frontier drives preview products and commit's old/new
+earthwork coverage. Grading guides sample a common terrain field; retained road seams own their
+contact heights. Shared tile sides use the uncut local grading halo and keep canonical boundary
+samples. Out-of-core samples, false beyond-endpoint constraint intersections and independently
+heighted guide slivers are rejected or corrected at input construction, never concealed by dropping
+terrain faces. A nonzero omitted-face count prevents readiness and publication. Contributor/window
+validation authorizes buffer composition only; final acceptance also requires present, valid render
+buffers for every clipped patch. Cold compilation, cache insertion and planned adoption share that
+gate; an ordinary loop-free patch does not require a clipped mesh.
 
 ### 8. Authoring Query Domains Must Stay Explicit
 

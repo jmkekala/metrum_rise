@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Sparse chunk-backed 2D grid with fixed-size square chunks.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct SparseChunkGrid<T: Copy + PartialEq> {
     width: usize,
     height: usize,
@@ -172,6 +172,23 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
     /// Returns the fixed storage-chunk width and height in cells.
     pub(crate) fn chunk_size(&self) -> usize {
         self.chunk_size
+    }
+
+    /// Creates an empty grid with the same addressing and default value, without scanning chunks.
+    pub(crate) fn empty_like(&self) -> Self {
+        Self::new(self.width, self.height, self.chunk_size, self.default_value)
+    }
+
+    /// Compares one storage chunk, including implicit default-valued chunks.
+    pub(crate) fn chunk_values_match(&self, other: &Self, x: usize, y: usize) -> bool {
+        debug_assert_eq!(self.chunk_size, other.chunk_size);
+        debug_assert!(self.default_value == other.default_value);
+        let key = Self::chunk_key(x, y);
+        match (self.chunks.get(&key), other.chunks.get(&key)) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+            (None, None) => true,
+            _ => false, // Stored chunks always contain at least one non-default cell.
+        }
     }
 
     /// Copies an inclusive rectangular region from a layout-compatible grid.

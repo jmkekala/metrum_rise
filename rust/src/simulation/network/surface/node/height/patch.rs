@@ -11,7 +11,6 @@ use super::vertices::{
     closed_height_contour_edges_from_vertices, height_vertex_heights_from_vertices,
 };
 use super::*;
-use crate::simulation::network::surface::keys::SURFACE_MM_PER_M;
 use crate::simulation::network::surface::segments::interpolate_height_i64;
 use std::collections::BTreeMap;
 
@@ -264,6 +263,7 @@ impl NodeBandHeightPatch {
         }
         let point_key = SurfaceXzKey::from_raw_tuple(point);
         let mut accepted_height_mm = None;
+        let mut accepted_height_m = None;
         for edge in &self.contour_edges {
             let Some(parameter) = point_key.overlay_segment_parameter(
                 SurfaceXzKey::from_raw_tuple(edge.start),
@@ -276,34 +276,42 @@ impl NodeBandHeightPatch {
             match accepted_height_mm {
                 Some(accepted_height_mm) if accepted_height_mm != height_mm => return None,
                 Some(_) => {}
-                None => accepted_height_mm = Some(height_mm),
+                None => {
+                    accepted_height_mm = Some(height_mm);
+                    // Millimetre keys establish authority agreement; they must not
+                    // quantize the rendered boundary away from its interior field.
+                    accepted_height_m = Some(
+                        edge.start_height_m
+                            + (edge.end_height_m - edge.start_height_m) * parameter.as_f64(),
+                    );
+                }
             }
         }
-        accepted_height_mm.map(|height_mm| height_mm as f64 / SURFACE_MM_PER_M)
+        accepted_height_m
     }
 
     fn height_at_near_contour_endpoint(&self, point: NodeHeightSourcePointKey) -> Option<f64> {
         let mut accepted = None;
         for edge in &self.contour_edges {
-            for (endpoint, height_mm) in [
-                (edge.start, edge.start_height_mm),
-                (edge.end, edge.end_height_mm),
+            for (endpoint, height_mm, height_m) in [
+                (edge.start, edge.start_height_mm, edge.start_height_m),
+                (edge.end, edge.end_height_mm, edge.end_height_m),
             ] {
                 if !height_endpoint_keys_match_with_dust(point, endpoint) {
                     continue;
                 }
                 match accepted {
-                    Some((accepted_endpoint, accepted_height_mm))
+                    Some((accepted_endpoint, accepted_height_mm, _))
                         if accepted_endpoint != endpoint || accepted_height_mm != height_mm =>
                     {
                         return None;
                     }
                     Some(_) => {}
-                    None => accepted = Some((endpoint, height_mm)),
+                    None => accepted = Some((endpoint, height_mm, height_m)),
                 }
             }
         }
-        accepted.map(|(_, height_mm)| height_mm as f64 / SURFACE_MM_PER_M)
+        accepted.map(|(_, _, height_m)| height_m)
     }
 
     pub(super) fn evaluate_triangle_surface_height(

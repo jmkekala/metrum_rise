@@ -62,6 +62,11 @@ var _candidate_cache_surface_generation: int = -1
 var _last_snap_to_roads_enabled: bool = true
 var _road_preview_material: ShaderMaterial
 var _junction_preview = preload("res://scripts/renderers/road_junction_preview.gd").new()
+var _terrain_preview = preload("res://scripts/renderers/road_terrain_preview.gd").new()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_terrain_preview.clear()
 
 const ROAD_SURFACE_CURVE_STEP_M := 4.0
 const ROAD_SURFACE_POINT_EPS_M := 0.05
@@ -106,8 +111,7 @@ func _process(delta):
 		or _junction_preview.generation != simulation_node.get_road_tool_surface_generation()
 		or not _preview_zoning_revision_is_current(_preview_cache_surface)
 	):
-		_junction_preview.clear()
-		_preview_drawn_request_id = 0
+		_clear_preview_visual()
 		if current_path != null:
 			_queue_preview_update()
 	# The base tool has now resolved this frame's pointer, including camera-only movement.
@@ -277,7 +281,7 @@ func _update_preview():
 	var points := _refresh_preview_curve()
 	if _preview_display_request != null and not _preview_display_request.matches_context(self):
 		_clear_preview_visual()
-	var completed := _poll_pending_preview_result()
+	_poll_pending_preview_result()
 	var exact := _cached_preview_surface_for_points(points)
 	# Consume exact work before invoking hover validation; an exact current result needs neither
 	# a second validity check nor a fallback ribbon that will never be displayed.
@@ -311,10 +315,10 @@ func _update_preview():
 			if _preview_cache_request.matches_context(self) and _preview_surface_generation_is_current(_preview_cache_surface):
 				if _draw_compiled_preview_surface(points, _preview_cache_surface, validation):
 					_preview_display_request = _preview_cache_request
-		elif completed:
-			_clear_preview_visual()
+		# An invalid result for an older pointer must not erase the retained display for
+		# this new, provisionally valid input. Exact current rejections take the path below.
 		if _junction_preview.generation >= 0:
-			_update_preview_measurement_label(validation.get("prepared_points", points), validation)
+			_update_preview_measurement_label(validation.get("prepared_points", points), validation, "provisional")
 			return
 	_draw_candidate_preview(points, validation)
 
@@ -457,12 +461,18 @@ func _draw_candidate_preview(points: PackedVector3Array, validation: Dictionary)
 		_clear_preview_visual()
 
 func _clear_preview_visual() -> void:
+	_terrain_preview.clear()
 	_junction_preview.clear()
 	_preview_display_request = null
 	blueprint_mesh.mesh = null
 	_preview_drawn_request_id = 0
 	if _info_label:
 		_info_label.visible = false
+
+func _invalidate_terrain_preview() -> void:
+	_clear_preview_visual()
+	_clear_preview_cache()
+	_queue_preview_update()
 
 func _draw_compiled_preview_surface(
 	points: PackedVector3Array,
@@ -477,22 +487,46 @@ func _draw_compiled_preview_surface(
 	var preview_request_id := int(preview.get("request_id", 0))
 	_update_road_preview_material(validation)
 	if preview_request_id > 0 and preview_request_id == _preview_drawn_request_id:
-		_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation)
+		_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
 		return true
 
 	if preview.has("junction_preview"):
-		if not _junction_preview.show_preview(self, preview["junction_preview"], preview_request_id):
+		var scene: Dictionary = preview["junction_preview"]
+		var staged: Array = []
+		var terrain_complete := false
+		if preview.has("terrain_preview"):
+			var payloads: Variant = preview["terrain_preview"].get("patches")
+			# An explicit empty batch is complete (e.g. an elevated bridge with no cutout).
+			# A missing or failed nonempty batch must still use the provisional road display.
+			terrain_complete = payloads is Array and payloads.is_empty()
+			if not terrain_complete and is_instance_valid(terrain_node):
+				staged = _terrain_preview.stage(terrain_node, payloads, int(preview["surface_generation"]))
+				terrain_complete = not staged.is_empty()
+			if terrain_complete:
+				scene = scene.duplicate()
+				scene["chunks"] = preview["terrain_preview"]["road_chunks"]
+				scene["terrain_coupled"] = true
+		if not _junction_preview.show_preview(self, scene, preview_request_id):
+			_terrain_preview.discard(staged)
 			return false
+		if not terrain_complete:
+			_terrain_preview.clear()
+		else:
+			_terrain_preview.commit(terrain_node, staged, preview_request_id, _invalidate_terrain_preview)
+			if _road_debug_enabled:
+				print("[DEBUG:road] road_terrain_preview request_id=%d patches=%d" % [preview_request_id, staged.size()])
 		blueprint_mesh.mesh = null
 	else:
+		_terrain_preview.clear()
 		_junction_preview.clear()
 		if not _upload_road_preview_mesh(preview):
 			return false
 	_preview_drawn_request_id = preview_request_id
-	_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation)
+	_update_preview_measurement_label(preview_verts if preview_verts.size() > 1 else points, validation, preview.get("plan_state", ""))
 	return true
 
 func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionary = {}) -> bool:
+	_terrain_preview.clear()
 	_junction_preview.clear()
 	_update_road_preview_material(preview)
 	var ribbon: Variant = preview
@@ -511,7 +545,7 @@ func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionar
 		return false
 	_preview_drawn_request_id = 0
 	var prepared: PackedVector3Array = preview.get("prepared_points", points)
-	_update_preview_measurement_label(prepared, preview)
+	_update_preview_measurement_label(prepared, preview, "provisional")
 	return true
 
 func _upload_road_preview_mesh(preview: Dictionary) -> bool:
@@ -542,7 +576,7 @@ func _update_road_preview_material(preview: Dictionary) -> void:
 	var state := 1 if bool(preview.get("is_pending", false)) else (0 if bool(preview.get("is_valid", false)) else 2)
 	_road_preview_material.set_shader_parameter("placement_state", state)
 
-func _update_preview_measurement_label(points: PackedVector3Array, preview: Dictionary = {}) -> void:
+func _update_preview_measurement_label(points: PackedVector3Array, preview: Dictionary = {}, plan_state: String = "") -> void:
 	if not _info_label or points.size() < 2:
 		return
 
@@ -592,6 +626,11 @@ func _update_preview_measurement_label(points: PackedVector3Array, preview: Dict
 			build_cost,
 			snap_str,
 		]
+		var state: String = plan_state if not plan_state.is_empty() else preview.get("plan_state", "")
+		if not state.is_empty() and (state != "ready" or _terrain_preview.request_id <= 0):
+			# Backend readiness alone is insufficient if the paired renderer could not stage.
+			_info_label.add_theme_color_override("font_color", Color(1.0, 0.76, 0.18, 0.98))
+			_info_label.text += " [commit validation pending]" if _terrain_preview.request_id > 0 else " [terrain preview pending]"
 
 	# Store the preview endpoint — projected to screen each frame in _process.
 	var label_pos: Vector3 = points[points.size() - 1]

@@ -213,8 +213,7 @@ const CHEAT_MONEY_GRANT_AMOUNT: f64 = 1_000_000.0;
 #[derive(Clone, Copy)]
 struct TerrainCdtSiteGradingContext<'a> {
     source: TerrainCdtSiteGradingSource<'a>,
-    graph: &'a crate::simulation::network::graph::RegionGraph,
-    road_surface: &'a RoadSurfaceSystem,
+    roads: crate::simulation::network::surface::RoadSurfaceView<'a>,
 }
 
 #[derive(Clone, Copy)]
@@ -225,21 +224,14 @@ enum TerrainCdtSiteGradingSource<'a> {
 impl TerrainCdtSiteGradingContext<'_> {
     fn append_guides(
         self,
-        terrain: &TerrainSystem,
+        terrain: &dyn crate::simulation::terrain::TerrainVisualSource,
         world_bounds: (f32, f32, f32, f32),
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<crate::simulation::terrain::cdt::TerrainCdtTieInGuideSample>,
         sample_keys: &mut HashSet<(i64, i64)>,
     ) {
-        let request = || {
-            BuildingSiteGradingRequest::new(
-                terrain,
-                self.graph,
-                self.road_surface,
-                world_bounds,
-                render_step_m,
-            )
-        };
+        let request =
+            || BuildingSiteGradingRequest::new(terrain, self.roads, world_bounds, render_step_m);
         match self.source {
             TerrainCdtSiteGradingSource::Snapshot(snapshot) => snapshot
                 .append_terrain_cdt_site_grading_guides_for_world_bounds(

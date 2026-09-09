@@ -642,6 +642,7 @@ func _test_real_terrain_atomic_transaction() -> void:
 		{"label": "failed", "status": "failed"},
 		{"label": "conflicted", "status": "conflicted"},
 		{"label": "pathological", "status": "pathological"},
+		{"label": "omitted terrain face", "status": "ok", "omitted": 1},
 		{"label": "empty", "status": "empty", "suppressed": true},
 		{"label": "missing status", "remove_status": true},
 		{"label": "wrong contract", "status": "ok", "contract": 3},
@@ -664,6 +665,8 @@ func _test_real_terrain_atomic_transaction() -> void:
 			blocked_payload.erase("terrain_cdt_status")
 		if blocked_case.has("contract"):
 			blocked_payload["terrain_cdt_contract_revision"] = blocked_case["contract"]
+		if blocked_case.has("omitted"):
+			blocked_payload["terrain_cdt_pathological_faces_omitted"] = blocked_case["omitted"]
 		if bool(blocked_case.get("bad_metadata", false)):
 			blocked_payload["terrain_cdt_mesh_suppressed"] = "false"
 		if bool(blocked_case.get("empty_normals", false)):
@@ -841,18 +844,18 @@ func _test_real_terrain_atomic_transaction() -> void:
 	simulation.response = _batch(generation, false, CHUNK_SPAN_M, [_triangle_chunk(0, 0, 6.0)])
 	terrain.patch_payload_ready[valid_key] = _engineered_terrain_payload(valid_key, generation)
 	var contained_payload := _engineered_terrain_payload(blocked_key, generation)
-	contained_payload["terrain_cdt_pathological_faces_omitted"] = 1
+	contained_payload["terrain_cdt_pathological_faces_omitted"] = 0
 	terrain.patch_payload_ready[blocked_key] = contained_payload
 	var contained_preflight := terrain.prepare_terrain_visual_update(false)
 	_expect(
 		not contained_preflight.is_empty(),
-		"current-contract ok terrain with omitted pathological faces must pass real preflight"
+		"current-contract complete terrain must pass real preflight"
 	)
 	network_renderer._process(0.0)
 	_expect(road_tool._road_mesh_generation == generation, "accepted baked terrain must publish its road pair")
 	_expect(
 		terrain.patches[blocked_key]["node"].mesh is ArrayMesh,
-		"contained pathological faces must keep the clipped baked ArrayMesh"
+		"complete engineered terrain must keep the clipped baked ArrayMesh"
 	)
 	_expect(
 		bool(terrain.patches[blocked_key]["height_is_baked"]),
@@ -1070,7 +1073,12 @@ func _test_native_road_cursor_contract() -> void:
 
 func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var tool := RoadToolScript.new()
+	tool.name = "RoadTool"
 	tool.simulation_node = simulation
+	tool.road_mesh_root = Node3D.new()
+	tool.add_child(tool.road_mesh_root)
+	var generation := simulation.get_network_render_generation()
+	_expect(tool.update_main_mesh(generation) == generation, "isolated preview must hydrate the empty committed chunk grid")
 	tool.blueprint_mesh = MeshInstance3D.new()
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
@@ -1104,14 +1112,19 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 		await process_frame
 	_expect(completed is Dictionary, "native exact preview must finish")
 	if completed is Dictionary:
-		_expect(tool._draw_compiled_preview_surface(points, completed, completed), "exact preview must use the same textured display contract")
-		var mesh: Mesh = tool.blueprint_mesh.mesh
-		_expect(tool._draw_compiled_preview_surface(points, completed, completed) and tool.blueprint_mesh.mesh == mesh, "unchanged exact preview must not upload another mesh")
+		_expect(completed.has("junction_preview"), "isolated exact preview must export the compiled local scene")
+		_expect(tool._draw_compiled_preview_surface(points, completed, completed), "exact preview must display compiled textured chunks")
+		var instances: Array = tool._junction_preview._instances.duplicate()
+		_expect(not instances.is_empty() and tool.blueprint_mesh.mesh == null, "compiled isolated preview must not also display a ribbon")
+		_expect(tool._draw_compiled_preview_surface(points, completed, completed) and tool._junction_preview._instances == instances, "unchanged exact preview must not upload another mesh")
 		for state in [{"is_valid": true}, {"is_pending": true}, {"is_valid": false}]:
 			tool._update_road_preview_material(state)
 			var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
 			_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
 		if not OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE").is_empty():
+			# This diagnostic owns the moving-ribbon material; exact chunks have their own tests.
+			var moving: Dictionary = simulation.validate_road_candidate_with_snap(points, tool.fwd_lanes, tool.bkw_lanes, false)
+			_expect(tool._draw_coarse_preview_surface(points, moving), "moving-ribbon capture must explicitly stage fallback geometry")
 			await _capture_road_preview(tool.blueprint_mesh.mesh, tool._road_preview_material)
 	if OS.get_environment("METRUM_ROAD_PREVIEW_TIMING") == "1":
 		for lane_count in [1, 4]:

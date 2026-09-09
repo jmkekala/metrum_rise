@@ -7,7 +7,10 @@ use super::coverage::{
     reject_triangle_coverage_mismatch, triangle_coverage_residual_shapes, triangle_double_area_m2,
     triangle_is_inside_owner, triangle_sort_key,
 };
-use super::vertices::push_arrangement_constraint_loop;
+use super::vertices::{
+    clean_triangulation_constraint_loop, push_arrangement_constraint_loop,
+    retain_constraint_vertices,
+};
 use super::*;
 use crate::simulation::network::surface::segments;
 
@@ -51,6 +54,7 @@ pub(super) fn triangulate_arrangement_region(
             &mut constraints,
         )?;
     }
+    retain_constraint_vertices(&mut vertices, &mut vertex_lookup, &mut constraints);
     let owner_shape = overlay_shape_from_arrangement_region(arrangement, region);
     insert_carriageway_interior_guides(
         node_id,
@@ -703,25 +707,24 @@ fn append_triangulated_clipped_shape(
                 vertices,
                 vertex_lookup,
             )?;
-            let local_index = *local_by_global.entry(global_index).or_insert_with(|| {
-                let index = local_to_global.len();
-                local_to_global.push(global_index);
-                index
-            });
-            if contour_indices.last().copied() != Some(local_index) {
-                contour_indices.push(local_index);
-            }
+            contour_indices.push(global_index);
         }
-        if contour_indices.len() >= 2
-            && contour_indices.first().copied() == contour_indices.last().copied()
-        {
-            contour_indices.pop();
-        }
+        // Repairs need the same post-canonicalization loop cleanup as the original region.
+        // Otherwise a collapsed out-and-back spur becomes an orphan boundary constraint.
+        clean_triangulation_constraint_loop(&mut contour_indices, vertices);
         if contour_indices.len() < 3 {
             // Repair contours can collapse after snapping to already-heighted support vertices.
             // The final coverage check below decides whether the skipped repair leaves a
             // meaningful residual instead of failing here with a misleading CDT contour error.
             continue;
+        }
+        for index in &mut contour_indices {
+            let global_index = *index;
+            *index = *local_by_global.entry(global_index).or_insert_with(|| {
+                let index = local_to_global.len();
+                local_to_global.push(global_index);
+                index
+            });
         }
         for index in 0..contour_indices.len() {
             let global_edge = normalized_vertex_edge(
@@ -832,25 +835,22 @@ fn append_triangulated_missing_owner_shape(
             else {
                 continue;
             };
-            let local_index = *local_by_global.entry(global_index).or_insert_with(|| {
-                let index = local_to_global.len();
-                local_to_global.push(global_index);
-                index
-            });
-            if contour_indices.last().copied() != Some(local_index) {
-                contour_indices.push(local_index);
-            }
+            contour_indices.push(global_index);
         }
-        if contour_indices.len() >= 2
-            && contour_indices.first().copied() == contour_indices.last().copied()
-        {
-            contour_indices.pop();
-        }
+        clean_triangulation_constraint_loop(&mut contour_indices, vertices);
         if contour_indices.len() < 3 {
             // Missing-coverage repair may not have enough height-supported vertices to form a
             // local CDT. Skip it and let final owner-vs-triangle coverage validation report any
             // remaining meaningful gap.
             continue;
+        }
+        for index in &mut contour_indices {
+            let global_index = *index;
+            *index = *local_by_global.entry(global_index).or_insert_with(|| {
+                let index = local_to_global.len();
+                local_to_global.push(global_index);
+                index
+            });
         }
         for index in 0..contour_indices.len() {
             let global_edge = normalized_vertex_edge(

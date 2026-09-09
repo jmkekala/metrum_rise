@@ -9,12 +9,14 @@ use super::model::BuildingSiteTerrainSnapshot;
 use crate::config::SIDEWALK_WIDTH;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::surface::RoadSurfaceSystem;
+use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceView};
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::cdt::{
     MAX_TERRAIN_TIE_IN_SLOPE_RATIO, TerrainCdtTieInGuideSample, TerrainCdtVertex,
 };
-use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
+use crate::simulation::terrain::{
+    TerrainSystem, TerrainVisualSource, terrain_cdt_local_sample_margin_m,
+};
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
 
@@ -28,9 +30,8 @@ const BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M: f32 = 0.05;
 
 /// Immutable inputs for exporting building-site grading into one terrain-CDT window.
 pub(crate) struct BuildingSiteGradingRequest<'a> {
-    terrain: &'a TerrainSystem,
-    graph: &'a RegionGraph,
-    road_surface: &'a RoadSurfaceSystem,
+    terrain: &'a dyn TerrainVisualSource,
+    roads: RoadSurfaceView<'a>,
     world_bounds: (f32, f32, f32, f32),
     render_step_m: f32,
 }
@@ -38,16 +39,14 @@ pub(crate) struct BuildingSiteGradingRequest<'a> {
 impl<'a> BuildingSiteGradingRequest<'a> {
     /// Binds one terrain window to the road-surface state used for grading samples.
     pub(crate) fn new(
-        terrain: &'a TerrainSystem,
-        graph: &'a RegionGraph,
-        road_surface: &'a RoadSurfaceSystem,
+        terrain: &'a dyn TerrainVisualSource,
+        roads: RoadSurfaceView<'a>,
         world_bounds: (f32, f32, f32, f32),
         render_step_m: f32,
     ) -> Self {
         Self {
             terrain,
-            graph,
-            road_surface,
+            roads,
             world_bounds,
             render_step_m,
         }
@@ -55,16 +54,15 @@ impl<'a> BuildingSiteGradingRequest<'a> {
 }
 
 pub(super) struct SiteGradingContext<'a> {
-    terrain: &'a TerrainSystem,
-    graph: &'a RegionGraph,
-    road_surface: &'a RoadSurfaceSystem,
+    terrain: &'a dyn TerrainVisualSource,
+    roads: RoadSurfaceView<'a>,
     safe_step_m: f32,
     max_distance_m: f32,
 }
 
 impl<'a> SiteGradingContext<'a> {
     pub(super) fn new(
-        terrain: &'a TerrainSystem,
+        terrain: &'a dyn TerrainVisualSource,
         graph: &'a RegionGraph,
         road_surface: &'a RoadSurfaceSystem,
         safe_step_m: f32,
@@ -72,8 +70,7 @@ impl<'a> SiteGradingContext<'a> {
     ) -> Self {
         Self {
             terrain,
-            graph,
-            road_surface,
+            roads: RoadSurfaceView::new(graph, road_surface),
             safe_step_m,
             max_distance_m,
         }
@@ -114,14 +111,14 @@ impl BuildingSiteTerrainSnapshot {
     ) {
         let (min_x, min_z, max_x, max_z) = request.world_bounds;
         let safe_step_m = request.render_step_m.max(f32::EPSILON);
-        let max_distance_m = terrain_cdt_local_sample_margin_m(request.terrain, safe_step_m);
-        let context = SiteGradingContext::new(
-            request.terrain,
-            request.graph,
-            request.road_surface,
+        let max_distance_m =
+            terrain_cdt_local_sample_margin_m(request.terrain.terrain(), safe_step_m);
+        let context = SiteGradingContext {
+            terrain: request.terrain,
+            roads: request.roads,
             safe_step_m,
             max_distance_m,
-        );
+        };
         let mut sink = SiteGradingGuideSink::new(tie_in_guide_samples, sample_keys);
         for site in &self.sites {
             let (site_min_x, site_min_z, site_max_x, site_max_z) =
@@ -261,8 +258,7 @@ fn append_building_site_grading_ray(
             pos,
             distance_m,
             context.terrain,
-            context.graph,
-            context.road_surface,
+            context.roads,
         );
         push_building_site_grading_sample(
             TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64),
@@ -280,13 +276,8 @@ fn building_site_support_tie_in_ray_is_valid(
 ) -> bool {
     for distance_m in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
         let pos = seam + outward * distance_m;
-        let target_height_m = building_site_raw_tie_in_target_height(
-            pos,
-            distance_m,
-            context.terrain,
-            context.graph,
-            context.road_surface,
-        );
+        let target_height_m =
+            building_site_raw_tie_in_target_height(pos, distance_m, context.terrain, context.roads);
         let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO
             + BUILDING_SITE_SUPPORT_TIE_IN_EPS_M;
         if (target_height_m - seam_height_m).abs() <= max_delta_m {
@@ -314,28 +305,25 @@ pub(super) fn building_site_grading_target_height(
     seam_height_m: f32,
     pos: Vector2,
     distance_m: f32,
-    terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    road_surface: &RoadSurfaceSystem,
+    terrain: &dyn TerrainVisualSource,
+    roads: RoadSurfaceView<'_>,
 ) -> f32 {
-    let raw_height_m =
-        building_site_raw_tie_in_target_height(pos, distance_m, terrain, graph, road_surface);
+    let raw_height_m = building_site_raw_tie_in_target_height(pos, distance_m, terrain, roads);
     grade_limited_site_tie_in_height(seam_height_m, raw_height_m, distance_m)
 }
 
 fn building_site_raw_tie_in_target_height(
     pos: Vector2,
     distance_m: f32,
-    terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    road_surface: &RoadSurfaceSystem,
+    terrain: &dyn TerrainVisualSource,
+    roads: RoadSurfaceView<'_>,
 ) -> f32 {
     let nearest_radius_m = distance_m.clamp(
         BUILDING_SITE_NEAREST_ROAD_SURFACE_MIN_RADIUS_M,
         BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M,
     );
     if let Some(road_height_m) =
-        building_site_visible_road_height(terrain, graph, road_surface, pos, nearest_radius_m)
+        building_site_visible_road_height(terrain.terrain(), roads, pos, nearest_radius_m)
     {
         return road_height_m;
     }
@@ -344,23 +332,20 @@ fn building_site_raw_tie_in_target_height(
 
 fn building_site_visible_road_height(
     terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    road_surface: &RoadSurfaceSystem,
+    roads: RoadSurfaceView<'_>,
     pos: Vector2,
     nearest_radius_m: f32,
 ) -> Option<f32> {
-    if let Some(height_m) = road_surface.sample_visible_surface_height(graph, terrain, pos.x, pos.y)
-    {
+    if let Some(height_m) = roads.sample_visible_height(terrain, pos.x, pos.y) {
         return Some(height_m);
     }
-    nearest_building_site_road_surface_sample(terrain, graph, road_surface, pos, nearest_radius_m)
+    nearest_building_site_road_surface_sample(terrain, roads, pos, nearest_radius_m)
         .map(|(_, height_m)| height_m)
 }
 
 pub(super) fn nearest_building_site_road_surface_sample(
     terrain: &TerrainSystem,
-    graph: &RegionGraph,
-    road_surface: &RoadSurfaceSystem,
+    roads: RoadSurfaceView<'_>,
     pos: Vector2,
     nearest_radius_m: f32,
 ) -> Option<(Vector2, f32)> {
@@ -368,51 +353,49 @@ pub(super) fn nearest_building_site_road_surface_sample(
     if radius_m <= f32::EPSILON {
         return None;
     }
-    let mut candidates = graph.get_edges_near_point(Vector3::new(pos.x, 0.0, pos.y), radius_m);
-    candidates.sort_unstable();
-    candidates.dedup();
-
     let mut best: Option<(f32, usize, Vector2, f32)> = None;
-    for edge_idx in candidates {
-        let Some(edge) = graph.get_edge(edge_idx) else {
-            continue;
-        };
-        if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
-            continue;
-        }
-        let Some(projection) =
-            BuildingAllocator::project_point_to_edge_centerline(edge_idx, edge, pos)
-        else {
-            continue;
-        };
-        let center = BuildingAllocator::sample_pos_on_edge(graph, edge_idx, projection.t);
-        let tangent = BuildingAllocator::sample_tangent_on_edge(graph, edge_idx, projection.t);
-        if tangent.length_squared() <= 1e-12 {
-            continue;
-        }
-        let normal = Vector2::new(tangent.y, -tangent.x) * projection.side as f32;
-        let probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
-        let dist_sq = probe.distance_squared_to(pos);
-        if dist_sq > radius_m * radius_m {
-            continue;
-        }
-        let Some(height_m) =
-            road_surface.sample_visible_surface_height(graph, terrain, probe.x, probe.y)
-        else {
-            continue;
-        };
-        let replace = best
-            .as_ref()
-            .is_none_or(|(best_dist_sq, best_edge_idx, _, _)| {
-                dist_sq
-                    .total_cmp(best_dist_sq)
-                    .then(edge_idx.cmp(best_edge_idx))
-                    .is_lt()
-            });
-        if replace {
-            best = Some((dist_sq, edge_idx, probe, height_m));
-        }
-    }
+    roads.visit_edges_near_point(
+        Vector3::new(pos.x, 0.0, pos.y),
+        radius_m,
+        |graph, edge_idx, live_id| {
+            let Some(edge) = graph.get_edge(edge_idx) else {
+                return;
+            };
+            if edge.deleted || edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+                return;
+            }
+            let Some(projection) =
+                BuildingAllocator::project_point_to_edge_centerline(edge_idx, edge, pos)
+            else {
+                return;
+            };
+            let center = BuildingAllocator::sample_pos_on_edge(graph, edge_idx, projection.t);
+            let tangent = BuildingAllocator::sample_tangent_on_edge(graph, edge_idx, projection.t);
+            if tangent.length_squared() <= 1e-12 {
+                return;
+            }
+            let normal = Vector2::new(tangent.y, -tangent.x) * projection.side as f32;
+            let probe = center + normal * building_site_road_connection_lateral_offset_m(edge);
+            let dist_sq = probe.distance_squared_to(pos);
+            if dist_sq > radius_m * radius_m {
+                return;
+            }
+            let Some(height_m) = roads.sample_visible_height(terrain, probe.x, probe.y) else {
+                return;
+            };
+            let replace = best
+                .as_ref()
+                .is_none_or(|(best_dist_sq, best_edge_idx, _, _)| {
+                    dist_sq
+                        .total_cmp(best_dist_sq)
+                        .then(live_id.cmp(best_edge_idx))
+                        .is_lt()
+                });
+            if replace {
+                best = Some((dist_sq, live_id, probe, height_m));
+            }
+        },
+    );
     best.map(|(_, _, probe, height_m)| (probe, height_m))
 }
 

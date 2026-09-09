@@ -45,6 +45,7 @@ impl TransitNetwork {
         &mut self,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
+        self.profile_authored_edges.clear();
         if let Some(journal) = self.road_edit_split_undo.take() {
             for undo in journal.into_iter().rev() {
                 for (index, edge_idx, cell_x, frontage_t) in undo.buildings {
@@ -356,6 +357,9 @@ impl RegionGraph {
                 if !edge.geometry.is_empty() {
                     edge.geometry[0] = new_pos;
                 }
+                if let Some(point) = edge.physical_geometry.first_mut() {
+                    *point = new_pos;
+                }
                 changed = true;
             }
             if edge.end_node == remove {
@@ -363,6 +367,9 @@ impl RegionGraph {
                 if !edge.geometry.is_empty() {
                     let last = edge.geometry.len() - 1;
                     edge.geometry[last] = new_pos;
+                }
+                if let Some(point) = edge.physical_geometry.last_mut() {
+                    *point = new_pos;
                 }
                 changed = true;
             }
@@ -732,7 +739,7 @@ fn apply_splits(
 }
 
 /// Migrates zoning occupancy and buildings when an edge is split.
-fn migrate_split_dependents(
+pub(super) fn migrate_split_dependents(
     edge_id: usize,
     new_edge_id: usize,
     split_x: usize,
@@ -1035,8 +1042,19 @@ pub fn split_edge(
     part2_geo.extend_from_slice(&old_edge.geometry[segment_idx + 1..]);
 
     let mut part1_geo = old_edge.geometry[..=segment_idx].to_vec();
+    // Splitting changes topology, not the solved profile of the retained road. Its control
+    // supports may be hard-pinned to a junction plane while the physical surface is eased.
+    let physical = RegionGraph::physical_profile_on_control_alignment(old_edge);
+    let mut part1_physical = physical[..=segment_idx].to_vec();
+    let mut part2_physical = vec![split_pos];
+    part2_physical.extend_from_slice(&physical[segment_idx + 1..]);
     if part1_geo.last().unwrap().distance_to(split_pos) > 0.001 {
         part1_geo.push(split_pos);
+        part1_physical.push(split_pos);
+    } else {
+        // An existing control knot can already equal the junction while its independently
+        // eased physical height differs. Both split halves must meet the authoritative node.
+        *part1_physical.last_mut().unwrap() = split_pos;
     }
 
     let primary_type = old_edge.primary_type;
@@ -1058,8 +1076,8 @@ pub fn split_edge(
     graph.remove_from_spatial_index(edge_id);
 
     graph.edges[edge_id].end_node = junction_node_id;
-    graph.edges[edge_id].geometry = part1_geo.clone();
-    graph.edges[edge_id].physical_geometry = part1_geo;
+    graph.edges[edge_id].geometry = part1_geo;
+    graph.edges[edge_id].physical_geometry = part1_physical;
     let (cost, length) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&graph.edges[edge_id]);
     graph.edges[edge_id].base_cost = cost;
@@ -1085,7 +1103,7 @@ pub fn split_edge(
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: part2_geo.clone(),
-        physical_geometry: part2_geo.clone(),
+        physical_geometry: part2_physical,
         class,
         deleted: false,
         no_building_spawn,
@@ -1116,6 +1134,15 @@ pub fn split_edge(
     );
     let split_x = (new_len_first / zoning.config.zone_cell_m).floor() as usize;
 
+    if let Some(splits) = &mut network.recorded_road_splits {
+        splits.push(super::road_edit::PlannedRoadSplit {
+            edge_id,
+            new_edge_id,
+            first_length_m: new_len_first,
+            second_length_m: new_len_second,
+        });
+    }
+
     migrate_split_dependents(
         edge_id,
         new_edge_id,
@@ -1128,6 +1155,9 @@ pub fn split_edge(
     );
 
     network.mark_point_dirty(split_pos);
+    if network.profile_authored_edges.contains(&edge_id) {
+        network.mark_road_profile_authored(new_edge_id);
+    }
     if network.bulk_load {
         network.bulk_dirty_edges.insert(edge_id);
         network.bulk_dirty_edges.insert(new_edge_id);
@@ -1193,6 +1223,56 @@ mod tests {
             String::new(),
         );
         format!("{pack_id}:{asset_id}")
+    }
+
+    #[test]
+    fn split_preserves_physical_heights_and_pins_both_halves() {
+        for split_x in [12.0, 18.0] {
+            let mut graph = RegionGraph::new();
+            let mut network = TransitNetwork::new();
+            let mut zoning = ZoningSystem::new(&WorldConfig::default());
+            let mut allocator = BuildingAllocator::new();
+            let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+            let end_pos = Vector3::new(36.0, 7.2, 0.0);
+            let end = graph.add_node(end_pos, NodeType::Junction);
+            let mut edge = crate::simulation::network::build_surface_edge(
+                start,
+                end,
+                vec![
+                    Vector3::ZERO,
+                    Vector3::new(6.0, 5.0, 0.0),
+                    Vector3::new(12.0, 4.0, 0.0),
+                    end_pos,
+                ],
+                1,
+                1,
+                EdgeClass::Standard,
+            );
+            // Physical stations differ from the materialized control support stations.
+            edge.physical_geometry = vec![Vector3::ZERO, Vector3::new(9.0, 1.8, 0.0), end_pos];
+            let edge_id = graph.add_edge(edge);
+            let split_pos = Vector3::new(split_x, 4.0, 0.0);
+            let junction = graph.add_node(split_pos, NodeType::Junction);
+            split_edge(
+                &mut network,
+                &mut graph,
+                edge_id,
+                2,
+                (split_x - 12.0) / 24.0,
+                junction,
+                &mut zoning,
+                &mut allocator,
+            );
+            let first = &graph.edge(edge_id).physical_geometry;
+            let second = &graph.edge(edge_id + 1).physical_geometry;
+            assert!(
+                (first[1].y - 1.2).abs() < 1e-5,
+                "control pin leaked into split"
+            );
+            assert_eq!(first.last(), Some(&split_pos));
+            assert_eq!(second.first(), Some(&split_pos));
+            assert_eq!(second.last(), Some(&end_pos));
+        }
     }
 
     #[test]

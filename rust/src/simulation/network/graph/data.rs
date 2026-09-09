@@ -89,7 +89,8 @@ pub struct Edge {
     pub end_clip: f32,
     /// Unclipped polyline control points (may extend into junction areas), used for zoning placement.
     pub geometry: Vec<Vector3>,
-    /// Clipped polyline used for actual road mesh rendering and agent movement.
+    /// Independently eased height profile on the control polyline's XZ alignment, used for
+    /// road rendering and agent movement. Support knots may differ; rendering applies clips.
     pub physical_geometry: Vec<Vector3>,
     /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,

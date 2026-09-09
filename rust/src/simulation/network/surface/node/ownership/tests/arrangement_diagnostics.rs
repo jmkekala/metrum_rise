@@ -46,11 +46,20 @@ fn owned_region_arrangement_reports_shared_edge_without_seam_constraint() {
 
 #[test]
 fn junction_side_join_asphalt_sidewalk_endpoint_sources_satisfy_boundary_seam() {
-    let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+    for kind in [
+        RoadSurfaceBandKind::Carriageway,
+        RoadSurfaceBandKind::CurbOrShoulder,
+    ] {
+        assert_paved_side_join_endpoint_sources(kind);
+    }
+}
+
+fn assert_paved_side_join_endpoint_sources(kind: RoadSurfaceBandKind) {
+    let carriageway = NodeBandOwner::new(kind, 0);
     let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
     let mut regions = vec![
         test_owned_region(
-            RoadSurfaceBandKind::Carriageway,
+            kind,
             carriageway,
             vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
         ),

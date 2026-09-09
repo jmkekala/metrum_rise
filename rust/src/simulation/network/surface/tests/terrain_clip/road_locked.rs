@@ -687,6 +687,12 @@ fn connected_bridge_ramps_keep_abutment_cutouts_beside_standard_bends() {
         ));
     }
 
+    graph.finalize_junction_endpoint_profiles_for_edges(
+        &HashSet::from([west_landing, east_landing]),
+        &HashSet::from([0, 1, 2]),
+        &HashSet::from([0, 1, 2]),
+    );
+    graph.rebuild_intersection_clips();
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
     assert!(
@@ -704,7 +710,32 @@ fn connected_bridge_ramps_keep_abutment_cutouts_beside_standard_bends() {
         .expect("connected bridge landing terrain cutouts must union successfully");
     assert!(!road_loops.is_empty());
     assert!(
-        source_count >= 5,
-        "both bridge abutments, both landing bends, and the grounded connector must contribute terrain cutouts; sources={source_count}"
+        source_count >= 3,
+        "the connector and both landing bends must own cutouts"
     );
+    // With graded bends, the abutment contact can lie wholly inside node ownership.
+    // Test coverage, not the old flat-platform split into five separate source loops.
+    for point in [
+        Vector2::ZERO,
+        Vector2::new(-24.0, 0.0),
+        Vector2::new(24.0, 0.0),
+        Vector2::new(-28.0, -12.0 / 7.0),
+        Vector2::new(28.0, 12.0 / 7.0),
+    ] {
+        assert!(
+            road_loops.iter().any(|outer| !outer.is_hole
+                && road_loop_contains_road_owned_point_xz(&road_loops, outer, point)),
+            "grounded landing/abutment must remain covered at {point:?}"
+        );
+    }
+    for point in [
+        Vector2::new(-60.0, -108.0 / 7.0),
+        Vector2::new(60.0, 108.0 / 7.0),
+    ] {
+        assert!(
+            !road_loops.iter().any(|outer| !outer.is_hole
+                && road_loop_contains_road_owned_point_xz(&road_loops, outer, point)),
+            "elevated bridge interior must not cut terrain at {point:?}"
+        );
+    }
 }

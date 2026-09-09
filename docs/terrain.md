@@ -208,10 +208,10 @@ the derived buffer, and only touched chunks are reset and restamped.
 
 Current deterministic sequence:
 
-1. reset the touched visual terrain chunks from source terrain
-2. compile or refresh the affected engineered-ground client surface inputs
-3. rasterize footprint support plus deterministic outer earthwork-margin transitions from those
-   inputs into the touched visual chunks
+1. compile or refresh the affected engineered-ground client surface inputs
+2. prepare structural support writes for the touched visual terrain chunks
+3. in canonical chunk order, reset each touched chunk from source terrain and apply its support
+   writes before advancing to the next chunk (shared borders preserve this ordering)
 4. leave untouched visual chunks and all source terrain chunks unchanged
 5. rebuild dependent caches against the updated client state plus visual terrain
 
@@ -242,9 +242,9 @@ Current deterministic editor rule:
 
 Remaining limitation:
 
-- road-touched terrain patches now use the accepted Spade CDT seam representation, but live visual
-  validation on varied authored maps is still required before the terrain / road integration can be
-  treated as fully shipped
+- the fixed Kuopio workload passes 39 placements / 158 profile checks, shared-side and coverage
+  regressions, and saved-reference settlement; broader authored-map coverage remains ongoing,
+  not a claim of watertightness for arbitrary inputs (see `ROAD-24` in [`roads.md`](roads.md))
 - terrain density alone is no longer the target fix for road / terrain gaps
 - the live road-touched seam path is the Spade CDT patch builder described in
   [`roads.md`](roads.md):
@@ -294,6 +294,8 @@ Current deterministic rules:
 - water baseline depth is serialized as one dense row-major `f32` blob
 - sparse chunk topology is not currently saved as chunk records
 - loading reconstructs sparse storage from those dense blobs
+- road loading compiles saved geometry first, locally finalizes only rejected grounded junctions,
+  and rejects an unrenderable detached graph; it does not regrade all saved roads to source terrain
 
 This is acceptable while city saves remain runtime snapshots rather than reusable authored world
 assets.
@@ -496,6 +498,9 @@ Current repository state:
   query chunks without cold-compiling an unchanged junction; the immutable previous refined
   generation stays reusable, while attached zoning removal uses an index-stable local parcel
   journal rather than cloning the zoning system
+- accepted road placement and failed adoption retain an exact touched-storage-chunk visual
+  checkpoint, so undo/rollback restores prior visual overrides as well as graph and split references;
+  the remaining dense authoring-undo limitation below is separate from `RoadEditPlan`
 - road bulldoze and undo queue their graph/surface/terrain work on the simulation thread; the
   Godot input path never performs the road-surface, road-mesh, or refined-CDT rebuild synchronously
 - building deletion retains an operation-local inverse journal for touched buildings, sites,
@@ -787,11 +792,12 @@ Deterministic terrain-render rules:
   provenance, local terrain samples, grading guides/constraints, render step, core bounds, and
   contract revision; unchanged fingerprints reuse immutable compiled geometry and per-tile render
   buffers from the last accepted generation
-- each cached tile also retains its road-input clipping: ordered source loops shared across tiles,
-  halo contributor manifests, and core-clipped loops. Reuse compares full geometry/provenance
+- each cached tile also retains its road-input clipping: ordered source loops shared across tiles
+  and halo contributor loops/manifests. Canonicalization clips ownership to the core while retaining
+  the uncut halo for grading shared sides. Reuse compares full geometry/provenance
   (including float bits), exact core bounds, and freshly sampled corner heights in
-  `O(local contributor vertices + source edges)` without allocating on a hit. Both halo and core
-  clipping are skipped only after this match. Terrain samples, adaptive margins, road/site grading
+  `O(local contributor vertices + source edges)` without allocating on a hit. Halo clipping is
+  skipped only after this match. Terrain samples, adaptive margins, road/site grading
   guides, and final input fingerprints are still rebuilt; source-generation equality alone cannot
   authorize reuse of visual-terrain inputs. Retention is bounded by cached tiles, with no history
   chain or independent global geometry cache.
@@ -807,6 +813,14 @@ Deterministic terrain-render rules:
   ordering, keeping total work `O(contributors + windows)` while reducing its wall-clock critical path
 - only changed tiles build through Rayon; completed tile results are sorted canonically before patch
   composition so scheduling order cannot change topology or shared seam identity
+- road grading guides provide sampling positions, not independent parent-edge height authority.
+  They sample the common visual terrain; interior samples inside the required tie-in envelope
+  yield to the retained road seam. Shared-side samples remain, graded once against uncut halo
+  contributors, so adjacent CDT tiles cannot bridge different elevations. Building pads and
+  structural retaining walls retain their own authority. Canonical boundary-cell welding and
+  strict core containment prevent sub-millimetre outside samples from expanding the CDT domain.
+  Guide points on road constraints are noded with the retained seam's interpolated height.
+  Segment incidence tolerances are distances, never fractions of arbitrarily long segments.
 - successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
   normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
   window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles
@@ -836,8 +850,9 @@ Deterministic terrain-render rules:
   separate generation check; it is no longer the first place a terrain-CDT failure can reject a road.
 - a statusless non-engineered payload may use the regular heightmap `PlaneMesh`. An engineered
   payload is renderable only when its current-contract final status is `ok` and its clipped baked
-  buffers are structurally valid. A positive omitted-pathological-face count is accepted only when
-  the remaining final status is `ok`; `empty`, `failed`, `conflicted`, still-`pathological`, unknown,
+  buffers are structurally valid. Any omitted-pathological-face count rejects the complete patch
+  in both Rust readiness and Godot staging: removing a bad face is not a coverage repair.
+  `empty`, `failed`, `conflicted`, still-`pathological`, unknown,
   wrong-contract, or malformed engineered output keeps the previous mesh and may not fall back to
   raw terrain.
 - a road-locked patch selected through the grading-ray safety pad expands its clip-source query by
@@ -930,6 +945,11 @@ Deterministic transition rules:
   - conflicting constraints are reported through CDT debug counters and skipped; they are treated
     as geometry bugs to fix at the road-piece source, not as a reason to panic the backend or fall
     back to legacy clipping
+  - constraint incidence uses the micrometre road-contour resolution, not the millimetre
+    identity grid as an overlap buffer. Distinct near-parallel approach boundaries must not be
+    fabricated into overlapping constraints with conflicting heights. Real overlaps and height
+    conflicts retain their existing checks; this does not widen height tolerances. The existing
+    patch-local noding complexity is unchanged.
   - Spade CDT faces whose centroids are inside road-owned footprints are omitted; all emitted
     terrain triangles must preserve road seam constraint edges and must not cross road footprint
     loops

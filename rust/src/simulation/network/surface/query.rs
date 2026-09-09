@@ -10,4 +10,7 @@ mod policy;
 mod preview;
 mod terrain_cdt;
 mod traversal;
+mod view;
 mod visible;
+
+pub(crate) use view::{PlannedRoadSurfaceQuery, RoadSurfaceView};

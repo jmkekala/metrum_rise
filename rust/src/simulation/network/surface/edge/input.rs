@@ -632,6 +632,20 @@ impl RoadSurfaceSystem {
             return;
         }
 
+        // The design grade is a target, not a hard gameplay rejection limit. Preserve
+        // a feasible source-supported envelope at EACH interval: equal-height pins can
+        // still surround a hill or valley that a uniform design-grade clamp would erase.
+        // Local bounds also avoid lending one steep section's allowance to the entire
+        // road. Compute once in O(P); the fixed-pass smoothing/curvature solve stays O(P).
+        let grade_limits: Vec<_> = samples
+            .windows(2)
+            .map(|span| {
+                ROAD_PROFILE_MAX_GRADE.max(
+                    (span[1].target_y - span[0].target_y).abs()
+                        / Self::profile_sample_run_m(span[0], span[1]),
+                )
+            })
+            .collect();
         let mut previous_y = vec![0.0; samples.len()];
         for _ in 0..ROAD_PROFILE_SOLVER_ITERS {
             for (dst, sample) in previous_y.iter_mut().zip(samples.iter()) {
@@ -650,11 +664,11 @@ impl RoadSurfaceSystem {
                     + terrain_delta * ROAD_PROFILE_TERRAIN_WEIGHT;
             }
             Self::restore_road_profile_pins(samples);
-            Self::enforce_road_profile_grade(samples);
+            Self::enforce_road_profile_grade(samples, &grade_limits);
             Self::restore_road_profile_pins(samples);
             Self::enforce_road_profile_curvature(samples);
             Self::restore_road_profile_pins(samples);
-            Self::enforce_road_profile_grade(samples);
+            Self::enforce_road_profile_grade(samples, &grade_limits);
             Self::restore_road_profile_pins(samples);
         }
     }
@@ -667,7 +681,7 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn enforce_road_profile_grade(samples: &mut [RoadVerticalProfileSample]) {
+    fn enforce_road_profile_grade(samples: &mut [RoadVerticalProfileSample], grade_limits: &[f32]) {
         if samples.len() < 2 {
             return;
         }
@@ -677,7 +691,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             let run_m = Self::profile_sample_run_m(samples[index - 1], samples[index]);
-            let max_delta = ROAD_PROFILE_MAX_GRADE * run_m;
+            let max_delta = grade_limits[index - 1] * run_m;
             samples[index].y = samples[index].y.clamp(
                 samples[index - 1].y - max_delta,
                 samples[index - 1].y + max_delta,
@@ -689,7 +703,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             let run_m = Self::profile_sample_run_m(samples[index], samples[index + 1]);
-            let max_delta = ROAD_PROFILE_MAX_GRADE * run_m;
+            let max_delta = grade_limits[index] * run_m;
             samples[index].y = samples[index].y.clamp(
                 samples[index + 1].y - max_delta,
                 samples[index + 1].y + max_delta,
@@ -738,5 +752,44 @@ impl RoadSurfaceSystem {
 
     fn xz_distance(a: Vector3, b: Vector3) -> f32 {
         (b.x - a.x).hypot(b.z - a.z)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feasible_endpoints_do_not_flatten_an_interior_hill_or_valley() {
+        // Equal endpoint heights satisfy the design grade, but say nothing about
+        // the relief between them. This broad curve is already curvature-feasible.
+        for sign in [-1.0, 1.0] {
+            let mut samples: Vec<_> = (-10_i32..=10)
+                .map(|i| {
+                    let x = i as f32 * 6.0;
+                    let y = sign * 0.004 * x * x;
+                    RoadVerticalProfileSample {
+                        x,
+                        z: 0.0,
+                        target_y: y,
+                        y,
+                        pinned: i.abs() == 10,
+                    }
+                })
+                .collect();
+            RoadSurfaceSystem::solve_standard_road_profile(&mut samples);
+            for sample in &samples {
+                assert!(
+                    (sample.y - sample.target_y).abs() < 0.2,
+                    "interior relief lost at {}: {} vs {}",
+                    sample.x,
+                    sample.y,
+                    sample.target_y
+                );
+                if sample.pinned {
+                    assert_eq!(sample.y, sample.target_y);
+                }
+            }
+        }
     }
 }

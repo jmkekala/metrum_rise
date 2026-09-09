@@ -181,6 +181,52 @@ fn conflicting_height_road_constraints_are_not_welded_by_height_max() {
 }
 
 #[test]
+fn constraint_incidence_does_not_extend_segments_by_a_fraction_of_their_length() {
+    let a = TerrainCdtVertex::new(9.564979, 150.321, -80.074526);
+    let b = TerrainCdtVertex::new(11.323582, 150.423, -81.016666);
+    let c = TerrainCdtVertex::new(9.563498, 150.322, -80.073733);
+    let d = TerrainCdtVertex::new(10.201014, 150.106, -78.883744);
+    assert_eq!(segment_intersections(a, b, c, d), [None, None]);
+    assert_eq!(segment_intersections(c, d, a, b), [None, None]);
+    for length in [2.0, 64.0, 1000.0] {
+        let start = test_vertex(0.0, 0.0);
+        let end = test_vertex(length, 0.0);
+        assert_eq!(
+            segment_intersections(
+                start,
+                end,
+                test_vertex(length + 0.0008, -1.0),
+                test_vertex(length + 0.0008, 1.0)
+            ),
+            [None, None]
+        );
+        assert!(segment_intersections(start, end, end, test_vertex(length, 1.0))[0].is_some());
+    }
+}
+
+#[test]
+fn near_parallel_approach_arms_do_not_fabricate_collinear_overlap() {
+    let a = TerrainCdtVertex::new(-1381.629449, 123.975, 2577.986181);
+    let b = TerrainCdtVertex::new(-1381.509472, 123.946, 2576.013330);
+    let c = TerrainCdtVertex::new(-1381.550238, 123.963, 2576.688184);
+    for (start, end) in [(a, b), (b, a)] {
+        for (other_start, other_end) in [(b, c), (c, b)] {
+            let intersections = segment_intersections(start, end, other_start, other_end);
+            assert!(intersections[0].is_some_and(|point| same_xz(point, b)));
+            assert_eq!(
+                intersections[1], None,
+                "adjacent but distinct arms intersect only at their shared endpoint"
+            );
+        }
+    }
+    let midpoint = interpolate_vertex(a, b, 0.5);
+    assert!(
+        segment_intersections(a, b, b, midpoint)[1].is_some(),
+        "actual collinear overlap must still be noded"
+    );
+}
+
+#[test]
 fn building_site_boundary_crossing_road_uses_road_height_without_cdt_conflict() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]);
     let road = vec![

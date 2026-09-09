@@ -102,7 +102,7 @@ func _stream_fixture(fixture: Dictionary) -> Dictionary:
 		if requested_id > 0 and not request_inputs.has(requested_id):
 			request_inputs[requested_id] = input_us
 		var shown_id: int = tool._junction_preview.request_id
-		_expect(shown_id > 0 or displayed_id == 0, "valid continuous motion must retain the junction after its first display")
+		_expect(shown_id > 0 or displayed_id == 0, "valid continuous motion must retain the junction: fixture=%s frame=%d valid=%s" % [fixture.name, index, tool.is_valid])
 		if shown_id > 0:
 			_expect(request_inputs.has(shown_id), "rendered request must come from this drag")
 			var age_ms := float(displayed_us - int(request_inputs.get(shown_id, displayed_us))) / 1000.0

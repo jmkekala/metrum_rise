@@ -12,6 +12,31 @@ impl SideJoinHeightPlane {
     }
 }
 
+/// Fits the same material level on both sides; curb-top and asphalt heights stay distinct.
+pub(super) fn endpoint_height_plane_for_outer_boundary(
+    mouths: &[NodeInputMouth],
+    band_kind: RoadSurfaceBandKind,
+) -> Option<SideJoinHeightPlane> {
+    let mut points = Vec::new();
+    for mouth in mouths {
+        for side in [SideJoinProfileSide::Start, SideJoinProfileSide::End] {
+            for layer in super::generation::side_join_layers(mouth, side) {
+                if layer.band_kind == band_kind {
+                    let interval = mouth.band_intervals.get(layer.band_index)?;
+                    points.push(if layer.outer_boundary_index == layer.band_index {
+                        interval.endpoint_start_world
+                    } else {
+                        interval.endpoint_end_world
+                    });
+                }
+            }
+        }
+    }
+    canonicalize_height_plane_points(&mut points);
+    let plane = height_plane_from_points(&points)?;
+    validate_height_plane(&points, plane).then_some(plane)
+}
+
 pub(super) fn endpoint_height_plane_for_band_kind(
     mouths: &[NodeInputMouth],
     band_kind: RoadSurfaceBandKind,

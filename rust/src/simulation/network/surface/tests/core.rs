@@ -430,6 +430,72 @@ fn standard_edge_sections_follow_solved_edge_profile_deterministically() {
 }
 
 #[test]
+fn junction_approaches_consume_the_solved_physical_profile_inside_node_ownership() {
+    let mut graph = RegionGraph::new();
+    let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+    let mut edges = HashSet::new();
+    for end in [
+        Vector3::new(80.0, 0.0, 0.0),
+        Vector3::new(-80.0, 0.0, 0.0),
+        Vector3::new(0.0, 24.0, 80.0),
+        Vector3::new(0.0, -24.0, -80.0),
+    ] {
+        let terminal = graph.add_node(end, NodeType::Junction);
+        edges.insert(graph.add_edge(test_edge(
+            center,
+            terminal,
+            (0..=40).map(|i| end * (i as f32 / 40.0)).collect(),
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        )));
+    }
+    graph.rebuild_adjacency_list();
+    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &edges);
+    graph.rebuild_intersection_clips();
+    let terrain = flat_terrain(192, 192);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let edge_idx = 2;
+    let edge = graph.edge(edge_idx);
+    let sections = &surface.compiled_sections()[&edge_idx];
+    for section in sections.iter() {
+        let z = section.center_xz.y as f32;
+        let pair = edge
+            .physical_geometry
+            .windows(2)
+            .find(|pair| z >= pair[0].z - 0.001 && z <= pair[1].z + 0.001)
+            .unwrap();
+        let t = (z - pair[0].z) / (pair[1].z - pair[0].z);
+        let expected = pair[0].lerp(pair[1], t);
+        assert!(
+            (section.center_height_m - expected.y as f32).abs() < 0.0001,
+            "surface re-solved the physical profile at {} m: {} != {}",
+            section.s_m,
+            section.center_height_m,
+            expected.y
+        );
+    }
+    let handoff = surface.compiled_visual_span_pieces()[&edge_idx]
+        .start_mouth_profile
+        .as_ref()
+        .unwrap();
+    let handoff_s = handoff.boundary_points_world[0].z as f32;
+    assert!(
+        sections.iter().any(|section| {
+            section.s_m > 2.0 && section.s_m < handoff_s && section.center_height_m > 0.001
+        }),
+        "elevation must be allowed to change before the ownership handoff"
+    );
+    assert!(
+        surface.compiled_visual_node_pieces().contains_key(&center),
+        "relaxing approaches must retain a valid crossing: {:?}",
+        surface.last_compile_failure_label()
+    );
+}
+
+#[test]
 fn junction_profile_transition_sections_use_dense_visual_cadence() {
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(0.0, 0.0, 0.0);

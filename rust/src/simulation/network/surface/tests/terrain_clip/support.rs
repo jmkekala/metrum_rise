@@ -258,7 +258,11 @@ pub(super) fn standard_node_graph_with_offset_roads(
         ));
     }
     let adaptable_edges = (0..graph.edge_count()).collect::<HashSet<_>>();
-    graph.solve_junction_endpoint_profiles_for_edges(&HashSet::from([center]), &adaptable_edges);
+    graph.finalize_junction_endpoint_profiles_for_edges(
+        &HashSet::from([center]),
+        &adaptable_edges,
+        &adaptable_edges,
+    );
     graph.rebuild_intersection_clips();
 
     (graph, center)

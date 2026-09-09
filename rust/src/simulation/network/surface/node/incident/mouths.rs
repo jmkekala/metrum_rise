@@ -310,7 +310,20 @@ fn incident_profile_path_has_non_collinear_boundary(path: &[IncidentMouthProfile
             let key = NodeArrangementKey::from_point(super::super::backend::road_vec3_xz(point));
             let px = i128::from(key.x_key() - start.x_key());
             let pz = i128::from(key.z_key() - start.z_key());
+            // A straight XZ approach can still carry a vertical curve. Keep those
+            // height supports when the node owns part of the solved road profile.
+            let t = (px * dx + pz * dz) as f64 / (dx * dx + dz * dz) as f64;
+            let height_roundoff = 4.0
+                * f64::from(f32::EPSILON)
+                * point
+                    .y
+                    .abs()
+                    .max(start_point.y.abs())
+                    .max(end_point.y.abs())
+                    .max(1.0);
             px * dz - pz * dx != 0
+                || (point.y - (start_point.y + t * (end_point.y - start_point.y))).abs()
+                    > height_roundoff
         })
     })
 }

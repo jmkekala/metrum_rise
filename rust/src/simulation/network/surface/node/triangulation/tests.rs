@@ -354,18 +354,12 @@ fn triangulation_constraint_loop_removes_dust_backtracking_spur_after_vertex_can
     let solution = triangulation_from_height_solution(&heights)
         .expect("post-canonicalization backtracking spur should be cleaned before CDT");
     let region = &solution.regions[0];
-    let spike_index = region
-        .vertices
-        .iter()
-        .position(|vertex| (vertex.point_world.z - 0.001).abs() < 1.0e-9)
-        .expect("spike vertex should remain in the vertex pool for deterministic CDT loading");
-
     assert!(
         region
-            .boundary_constraints
+            .vertices
             .iter()
-            .all(|constraint| !constraint.contains(&spike_index)),
-        "canonical boundary constraints must not keep a zero-area dust backtracking spur"
+            .all(|vertex| (vertex.point_world.z - 0.001).abs() >= 1.0e-9),
+        "CDT must not reintroduce a cleaned dust spur as an unconstrained guide"
     );
 }
 

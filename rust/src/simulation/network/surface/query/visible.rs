@@ -63,6 +63,27 @@ impl RoadSurfaceSystem {
         world_x: f32,
         world_z: f32,
     ) -> Option<f32> {
+        let (surface, earthwork) = self.sample_visible_surface_layers_filtered(
+            graph,
+            terrain,
+            world_x,
+            world_z,
+            |_| true,
+            |_| true,
+        );
+        surface.or(earthwork)
+    }
+
+    /// Queries selected owners without allowing earthworks to override any visible road top.
+    pub(super) fn sample_visible_surface_layers_filtered(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        world_x: f32,
+        world_z: f32,
+        include_edge: impl Fn(usize) -> bool,
+        include_node: impl Fn(u32) -> bool,
+    ) -> (Option<f32>, Option<f32>) {
         let world_x = f64::from(world_x);
         let world_z = f64::from(world_z);
         let point = RoadVec2::new(world_x, world_z);
@@ -74,7 +95,7 @@ impl RoadSurfaceSystem {
         // Reuse the immutable owner-local triangle grids already built for lane queries.
         // O(owners in query chunk + triangles in their matching cells), with no allocations.
         for &node_id in node_ids.into_iter().flatten() {
-            if !self.node_uses_visible_surface(graph, terrain, node_id) {
+            if !include_node(node_id) || !self.node_uses_visible_surface(graph, terrain, node_id) {
                 continue;
             }
             if let Some(piece) = self.compiled_visual_node_pieces.get(&node_id)
@@ -84,6 +105,9 @@ impl RoadSurfaceSystem {
             }
         }
         for &edge_idx in edge_indices.into_iter().flatten() {
+            if !include_edge(edge_idx) {
+                continue;
+            }
             if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx)
                 && let Some(height_m) = piece.surface_query.sample_visible_height(point)
             {
@@ -92,7 +116,7 @@ impl RoadSurfaceSystem {
         }
 
         if top_surface_height_m.is_some() {
-            return top_surface_height_m;
+            return (top_surface_height_m, None);
         }
 
         let mut earthwork_height_m: Option<f32> = None;
@@ -101,10 +125,12 @@ impl RoadSurfaceSystem {
             terrain,
             edge_indices
                 .into_iter()
-                .flat_map(|owners| owners.iter().copied()),
+                .flat_map(|owners| owners.iter().copied())
+                .filter(|edge| include_edge(*edge)),
             node_ids
                 .into_iter()
-                .flat_map(|owners| owners.iter().copied()),
+                .flat_map(|owners| owners.iter().copied())
+                .filter(|node| include_node(*node)),
             &mut |triangle| {
                 if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
                     keep_max_height(&mut earthwork_height_m, height_m);
@@ -112,7 +138,7 @@ impl RoadSurfaceSystem {
             },
         );
 
-        earthwork_height_m
+        (None, earthwork_height_m)
     }
 
     pub(crate) fn sample_visible_carriageway_height(

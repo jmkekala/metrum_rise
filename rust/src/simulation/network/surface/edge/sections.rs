@@ -82,10 +82,24 @@ impl RoadSurfaceSystem {
         let (end_kind, end_pass_through_tangent) =
             self.section_endpoint_kind_and_tangent(graph, edge_idx, edge, false);
         let start_profile_plane = Self::node_kind_uses_endpoint_profile(start_kind)
-            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.start_node)))
+            .then(|| {
+                let node = graph.get_valid_node(edge.start_node);
+                if edge.class == EdgeClass::Standard {
+                    graph.solved_junction_endpoint_profile_plane(node)
+                } else {
+                    graph.junction_endpoint_profile_plane(node)
+                }
+            })
             .flatten();
         let end_profile_plane = Self::node_kind_uses_endpoint_profile(end_kind)
-            .then(|| graph.junction_endpoint_profile_plane(graph.get_valid_node(edge.end_node)))
+            .then(|| {
+                let node = graph.get_valid_node(edge.end_node);
+                if edge.class == EdgeClass::Standard {
+                    graph.solved_junction_endpoint_profile_plane(node)
+                } else {
+                    graph.junction_endpoint_profile_plane(node)
+                }
+            })
             .flatten();
         let mouth_policy = self.visual_edge_mouth_policy_for_edge(
             graph,
@@ -146,16 +160,19 @@ impl RoadSurfaceSystem {
                         end_profile_plane,
                     )
                 });
-                let center_height_m = profile_blend.map_or_else(
-                    || self.solve_section_height(center),
-                    |blend| {
-                        blend.height_at_xz(
+                // The topology finalizer owns the longitudinal solution. Ownership of a
+                // section by the node must not flatten that solution a second time.
+                let center_height_m = if edge.class == EdgeClass::Standard {
+                    self.solve_section_height(center)
+                } else {
+                    profile_blend.map_or(self.solve_section_height(center), |blend| {
+                        blend.structural_height_at_xz(
                             center.x as f32,
                             center.z as f32,
-                            self.solve_section_height(center),
+                            center.y as f32,
                         )
-                    },
-                );
+                    })
+                };
                 RoadSurfaceSection {
                     edge_idx,
                     s_m,

@@ -301,7 +301,7 @@ pub struct BuildingAllocator {
     pub dirty: bool,
     /// Per-edge frontage occupancy tracker.
     pub edge_occupancy: HashMap<usize, EdgeOccupancy>,
-    /// Inverted index for shipped baseline families in [`BASELINE_PRIVATE_ZONES`] order.
+    /// Inverted index in residential, commercial, industrial order (`BASELINE_PRIVATE_ZONES`).
     pub zone_index: [Vec<usize>; 3],
     /// Inverted vacancy index for shipped residential/commercial/industrial buildings.
     pub vacancy_index: [Vec<usize>; 3],
@@ -315,7 +315,7 @@ pub struct BuildingAllocator {
     pub(crate) max_site_radius_m: f32,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
-    /// Per-family dirty flags in [`BASELINE_PRIVATE_ZONES`] order.
+    /// Per-family dirty flags in residential, commercial, industrial order (`BASELINE_PRIVATE_ZONES`).
     pub dirty_zones: [bool; 3],
     /// True when the derived entrance cache must be rebuilt before use.
     pub(crate) entrances_dirty: bool,

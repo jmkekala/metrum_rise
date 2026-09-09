@@ -3,7 +3,8 @@
 //! Pack directory scanner.
 //!
 //! Reads a directory of content packs from the native filesystem and produces
-//! validated [`PackManifest`] + [`AssetManifest`] pairs for use with [`AssetRegistry`].
+//! validated [`PackManifest`] + [`AssetManifest`] pairs for use with
+//! [`AssetRegistry`](crate::assets::AssetRegistry).
 //! Only `std::fs` I/O is used — no Godot APIs — so this module is fully testable
 //! without the engine.
 //!

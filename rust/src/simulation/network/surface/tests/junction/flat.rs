@@ -760,7 +760,8 @@ fn logged_mixed_width_junction_keeps_single_footprint_boundary_height() {
 
     if !surface.compiled_visual_node_pieces().contains_key(&node6) {
         panic!(
-            "logged mixed-width JunctionN did not compile: {}",
+            "logged mixed-width JunctionN did not compile: {:?} {}",
+            surface.last_compile_failure_label(),
             canonical_junction_pipeline_report(&surface, &graph, node6)
         );
     }
@@ -1144,8 +1145,8 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             top_polygon_count: 275,
             carrier_record_count: 326,
             source_segment_record_count: 19,
-            polygon_key_set_digest: 15505972699732544511,
-            top_owner_height_field_digest: 4578930640497027894,
+            polygon_key_set_digest: 5647545611315208473,
+            top_owner_height_field_digest: 7433445721030018642,
             carrier_owner_source_height_field_digest: 5687354493498944674,
             source_segment_id_digest: 17651613363160715331,
             source_segment_ids: vec![
@@ -1183,8 +1184,8 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             top_polygon_count: 479,
             carrier_record_count: 567,
             source_segment_record_count: 28,
-            polygon_key_set_digest: 3103305073605895394,
-            top_owner_height_field_digest: 1053228158815445421,
+            polygon_key_set_digest: 17903843049220661623,
+            top_owner_height_field_digest: 17620823178268395475,
             carrier_owner_source_height_field_digest: 13238820941424359883,
             source_segment_id_digest: 2898317876464273514,
             source_segment_ids: vec![
@@ -1231,8 +1232,8 @@ fn flat_junctionn_canonical_raw_polygon_golden_checks_cover_generated_matrix() {
             top_polygon_count: 601,
             carrier_record_count: 706,
             source_segment_record_count: 32,
-            polygon_key_set_digest: 4804634371906054559,
-            top_owner_height_field_digest: 15595832286415021780,
+            polygon_key_set_digest: 14941999532158573614,
+            top_owner_height_field_digest: 3714959688274563902,
             carrier_owner_source_height_field_digest: 13406976634543183515,
             source_segment_id_digest: 6020531977663627717,
             source_segment_ids: vec![

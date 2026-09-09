@@ -101,8 +101,9 @@ The fixed controlled default is a 32-fixture benchmark, not an exhaustive terrai
 the authored world between its warmup and measured cycles, so every case repeats at the same site and
 clean-network state. `METRUM_GAMEPLAY_BENCHMARK_MATRIX=baseline` selects the former three-case,
 12-fixture growing-network/site-sweep workload. Increasing baseline repetitions can encounter
-additional correctness sites and fails promptly if it does. Setting the baseline matrix and fixture
-spacing to `520` reproduces the original failing site. The targeted `road08` matrix replays the exact
+additional correctness sites and fails promptly if it does. The baseline matrix with fixture
+spacing `520` was used for the historical `ROAD-06` capture; this is not a verified failure on the
+current build (see [parked reports](roadmap.md#parked-historical-reports)). The targeted `road08` matrix replays the exact
 terrain-sensitive curve at `(-1920, -1280)`: it commits the setup span, requires the authoritative
 curve preview to reject with `surface_geometry_invalid`, and records the rejection latency instead of
 mistaking a completed invalid result for pending work. The targeted `double_t` matrix replays only
@@ -130,8 +131,8 @@ The stable controls are:
   `METRUM_GAMEPLAY_BENCHMARK_WARMUP_REPETITIONS`
 - `METRUM_GAMEPLAY_BENCHMARK_TIMEOUT_SEC` for each renderer/generation settle fence
 - `METRUM_GAMEPLAY_BENCHMARK_FIXTURE_SPACING_M` for the deterministic fixture-center cadence
-  (default `640`; use the `baseline` matrix with `520` to reproduce the original terrain-CDT case
-  tracked as `ROAD-06`)
+  (default `640`; `520` with the `baseline` matrix was the historical `ROAD-06` configuration,
+  not a current failure guarantee)
 - `METRUM_GAMEPLAY_BENCHMARK_SAMPLE_RATE` for Samply's Hz rate (default `1000`)
 - `METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH` to intentionally profile another authored world
 - `METRUM_GAMEPLAY_BENCHMARK_OUTPUT_DIR`, or the individual

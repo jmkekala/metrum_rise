@@ -6,16 +6,17 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use super::road_edit_plan::RoadEditPlan;
 use super::road_preview::{
-    RoadPreviewValidationCertificate, RoadPreviewWorkerContext, RoadToolQuerySnapshot,
-    road_tool_snapshots_from_core,
+    RoadPreviewWorkerContext, RoadToolQuerySnapshot, road_tool_snapshots_from_core,
 };
 use super::snapshot::RenderSnapshot;
-use super::state::{BulkRoadGeometryFinalize, SimCore};
+use super::state::SimCore;
 use super::terrain_payloads::ROAD_LOCKED_TERRAIN_RENDER_STEP_M;
 use crate::debug::{CrashCommand, CrashSimSnapshot};
 use crate::debug_log;
 use crate::nodes::sim::editing::BulldozeTarget;
+use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use godot::prelude::godot_error;
 
 fn run_sim_phase<T>(phase: &str, run: impl FnOnce() -> T) -> T {
@@ -53,7 +54,7 @@ pub(crate) enum SimCommand {
         /// Whether authored endpoints may snap to nearby existing road nodes.
         snap_to_existing_roads: bool,
         /// Successful exact preview tied to the same immutable road-surface generation.
-        validation_certificate: Option<RoadPreviewValidationCertificate>,
+        edit_plan: Option<Arc<RoadEditPlan>>,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
     },
@@ -230,7 +231,7 @@ pub(crate) fn run_sim_thread(
                     fwd_lanes,
                     bkw_lanes,
                     snap_to_existing_roads,
-                    validation_certificate,
+                    edit_plan,
                     enqueued_at,
                 }) => {
                     commands_processed += 1;
@@ -264,6 +265,34 @@ pub(crate) fn run_sim_thread(
                         );
                         // Bulk-load defers per-edge rebuilds until finalization.
                         let add_internal_start = Instant::now();
+                        // Complete all geometry before opening the transaction. The worker and
+                        // click rebuild use the same local compiler; neither clones the city here.
+                        let edit_plan = edit_plan
+                            .filter(|plan| {
+                                plan.prepared_input_for(
+                                    c.road_tool_surface_generation,
+                                    c.heightmap.source_generation(),
+                                    &points,
+                                    fwd_lanes,
+                                    bkw_lanes,
+                                    snap_to_existing_roads,
+                                )
+                                .is_some()
+                                    && plan.status(&c) == "ready"
+                            })
+                            .unwrap_or_else(|| {
+                                Arc::new(super::RoadEditPlan::compile(
+                                    &c,
+                                    super::road_preview::RoadPreviewRequest {
+                                        request_id: 0,
+                                        surface_generation: c.road_tool_surface_generation,
+                                        points: points.clone(),
+                                        fwd_lanes,
+                                        bkw_lanes,
+                                        snap_to_existing_roads,
+                                    },
+                                ))
+                            });
                         c.transit_network.bulk_load = true;
                         c.transit_network.begin_road_edit();
                         record_crash_phase_for_core(&c, "add road internal");
@@ -272,7 +301,7 @@ pub(crate) fn run_sim_thread(
                             fwd_lanes,
                             bkw_lanes,
                             snap_to_existing_roads,
-                            validation_certificate.as_ref(),
+                            Some(edit_plan.as_ref()),
                         );
                         let add_internal_ms = add_internal_start.elapsed().as_secs_f64() * 1000.0;
                         let finalize_start = Instant::now();
@@ -282,13 +311,21 @@ pub(crate) fn run_sim_thread(
                             c.transit_network.bulk_load = false;
                             record_crash_phase_for_core(c, "add road geometry finalize");
 
-                            let BulkRoadGeometryFinalize {
+                            let terrain_plan = road_add
+                                .finalized_geometry
+                                .as_ref()
+                                .map(|_| edit_plan.as_ref())
+                                .and_then(|plan| plan.terrain());
+
+                            let FinalizedRoadGeometry {
                                 dirty_edges: dirty,
                                 affected_nodes: _affected_nodes,
                                 profile_us: dt_profile_us,
-                                regrade_us: dt_regrade_us,
                                 clips_us: dt_clips_us,
-                            } = c.finalize_bulk_road_geometry_for_dirty_edges();
+                            } = road_add
+                                .finalized_geometry
+                                .take()
+                                .unwrap_or_else(|| c.finalize_bulk_road_geometry_for_dirty_edges());
                             let dirty_count = dirty.len();
                             edit_metrics.dirty_edges = dirty_count;
                             if crate::debug::category_enabled("road")
@@ -308,7 +345,8 @@ pub(crate) fn run_sim_thread(
                             }
                             let surface_start = Instant::now();
                             record_crash_phase_for_core(c, "add road render validation");
-                            road_add.committed = c.validate_staged_road_render();
+                            road_add.committed =
+                                c.validate_staged_road_render_with_plan(terrain_plan);
                             surface_ms = surface_start.elapsed().as_secs_f64() * 1000.0;
                             if road_add.committed {
                                 let t_inv = Instant::now();
@@ -355,11 +393,10 @@ pub(crate) fn run_sim_thread(
 
                                 let total_us = road_total.elapsed().as_micros();
                                 let msg = format!(
-                                    "TOTAL={}µs  {}  profiles={}µs  regrade={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
+                                    "TOTAL={}µs  {}  profiles={}µs  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
                                     total_us,
                                     c.last_road_timing,
                                     dt_profile_us,
-                                    dt_regrade_us,
                                     dt_clips_us,
                                     dt_lanes_us,
                                     dirty_count,

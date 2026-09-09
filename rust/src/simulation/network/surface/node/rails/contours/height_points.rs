@@ -3,25 +3,25 @@
 //! Height-carrier alignment for generated rail contours.
 
 use super::*;
-use crate::simulation::network::surface::keys::{
-    SURFACE_MM_PER_M, SurfaceHeightMmKey, SurfaceXzKey,
-};
-use crate::simulation::network::surface::segments::interpolate_height_i64;
+use crate::simulation::network::surface::keys::{SurfaceHeightMmKey, SurfaceXzKey};
 
 pub(in crate::simulation::network::surface::node::rails) fn align_height_points_to_contour(
     contour_points_xz: &[RoadVec2],
     source_points_world: &[RoadVec3],
 ) -> Option<Vec<RoadVec3>> {
-    let mut height_by_key = BTreeMap::<NodeRailPointKey, SurfaceHeightMmKey>::new();
+    let mut height_by_key = BTreeMap::<NodeRailPointKey, f64>::new();
     for point in source_points_world {
         let key = road_point_key(xz(*point));
         let height_key = SurfaceHeightMmKey::from_m_f64(point.y);
         if let Some(existing_height_key) = height_by_key.get(&key)
-            && *existing_height_key != height_key
+            && SurfaceHeightMmKey::from_m_f64(*existing_height_key) != height_key
         {
             return None;
         }
-        height_by_key.insert(key, height_key);
+        height_by_key
+            .entry(key)
+            .and_modify(|height| *height = height.min(point.y))
+            .or_insert(point.y);
     }
     contour_points_xz
         .iter()
@@ -30,13 +30,7 @@ pub(in crate::simulation::network::surface::node::rails) fn align_height_points_
             height_by_key
                 .get(&road_point_key(point_xz))
                 .copied()
-                .map(|height_key| {
-                    RoadVec3::new(
-                        point_xz.x,
-                        height_key.as_i64() as f64 / SURFACE_MM_PER_M,
-                        point_xz.y,
-                    )
-                })
+                .map(|height_m| RoadVec3::new(point_xz.x, height_m, point_xz.y))
         })
         .collect()
 }
@@ -60,19 +54,21 @@ fn height_on_source_contours(
     source_contours_world: &[&[RoadVec3]],
 ) -> Option<f64> {
     let key = road_point_key(point_xz);
-    let mut height_key: Option<SurfaceHeightMmKey> = None;
+    let mut height: Option<f64> = None;
     for source_contour_world in source_contours_world {
         if let Some(candidate_height_m) = height_on_source_contour_edge(key, source_contour_world) {
             let candidate_height_key = SurfaceHeightMmKey::from_m_f64(candidate_height_m);
-            if let Some(existing_height_key) = height_key
-                && existing_height_key != candidate_height_key
+            if let Some(existing_height) = height
+                && SurfaceHeightMmKey::from_m_f64(existing_height) != candidate_height_key
             {
                 return None;
             }
-            height_key = Some(candidate_height_key);
+            height = Some(height.map_or(candidate_height_m, |current| {
+                current.min(candidate_height_m)
+            }));
         }
     }
-    height_key.map(|height_key| height_key.as_i64() as f64 / SURFACE_MM_PER_M)
+    height
 }
 
 fn height_on_source_contour_edge(
@@ -121,12 +117,8 @@ pub(in crate::simulation::network::surface::node::rails) fn height_for_key_on_ge
         SurfaceXzKey::from_raw_tuple(start),
         SurfaceXzKey::from_raw_tuple(end),
     )?;
-    let height_mm = interpolate_height_i64(
-        SurfaceHeightMmKey::from_m_f64(start_height_m).as_i64(),
-        SurfaceHeightMmKey::from_m_f64(end_height_m).as_i64(),
-        parameter,
-    );
-    Some(height_mm as f64 / SURFACE_MM_PER_M)
+    // Millimetre keys validate agreement; they must not round the geometry itself.
+    Some(start_height_m + (end_height_m - start_height_m) * parameter.as_f64())
 }
 
 #[cfg(test)]

@@ -6,14 +6,18 @@ use super::{ChunkCacheKind, RoadSurfaceCompileReason, RoadSurfaceSystem, Surface
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use rayon::prelude::*;
+use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Instant;
 
 mod boundary;
 mod geometry;
 mod model;
+mod planning;
 mod ranges;
 mod stamping;
 
+pub(crate) use planning::RoadEarthworkPlan;
 use stamping::{EarthworkChunkStampResult, EarthworkStampStats};
 
 pub(crate) use model::{
@@ -40,10 +44,29 @@ const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 const PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS: usize = 2;
 
 impl RoadSurfaceSystem {
+    /// Offers immutable preview stamp products for the next staged earthwork publication only.
+    pub(crate) fn enqueue_planned_earthworks(&mut self, plan: Option<Arc<RoadEarthworkPlan>>) {
+        self.pending_planned_earthworks = plan;
+    }
+
     /// Marks terrain render patches touched by dirty road chunks and local CDT grading support.
     pub(crate) fn mark_render_patches_for_chunk_grading_envelopes(
         &self,
         terrain: &mut TerrainSystem,
+        chunks: &[SurfaceChunkKey],
+        render_step_m: f32,
+    ) -> Vec<(usize, usize)> {
+        let dirty_patch_keys =
+            self.render_patch_keys_for_chunk_grading_envelopes(terrain, chunks, render_step_m);
+        for &(patch_x, patch_z) in &dirty_patch_keys {
+            terrain.mark_render_patch_dirty(patch_x, patch_z);
+        }
+        dirty_patch_keys
+    }
+
+    pub(super) fn render_patch_keys_for_chunk_grading_envelopes(
+        &self,
+        terrain: &TerrainSystem,
         chunks: &[SurfaceChunkKey],
         render_step_m: f32,
     ) -> Vec<(usize, usize)> {
@@ -65,9 +88,6 @@ impl RoadSurfaceSystem {
 
         dirty_patch_keys.sort_unstable();
         dirty_patch_keys.dedup();
-        for &(patch_x, patch_z) in &dirty_patch_keys {
-            terrain.mark_render_patch_dirty(patch_x, patch_z);
-        }
         dirty_patch_keys
     }
 
@@ -93,6 +113,8 @@ impl RoadSurfaceSystem {
         let had_dirty_work = self.has_pending_rebuild_work();
         self.compile_dirty_with_reason(graph, terrain, reason);
         if !self.published_generation_matches_source() {
+            self.pending_planned_earthworks = None;
+            self.last_reused_earthwork_chunk_count = 0;
             return Vec::new();
         }
 
@@ -111,6 +133,7 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         terrain: &mut TerrainSystem,
     ) -> Vec<SurfaceChunkKey> {
+        self.pending_planned_earthworks = None;
         self.compile_dirty_with_reason(graph, terrain, RoadSurfaceCompileReason::TerrainEarthwork);
         if !self.published_generation_matches_source() {
             return Vec::new();
@@ -122,7 +145,7 @@ impl RoadSurfaceSystem {
     }
 
     fn apply_earthwork_chunks(
-        &self,
+        &mut self,
         graph: &RegionGraph,
         terrain: &mut TerrainSystem,
         chunks: &[SurfaceChunkKey],
@@ -131,35 +154,31 @@ impl RoadSurfaceSystem {
         let total_start = road_debug.then(Instant::now);
         let collect_start = road_debug.then(Instant::now);
         let terrain_read: &TerrainSystem = terrain;
-        let stamp_results: Vec<EarthworkChunkStampResult> =
-            if chunks.len() >= PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS {
-                chunks
-                    .par_iter()
-                    .copied()
-                    .map(|chunk| {
-                        let chunk_start = road_debug.then(Instant::now);
-                        let mut result =
-                            self.collect_earthwork_chunk_stamp_writes(graph, terrain_read, chunk);
-                        result.collect_ms = chunk_start
-                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                            .unwrap_or(0.0);
-                        result
-                    })
-                    .collect()
+        let plan = self
+            .pending_planned_earthworks
+            .take()
+            .filter(|plan| plan.dependencies_match(self, terrain_read));
+        let collect_chunk = |chunk| {
+            let chunk_start = road_debug.then(Instant::now);
+            let input = self.prepare_earthwork_chunk_stamp(graph, terrain_read, chunk);
+            let result = if let Some(result) = plan
+                .as_ref()
+                .and_then(|plan| plan.matching_chunk(chunk, &input))
+            {
+                Cow::Borrowed(result)
             } else {
-                chunks
-                    .iter()
-                    .copied()
-                    .map(|chunk| {
-                        let chunk_start = road_debug.then(Instant::now);
-                        let mut result =
-                            self.collect_earthwork_chunk_stamp_writes(graph, terrain_read, chunk);
-                        result.collect_ms = chunk_start
-                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                            .unwrap_or(0.0);
-                        result
-                    })
-                    .collect()
+                Cow::Owned(input.finish())
+            };
+            let collect_ms = chunk_start
+                .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                .unwrap_or(0.0);
+            (result, collect_ms)
+        };
+        let stamp_results: Vec<(Cow<'_, EarthworkChunkStampResult>, f64)> =
+            if chunks.len() >= PARALLEL_EARTHWORK_CHUNK_MIN_ITEMS {
+                chunks.par_iter().copied().map(collect_chunk).collect()
+            } else {
+                chunks.iter().copied().map(collect_chunk).collect()
             };
         let collect_ms = collect_start
             .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -170,10 +189,13 @@ impl RoadSurfaceSystem {
         let mut chunk_collect_total_ms = 0.0;
         let mut chunk_collect_max_ms = 0.0_f64;
         let chunk_collect_count = stamp_results.len();
-        for result in stamp_results {
+        self.last_reused_earthwork_chunk_count = 0;
+        for (result, collect_ms) in stamp_results {
+            self.last_reused_earthwork_chunk_count +=
+                usize::from(matches!(result, Cow::Borrowed(_)));
             let chunk = result.chunk;
-            chunk_collect_total_ms += result.collect_ms;
-            chunk_collect_max_ms = chunk_collect_max_ms.max(result.collect_ms);
+            chunk_collect_total_ms += collect_ms;
+            chunk_collect_max_ms = chunk_collect_max_ms.max(collect_ms);
             let (chunk_min, chunk_max) = self.chunk_bounds(chunk);
             terrain.reset_visual_region_from_source_world(
                 chunk_min.x as f32,
@@ -197,6 +219,12 @@ impl RoadSurfaceSystem {
             } else {
                 chunk_collect_total_ms / chunk_collect_count as f64
             };
+            crate::debug_log!(
+                "road",
+                "road_edit_earthworks reused_chunks={} rebuilt_chunks={}",
+                self.last_reused_earthwork_chunk_count,
+                chunk_collect_count - self.last_reused_earthwork_chunk_count,
+            );
             crate::debug_log!(
                 "road",
                 "earthwork_stamp_detail chunks={} chunks_with_cache={} span_owners={} node_owners={} regions_visited={} regions_stamped={} triangles_visited={} degenerate_triangles={} valid_triangles={} triangle_grid_cells_scanned={} tile_triangle_refs={} point_triangle_tests={} candidate_inserts={} candidate_replacements={} final_unique_writes={} chunk_collect_avg_ms={:.3} chunk_collect_max_ms={:.3} collect_ms={:.3} apply_ms={:.3} total_ms={:.3}",

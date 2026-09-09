@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::simulation::core::round_f64_to_i64;
+use crate::simulation::terrain::TerrainVisualSource;
 
 const TERRAIN_CDT_GRADING_SAMPLE_KEY_SCALE: f64 = 1000.0;
 const TERRAIN_CDT_GRADING_RING_MULTIPLIERS: [f32; 4] = [1.0, 2.0, 4.0, 8.0];
@@ -12,11 +13,11 @@ const TERRAIN_CDT_REQUIRED_GRADING_MAX_PROBES: usize = 8;
 impl RoadSurfaceSystem {
     /// Returns the support distance required for road terrain-CDT grading guides.
     pub(crate) fn terrain_cdt_required_grading_margin_m(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
     ) -> f32 {
-        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
         let mut margin_m = base_margin_m;
         for road_loop in road_loops {
             margin_m = margin_m.max(Self::terrain_cdt_required_grading_margin_for_loop_vertices(
@@ -36,10 +37,10 @@ impl RoadSurfaceSystem {
     pub(crate) fn terrain_cdt_required_grading_margin_for_visible_roads(
         &self,
         graph: &RegionGraph,
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         render_step_m: f32,
     ) -> f32 {
-        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain, render_step_m);
+        let base_margin_m = terrain_cdt_local_sample_margin_m(terrain.terrain(), render_step_m);
         let mut margin_m = base_margin_m;
 
         for (_, piece) in self.compiled_visual_span_pieces.iter() {
@@ -76,7 +77,7 @@ impl RoadSurfaceSystem {
     /// Emits deterministic terrain-CDT guide samples for the roadbed grading envelope.
     #[cfg(test)]
     pub(crate) fn append_terrain_cdt_roadbed_grading_envelope(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
         tie_in_guide_samples: &mut Vec<TerrainCdtTieInGuideSample>,
@@ -99,7 +100,7 @@ impl RoadSurfaceSystem {
 
     /// Emits grading guides using a support distance already computed for the same loops.
     pub(crate) fn append_terrain_cdt_roadbed_grading_envelope_with_margin(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         road_loops: &[TerrainCdtRoadLoop],
         render_step_m: f32,
         max_distance_m: f32,
@@ -219,7 +220,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn terrain_cdt_required_grading_margin_for_clip_loop(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         boundary_loop: &RoadSurfaceTerrainClipLoop,
         render_step_m: f32,
         base_margin_m: f32,
@@ -239,7 +240,7 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_cdt_required_grading_margin_for_loop_vertices(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         vertices: &[TerrainCdtVertex],
         is_hole: bool,
         uses_clean_grounded_tie_in: bool,
@@ -331,7 +332,7 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_cdt_required_grading_margin_for_seam_vertices(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         vertices: impl IntoIterator<Item = TerrainCdtVertex>,
         safe_step_m: f32,
         base_margin_m: f32,
@@ -353,7 +354,7 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn terrain_cdt_required_grading_margin_for_ray(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         seam_x: f64,
         seam_z: f64,
         seam_height_m: f32,
@@ -370,7 +371,7 @@ impl RoadSurfaceSystem {
         {
             return base_margin_m.max(0.0);
         }
-        let (world_w, world_h) = terrain.world_size();
+        let (world_w, world_h) = terrain.terrain().world_size();
         let max_probe_distance_m = world_w.hypot(world_h).max(base_margin_m).max(safe_step_m);
         let mut margin_m = base_margin_m.max(0.0);
         let mut probe_distance_m = safe_step_m.min(max_probe_distance_m).max(f32::EPSILON);
@@ -399,7 +400,7 @@ impl RoadSurfaceSystem {
     }
 
     fn terrain_cdt_grading_ring_vertices(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         seam_x: f64,
         seam_z: f64,
         seam_height_m: f32,
@@ -439,7 +440,7 @@ impl RoadSurfaceSystem {
     }
 
     fn push_terrain_cdt_grading_ring_vertex(
-        terrain: &TerrainSystem,
+        terrain: &impl TerrainVisualSource,
         seam_x: f64,
         seam_z: f64,
         seam_height_m: f32,
