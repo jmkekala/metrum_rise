@@ -138,6 +138,15 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 - For isolated graph, routing, or performance tests, prefer minimal subsystem setup over full gameplay placement/spawn flows unless those side effects are explicitly part of the test.
 - Add targeted tests when a behavior change clearly warrants them, but avoid sprawling unrelated test rewrites or speculative test expansion outside the current task.
 
+### Verification Workflow
+
+- Implementation and code audits must include relevant correctness tests before handoff. Broaden coverage for cross-system changes; report any checks that could not run.
+- Run targeted benchmarks when changes can affect runtime cost, allocations, copying, or scaling. Reuse the existing benchmark system and fixtures; do not treat passing tests as performance acceptance.
+- For local road-edit planning changes, include the populated-map locality check: hold the affected neighborhood fixed while increasing background buildings, parcels, agents, and roads. Verify matching local products and that planning cost follows the affected neighborhood, not the whole city. Keep one-time snapshot/setup cost separate from repeated planning cost.
+- Support performance comparisons with matched, unprofiled release runs. Use profiling to locate costs, not as the acceptance timing. Record commands, workload/build identity, worker settings, results, and artifact locations in the owning subsystem documentation when they establish acceptance.
+- Clearly distinguish freshly run tests, freshly run benchmarks, and inspection of historical results in progress updates and the final handoff. Old results are evidence for their original build, not validation of the current changes.
+- Do not launch benchmarks merely because another message arrived. Documentation-only edits, explanations, and commit-message requests normally need only relevant read-only or documentation checks unless the user explicitly requests a benchmark.
+
 ### Rustdoc
 
 Every new **public** item (`pub struct`, `pub enum`, enum variant, `pub fn`, `pub const`) **must** have a `///` doc comment at the time it is written. `#![warn(missing_docs)]` is enabled in `lib.rs` and will produce a compiler warning for any public item that is missing one.
