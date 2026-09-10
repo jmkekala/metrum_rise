@@ -13,6 +13,7 @@
 #                        Profile the windowed controlled road workload with Samply
 #   --profile-gameplay-roads-headless
 #                        Profile the same workload with Godot's CPU-only headless renderer
+#   --gpu-profile        Add Godot GPU stage diagnostics to a windowed gameplay road workload
 #   --replay-road-terrain / --replay-road-terrain-headless
 #                        Replay pinned Kuopio terrain cases and audit road profiles (diagnostic)
 #
@@ -85,6 +86,7 @@ ROAD_CHUNK_BENCHMARK=0
 ROAD_CHUNK_UPLOAD_BENCHMARK=0
 GAMEPLAY_ROAD_PROFILE_MODE=""
 GAMEPLAY_ROAD_USE_PROFILER=0
+GAMEPLAY_ROAD_GPU_PROFILE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
 DEBUG_SIM=0
@@ -199,6 +201,8 @@ while [ $i -le $# ]; do
         fi
         export METRUM_GAMEPLAY_BENCHMARK_MATRIX="terrain"
         RELEASE=1
+    elif [ "$arg" = "--gpu-profile" ]; then
+        GAMEPLAY_ROAD_GPU_PROFILE=1
     elif [ "$arg" = "--profile-gameplay-roads" ]; then
         GAMEPLAY_ROAD_PROFILE_MODE="windowed"
         GAMEPLAY_ROAD_USE_PROFILER=1
@@ -331,6 +335,11 @@ while [ $i -le $# ]; do
     fi
     i=$((i + 1))
 done
+
+if [ "$GAMEPLAY_ROAD_GPU_PROFILE" -eq 1 ] && [ "$GAMEPLAY_ROAD_PROFILE_MODE" != "windowed" ]; then
+    echo "Error: --gpu-profile requires a windowed gameplay road workload (for example --benchmark-gameplay-roads)." >&2
+    exit 2
+fi
 
 case "$VISUAL_DEBUG_MODE" in
     raw|albedo)
@@ -627,7 +636,8 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     export METRUM_GAMEPLAY_BENCHMARK_RUN_ID="$GAMEPLAY_RUN_ID"
     export METRUM_GAMEPLAY_BENCHMARK_WORLD_PATH="$GAMEPLAY_WORLD_PATH"
     export METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH="$GAMEPLAY_METRICS_PATH"
-    export METRUM_GAMEPLAY_BENCHMARK_PROFILED="$GAMEPLAY_ROAD_USE_PROFILER"
+    export METRUM_GAMEPLAY_BENCHMARK_PROFILED="$((GAMEPLAY_ROAD_USE_PROFILER || GAMEPLAY_ROAD_GPU_PROFILE))"
+    export METRUM_GAMEPLAY_BENCHMARK_GPU_PROFILED="$GAMEPLAY_ROAD_GPU_PROFILE"
     export METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
     export METRUM_GAMEPLAY_BENCHMARK_GIT_DIRTY="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no | wc -l)"
     export METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256="$(git -C "$PROJECT_ROOT" diff --binary HEAD | sha256sum | cut -d ' ' -f 1)"
@@ -638,7 +648,7 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
         exit 2
     fi
 
-    echo "Running deterministic $GAMEPLAY_ROAD_PROFILE_MODE gameplay road workload (profiler=$GAMEPLAY_ROAD_USE_PROFILER)..."
+    echo "Running deterministic $GAMEPLAY_ROAD_PROFILE_MODE gameplay road workload (cpu_profile=$GAMEPLAY_ROAD_USE_PROFILER gpu_profile=$GAMEPLAY_ROAD_GPU_PROFILE)..."
     echo "  Matrix:  ${METRUM_GAMEPLAY_BENCHMARK_MATRIX:-paired}"
     if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then
         echo "  Profile: $GAMEPLAY_PROFILE_PATH"
@@ -651,6 +661,9 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
         GAMEPLAY_COMMAND+=(--headless)
     else
         GAMEPLAY_COMMAND+=(--windowed --resolution 1920x1080)
+    fi
+    if [ "$GAMEPLAY_ROAD_GPU_PROFILE" -eq 1 ]; then
+        GAMEPLAY_COMMAND+=(--gpu-profile)
     fi
     GAMEPLAY_COMMAND+=(-- --gameplay-road-benchmark)
     if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ]; then

@@ -229,7 +229,15 @@ reopening requires a current reproduction, not an assumption that the old geomet
   also preserves ownership for junction boundary edges shorter than `1 mm` when their endpoints
   occupy distinct canonical cells, preventing a successful commit from being hidden by the atomic
   terrain/road upload guard. See [`roads.md`](roads.md).
-- Road benchmark schema 3 separates unprofiled release measurement from Samply diagnostics.
+- Road benchmark schema 3 separates unprofiled release measurement from CPU/GPU diagnostics.
+  Add `--gpu-profile` to a windowed road workload to retain Godot GPU stage timings in its log;
+  runtime metadata marks the capture as profiled, excluding it from acceptance comparisons.
+  The RX 7900 XTX / 1080p repeat with grass mipmaps and the window left stationary passes all
+  48 fixtures in each run: median periodic GPU time is 0.630 ms; unprofiled road-operation frame
+  intervals average 16.360 ms and reach 40.742 ms. Longer intervals therefore recur without
+  reported desktop switching, but their cause remains unresolved: these are CPU callback
+  intervals, not GPU presentation timings. This is an empty, paused road fixture. See
+  [`roads.md`](roads.md).
   `./run.sh --benchmark-gameplay-roads[-headless]` defaults to 48 paired flat-terrain fixtures,
   resetting the world per case. Select `scaling` for fixed local edits with larger remote grids,
   `interaction` for prepared/dragged/immediate-click paths, or `saved` for pinned edits in a city.
@@ -417,7 +425,12 @@ reopening requires a current reproduction, not an assumption that the old geomet
   [`earthworks.md`](earthworks.md).
 - Terrain/water presentation now has a documented runtime contract: terrain and building-site
   grass use the Grass002 world-space material stack with luminance-preserving macro/mid/micro
-  detail fade, water uses a dark Baltic-blue depth palette with less terrain bleed and restrained
+  detail fade. Runtime grass albedo/height imports now include full mipmap chains (`TERRAIN-02`),
+  verified through the shared material loader. The stationary-window RX 7900 XTX repeat reports
+  0.630 ms median periodic GPU time; both 48-fixture runs pass. Earlier before/after timings are
+  qualified by reported desktop switching; see [`terrain.md`](terrain.md).
+  Water uses a dark Baltic-blue depth palette with
+  less terrain bleed and restrained
   downward-view sky reflection through a tuned Fresnel/foam/normal material path. Grazing views
   receive a smooth sky response that does not expose procedural normal cells, and the sun
   reflection uses a conservative softened shoulder around its bright core; fine ripple detail is

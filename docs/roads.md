@@ -825,6 +825,43 @@ Required bounds:
   mixed-width, curved, close-double-T, and chunk-corner layouts. One warmup plus five measured
   repetitions gives 48 fixtures; alternate measured cycles reverse case order deterministically.
   Override counts with `METRUM_GAMEPLAY_BENCHMARK_REPETITIONS` / `..._WARMUP_REPETITIONS`.
+- Add `--gpu-profile` to a windowed gameplay road command, for example
+  `./run.sh --benchmark-gameplay-roads --gpu-profile`, to enable Godot's built-in GPU stage
+  diagnostics. Output is retained in the run's existing `*.godot.log` under `benchmark-results/`
+  (or the configured output directory). The modifier also works with `--profile-gameplay-roads`
+  to collect CPU and GPU diagnostics together; headless workloads are rejected before building.
+  JSON runtime metadata records `gpu_profiled: true` and `profiled: true`, so the existing paired
+  report rejects these diagnostic captures as acceptance timings. GPU stage output is a periodic
+  rendering breakdown, not per-operation GPU timing or presentation latency; existing JSON frame
+  observations keep their CPU timing contract. This reuses the road workload and does not measure
+  whole-city rendering or running-simulation contention.
+  The 2026-09-10 diagnostic before runtime grass mipmaps on the RX 7900 XTX / i9-12900K,
+  Godot 4.7.2 Forward+, 1920x1080,
+  60 FPS cap, V-Sync enabled and 24 Rayon workers passed all 48 paired fixtures with GPU profiling
+  and all 48 in the matching unprofiled release run. Post-warm-up periodic GPU averages had a
+  `2.978 ms` median (`3.071 ms` largest average), with opaque rendering accounting for `95.2%`
+  of reported time. The unprofiled operations still recorded frame intervals up to `39.820 ms`.
+  An eight-fixture CPU/GPU diagnostic recorded network/terrain renderer calls up to
+  `19.669 / 17.603 ms`, including setup/reloads; this does not identify the exact cause of the
+  unprofiled spike. The user later reported moving windows between desktops during benchmarking;
+  affected runs/time ranges are unspecified. Frame-interval outliers do not establish a game-side
+  hitch, and precise timing comparisons need an uninterrupted repeat with the window stationary.
+  These are diagnostic baselines, not speedup, individual-frame GPU-tail, or
+  whole-city claims: the fixtures contain no buildings/agents and simulation is paused.
+  Commands, build/workload identity, summaries and raw captures are retained under
+  `benchmark-results/gpu-road-analysis-Jecrzy/`; see its `analysis.txt` and `analysis.json`.
+  A subsequent repeat on the same hardware/settings, with grass mipmaps enabled and the user
+  leaving the window stationary, passed all 48 fixtures in each of two sequential release runs
+  (GPU-profiled, then unprofiled). The 78 post-warm-up GPU reports had a `0.630 ms` median and
+  `0.788 ms` largest periodic average; opaque-pass mean was `0.502 ms`. The unprofiled run's
+  996 observed frame intervals across 85 measured road operations averaged `16.360 ms` and
+  reached `40.742 ms`; 14 operations contained an interval above `33.333 ms`. This counts
+  affected operations, not individual spikes. Longer CPU callback intervals therefore recur
+  without reported desktop switching, but their cause remains unresolved; periodic GPU
+  averages cannot identify individual-frame stalls. Workload signatures and library hashes
+  match between runs. No new zero-mip baseline was captured. Commands, build identity,
+  texture hash checks and raw captures are in `benchmark-results/stationary-mipmaps-LZ6tB3/`;
+  see its `results.txt` and `analysis.json`.
 - `METRUM_GAMEPLAY_BENCHMARK_MATRIX=scaling` holds the local T edit and terrain fixed while adding
   a remote, internally connected grid. Default sides `0,4,8` contain `0,24,112` live background edges;
   `METRUM_GAMEPLAY_BENCHMARK_GRID_SIDES=0,8,16` gives `0,112,480`. Sizes must be unique, zero or

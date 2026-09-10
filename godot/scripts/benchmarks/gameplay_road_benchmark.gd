@@ -93,6 +93,7 @@ func _runtime_metadata() -> Dictionary:
 		"configured_renderer": ProjectSettings.get_setting("rendering/renderer/rendering_method"),
 		"rayon_num_threads_env": OS.get_environment("RAYON_NUM_THREADS"),
 		"profiled": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_PROFILED") == "1",
+		"gpu_profiled": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GPU_PROFILED") == "1",
 		"git_revision": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION"),
 		"tracked_dirty_files": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_GIT_DIRTY"),
 		"source_diff_sha256": OS.get_environment("METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256"),

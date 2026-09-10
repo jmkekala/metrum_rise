@@ -413,6 +413,11 @@ state or hidden repair paths for missing geometry.
 Current deterministic rules:
 
 - terrain grass uses world-space UVs and the Grass002 texture stack
+- the runtime `grass002_2k_albedo.jpg` and `grass002_2k_height.jpg` imports generate complete
+  mipmap chains (11 levels below the 2048x2048 base). Their shader samplers already request
+  mipmapped anisotropic filtering; the normal imported-resource path must provide those levels,
+  just as the source-image fallback does. Mipmaps are built at import time, with no new per-frame
+  CPU work; full-chain texture storage grows by approximately one third
 - terrain grass combines macro, mid, and micro layers through stochastic anti-tiling and screen
   footprint fade
 - macro / mid / micro grass fading must preserve average luminance; the fade may reduce detail
@@ -449,6 +454,31 @@ Current deterministic rules:
 - terrain and site ground receive real shadows; final buildings and cars cast shadows; construction
   pads, debug overlays, and temporary authoring helpers should not cast shadows unless a specific
   debug mode asks for that
+
+Grass mipmap verification (`TERRAIN-02`, 2026-09-10): both imported runtime grass textures
+load as `CompressedTexture2D` with 11 mip levels below the base. The same 48-fixture paired
+road workload passes with and without GPU profiling on the RX 7900 XTX / i9-12900K,
+Godot 4.7.2 Forward+, 1920x1080, 60 FPS cap, V-Sync enabled and 24 Rayon workers. Against the
+earlier same-session zero-mip baseline, median periodic GPU time falls `2.978 -> 0.638 ms`;
+opaque-pass mean falls `2.789 -> 0.505 ms`. These are one-process diagnostic comparisons,
+not uncapped FPS or individual-frame GPU-tail measurements. Matching unprofiled release runs
+retain about `16.37 ms` mean observed frame intervals. The user later reported moving windows
+between desktops during benchmarking, without identifying affected runs/time ranges. The frame
+outliers do not establish a game-side issue, and the exact GPU reduction needs an uninterrupted
+repeat with the window stationary. The verified mipmap chains are unaffected. Commands are
+`./run.sh --benchmark-gameplay-roads --gpu-profile` and `./run.sh --benchmark-gameplay-roads`,
+with the default paired matrix, one warm-up and five measured repetitions. Workload signatures
+and library hashes match across states. Build identity, texture hashes, mip probes, commands and
+captures are retained in `benchmark-results/grass-mipmaps-dfVqPd/`; the before captures live in
+`benchmark-results/gpu-road-analysis-Jecrzy/`. Filtering/grass-scale visual retuning is separate.
+
+The subsequent stationary-window repeat with mipmaps enabled reproduces the low GPU cost:
+`0.630 ms` median periodic GPU time, with all 48 fixtures passing in both profiled and unprofiled
+runs. Fresh source/import/texture hash checks match the previously verified mip chains. The
+unprofiled run still records a `40.742 ms` maximum CPU callback interval, so desktop switching
+does not explain all longer intervals. This repeat has no zero-mip baseline and does not settle
+the exact speedup or the interval cause. See `roads.md` and
+`benchmark-results/stationary-mipmaps-LZ6tB3/results.txt` for the full run conditions and results.
 
 Rendering non-repair rule:
 
