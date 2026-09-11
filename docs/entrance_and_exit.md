@@ -717,6 +717,56 @@ The entrance/exit rewrite is mode-preserving:
 
 The local access phases must not silently swap a car trip into a pedestrian visual or a foot trip into a vehicle visual.
 
+##### Render-height ownership
+
+Local access movement owns XZ positions; it does not cache an independent elevation profile.
+For both cars and pedestrians, `ACCESS_EGRESS` and `ACCESS_INGRESS` use the same current
+world-surface query: owned road top, then flat building support, then accepted generation-matched
+graded terrain/CDT, with visual terrain as the unowned fallback. Pedestrians sample at their
+origin; rigid vehicles sample their footprint as described below. Keep 0.02 m clearance above
+the supporting surface. Original source terrain and a maximum of road,
+pad and terrain heights are not valid substitutes: terrain cut away beneath a yard must not
+lift an agent above that yard. This applies equally to zoned and explicitly placed buildings.
+
+Network-bound agents retain lane geometry heights; sidewalk walkers retain the existing curb
+step offset. Ground heights are resampled when snapshots are built, so new terrain/site
+products need no route rewrite or cached-access-height invalidation. Terrain publication and
+pending-product limitations remain owned by [`earthworks.md`](earthworks.md).
+
+Off-lane vehicles use one Rust rigid-footprint support solver in snapshots and after visual
+interpolation. Mesh loading registers model-local bounds and bottom contacts once; it does not
+change simulation movement or save data. Four yaw-aligned footprint corners define a least-squares
+pitch/roll plane. Preserve the existing XZ heading when constructing its orthonormal basis;
+model -Z still faces travel. Query the final rotated XZ of the prepared contacts, then choose the
+smallest origin height that clears them all by 0.02 m. Contacts include a 3×3 bounds grid and up
+to 64 distinct mesh-bottom vertices. Registration rejects invalid geometry; the renderer then
+uses its matching procedural fallback instead of mismatched dimensions.
+
+A centre height and triangle normal alone cannot support a rigid car spanning road/apron/pad
+grade breaks. The footprint contract applies to both sides and both access directions, remains
+level when the entire footprint is on a level pad, and permits rigid-body clearance above lower
+parts of a concave transition. It is not suspension simulation or continuous chassis collision.
+Lane-bound cars retain lane geometry; pedestrians retain their existing orientation.
+The superseded optional-normal query pipeline is removed. The production ownership query returns
+height only; vehicle orientation continues to derive from the footprint, not a centre-face normal.
+The old direct, non-snapshot car/pedestrian exporters are removed; they had no callers and bypassed
+the shared surface contract. Instance rendering consumes the coherent snapshot exports only.
+
+Car transforms, stable IDs and off-lane flags are exported from a single snapshot read. After
+interpolating XZ and yaw, Godot requests the same Rust solve for flagged cars. This read uses a
+nonblocking core lock: if busy/unprepared, only those cars use their supported snapshot poses;
+ordinary lane interpolation continues. Interpolation caches the pose actually uploaded. Changes
+between lane and access ownership snap to the target pose instead of blending unsupported
+geometry across owners. No per-agent persistent height cache or additional route state is added.
+
+The allocator prepares its existing site/chunk index once before the snapshot loop. Repeated
+off-lane height queries allocate nothing, compile nothing and visit only local road owners,
+nearby indexed sites and containing fixed terrain tiles, not the entire building or terrain
+store. Each vehicle solve performs four fit queries plus at most 73 contact queries, independent
+of city population. Rayon fills existing transform buffers in parallel without changing instance
+order or allocating per vehicle; the snapshot iterator borrows buckets without a staging vector.
+Existing camera culling happens before those queries; lane-bound agents avoid footprint probes.
+
 If a later feature needs temporary render suppression unrelated to transit state, add a narrowly scoped visual/debug flag then. Do not keep `is_visible` as a general-purpose state bucket just because the old system used it.
 
 That separation is the main reason to accept the SoA edit.
@@ -1598,6 +1648,125 @@ This is compatible with the project's performance rules because:
 - SoA growth is limited to compact scalar trip-plan state
 - two legacy SoA fields (`target_node`, `is_visible`) can be deleted at the end of the migration
 - the pathing backend stays on the existing road graph
+
+### Earlier Centre-Surface Orientation Verification (2026-09-10)
+
+These measurements describe the earlier centre-sample implementation, not current footprint
+support. Its planar orientation tests passed, but later road/apron breakover diagnostics showed
+buried mesh contacts despite a correctly grounded origin.
+
+That implementation used the same supporting surface for height and basis, with no
+extra spatial index, geometry rebuild, route field or per-query allocation. Work stays bounded
+to nearby road/site owners and triangles in containing CDT cells. Height-only specializations
+skip normals; camera-culled and lane-bound agents do not pay the new off-lane orientation cost.
+
+At that revision, `cargo test --release`: **1,652 passed, 7 ignored**. Tests covered both windings and
+highest-triangle selection, analytic visual-heightfield gradients with world-unit scaling,
+orthonormal pitch/roll bases with unchanged yaw, and 128 entry/exit transforms against exported
+Kuopio yard triangles. Pending terrain still cannot tilt a flat support pad. The portable yard
+asset now uses the required `entrance/main` name; directional tests explicitly rebuild entrances
+and supply valid lane attachments. The reference SQLite remains unchanged. `cargo check
+--all-targets`, `cargo doc --no-deps`, release build, formatting and diff checks pass without Rust
+warnings. The deployed library passes the headless `road_junction_preview_test.gd` bridge smoke
+test; vehicle orientation itself is checked in Rust snapshot transforms, not by that road test.
+
+Matched unprofiled runs used Rust 1.98.1, `RAYON_NUM_THREADS=24`, working-tree base
+`91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, with no concurrent builds or Godot runs.
+Baseline executable `/tmp/metrum-angle-baseline-tests` SHA-256:
+`4c01acddd54e3ec9f80af733ada0b98788a6c4f4426e55eec94cda64f3e7ab7c`.
+Final `rust/target/release/deps/metrum_rise-9cc8d57998aa4451` SHA-256:
+`3e8806fc9b647b0aaf2e82f828021a8478d3238c4b4b94cf7a4a885b4dfbf901`.
+
+```bash
+for measurement in graded_yard_access_snapshot_benchmark graded_yard_height_query_benchmark populated_paved_road_plan_scaling; do
+  RAYON_NUM_THREADS=24 /tmp/metrum-angle-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$measurement" --ignored --nocapture --test-threads=1
+done
+```
+
+Snapshot workload retains the existing 76 Kuopio positions, equal cars/walkers and ingress/egress,
+10 warmups and 100 recycled snapshots per count, with setup/compilation outside timing. Its
+minimal agents have no cached route attachments; real directional headings are covered by the
+new correctness test separately. The asset anchor-name correction changes no fixture geometry.
+
+| Visible access agents | Baseline p50 / p90 (ms) | Final p50 / p90 (ms) |
+| --- | --- | --- |
+| 100 | 0.2297 / 0.2383 | 0.2384 / 0.2457 |
+| 1,000 | 0.9269 / 0.9404 | 0.9408 / 0.9727 |
+| 10,000 | 7.9157 / 7.9827 | 7.9367 / 8.1087 |
+
+The 76-point height-only query workload (10 × 100,000 queries) measures 749.1 → 582.7 ns p50,
+751.0 → 595.9 ns p90. Snapshot overhead is small in this workload; these are not full-game
+frame-rate guarantees. The populated-road check repeats 100 local plans at 0/1,000/10,000/100,000
+background buildings, up to 600,024 agents, 100,004 parcels and 391 roads. All local products
+remain identical. Compile p50 before → after is 20.078 → 20.694 / 20.128 → 20.200 /
+20.638 → 20.458 / 21.258 → 21.792 ms, respectively; final worker p50 spans 21.41–22.88 ms,
+compile p95 22.80–30.08 ms. Separate one-time edit snapshots cost 0.0064/0.0511/0.3698/3.3858 ms.
+Repeated local work does not grow proportionally with the background city.
+
+Artifacts: `/tmp/metrum-angle-{before,after}-<measurement>.log` for the exact names above;
+`/tmp/metrum-angle-{tests,check,rustdoc,build,godot}.log` for verification. Deployed library
+SHA-256: `7874b0f50ac54935ead1638f676278abf9661290630fa22e102bd0d56c1de1d0`.
+
+### Rigid Vehicle Support Verification (2026-09-10)
+
+Current verification: `RAYON_NUM_THREADS=24 cargo test --release --lib` passes **1,655 tests,
+8 ignored**. Footprint tests cover mirrored rising/falling road–apron–pad transitions, asymmetric
+model bounds, exact planar grades and yaw, compiled Kuopio paving contacts, post-interpolation
+XZ, unchanged lane transforms, malformed batch rejection, and recycled snapshot/ID/flag alignment.
+`cargo check --all-targets`, `cargo doc --no-deps`, formatting and diff checks pass without Rust
+warnings. The original Kuopio SQLite is unchanged; no new saved city is needed.
+
+`godot/tests/vehicle_ground_support_test.gd` loads all five real vehicle meshes and exercises the
+production renderer plus native solver. Both headless and Xvfb/OpenGL runs pass **4,840 poses**
+on mirrored uphill/downhill transitions, entry/exit, busy-core fallback and ownership handoff.
+2,480 poses are tilted; minimum actual mesh-bottom contact clearance is 0.020000 m. The fixture
+requires up to 0.4236 m origin lift above its centre surface, so it cannot pass with the earlier
+centre-only solve. The rendered run also checks actual MultiMesh transform readback. The test
+is included in `./run.sh --test`; headless mode checks cached uploaded poses, not dummy-renderer
+GPU readback. These are geometric regressions, not an exact replay of the screenshot's trip.
+
+Matched unprofiled snapshot comparison uses the same 76-position mixed-access workload above,
+Rust 1.98.1, 24 Rayon workers and base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` plus working-tree
+changes, with builds and other engine/benchmark runs stopped during timing. Baseline executable
+`/tmp/metrum-support-baseline-tests` has SHA-256
+`3e8806fc9b647b0aaf2e82f828021a8478d3238c4b4b94cf7a4a885b4dfbf901`;
+current `rust/target/release/deps/metrum_rise-9cc8d57998aa4451` has SHA-256
+`5ed4e143bf483bddea5eaccccd18ccd07ba925dcad99ad5c1c97231dd4204384`.
+
+| Visible mixed access agents | Centre-only p50 / p90 (ms) | Footprint p50 / p90 (ms) |
+| --- | --- | --- |
+| 100 | 0.2339 / 0.2419 | 0.4144 / 0.5665 |
+| 1,000 | 0.9373 / 0.9600 | 1.3178 / 1.7300 |
+| 10,000 | 7.9435 / 8.0123 | 8.3231 / 10.6078 |
+
+The added footprint queries increase CPU work and tail latency; parallel buffer filling keeps
+this workload's snapshot median increase below 0.4 ms. This is not a claim of zero overhead.
+The separate current Kuopio support-batch benchmark (all cars, default support bounds, 10 warmups,
+100 samples, setup excluded) measures p50 / p90 **0.4985 / 0.7690**, **1.0178 / 1.2914** and
+**5.8277 / 6.2374 ms** for 100/1,000/10,000 cars. It excludes GDScript and GPU work.
+
+The rendered update benchmark includes production GDScript interpolation/cache work, native
+support and MultiMesh buffer upload, using the real sedan over the synthetic transition rather
+than CDT yards. Godot 4.7.2, Xvfb, OpenGL compatibility, llvmpipe; 10 warmups and 100 attempts.
+At 100/1,000/10,000 all-access cars, p50 / p90 is **0.286 / 0.380**, **2.601 / 5.558** and
+**15.872 / 17.957 ms**. Busy-core attempts (1/0/1) are excluded from these grounding timings and
+reported separately; correctness tests exercise the supported-snapshot fallback. The 10,000-car
+stress case consumes roughly a frame budget by itself, so these are not full-city FPS guarantees.
+Ordinary lane cars skip footprint probes. No road-planning path changed; the earlier populated
+locality result above is historical, not rerun for this rendering-only correction.
+
+```bash
+RAYON_NUM_THREADS=24 /tmp/metrum-support-baseline-tests graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_access_snapshot_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_vehicle_support_batch_benchmark --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --script res://tests/vehicle_ground_support_test.gd -- --benchmark-vehicle-support
+```
+
+Artifacts: `/tmp/metrum-support-{before,after}-snapshot-2.log`, `/tmp/metrum-support-batch.log`,
+`/tmp/metrum-support-render.log`, and `/tmp/metrum-support-{tests,check,rustdoc,godot}.log`.
+Deployed library SHA-256:
+`7e17c3d1fe490619bd2cf86a1c36cacf42b87b80391a0c493ba0344abee16d68`.
 
 ## Recommended Direction
 

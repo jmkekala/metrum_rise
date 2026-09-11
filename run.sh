@@ -740,6 +740,9 @@ if [ $TEST -eq 1 ]; then
     fi
     echo "Running Godot bridge tests..."
     cd ../godot
+    if ! godot --headless --script res://tests/vehicle_ground_support_test.gd; then
+        exit 1
+    fi
     if ! godot --headless --script res://tests/network_tool_chunk_renderer_test.gd; then
         exit 1
     fi

@@ -97,18 +97,63 @@ impl SimulationNode {
         get_agent_transforms(&self.snapshot.read().unwrap())
     }
 
-    /// Returns a Dictionary of packed transforms for visible car agents, keyed by vehicle type.
+    /// Returns coherent per-model car transforms, render IDs and off-lane support flags.
     #[func]
-    pub fn get_car_transforms(&self) -> VarDictionary {
-        use crate::nodes::sim::bridge::agents::get_car_transforms;
-        get_car_transforms(&self.snapshot.read().unwrap())
+    pub fn get_car_render_data(&self) -> VarDictionary {
+        crate::nodes::sim::bridge::agents::get_car_render_data(&self.snapshot.read().unwrap())
     }
 
-    /// Returns render IDs for visible car agents, keyed to match `get_car_transforms`.
+    /// Registers model-local ground geometry once at mesh load; never alters agent movement.
     #[func]
-    pub fn get_car_render_ids(&self) -> VarDictionary {
-        use crate::nodes::sim::bridge::agents::get_car_render_ids;
-        get_car_render_ids(&self.snapshot.read().unwrap())
+    pub fn set_vehicle_ground_support(
+        &self,
+        vehicle: i32,
+        bounds: Aabb,
+        contacts: PackedVector3Array,
+    ) -> bool {
+        use crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport;
+        let Some(profile) = VehicleGroundSupport::new(
+            [
+                bounds.position.x,
+                bounds.position.z,
+                bounds.end().x,
+                bounds.end().z,
+            ],
+            contacts.as_slice(),
+        ) else {
+            return false;
+        };
+        let mut core = self.lock_core();
+        let Some(target) = usize::try_from(vehicle)
+            .ok()
+            .and_then(|id| core.vehicle_ground_support.get_mut(id))
+        else {
+            return false;
+        };
+        *target = profile;
+        true
+    }
+
+    /// Grounds an interpolated car bucket in Rust. Empty means busy/unprepared: use its already
+    /// validated snapshot poses, never publish unvalidated interpolated off-lane geometry.
+    #[func]
+    pub fn ground_car_transforms(
+        &self,
+        vehicle: i32,
+        mut transforms: PackedFloat32Array,
+        flags: PackedByteArray,
+    ) -> PackedFloat32Array {
+        let Some(core) = self.try_lock_core() else {
+            return PackedFloat32Array::new();
+        };
+        let Ok(vehicle) = u8::try_from(vehicle) else {
+            return PackedFloat32Array::new();
+        };
+        if core.ground_vehicle_transforms(vehicle, transforms.as_mut_slice(), flags.as_slice()) {
+            transforms
+        } else {
+            PackedFloat32Array::new()
+        }
     }
 
     /// Returns debug path geometry for active agents.

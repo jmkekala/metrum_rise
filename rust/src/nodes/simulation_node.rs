@@ -106,8 +106,8 @@
 //! | | `get_zoning_parcels_overlay` | `zoning_overlay.gd` |
 //! | | `try_get_zoning_parcels_overlay_packed` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
-//! | | `get_car_transforms` | `agent_renderer.gd` |
-//! | | `get_car_render_ids` | `agent_renderer.gd` |
+//! | | `get_car_render_data` | `agents.gd` |
+//! | | `ground_car_transforms` | `agents.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
 
 use godot::classes::{INode3D, Node3D};
@@ -191,9 +191,10 @@ use async_terrain::{
 };
 use variant_export::{
     TERRAIN_CDT_TILE_NEIGHBORS, TerrainCdtTileId, budget_ledger_entry_dict,
-    zoning_geometries_without_explicit_sites, zoning_parcel_cell_dimensions, zoning_parcel_color,
-    zoning_parcel_geometries_array, zoning_parcel_geometries_packed_dict,
-    zoning_parcel_geometry_dict, zoning_parcel_surface_corners,
+    prepare_zoning_site_queries, zoning_buildable_geometries, zoning_geometry_feasibility,
+    zoning_parcel_cell_dimensions, zoning_parcel_color, zoning_parcel_geometries_array,
+    zoning_parcel_geometries_packed_dict, zoning_parcel_geometry_dict,
+    zoning_parcel_surface_corners,
 };
 
 const TERRAIN_CDT_DIAGNOSTIC_STAGE_LABEL: &str = "cdt_triangulation";
@@ -202,7 +203,7 @@ const TERRAIN_CDT_BACKEND_NONE_LABEL: &str = "none";
 const TERRAIN_CDT_BACKEND_NONE_CODE: i64 = -1;
 const TERRAIN_CDT_BACKEND_SPADE_LABEL: &str = "spade";
 const TERRAIN_CDT_BACKEND_SPADE_CODE: i64 = 0;
-const TERRAIN_CDT_CONTRACT_REVISION: i64 = 5;
+const TERRAIN_CDT_CONTRACT_REVISION: i64 = 13;
 const TERRAIN_CDT_FAR_SAMPLE_MIN_STEP_M: f32 = 8.0;
 const TERRAIN_CDT_MAX_LOCAL_GRID_SAMPLES: f32 = 8_192.0;
 const TERRAIN_CDT_SAMPLE_KEY_SCALE: f64 = 1000.0;
@@ -512,6 +513,7 @@ impl INode3D for SimulationNode {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
+            vehicle_ground_support: Default::default(),
         };
 
         core.precompute_road_mesh_data();

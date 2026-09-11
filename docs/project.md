@@ -12,15 +12,33 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Shipped Foundations
 
+- **Terrain reload and yard seams**: CDT cleanup now preserves distinct near-endpoint
+  intersections instead of merging them by a dimensionless tolerance. This fixes the reproduced
+  missing terrain patch without disabling mesh validation; terrain debugging also reports rejected
+  patch publication. Shared-side sample welding now precedes containment in both adjacent tiles,
+  closing the reproduced narrow commercial-yard gap without changing assets or flattening the
+  graded apron. Rust/Godot terrain contract revision 13 also invalidates products with the old
+  opposite-sign building-part yaw.
+  See [`terrain.md`](terrain.md).
+- **Level building yards (`EARTH-02`)**: buildings and usable yard interiors share a level pad; 2 m lot-edge strips provide graded road/neighbor/terrain tie-ins. Zoned, service and explicit industry placement now share support preparation, installation and site-terrain invalidation. Mixed 2D/3D frontage projection and the explicit-mode raw-height fallback are removed. Paired zoned/service tests compare final site and terrain geometry; the reported floating/buried-house scene is not yet reproduced from an exact save. See [`earthworks.md`](earthworks.md).
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
 - **Zoning and building allocation**: Rust-owned road-aligned parcels, parcel occupancy, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
-- **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
+- **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code. Cars and pedestrians share road/pad/graded-terrain height ownership in both access directions; source terrain no longer overrides cut or filled yards. Off-lane cars now use mesh-sized rigid footprint support, including after interpolation, so grade breaks cannot bury the sampled bottom contacts despite a correctly grounded centre. The shared Rust solver preserves horizontal heading and remains level on wholly flat pads; lane/access handoffs do not blend across height owners.
 - **Benchmark coverage**: Criterion covers live agent access and isolated road kernels; the chunk suite measures generation and fixed-payload Godot upload. Release gameplay measurements separate paired flat layouts, remote-grid scaling, pointer interaction, and pinned saved-city edits; authored Kuopio replays and Samply runs provide diagnostics. Comparisons require matched inputs, complete generation-matched output, and independent process pairs. See [`roads.md`](roads.md).
 - **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household VAT, business profit tax, and daily property tax), live `CityFiscalPolicy` controls/save state, first city-owned service-building placement/funding, explicit field-backed grain farms, aggregate `service_store` commercial services, and the starter `grain -> packaged_food -> household_supplies` chain are all live. See [`economy.md`](economy.md).
 - **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs after existing unemployed adults are counted first, continuous forecast-only marginal commercial worker-equivalents from one candidate household after that same local labour pool is counted, and authored regional migration pressure; vacant homes only cap actual move-in execution. Job-driven admission prefers an adult-capable claimable household over a workerless front candidate. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households only for the remaining workforce shortfall, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents after existing unemployed adults are counted, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand is driven by commercial input coverage rather than household `goods_shortage`. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
 
 ## Current Priorities
+
+- Residential buildability now uses the same flat-site solver as explicit buildings. Demand selects
+  among geometrically feasible assets; zoning previews reject unsupported lots visibly without
+  changing terrain. Local dependency caching avoids repeat grading on unchanged sites. See
+  [`building_allocator.md`](building_allocator.md), [`zoning.md`](zoning.md) and
+  [`earthworks.md`](earthworks.md) for hillside regression coverage and verification.
+  The follow-up audit aligns terrain picking with render acceptance, validates in-place level
+  changes at fixed support heights, and removes stale asset-index membership and duplicate paving
+  elevation/driveway preparation state.
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
@@ -131,6 +149,18 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 
 ## Recent Structural Changes
+
+- `EARTH-02` audit: rendering and structural support now share editor-consistent part yaw and
+  allocator frontage transforms. Duplicate asset/lifecycle/bounds paths and the superseded
+  centre-normal query pipeline are removed; vehicle footprint grounding remains active.
+  CDT revision 13 invalidates old derived products. See
+  [`earthworks.md`](earthworks.md#changeset-audit-2026-09-11).
+
+- `EARTH-02`: small-lot frontage gaps now use actual imported model bounds instead of a fixed
+  structural-pad radius. Buildings/usable yards remain flat; the surrounding terrain can join the
+  sloping sidewalk. The reported shop passes 99 frontage probes and all eight terrain patches on
+  read-only reload, without editing assets or the save. Pack reload invalidates derived sites and
+  ground; CDT revision 11 excludes older cached pads. See [`earthworks.md`](earthworks.md#imported-structural-bounds-verification-2026-09-11).
 
 - `ROAD-20`: road edits no longer rebuild a second whole-network ghost-snapping R-tree.
   Snapping streams local guides through the existing edge index without traversal/candidate buffers.

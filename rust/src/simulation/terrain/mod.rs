@@ -212,22 +212,6 @@ impl TerrainSystem {
         self.visual_generation
     }
 
-    /// Calculates the surface normal at a fractional coordinate using gradient sampling.
-    pub fn get_normal_interpolated(&self, x: f32, z: f32) -> Vector3 {
-        let eps = 0.1;
-        let h_x1 = self.get_height_interpolated(x + eps, z);
-        let h_x0 = self.get_height_interpolated(x - eps, z);
-        let h_z1 = self.get_height_interpolated(x, z + eps);
-        let h_z0 = self.get_height_interpolated(x, z - eps);
-
-        let dx = (h_x1 - h_x0) / (2.0 * eps);
-        let dz = (h_z1 - h_z0) / (2.0 * eps);
-
-        // This is the gradient in "unit" height units.
-        // We need to scale it by our world height scale (20.0) for accurate slope.
-        Vector3::new(-dx * 20.0, 1.0, -dz * 20.0).normalized()
-    }
-
     fn interpolate_grid_height(&self, grid: &SparseChunkGrid<f32>, x: f32, z: f32) -> f32 {
         self.interpolate_height_cells(x, z, |x0, x1, z0, z1| {
             grid.get_bilinear_cells(x0, x1, z0, z1)
@@ -1094,6 +1078,25 @@ mod tests {
     use crate::config::HEIGHT_SCALE;
     use godot::prelude::Vector3;
     use std::collections::HashSet;
+
+    #[test]
+    fn visual_height_uses_bilinear_visual_cells_in_world_units() {
+        let mut terrain = TerrainSystem::with_chunking(9, 9, 2.0, 4, 0.0);
+        let cells: Vec<_> = (0..9).flat_map(|z| (0..9).map(move |x| (x, z))).collect();
+        let field = |x: f32, z: f32| 5.0 + 0.2 * x - 0.3 * z + 0.04 * x * z;
+        terrain.set_visual_heights_at_grid_unmarked(&cells, |&(x, z)| {
+            (
+                x,
+                z,
+                field((x as f32 - 4.0) * 2.0, (z as f32 - 4.0) * 2.0) / HEIGHT_SCALE,
+            )
+        });
+        for (x, z) in [(-7.3, -6.1), (0.7, 1.3), (5.2, 6.8), (-20.0, 20.0)] {
+            let height = terrain.sample_visual_height_world(x, z) * HEIGHT_SCALE;
+            assert!((height - field(x.clamp(-8.0, 8.0), z.clamp(-8.0, 8.0))).abs() < 1e-5);
+            assert_eq!(terrain.sample_height_world(x, z), 0.0);
+        }
+    }
 
     #[test]
     fn raycast_reaches_large_world_from_high_altitude_camera() {

@@ -32,6 +32,7 @@ use std::collections::HashSet;
 #[test]
 fn site_radius_is_measured_from_the_indexed_lot_center() {
     let site = BuildingSiteClient {
+        foundation_mesh: Default::default(),
         footprint_world: vec![
             Vector2::new(18.0, -1.0),
             Vector2::new(20.0, -1.0),
@@ -88,6 +89,7 @@ fn road_test_edge(
 
 fn square_site_with_surface() -> BuildingSiteClient {
     BuildingSiteClient {
+        foundation_mesh: Default::default(),
         footprint_world: vec![
             Vector2::new(-5.0, -5.0),
             Vector2::new(-5.0, 5.0),
@@ -104,7 +106,6 @@ fn square_site_with_surface() -> BuildingSiteClient {
         surfaces: vec![BuildingSiteSurfaceClient {
             material: SiteSurfaceMaterial::Asphalt,
             name: "asphalt".to_owned(),
-            height_m: 2.4,
             vertices_world: vec![
                 Vector2::new(-1.0, -1.0),
                 Vector2::new(-1.0, 1.0),
@@ -129,6 +130,7 @@ fn flat_site_from_bounds(
         Vector2::new(max_x, min_z),
     ];
     BuildingSiteClient {
+        foundation_mesh: Default::default(),
         footprint_world: footprint_world.clone(),
         lot_footprint_world: [
             Vector2::new(min_x, min_z),
@@ -182,10 +184,10 @@ fn site_grading_target_uses_visible_road_surface() {
 }
 
 #[test]
-fn site_height_prefers_authored_surface_offset() {
+fn site_paving_does_not_offset_physical_support() {
     let site = square_site_with_surface();
 
-    assert_eq!(site.height_at(Vector2::new(0.0, 0.0)), Some(2.4));
+    assert_eq!(site.height_at(Vector2::new(0.0, 0.0)), Some(2.0));
     assert_eq!(site.height_at(Vector2::new(4.0, 4.0)), Some(2.0));
 }
 
@@ -193,19 +195,19 @@ fn site_height_prefers_authored_surface_offset() {
 fn site_height_includes_surface_and_footprint_boundaries() {
     let site = square_site_with_surface();
 
-    assert_eq!(site.height_at(Vector2::new(1.0, 0.0)), Some(2.4));
+    assert_eq!(site.height_at(Vector2::new(1.0, 0.0)), Some(2.0));
     assert_eq!(site.height_at(Vector2::new(5.0, 0.0)), Some(2.0));
 }
 
 #[test]
-fn site_raycast_hits_authored_surface_before_support_plane() {
+fn site_raycast_uses_physical_support_not_paving_offset() {
     let site = square_site_with_surface();
 
     let hit = site
         .raycast(Vector3::new(0.0, 10.0, 0.0), Vector3::DOWN)
         .expect("ray should hit site surface");
 
-    assert!((hit.y - 2.4).abs() <= f32::EPSILON);
+    assert!((hit.y - 2.0).abs() <= f32::EPSILON);
 }
 
 #[test]
@@ -245,6 +247,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
     let road_surface = RoadSurfaceSystem::new(RegionGraph::CHUNK_SIZE);
     let snapshot = BuildingSiteTerrainSnapshot {
         sites: vec![BuildingSiteTerrainClient {
+            surfaces: Vec::new(),
             building_idx: 0,
             footprint_world: vec![
                 Vector2::new(58.0, 10.0),
@@ -288,6 +291,25 @@ fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
     let detached = snapshot.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
 
     assert_eq!(detached, direct);
+    assert_eq!(direct.len(), 1);
+    assert_eq!(
+        direct[0].vertices.len(),
+        allocator.building_sites[0].footprint_world.len()
+    );
+    for (vertex, point) in direct[0]
+        .vertices
+        .iter()
+        .zip(&allocator.building_sites[0].footprint_world)
+    {
+        assert_eq!(
+            (vertex.x, vertex.z),
+            (f64::from(point.x), f64::from(point.y))
+        );
+        assert_eq!(
+            vertex.height_m,
+            allocator.building_sites[0].support_height_m
+        );
+    }
     for bounds in [(-8.0, -8.0, 8.0, 8.0), (20.0, 20.0, 30.0, 30.0)] {
         assert_eq!(
             snapshot.has_building_site_for_world_bounds(bounds.0, bounds.1, bounds.2, bounds.3),
@@ -297,14 +319,14 @@ fn terrain_site_snapshot_preserves_stable_cdt_ownership() {
 }
 
 #[test]
-fn adjacent_different_height_site_loops_do_not_conflict_in_cdt() {
+fn neighboring_different_height_site_loops_with_grading_space_compile() {
     let mut allocator = BuildingAllocator::new();
     allocator
         .building_sites
-        .push(flat_site_from_bounds(-5.0, -5.0, 0.0, 5.0, 0.0));
+        .push(flat_site_from_bounds(-5.0, -5.0, -1.0, 5.0, 0.0));
     allocator
         .building_sites
-        .push(flat_site_from_bounds(0.0, -5.0, 5.0, 5.0, 1.0));
+        .push(flat_site_from_bounds(1.0, -5.0, 5.0, 5.0, 1.0));
     let loops = allocator.terrain_cdt_site_loops_for_world_bounds(-8.0, -8.0, 8.0, 8.0);
     let source_samples = vec![
         TerrainCdtVertex::new(-8.0, 0.0, -8.0),
@@ -318,7 +340,7 @@ fn adjacent_different_height_site_loops_do_not_conflict_in_cdt() {
         loops,
         source_samples,
     ))
-    .expect("adjacent yards at different road-derived heights must not emit duplicate X/Z CDT boundary vertices");
+    .expect("different-height pads reserve space outside their footprints for grading");
 
     assert_eq!(
         mesh.stats.building_site_constraint_edges, mesh.stats.road_constraint_edges,
@@ -425,6 +447,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
     let mut mesh_part = MeshPart::single_lod0("main", "main.glb");
     mesh_part.position = [7.0, 0.0, 0.0];
     mesh_part.scale = 2.0;
+    mesh_part.imported_bounds = Some([[-0.75, 0.0, -0.75], [0.75, 1.0, 0.75]]);
     let manifest = AssetManifest {
         asset_id: "building.test.site".to_owned(),
         display_name: "Site Test".to_owned(),
@@ -485,22 +508,13 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
         .iter()
         .map(|point| frontage_projection(*point, frontage_dir))
         .fold(f32::NEG_INFINITY, f32::max);
-    let access_edge_points = support
-        .iter()
-        .filter(|point| (frontage_projection(**point, frontage_dir) - support_limit).abs() <= 0.001)
-        .collect::<Vec<_>>();
-
     assert!(
         max_frontage_projection <= support_limit + 0.001,
         "access support must stay behind the road boundary: {support:?}"
     );
     assert!(
-        !access_edge_points.is_empty(),
-        "driveway support should still define an interior access edge: {support:?}"
-    );
-    assert!(
-        access_edge_points.iter().all(|point| point.x.abs() <= 2.0),
-        "road-facing access support should stay near the driveway width: {support:?}"
+        max_frontage_projection < support_limit - 0.001,
+        "driveway must not extend the flat foundation to the frontage: {support:?}"
     );
     assert!(
         signed_polygon_area(&support).abs() < 40.0 * 30.0,
@@ -556,6 +570,84 @@ fn site_grading_nearest_road_sample_uses_visible_surface_edge() {
 }
 
 #[test]
+fn frontage_paving_has_a_flat_yard_and_separate_boundary_tie_ins() {
+    let mut manifest: AssetManifest = toml::from_str(
+        r#"
+asset_id = "building.test.graded_frontage"
+display_name = "Graded frontage"
+[building]
+placement_mode = "zoned_private"
+zone_type = "residential"
+lot_width_cells = 2
+lot_depth_cells = 2
+frontage_forward = [0, 0, -1]
+[[mesh_parts]]
+name = "house"
+position = [0, 0, 2]
+scale = 7
+[[site_surfaces]]
+material = "asphalt"
+y_m = 0.01
+vertices = [[-10, -10], [10, -10], [10, -3.5], [-10, -3.5]]
+"#,
+    )
+    .unwrap();
+    manifest.mesh_parts[0].imported_bounds = Some([[-0.75, 0.0, -0.75], [0.75, 1.0, 0.75]]);
+    let support = required_flat_support_footprint_local(&manifest, 10.0, 10.0);
+    assert!(
+        support.iter().all(|p| p.y > -9.0),
+        "paving forced a flat road-edge seam: {support:?}"
+    );
+    assert!(super::geometry::point_in_polygon_slice(
+        Vector2::new(0.0, 2.0),
+        &support
+    ));
+    for point in [Vector2::new(0.0, -6.0), Vector2::new(7.0, -6.0)] {
+        assert!(
+            super::geometry::point_in_polygon_slice(point, &support),
+            "usable yard must share the flat support: {point:?} outside {support:?}"
+        );
+    }
+    for point in [Vector2::new(0.0, -9.0), Vector2::new(9.0, -6.0)] {
+        assert!(
+            !super::geometry::point_in_polygon_slice(point, &support),
+            "lot-edge tie-in must remain outside the flat pad: {point:?}"
+        );
+    }
+}
+
+#[test]
+fn imported_support_bounds_apply_scale_yaw_and_pivot_without_padding() {
+    let mut manifest: AssetManifest = toml::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/building-site.toml"
+    )))
+    .unwrap();
+    manifest.anchors.clear();
+    manifest.site_surfaces.clear();
+    let part = &mut manifest.mesh_parts[0];
+    part.imported_bounds = Some([[-1.0, 0.0, -2.0], [3.0, 1.0, 1.0]]);
+    part.position = [2.0, 0.0, -1.0];
+    part.rotation_degrees = [0.0, 90.0, 0.0];
+    part.pivot_offset = Some([0.5, 0.0, -0.25]);
+    part.scale = 2.0;
+    let support = required_flat_support_footprint_local(&manifest, 20.0, 20.0);
+    assert_eq!(support.len(), 4);
+    for point in [
+        Vector2::new(-2.5, -8.0),
+        Vector2::new(3.5, -8.0),
+        Vector2::new(3.5, 0.0),
+        Vector2::new(-2.5, 0.0),
+    ] {
+        assert!(
+            support.iter().any(|p| p.distance_to(point) < 0.001),
+            "{support:?}"
+        );
+    }
+    assert!((signed_polygon_area(&support).abs() - 48.0).abs() < 0.001);
+}
+
+#[test]
 fn site_grading_consumes_planned_visual_writes_and_resets() {
     use crate::simulation::terrain::{TerrainVisualOverlay, TerrainVisualSource};
 
@@ -572,6 +664,7 @@ fn site_grading_consumes_planned_visual_writes_and_resets() {
     overlay.discard_unchanged(&base);
     let sites = BuildingSiteTerrainSnapshot {
         sites: vec![BuildingSiteTerrainClient {
+            surfaces: Vec::new(),
             building_idx: 0,
             footprint_world: vec![
                 Vector2::new(-2.0, -2.0),

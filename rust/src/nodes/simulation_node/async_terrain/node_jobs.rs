@@ -564,6 +564,7 @@ impl SimulationNode {
         TerrainPatchPayloadBuildJob::Refined {
             request,
             input: RefinedTerrainPatchBuildInput {
+                site_surfaces: source.sites.paving_surfaces(),
                 key: RefinedTerrainPatchCacheKey {
                     patch_x: request.key.patch_x,
                     patch_z: request.key.patch_z,

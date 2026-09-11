@@ -117,17 +117,113 @@ fn grading_guide_on_a_road_seam_uses_the_retained_constraint_height() {
 #[test]
 fn near_boundary_samples_do_not_expand_the_triangulation_domain() {
     let patch = TerrainCdtPatch::new(576.0, 180.0, 640.0, 192.0, [100.0; 4]);
-    let outside = TerrainCdtVertex::new(613.174024, 117.694466, 179.999886);
-    let input = TerrainCdtInput::new(patch, Vec::new(), vec![outside])
-        .with_tie_in_guide_samples(vec![TerrainCdtTieInGuideSample { vertex: outside }]);
+    let near_side = TerrainCdtVertex::new(613.174024, 117.694466, 179.999886);
+    let outside = TerrainCdtVertex::new(611.0, 130.0, 179.998);
+    let input = TerrainCdtInput::new(patch, Vec::new(), vec![near_side, outside])
+        .with_tie_in_guide_samples(vec![
+            TerrainCdtTieInGuideSample { vertex: near_side },
+            TerrainCdtTieInGuideSample { vertex: outside },
+        ]);
     let mesh = build_road_touched_terrain_patch(input).unwrap();
     assert!(
         mesh.vertices
             .iter()
             .all(|vertex| patch_contains(*vertex, patch))
     );
-    assert_eq!(mesh.triangles.len(), 2);
-    assert_eq!(mesh.stats.max_face_y_delta_m, 0.0);
+    assert_eq!(mesh.triangles.len(), 3);
+    assert!(mesh.vertices.contains(&TerrainCdtVertex::new(
+        near_side.x,
+        near_side.height_m,
+        patch.min_z,
+    )));
+    assert!(!mesh.vertices.iter().any(|p| p.x == outside.x));
+}
+
+#[test]
+fn adjacent_tiles_share_near_boundary_grading_samples_from_either_side() {
+    // One f32 ULP at this world scale is almost the CDT's 1 mm side tolerance.
+    // Snapping only the containing tile leaves a lower apron point opposite an
+    // unsplit source-terrain edge in its neighbor.
+    for shared in [-8832.0, 8832.0] {
+        for offset in [-0.0009765625, -0.000001, 0.000001, 0.0009765625] {
+            for swap_axes in [false, true] {
+                for as_guide in [false, true] {
+                    let point = |x, height, z| {
+                        if swap_axes {
+                            TerrainCdtVertex::new(z, height, x)
+                        } else {
+                            TerrainCdtVertex::new(x, height, z)
+                        }
+                    };
+                    let apron = point(shared + offset, 99.28, 13.28);
+                    let meshes = [shared - 64.0, shared].map(|min| {
+                        let patch = if swap_axes {
+                            TerrainCdtPatch::new(0.0, min, 64.0, min + 64.0, [99.5; 4])
+                        } else {
+                            TerrainCdtPatch::new(min, 0.0, min + 64.0, 64.0, [99.5; 4])
+                        };
+                        let mut input = TerrainCdtInput::new(
+                            patch,
+                            Vec::new(),
+                            vec![point(shared, 99.5, 12.0), point(shared, 99.6, 14.0)],
+                        );
+                        if as_guide {
+                            input
+                                .tie_in_guide_samples
+                                .push(TerrainCdtTieInGuideSample { vertex: apron });
+                        } else {
+                            input.source_samples.push(apron);
+                        }
+                        let mesh = build_road_touched_terrain_patch(input).unwrap();
+                        assert!(mesh.vertices.iter().all(|p| patch_contains(*p, patch)));
+                        let mut side = mesh
+                            .triangles
+                            .iter()
+                            .flatten()
+                            .map(|&index| mesh.vertices[index])
+                            .filter(|p| if swap_axes { p.z } else { p.x } == shared)
+                            .map(|p| (if swap_axes { p.x } else { p.z }, p.height_m))
+                            .collect::<Vec<_>>();
+                        side.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        side.dedup();
+                        side
+                    });
+                    assert_eq!(
+                        meshes[0], meshes[1],
+                        "offset={offset} swap_axes={swap_axes}"
+                    );
+                    assert!(meshes[0].contains(&(13.28, 99.28)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn inside_boundary_guides_join_the_exact_tile_side_without_slivers() {
+    let patch = TerrainCdtPatch::new(0.0, -64.0, 64.0, 0.0, [20.0; 4]);
+    let input = TerrainCdtInput::new(
+        patch,
+        Vec::new(),
+        vec![
+            TerrainCdtVertex::new(0.0, 20.0, -24.0),
+            TerrainCdtVertex::new(0.0, 20.12, -22.2335),
+        ],
+    )
+    .with_tie_in_guide_samples(vec![TerrainCdtTieInGuideSample {
+        vertex: TerrainCdtVertex::new(0.000001, 20.0, -23.25),
+    }]);
+    let mesh = build_road_touched_terrain_patch(input).unwrap();
+    assert!(
+        mesh.vertices
+            .iter()
+            .all(|p| p.x == 0.0 || p.x >= CDT_EPSILON_M)
+    );
+    assert!(
+        mesh.stats.max_face_slope_ratio < 2.0,
+        "{}",
+        mesh.stats.max_face_slope_ratio
+    );
 }
 
 #[test]

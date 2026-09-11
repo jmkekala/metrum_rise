@@ -6,6 +6,7 @@ extends SceneTree
 const RoadToolScript := preload("res://scripts/tools/road_tool.gd")
 const WorldMaterialsScript := preload("res://scripts/renderers/world_materials.gd")
 const TerrainScript := preload("res://scripts/renderers/terrain.gd")
+const ZoningToolScript := preload("res://scripts/tools/zoning_tool.gd")
 var _failures := 0
 var simulation: SimulationNode
 var _capture_baseline_sky := {}
@@ -32,8 +33,10 @@ func _commit(points: PackedVector3Array, forward: int = 1, backward: int = 1) ->
 	return false
 
 func _run() -> void:
+	await _test_graded_paving_payload()
 	simulation = SimulationNode.new()
 	root.add_child(simulation)
+	await _test_zoning_buildability_feedback()
 	for fixture in [
 		{"name": "isolated", "end_x": 48.0, "end_z": 0.0, "forward": 1, "backward": 1, "isolated": true},
 		{"name": "isolated_bridge", "end_x": 48.0, "end_z": 0.0, "forward": 1, "backward": 1, "isolated": true, "height": 10.0},
@@ -53,6 +56,92 @@ func _run() -> void:
 	if _failures == 0:
 		print("road_junction_preview_test: PASS")
 	quit(_failures)
+
+func _test_zoning_buildability_feedback() -> void:
+	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "zoning fixture world must load")
+	simulation.set_simulation_speed(0.0)
+	if not await _commit(PackedVector3Array([Vector3(-96, 0, 0), Vector3(96, 0, 0)])):
+		return
+	_expect(simulation.get_registered_asset_ids().is_empty(), "zoning fixture intentionally has no building assets")
+	var before := simulation.get_zoning_site_dependencies()
+	var rejected := simulation.get_zoning_parcel_preview(0.0, 16.0, 1, 2, 2)
+	_expect(not rejected.is_empty() and not rejected.get("valid", true), "unsupported lot must remain visible as invalid")
+	_expect(str(rejected.get("reason", "")).contains("asset"), "unsupported lot must explain missing compatible assets")
+	_expect(not simulation.apply_zoning_parcel_at(0.0, 16.0, 1, 2, 2), "unsupported zoned parcel must not commit")
+	_expect(not simulation.has_zoning_parcel_at(0.0, 16.0), "failed zoning must not insert a parcel")
+	_expect(simulation.get_zoning_site_dependencies() == before, "feasibility must not change road, terrain or zoning")
+	var drag := simulation.get_zoning_parcel_drag_preview_packed(-60.0, 16.0, 60.0, 16.0, 1, 2, 2, 0.0)
+	_expect(int(drag.get("parcel_count", 0)) > 0 and int(drag.get("valid_count", -1)) == 0, "drag retains rejected geometries with no valid lots")
+	var colors: PackedColorArray = drag.get("colors", PackedColorArray())
+	_expect(colors.size() == int(drag.get("parcel_count", 0)), "every drag parcel needs its feasibility color")
+	for color in colors:
+		_expect(color.r > color.g, "rejected zoning must be red")
+	var tool := ZoningToolScript.new()
+	tool._feasibility_label = Label.new()
+	tool.add_child(tool._feasibility_label)
+	tool._show_feasibility(drag)
+	_expect(not tool._feasibility_label.text.is_empty(), "zoning tool must display the Rust rejection reason")
+	_expect(tool._build_packed_parcels_mesh(drag, true) != null, "zoning tool must render rejected parcels")
+	tool.free()
+	_expect(simulation.get_zoning_parcel_preview(0.0, 16.0, 0, 2, 2).get("valid", false), "free parcels do not require a building asset")
+	_expect(simulation.apply_zoning_parcel_at(0.0, 16.0, 0, 2, 2), "free parcel placement must remain possible")
+	_expect(simulation.get_zoning_site_dependencies() != before, "zoning edits invalidate retained cursor previews")
+
+func _test_graded_paving_payload() -> void:
+	var terrain := TerrainScript.new()
+	var data := {
+		"terrain_mesh_vertices": PackedVector3Array([Vector3.ZERO, Vector3(4, 1, 0), Vector3(0, 0, 4)]),
+		"terrain_mesh_normals": PackedVector3Array([Vector3.UP, Vector3.UP, Vector3.UP]),
+		"terrain_mesh_uvs": PackedVector2Array([Vector2.ZERO, Vector2.RIGHT, Vector2.UP]),
+		"terrain_mesh_indices": PackedInt32Array([0, 1, 2]),
+		"terrain_mesh_colors": PackedColorArray([Color.RED, Color.RED, Color.RED]),
+	}
+	_expect(terrain._triangle_mesh_payload_is_valid(data, "terrain_mesh", true), "graded paving payload must validate")
+	var mesh: ArrayMesh = terrain._baked_terrain_patch_mesh(data)
+	var arrays := mesh.surface_get_arrays(0)
+	_expect(arrays[Mesh.ARRAY_VERTEX] == data.terrain_mesh_vertices, "paving upload preserves graded vertices")
+	_expect(arrays[Mesh.ARRAY_COLOR] == data.terrain_mesh_colors, "paving upload preserves material tags")
+	data.terrain_mesh_colors = PackedColorArray([Color.RED])
+	_expect(not terrain._triangle_mesh_payload_is_valid(data, "terrain_mesh", true), "incomplete paving tags must fail closed")
+	terrain.free()
+	if DisplayServer.get_name() == "headless":
+		return
+	# Exercise the actual terrain shader, not the unshaded coverage-test material below.
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(128, 128)
+	viewport.own_world_3d = true
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(viewport)
+	var material := ShaderMaterial.new()
+	material.shader = TerrainScript.TERRAIN_SHADER
+	material.set_shader_parameter("height_is_baked", true)
+	var texture_image := Image.create(2, 2, false, Image.FORMAT_RGBA8)
+	texture_image.fill(Color(1.0, 0.0, 0.0))
+	material.set_shader_parameter("site_asphalt_albedo_tex", ImageTexture.create_from_image(texture_image))
+	var instance := MeshInstance3D.new()
+	instance.mesh = mesh
+	instance.material_override = material
+	viewport.add_child(instance)
+	var camera := Camera3D.new()
+	viewport.add_child(camera)
+	camera.position = Vector3(2.0, 8.0, 6.0)
+	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+	camera.size = 6.0
+	camera.look_at(Vector3(2.0, 0.5, 2.0))
+	camera.current = true
+	for frame in range(4):
+		await process_frame
+	await RenderingServer.frame_post_draw
+	var rendered := viewport.get_texture().get_image()
+	var paved_pixels := 0
+	for y in range(rendered.get_height()):
+		for x in range(rendered.get_width()):
+			var color := rendered.get_pixel(x, y)
+			if color.r > 0.2 and color.g < 0.05 and color.b < 0.05:
+				paved_pixels += 1
+	_expect(paved_pixels > 100, "terrain shader must render tagged graded paving with its site material")
+	viewport.queue_free()
+	await process_frame
 
 func _fixture(fixture: Dictionary) -> void:
 	_expect(simulation.create_blank_world(512.0, 512.0, 8.0, 128.0, 0.0), "junction fixture world must load")

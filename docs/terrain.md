@@ -228,7 +228,7 @@ Current runtime client state:
 - terrain-only queries still read source terrain, while visible-world queries use the client-owned
   surface first, structural local earthwork geometry second, and visual terrain third; ordinary
   grounded seams are terrain topology, not a separate road-owned query surface
-- flat building pads now use the same Rust-side stitched terrain patch model for local site
+- flat building/yard pads and graded edge paving use the same Rust-side stitched terrain patch model for local site
   tie-ins; future engineered-ground clients should extend [`earthworks.md`](earthworks.md) instead
   of inventing a separate terrain-flattening path
 
@@ -849,8 +849,19 @@ Deterministic terrain-render rules:
   contributors, so adjacent CDT tiles cannot bridge different elevations. Building pads and
   structural retaining walls retain their own authority. Canonical boundary-cell welding and
   strict core containment prevent sub-millimetre outside samples from expanding the CDT domain.
+  Snap guide/source samples within the existing 1 mm side tolerance before testing containment:
+  both adjacent tiles must retain the same side point and height, even when its original position
+  falls just inside only one tile. More distant halo samples remain excluded.
   Guide points on road constraints are noded with the retained seam's interpolated height.
   Segment incidence tolerances are distances, never fractions of arbitrarily long segments.
+  Noded-edge cleanup deduplicates canonical vertex IDs, not nearby segment parameters:
+  even sub-millimetre intersections in distinct identity cells must remain on both incident
+  boundaries. Otherwise a road/site corner can leave crossing constraints and suppress an
+  entire render patch after loading. CDT contract revision `13` includes that noding fix,
+  imported-bounds building support, symmetric shared-side sample welding and editor-consistent
+  building-part yaw, invalidating earlier oversized/misrotated pads and one-sided apron products;
+  Rust and Godot enforce the same revision. Invalid geometry still blocks publication, and both
+  `terrain` and `road` debugging expose the renderer's rejection reason.
 - successful tile output caches vertices, normals, UVs, offset-ready indices, pre-normalized local
   normal-sum magnitudes, and side-seam manifests; reuse therefore skips triangle conversion,
   window-side vertex scans, and triangle-index normal reconstruction for unchanged tiles
@@ -1000,6 +1011,94 @@ Deterministic transition rules:
   instead of resynchronizing those client surfaces to edited terrain
 
 The chunk-local render path is now the live large-world terrain / water runtime boundary.
+
+#### Road/site corner noding verification (2026-09-11)
+
+`road_site_intersections_near_pad_corners_keep_distinct_vertices` uses an authored 32 m tile
+with a sidewalk boundary crossing just inside two flat-pad corners. It fails with the old
+split cleanup (two rejected constraints), and passes with identity-only deduplication. It
+also checks complete exterior area, no missing constraints, level output, and exact geometry
+agreement after contributor reordering. This fix keeps the existing tile-local complexity:
+`O(K log K)` sorting and `O(K)` cleanup per edge with K split events, removing the extra
+deduplication buffer. No city-wide query or per-agent work is introduced.
+
+Fresh verification: `cargo test --release --lib` passes 1,656 tests (9 intentionally ignored);
+headless `road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd` pass.
+Logs: `/tmp/metrum-chunk-full-tests.log`, `/tmp/metrum-chunk-bridge.log`, and
+`/tmp/metrum-chunk-renderer-tests.log`.
+
+Targeted unprofiled measurement uses the same fixture plus 1,089 regular source samples:
+24 batches of 50 builds, four warmups, input cloning outside the timed compiler. Command:
+`RAYON_NUM_THREADS=24 cargo test --release --lib benchmark_road_site_cdt_noding -- --ignored --nocapture`.
+The production release test reports **0.4477 ms/tile**, 763 retained vertices, 1,369 faces,
+and zero invalid/missing constraints. Test-binary SHA-256:
+`614a167a46dc9fc3bf2c8ef5ca6820d0a156afd194126af9181733074e9cafcc`.
+
+Three matched isolated CDT-module process pairs (`rustc 1.98.1`, `--edition=2024 --test -O`,
+identical release Spade/R-tree/overlay dependencies, debug logging disabled, no concurrent
+builds/tests) measure old/new medians **0.4816/0.4611**, **0.4828/0.4607**, and
+**0.4842/0.4607 ms/tile**. The middle pair reverses process order. Each build runs the serial
+tile kernel; outer Rayon scheduling and whole-patch upload are outside this measurement.
+The old output has one invalid and three missing constraints, so these are correction-cost
+measurements, not an equivalent-output speedup or a city-scale FPS claim. Harnesses and logs:
+`/tmp/metrum-cdt-{before,after}/harness.rs`, `/tmp/metrum-chunk-kernel-{before,after}-*.log`,
+and `/tmp/metrum-chunk-kernel-production.log`. Matched binary SHA-256 prefixes:
+`9c810e195d67e7d5` (before), `3952a9f86230267ee` (after).
+
+#### Shared-side yard seam verification (2026-09-11)
+
+A commercial apron exposed a 0.276727 m vertical T-junction across a 64 m tile side. A grading
+sample less than 1 mm inside one tile snapped onto that side, while the neighbor rejected it
+before snapping and retained an unsplit edge at a different height. Canonicalization now welds
+samples first and enforces strict containment afterwards. This adds no allocations, spatial
+queries or city-wide work: constant work per local source/guide sample, with existing CDT costs.
+Flat pads and authored assets are unchanged; Rust/Godot contract revision 12 invalidates old meshes.
+
+`adjacent_tiles_share_near_boundary_grading_samples_from_either_side` failed before the fix and
+passes afterwards. Its 64 cases cover both axes, positive/negative large-world coordinates, both
+offset directions and source/guide inputs. It compares referenced side vertices and heights;
+the containment regression also proves that farther halo samples stay excluded.
+
+Fresh release verification passes **1,659 Rust tests (9 ignored)**, including the 61 CDT tests,
+plus headless `road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd`. The
+read-only loaded scene publishes all eight requested patches; its repaired point is referenced
+by triangles on both sides at exactly the same height. A local rendered-triangle incidence audit
+changes from one >1 cm disagreement to zero (maximum residual under 5 mm with 1 mm XZ incidence
+tolerance). The neighboring frontage still passes 99 probes, maximum paired difference 6.5 mm.
+Neither assets, the diagnostic save nor the checked-in terrain fixture were modified. Logs:
+`/tmp/metrum-yard-seam-{red,cdt-tests,full-tests,scene,bridge,renderer}.log` and
+`/tmp/metrum-yard-seam-{before,after}-audit.log`. Full-suite command from repository root:
+`RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 --test-threads=8`.
+
+Matched, unprofiled release timing (`rustc 1.98.1`, Cargo release profile, debug flags unset,
+`RAYON_NUM_THREADS=24`, no concurrent builds/tests) reuses `benchmark_road_site_cdt_noding` above.
+Three before/after process pairs give **0.4516/0.4463**, **0.4493/0.4477**, and
+**0.4483/0.4477 ms/tile**; the middle pair reverses order. All outputs retain 763 vertices,
+1,369 faces and zero invalid/missing constraints. No kernel regression is apparent in this fixture;
+these small differences are not a general speedup claim.
+
+The existing `populated_paved_road_plan_scaling` also passes one matched process pair, 100 measured
+edits plus three warmups per population, with fixed local sites and identical local products at
+every background size within each build. Worker p50 milliseconds, before/after:
+
+| Remote buildings | Remote roads | Agents | Before / after |
+| ---: | ---: | ---: | ---: |
+| 0 | 0 | 24 | 21.45 / 23.50 |
+| 1,000 | 4 | 6,024 | 21.55 / 22.85 |
+| 10,000 | 40 | 60,024 | 22.39 / 22.60 |
+| 100,000 | 391 | 600,024 | 22.76 / 22.54 |
+
+Current readiness p50 stays below 0.020 ms; one-time snapshot cost is separate (0.007–3.312 ms).
+This verifies locality, not an end-to-end speedup: one pair cannot attribute the small-map timing
+variation. Commands for each retained release test binary use
+`RAYON_NUM_THREADS=24 <binary> <benchmark_name> --ignored --nocapture --test-threads=1`.
+Before binary: `/tmp/metrum-yard-seam-before-tests`, SHA-256
+`e3b5bb7b17e17d09f987c6a299d20028f90ba9fa6726f6a5350e38926fe7a1a2`;
+after binary: `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`, SHA-256
+`7767a8db42fa886644764739ad7833eced7afca243462e11678c23a6fe2f5e6f`.
+Artifacts: `/tmp/metrum-yard-seam-kernel-{before,after}-{1,2,3}.log` and
+`/tmp/metrum-yard-seam-locality-{before,after}.log`. Deployed library SHA-256:
+`8e8daecd8676bfe2a6d914531fc59b0587be111a45429ed2fa47ff3431e4e832`.
 
 ### 6. Offline Heightmap / DEM Import Is Live
 

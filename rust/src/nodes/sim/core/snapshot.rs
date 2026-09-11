@@ -6,11 +6,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::state::{PendingDemandSpawnAction, SimCore};
-use crate::config::HEIGHT_SCALE;
-use crate::nodes::sim::render::lane_pose::sample_lane_pose;
+use crate::nodes::sim::render::lane_pose::{sample_lane_change_pose, sample_lane_pose};
+#[cfg(test)]
+use crate::nodes::sim::render::vehicle_ground::ground_vehicle_basis;
 use crate::simulation::agriculture::FieldSite;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator, BuildingSiteClient};
-use crate::simulation::economy::agents::{Agent, MODE_CAR, transit_is_visible};
+use crate::simulation::economy::agents::{Agent, MODE_CAR, TRANSIT_NETWORK, transit_is_visible};
 use crate::simulation::economy::households::HouseholdBuildingUndo;
 use crate::simulation::economy::logistics::ShipmentBuildingUndo;
 use crate::simulation::extraction::ExtractorSite;
@@ -23,9 +24,14 @@ use crate::simulation::network::surface::{
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
-const PEDESTRIAN_SURFACE_CLEARANCE_M: f32 = 0.02;
+const AGENT_SURFACE_CLEARANCE_M: f32 = 0.02;
 
-fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
+/// Resolves the same planar access destination for snapshot orientation and debug overlays.
+pub(crate) fn access_phase_target(
+    core: &SimCore,
+    agent_idx: usize,
+    egress: bool,
+) -> Option<Vector3> {
     let building_id = if egress {
         core.agents.current_building[agent_idx]
     } else {
@@ -96,37 +102,6 @@ pub(super) fn pedestrian_lane_surface_height(lane: &Lane, lane_y: f32) -> f32 {
     } else {
         lane_y
     }
-}
-
-pub(super) fn pedestrian_needs_access_surface(transit: u8) -> bool {
-    use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
-
-    transit == TRANSIT_ACCESS_EGRESS || transit == TRANSIT_ACCESS_INGRESS
-}
-
-/// Chooses the topmost authored surface used while a pedestrian is entering or leaving a building.
-pub(super) fn pedestrian_access_surface_height_from_samples(
-    terrain_y: f32,
-    road_y: Option<f32>,
-    building_site_y: Option<f32>,
-) -> f32 {
-    road_y
-        .into_iter()
-        .chain(building_site_y)
-        .fold(terrain_y, f32::max)
-}
-
-fn pedestrian_access_surface_height(core: &SimCore, world_x: f32, world_z: f32) -> f32 {
-    let terrain_y = core.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE;
-    let road_y = core
-        .transit_network
-        .road_surface
-        .sample_visible_surface_height(&core.region_graph, &core.heightmap, world_x, world_z);
-    let building_site_y = core
-        .allocator
-        .sample_building_site_height(Vector2::new(world_x, world_z));
-
-    pedestrian_access_surface_height_from_samples(terrain_y, road_y, building_site_y)
 }
 
 /// Full water runtime snapshot for undo history.
@@ -220,6 +195,8 @@ pub struct RenderSnapshot {
     pub car_transforms: HashMap<u8, Vec<f32>>,
     /// Per car transform bucket → render IDs matching `car_transforms` instance order.
     pub car_render_ids: HashMap<u8, Vec<i64>>,
+    /// Off-lane support flags, aligned with each car transform/identity bucket.
+    pub car_ground_flags: HashMap<u8, Vec<u8>>,
     /// Mirrors `SimCore::terrain_dirty` at snapshot time.
     pub terrain_dirty: bool,
     /// Sorted dirty terrain patch keys paired with their authoritative payload revisions.
@@ -302,6 +279,7 @@ impl Default for RenderSnapshot {
             pedestrian_transforms: HashMap::new(),
             car_transforms: HashMap::new(),
             car_render_ids: HashMap::new(),
+            car_ground_flags: HashMap::new(),
             terrain_dirty: true,
             terrain_dirty_patch_states: Arc::new(Vec::new()),
             terrain_payload_global_generation: 0,
@@ -369,6 +347,9 @@ impl SimCore {
         &mut self,
         mut snapshot: RenderSnapshot,
     ) -> RenderSnapshot {
+        // Repair derived site/index state once, never via a full-store fallback per agent.
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
         for buffer in snapshot.pedestrian_transforms.values_mut() {
             buffer.clear();
         }
@@ -377,6 +358,9 @@ impl SimCore {
         }
         for ids in snapshot.car_render_ids.values_mut() {
             ids.clear();
+        }
+        for flags in snapshot.car_ground_flags.values_mut() {
+            flags.clear();
         }
 
         let (aabb_x_min, aabb_x_max, aabb_z_min, aabb_z_max) = self.camera_aabb;
@@ -396,7 +380,28 @@ impl SimCore {
             let lane_id = self.agents.current_lane_id[i];
             if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
                 let lane = &self.transit_network.lane_system.lanes[lane_id];
-                lane_pose = sample_lane_pose(lane, self.agents.lane_distance[i]);
+                lane_pose = if self.agents.transit_mode[i] == MODE_CAR
+                    && self.agents.transit[i] == TRANSIT_NETWORK
+                    && let Some(source_lane) = self
+                        .transit_network
+                        .lane_system
+                        .lanes
+                        .get(self.agents.lane_change_from_lane_id[i] as usize)
+                    && source_lane.edge_id != usize::MAX
+                    && source_lane.edge_id == lane.edge_id
+                    && source_lane.is_fwd == lane.is_fwd
+                    && source_lane.lane_type == lane.lane_type
+                {
+                    sample_lane_change_pose(
+                        source_lane,
+                        lane,
+                        self.agents.lane_distance[i],
+                        self.agents.lane_change_start_d[i],
+                        self.agents.lane_change_length_m[i],
+                    )
+                } else {
+                    sample_lane_pose(lane, self.agents.lane_distance[i])
+                };
                 if let Some((pos, _)) = lane_pose {
                     world_x = pos.x;
                     world_z = pos.z;
@@ -412,18 +417,15 @@ impl SimCore {
             {
                 continue;
             }
+            // Lane geometry owns network height. Both off-lane modes use the same current
+            // road/pad/CDT ownership query in ingress and egress, including cut-away terrain.
             if self.agents.transit_mode[i] != MODE_CAR {
                 // Pedestrian / walker — use variant MMI and oriented basis.
                 let p_type = self.agents.pedestrian_type[i];
                 let walk_cycle = self.agents.walk_phase[i];
                 let world_y = pedestrian_lane_surface_y.unwrap_or_else(|| {
-                    if pedestrian_needs_access_surface(self.agents.transit[i]) {
-                        // Door-to-curb walkers are off-lane; keep this point query allocation-free.
-                        pedestrian_access_surface_height(self, world_x, world_z)
-                    } else {
-                        self.heightmap.sample_visual_height_world(world_x, world_z) * HEIGHT_SCALE
-                    }
-                }) + PEDESTRIAN_SURFACE_CLEARANCE_M;
+                    self.get_world_surface_height_internal(Vector2::new(world_x, world_z))
+                }) + AGENT_SURFACE_CLEARANCE_M;
                 let forward = lane_pose
                     .map(|(_, tangent)| tangent)
                     .or_else(|| access_phase_direction(self, i, world_x, world_z));
@@ -439,7 +441,7 @@ impl SimCore {
                 buffer.push(0.0);
                 buffer.push(0.0);
             } else {
-                // Car — oriented along lane geometry.
+                // Keep stable bucket order here; solve independent off-lane footprints below.
                 let v_type = self.agents.vehicle_type[i];
                 let render_id = self.agents.render_id[i];
                 let variant_id = (render_id % 5) as u8;
@@ -449,18 +451,38 @@ impl SimCore {
                     .entry(model_key)
                     .or_default()
                     .push(render_id.min(i64::MAX as u64) as i64);
-                let (world_y, forward) = if let Some((pos, tangent)) = lane_pose {
-                    (pos.y + 0.02, Some(-tangent))
+                snapshot
+                    .car_ground_flags
+                    .entry(model_key)
+                    .or_default()
+                    .push(u8::from(lane_pose.is_none()));
+                let (world_y, basis) = if let Some((pos, tangent)) = lane_pose {
+                    (pos.y + AGENT_SURFACE_CLEARANCE_M, model_basis(-tangent))
                 } else {
-                    let terrain_y =
-                        self.heightmap.sample_height_world(world_x, world_z) * HEIGHT_SCALE;
-                    let forward = access_phase_direction(self, i, world_x, world_z).map(|v| -v);
-                    (terrain_y + 0.02, forward)
+                    let heading = access_phase_direction(self, i, world_x, world_z)
+                        .map(|direction| -direction)
+                        .unwrap_or(Vector3::BACK);
+                    (0.0, model_basis(heading))
                 };
-                let basis = forward.map(model_basis).unwrap_or_else(default_model_basis);
                 let buffer = snapshot.car_transforms.entry(model_key).or_default();
                 push_transform(buffer, basis, Vector3::new(world_x, world_y, world_z));
             }
+        }
+
+        {
+            use rayon::prelude::*;
+            // Borrow buckets directly: HashMap's rayon adapter would allocate a staging Vec.
+            snapshot
+                .car_transforms
+                .iter_mut()
+                .par_bridge()
+                .for_each(|(&key, buffer)| {
+                    self.solve_vehicle_transforms(
+                        key / 10,
+                        buffer,
+                        &snapshot.car_ground_flags[&key],
+                    );
+                });
         }
 
         let node_positions = self.network_node_positions_snapshot();
@@ -531,5 +553,41 @@ impl SimCore {
         snapshot.zoning_overlay_revision = self.zoning.overlay_revision();
         snapshot.zoning_overlay_occupancy_revision = self.zoning.overlay_occupancy_revision();
         snapshot
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ground_vehicle_basis_preserves_yaw_and_follows_pitch_and_roll() {
+        for normal in [
+            Vector3::UP,
+            Vector3::new(-0.4, 1.0, 0.2).normalized(),
+            Vector3::new(0.3, 1.0, -0.5).normalized(),
+        ] {
+            for heading in [
+                Vector3::BACK,
+                Vector3::FORWARD,
+                Vector3::RIGHT,
+                Vector3::LEFT,
+                Vector3::new(1.0, 0.0, 1.0).normalized(),
+            ] {
+                let [x, y, z] = ground_vehicle_basis(heading, normal);
+                assert!(y.distance_to(normal) < 1e-6);
+                assert!(
+                    Vector2::new(z.x, z.z)
+                        .normalized()
+                        .distance_to(Vector2::new(heading.x, heading.z))
+                        < 1e-6
+                );
+                for axis in [x, y, z] {
+                    assert!((axis.length() - 1.0).abs() < 1e-6);
+                }
+                assert!(x.cross(y).distance_to(z) < 1e-6);
+                assert!(z.dot(normal).abs() < 1e-6);
+            }
+        }
     }
 }

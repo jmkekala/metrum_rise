@@ -3,6 +3,7 @@
 //! `SimCore` refined terrain patch cache builders and invalidation helpers.
 
 use super::super::*;
+use crate::simulation::network::surface::{RoadSurfaceTriangleQueryIndex, RoadVec3};
 use std::collections::BTreeSet;
 
 impl SimCore {
@@ -24,6 +25,19 @@ impl SimCore {
         let cdt_start = Instant::now();
         let mesh_result = build_road_touched_terrain_patch(window.cdt_input);
         let cdt_ms = cdt_start.elapsed().as_secs_f64() * 1000.0;
+        let ground_query = Arc::new(mesh_result.as_ref().map_or_else(
+            |_| Default::default(),
+            |mesh| {
+                RoadSurfaceTriangleQueryIndex::from_ground_triangles(mesh.triangles.iter().map(
+                    |indices| {
+                        indices.map(|i| {
+                            let p = mesh.vertices[i];
+                            RoadVec3::new(p.x, f64::from(p.height_m), p.z)
+                        })
+                    },
+                ))
+            },
+        ));
         let mesh_buffers = mesh_result.as_ref().ok().map(|mesh| {
             Arc::new(
                 SimulationNode::prepare_cached_refined_terrain_window_mesh_buffers(
@@ -36,6 +50,7 @@ impl SimCore {
         });
         (
             Arc::new(CachedRefinedTerrainCdtWindow {
+                ground_query,
                 key: window.key,
                 input_road_loops,
                 input_source_samples,
@@ -312,6 +327,7 @@ impl SimCore {
                 road_locked,
             );
             inputs.push(RefinedTerrainPatchBuildInput {
+                site_surfaces: sites.paving_surfaces(),
                 key,
                 surface_generation,
                 patch: base_patch,
@@ -484,6 +500,7 @@ impl SimCore {
                     (previous.contract_revision == TERRAIN_CDT_CONTRACT_REVISION
                         && previous.key == input.key
                         && previous.patch == input.patch
+                        && previous.site_surfaces == input.site_surfaces
                         && previous.windows.len() == windows.len()
                         && previous
                             .windows
@@ -530,6 +547,7 @@ impl SimCore {
                     )
                 };
                 let mut entry = CachedRefinedTerrainPatch {
+                    site_surfaces: input.site_surfaces,
                     key: input.key,
                     contract_revision: TERRAIN_CDT_CONTRACT_REVISION,
                     surface_generation: input.surface_generation,
@@ -566,13 +584,18 @@ impl SimCore {
                             })
                             .collect::<Vec<_>>();
                         debug_assert_eq!(successful_windows.len(), entry.windows.len());
-                        Some(Arc::new(
+                        let mut buffers =
                             SimulationNode::prepare_cached_refined_terrain_mesh_buffers(
                                 &entry.patch,
                                 &successful_windows,
                                 (entry.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
-                            ),
-                        ))
+                            );
+                        SimulationNode::partition_terrain_site_paving(
+                            &entry.patch,
+                            &entry.site_surfaces,
+                            &mut buffers,
+                        );
+                        Some(Arc::new(buffers))
                     });
                 }
                 Arc::new(entry)

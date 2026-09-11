@@ -1370,9 +1370,7 @@ impl SimCore {
             }
         }
         self.rebuild_building_entrances_internal();
-        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
-        }
+        self.publish_pending_building_site_changes();
         Ok(building_idx)
     }
 
@@ -1426,9 +1424,7 @@ impl SimCore {
             }
         }
         self.rebuild_building_entrances_internal();
-        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
-        }
+        self.publish_pending_building_site_changes();
         Ok(building_idx)
     }
 
@@ -2127,6 +2123,7 @@ mod tests {
             cached_network_node_positions_dirty: true,
             road_tool_surface_generation: 1,
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
+            vehicle_ground_support: Default::default(),
         }
     }
 

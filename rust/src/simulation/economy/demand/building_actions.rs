@@ -18,7 +18,7 @@ use super::viability::{
     building_is_viable_for_downgrade, building_is_viable_for_upgrade, level_change_is_compatible,
 };
 use crate::debug_log;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
@@ -95,6 +95,7 @@ impl DemandSystem {
         residential_occupants: &ResidentialOccupantSnapshot,
         cadence_fraction: f32,
         log_label: &str,
+        environment: BuildingSiteEnvironment<'_>,
     ) {
         let mut commercial_spawn_resource_priorities = snapshot
             .committed_unmet_commercial_consumer_demand_by_resource
@@ -111,6 +112,7 @@ impl DemandSystem {
             graph,
             catalog,
             &commercial_spawn_resource_priorities,
+            environment,
         );
         let absorption_context = &snapshot.output_absorption;
         for use_kind in [

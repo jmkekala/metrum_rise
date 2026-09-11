@@ -128,6 +128,7 @@ impl SimulationNode {
             None,
         );
         RefinedTerrainPatchBuildInput {
+            site_surfaces: sites.map_or_else(Vec::new, |sites| sites.paving_surfaces()),
             key: Self::refined_patch_cache_key(patch.patch_x, patch.patch_z, render_step_m),
             // The authoritative patch payload revision is assigned after exact commit matching.
             surface_generation: 0,

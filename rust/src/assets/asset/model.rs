@@ -29,6 +29,10 @@ pub struct LodEntry {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeshPart {
+    /// Imported LOD0 bounds in mesh-root coordinates, before the authored part transform.
+    /// Populated at pack load, never deserialized from unverified manifest data.
+    #[serde(skip)]
+    pub imported_bounds: Option<[[f32; 3]; 2]>,
     /// Short editor label for this mesh part.
     pub name: String,
     /// Local-space position `[x, y, z]` relative to the building placement origin.
@@ -49,9 +53,22 @@ pub struct MeshPart {
 }
 
 impl MeshPart {
+    // Shared with rendered instances and structural support. Match Godot's positive-Y yaw:
+    // +X rotates toward -Z; the pivot correction is scaled and rotated before translation.
+    pub(crate) fn local_transform(&self) -> glam::Affine3A {
+        let basis = glam::Mat3::from_rotation_y(self.rotation_degrees[1].to_radians())
+            * self.scale.max(0.001);
+        glam::Affine3A::from_mat3_translation(
+            basis,
+            glam::Vec3::from_array(self.position)
+                + basis * glam::Vec3::from_array(self.pivot_offset.unwrap_or([0.0; 3])),
+        )
+    }
+
     /// Creates a default-position building mesh part with one LOD0 mesh file.
     pub fn single_lod0(name: impl Into<String>, file: impl Into<String>) -> Self {
         Self {
+            imported_bounds: None,
             name: name.into(),
             position: [0.0, 0.0, 0.0],
             rotation_degrees: [0.0, 0.0, 0.0],
@@ -131,7 +148,8 @@ pub enum SiteSurfaceMaterial {
 
 /// One authored polygon ground-treatment surface inside a building lot.
 ///
-/// Runtime treats this as a material/layout region on the flat building support footprint.
+/// Runtime includes the yard interior in the level support pad, retaining graded lot-edge tie-ins.
+/// This region partitions those shared support/terrain triangles by material.
 /// Gameplay must not render it as a loose terrain overlay.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,7 +159,7 @@ pub struct SiteSurface {
     /// Optional editor label for this surface.
     #[serde(default)]
     pub name: String,
-    /// Local-space vertical offset in metres relative to the building placement origin.
+    /// Vertical offset in metres for the flat asset-editor preview only; gameplay follows ground.
     #[serde(default)]
     pub y_m: f32,
     /// Local-space `[x, z]` polygon vertices, in winding order, relative to the asset origin.

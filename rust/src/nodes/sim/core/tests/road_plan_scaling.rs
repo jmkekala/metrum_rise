@@ -10,12 +10,48 @@ use std::time::Instant;
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false);
+}
+
+#[test]
+#[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
+fn populated_paved_road_plan_scaling() {
+    measure_populated_road_plan_scaling(true, false);
+}
+
+#[test]
+#[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
+fn populated_zoning_feasibility_scaling() {
+    measure_populated_road_plan_scaling(true, true);
+}
+
+fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool) {
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
         vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
     );
     let asset = register_test_asset(&mut core.allocator, "scaling_site", ZoneType::Residential);
+    if paved {
+        let mut manifest = core
+            .allocator
+            .registry
+            .get(&asset)
+            .unwrap()
+            .manifest
+            .clone();
+        // Only the fixed four local sites are paved; remote records retain the matched baseline.
+        manifest.asset_id = "scaling_paved_site".into();
+        manifest.site_surfaces = toml::from_str::<AssetManifest>(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../benchmarks/fixtures/kuopio-terrain/building-site.toml"
+        )))
+        .unwrap()
+        .site_surfaces;
+        core.allocator
+            .registry
+            .register("test", manifest, String::new());
+    }
     add_test_complete_building(&mut core, asset, ZoneType::Residential);
     let template = core.allocator.buildings[0].clone();
     // Four unchanged occupied sites flank the measured T. These exercise real site
@@ -23,18 +59,26 @@ fn populated_road_plan_scaling() {
     core.allocator.buildings.clear();
     for x in [-72.0, -24.0, 24.0, 72.0] {
         let mut building = template.clone();
+        if paved {
+            building.asset_id = "test:scaling_paved_site".into();
+        }
         building.center_x = x;
         building.center_y = 32.0;
         building.frontage_t = (x + 96.0) / 192.0;
         building.facing_dir = Vector2::new(0.0, -1.0);
         building.width_cells = 1;
         building.depth_cells = 1;
+        if paved {
+            building.width_cells = 2;
+            building.depth_cells = 2;
+        }
         building.occupancy = 6;
         insert_populated_site(&mut core, building);
     }
     let edge_template = core.region_graph.edge(0).clone();
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
+    let mut initial_site_solves = None;
     for remote_buildings in [0usize, 1_000, 10_000, 100_000] {
         // Detached fixture insertion uses indexed graph/parcel mutators. Each remote
         // street fronts a row of 256 lots, outside the measured edit's neighborhood.
@@ -84,6 +128,51 @@ fn populated_road_plan_scaling() {
                 .road_surface
                 .published_generation_matches_source()
         );
+        if zoning_only {
+            let geometry = core
+                .zoning
+                .preview_parcel_at(0.0, 16.0, 20.0, 20.0, &core.region_graph)
+                .unwrap();
+            let check = || {
+                core.allocator.zoning_site_feasibility(
+                    &geometry,
+                    1,
+                    &core.zoning,
+                    &core.region_graph,
+                    core.demand.runtime_catalog(),
+                    crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                        road_surface: &core.transit_network.road_surface,
+                        terrain: &core.heightmap,
+                    },
+                )
+            };
+            let first = Instant::now();
+            assert!(check().is_ok());
+            let first_ms = first.elapsed().as_secs_f64() * 1000.0;
+            let solves = core.allocator.site_feasibility_solve_count();
+            assert_eq!(
+                solves,
+                *initial_site_solves.get_or_insert(solves),
+                "remote edits repeated local geometry solving"
+            );
+            let mut samples = Vec::new();
+            for _ in 0..300 {
+                let start = Instant::now();
+                std::hint::black_box(check()).unwrap();
+                samples.push(start.elapsed().as_secs_f64() * 1e6);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "ZONING_FEASIBILITY_SCALING {}",
+                serde_json::json!({
+                    "remote_buildings": remote_buildings, "remote_roads": background_roads,
+                    "agents": core.agents.len(), "parcels": core.zoning.parcels().len(),
+                    "first_or_revalidate_ms": first_ms, "warm_p50_us": samples[150], "warm_p95_us": samples[284],
+                    "local_solves": solves, "samples": samples.len(), "rayon_threads": rayon::current_num_threads(),
+                })
+            );
+            continue;
+        }
         let snapshot_start = Instant::now();
         let (context, _) = road_tool_snapshots_from_core(&core).unwrap();
         let snapshot_ms = snapshot_start.elapsed().as_secs_f64() * 1000.0;

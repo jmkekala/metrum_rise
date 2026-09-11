@@ -6,21 +6,22 @@ use super::geometry::{
     SITE_POINT_EPS_SQUARED_M2, convex_hull_from_sorted_points, signed_polygon_area, site_radius_m,
 };
 use super::model::{BuildingSiteClient, BuildingSiteSurfaceClient};
-use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurface};
+use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart};
 use crate::simulation::buildings::allocator::entrance::{
     building_local_xz_basis, building_local_xz_pos,
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 
 const DEFAULT_ANCHOR_FORWARD: [f32; 3] = [0.0, 0.0, 1.0];
-const BUILDING_SITE_MESH_PART_SUPPORT_MARGIN_M: f32 = 5.25;
-const BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M: f32 = 0.35;
 const BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M: f32 = 0.25;
 pub(super) const BUILDING_SITE_ROAD_ACCESS_CLEARANCE_M: f32 = 1.0;
 const BUILDING_SITE_ENTRANCE_SUPPORT_WIDTH_M: f32 = 2.0;
 const BUILDING_SITE_ENTRANCE_SUPPORT_LENGTH_M: f32 = 2.0;
-const BUILDING_SITE_DEFAULT_SUPPORT_INSET_M: f32 = 2.0;
+// Keep room between a level yard and road/neighbor/terrain boundaries. Mesh support
+// remains authoritative; this reservation applies to authored yard support only.
+const BUILDING_SITE_LOT_TIE_IN_WIDTH_M: f32 = 2.0;
 
 #[derive(Clone, Copy)]
 struct LocalLotSupport {
@@ -55,10 +56,27 @@ impl LocalLotSupport {
 }
 
 impl BuildingAllocator {
+    /// Replaces derived sites after an authoritative asset-pack refresh, invalidating old and new ground.
+    pub(crate) fn refresh_building_sites_after_asset_reload(&mut self, zone_cell_m: f32) {
+        if self.buildings.is_empty() {
+            return;
+        }
+        // Explicit whole-catalog reload: all buildings may have changed asset geometry.
+        for idx in 0..self.building_sites.len() {
+            self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(idx));
+        }
+        self.rebuild_building_site_clients(zone_cell_m);
+        for idx in 0..self.building_sites.len() {
+            self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(idx));
+        }
+        self.bump_building_ref_revision();
+        self.entrances_dirty = true;
+    }
+
     pub(crate) fn rebuild_building_site_clients(&mut self, zone_cell_m: f32) {
         self.building_sites = self
             .buildings
-            .iter()
+            .par_iter()
             .map(|building| self.derive_building_site_client(building, zone_cell_m))
             .collect();
         self.recompute_max_site_radius_m();
@@ -134,7 +152,6 @@ impl BuildingAllocator {
                     .map(|surface| BuildingSiteSurfaceClient {
                         material: surface.material,
                         name: surface.name.clone(),
-                        height_m: building.support_height_m + surface.y_m,
                         vertices_world: surface
                             .vertices
                             .iter()
@@ -152,6 +169,7 @@ impl BuildingAllocator {
             .unwrap_or_default();
 
         BuildingSiteClient {
+            foundation_mesh: Default::default(),
             footprint_world,
             lot_footprint_world,
             support_height_m: building.support_height_m,
@@ -211,8 +229,21 @@ pub(super) fn required_flat_support_footprint_local(
     for anchor in &manifest.anchors {
         append_anchor_support_points(anchor, lot, &mut points);
     }
+    // Authored paving expands the existing support hull into a level, usable yard.
+    // Its lot-edge strips remain terrain-owned transitions, not a flat road seam.
+    let inset = lot_support_inset_m(lot_half_width, lot_half_depth);
+    let yard_lot = LocalLotSupport {
+        half_width: lot_half_width - inset,
+        half_depth: lot_half_depth - inset,
+        ..lot
+    };
     for surface in &manifest.site_surfaces {
-        append_site_surface_support_points(surface, lot, &mut points);
+        points.extend(
+            surface
+                .vertices
+                .iter()
+                .map(|p| yard_lot.clamp_point(Vector2::new(p[0], p[1]))),
+        );
     }
     if points.is_empty() {
         return default_support_footprint_local(lot_half_width, lot_half_depth);
@@ -249,14 +280,21 @@ fn append_mesh_part_support_points(
     lot: LocalLotSupport,
     points: &mut Vec<Vector2>,
 ) {
-    let half_extent = (part.scale * 0.75).max(BUILDING_SITE_MESH_PART_SUPPORT_MARGIN_M);
-    append_axis_aligned_support_rect(
-        Vector2::new(part.position[0], part.position[2]),
-        half_extent,
-        half_extent,
-        lot,
-        points,
-    );
+    // Runtime pack loading requires actual mesh bounds. Meshless simulation fixtures
+    // can still describe their support through yard regions and entrance landings.
+    let Some([min, max]) = part.imported_bounds else {
+        return;
+    };
+    let transform = part.local_transform();
+    for (x, z) in [
+        (min[0], min[2]),
+        (min[0], max[2]),
+        (max[0], max[2]),
+        (max[0], min[2]),
+    ] {
+        let point = transform.transform_point3(glam::Vec3::new(x, 0.0, z));
+        points.push(lot.clamp_point(Vector2::new(point.x, point.z)));
+    }
 }
 
 fn append_anchor_support_points(anchor: &Anchor, lot: LocalLotSupport, points: &mut Vec<Vector2>) {
@@ -272,77 +310,11 @@ fn append_anchor_support_points(anchor: &Anchor, lot: LocalLotSupport, points: &
             lot,
             points,
         ),
-        AnchorType::Driveway => {
-            let width = anchor.width_m.unwrap_or(0.0);
-            append_oriented_support_rect(
-                anchor.position,
-                anchor.forward,
-                width,
-                (width * 1.4).max(1.5),
-                BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M,
-                lot,
-                points,
-            );
-        }
-        AnchorType::Parking | AnchorType::LoadingBay => append_oriented_support_rect(
-            anchor.position,
-            anchor.forward,
-            anchor.width_m.unwrap_or(0.0),
-            anchor.length_m.unwrap_or(0.0),
-            BUILDING_SITE_ACCESS_SUPPORT_MARGIN_M,
-            lot,
-            points,
-        ),
-        AnchorType::Wheel | AnchorType::Light => {}
-    }
-}
-
-fn append_site_surface_support_points(
-    surface: &SiteSurface,
-    lot: LocalLotSupport,
-    points: &mut Vec<Vector2>,
-) {
-    if surface.vertices.is_empty() {
-        return;
-    }
-    let mut min_x = f32::INFINITY;
-    let mut min_z = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut max_z = f32::NEG_INFINITY;
-    for vertex in &surface.vertices {
-        min_x = min_x.min(vertex[0]);
-        min_z = min_z.min(vertex[1]);
-        max_x = max_x.max(vertex[0]);
-        max_z = max_z.max(vertex[1]);
-    }
-    min_x -= BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
-    min_z -= BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
-    max_x += BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
-    max_z += BUILDING_SITE_SURFACE_SUPPORT_MARGIN_M;
-    for point in [
-        Vector2::new(min_x, min_z),
-        Vector2::new(min_x, max_z),
-        Vector2::new(max_x, max_z),
-        Vector2::new(max_x, min_z),
-    ] {
-        points.push(lot.clamp_point(point));
-    }
-}
-
-fn append_axis_aligned_support_rect(
-    center: Vector2,
-    half_width: f32,
-    half_depth: f32,
-    lot: LocalLotSupport,
-    points: &mut Vec<Vector2>,
-) {
-    for point in [
-        Vector2::new(center.x - half_width, center.y - half_depth),
-        Vector2::new(center.x - half_width, center.y + half_depth),
-        Vector2::new(center.x + half_width, center.y + half_depth),
-        Vector2::new(center.x + half_width, center.y - half_depth),
-    ] {
-        points.push(lot.clamp_point(point));
+        AnchorType::Driveway
+        | AnchorType::Parking
+        | AnchorType::LoadingBay
+        | AnchorType::Wheel
+        | AnchorType::Light => {}
     }
 }
 
@@ -388,10 +360,14 @@ pub(super) fn frontage_projection_limit(
 }
 
 fn default_support_footprint_local(lot_half_width: f32, lot_half_depth: f32) -> Vec<Vector2> {
-    let inset = BUILDING_SITE_DEFAULT_SUPPORT_INSET_M
-        .min(lot_half_width.max(0.0) * 0.5)
-        .min(lot_half_depth.max(0.0) * 0.5);
+    let inset = lot_support_inset_m(lot_half_width, lot_half_depth);
     lot_footprint_local(lot_half_width - inset, lot_half_depth - inset)
+}
+
+fn lot_support_inset_m(lot_half_width: f32, lot_half_depth: f32) -> f32 {
+    BUILDING_SITE_LOT_TIE_IN_WIDTH_M
+        .min(lot_half_width.max(0.0) * 0.5)
+        .min(lot_half_depth.max(0.0) * 0.5)
 }
 
 fn lot_footprint_local(lot_half_width: f32, lot_half_depth: f32) -> Vec<Vector2> {

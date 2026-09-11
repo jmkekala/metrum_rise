@@ -94,6 +94,7 @@ fn test_cached_refined_terrain_patch(
     surface_generation: u64,
 ) -> CachedRefinedTerrainPatch {
     CachedRefinedTerrainPatch {
+        site_surfaces: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -225,6 +226,7 @@ fn test_core_with_flat_terrain(raw_height: f32) -> SimCore {
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        vehicle_ground_support: Default::default(),
     };
     core.transit_network
         .road_surface

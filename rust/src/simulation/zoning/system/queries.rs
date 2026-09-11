@@ -8,6 +8,12 @@ use crate::simulation::zoning::{ParcelId, ZoningParcel};
 use godot::prelude::Vector2;
 
 impl ZoningSystem {
+    /// Returns the authored parcel under a point through the existing parcel spatial index.
+    pub(crate) fn parcel_at(&self, point: Vector2) -> Option<&ZoningParcel> {
+        self.parcels
+            .find_at_point(point)
+            .and_then(|id| self.parcels.get(id))
+    }
     /// Returns every authored zoning parcel.
     pub fn parcels(&self) -> &[ZoningParcel] {
         self.parcels.parcels()

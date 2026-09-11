@@ -6,7 +6,7 @@
 ##   get_zoning_parcel_drag_preview_packed(), apply_zoning_parcel_at(),
 ##   apply_zoning_parcel_drag(), get_zoning_parcel_profile_runtime_id_at(),
 ##   get_zoning_parcel_rezone_drag_preview_packed(),
-##   apply_zoning_parcel_rezone_drag(), intersect_world_surface()
+##   apply_zoning_parcel_rezone_drag(), get_zoning_site_dependencies(), intersect_world_surface()
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
@@ -21,6 +21,8 @@ var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
 var preview_mesh: MeshInstance3D
+var _feasibility_label: Label
+var _site_dependencies := PackedInt64Array()
 var dragging: bool = false
 var drag_start_world = null
 var drag_mode: int = 0
@@ -50,6 +52,12 @@ const DRAG_MODE_REZONE: int = 2
 
 func _ready():
 	_reload_profiles()
+	_feasibility_label = Label.new()
+	_feasibility_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_feasibility_label.add_theme_color_override("font_shadow_color", Color.BLACK)
+	_feasibility_label.add_theme_constant_override("shadow_offset_x", 1)
+	_feasibility_label.add_theme_constant_override("shadow_offset_y", 1)
+	add_child(_feasibility_label)
 
 	preview_mesh = MeshInstance3D.new()
 	preview_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -201,10 +209,18 @@ func _commit_rezone_drag(start: Vector2, end: Vector2) -> void:
 			zoning_overlay.mark_zone_dirty()
 
 func _update_preview() -> void:
+	# Rust owns feasibility; invalidate retained geometry when its inputs change even if the cursor does not.
+	var dependencies: PackedInt64Array = simulation_node.get_zoning_site_dependencies()
+	if dependencies != _site_dependencies:
+		_site_dependencies = dependencies
+		_clear_preview_cache()
+	_feasibility_label.position = get_viewport().get_mouse_position() + Vector2(18, 18)
 	var wp = _mouse_world_pos()
 	if wp == null:
 		preview_mesh.visible = false
+		_feasibility_label.visible = false
 		return
+	_feasibility_label.visible = not _feasibility_label.text.is_empty()
 	if dragging and drag_start_world != null and drag_start_world.distance_to(wp) >= DRAG_THRESHOLD_M:
 		if drag_mode == DRAG_MODE_REZONE:
 			if _preview_cache_matches(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp):
@@ -219,6 +235,7 @@ func _update_preview() -> void:
 				current_profile_runtime_id
 			)
 			var rezone_mesh := _build_packed_parcels_mesh(rezone_payload, true)
+			_show_feasibility(rezone_payload)
 			_store_preview_cache(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
 			_apply_drag_preview_mesh(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
 			return
@@ -238,6 +255,7 @@ func _update_preview() -> void:
 			parcel_gap_m
 		)
 		var drag_mesh := _build_packed_parcels_mesh(drag_payload, true)
+		_show_feasibility(drag_payload)
 		_store_preview_cache(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
 		_apply_drag_preview_mesh(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
 		return
@@ -254,6 +272,7 @@ func _update_preview() -> void:
 		parcel_depth_cells
 	)
 	var mesh: Mesh = null if payload.is_empty() else _build_parcels_mesh([payload], true)
+	_show_feasibility(payload)
 	_store_preview_cache(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp, mesh)
 	_apply_single_preview_mesh(mesh)
 
@@ -284,6 +303,8 @@ func _store_preview_cache(kind: int, start: Vector2, end: Vector2, mesh: Mesh) -
 	_preview_cache_mesh = mesh
 
 func _clear_preview_cache() -> void:
+	if _feasibility_label != null:
+		_feasibility_label.visible = false
 	_preview_cache_valid = false
 	_preview_cache_mesh = null
 	_last_valid_single_preview_mesh = null
@@ -295,6 +316,10 @@ func _clear_preview_cache() -> void:
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
 	preview_mesh.visible = mesh != null
+
+func _show_feasibility(payload: Dictionary) -> void:
+	_feasibility_label.text = str(payload.get("reason", ""))
+	_feasibility_label.visible = not _feasibility_label.text.is_empty()
 
 func _apply_single_preview_mesh(mesh: Mesh) -> void:
 	if mesh != null:
@@ -373,11 +398,13 @@ func _build_packed_parcels_mesh(payload: Dictionary, include_fill: bool) -> Mesh
 		return null
 
 	var color: Color = payload.get("color", Color(0.7, 0.9, 0.7, 0.34))
+	var colors: PackedColorArray = payload.get("colors", PackedColorArray())
 	var im := ImmediateMesh.new()
 	if include_fill:
 		im.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
 		im.surface_set_color(color)
 		for parcel_index in range(parcel_count):
+			im.surface_set_color(colors[parcel_index] if parcel_index < colors.size() else color)
 			var base := parcel_index * 4
 			im.surface_add_vertex(corners[base])
 			im.surface_add_vertex(corners[base + 1])
@@ -390,6 +417,8 @@ func _build_packed_parcels_mesh(payload: Dictionary, include_fill: bool) -> Mesh
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
 	im.surface_set_color(Color(color.r, color.g, color.b, 0.88))
 	for parcel_index in range(parcel_count):
+		var parcel_color: Color = colors[parcel_index] if parcel_index < colors.size() else color
+		im.surface_set_color(Color(parcel_color.r, parcel_color.g, parcel_color.b, 0.88))
 		var base := parcel_index * 4
 		for i in range(4):
 			im.surface_add_vertex(corners[base + i])

@@ -1084,7 +1084,9 @@ Interpretation:
 Hourly economy diagnostics emit one `building action diagnostics` line per use family. These lines
 are the first place to check when a visible RCI pressure does not become a building:
 
-- `spawn_candidates` is the frozen legal empty-site count for that use before final gates
+- `spawn_candidates` is the frozen legal, site-feasible empty-site count for that use before
+  economic gates. Each compatible initial asset passes the shared site-support solver before
+  deterministic selection; one rejected variant cannot starve a lot that supports another.
 - `spawn_profile_missing` counts candidates whose zone density could not be matched to a shipped
   growth profile, contributing zero normalized pressure
 - `spawn_norm`, `spawn_need`, and `spawn_credit` show the hourly spawn-need credit calculation
@@ -1102,6 +1104,11 @@ are the first place to check when a visible RCI pressure does not become a build
 Allocator execution emits a separate `building action execution` line when selected spawn actions
 are submitted to final placement. This line is the first place to check when `spawn_selected` is
 positive but no building appears:
+
+Unchanged successful and rejected site solutions are cached; local road, terrain, neighboring-site
+and asset changes trigger re-evaluation. This avoids repeating expensive grading checks every hour.
+The existing parcel/asset discovery still runs in Rayon. Execution revalidates queued placements
+against current geometry before insertion, so a later invalidating edit can still reject an action.
 
 - `spawn_attempted` is the selected spawn count submitted to allocator placement
 - `spawn_placed` is the count that committed a building

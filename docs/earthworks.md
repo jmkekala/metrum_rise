@@ -74,8 +74,8 @@ Each engineered-ground client owns one authoritative support surface for its foo
 Current and planned clients include:
 
 - roads, using the compiled roadbed
-- building sites, using the placed building's fixed flat lot plane; authored
-  `[[site_surfaces]]` polygons are material/layout regions on top of that plane
+- buildings, using a fixed flat structural foundation, entrance landings and usable yard interior;
+  authored `[[site_surfaces]]` partition that support and the graded lot-edge tie-ins by material
 - future parking platforms, rail beds, retaining structures, or other built ground
 
 The support surface must not be inferred from the terrain heightfield after the fact.
@@ -342,10 +342,10 @@ only payload generation metadata changes. A different query margin must select t
 road/site contributors. Mismatches roll back, rather than replacing ready geometry through fresh
 tile or patch assembly. Plan-less subsystem callers retain the cold compiler.
 Ordinary grounded roads are CDT-only, not height-stamped. The worker captures local building-site
-footprints/support heights using the prepared allocator index, then compiles grading off-lock
+footprints/support heights and paving regions using the prepared allocator index, then compiles grading off-lock
 against planned roads plus unchanged resident owners. Neither capture nor status checking may
 rebuild the city index; unprepared inputs remain provisional/pending. Exact local site comparisons
-detect added/removed footprints and height/ID changes. Planned building grading, coverage and final
+detect added/removed footprints and height/ID/material changes. Planned building grading, coverage and final
 quality validation govern readiness, with exact post-topology checks at adoption. Eligible road
 previews now stage the complete local patch batch with canonical unlifted road meshes using the
 production exporters/builders. Planned ownership can restore regular terrain where a cutout
@@ -405,17 +405,19 @@ more capable than the terrain heightfield alone.
 
 ### 1. Roads Are The Live Client
 
-The current runtime ships roads and flat building sites as live engineered-ground clients.
+The current runtime ships roads and level building/yard pads with graded edge tie-ins as
+engineered-ground clients.
 
 That means:
 
 - `RoadSurfaceSystem` owns the roadbed support surface
 - `BuildingAllocator` owns required flat building-site support clients registered at construction
   start
-- authored `[[site_surfaces]]` polygons render/query as material regions on top of the flat site
-  plane, but do not define separate terrain ownership footprints
+- authored `[[site_surfaces]]` polygons expand the level support hull inside the lot's tie-in strip
+  and partition the final support/terrain triangles by material; only outside the support pad do
+  they follow the compiled road/terrain tie-in, not an independent flat sheet
 - live gameplay must not render authored yard surfaces as loose decal / overlay meshes over terrain;
-  they must be emitted from the runtime site client after the terrain footprint is clipped
+  their geometry must be the shared support/terrain geometry, without offset or overlapping covers
 - grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
   terrain; road-touched terrain patches are stitched to the road-owned outer edge
 - bridges do not stamp terrain earthworks; raised spans and elevated terminals render structural
@@ -783,15 +785,38 @@ The v1 runtime building-site authoring envelope is the occupied lot rectangle:
 
 The required flat support footprint is the area that terrain may never enter after placement. The
 occupied lot rectangle remains the reservation / overlap envelope, while runtime derives the
-required support footprint from mesh parts, entrance landings, driveway/loading/parking anchors,
-and authored hard surfaces. Road-facing access-anchor support stays behind the exact road /
+required support footprint from mesh parts, entrance landings, and authored yard material regions.
+Yard support vertices are clamped to the lot rectangle inset by **2 m** on all sides before joining
+the existing convex support hull. For very small lots, the inset is capped at half each half-extent.
+This makes the usable yard level while reserving road, neighbor and rear-ground transition strips.
+Structural mesh support uses the imported LOD0 bounds, transformed with the same position, yaw,
+scale and pivot convention as rendering. It is not expanded by a fixed-radius estimate or reduced
+by the yard inset. Godot imports these bounds once per distinct mesh path during pack loading;
+the asset registry retains them for pure Rust site derivation, with no per-building file I/O.
+Buildings with an unimportable mesh are skipped with a pack warning, not assigned invented bounds.
+An authoritative pack refresh rebuilds site clients and entrance caches, advances site revisions,
+and invalidates the old/new terrain envelopes. Load regenerates sites from the current asset bounds.
+Part transforms now share the editor's positive-Y yaw (+X toward -Z), including scale and pivot;
+rendering also reuses the allocator's frontage basis. CDT revision **13** invalidates derived
+terrain products made with the former opposite-sign part yaw. Authoring files are unchanged.
+Driveway, parking and loading anchors
+alone do not expand the pad. Road-facing entrance support stays behind the exact road /
 sidewalk boundary by a deterministic clearance so the frontage strip is a tie-in/apron region
 instead of a second hard terrain-CDT loop sharing the road seam. Terrain, road, and apron tie-ins
 start outside the support footprint; they must not cross back through it, and apron guides remain
 sample-only so neighboring site or road windows cannot gain extra hard CDT rails. Authored
 `[[site_surfaces]]` polygons do not define separate terrain-ownership cuts. They define
-visible/material regions on the selected site plane, such as asphalt, concrete, paved yards, or
-walkways.
+material regions on the final support triangles, such as asphalt, concrete, paved yards, or
+walkways. Outside the level support pad, those triangles can rise or fall to match the whole frontage.
+Partitioning preserves triangle planes and area; road boundary heights remain authoritative.
+Authored `y_m` is a flat-editor preview offset, not a gameplay displacement or raised-platform contract.
+
+The site CDT cutout uses the exact flat-support boundary and height, also used by the foundation
+mesh and ground queries. The former 2 cm inward cutout offset is removed: it let the terrain
+transition begin inside the flat pad and disagree with its height query at the edge. Rust/Godot
+CDT contract revision **13** includes that boundary fix and the shared part-transform correction.
+Cars and walkers use this same surface
+ownership during entry and exit; see [`entrance_and_exit.md`](entrance_and_exit.md#render-height-ownership).
 
 Zoning is not an engineered-ground client:
 
@@ -814,9 +839,9 @@ This editor view is WYSIWYG for local layout and materials. It is not responsibl
 world height of the site; runtime placement still chooses that height from road / driveway /
 neighbor context.
 
-### 3. Placement Chooses One Flat Site Height
+### 3. Placement Chooses One Flat Foundation Height
 
-Every accepted building site has exactly one support height:
+Every accepted building has one support height shared by its structure and usable yard interior:
 
 ```text
 building.support_height_m = site_plane_y
@@ -830,17 +855,21 @@ For normal roadside buildings, height selection is deterministic:
 4. Sort valid candidates by distance to the frontage edge, then by authored anchor order.
 5. Select the first valid driveway as the primary driveway.
 6. Sample the existing visible road/world surface at that connection.
-7. Use that height as the flat site plane.
-8. Validate remaining driveway anchors against the chosen site height.
-9. Validate touching neighboring building sites against the chosen site height.
+7. Use that height as the preferred plane, not an immutable height constraint.
+8. Intersect driveway grade intervals with the feasible height intervals of the existing
+   perimeter/corner grading rays. Choose the feasible height closest to the preference;
+   equal-distance ties choose the lower height. The building and usable yard remain level.
+9. Validate remaining driveway connections, touching fixed neighbors and all terrain tie-ins
+   before accepting the solved plane. Never move the road or neighboring committed pads.
 
 If an asset has no driveway anchors, the fallback connection is the parcel frontage midpoint on the
-claimed road side. If an explicit non-road service asset has no road connection by design, it may
-fall back to source terrain at the placement center. If no valid connection exists for a road-bound
-building, placement is rejected with a diagnostic.
+claimed road side. All currently implemented placement modes are road-bound: an explicit service
+or industry asset must not silently substitute source terrain when the road surface is missing.
+Placement is rejected with a diagnostic. A future genuinely non-road mode requires an explicit
+eligibility contract rather than checking only `placement_mode = "explicit"`.
 
 The `main` entrance does not choose the site height. It sits on the flat site plane chosen from the
-road / driveway / explicit-site rule above.
+road / driveway rule above.
 
 After the support height is selected, placement validates the required flat support footprint:
 
@@ -849,6 +878,9 @@ After the support height is selected, placement validates the required flat supp
   support footprint within the building-site apron envelope
 - the height delta from the support plane to that tie-in target must fit the shipped terrain
   tie-in slope budget
+- driveway-to-pad height deltas must fit the same 50% maximum grade over their available XZ run
+- grading probes include the full existing envelope endpoint (20 m on 10 m terrain), not only
+  the interior power-of-two rings; validation and emitted grading guides use the same distances
 - if no legal tie-in exists, placement is rejected before the building is committed
 
 ### 4. Multiple Driveways And Neighbor Sites Are Validation Inputs
@@ -858,9 +890,10 @@ Multiple driveways are allowed, but they do not create multiple site heights.
 Required rule:
 
 - primary driveway: closest valid driveway to the frontage edge; tie-break by authored anchor order
-- secondary driveways: must be compatible with the chosen flat site height
+- secondary driveways: must be compatible with the primary road connection and the solved pad
 - v1 rejection threshold: any secondary driveway whose sampled connection height differs by more
-  than `0.35 m` rejects placement
+  than `0.35 m` from the primary connection rejects placement; all connections must also satisfy
+  the driveway-to-pad grade intervals
 
 Neighboring placed sites are fixed clients:
 
@@ -870,8 +903,8 @@ Neighboring placed sites are fixed clients:
 - if the height difference is `0.10 m` or less, the future implementation may merge/clean the shared
   seam deterministically without changing either committed height
 
-When the selected road connection height conflicts with a neighboring fixed site, the placement is
-rejected. The runtime must not average road and neighbor heights.
+When the solved pad conflicts with a neighboring fixed site, placement is rejected. The runtime
+must not average or move existing road and neighbor heights.
 
 ### 5. Terrain Integration Uses The Same Topology Ownership As Roads
 
@@ -881,13 +914,14 @@ Required runtime behavior:
 
 - source terrain remains unchanged
 - the support footprint is clipped out of visual terrain topology
-- site top surfaces render on the flat support plane
+- building and usable-yard top surfaces render on the flat support plane; edge/apron paving
+  partitions the final terrain mesh
 - terrain outside the support footprint stitches to the site boundary through the same Rust-owned
   terrain-patch / CDT ownership model used by grounded roads
 - boundary vertices at the site seam reuse the site plane height, not resampled source terrain
   heights
-- visible-world height and ray queries see road surfaces first, building-site top surfaces second,
-  and source/visual terrain after those owned surfaces
+- visible-world height and ray queries see road surfaces, foundation tops, and current compiled
+  terrain triangles; the visual heightfield is the fallback outside compiled engineered ground
 - no shader mask, z-bias, loose overlay mesh, terrain alpha, or hidden second support plane may hide
   missing topology
 
@@ -901,7 +935,24 @@ Construction rule:
 
 - the flat site client is registered at construction start, before the rising building animation
   finishes
-- later construction visuals are drawn on the already committed site plane
+- construction pads and scaffolding reference the committed site plane; the unfinished private
+  building model may rise from below it without changing the authoritative support or terrain
+
+Shared placement lifecycle:
+
+- Zoned, service and explicit industry assets use the same support preparation, site installation,
+  revision/invalidation finalizer and pending-site terrain update mechanism. Zoning and economic
+  eligibility remain separate from geometry.
+- Site creation, redevelopment and removal record their bounds inside allocator mutators, not in
+  caller-specific demand reports. Simulation placement/cadence entry points consume the same
+  outbox to invalidate local terrain payload generations.
+- Road attachment projection is nearest in XZ but stores the 3D physical arc-length fraction used
+  by road sampling and save/load. Mixing 2D projection distance with 3D sampling moves sites along
+  sloped roads and is forbidden.
+- This is one geometry/update contract, not a new atomic building/terrain renderer transaction.
+  The reported floating/buried-house screenshot scene still needs exact-save reproduction;
+  construction animation and delayed/failed terrain publication must be distinguished from a
+  wrong final support plane.
 
 ### 6. Determinism And Performance
 
@@ -915,6 +966,20 @@ The building-site implementation must reuse existing ownership and indexing syst
 - building chunk indices for nearby fixed-site adjacency checks
 - asset `[[anchors]]` and `[[site_surfaces]]` schemas for local layout metadata
 - building-site render buffers are rebuilt from allocator revisions, not every frame
+- foundation material partitions are cached per derived site; terrain material partitions are built
+  off-thread per affected patch using the existing polygon CDT and an R-tree over local material
+  triangles. No city-wide building query or new global spatial index is introduced.
+- exact paving inputs participate in terrain-buffer reuse and RoadEditPlan site dependencies;
+  a material-only edit can reuse geometric CDT windows but must rebuild the final material partition
+- point queries allocate nothing and use the existing patch/64 m CDT tile grid, then the road
+  compiler's existing triangle lookup grid (4 m initial cells, at most 256 cells per tile).
+  Immutable tile-local indices are built off-thread and reused with unchanged CDT windows.
+  Ray queries visit intersected patch rows/columns and tiles, never compile terrain in a query.
+- Height/picking queries require matching generations and the same complete terrain acceptance
+  checks as rendering. Finite vectors alone cannot authorize conflicted or pathological output.
+- In-place level changes validate the new asset support at the existing fixed site height, through
+  the same local solver; unsupported changes reject before modifying the building or its terrain.
+  Paving regions carry material/layout only, not an independent or duplicated elevation field.
 - asynchronous site-terrain rebuilds copy only chunk-indexed sites overlapping the affected patch;
   site grading samples the bounded road-surface ownership index and must not scan all buildings or
   all compiled roads
@@ -930,6 +995,638 @@ Deterministic ordering rules:
 - neighboring sites sort by stable building index / parcel id before validation or merge handling
 - dirty terrain/site patch rebuilds run in canonical chunk order
 - no unordered hash iteration may decide accepted height, rejected height, or emitted seam topology
+
+### 7. Initial Graded-Yard Regression Coverage (2026-09-10)
+
+Historical verification for the initial gap fix, before the level-yard follow-up below. These
+measurements validate their recorded binary, not the later footprint change.
+
+The initial frontage-gap fix kept only mesh support and entrance landings level. Yard materials partition
+the already solved foundation/terrain triangles, so they cannot leave a separate elevated or sunken
+yard sheet beside the sidewalk. The renderer, height queries, pedestrian ground sampling and picking
+consume that geometry. RoadEditPlan retains the same paving inputs and final material buffers through
+preview and adoption. A second reproduced defect, an inside-boundary CDT guide within a micrometre
+of the tile side at a conflicting height, now joins the exact boundary within the existing 1 mm
+canonicalization tolerance; outside halo samples remain outside.
+
+The later shared-side correction (CDT revision 12) applies this welding symmetrically before
+containment. Samples within the side tolerance join the exact boundary in both tiles; more distant
+halo samples remain excluded. Otherwise the neighboring tile can discard the same grading sample
+and bridge its elevation with an unsplit terrain edge, reopening a narrow gap inside a paved apron.
+
+The reference `benchmarks/fixtures/kuopio-terrain/kuopio-terrain-map.sqlite` is unchanged:
+SHA-256 `e1d7e0baf4eefd23293f0a770345f50e455815124c0a0920aefe10cc7a1033c0`.
+It still contains 70 roads and no saved buildings or parcels. The companion `building-site.toml`
+provides a portable 20 × 20 m residential lot and paved frontage; tests register it in memory and
+use production zoning/placement without installed user assets. Its SHA-256 is
+`70d99572341f7be954cb565b40467a2c32ee0ef6b2981c3cd7f147081443c300`.
+
+`nodes::sim::core::tests::building_site_terrain` covers:
+
+- Six adjacent yards on each of +15% and −15% roads, on both sides; foundation triangles stay flat.
+- Eight recorded placements at the midpoints of saved edges 3, 9, 15 and 18, on both sides.
+  Four are accepted; `(9, +1)`, `(15, −1)`, `(15, +1)` and `(18, +1)` deliberately retain
+  `SiteSupportTieInInvalid`. The test asserts these outcomes instead of moving rejected lots.
+- 160 interior samples per accepted yard compare rendered paving, world height and picking within
+  3 mm, plus 19 frontage samples within 5 cm of the road at a 25 mm inward offset.
+- A later T-road edit beside the synthetic yards retains exact ready-preview/adopted buffer identity
+  and repeats yard coverage checks.
+- Asphalt-to-concrete changes reuse unchanged CDT windows but rebuild final material buffers.
+
+These are reconstructed regressions, not a reproduction of the screenshot's exact save and assets.
+The tests do not promise arbitrary terrain/lot compatibility: secondary-driveway and adjacent-pad
+height conflicts remain placement rejections. No change to those acceptance thresholds was needed.
+
+Verification commands, run from `rust/` unless a repository-root path is shown:
+
+```bash
+cargo test --release --lib
+cargo build --release
+cargo doc --no-deps
+RAYON_NUM_THREADS=24 cargo test --release --lib populated_road_plan_scaling -- --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 cargo test --release --lib populated_paved_road_plan_scaling -- --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 cargo test --release --lib graded_yard_height_query_benchmark -- --ignored --nocapture --test-threads=1
+# Repository root, after deploying the release library to godot/bin:
+godot --headless --path godot --log-file /tmp/metrum-yard-godot-engine-indexed.log --script res://tests/road_junction_preview_test.gd
+xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file /tmp/metrum-yard-rendered-engine-indexed.log --script res://tests/road_junction_preview_test.gd
+```
+
+Fresh Rust result: **1,640 passed, 5 intentionally ignored measurements, 0 failed**, including
+the unchanged Kuopio road replay's 39 strokes and 158 profile checks. The three commands above
+explicitly run the relevant ignored measurements. Release build and rustdoc emit no warnings.
+Both Godot runs pass (Godot 4.7.2; Xvfb uses llvmpipe OpenGL 4.6/Mesa 26.2.2). Godot's
+regression checks the actual packed vertex/color upload, rejects incomplete material tags, and
+under Xvfb renders a graded paving triangle through the real terrain shader; headless mode only
+checks the payload, not rasterized shader output.
+Deployed release-library SHA-256:
+`3432fe089e4ff108859a9942c61e6b404f77edc09861e0749aafa5befd644966`.
+
+Performance acceptance uses sequential, unprofiled release runs on the same host, Rust 1.98.1,
+24 Rayon workers, 100 measured plans per population level. Baseline is the unmodified source at
+`91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`; final is that source plus this graded-yard change.
+Final test-binary SHA-256:
+`a16c164aea5e752dc89be2ccc2a12a127de9c1ee95e3ac1ed041e20a6a1e8127`.
+No profiler, Godot process or concurrent build ran during the timed measurement loops.
+
+| Background buildings | Baseline bare compile p50 (ms) | Final bare compile p50 (ms) | Final paved compile p50 (ms) | Paved snapshot, once per edit (ms) |
+|---:|---:|---:|---:|---:|
+| 0 | 19.489 | 20.094 | 20.582 | 0.0065 |
+| 1,000 | 19.257 | 19.481 | 21.000 | 0.0514 |
+| 10,000 | 20.163 | 19.463 | 21.093 | 0.3674 |
+| 100,000 | 19.758 | 20.083 | 22.493 | 3.4700 |
+
+Only the bare columns are a matched before/after comparison. The new paved workload changes the
+four fixed local sites to 20 × 20 m paved lots; it is not an old-build speedup comparison. Both
+workloads keep the edited neighborhood fixed while background totals increase to 100,004 parcels,
+600,024 agents and 391 roads. Local products match exactly across population levels. Final worker
+p50 ranges are 20.40–21.37 ms bare and 21.77–22.75 ms paved; paved readiness p50 is 0.017–0.019 ms.
+Repeated local planning shows no city-proportional growth. The existing one-time snapshot cost is
+reported separately, not hidden inside or confused with repeated local compilation.
+
+The complete world-height query over 76 accepted Kuopio apron points measures **953.4 ns p50**
+(10 batches of 100,000 queries, placement/compilation untimed). An intermediate tile-wide triangle
+scan measured 10,713.9 ns; it was replaced with the existing owner-local triangle index before
+acceptance. The index adds no point-query allocation or query-time compilation.
+
+Temporary raw logs: `/tmp/metrum-site-baseline-scaling-20260910.log`,
+`/tmp/metrum-yard-full-rust-indexed.log`, `/tmp/metrum-yard-release-indexed.log`,
+`/tmp/metrum-yard-scaling-indexed.log`, `/tmp/metrum-yard-paved-scaling-indexed.log`,
+`/tmp/metrum-yard-query-indexed.log`, `/tmp/metrum-yard-godot-indexed.log`,
+`/tmp/metrum-yard-rendered-indexed.log`, and `/tmp/metrum-yard-rustdoc.log`.
+The measurements above remain here after those temporary
+artifacts expire. These are local correctness/locality and renderer-contract checks, not an
+uncapped gameplay FPS acceptance or a claim that every possible lot is buildable.
+
+### 8. Level-Yard Follow-up (2026-09-10)
+
+Visual feedback showed that terrain-conforming paving made a large industrial yard look like
+a paved hillside. The current contract therefore includes authored yard interiors in the existing
+level support hull. Only the 2 m lot-edge strips remain terrain-owned tie-ins; structural support
+and entrance landings are preserved. Small-lot inset caps and hull ordering are deterministic.
+This adds authored yard vertices to the existing O(V log V) per-site derivation, not a per-frame
+solver or a city-wide query. The exact support footprint feeds placement checks, rendering, height
+queries, terrain clipping and RoadEditPlan through the existing client. This follow-up introduced
+CDT contract revision 7; later buildability and exact pad-boundary updates use revisions 8 and 9.
+
+The regression `frontage_paving_has_a_flat_yard_and_separate_boundary_tie_ins` first failed on the
+previous implementation because `(0, -6)` was outside the level pad. It now requires yard interior
+coverage while excluding the frontage and side tie-in strips. Existing sloped-road and Kuopio
+coverage checks additionally assert eight level interior samples per yard. The new 40 × 40 m
+paved-lot regression checks an 11 × 11 level interior grid over both a 3 m hill and a 3 m depression,
+on both road sides, plus the existing coverage/picking/frontage checks. The same cases at 14 m
+relief must reject placement as `SiteSupportTieInInvalid`: the existing 50% tie-in slope budget
+over the fixture's 8 m grading margin is not relaxed to force an impossible lot through.
+
+The saved Kuopio map and portable asset fixture remain unchanged. The exact screenshot save was
+not available, so the larger-lot cases are reconstructed geometry regressions, not a replay of that
+particular factory. New placements still reject unsupported cut/fill; supporting arbitrary steep
+sites or adding retaining structures is not implied by making the usable yard level.
+
+Fresh follow-up checks: `cargo test --release --lib` passes **1,641 tests** (5 measurement tests
+ignored). The same production Kuopio road replay, site coverage, material-cache reuse and later
+RoadEditPlan adoption checks still pass. The following two release measurements were run
+sequentially, with no concurrent assistant build/render test, using 24 Rayon workers:
+
+```bash
+RAYON_NUM_THREADS=24 cargo test --release --lib populated_paved_road_plan_scaling -- --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 cargo test --release --lib graded_yard_height_query_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+The paved locality baseline was freshly rerun before this footprint change. Workload, host,
+Rust 1.98.1 release settings and 100 samples per level match. Its binary is the initial version
+recorded above (`a16c164a…`); the follow-up test binary SHA-256 is
+`38172ab375c1f7fe7bfa8a43371a5a6ccd8d3e3a278259cb9bfb15500d28db1e`.
+
+| Background buildings | Before compile p50 (ms) | Level-yard compile p50 (ms) | Level-yard worker p50 (ms) | Snapshot, once per edit (ms) |
+|---:|---:|---:|---:|---:|
+| 0 | 20.164 | 21.342 | 22.258 | 0.0107 |
+| 1,000 | 19.611 | 22.137 | 22.782 | 0.0619 |
+| 10,000 | 20.014 | 22.535 | 23.020 | 0.3508 |
+| 100,000 | 20.124 | 21.478 | 22.163 | 3.5252 |
+
+The observed compile median is 1.2–2.5 ms higher for the changed geometry; this is not a speedup
+claim. Local products remain identical across population levels, and repeated planning remains
+bounded to the fixed neighborhood rather than growing proportionally with background population.
+Snapshot/setup cost remains separate. World-height queries over the same 76 frontage-apron points
+measure **676.7 ns p50**, with compilation and placement excluded (10 × 100,000 queries).
+
+Temporary follow-up evidence: `/tmp/metrum-flat-yard-before.log` (expected old-code failure),
+`/tmp/metrum-flat-yard-full-rust.log`, `/tmp/metrum-flat-yard-baseline-scaling.log`,
+`/tmp/metrum-flat-yard-scaling.log`, and `/tmp/metrum-flat-yard-query.log`.
+
+`cargo build --release` and `cargo doc --no-deps` also pass without warnings. The headless and
+Xvfb Godot commands from the preceding section pass against the rebuilt revision-7 library;
+follow-up logs are `/tmp/metrum-flat-yard-build.log`, `/tmp/metrum-flat-yard-rustdoc.log`,
+`/tmp/metrum-flat-yard-godot.log` and `/tmp/metrum-flat-yard-rendered.log` (same Godot/Mesa versions).
+The release library was deployed to `godot/bin/libmetrum_rise.so`, SHA-256
+`d203e6ef059e905f4fc3e140593862ad1d4862e8e0b6e727388c97a2cedd2936`.
+Formatting and `git diff --check` pass. These checks retain the earlier caveat: the factory in
+the user's exact saved scene has not been visually replayed.
+
+#### Imported structural bounds verification (2026-09-11)
+
+The small-shop frontage gap came from the former `max(scale * 0.75, 5.25 m)` mesh-support
+half-extent, not from a malformed paving polygon. It expanded the level pad to the sidewalk on
+a 10×10 m lot, removing the terrain-owned transition strip. Runtime now imports LOD0 bounds
+through Godot, including descendant transforms, then applies the authored part transform during
+shared site derivation. It preserves required structural support without that arbitrary expansion.
+Rust/Godot CDT revision **11** prevents reuse of the older support/terrain products.
+
+`small_commercial_pads_leave_a_watertight_sloping_frontage` covers a 10×10 m commercial lot on
+both sides of ±4% roads, using portable model bounds. It checks level support, paved coverage,
+height-query/render agreement and frontage heights, including an asset-footprint refresh.
+`imported_support_bounds_apply_scale_yaw_and_pivot_without_padding` locks the part-transform
+convention. Existing meshless geometry fixtures now state their structural boxes explicitly.
+
+A read-only headless replay of the reported scene keeps the shop's pad at **98.75009 m**, reduces
+its support area from **90 to 48 m²**, and reduces the maximum road/yard difference from
+**293.8 to 6.5 mm** across 99 frontage probe pairs placed 25 mm either side of the boundary.
+All eight requested terrain patches pass and all frontage probes have surface coverage. The
+remaining nonzero probe difference measures grade over 50 mm, not coincident-vertex separation.
+No user assets, save files or the checked-in terrain reference were modified.
+
+Import is O(imported model data) once per distinct mesh path per catalog refresh; support
+derivation remains O(P log P) in local support points, with four points per mesh part. It performs
+no file I/O during placement or per-agent queries. A whole-catalog refresh rebuilds potentially
+affected sites in parallel and invalidates their terrain; this is not per-cursor/tick work.
+
+Unprofiled release measurements ran sequentially with `RAYON_NUM_THREADS=24`, after compilation.
+The existing `graded_yard_height_query_benchmark --ignored --nocapture --test-threads=1` holds the
+76 query points and portable geometry fixed, excluding setup/compilation (10×100,000 queries).
+Three paired run medians were **576.2/596.6, 594.6/599.0, 569.4/639.4 ns** before/after; this is a
+small increase, not a claimed speedup. Pack import alone took **29.45, 28.41, 27.90 ms**, versus a
+**0.95 ms** pre-change manifest-only observation; those startup measurements are separate from
+query timing. These do not establish populated-city catalog-reload performance.
+
+Deployed release library SHA-256:
+`849010f4a5bb4d96c3023a47cc78cd7f473ed49fc47c44259332f231d1cc6574`.
+Query measurement binary SHA-256:
+`fb911df62022790741a122b4c5b48296c52e2bec8aa6fabf7f08884922267577`;
+baseline is the preceding corner-noding build described in `terrain.md`.
+Artifacts: `/tmp/metrum-frontage-query-{before,after}-{1,2,3}.log`,
+`/tmp/metrum-frontage-import-{1,2,3}.log`, `/tmp/metrum-frontage-{before,after}-coverage.log`.
+Correctness logs: `/tmp/metrum-frontage-final-tests.log`, `/tmp/metrum-frontage-bridge.log`,
+`/tmp/metrum-frontage-renderer.log`, `/tmp/metrum-frontage-rustdoc.log`.
+Fresh final verification: `cargo test --release --lib` passes **1,658 tests** (9 measurements
+ignored), including the asset-refresh assertion added after the query measurements. Headless
+`road_junction_preview_test.gd` and `network_tool_chunk_renderer_test.gd` both pass; release build,
+rustdoc, formatting and `git diff --check` are clean.
+
+### 9. Shared Zoned / Explicit Site Contract (2026-09-10)
+
+The placement-mode refactor removes duplicated service/industry preview and installation bodies,
+moves revision/index/site invalidation into the common building installer, and replaces demand's
+separate dirty-bounds result with the allocator's existing pending-site outbox. Level changes and
+removal record old/new bounds inside their owning mutators. Private construction duration,
+zoning occupancy, service eligibility and charging remain independent of support geometry.
+
+Two inconsistencies were removed:
+
+- Explicit roadside placement no longer falls back to source height when its road surface is
+  unavailable. Missing frontage surfaces fail without inserting a building or dirtying its site.
+- The shared road-frontage projection previously divided accumulated XZ distances by a 3D road
+  length, then fed that fraction into 3D sampling. Uphill/downhill roads consequently shifted
+  placements along the road. Projection now uses XZ for nearest-point/side selection and 3D arc
+  distance for the stored attachment, matching sampling and save/load. This remains O(S) per
+  candidate road's S segments with O(1) scratch space and no new allocations or spatial index.
+
+`queued_asymmetric_houses_publish_graded_terrain` exercises six neighboring placements, on both
+sides of a 15% road and on each of ±5% cross-slopes. It uses the asymmetric layout of the installed
+family house as portable geometry, runs both minute-queued private spawning and explicit service
+placement, rebuilds through the renderer's production terrain-input path after each placement,
+and acknowledges exact terrain revisions before the next spawn. Both modes must produce identical
+support footprints, foundation/material triangles and final terrain buffers. Interior probes also
+require terrain to be excluded from the flat pads, rather than merely trusting a height query
+that prioritizes the foundation. Existing Kuopio tests use the unchanged saved reference.
+
+`sloped_frontage_projection_round_trips_the_shared_attachment` covers varying grades and bends on
+both road sides. `explicit_roadside_site_rejects_missing_surface_without_raw_terrain_fallback`
+locks the fail-closed contract. The yard test helper also requires placement itself to publish site
+bounds, so a caller cannot mask an absent invalidation by manually marking terrain dirty.
+
+These tests do not establish that the September 10 floating/buried-house screenshots are fully
+fixed. The exact scene/save has not been replayed; private construction still intentionally lowers
+unfinished models, and building-frame publication is not an atomic terrain/building transaction.
+Those distinctions remain part of `EARTH-02` visual hardening, not a claim of completed repair.
+
+Fresh verification for this refactor: `cargo test --release -- --test-threads=12` passes **1,644
+tests** (5 measurement tests ignored); release build, rustdoc, formatting and `git diff --check`
+pass without compiler warnings. Source identity is the working tree over
+`91af8afca4eb2e9a493ab3bc7f2025a2b87195d9` including the preceding yard changes. Final release test
+binary SHA-256: `b1d60aaa4ada18fbd28609ab0f473801fb13c88137975fb4a0bbb27ef3ec1e09`.
+
+Fresh unprofiled measurements ran sequentially after compilation, with 24 Rayon workers and no
+concurrent assistant build/render test. They use the same existing paved locality fixture and
+100 samples per population level; setup and the one-time snapshot remain outside repeated work:
+
+```bash
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 graded_yard_height_query_benchmark --ignored --nocapture --test-threads=1
+```
+
+| Background buildings | Compile p50 (ms) | Worker p50 (ms) | One-time snapshot (ms) |
+|---:|---:|---:|---:|
+| 0 | 20.129 | 21.287 | 0.0106 |
+| 1,000 | 19.817 | 21.324 | 0.0574 |
+| 10,000 | 19.851 | 21.347 | 0.3785 |
+| 100,000 | 20.080 | 21.466 | 9.0101 |
+
+Local geometry matches exactly across levels (up to 600,024 agents / 100,004 parcels / 391 remote
+roads). Height queries measure **675.1 ns p50**, **686.8 ns p90**, over the same 76 Kuopio apron
+points and 10 × 100,000 queries. Earlier sections are historical evidence, not a freshly rerun
+before/after baseline for this refactor; these numbers establish current locality, not a speedup.
+The 9 ms largest snapshot is reported explicitly and is not part of the ~20 ms repeated compile.
+
+Logs: `/tmp/metrum-shared-site-final-tests.log`, `/tmp/metrum-shared-site-build.log`,
+`/tmp/metrum-shared-site-rustdoc.log`, `/tmp/metrum-shared-site-format.log`,
+`/tmp/metrum-shared-site-scaling.log`, `/tmp/metrum-shared-site-query.log`.
+The deployed release library SHA-256 is
+`2bc8e9a5dc681303995f04f0587d44217a367c51d89035f7fae73c200b1b9449`.
+The existing Godot bridge/terrain-payload regression also passes against that library:
+`godot --headless --path godot --log-file /tmp/metrum-shared-site-godot-engine.log --script res://tests/road_junction_preview_test.gd`,
+with output in `/tmp/metrum-shared-site-godot.log`. This is a fresh headless contract check, not
+a graphical replay of the reported houses; prior rendered runs in sections 7–8 are historical.
+
+### 10. Residential Buildability (2026-09-10)
+
+The hillside regression covers five residential lots (6, 7, 8, 9, 16). Deterministic selection
+previously chose a small house that failed site support; the
+family-house alternative already fit four lots. Parcel 7 additionally needed a different level
+pad height: its primary road connection fixed the old plane too low for the rear terrain tie-in.
+At one failing rear probe the source rose 8.38 m over 16 m, exceeding the existing 8 m grade budget.
+
+The shared solver now intersects permissible height intervals from road-to-pad runs and existing
+perimeter rays, selecting the closest feasible height to the preferred connection. It does not
+relax the 50% grade, move roads/neighbors, add a retaining-wall workaround, or make the yard follow
+the hill. Ray validation and guide generation both include the exact grading-envelope endpoint.
+This changed terrain compiler inputs to CDT contract revision **8**; the subsequent exact
+pad-boundary update uses revision **9**.
+
+Demand evaluates support before ranking compatible assets. Zoning preview/commit reuse this
+non-mutating feasibility path; unsupported new lots are red with a reason and are not accepted.
+Existing blocked lots remain authored intent and are re-evaluated after relevant changes. Both
+positive and negative results are cached with exact pose/asset keys and local terrain/road/site
+dependencies; unchanged or remote-only edits do not repeat local geometry solves. Queued placement
+revalidates current state before insertion. See [`zoning.md`](zoning.md) and
+[`building_allocator.md`](building_allocator.md) for API and complexity contracts.
+
+`benchmarks/fixtures/kuopio-terrain/residential-buildability.json` is a portable hillside fixture:
+a local source grid, three road profiles, parcel attachments and two house manifests.
+It has no mesh dependency and does not replace the Kuopio SQLite or `building-site.toml` fixture.
+Portable tests evaluate and construct all five empty lots, require the family house on parcel 7,
+compile final terrain patches, check terrain-neutral feasibility, remote-cache reuse, local
+terrain/road invalidation, asset removal, stale queued-action rejection and unzoning.
+
+Fresh unprofiled locality measurements used Rust 1.98.1 release settings, 24 Rayon workers,
+the working tree over `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, and the existing four-local-site
+populated fixture (up to 600,024 agents, 100,004 parcels and 391 remote roads). The following ran
+sequentially after compilation, without concurrent assistant builds or render tests:
+
+```bash
+# Repository root; build with cargo test --release --lib --no-run from rust/ first.
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_zoning_feasibility_scaling --ignored --nocapture --test-threads=1
+RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1
+```
+
+| Background buildings | First/revalidate site query (ms) | Warm site p50 / p95 (µs) | Road plan compile p50 (ms) | Road snapshot, once per edit (ms) |
+|---:|---:|---:|---:|---:|
+| 0 | 0.0583 | 0.752 / 0.799 | 20.203 | 0.0067 |
+| 1,000 | 0.0143 | 0.761 / 0.809 | 20.205 | 0.0586 |
+| 10,000 | 0.0151 | 0.751 / 0.877 | 20.194 | 0.3757 |
+| 100,000 | 0.0177 | 0.750 / 1.065 | 20.587 | 3.5066 |
+
+There are 300 warm feasibility samples and 100 measured plans per population level. Feasibility
+performs exactly one local solve over the entire matrix; subsequent remote changes only check
+local dependencies. Road/terrain products match exactly across population levels. Fixture insertion
+and normal index preparation are outside measured queries; cold solving/revalidation and one-time
+road snapshots are reported separately. This establishes current locality, not an old-build speedup
+or end-to-end zoning-tool frame latency. Earlier sections' timings are historical, not fresh baselines.
+Measured executable SHA-256: `16fa69e5a6e2bfcf04f4fe1513c2119eba8a3a8ee981ea734fc785355e5ca353`;
+subsequent test-only cleanup leaves the measured production implementation unchanged.
+Raw measurements: `/tmp/metrum-buildability-zoning-scaling.log` and
+`/tmp/metrum-buildability-road-scaling.log`; this table retains results after those files expire.
+
+Final correctness verification: `cargo test --release` passes **1,646 tests**, with six measurements
+ignored by the ordinary suite (the two relevant locality measurements are run explicitly above).
+Release test executable SHA-256:
+`a8dcdd116cbe04cd73fb5abd5f1c5b08b7f7cd4dc02962eb8b2d75ce62941f3c`.
+`cargo build --release`, `cargo check --all-targets`, `cargo doc --no-deps`, formatting and diff
+whitespace checks pass without Rust warnings. Godot 4.7.2 passes the headless bridge test and the
+Xvfb/llvmpipe rendered test below; the latter reports only its unsupported V-Sync warning. The new
+bridge assertions verify red rejected lots, their reason strings, terrain-neutral preview/rejection,
+per-parcel drag colors, tool mesh/label handling, free-parcel placement and dependency changes.
+
+```bash
+# Repository root, against the deployed release library.
+godot --headless --path godot --log-file /tmp/metrum-buildability-godot-engine.log --script res://tests/road_junction_preview_test.gd
+xvfb-run -a godot --display-driver x11 --path godot --rendering-method gl_compatibility --log-file /tmp/metrum-buildability-rendered-engine.log --script res://tests/road_junction_preview_test.gd
+```
+
+Logs: `/tmp/metrum-buildability-final-tests.log`, `/tmp/metrum-buildability-release-build.log`,
+`/tmp/metrum-buildability-all-targets.log`, `/tmp/metrum-buildability-rustdoc.log`,
+`/tmp/metrum-buildability-godot.log` and `/tmp/metrum-buildability-rendered.log`.
+Deployed `godot/bin/libmetrum_rise.so` SHA-256:
+`bbcafb1a30b2f4d50066a9d2fbf55e9178ecc35dc01d71e83d70c6bcd9c913f8`.
+
+### 11. Building-Site Spec Audit (2026-09-10)
+
+The full uncommitted source/fixture/documentation audit found and corrected these contract gaps:
+
+- Engineered height/picking accepted finite buffers even when terrain publication rejected omitted
+  pathological faces. Both now use the complete shared acceptance checks on current-generation
+  patches; queries remain allocation-free and bounded to local windows.
+- In-place upgrades/downgrades bypassed support validation. The target asset now passes the same
+  connection, footprint, neighbor and terrain checks at the existing fixed height before mutation.
+- Replacing an asset retained old zone/density/family memberships. Registration now removes those
+  memberships from the affected buckets before indexing the replacement.
+- Shared support preparation repeated driveway queries, and paving retained an unused duplicate
+  elevation field. Connections are resolved once per attempt; material regions carry no height.
+  An obsolete dead-code suppression and unnecessary helper visibility were also removed.
+- Allocator documentation still described daily/founding placement and compared secondary
+  driveways against the solved pad instead of the primary road connection. It now matches the
+  hourly/minute-queued lifecycle and the actual support constraints.
+
+Regressions cover render-rejected ground queries, changed asset classifications, and rejected
+level changes after terrain edits with unchanged building identity, height and revision. Existing
+paired zoned/service, hillside placement, coverage, cache and RoadEditPlan regressions remain.
+The earlier `EARTH-02` transient renderer-publication and exact-scene limitations are not erased
+by this audit.
+
+Fresh final verification: `cargo test --release` passes **1,648 tests**, with six measurement tests
+ignored in the ordinary suite. `cargo check --all-targets`, `cargo doc --no-deps`, release build,
+formatting and both working/index diff-whitespace checks pass without Rust warnings. The headless
+and Xvfb rendered `road_junction_preview_test.gd` both pass against the rebuilt/deployed library;
+Xvfb reports only the unsupported V-Sync warning. Commands are the section-10 commands with
+`/tmp/metrum-site-audit-` log prefixes.
+
+Matched unprofiled comparisons ran each baseline/final pair sequentially after all builds, using
+Rust 1.98.1 release settings and 24 Rayon workers, with no concurrent assistant build or renderer.
+Both builds are the working tree over `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, before/after the
+audit fixes above. The pre-audit test executable is preserved at `/tmp/metrum-site-audit-baseline-tests`
+(SHA-256 `a8dcdd116cbe04cd73fb5abd5f1c5b08b7f7cd4dc02962eb8b2d75ce62941f3c`); final executable
+SHA-256 is `5c1b6d0505eb5987511aee3311de96afdb3a29e04e46f906aa3d92f16fa9cd6b`.
+
+```bash
+# Repository root; each measurement is a fresh process, setup excluded from its timed loops.
+for audit_measurement in graded_yard_height_query_benchmark populated_zoning_feasibility_scaling populated_paved_road_plan_scaling; do
+  RAYON_NUM_THREADS=24 /tmp/metrum-site-audit-baseline-tests "$audit_measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$audit_measurement" --ignored --nocapture --test-threads=1
+done
+```
+
+| Background buildings | Road compile p50 before / after (ms) | Warm feasibility p50 before / after (µs) | Final snapshot, once per edit (ms) |
+|---:|---:|---:|---:|
+| 0 | 20.308 / 20.154 | 0.758 / 0.739 | 0.0069 |
+| 1,000 | 20.074 / 20.192 | 0.783 / 0.849 | 0.0585 |
+| 10,000 | 20.271 / 20.233 | 0.751 / 0.746 | 0.3858 |
+| 100,000 | 20.440 / 20.493 | 0.760 / 0.749 | 3.7441 |
+
+The workload retains four local paved sites and grows to 600,024 agents, 100,004 parcels and 391
+remote roads. Each level has 100 road plans and 300 warm feasibility samples. Local products match
+exactly across levels; feasibility solves once over the matrix. Final first/revalidation queries
+take 0.0522/0.0152/0.0149/0.0186 ms, reported separately from warm queries and fixture/index setup.
+Final worker medians are 21.54–21.89 ms. No city-proportional repeated planning cost is observed.
+These are locality checks, not whole-game frame-latency or arbitrary-lot acceptance claims.
+
+The complete height query over 76 Kuopio apron points (10 × 100,000 queries) changes from
+**683.8 ns p50 / 686.2 ns p90** to **766.3 ns p50 / 810.6 ns p90**. The full acceptance guard
+therefore costs about 83 ns per median query; this correctness cost is explicit, not a speedup.
+
+Raw performance logs use `/tmp/metrum-site-audit-{baseline,final}-<measurement>.log` with the exact
+measurement names above. Correctness/build logs are `/tmp/metrum-site-audit-{tests,check,rustdoc,build}.log`;
+Godot logs are `/tmp/metrum-site-audit-{godot,rendered}.log`. The tables retain evidence after these
+temporary artifacts expire. Deployed `godot/bin/libmetrum_rise.so` SHA-256:
+`d0b260e94c5aef161c438a44cb35bb27b82befa362f4175beba31c3a5e2117e5`.
+
+### 12. Entry/Exit Grounding And Exact Pad Boundaries (2026-09-10)
+
+Off-lane cars sampled source terrain, while walkers selected the maximum of terrain, road and pad
+heights. Both now use the shared ownership-ordered world query in either access direction, with
+0.02 m clearance; lane-bound heights are unchanged. No vertical profile is cached in agent/access
+state. The existing site index is prepared once before snapshot iteration, avoiding per-agent
+fallback scans. See [`entrance_and_exit.md`](entrance_and_exit.md#render-height-ownership).
+
+The new Kuopio regression first reproduced a car origin 0.36 m above the required surface plus
+clearance. Sampling the pad boundary also exposed an 8 mm mismatch: the old 2 cm inward terrain
+cutout allowed grading inside the pad. Exact cutouts now share the foundation/query boundary
+(CDT revision 9). The neighbor-height guard includes touching supports, not only positive-area
+overlaps. Different-height neighboring pads need grading space; a legacy low-level test that
+placed their incompatible boundaries at identical XZ now supplies that space. The rollback test
+uses a registered minimal asset and coherent derived transforms, instead of a missing-asset
+full-lot fallback against the road seam.
+
+Fresh correctness verification: **1,648 Rust tests pass, 7 ignored**, including 352 car/walker
+ingress/egress transform checks against rendered cut/fill yards, aprons, sidewalk and carriageway;
+pending-terrain checks also keep agents on fixed pads above or below the visual heightfield.
+Exact live/planned site-loop coordinates, neighbor-height rejection, terrain coverage and
+RoadEditPlan rollback remain covered. `cargo check --all-targets`, `cargo doc --no-deps`, release
+build, formatting and diff checks pass without Rust warnings. The Kuopio SQLite is unchanged.
+`road_junction_preview_test.gd` passes both headless and rendered under Xvfb with the deployed
+revision-9 library. The rendered run only reports the virtual driver's unsupported VSync mode.
+
+Matched, unprofiled release measurements ran sequentially after all builds, with Rust 1.98.1 and
+`RAYON_NUM_THREADS=24`, over working-tree base `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`.
+Baseline is the pre-fix implementation with the new snapshot benchmark instrumentation:
+`/tmp/metrum-access-baseline-tests`, SHA-256
+`bec46f458fd998a99e80f6fb1dab35ce38da15ac345969d6ad02d1ec5eb44820`.
+Final test executable `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`, SHA-256
+`4c01acddd54e3ec9f80af733ada0b98788a6c4f4426e55eec94cda64f3e7ab7c`.
+
+```bash
+for measurement in graded_yard_access_snapshot_benchmark populated_paved_road_plan_scaling populated_zoning_feasibility_scaling graded_yard_height_query_benchmark; do
+  RAYON_NUM_THREADS=24 /tmp/metrum-access-baseline-tests "$measurement" --ignored --nocapture --test-threads=1
+  RAYON_NUM_THREADS=24 rust/target/release/deps/metrum_rise-9cc8d57998aa4451 "$measurement" --ignored --nocapture --test-threads=1
+done
+```
+
+Snapshot workload: 76 fixed Kuopio frontage/pad-boundary positions, equal cars/walkers and
+ingress/egress, 10 warmups and 100 recycled snapshots per count. Placement, compilation, agent
+creation and buffer warmup are outside timing; no Godot or build runs concurrently.
+
+| Simultaneously visible access agents | Snapshot p50 before → after (ms) | p90 before → after (ms) |
+| --- | --- | --- |
+| 100 | 0.2027 → 0.2325 | 0.2203 → 0.2388 |
+| 1,000 | 0.5852 → 0.9364 | 0.6085 → 0.9470 |
+| 10,000 | 4.4585 → 7.9714 | 4.4977 → 8.0166 |
+
+Correctly grounding cars adds about 0.35 ms per 1,000 access agents in this mixed workload.
+That bounded, allocation-free query cost is retained explicitly; it is not a speedup or a
+whole-game frame-rate guarantee. Network-bound and camera-culled agents do not pay it.
+
+| Remote buildings | Road compile p50 before → after (ms) | Warm feasibility p50 before → after (µs) | Final one-time edit snapshot (ms) |
+| --- | --- | --- | --- |
+| 0 | 20.358 → 19.957 | 0.766 → 0.758 | 0.0103 |
+| 1,000 | 20.145 → 20.092 | 0.757 → 0.773 | 0.0572 |
+| 10,000 | 20.268 → 19.855 | 0.777 → 0.802 | 0.3550 |
+| 100,000 | 20.321 → 20.176 | 0.792 → 0.822 | 3.2621 |
+
+Each level measures 100 local road plans and 300 warm feasibility queries, increasing background
+state to 600,024 agents / 100,004 parcels / 391 roads. Final local products are identical across
+population levels; the feasibility matrix still performs one local solve. Final first/revalidation
+queries take 0.0559/0.0145/0.0151/0.0174 ms, separately from warm measurements. Worker p50 stays
+21.31–21.40 ms; repeated planning remains local, with one-time snapshot cost reported separately.
+The existing 76-point height-query benchmark (10 × 100,000 samples) remains stable:
+756.7 → 751.2 ns p50 and 760.3 → 751.7 ns p90. Its pair ran after the Godot checks had exited.
+
+Logs: `/tmp/metrum-access-{before,after}-<measurement>.log` for the exact names above;
+`/tmp/metrum-access-{tests,check,rustdoc,build}.log` for correctness/build checks.
+Godot logs are `/tmp/metrum-access-{godot,rendered}.log`.
+The deployed library SHA-256 is
+`7230d78be163ab17e94909acc02e672f9ef47e00c00de98ece5d60d3d528debe`.
+
+### Changeset audit (2026-09-11)
+
+The audit of the pending site/terrain/access changes corrected runtime mesh-part yaw: the editor
+uses positive-Y rotation (+X toward -Z), while rendering and support derivation had independently
+implemented its opposite. `MeshPart::local_transform` now owns yaw, scale and pivot for both;
+rendering reuses the allocator's frontage basis too. The regression
+`building_part_pose_matches_editor_yaw_scale_and_pivot` compares packed render transforms against
+Godot's independent Basis math for 20 signed-yaw/building-heading combinations. The imported-bounds
+regression verifies the corresponding structural footprint. CDT revision 13 prevents stale reuse.
+
+Removed duplicate fresh-asset ranking loops, upgrade/downgrade application loops and live/snapshot
+site-bounds calculations. Commercial output priorities, deterministic ranking and downgrade-before-
+upgrade ordering are unchanged. Removed the superseded optional-normal surface-query pipeline and
+the unused standard-building-scale helper/test, uncalled capacity/world-size wrappers, and direct
+car/pedestrian exporters that still sampled raw terrain. Coherent snapshots are the only instance
+export path; path debug overlays share the snapshot's access-destination resolver. Vehicle pitch/roll
+still uses the active footprint solver; authored mesh scale and the missing-asset error mesh remain
+supported. These changes add no spatial index, per-agent allocation or city-wide query: part
+transforms remain O(1), site bounds
+remain O(local vertices), and selection/terrain query complexity is unchanged.
+
+The changed-line Clippy audit has no unused-variable/dead-code diagnostics; its only retained
+changed-line suggestion concerns the intentional release-only benchmark assertion. Default Clippy
+still fails at the unchanged `economy/agents/tick/slices.rs` unsafe `RawSlice::get_mut(&self)` API
+(`clippy::mut_from_ref`). Diagnostic continuation used a command-line lint override, not a source
+suppression or a change to the agent aliasing contract. Other pre-existing repository lints are
+outside this changeset cleanup. Historical verification sections above describe their original
+builds, not this audit's final executable. Broader `EARTH-02` frame-publication limitations remain.
+Removing the direct exporters also exposed a missed migration: only the obsolete exporter used
+lane-change S-curves. The active snapshot now consumes the existing sampler with matching-owner
+checks, as required by [`traffic.md`](traffic.md#render-movement).
+
+Matched measurements caught a cleanup regression before acceptance: copying an indexed triangle
+through the height-query helper introduced 72-byte stack copies per candidate. Generated-code
+inspection identified the call boundary; both the index loop and helper now borrow the triangle.
+The intermediate 736–744 ns/query results are not the final implementation's acceptance timings.
+
+Fresh final verification (not the historical results above):
+
+- `RAYON_NUM_THREADS=24 cargo test --release --lib`: **1,660 passed**, 10 ignored measurement cases.
+- `cargo build --release`, `cargo doc --no-deps`, `cargo fmt --all --check`, `bash -n run.sh`,
+  staged/unstaged `git diff --check`, changed-source licensing/module headers and documentation
+  file links: pass. Release build and rustdoc emit no warnings.
+- `cargo clippy --all-targets --message-format=json -- -A clippy::mut_from_ref`: diagnostic
+  continuation completes, with the pre-existing repository warnings described above. The override
+  does not constitute default-Clippy acceptance.
+- Godot `vehicle_ground_support`, `network_tool_chunk_renderer`, `road_benchmark_metrics`,
+  `road_junction_preview`, `road_preview_stream` and `camera_save_load` headless test scripts: pass.
+  Vehicle support checks 4,840 poses (2,480 tilted), with minimum contact clearance **0.020000 m**.
+  `road_junction_preview_test.gd` also passes under Xvfb/OpenGL Compatibility (Mesa llvmpipe).
+
+Commands run from `rust/` for Cargo and the repository root for Godot:
+`RAYON_NUM_THREADS=24 godot --headless --path godot --script res://tests/<name>_test.gd`;
+rendered check uses `xvfb-run -a godot --display-driver x11 --path godot
+--rendering-method gl_compatibility --script res://tests/road_junction_preview_test.gd`.
+Logs: `/tmp/metrum-audit-sealed-{tests,build,doc}.log`,
+`/tmp/metrum-audit-sealed-clippy.{jsonl,log}`, `/tmp/metrum-audit-final-<name>.log` and
+`/tmp/metrum-audit-rendered.log`. Toolchain: Rust 1.98.1; Godot 4.7.2, gdext API 4.5.
+The checked-in Kuopio SQLite and user assets remain unchanged.
+
+Final unprofiled measurements use independent release processes on an i9-12900K, with
+`RAYON_NUM_THREADS=24`, no concurrent builds/render tests and no profiler. The height-query
+microbenchmark alone uses `taskset -c 0` for matched core affinity: three before/after process
+pairs, each sampling 76 points in ten 100,000-query batches. Its median process p50 is
+**584.1 → 560.4 ns/query**; final process medians span 557.4–561.4 ns. The generated code also
+confirms the eliminated copies; no application-wide speedup is inferred.
+
+Access snapshots and vehicle-support batches use three matched process pairs, each with ten
+warmups and 100 measurements at 100/1,000/10,000 entities. Fixture setup is excluded and snapshot
+buffers are reused. Median process p50 values (ms):
+
+| Workload | Entities | Before | Final |
+| --- | ---: | ---: | ---: |
+| Access snapshot | 100 | 0.4160 | 0.5037 |
+| Access snapshot | 1,000 | 1.0985 | 1.1637 |
+| Access snapshot | 10,000 | 8.6098 | 7.5713 |
+| Vehicle-support batch | 100 | 0.4415 | 0.3632 |
+| Vehicle-support batch | 1,000 | 1.0333 | 1.3082 |
+| Vehicle-support batch | 10,000 | 5.1362 | 4.6879 |
+
+Small parallel batches remain process-sensitive; the largest median increase here is 0.275 ms
+at 1,000 support queries, while both 10,000-entity workloads improve. The audit accepts these
+bounded costs with unchanged query complexity, not a claim that every workload became faster.
+All process results, including slower samples, remain in the logs.
+
+The populated paved-site check uses four unchanged local sites and 0/1,000/10,000/100,000 remote
+buildings, up to 100,004 parcels, 600,024 agents and 391 background roads. In the final paired
+run, worker p50 spans **22.19–23.86 → 22.01–22.79 ms** across population levels, with identical
+local products in every compile/worker assertion. Each level has three warmups and 100 measured
+samples. Final readiness p50 stays below 0.020 ms. The one-time 100,000-background snapshot costs
+**3.330 → 3.413 ms**, separately from repeated planning. Cached zoning checks retain one local
+solve across all four levels; final warm p50 is 0.694–0.718 µs (300 queries/level). The local CDT
+fixture has unchanged 763 vertices / 1,369 accepted faces and no missing/invalid constraints;
+20 batches of 50 compiles after four warmup batches measure **0.4577 → 0.4444 ms/compile**.
+These are locality/cost checks, not a guarantee of city-wide frame time.
+
+Reproduction: `RAYON_NUM_THREADS=24 <binary> <measurement> --ignored --nocapture --test-threads=1`.
+Use `taskset -c 0 <binary>` for `graded_yard_height_query_benchmark` only. Other exact workload
+names are `graded_yard_access_snapshot_benchmark`, `graded_yard_vehicle_support_batch_benchmark`,
+`populated_zoning_feasibility_scaling`, `populated_paved_road_plan_scaling` and
+`benchmark_road_site_cdt_noding`. Logs are `/tmp/metrum-audit-sealed-query-{1,2,3}-{before,after}.log`
+and `/tmp/metrum-audit-sealed-{before,after}-<measurement>.log`.
+The extra access/batch process pairs use
+`/tmp/metrum-audit-sealed-{2,3}-{before,after}-<measurement>.log`.
+
+Build identities (working changes on `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, SHA-256):
+
+- Pre-audit executable `/tmp/metrum-audit-before-tests`:
+  `7767a8db42fa886644764739ad7833eced7afca243462e11678c23a6fe2f5e6f`.
+- Final executable `rust/target/release/deps/metrum_rise-9cc8d57998aa4451`:
+  `a0346d598d43f8386d373bb0958ab83da9863368f082f68386c2576b01b32cc0`.
+- Final deployed library `godot/bin/libmetrum_rise.so`:
+  `890c719920b8a947e8067040f069515bb7e36b9d3801e2f296f1464a04f8f62e`.
 
 ## Later Additions
 

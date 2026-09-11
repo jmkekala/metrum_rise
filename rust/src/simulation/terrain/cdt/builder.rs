@@ -29,6 +29,15 @@ pub(crate) fn build_road_touched_terrain_patch(
     let constraints = std::mem::take(&mut canonical.constraints);
     let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, constraints, |edge| {
         invalid_constraint_edges += 1;
+        crate::debug_log!(
+            "terrain",
+            "terrain_cdt_rejected_constraint start={:?} end={:?} source={:?}",
+            canonical.vertices[edge[0]],
+            canonical.vertices[edge[1]],
+            canonical
+                .road_constraint_sources
+                .get(&normalize_edge_array(edge[0], edge[1])),
+        );
         insert_invalid_constraint_sample(
             &mut invalid_constraint_samples,
             normalize_edge_array(edge[0], edge[1]),

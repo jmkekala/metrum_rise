@@ -133,7 +133,11 @@ impl BuildingAllocator {
             let b = Vector2::new(segment[1].x, segment[1].z);
             let delta = b - a;
             let seg_len_sq = delta.length_squared();
+            // Projection is horizontal, but the attachment fraction uses the same 3D
+            // arc length as sample_pos_on_edge, lanes, and saved frontage_t values.
+            let physical_seg_len = segment[0].distance_to(segment[1]);
             if seg_len_sq <= 1e-12 {
+                acc_len += physical_seg_len;
                 continue;
             }
             let local_t = ((point - a).dot(delta) / seg_len_sq).clamp(0.0, 1.0);
@@ -145,10 +149,11 @@ impl BuildingAllocator {
                 let normal = Vector2::new(tangent.y, -tangent.x);
                 let to_point = point - closest;
                 best_dist_sq = dist_sq;
-                best_t = ((acc_len + seg_len * local_t) / edge.physical_length).clamp(0.0, 1.0);
+                best_t =
+                    ((acc_len + physical_seg_len * local_t) / edge.physical_length).clamp(0.0, 1.0);
                 best_side = if to_point.dot(normal) >= 0.0 { 1 } else { -1 };
             }
-            acc_len += seg_len_sq.sqrt();
+            acc_len += physical_seg_len;
         }
         best_dist_sq.is_finite().then_some(RoadFrontageProjection {
             edge_idx,

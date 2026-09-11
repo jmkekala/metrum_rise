@@ -655,6 +655,7 @@ impl SimulationNode {
         };
         let mut core = self.lock_core();
         let core = &mut *core;
+        prepare_zoning_site_queries(core);
         let Some((frontage_m, depth_m)) =
             zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
         else {
@@ -674,10 +675,7 @@ impl SimulationNode {
             };
             geometry
         };
-        if core
-            .allocator
-            .parcel_geometry_overlaps_explicit_site(&geometry)
-        {
+        if zoning_geometry_feasibility(core, &geometry, runtime_id).is_err() {
             return false;
         }
         let result = core.zoning.place_or_rezone_parcel_at(
@@ -691,7 +689,6 @@ impl SimulationNode {
         match result {
             Ok(_) => {
                 core.allocator.dirty = true;
-                core.allocator.dirty_index = true;
                 true
             }
             Err(_) => false,
@@ -708,7 +705,8 @@ impl SimulationNode {
         frontage_cells: i32,
         depth_cells: i32,
     ) -> VarDictionary {
-        let core = self.lock_core();
+        let mut core = self.lock_core();
+        prepare_zoning_site_queries(&mut core);
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -773,7 +771,8 @@ impl SimulationNode {
         depth_cells: i32,
         gap_m: f32,
     ) -> VarArray {
-        let core = self.lock_core();
+        let mut core = self.lock_core();
+        prepare_zoning_site_queries(&mut core);
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarArray::new();
         };
@@ -794,7 +793,6 @@ impl SimulationNode {
         ) else {
             return VarArray::new();
         };
-        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
         zoning_parcel_geometries_array(&core, &geometries, runtime_id)
     }
 
@@ -811,7 +809,8 @@ impl SimulationNode {
         depth_cells: i32,
         gap_m: f32,
     ) -> VarDictionary {
-        let core = self.lock_core();
+        let mut core = self.lock_core();
+        prepare_zoning_site_queries(&mut core);
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -832,7 +831,6 @@ impl SimulationNode {
         ) else {
             return VarDictionary::new();
         };
-        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
         if geometries.is_empty() {
             return VarDictionary::new();
         }
@@ -849,7 +847,8 @@ impl SimulationNode {
         end_z: f32,
         target_profile_runtime_id: i32,
     ) -> VarDictionary {
-        let core = self.lock_core();
+        let mut core = self.lock_core();
+        prepare_zoning_site_queries(&mut core);
         let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
             return VarDictionary::new();
         };
@@ -865,7 +864,6 @@ impl SimulationNode {
         let geometries = core
             .zoning
             .preview_rezone_stroke(start_x, start_z, end_x, end_z);
-        let geometries = zoning_geometries_without_explicit_sites(&core, geometries);
         if geometries.is_empty() {
             return VarDictionary::new();
         }
@@ -890,6 +888,7 @@ impl SimulationNode {
         };
         let mut core = self.lock_core();
         let core = &mut *core;
+        prepare_zoning_site_queries(core);
         let Some((frontage_m, depth_m)) =
             zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
         else {
@@ -907,14 +906,13 @@ impl SimulationNode {
         ) else {
             return false;
         };
-        let geometries = zoning_geometries_without_explicit_sites(core, geometries);
+        let geometries = zoning_buildable_geometries(core, geometries, runtime_id);
         let result = core
             .zoning
             .place_prevalidated_parcel_geometries(geometries, runtime_id);
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
-                core.allocator.dirty_index = true;
                 true
             }
             _ => false,
@@ -936,10 +934,11 @@ impl SimulationNode {
         };
         let mut core = self.lock_core();
         let core = &mut *core;
+        prepare_zoning_site_queries(core);
         let geometries = core
             .zoning
             .preview_rezone_stroke(start_x, start_z, end_x, end_z);
-        let geometries = zoning_geometries_without_explicit_sites(core, geometries);
+        let geometries = zoning_buildable_geometries(core, geometries, runtime_id);
         if geometries.is_empty() {
             return false;
         }
@@ -949,11 +948,31 @@ impl SimulationNode {
         match result {
             Ok(ids) if !ids.is_empty() => {
                 core.allocator.dirty = true;
-                core.allocator.dirty_index = true;
                 true
             }
             _ => false,
         }
+    }
+
+    /// Returns exact dependency epochs for invalidating retained zoning previews.
+    #[func]
+    pub fn get_zoning_site_dependencies(&self) -> PackedInt64Array {
+        let core = self.lock_core();
+        [
+            core.road_tool_surface_generation,
+            core.heightmap.source_generation(),
+            core.heightmap.visual_generation(),
+            core.transit_network
+                .road_surface
+                .compile_invalidation_generation,
+            core.allocator.building_ref_revision(),
+            core.allocator.registry.revision(),
+            core.zoning.overlay_revision(),
+            core.zoning.overlay_occupancy_revision(),
+        ]
+        .into_iter()
+        .map(|v| v as i64)
+        .collect()
     }
 
     /// Returns committed zoning parcels for the Godot overlay mesh.

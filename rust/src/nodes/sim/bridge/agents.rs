@@ -13,20 +13,21 @@ pub fn get_agent_transforms(snapshot: &RenderSnapshot) -> VarDictionary {
     dict
 }
 
-/// Returns a Dictionary of packed transforms for visible car agents, keyed by type.
-pub fn get_car_transforms(snapshot: &RenderSnapshot) -> VarDictionary {
+/// Exports car transforms, identities and support flags from a single coherent snapshot.
+pub fn get_car_render_data(snapshot: &RenderSnapshot) -> VarDictionary {
     let mut dict = VarDictionary::new();
     for (&k, v) in &snapshot.car_transforms {
-        dict.set(k as i32, PackedFloat32Array::from_iter(v.iter().cloned()));
-    }
-    dict
-}
-
-/// Returns render IDs for visible car agents, keyed to match `get_car_transforms`.
-pub fn get_car_render_ids(snapshot: &RenderSnapshot) -> VarDictionary {
-    let mut dict = VarDictionary::new();
-    for (&k, v) in &snapshot.car_render_ids {
-        dict.set(k as i32, PackedInt64Array::from_iter(v.iter().copied()));
+        let mut bucket = VarDictionary::new();
+        bucket.set("transforms", PackedFloat32Array::from(v.as_slice()));
+        bucket.set(
+            "ids",
+            PackedInt64Array::from(snapshot.car_render_ids[&k].as_slice()),
+        );
+        bucket.set(
+            "ground_flags",
+            PackedByteArray::from(snapshot.car_ground_flags[&k].as_slice()),
+        );
+        dict.set(k as i32, bucket);
     }
     dict
 }

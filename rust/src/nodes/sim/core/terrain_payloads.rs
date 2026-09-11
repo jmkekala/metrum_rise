@@ -2,6 +2,7 @@
 
 //! Refined road-clipped terrain build and cache payload contracts.
 
+use crate::simulation::buildings::allocator::BuildingSiteSurfaceClient;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -44,6 +45,8 @@ pub(crate) struct RefinedTerrainPatchCacheKey {
 
 /// Complete input needed to build a refined road-clipped terrain patch off the Godot frame.
 pub(crate) struct RefinedTerrainPatchBuildInput {
+    /// Local material regions partitioned onto the final engineered ground.
+    pub(crate) site_surfaces: Vec<BuildingSiteSurfaceClient>,
     /// Cache key for the produced patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// Patch-local terrain source generation captured when this input was assembled.
@@ -139,6 +142,9 @@ pub(crate) struct CachedTerrainCdtRoadInput {
 /// Cached local CDT window built away from the Godot frame.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CachedRefinedTerrainCdtWindow {
+    /// Existing owner-local triangle grid, built off-thread and reused with the immutable tile.
+    pub(crate) ground_query:
+        Arc<crate::simulation::network::surface::RoadSurfaceTriangleQueryIndex>,
     /// Window cache key.
     pub(crate) key: RefinedTerrainCdtWindowKey,
     /// Number of road loops supplied to the CDT builder.
@@ -166,6 +172,8 @@ pub(crate) struct CachedRefinedTerrainCdtWindow {
 /// Production mesh arrays prepared off-thread for one fixed window or a complete render patch.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CachedRefinedTerrainMeshBuffers {
+    /// Optional per-vertex material tags: white ground, red asphalt, green concrete.
+    pub(crate) terrain_colors: Vec<godot::prelude::Color>,
     /// True when every exported vector is finite and every triangle index is in bounds.
     pub(crate) variant_payload_valid: bool,
     /// Ordinary terrain vertices in render-patch-local coordinates.
@@ -217,6 +225,8 @@ pub(crate) struct CachedRefinedTerrainMeshBuffers {
 /// Cached production refined terrain patch built away from the Godot frame.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CachedRefinedTerrainPatch {
+    /// Exact material inputs; material changes invalidate composed buffers, not CDT windows.
+    pub(crate) site_surfaces: Vec<BuildingSiteSurfaceClient>,
     /// Cache key for this patch.
     pub(crate) key: RefinedTerrainPatchCacheKey,
     /// CDT contract revision used to build this cached patch.

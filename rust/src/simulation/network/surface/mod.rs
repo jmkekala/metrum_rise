@@ -34,6 +34,7 @@ pub use cache::{RoadEarthworkChunkCacheEntry, RoadSurfaceChunkCacheEntry};
 pub(crate) use edge::RoadPreviewVisualMesh;
 pub use edge::{PreviewRoadSurfaceResult, RoadPreviewValidation};
 pub use node::RoadSurfaceVisualNodePiece;
+pub(crate) use query::{ray_xz_interval_for_bounds, road_ray_triangle_intersection_t};
 pub use span::RoadSurfaceVisualSpanPiece;
 pub use system::RoadSurfaceSystem;
 
@@ -195,7 +196,8 @@ struct RoadSurfaceIndexedTriangle {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-struct RoadSurfaceTriangleQueryIndex {
+/// Immutable owner-local triangle grid shared by road carriers and compiled terrain tiles.
+pub(crate) struct RoadSurfaceTriangleQueryIndex {
     bounds_xz: [f64; 4],
     cell_size_m: f64,
     width: usize,
@@ -243,6 +245,21 @@ impl RoadSurfaceVisualPolygon {
 }
 
 impl RoadSurfaceTriangleQueryIndex {
+    /// Builds the existing bounded grid for a terrain tile without copying polygon wrappers.
+    pub(crate) fn from_ground_triangles(
+        triangles: impl IntoIterator<Item = [RoadVec3; 3]>,
+    ) -> Self {
+        Self::from_indexed_triangles(
+            triangles
+                .into_iter()
+                .map(|triangle| RoadSurfaceIndexedTriangle {
+                    triangle,
+                    carriageway: false,
+                })
+                .collect(),
+        )
+    }
+
     fn from_surface_polygons(
         road: &[RoadSurfaceVisualPolygon],
         curb: &[RoadSurfaceVisualPolygon],
@@ -261,6 +278,10 @@ impl RoadSurfaceTriangleQueryIndex {
                     })
             }));
         }
+        Self::from_indexed_triangles(triangles)
+    }
+
+    fn from_indexed_triangles(triangles: Vec<RoadSurfaceIndexedTriangle>) -> Self {
         if triangles.is_empty() {
             return Self::default();
         }

@@ -77,6 +77,11 @@ pub(super) fn site_radius_m(site: &BuildingSiteClient) -> f32 {
         / site.lot_footprint_world.len() as f32;
     site.footprint_world
         .iter()
+        .chain(
+            site.surfaces
+                .iter()
+                .flat_map(|surface| &surface.vertices_world),
+        )
         .map(|point| point.distance_to(lot_center))
         .fold(0.0, f32::max)
 }

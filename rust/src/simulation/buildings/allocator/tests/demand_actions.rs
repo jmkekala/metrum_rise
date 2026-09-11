@@ -420,6 +420,50 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         .find(|building| building.parcel_id == spawn_parcel_id)
         .expect("spawn action should place a building on the selected parcel");
     assert!(spawned.operating_budget.abs() <= f32::EPSILON);
+
+    // A later terrain edit cannot authorize a new asset footprint at an unsupported fixed pad.
+    let mut blocked_terrain = terrain.clone();
+    for z in 0..blocked_terrain.height {
+        for x in 0..blocked_terrain.width {
+            blocked_terrain.set_height(x, z, 20.0);
+        }
+    }
+    let building = allocator
+        .buildings
+        .iter()
+        .find(|b| b.parcel_id == occupied_parcels[0])
+        .unwrap();
+    let support_height = building.support_height_m;
+    let mut blocked = DemandBuildingActionPlan::default();
+    blocked
+        .residential
+        .downgrades
+        .push(DemandLevelChangeAction {
+            building: crate::simulation::economy::demand::demand_building_action_key(building),
+            target_asset_id: residential_level_1,
+        });
+    let revision = allocator.building_ref_revision();
+    allocator.execute_demand_building_actions(
+        &blocked,
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &graph,
+        &network.lane_system,
+        &network.road_surface,
+        &blocked_terrain,
+        demand.runtime_catalog(),
+        demand.runtime_tuning(),
+    );
+    let building = allocator
+        .buildings
+        .iter()
+        .find(|b| b.parcel_id == occupied_parcels[0])
+        .unwrap();
+    assert_eq!(building.asset_id, residential_level_2);
+    assert_eq!(building.support_height_m, support_height);
+    assert_eq!(allocator.building_ref_revision(), revision);
 }
 
 #[test]

@@ -7,7 +7,9 @@
 use crate::assets::{AssetEntry, MeshPart, SiteSurfaceMaterial};
 use crate::config::{HEIGHT_SCALE, SIDEWALK_WIDTH};
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, building_local_xz_basis,
+};
 use crate::simulation::network::graph::Edge;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::zoning::ZoneType;
@@ -140,17 +142,13 @@ impl SimCore {
         let mut concrete_vertices = Vec::new();
 
         for site in &self.allocator.building_sites {
-            append_site_polygon_triangles(
-                &mut ground_vertices,
-                &site.footprint_world,
-                site.support_height_m,
-            );
-            for surface in &site.surfaces {
-                let target = match surface.material {
-                    SiteSurfaceMaterial::Asphalt => &mut asphalt_vertices,
-                    SiteSurfaceMaterial::Concrete => &mut concrete_vertices,
+            for (material, triangle) in site.foundation_mesh() {
+                let target = match material {
+                    None => &mut ground_vertices,
+                    Some(SiteSurfaceMaterial::Asphalt) => &mut asphalt_vertices,
+                    Some(SiteSurfaceMaterial::Concrete) => &mut concrete_vertices,
                 };
-                append_site_polygon_triangles(target, &surface.vertices_world, surface.height_m);
+                target.extend_from_slice(triangle);
             }
         }
 
@@ -178,7 +176,7 @@ impl SimCore {
         dict
     }
 
-    /// Returns the 12-float transforms for building plot/foundation MultiMeshes (visualizing item 53).
+    /// Returns the 12-float transforms for zone-filtered plot overlay MultiMeshes.
     pub fn get_building_plot_transforms_internal(&self, zone_type_int: u8) -> PackedFloat32Array {
         let target_zone = match zone_type_int {
             1 => ZoneType::Residential,
@@ -530,7 +528,7 @@ impl SimCore {
                 );
                 surface_dict.set("name", surface.name.as_str());
                 surface_dict.set("material", site_surface_material_label(surface.material));
-                surface_dict.set("height_m", surface.height_m);
+                surface_dict.set("height_m", site.support_height_m);
                 surface_dict.set(
                     "area_m2",
                     polygon_signed_area(&surface.vertices_world).abs(),
@@ -991,46 +989,26 @@ fn push_building_part_transform_for_pose(
     entry: Option<&AssetEntry>,
     part: &MeshPart,
 ) {
-    let world_x = center_2d.x;
-    let world_z = center_2d.y;
     let (basis_x, basis_z) = building_local_xz_basis(facing_dir, building_frontage_forward(entry));
+    let local = part.local_transform();
+    let part_x_axis = basis_x * local.matrix3.x_axis.x + basis_z * local.matrix3.x_axis.z;
+    let part_z_axis = basis_x * local.matrix3.z_axis.x + basis_z * local.matrix3.z_axis.z;
+    let translation = center_2d + basis_x * local.translation.x + basis_z * local.translation.z;
 
-    let yaw = part.rotation_degrees[1].to_radians();
-    let cos_yaw = yaw.cos();
-    let sin_yaw = yaw.sin();
-    let part_x_axis = basis_x * cos_yaw + basis_z * sin_yaw;
-    let part_z_axis = basis_z * cos_yaw - basis_x * sin_yaw;
-    let s = part.scale.max(0.001);
-
-    let [px, py, pz] = part.position;
-    let [po_x, po_y, po_z] = part.pivot_offset.unwrap_or([0.0, 0.0, 0.0]);
-
-    let tx = world_x
-        + basis_x.x * px
-        + basis_z.x * pz
-        + part_x_axis.x * po_x * s
-        + part_z_axis.x * po_z * s;
-    let ty = world_y + py + po_y * s;
-    let tz = world_z
-        + basis_x.y * px
-        + basis_z.y * pz
-        + part_x_axis.y * po_x * s
-        + part_z_axis.y * po_z * s;
-
-    buffer.push(part_x_axis.x * s);
+    buffer.push(part_x_axis.x);
     buffer.push(0.0);
-    buffer.push(part_z_axis.x * s);
-    buffer.push(tx);
+    buffer.push(part_z_axis.x);
+    buffer.push(translation.x);
 
     buffer.push(0.0);
-    buffer.push(s);
+    buffer.push(local.matrix3.y_axis.y);
     buffer.push(0.0);
-    buffer.push(ty);
+    buffer.push(world_y + local.translation.y);
 
-    buffer.push(part_x_axis.y * s);
+    buffer.push(part_x_axis.y);
     buffer.push(0.0);
-    buffer.push(part_z_axis.y * s);
-    buffer.push(tz);
+    buffer.push(part_z_axis.y);
+    buffer.push(translation.y);
 }
 
 fn push_broken_building_transform(buffer: &mut Vec<f32>, building: &Building, world_y: f32) {
@@ -1159,81 +1137,6 @@ fn push_oriented_box_transform(
     buffer.push(center_z);
 }
 
-fn append_site_polygon_triangles(buffer: &mut Vec<Vector3>, vertices: &[Vector2], y: f32) {
-    if vertices.len() < 3 {
-        return;
-    }
-    let mut indices = (0..vertices.len()).collect::<Vec<_>>();
-    if polygon_signed_area(vertices) < 0.0 {
-        indices.reverse();
-    }
-
-    let mut guard = 0usize;
-    while indices.len() > 3 && guard < vertices.len() * vertices.len() {
-        guard += 1;
-        let mut clipped = false;
-        for cursor in 0..indices.len() {
-            let prev_idx = indices[(cursor + indices.len() - 1) % indices.len()];
-            let current_idx = indices[cursor];
-            let next_idx = indices[(cursor + 1) % indices.len()];
-            let prev = vertices[prev_idx];
-            let current = vertices[current_idx];
-            let next = vertices[next_idx];
-            if site_orientation(prev, current, next) <= 0.0001 {
-                continue;
-            }
-
-            let mut contains_other = false;
-            for &candidate_idx in &indices {
-                if candidate_idx == prev_idx
-                    || candidate_idx == current_idx
-                    || candidate_idx == next_idx
-                {
-                    continue;
-                }
-                if site_point_in_triangle(vertices[candidate_idx], prev, current, next) {
-                    contains_other = true;
-                    break;
-                }
-            }
-            if contains_other {
-                continue;
-            }
-
-            push_site_triangle(buffer, prev, current, next, y);
-            indices.remove(cursor);
-            clipped = true;
-            break;
-        }
-        if !clipped {
-            append_site_polygon_fan_triangles(buffer, vertices, y);
-            return;
-        }
-    }
-
-    if indices.len() == 3 {
-        push_site_triangle(
-            buffer,
-            vertices[indices[0]],
-            vertices[indices[1]],
-            vertices[indices[2]],
-            y,
-        );
-    }
-}
-
-fn append_site_polygon_fan_triangles(buffer: &mut Vec<Vector3>, vertices: &[Vector2], y: f32) {
-    for i in 1..vertices.len() - 1 {
-        push_site_triangle(buffer, vertices[0], vertices[i], vertices[i + 1], y);
-    }
-}
-
-fn push_site_triangle(buffer: &mut Vec<Vector3>, a: Vector2, b: Vector2, c: Vector2, y: f32) {
-    buffer.push(Vector3::new(a.x, y, a.y));
-    buffer.push(Vector3::new(b.x, y, b.y));
-    buffer.push(Vector3::new(c.x, y, c.y));
-}
-
 fn polygon_signed_area(vertices: &[Vector2]) -> f32 {
     let mut area = 0.0;
     for i in 0..vertices.len() {
@@ -1270,17 +1173,6 @@ fn vector2_bounds(vertices: &[Vector2]) -> (f32, f32, f32, f32) {
         max_z = max_z.max(vertex.y);
     }
     (min_x, min_z, max_x, max_z)
-}
-
-fn site_orientation(a: Vector2, b: Vector2, c: Vector2) -> f32 {
-    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-}
-
-fn site_point_in_triangle(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool {
-    let ab = site_orientation(a, b, p);
-    let bc = site_orientation(b, c, p);
-    let ca = site_orientation(c, a, p);
-    ab >= -0.0001 && bc >= -0.0001 && ca >= -0.0001
 }
 
 fn offset_point(
@@ -1371,39 +1263,50 @@ fn building_frontage_forward(entry: Option<&AssetEntry>) -> [f32; 3] {
         .unwrap_or([0.0, 0.0, 1.0])
 }
 
-fn building_local_xz_basis(facing_dir: Vector2, anchor_forward: [f32; 3]) -> (Vector2, Vector2) {
-    let world_front = if facing_dir.length_squared() > 1e-12 {
-        facing_dir.normalized()
-    } else {
-        Vector2::new(0.0, 1.0)
-    };
-    let local_front = asset_local_front_xz(anchor_forward);
-    let world_right = Vector2::new(world_front.y, -world_front.x);
-    let basis_x = world_right * local_front.y + world_front * local_front.x;
-    let basis_z = world_front * local_front.y - world_right * local_front.x;
-
-    (basis_x, basis_z)
-}
-
-fn asset_local_front_xz(anchor_forward: [f32; 3]) -> Vector2 {
-    let front = Vector2::new(anchor_forward[0], anchor_forward[2]);
-    if front.length_squared() > 1e-12 {
-        front.normalized()
-    } else {
-        Vector2::new(0.0, 1.0)
-    }
-}
-
-/// Returns the scale factor for a building.
-/// Standard assets use 1:10 scale (1 unit = 10m), so we scale by [`crate::config::BUILDING_VISUAL_SCALE`].
-pub fn get_building_visual_scale() -> (f32, f32, f32) {
-    let s = crate::config::BUILDING_VISUAL_SCALE;
-    (s, s, s)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn building_part_pose_matches_editor_yaw_scale_and_pivot() {
+        for yaw in [-90.0_f32, -31.0, 0.0, 47.0, 90.0] {
+            for heading in [-2.4_f32, 0.0, 1.2, std::f32::consts::PI] {
+                let mut part = MeshPart::single_lod0("rotated", "unused.glb");
+                part.position = [2.0, 3.0, -1.0];
+                part.rotation_degrees = [0.0, yaw, 0.0];
+                part.scale = 2.0;
+                part.pivot_offset = Some([0.5, 0.25, -0.75]);
+                let mut buffer = Vec::new();
+                let origin = Vector3::new(11.0, 17.0, -5.0);
+                push_building_part_transform_for_pose(
+                    &mut buffer,
+                    Vector2::new(origin.x, origin.z),
+                    origin.y,
+                    Vector2::new(heading.sin(), heading.cos()),
+                    None,
+                    &part,
+                );
+                let actual = Transform3D::new(
+                    Basis::from_cols(
+                        Vector3::new(buffer[0], buffer[4], buffer[8]),
+                        Vector3::new(buffer[1], buffer[5], buffer[9]),
+                        Vector3::new(buffer[2], buffer[6], buffer[10]),
+                    ),
+                    Vector3::new(buffer[3], buffer[7], buffer[11]),
+                );
+                // Independent oracle: the editor uses Godot's positive-Y Basis, not our helper.
+                let building = Basis::from_axis_angle(Vector3::UP, heading);
+                let rotation = Basis::from_axis_angle(Vector3::UP, yaw.to_radians());
+                for point in [Vector3::ZERO, Vector3::RIGHT, Vector3::UP, Vector3::BACK] {
+                    let expected = origin
+                        + building
+                            * (Vector3::new(2.0, 3.0, -1.0)
+                                + rotation * ((point + Vector3::new(0.5, 0.25, -0.75)) * 2.0));
+                    assert!((actual * point).distance_to(expected) < 1e-5);
+                }
+            }
+        }
+    }
 
     fn assert_vec2_close(actual: Vector2, expected: Vector2) {
         assert!(
@@ -1413,26 +1316,6 @@ mod tests {
             expected.y,
             actual.x,
             actual.y
-        );
-    }
-
-    #[test]
-    fn test_building_visual_scale_is_adequate() {
-        // This test ensures that buildings are not "miniature" by verifying the scale factor
-        // returned from our logic is at least 10.0 (the standard for current assets).
-        let (sx, sy, sz) = get_building_visual_scale();
-
-        assert!(
-            sy >= 10.0,
-            "Building vertical scale must be at least 10.0 to match asset scale"
-        );
-        assert!(
-            sx >= 10.0,
-            "Building horizontal scale must be at least 10.0 to match asset scale"
-        );
-        assert!(
-            sz >= 10.0,
-            "Building depth scale must be at least 10.0 to match asset scale"
         );
     }
 

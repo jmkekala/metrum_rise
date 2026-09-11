@@ -61,15 +61,17 @@ impl SimulationNode {
         }
         let aggregate_stats = Self::aggregate_cdt_window_stats(&successful_windows);
         Self::append_cdt_stats(dict, aggregate_stats);
-        let mesh_buffer_summary = if include_debug {
+        if include_debug {
             Self::append_cdt_window_mesh_buffers(
                 dict,
                 &cached.patch,
                 &successful_windows,
                 (cached.key.render_step_mm as f32 / 1000.0).max(f32::EPSILON),
                 true,
-            )
-        } else if let Some(buffers) = cached.mesh_buffers.as_deref() {
+            );
+        }
+        // Debug metadata must not replace the adopted material-partitioned geometry.
+        let mesh_buffer_summary = if let Some(buffers) = cached.mesh_buffers.as_deref() {
             Self::append_cached_refined_terrain_mesh_buffers(dict, buffers)
         } else {
             Self::append_cdt_window_mesh_buffers(

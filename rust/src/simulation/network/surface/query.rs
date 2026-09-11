@@ -14,3 +14,4 @@ mod view;
 mod visible;
 
 pub(crate) use view::{PlannedRoadSurfaceQuery, RoadSurfaceView};
+pub(crate) use visible::{ray_xz_interval_for_bounds, road_ray_triangle_intersection_t};

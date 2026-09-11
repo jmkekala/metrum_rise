@@ -156,7 +156,8 @@ impl ZoningParcel {
         self.aabb_max = geometry.aabb_max;
     }
 
-    pub(super) fn new(
+    /// Constructs a detached parcel value, including for non-mutating feasibility checks.
+    pub(crate) fn new(
         id: ParcelId,
         geometry: ParcelGeometry,
         zone_profile_runtime_id: u16,

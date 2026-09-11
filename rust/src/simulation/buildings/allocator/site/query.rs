@@ -14,11 +14,7 @@ impl BuildingSiteClient {
     }
 
     pub(super) fn height_at(&self, pos: Vector2) -> Option<f32> {
-        for surface in &self.surfaces {
-            if point_in_polygon_slice(pos, &surface.vertices_world) {
-                return Some(surface.height_m);
-            }
-        }
+        // Aprons are owned by engineered terrain, not an independent flat plane.
         self.contains_point(pos).then_some(self.support_height_m)
     }
 
@@ -28,15 +24,6 @@ impl BuildingSiteClient {
         }
 
         let mut best: Option<(f32, Vector3)> = None;
-        for surface in &self.surfaces {
-            update_site_plane_ray_hit(
-                &mut best,
-                ray_origin,
-                ray_dir,
-                surface.height_m,
-                &surface.vertices_world,
-            );
-        }
         update_site_plane_ray_hit(
             &mut best,
             ray_origin,

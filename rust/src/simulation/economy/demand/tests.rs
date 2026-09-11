@@ -795,11 +795,18 @@ fn commercial_spawn_candidate_prefers_asset_for_unmet_consumer_resource() {
     let graph = graph_with_connected_border();
     let zoning = commercial_zoning_run(&graph);
 
+    let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
+    let mut road_surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+    road_surface.compile_dirty(&graph, &terrain);
     let candidates = allocator.collect_demand_spawn_candidates_by_use(
         &zoning,
         &graph,
         catalog.as_ref(),
         &[(personal_services, 1.0)],
+        crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+            road_surface: &road_surface,
+            terrain: &terrain,
+        },
     );
 
     assert!(!candidates.commercial.is_empty());

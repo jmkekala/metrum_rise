@@ -262,6 +262,24 @@ pub(super) fn canonicalize_input_with_grading_bounds(
     // them lets adjacent tile triangulations bridge different heights across the side.
     // Structural retaining walls and building pads keep their own height authority.
     let boundary_height = |mut vertex: TerrainCdtVertex| {
+        // A sample accepted as lying on a tile side must lie on that exact side.
+        // Snap before containment: the neighboring tile must retain the same sample,
+        // even when f32 site transforms put it just outside its unsnapped bounds.
+        // Containment after welding still rejects halo points beyond the side tolerance
+        // and never allows triangulation outside the exact core.
+        for (coordinate, min, max) in [
+            (&mut vertex.x, input.patch.min_x, input.patch.max_x),
+            (&mut vertex.z, input.patch.min_z, input.patch.max_z),
+        ] {
+            if (*coordinate - min).abs() <= CDT_EPSILON_M {
+                *coordinate = min;
+            } else if (*coordinate - max).abs() <= CDT_EPSILON_M {
+                *coordinate = max;
+            }
+        }
+        if !patch_contains(vertex, input.patch) {
+            return vertex;
+        }
         if vertex_on_patch_boundary(vertex, input.patch)
             && let Some(sample) =
                 widening_tie_in_sample_against_any_road_loop(vertex, &grading_loops)

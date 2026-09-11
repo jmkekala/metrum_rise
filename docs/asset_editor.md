@@ -471,13 +471,13 @@ Rules:
   polygon `vertices = [[x, z], ...]` in winding order.
 - Site surfaces must fit fully inside the authored lot rectangle.
 - Site surface polygons must have at least three vertices, non-zero area, and no self-intersection.
-- Site surfaces are authored visual-ground metadata. Live gameplay renders them on the flat
-  building-site client and queries their authored `y_m` offset, but they never become independent
-  terrain-cut footprints.
-- The current runtime terrain-ownership footprint is the required flat support footprint. Until the
-  asset schema exports explicit support extents, the backend treats the authored lot rectangle as
-  that conservative support footprint. `[[site_surfaces]]` polygons remain material/layout regions
-  on the selected site plane.
+- Site surfaces are authored material regions. Gameplay partitions the actual foundation/graded
+  terrain triangles; it does not draw a separate horizontal polygon or apply the editor's `y_m`
+  preview offset. These regions never become independent terrain-cut footprints.
+- The flat terrain-ownership footprint derives from mesh-part support, entrance landings and
+  authored yard regions. Yard vertices are clamped to the lot's 2 m inset before joining the support
+  hull; the remaining edge strips grade to roads, neighboring pads and terrain. Structural mesh
+  support is not shrunk. Driveway/parking/loading anchors alone do not expand the pad.
 - Site surfaces do not imply access, parking capacity, freight capacity, service eligibility,
   pedestrian paths, or vehicle routing.
 - Anchors may sit on top of site surfaces, but anchors never create surfaces by themselves.
@@ -499,7 +499,7 @@ The building authoring view is WYSIWYG for the local flat lot:
 - Authored site-surface materials preview on the flat lot as the runtime site client will render
   them.
 - The editor does not choose the world height of the lot. Runtime placement chooses the height from
-  road/driveway connection, neighboring fixed sites, or explicit-site fallback according to
+  road/driveway connection and neighboring fixed sites through the shared placement contract in
   [`earthworks.md`](earthworks.md).
 - Zoning previews and parcel edits remain visual/legal intent only. They must not preview terrain
   deformation as if a site already existed.
@@ -946,8 +946,14 @@ LOD rules by asset class:
   same part when they exist. Top-level `[[lods]]` is not valid for building assets.
 - Building mesh part geometry must fit inside `lot_width_cells` x `lot_depth_cells` after applying
   its authored position, Y rotation, scale, and pivot. This is an editor/export invariant based on
-  the imported mesh bounds; the runtime manifest validator does not independently load external mesh
-  files just to recompute their bounds.
+  the imported mesh bounds. Manifest parsing remains engine-independent. Runtime pack loading also
+  imports LOD0 bounds through Godot and caches them in the asset registry for structural support;
+  it no longer estimates support size from part scale. No new authored field, asset re-export or save
+  conversion is required. Import failures produce a pack warning and skip the asset.
+- Building part transforms use the editor's positive-Y yaw convention: +X rotates toward -Z.
+  Runtime rendering and structural support share one part transform (including scale and pivot),
+  and rendering reuses the allocator's frontage basis. Rotated parts must not be mirrored relative
+  to the editor or their support footprints.
 - Vehicles export with required `LOD0`. Additional farther tiers use ordered `[[lods]]` entries when they exist.
 - Props export with required `LOD0`. Props may add `LOD1` and `LOD2`, or cull after `LOD0` or `LOD1`.
 - Characters do not use ordinary mesh `[[lods]]`. Character runtime tiers are defined separately:
@@ -1735,7 +1741,8 @@ Optional `[[site_surfaces]]` table for building visual yard polygons:
 
 - `material`: enum, one of `asphalt` or `concrete`
 - `name`: optional editor label
-- `y_m`: optional finite vertical offset in asset-local metres, default `0.0`
+- `y_m`: optional finite offset for the flat asset-editor preview, default `0.0`; gameplay paving
+  is a material partition on physical ground, not an elevated overlay or platform
 - `vertices`: at least three `[x, z]` pairs in asset-local metres, in winding order
 - `vertices` must define a finite, non-self-intersecting polygon fully inside the authored lot
 

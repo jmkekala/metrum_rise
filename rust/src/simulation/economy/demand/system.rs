@@ -16,7 +16,7 @@ use super::snapshot::{
 };
 use super::types::DEMAND_HOURLY_CADENCE_FRACTION;
 use super::{UseTuningBool, UseTuningF32};
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, load_runtime_economy_catalog,
     load_runtime_economy_tuning,
@@ -121,6 +121,9 @@ impl DemandSystem {
         treasury_balance: f64,
     ) {
         let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
+        let terrain = crate::simulation::terrain::TerrainSystem::new(4, 4);
+        let mut road_surface = crate::simulation::network::surface::RoadSurfaceSystem::new(512.0);
+        road_surface.compile_dirty(graph, &terrain);
         self.run_hourly_pass_with_service_funding(
             allocator,
             households,
@@ -129,6 +132,10 @@ impl DemandSystem {
             treasury_balance,
             &[],
             &fiscal_policy,
+            BuildingSiteEnvironment {
+                road_surface: &road_surface,
+                terrain: &terrain,
+            },
         );
     }
 
@@ -142,6 +149,7 @@ impl DemandSystem {
         treasury_balance: f64,
         service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,
+        environment: BuildingSiteEnvironment<'_>,
     ) {
         self.building_actions = DemandBuildingActionPlan::default();
         let catalog = Arc::clone(&self.runtime_catalog);
@@ -199,6 +207,7 @@ impl DemandSystem {
             &residential_occupants,
             DEMAND_HOURLY_CADENCE_FRACTION,
             "hourly_pass",
+            environment,
         );
     }
 

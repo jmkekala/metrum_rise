@@ -44,8 +44,8 @@ impl RoadSurfaceSystem {
         )
     }
 
-    /// Triangulates an outer boundary and holes using the same CDT as road polygons.
-    pub(in crate::simulation::network::surface) fn triangulate_constrained_rings_xz(
+    /// Triangulates an outer boundary and holes for road and building-site polygons.
+    pub(crate) fn triangulate_constrained_rings_xz(
         rings: &[impl AsRef<[RoadVec3]>],
     ) -> Option<Vec<[RoadVec3; 3]>> {
         if rings.is_empty() || rings.iter().any(|ring| ring.as_ref().len() < 3) {

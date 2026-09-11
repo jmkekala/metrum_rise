@@ -4,6 +4,101 @@
 
 use super::*;
 
+fn near_corner_road_site_input() -> TerrainCdtInput {
+    // Opposite sides of an identity-cell boundary remain distinct even when their
+    // separation is below one millimetre. Both incident rails must retain the split.
+    let road = sourced_road_loop(
+        1,
+        0,
+        vec![
+            TerrainCdtVertex::new(2.0, 0.0, 2.0),
+            TerrainCdtVertex::new(28.0, 0.0, 2.0),
+            TerrainCdtVertex::new(28.0, 0.0, 10.00051),
+            TerrainCdtVertex::new(2.0, 0.0, 10.00051),
+        ],
+        test_span_boundary_source(1, TerrainCdtRoadBandKind::Sidewalk, 0),
+    );
+    let site = sourced_road_loop(
+        2,
+        0,
+        vec![
+            TerrainCdtVertex::new(10.00049, 0.0, 10.00049),
+            TerrainCdtVertex::new(20.00049, 0.0, 10.00049),
+            TerrainCdtVertex::new(20.00049, 0.0, 20.00049),
+            TerrainCdtVertex::new(10.00049, 0.0, 20.00049),
+        ],
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+            building_idx: 0,
+            local_loop_index: 0,
+            local_edge_index: 0,
+        },
+    );
+    TerrainCdtInput::new(
+        TerrainCdtPatch::new(0.0, 0.0, 32.0, 32.0, [0.0; 4]),
+        vec![road, site],
+        Vec::new(),
+    )
+}
+
+#[test]
+fn road_site_intersections_near_pad_corners_keep_distinct_vertices() {
+    let input = near_corner_road_site_input();
+    let mesh = build_road_touched_terrain_patch(input.clone()).unwrap();
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(mesh.stats.spade_missing_road_constraint_edges, 0);
+    assert_eq!(mesh.stats.max_face_slope_ratio, 0.0);
+    let terrain_area = mesh
+        .triangles
+        .iter()
+        .map(|triangle| signed_area(&triangle.map(|index| mesh.vertices[index])).abs())
+        .sum::<f64>();
+    let road_area = 26.0 * (10.00051 - 2.0);
+    let pad_area = 100.0;
+    let overlap_area = 10.0 * (10.00051 - 10.00049);
+    assert!((terrain_area - (32.0 * 32.0 - road_area - pad_area + overlap_area)).abs() < 0.00001);
+    let mut reordered = input;
+    reordered.road_loops.reverse();
+    assert_eq!(mesh, build_road_touched_terrain_patch(reordered).unwrap());
+}
+
+#[test]
+#[ignore = "unprofiled local CDT timing; run alone with --release --ignored --nocapture"]
+fn benchmark_road_site_cdt_noding() {
+    assert!(
+        !cfg!(debug_assertions),
+        "measurement requires a release build"
+    );
+    let mut input = near_corner_road_site_input();
+    input.source_samples = (0..=32)
+        .flat_map(|x| (0..=32).map(move |z| TerrainCdtVertex::new(f64::from(x), 0.0, f64::from(z))))
+        .collect();
+    let mut samples = Vec::new();
+    let mut stats = None;
+    for round in 0..24 {
+        // Input cloning/setup stays outside the measured compiler batch.
+        let inputs = vec![input.clone(); 50];
+        let start = std::time::Instant::now();
+        for input in inputs {
+            let mesh = build_road_touched_terrain_patch(std::hint::black_box(input)).unwrap();
+            stats = Some(mesh.stats);
+            std::hint::black_box(mesh);
+        }
+        if round >= 4 {
+            samples.push(start.elapsed().as_secs_f64() * 1000.0 / 50.0);
+        }
+    }
+    samples.sort_by(f64::total_cmp);
+    let stats = stats.unwrap();
+    println!(
+        "road/site CDT: median_ms={:.4} vertices={} faces={} invalid={} missing={}",
+        (samples[9] + samples[10]) * 0.5,
+        stats.input_vertices,
+        stats.accepted_faces,
+        stats.invalid_constraint_edges,
+        stats.spade_missing_road_constraint_edges,
+    );
+}
+
 #[test]
 fn crossing_road_constraints_are_noded_before_triangulation() {
     let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);

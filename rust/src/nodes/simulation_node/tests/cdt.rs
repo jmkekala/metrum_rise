@@ -9,6 +9,7 @@ fn test_cached_cdt_window(
     mesh_result: Result<TerrainCdtMesh, TerrainCdtError>,
 ) -> CachedRefinedTerrainCdtWindow {
     CachedRefinedTerrainCdtWindow {
+        ground_query: Default::default(),
         key: RefinedTerrainCdtWindowKey {
             min_x_mm,
             min_z_mm: 0,
@@ -102,6 +103,7 @@ fn cached_patch_from_planned_windows(
         .into_iter()
         .map(|window| {
             Arc::new(CachedRefinedTerrainCdtWindow {
+                ground_query: Default::default(),
                 key: window.key,
                 road_input: window.road_input,
                 input_road_loops: window.cdt_input.road_loops.len(),
@@ -497,6 +499,7 @@ fn refined_patch_build_reuses_successful_window_by_arc_identity() {
     let key = previous.key;
     let cdt_input = TerrainCdtInput::new(previous.cdt_patch, Vec::new(), Vec::new());
     let input = RefinedTerrainPatchBuildInput {
+        site_surfaces: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -650,6 +653,7 @@ fn local_refined_build_derives_complete_clip_counts_from_window_manifests() {
     mixed_window.road_clip_fingerprints = vec![7];
     mixed_window.site_clip_fingerprints = vec![9];
     let input = RefinedTerrainPatchBuildInput {
+        site_surfaces: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -693,6 +697,7 @@ fn local_refined_build_rejects_equal_sized_wrong_contributor_manifest() {
     let mut road_window = test_cached_cdt_window(0, Ok(empty_test_cdt_mesh()));
     road_window.road_clip_fingerprints = vec![7];
     let input = RefinedTerrainPatchBuildInput {
+        site_surfaces: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -741,6 +746,7 @@ fn refined_patch_build_never_reuses_failed_window() {
     let key = previous.key;
     let invalid_patch = TerrainCdtPatch::new(0.0, 0.0, 0.0, 1.0, [0.0; 4]);
     let input = RefinedTerrainPatchBuildInput {
+        site_surfaces: Vec::new(),
         key: RefinedTerrainPatchCacheKey {
             patch_x: 0,
             patch_z: 0,
@@ -1629,6 +1635,7 @@ fn terrain_cdt_incremental_planner_drops_removed_local_tiles_without_assembling_
     let cached_window = |tile_x: i64, has_engineered_contributor| {
         let min_x_mm = tile_x * 64_000;
         Arc::new(CachedRefinedTerrainCdtWindow {
+            ground_query: Default::default(),
             key: RefinedTerrainCdtWindowKey {
                 min_x_mm,
                 min_z_mm: 0,
@@ -1710,6 +1717,7 @@ fn terrain_cdt_incremental_planner_work_stays_bounded_with_many_remote_tiles() {
             previous
                 .windows
                 .push(Arc::new(CachedRefinedTerrainCdtWindow {
+                    ground_query: Default::default(),
                     key: RefinedTerrainCdtWindowKey {
                         min_x_mm,
                         min_z_mm,

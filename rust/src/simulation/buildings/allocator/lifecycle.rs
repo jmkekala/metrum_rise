@@ -36,8 +36,6 @@ const FRONTAGE_ATTACHMENT_VALID_MIN_DISTANCE_M: f32 = 6.0;
 /// Summary of building mutations performed by one demand-owned building action pass.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DemandBuildingActionExecution {
-    /// World-space bounds of building-site terrain patches dirtied by this action pass.
-    pub(crate) site_dirty_bounds: Option<(f32, f32, f32, f32)>,
     /// Residential spawn execution and final placement rejection counters.
     pub(crate) residential: DemandUseBuildingActionExecution,
     /// Commercial spawn execution and final placement rejection counters.
@@ -410,7 +408,6 @@ impl BuildingAllocator {
             .collect();
         let mut mutated_any = false;
         let mut execution = DemandBuildingActionExecution {
-            site_dirty_bounds: None,
             residential: DemandUseBuildingActionExecution::default(),
             commercial: DemandUseBuildingActionExecution::default(),
             industrial: DemandUseBuildingActionExecution::default(),
@@ -428,10 +425,6 @@ impl BuildingAllocator {
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
-                accumulate_site_dirty_bounds(
-                    &mut execution.site_dirty_bounds,
-                    self.site_world_bounds(building_idx),
-                );
                 if let Some((moved_key, moved_idx)) = self.remove_building_at_index(
                     building_idx,
                     zoning,
@@ -444,44 +437,21 @@ impl BuildingAllocator {
                 mutated_any = true;
             }
 
-            for action in &use_plan.downgrades {
+            for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
                 let Some(&building_idx) = action_lookup.get(&action.building) else {
                     continue;
                 };
-                let old_site_bounds = self.site_world_bounds(building_idx);
                 if let Some(updated_key) = self.apply_level_change_action(
                     building_idx,
                     action,
                     catalog,
                     zoning.config.zone_cell_m,
+                    graph,
+                    super::BuildingSiteEnvironment {
+                        road_surface,
+                        terrain,
+                    },
                 ) {
-                    accumulate_site_dirty_bounds(&mut execution.site_dirty_bounds, old_site_bounds);
-                    accumulate_site_dirty_bounds(
-                        &mut execution.site_dirty_bounds,
-                        self.site_world_bounds(building_idx),
-                    );
-                    action_lookup.remove(&action.building);
-                    action_lookup.insert(updated_key, building_idx);
-                    mutated_any = true;
-                }
-            }
-
-            for action in &use_plan.upgrades {
-                let Some(&building_idx) = action_lookup.get(&action.building) else {
-                    continue;
-                };
-                let old_site_bounds = self.site_world_bounds(building_idx);
-                if let Some(updated_key) = self.apply_level_change_action(
-                    building_idx,
-                    action,
-                    catalog,
-                    zoning.config.zone_cell_m,
-                ) {
-                    accumulate_site_dirty_bounds(&mut execution.site_dirty_bounds, old_site_bounds);
-                    accumulate_site_dirty_bounds(
-                        &mut execution.site_dirty_bounds,
-                        self.site_world_bounds(building_idx),
-                    );
                     action_lookup.remove(&action.building);
                     action_lookup.insert(updated_key, building_idx);
                     mutated_any = true;
@@ -503,10 +473,6 @@ impl BuildingAllocator {
                         execution.use_mut(zone_type).spawn_executed += 1;
                         self.buildings[building_idx].profit_tax_budget_baseline =
                             self.buildings[building_idx].operating_budget;
-                        accumulate_site_dirty_bounds(
-                            &mut execution.site_dirty_bounds,
-                            self.site_world_bounds(building_idx),
-                        );
                         mutated_any = true;
                     }
                     Err(reason) => {
@@ -557,10 +523,6 @@ impl BuildingAllocator {
                 execution.use_mut(zone_type).spawn_executed += 1;
                 self.buildings[building_idx].profit_tax_budget_baseline =
                     self.buildings[building_idx].operating_budget;
-                accumulate_site_dirty_bounds(
-                    &mut execution.site_dirty_bounds,
-                    self.site_world_bounds(building_idx),
-                );
                 if self.dirty_index
                     && (!zone_index_was_clean || !self.index_appended_building(building_idx))
                 {
@@ -1007,6 +969,8 @@ impl BuildingAllocator {
         action: &DemandLevelChangeAction,
         catalog: &RuntimeEconomyCatalog,
         zone_cell_m: f32,
+        graph: &RegionGraph,
+        environment: super::BuildingSiteEnvironment<'_>,
     ) -> Option<DemandBuildingActionKey> {
         let building = self.buildings.get(building_idx)?;
         if building.broken || building.pending_redevelopment {
@@ -1050,6 +1014,16 @@ impl BuildingAllocator {
         if target_worker_capacity < building.worker_count {
             return None;
         }
+        if !self.replacement_site_is_valid(
+            building_idx,
+            &action.target_asset_id,
+            zone_cell_m,
+            graph,
+            environment,
+        ) {
+            return None;
+        }
+        let old_site_bounds = self.site_world_bounds(building_idx);
         let building = &mut self.buildings[building_idx];
         building.asset_id = action.target_asset_id.clone();
         building.level = target_building.level;
@@ -1061,8 +1035,9 @@ impl BuildingAllocator {
         building.rezone_grace_days_remaining = 0;
         let zone_type = building.zone_type;
         let updated_key = demand_building_action_key(building);
-        let _ = building;
         self.rebuild_building_site_client(building_idx, zone_cell_m);
+        self.accumulate_pending_site_dirty_bounds(old_site_bounds);
+        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
@@ -1082,6 +1057,7 @@ impl BuildingAllocator {
         logistics: &mut ShipmentSystem,
     ) -> Option<(DemandBuildingActionKey, usize)> {
         let building = self.buildings.get(building_idx)?.clone();
+        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         zoning.clear_parcel_occupancy(building.parcel_id);
 
         agents.evict_building(building_idx);
@@ -1135,22 +1111,5 @@ impl BuildingAllocator {
         }
         let _ = self.remove_building_at_index(building_idx, zoning, agents, households, logistics);
         true
-    }
-}
-
-fn accumulate_site_dirty_bounds(
-    target: &mut Option<(f32, f32, f32, f32)>,
-    bounds: Option<(f32, f32, f32, f32)>,
-) {
-    let Some(bounds) = bounds else {
-        return;
-    };
-    if let Some(existing) = target {
-        existing.0 = existing.0.min(bounds.0);
-        existing.1 = existing.1.min(bounds.1);
-        existing.2 = existing.2.max(bounds.2);
-        existing.3 = existing.3.max(bounds.3);
-    } else {
-        *target = Some(bounds);
     }
 }

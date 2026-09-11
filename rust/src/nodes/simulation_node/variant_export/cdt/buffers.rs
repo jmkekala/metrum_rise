@@ -6,6 +6,7 @@ use super::super::super::*;
 use super::types::*;
 use crate::simulation::core::round_f64_to_i64;
 
+mod paving;
 mod regular;
 
 #[derive(Clone, Copy)]
@@ -210,6 +211,7 @@ impl SimulationNode {
         );
         Self::reconcile_terrain_mesh_duplicate_normals(&mut terrain_buffers);
         let mut buffers = CachedRefinedTerrainMeshBuffers {
+            terrain_colors: Vec::new(),
             variant_payload_valid: false,
             terrain_vertices: terrain_buffers.vertices,
             terrain_normals: terrain_buffers.normals,
@@ -307,6 +309,7 @@ impl SimulationNode {
             Self::append_terrain_cdt_mesh_side_samples(bounds, &mesh.vertices);
         }
         CachedRefinedTerrainMeshBuffers {
+            terrain_colors: Vec::new(),
             // Window buffers are never exported directly; the composed patch validates once.
             variant_payload_valid: false,
             terrain_vertices: terrain_buffers.vertices,
@@ -473,6 +476,10 @@ impl SimulationNode {
             PackedVector3Array::from_iter(buffers.terrain_vertices.iter().copied()),
         );
         dict.set(
+            "terrain_mesh_colors",
+            PackedColorArray::from_iter(buffers.terrain_colors.iter().copied()),
+        );
+        dict.set(
             "terrain_mesh_normals",
             PackedVector3Array::from_iter(buffers.terrain_normals.iter().copied()),
         );
@@ -506,19 +513,25 @@ impl SimulationNode {
     fn cached_refined_terrain_mesh_buffers_are_valid(
         buffers: &CachedRefinedTerrainMeshBuffers,
     ) -> bool {
-        Self::triangle_mesh_buffers_are_valid(
-            &buffers.terrain_vertices,
-            &buffers.terrain_normals,
-            &buffers.terrain_uvs,
-            &buffers.terrain_indices,
-            true,
-        ) && Self::triangle_mesh_buffers_are_valid(
-            &buffers.retaining_vertices,
-            &buffers.retaining_normals,
-            &buffers.retaining_uvs,
-            &buffers.retaining_indices,
-            false,
-        )
+        (buffers.terrain_colors.is_empty()
+            || (buffers.terrain_colors.len() == buffers.terrain_vertices.len()
+                && buffers.terrain_colors.iter().all(|c| {
+                    c.r.is_finite() && c.g.is_finite() && c.b.is_finite() && c.a.is_finite()
+                })))
+            && Self::triangle_mesh_buffers_are_valid(
+                &buffers.terrain_vertices,
+                &buffers.terrain_normals,
+                &buffers.terrain_uvs,
+                &buffers.terrain_indices,
+                true,
+            )
+            && Self::triangle_mesh_buffers_are_valid(
+                &buffers.retaining_vertices,
+                &buffers.retaining_normals,
+                &buffers.retaining_uvs,
+                &buffers.retaining_indices,
+                false,
+            )
     }
 
     pub(in crate::nodes::simulation_node) fn triangle_mesh_buffers_are_valid(

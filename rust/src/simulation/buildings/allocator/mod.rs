@@ -19,8 +19,11 @@ mod site;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use entrance::building_local_xz_basis;
+pub(crate) use placement::BuildingSiteEnvironment;
 pub(crate) use placement::ExplicitServicePlacementPreview;
 pub(crate) use site::BuildingSiteGradingRequest;
+pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
@@ -261,7 +264,6 @@ pub struct Building {
 #[derive(Clone)]
 pub(crate) struct BuildingEntrance {
     pub edge_idx: usize,
-    #[allow(dead_code)]
     pub side: i8,
     pub vehicle_frontage_access: VehicleFrontageAccess,
     pub entrance_s_m: f32,
@@ -327,8 +329,10 @@ pub struct BuildingAllocator {
     pub(crate) entrances: Vec<BuildingEntrance>,
     /// Derived flat building-site clients keyed by building index.
     pub(crate) building_sites: Vec<BuildingSiteClient>,
-    /// Building-site terrain bounds dirtied by allocator-owned cleanup.
+    /// Shared terrain-change outbox for placement, redevelopment, and removal in every mode.
     pub(crate) building_site_dirty_bounds: Option<(f32, f32, f32, f32)>,
+    // Geometry-only feasibility, independent of demand and dropped on allocator snapshots.
+    site_feasibility: placement::SiteFeasibilityCache,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -558,6 +562,7 @@ impl BuildingAllocator {
             entrances: Vec::new(),
             building_sites: Vec::new(),
             building_site_dirty_bounds: None,
+            site_feasibility: Default::default(),
             registry: AssetRegistry::new(),
         }
     }
@@ -727,6 +732,7 @@ impl BuildingAllocator {
         let had_buildings = !self.buildings.is_empty();
         let had_entrances = !self.entrances.is_empty();
         let had_sites = !self.building_sites.is_empty();
+        self.site_feasibility = placement::SiteFeasibilityCache::default();
         self.buildings.clear();
         self.building_sites.clear();
         self.edge_occupancy.clear();
@@ -770,17 +776,6 @@ impl BuildingAllocator {
     /// Advances the derived entrance-reference revision.
     pub(crate) fn bump_entrance_ref_revision(&mut self) {
         self.entrance_ref_revision = self.entrance_ref_revision.wrapping_add(1);
-    }
-
-    /// Returns the occupant capacity for a building, from its registered manifest.
-    ///
-    /// Unresolved assets or undeclared capacities count as zero.
-    pub fn building_capacity(&self, building_idx: usize) -> u32 {
-        let b = &self.buildings[building_idx];
-        if b.broken || b.economy_broken || b.is_under_construction() {
-            return 0;
-        }
-        self.registry.capacity(&b.asset_id)
     }
 
     /// Returns the household capacity declared by a building asset.

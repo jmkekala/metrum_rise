@@ -222,6 +222,9 @@ pub struct SimCore {
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
     pub camera_aabb: (f32, f32, f32, f32),
+    /// Runtime mesh support geometry; rendering metadata, not saved simulation state.
+    pub(crate) vehicle_ground_support:
+        [crate::nodes::sim::render::vehicle_ground::VehicleGroundSupport; 5],
 }
 
 impl SimCore {
@@ -536,9 +539,7 @@ impl SimCore {
             self.demand.runtime_tuning(),
         );
         let execute_ms = execute_start.elapsed().as_secs_f64() * 1000.0;
-        if let Some(bounds) = execution.site_dirty_bounds {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
-        }
+        self.publish_pending_building_site_changes();
         let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
 
         let use_execution = match pending.zone_type {
@@ -588,9 +589,7 @@ impl SimCore {
             &mut self.transit_network,
             &mut self.region_graph,
         );
-        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
-        }
+        self.publish_pending_building_site_changes();
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
             use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
@@ -702,6 +701,13 @@ impl SimCore {
         minute_of_day: u16,
         service_funding_by_building: &[f32],
     ) {
+        self.allocator
+            .prepare_building_site_query_index(self.config.zone_cell_m);
+        self.transit_network.road_surface.compile_dirty_with_reason(
+            &self.region_graph,
+            &self.heightmap,
+            RoadSurfaceCompileReason::SimCommit,
+        );
         self.demand.run_hourly_pass_with_service_funding(
             &self.allocator,
             &self.households,
@@ -710,6 +716,10 @@ impl SimCore {
             self.treasury.balance,
             service_funding_by_building,
             &self.fiscal_policy,
+            crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+                road_surface: &self.transit_network.road_surface,
+                terrain: &self.heightmap,
+            },
         );
         let launched_households = self
             .allocator
@@ -746,9 +756,7 @@ impl SimCore {
             } else {
                 Default::default()
             };
-        if let Some(bounds) = building_action_execution.site_dirty_bounds {
-            self.mark_building_site_terrain_dirty_bounds(bounds);
-        }
+        self.publish_pending_building_site_changes();
         self.demand
             .log_hourly_household_action_diagnostics(day_index, minute_of_day);
         self.demand
@@ -814,6 +822,13 @@ impl SimCore {
             self.demand.building_actions.commercial.despawns.len(),
             self.demand.building_actions.industrial.despawns.len(),
         );
+    }
+
+    /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.
+    pub(crate) fn publish_pending_building_site_changes(&mut self) {
+        if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
+            self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
     }
 
     pub(crate) fn mark_building_site_terrain_dirty_bounds(&mut self, bounds: (f32, f32, f32, f32)) {

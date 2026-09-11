@@ -124,6 +124,11 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap another road-owned corridor.
 - The parcel must not overlap an explicit service-building site reservation.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
+- A nonzero profile needs at least one legal initial-level asset with a valid shared flat-site
+  solution. Zoning preview tests the same support solver used by demand and explicit placement;
+  preview and commit never stamp terrain or insert a building. Unsupported lots remain visible
+  in red with a reason, but cannot be committed as newly zoned lots. Runtime id `0` remains usable
+  for free/unzoned parcels even without compatible building assets.
 - Successful parcel placement records only zoning/legal intent. Terrain integration is deferred
   until `BuildingAllocator` accepts an actual building placement and the `EARTH-02` building-site
   client is registered.
@@ -137,6 +142,14 @@ candidate, including an explicit service-building site reservation, is skipped r
 cancelling the whole preview or commit. If no generated candidate is legal, the drag fails without
 mutation. On curves, Rust may widen spacing between generated
 parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
+
+Site feasibility filters the geometrically legal layout: drag previews retain invalid lots in red,
+and commit accepts only currently buildable lots. Existing saved parcels are not silently deleted
+when blocked. Demand re-evaluates their compatible assets through the same dependency-aware cache;
+hovering/repainting exposes a rejection reason. Road, terrain, neighboring-site and asset changes
+invalidate affected solutions. Redevelopment ignores the parcel's own occupied site, not neighbors.
+This guarantees geometric feasibility under unchanged inputs, not construction regardless of
+demand, economic gates, later edits or installed assets.
 
 When dragging from an existing parcel, the first generated parcel starts after:
 
@@ -163,9 +176,15 @@ Parcel creation and preview:
 ```text
 get_zoning_parcel_preview(...)
 get_zoning_parcel_drag_preview_packed(...)
+get_zoning_site_dependencies() -> PackedInt64Array
 apply_zoning_parcel_at(...)
 apply_zoning_parcel_drag(...)
 ```
+
+Single preview dictionaries include `valid` and `reason`. Packed drag dictionaries additionally
+include `valid_count` and per-parcel `colors`; `parcel_count` includes rejected preview lots.
+The tool displays the Rust-provided reason and drops retained preview geometry whenever dependency
+epochs change, including while the cursor is stationary. Commit always checks current inputs.
 
 Parcel rezone:
 

@@ -10,6 +10,20 @@ uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anis
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_coal_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grain_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_asphalt_albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D site_concrete_albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float site_asphalt_uv_scale = 0.12;
+uniform float site_asphalt_macro_uv_scale = 0.018;
+uniform float site_asphalt_macro_influence = 0.25;
+uniform float site_asphalt_brightness = 1.0;
+uniform vec3 site_asphalt_albedo_floor = vec3(0.0);
+uniform float site_asphalt_floor_influence = 0.0;
+uniform float site_concrete_uv_scale = 0.18;
+uniform float site_concrete_macro_uv_scale = 0.030;
+uniform float site_concrete_macro_influence = 0.12;
+uniform float site_concrete_brightness = 1.0;
+uniform vec3 site_concrete_albedo_floor = vec3(0.0);
+uniform float site_concrete_floor_influence = 0.0;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform bool height_is_baked = false;
@@ -947,6 +961,21 @@ void fragment() {
 		color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
 		color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
 		color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
+		// Per-face tags change material, never displace or discard ground.
+		// Untagged meshes use Godot's default white vertex color.
+		if (height_is_baked && COLOR.b < 0.5) {
+			if (COLOR.r > 0.5) {
+				vec3 detail = texture(site_asphalt_albedo_tex, var_world_pos.xz * site_asphalt_uv_scale).rgb;
+				vec3 macro = texture(site_asphalt_albedo_tex, var_world_pos.xz * site_asphalt_macro_uv_scale).rgb;
+				color = detail * mix(vec3(1.0), macro * 1.2, site_asphalt_macro_influence) * site_asphalt_brightness;
+				color = mix(color, max(color, site_asphalt_albedo_floor), site_asphalt_floor_influence);
+			} else {
+				vec3 detail = texture(site_concrete_albedo_tex, var_world_pos.xz * site_concrete_uv_scale).rgb;
+				vec3 macro = texture(site_concrete_albedo_tex, var_world_pos.xz * site_concrete_macro_uv_scale).rgb;
+				color = detail * mix(vec3(1.0), macro * 1.2, site_concrete_macro_influence) * site_concrete_brightness;
+				color = mix(color, max(color, site_concrete_albedo_floor), site_concrete_floor_influence);
+			}
+		}
 		ALBEDO = color;
 		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0);
 		ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);

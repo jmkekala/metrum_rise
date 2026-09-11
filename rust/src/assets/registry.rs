@@ -32,6 +32,7 @@ pub struct AssetEntry {
 /// dimensions or identity should read from a shared registry rather than maintaining their own maps.
 #[derive(Debug, Default, Clone)]
 pub struct AssetRegistry {
+    revision: u64,
     /// Primary store: qualified_id → entry.
     entries: HashMap<String, AssetEntry>,
     /// Secondary index: `by_zone[ZoneClass as usize]` = sorted list of qualified_ids for
@@ -60,7 +61,31 @@ impl AssetRegistry {
     /// The manifest must already be validated through [`AssetManifest`] parsing.
     /// `asset_dir` is the native filesystem path to the directory containing `asset.toml`.
     pub fn register(&mut self, pack_id: &str, manifest: AssetManifest, asset_dir: String) {
+        self.revision = self.revision.wrapping_add(1);
         let qid = manifest.qualified_id(pack_id);
+
+        // Replacement must remove the old classification before indexing the new manifest.
+        // Only the old zone/density buckets are visited, never the whole registry.
+        if let Some(old) = self.entries.get(&qid)
+            && let Some(building) = &old.manifest.building
+        {
+            if let Some(zone) = building.zone_type {
+                self.by_zone[zone as usize].retain(|id| id != &qid);
+                let key = (zone, building.density_key().unwrap_or("low").to_owned());
+                if let Some(ids) = self.by_zone_density.get_mut(&key) {
+                    ids.retain(|id| id != &qid);
+                    if ids.is_empty() {
+                        self.by_zone_density.remove(&key);
+                    }
+                }
+            }
+            if let Some(set) = &old.manifest.asset_set {
+                let key = (set.clone(), building.level);
+                if self.upgrade_index.get(&key) == Some(&qid) {
+                    self.upgrade_index.remove(&key);
+                }
+            }
+        }
 
         if let Some(bd) = &manifest.building {
             if bd.placement_mode != PlacementMode::ZonedPrivate {
@@ -330,12 +355,18 @@ impl AssetRegistry {
 
     /// Removes all entries and clears all secondary indices.
     pub fn clear(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         self.entries.clear();
         for list in &mut self.by_zone {
             list.clear();
         }
         self.by_zone_density.clear();
         self.upgrade_index.clear();
+    }
+
+    /// Revision of asset registration/removal, including replacement of an existing manifest.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -359,6 +390,7 @@ mod tests {
             thumbnail: None,
             lods: vec![],
             mesh_parts: vec![MeshPart {
+                imported_bounds: None,
                 name: "main".to_owned(),
                 position: [0.0, 0.0, 0.0],
                 rotation_degrees: [0.0, 0.0, 0.0],
@@ -477,6 +509,48 @@ mod tests {
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.buildings_for_zone(ZoneClass::Residential).len(), 1);
         assert_eq!(reg.lot_size("base:b.res.house"), (4, 3));
+    }
+
+    #[test]
+    fn replacement_removes_old_zone_density_and_family_membership() {
+        let mut reg = AssetRegistry::new();
+        let mut house = make_building_manifest("building", ZoneClass::Residential, 2, 2);
+        house.asset_set = Some("old".to_owned());
+        reg.register("base", house.clone(), String::new());
+        let revision = reg.revision();
+        let mut replacement = house;
+        replacement.asset_set = Some("new".to_owned());
+        let building = replacement.building.as_mut().unwrap();
+        building.zone_type = Some(ZoneClass::Commercial);
+        building.density = Some("high".to_owned());
+        building.level = 2;
+        reg.register("base", replacement.clone(), String::new());
+        assert_ne!(reg.revision(), revision);
+        assert!(reg.buildings_for_zone(ZoneClass::Residential).is_empty());
+        assert!(
+            reg.buildings_for_zone_density(ZoneClass::Residential, "low")
+                .is_empty()
+        );
+        assert!(!reg.upgrade_index.contains_key(&("old".to_owned(), 1)));
+        assert_eq!(
+            reg.buildings_for_zone_density(ZoneClass::Commercial, "high"),
+            ["base:building"]
+        );
+        assert_eq!(
+            reg.upgrade_index
+                .get(&("new".to_owned(), 2))
+                .map(String::as_str),
+            Some("base:building")
+        );
+
+        replacement.building = None;
+        reg.register("base", replacement, String::new());
+        assert!(reg.buildings_for_zone(ZoneClass::Commercial).is_empty());
+        assert!(
+            reg.buildings_for_zone_density(ZoneClass::Commercial, "high")
+                .is_empty()
+        );
+        assert!(reg.upgrade_index.is_empty());
     }
 
     #[test]

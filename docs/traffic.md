@@ -17,6 +17,7 @@ Implementation lives mainly in:
 - `rust/src/simulation/economy/agents/data.rs`
 - `rust/src/simulation/network/lanes/vehicle_junctions.rs`
 - `rust/src/nodes/sim/render/lane_pose.rs`
+- `rust/src/nodes/sim/core/snapshot.rs`
 - `rust/src/nodes/sim/render/agents.rs`
 - `godot/scripts/renderers/agents.gd`
 
@@ -276,7 +277,22 @@ This rule intentionally avoids weaving:
 
 ## Render Movement
 
-Rust produces car transforms from lane poses in `nodes/sim/render/agents.rs`.
+Rust produces car transforms from lane poses in `nodes/sim/core/snapshot.rs`; the former direct
+car/pedestrian exporters are removed. `nodes/sim/render/agents.rs` owns path debug overlays only.
+The snapshot samples an active car lane-change curve only when source and destination lanes have
+matching road, direction and lane type. Invalid/stale sources use the current lane pose. This
+reuses the existing allocation-free lane sampler; it adds one bounded source-lane lookup and, for
+active changes, source-lane sampling, not a scan over agents or roads. The snapshot regression
+`car_snapshot_keeps_lane_change_curve_in_both_directions` checks start/midpoint/end positions,
+sloped lane heights, lateral orientation, ownership flags and mismatched-source rejection.
+
+The final audit's `lane_change_snapshot_benchmark` measures 100/1,000/10,000 cars on two sloped
+lanes, with fixture setup excluded, ten warmups and 100 recycled snapshots per workload. Release
+p50 for inactive versus all-active lane changes is 0.0316/0.0363, 0.1189/0.1507 and
+0.8272/0.9872 ms respectively (`RAYON_NUM_THREADS=24`). This isolates the snapshot sampling cost;
+it is not a gameplay frame-time benchmark. Log: `/tmp/metrum-audit-sealed-lane-change.log`;
+build identity and related acceptance checks are in
+[`earthworks.md`](earthworks.md#changeset-audit-2026-09-11).
 
 Lane pose sampling in `nodes/sim/render/lane_pose.rs`:
 

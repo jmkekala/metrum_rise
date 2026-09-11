@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! Godot-Rust bridge helpers for asset management and content registries.
+
+mod mesh_bounds;
+
 use crate::assets::asset::ZoneClass;
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
@@ -21,7 +24,8 @@ pub fn load_asset_packs(
         filter_str.split(',').map(str::trim).collect()
     };
 
-    let result = scan_pack_dir(Path::new(&dir_path.to_string()));
+    let mut result = scan_pack_dir(Path::new(&dir_path.to_string()));
+    let mut bounds_cache = mesh_bounds::MeshBoundsCache::new();
     // Treat every load as an authoritative registry refresh. Asset editor moves,
     // pack disables, and deleted folders must remove stale qualified IDs too.
     core.allocator.registry.clear();
@@ -29,12 +33,25 @@ pub fn load_asset_packs(
         if !filter.is_empty() && !filter.contains(&pack.pack.pack_id.as_str()) {
             continue;
         }
-        for (asset, asset_dir) in pack.assets {
+        for (mut asset, asset_dir) in pack.assets {
+            if let Err(error) =
+                mesh_bounds::import_building_bounds(&mut asset, &asset_dir, &mut bounds_cache)
+            {
+                result.warnings.push(format!(
+                    "skipping '{}': {error}",
+                    asset.qualified_id(&pack.pack.pack_id)
+                ));
+                continue;
+            }
             core.allocator
                 .registry
                 .register(&pack.pack.pack_id, asset, asset_dir);
         }
     }
+    core.allocator
+        .refresh_building_sites_after_asset_reload(core.zoning.config.zone_cell_m);
+    core.rebuild_building_entrances_internal();
+    core.publish_pending_building_site_changes();
     let reg = &core.allocator.registry;
     debug_log!(
         "spawn",

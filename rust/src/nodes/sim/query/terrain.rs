@@ -5,17 +5,12 @@
 use crate::config::HEIGHT_SCALE;
 use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
+mod engineered;
 
 impl SimCore {
     /// Returns the heightmap dimensions in terrain samples as a Godot Vector2.
     pub fn get_heightmap_size_internal(&self) -> Vector2 {
         Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
-    }
-
-    /// Returns the terrain world extent in metres.
-    pub fn get_terrain_world_size_internal(&self) -> Vector2 {
-        let (world_w, world_h) = self.heightmap.world_size();
-        Vector2::new(world_w, world_h)
     }
 
     /// Returns the terrain height at the given world position.
@@ -32,6 +27,7 @@ impl SimCore {
             .road_surface
             .sample_visible_surface_height(&self.region_graph, &self.heightmap, pos.x, pos.y)
             .or_else(|| self.allocator.sample_building_site_height(pos))
+            .or_else(|| self.sample_engineered_ground_height(pos))
             .unwrap_or_else(|| {
                 self.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE
             })
@@ -82,8 +78,15 @@ impl SimCore {
                     )
                     .is_none()
                     && self.allocator.sample_building_site_height(pos).is_none()
+                    && self.sample_engineered_ground_height(pos).is_none()
             });
         let owned_hit = closest_ray_hit(ray_origin, ray_dir, road_hit, site_hit);
+        let owned_hit = closest_ray_hit(
+            ray_origin,
+            ray_dir,
+            owned_hit,
+            self.raycast_engineered_ground(ray_origin, ray_dir),
+        );
         closest_ray_hit(ray_origin, ray_dir, owned_hit, terrain_hit)
     }
 }

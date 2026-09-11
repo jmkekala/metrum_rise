@@ -4,8 +4,9 @@
 //!
 //! `SimCore` owns all simulation state. The background thread continuously ticks
 //! it at ~60 Hz, writes a `RenderSnapshot` after every tick, and never touches
-//! Godot objects. The Godot main thread reads only from the snapshot for rendering
-//! and locks the `Arc<Mutex<SimCore>>` briefly for mutations (road edits, etc.).
+//! Godot objects. The Godot main thread reads render snapshots and locks the core
+//! briefly for mutations. Interpolated off-lane vehicle poses also use a nonblocking
+//! read of local surface indices; a busy core falls back to supported snapshot poses.
 
 mod budget;
 mod road_edit_plan;
@@ -36,6 +37,7 @@ pub(crate) use road_preview::{
 };
 pub(crate) use snapshot::{
     BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, WaterRuntimeSnapshot,
+    access_phase_target,
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use terrain_payloads::{
@@ -51,10 +53,7 @@ pub(crate) use water_preview::{
 };
 
 #[cfg(test)]
-use snapshot::{
-    pedestrian_access_surface_height_from_samples, pedestrian_lane_surface_height,
-    pedestrian_needs_access_surface,
-};
+use snapshot::pedestrian_lane_surface_height;
 #[cfg(test)]
 use state::{
     absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,

@@ -11,7 +11,6 @@ use crate::simulation::terrain::cdt::{
 };
 
 const BUILDING_SITE_FOOTPRINT_GROUP_MASK: u64 = 0x8000_0000_0000_0000;
-const BUILDING_SITE_CDT_LOOP_CLEARANCE_M: f32 = 0.02;
 
 impl BuildingAllocator {
     pub(crate) fn terrain_site_snapshot_for_world_bounds(
@@ -31,6 +30,7 @@ impl BuildingAllocator {
                         building_idx,
                         footprint_world: site.footprint_world.clone(),
                         support_height_m: site.support_height_m,
+                        surfaces: site.surfaces.clone(),
                     }
                 })
             })
@@ -93,6 +93,13 @@ impl BuildingAllocator {
 }
 
 impl BuildingSiteTerrainSnapshot {
+    /// Returns ordered paving regions from the captured local sites, including apron-only hits.
+    pub(crate) fn paving_surfaces(&self) -> Vec<super::model::BuildingSiteSurfaceClient> {
+        self.sites
+            .iter()
+            .flat_map(|site| site.surfaces.iter().cloned())
+            .collect()
+    }
     /// Tests exact site bounds within this already-local capture, matching live site ownership.
     pub(crate) fn has_building_site_for_world_bounds(
         &self,
@@ -124,7 +131,7 @@ impl BuildingSiteTerrainSnapshot {
 impl BuildingSiteTerrainClient {
     fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {
         let (site_min_x, site_min_z, site_max_x, site_max_z) =
-            super::geometry::polygon_slice_bounds(&self.footprint_world);
+            super::model::site_surface_bounds(&self.footprint_world, &self.surfaces);
         site_min_x <= max_x && site_max_x >= min_x && site_min_z <= max_z && site_max_z >= min_z
     }
 }
@@ -147,8 +154,9 @@ fn building_site_cdt_loop_from_parts(
     support_height_m: f32,
 ) -> TerrainCdtRoadLoop {
     let stable_piece_id = BUILDING_SITE_FOOTPRINT_GROUP_MASK | building_idx as u64;
-    let cdt_footprint = inset_building_site_cdt_footprint(footprint_world);
-    let vertices = cdt_footprint
+    // The cutout, flat foundation and height query must share exactly one boundary.
+    // An inset lets graded terrain rise through the outer strip of the level pad.
+    let vertices = footprint_world
         .iter()
         .map(|point| TerrainCdtVertex::new(point.x as f64, support_height_m, point.y as f64))
         .collect::<Vec<_>>();
@@ -174,29 +182,4 @@ fn building_site_cdt_loop_from_parts(
         vertices,
         source_edges,
     )
-}
-
-fn inset_building_site_cdt_footprint(
-    footprint_world: &[godot::prelude::Vector2],
-) -> Vec<godot::prelude::Vector2> {
-    if footprint_world.len() < 3 {
-        return footprint_world.to_vec();
-    }
-    let center = footprint_world
-        .iter()
-        .copied()
-        .fold(godot::prelude::Vector2::ZERO, |sum, point| sum + point)
-        / footprint_world.len() as f32;
-    footprint_world
-        .iter()
-        .map(|&point| {
-            let inward = center - point;
-            let distance_m = inward.length();
-            if distance_m <= BUILDING_SITE_CDT_LOOP_CLEARANCE_M * 2.0 {
-                point
-            } else {
-                point + inward / distance_m * BUILDING_SITE_CDT_LOOP_CLEARANCE_M
-            }
-        })
-        .collect()
 }

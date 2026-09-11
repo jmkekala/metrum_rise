@@ -90,7 +90,7 @@ impl RoadSurfaceSystem {
         let chunk = Self::query_chunk_coords_for_world(world_x, world_z);
         let edge_indices = self.query_chunk_spans.get(&chunk);
         let node_ids = self.query_chunk_nodes.get(&chunk);
-        let mut top_surface_height_m: Option<f32> = None;
+        let mut top_surface = None;
 
         // Reuse the immutable owner-local triangle grids already built for lane queries.
         // O(owners in query chunk + triangles in their matching cells), with no allocations.
@@ -99,9 +99,9 @@ impl RoadSurfaceSystem {
                 continue;
             }
             if let Some(piece) = self.compiled_visual_node_pieces.get(&node_id)
-                && let Some(height_m) = piece.surface_query.sample_visible_height(point)
+                && let Some(sample) = piece.surface_query.sample_visible_height(point)
             {
-                keep_max_height(&mut top_surface_height_m, height_m);
+                keep_max_height(&mut top_surface, sample);
             }
         }
         for &edge_idx in edge_indices.into_iter().flatten() {
@@ -109,17 +109,17 @@ impl RoadSurfaceSystem {
                 continue;
             }
             if let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx)
-                && let Some(height_m) = piece.surface_query.sample_visible_height(point)
+                && let Some(sample) = piece.surface_query.sample_visible_height(point)
             {
-                keep_max_height(&mut top_surface_height_m, height_m);
+                keep_max_height(&mut top_surface, sample);
             }
         }
 
-        if top_surface_height_m.is_some() {
-            return (top_surface_height_m, None);
+        if top_surface.is_some() {
+            return (top_surface, None);
         }
 
-        let mut earthwork_height_m: Option<f32> = None;
+        let mut earthwork = None;
         self.visit_visible_earthwork_query_triangles(
             graph,
             terrain,
@@ -132,13 +132,13 @@ impl RoadSurfaceSystem {
                 .flat_map(|owners| owners.iter().copied())
                 .filter(|node| include_node(*node)),
             &mut |triangle| {
-                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
-                    keep_max_height(&mut earthwork_height_m, height_m);
+                if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
+                    keep_max_height(&mut earthwork, height_m);
                 }
             },
         );
 
-        (None, earthwork_height_m)
+        (None, earthwork)
     }
 
     pub(crate) fn sample_visible_carriageway_height(
@@ -165,7 +165,7 @@ impl RoadSurfaceSystem {
             }
             for polygon in &piece.road_surface_polygons {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
                     }
                 });
@@ -178,7 +178,7 @@ impl RoadSurfaceSystem {
             };
             for polygon in &piece.road_surface_polygons {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_max_height(&mut road_surface_height_m, height_m);
                     }
                 });
@@ -223,7 +223,7 @@ impl RoadSurfaceSystem {
                 .chain(&piece.sidewalk_surface_polygons)
             {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                    if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                    if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                         keep_min_height(&mut best_height_m, height_m - height_offset_m);
                     }
                 });
@@ -236,7 +236,7 @@ impl RoadSurfaceSystem {
             };
             let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
             self.visit_span_piece_clearance_triangles(piece, &mut |triangle| {
-                if let Some(height_m) = Self::triangle_height_at_xz(triangle, point) {
+                if let Some(height_m) = Self::triangle_height_at_xz(&triangle, point) {
                     keep_min_height(&mut best_height_m, height_m - height_offset_m);
                 }
             });
@@ -373,8 +373,10 @@ impl RoadSurfaceSystem {
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
 
-    fn triangle_height_at_xz(triangle: [RoadVec3; 3], point: RoadVec2) -> Option<f32> {
-        let (wa, wb, wc) = road_triangle_barycentric_weights_xz(triangle, point)?;
+    // Borrow the indexed triangle through this call boundary instead of copying 72 bytes
+    // for every candidate in a height query.
+    fn triangle_height_at_xz(triangle: &[RoadVec3; 3], point: RoadVec2) -> Option<f32> {
+        let (wa, wb, wc) = road_triangle_barycentric_weights_xz(*triangle, point)?;
         Some((triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc) as f32)
     }
 
@@ -439,6 +441,11 @@ impl RoadLaneSurfaceQuery<'_> {
 }
 
 impl RoadSurfaceTriangleQueryIndex {
+    /// Samples compiled ground height in the containing local grid cell.
+    pub(crate) fn sample_ground_height(&self, point: RoadVec2) -> Option<f32> {
+        self.sample_height_matching(point, |_| true)
+    }
+
     fn sample_height(&self, point: RoadVec2, carriageway_only: bool) -> Option<f32> {
         self.sample_height_matching(point, |triangle| !carriageway_only || triangle.carriageway)
     }
@@ -454,23 +461,24 @@ impl RoadSurfaceTriangleQueryIndex {
         point: RoadVec2,
         accepts: impl Fn(&RoadSurfaceIndexedTriangle) -> bool,
     ) -> Option<f32> {
-        let mut surface_height_m = None;
+        let mut height = None;
         for &triangle_idx in self.cell_triangle_indices(point) {
-            let indexed = self.triangles[triangle_idx as usize];
-            if !accepts(&indexed) {
+            let indexed = &self.triangles[triangle_idx as usize];
+            if !accepts(indexed) {
                 continue;
             }
             if let Some(height_m) =
-                RoadSurfaceSystem::triangle_height_at_xz(indexed.triangle, point)
+                RoadSurfaceSystem::triangle_height_at_xz(&indexed.triangle, point)
             {
-                keep_max_height(&mut surface_height_m, height_m);
+                keep_max_height(&mut height, height_m);
             }
         }
-        surface_height_m
+        height
     }
 }
 
-fn ray_xz_interval_for_bounds(
+/// Intersects a forward ray with an XZ rectangle; shared by road and engineered-ground queries.
+pub(crate) fn ray_xz_interval_for_bounds(
     ray_origin: RoadVec3,
     ray_dir: RoadVec3,
     min_x: f64,
@@ -606,7 +614,8 @@ fn road_triangle_barycentric_weights_xz(
     Some((w0, w1, w2))
 }
 
-fn road_ray_triangle_intersection_t(
+/// Two-sided triangle hit parameter, shared by the visible road and terrain carriers.
+pub(crate) fn road_ray_triangle_intersection_t(
     triangle: [RoadVec3; 3],
     ray_origin: RoadVec3,
     ray_dir: RoadVec3,
@@ -642,6 +651,29 @@ mod tests {
     use crate::simulation::network::build_surface_edge;
     use crate::simulation::network::types::NodeType;
 
+    #[test]
+    fn ground_height_comes_from_highest_triangle_regardless_of_winding() {
+        let lower = [
+            RoadVec3::ZERO,
+            RoadVec3::new(4.0, 0.0, 0.0),
+            RoadVec3::new(0.0, 0.0, 4.0),
+        ];
+        for grade in [-0.4, 0.4] {
+            let upper = lower.map(|p| RoadVec3::new(p.x, 5.0 + grade * p.x + 0.2 * p.z, p.z));
+            for triangle in [upper, [upper[2], upper[1], upper[0]]] {
+                let index = RoadSurfaceTriangleQueryIndex::from_ground_triangles([lower, triangle]);
+                let point = RoadVec2::new(1.0, 1.0);
+                let height = index.sample_ground_height(point).unwrap();
+                assert!((height - (5.2 + grade as f32)).abs() < 1e-6);
+                assert!(
+                    index
+                        .sample_ground_height(RoadVec2::new(10.0, 10.0))
+                        .is_none()
+                );
+            }
+        }
+    }
+
     fn scanned_height(
         surface: &RoadSurfaceSystem,
         graph: &RegionGraph,
@@ -668,7 +700,7 @@ mod tests {
             edges.clone(),
             nodes.clone(),
             &mut |triangle| {
-                if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(triangle, point) {
+                if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point) {
                     keep_max_height(&mut result, height);
                 }
             },
@@ -680,7 +712,7 @@ mod tests {
                 edges,
                 nodes,
                 &mut |triangle| {
-                    if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(triangle, point)
+                    if let Some(height) = RoadSurfaceSystem::triangle_height_at_xz(&triangle, point)
                     {
                         keep_max_height(&mut result, height);
                     }

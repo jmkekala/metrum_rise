@@ -480,21 +480,10 @@ fn sort_dedup_constraint_splits(splits: &mut Vec<TerrainCdtRoadConstraintSplit>)
         a.t.total_cmp(&b.t)
             .then_with(|| a.vertex_index.cmp(&b.vertex_index))
     });
-    let mut deduped = Vec::with_capacity(splits.len());
-    for split in splits.iter().copied() {
-        if let Some(last) = deduped.last_mut() {
-            let last: &mut TerrainCdtRoadConstraintSplit = last;
-            if (split.t - last.t).abs() <= CDT_EPSILON_M || split.vertex_index == last.vertex_index
-            {
-                if split.vertex_index < last.vertex_index {
-                    *last = split;
-                }
-                continue;
-            }
-        }
-        deduped.push(split);
-    }
-    *splits = deduped;
+    // t is dimensionless, not metres. Even metrically close intersections can occupy
+    // different canonical vertices; dropping one leaves its other incident edge
+    // crossing this constraint. Vertex insertion already owns identity merging.
+    splits.dedup_by_key(|split| split.vertex_index);
 }
 
 pub(in crate::simulation::terrain::cdt) fn segment_intersections(

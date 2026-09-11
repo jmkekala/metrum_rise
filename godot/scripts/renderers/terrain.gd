@@ -131,7 +131,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 5
+const TERRAIN_CDT_CONTRACT_REVISION := 13
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -891,9 +891,9 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		return
 	if _patch_requires_engineered_refinement(key, patch_data) and not _engineered_patch_data_is_renderable(patch_data):
 		_mark_bad_cdt_generation_handled(key, patch_data)
-		if _road_debug_enabled:
+		if _terrain_debug_enabled or _road_debug_enabled:
 			print(
-				"[DEBUG:road] terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
+				"[DEBUG:terrain] terrain_create key=(%d,%d) deferred_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s"
 				% [
 					key.x,
 					key.y,
@@ -963,6 +963,11 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_grass_height", grass_height_texture)
 	material.set_shader_parameter("terrain_coal_albedo", coal_albedo_texture)
 	material.set_shader_parameter("terrain_grain_albedo", grain_albedo_texture)
+	# Reuse the site materials' texture/tone contract on the graded terrain faces.
+	for kind: String in ["asphalt", "concrete"]:
+		var paving: ShaderMaterial = WorldMaterials.site_asphalt_material() if kind == "asphalt" else WorldMaterials.site_concrete_material()
+		for parameter: String in ["albedo_tex", "uv_scale", "macro_uv_scale", "macro_influence", "brightness", "albedo_floor", "floor_influence"]:
+			material.set_shader_parameter("site_" + kind + "_" + parameter, paving.get_shader_parameter(parameter))
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("height_is_baked", height_is_baked)
@@ -1132,9 +1137,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 		if not previous_patch_data.is_empty():
 			patch["engineered_bad_cdt_blocked"] = false
 			_apply_patch_visibility_for_residency(key, patch, previous_patch_data)
-			if _road_debug_enabled:
+			if _terrain_debug_enabled or _road_debug_enabled:
 				print(
-					"[DEBUG:road] terrain_upload key=(%d,%d) preserved_last_good_cdt=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
+					"[DEBUG:terrain] terrain_upload key=(%d,%d) preserved_last_good_cdt=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
 					% [
 						key.x,
 						key.y,
@@ -1147,9 +1152,9 @@ func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 			return false
 		patch_render_will_change.emit(key)
 		_block_engineered_patch_until_valid_cdt(patch)
-		if _road_debug_enabled:
+		if _terrain_debug_enabled or _road_debug_enabled:
 			print(
-				"[DEBUG:road] terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
+				"[DEBUG:terrain] terrain_upload key=(%d,%d) hidden_bad_cdt_no_heightmap_fallback=true cdt_status=%s cdt_error=%s fetch_ms=%.3f total_ms=%.3f"
 				% [
 					key.x,
 					key.y,
@@ -2414,6 +2419,13 @@ func _triangle_mesh_payload_is_valid(
 	var normals: PackedVector3Array = patch_data[normals_key]
 	var uvs: PackedVector2Array = patch_data[uvs_key]
 	var indices: PackedInt32Array = patch_data[indices_key]
+	var colors: PackedColorArray = PackedColorArray()
+	if patch_data.has(prefix + "_colors"):
+		if typeof(patch_data[prefix + "_colors"]) != TYPE_PACKED_COLOR_ARRAY:
+			return false
+		colors = patch_data[prefix + "_colors"]
+		if not colors.is_empty() and colors.size() != vertices.size():
+			return false
 	if vertices.is_empty():
 		return not required and normals.is_empty() and uvs.is_empty() and indices.is_empty()
 	if vertices.size() < 3:
@@ -2441,6 +2453,9 @@ func _triangle_mesh_payload_is_valid(
 			return false
 	for uv in uvs:
 		if not is_finite(uv.x) or not is_finite(uv.y):
+			return false
+	for color in colors:
+		if not is_finite(color.r) or not is_finite(color.g) or not is_finite(color.b) or not is_finite(color.a):
 			return false
 	if indices.is_empty():
 		return true
@@ -2632,12 +2647,15 @@ func _baked_terrain_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
 	var normals: PackedVector3Array = patch_data["terrain_mesh_normals"] as PackedVector3Array
 	var uvs: PackedVector2Array = patch_data["terrain_mesh_uvs"] as PackedVector2Array
 	var indices: PackedInt32Array = patch_data.get("terrain_mesh_indices", PackedInt32Array()) as PackedInt32Array
+	var colors: PackedColorArray = patch_data.get("terrain_mesh_colors", PackedColorArray()) as PackedColorArray
 	var mesh: ArrayMesh = ArrayMesh.new()
 	if vertices.size() < 3:
 		return mesh
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if colors.size() == vertices.size():
+		arrays[Mesh.ARRAY_COLOR] = colors
 	if normals.size() == vertices.size():
 		arrays[Mesh.ARRAY_NORMAL] = normals
 	if uvs.size() == vertices.size():

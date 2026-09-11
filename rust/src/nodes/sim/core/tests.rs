@@ -2,15 +2,16 @@
 
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
+mod building_site_terrain;
 mod ghost_lines;
 mod road_plan_scaling;
 mod road_terrain_plan;
+mod zoning_buildability;
 
 use super::{
     CityTreasury, DailyBudgetLedgerEntry, RenderSnapshot, RoadPreviewRequest, SimCore,
     absolute_operational_minute, demand_plan_has_non_spawn_actions, demand_plan_without_spawns,
-    pedestrian_access_surface_height_from_samples, pedestrian_lane_surface_height,
-    pedestrian_needs_access_surface, road_tool_snapshots_from_core,
+    pedestrian_lane_surface_height, road_tool_snapshots_from_core,
 };
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass};
@@ -19,8 +20,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
-    AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
-    TRANSIT_NETWORK,
+    AgentSystem, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
 };
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
@@ -121,6 +121,7 @@ fn test_core() -> SimCore {
         cached_network_node_positions_dirty: true,
         road_tool_surface_generation: 1,
         camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        vehicle_ground_support: Default::default(),
     }
 }
 
@@ -812,11 +813,17 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
         .committed
     );
     core.precompute_road_mesh_data();
-    add_test_complete_building(&mut core, "plan-rollback".into(), ZoneType::Residential);
+    let asset = register_test_asset(&mut core.allocator, "plan-rollback", ZoneType::Residential);
+    add_test_complete_building(&mut core, asset, ZoneType::Residential);
     let building = &mut core.allocator.buildings[0];
     building.cell_x = 20;
     building.frontage_t = 0.85;
-    let original = building.clone();
+    core.allocator
+        .recompute_derived_transforms(&core.region_graph, &core.zoning)
+        .unwrap();
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    let original = core.allocator.buildings[0].clone();
     core.allocator.edge_occupancy.insert(
         0,
         EdgeOccupancy {
@@ -852,6 +859,12 @@ fn planned_topology_terrain_rejection_restores_split_dependents() {
     );
     let plan = preview.edit_plan().unwrap();
     assert!(plan.topology_for(&core.region_graph).is_some());
+    assert_eq!(
+        plan.status(&core),
+        "ready",
+        "{:?}",
+        plan.terrain().and_then(|terrain| terrain.failure_reason())
+    );
     core.transit_network.begin_road_edit();
     core.transit_network.bulk_load = true;
     let result = core.add_road_internal_with_snap_and_validation(points, 1, 1, true, Some(&plan));
@@ -1289,27 +1302,102 @@ fn pedestrian_lane_surface_height_matches_lane_semantics() {
     };
     assert_eq!(pedestrian_lane_surface_height(&footpath, 4.0), 4.0);
 }
-
-#[test]
-fn pedestrian_access_surface_is_limited_to_door_transitions() {
-    assert!(pedestrian_needs_access_surface(TRANSIT_ACCESS_EGRESS));
-    assert!(pedestrian_needs_access_surface(TRANSIT_ACCESS_INGRESS));
-    assert!(!pedestrian_needs_access_surface(TRANSIT_NETWORK));
-    assert!(!pedestrian_needs_access_surface(TRANSIT_IN_BUILDING));
+fn lane_change_snapshot_fixture(direction: f32) -> SimCore {
+    use crate::simulation::network::lanes::{Lane, LaneType};
+    let mut core = test_core();
+    let length = Vector3::new(80.0, 8.0, 0.0).length();
+    for lateral in [0.0, 3.5] {
+        core.transit_network.lane_system.lanes.push(Lane {
+            geometry: vec![
+                Vector3::new(0.0, 0.0, direction * lateral),
+                Vector3::new(direction * 80.0, 8.0, direction * lateral),
+            ],
+            length,
+            cum_dist: vec![0.0, length],
+            lane_type: LaneType::Vehicle,
+            edge_id: 0,
+            is_fwd: direction > 0.0,
+            ..Default::default()
+        });
+    }
+    core
 }
 
 #[test]
-fn pedestrian_access_surface_uses_highest_authoritative_surface() {
-    assert_eq!(
-        pedestrian_access_surface_height_from_samples(1.0, Some(1.2), Some(1.7)),
-        1.7
-    );
-    assert_eq!(
-        pedestrian_access_surface_height_from_samples(1.6, Some(1.2), None),
-        1.6
-    );
-    assert_eq!(
-        pedestrian_access_surface_height_from_samples(1.0, None, Some(1.4)),
-        1.4
-    );
+fn car_snapshot_keeps_lane_change_curve_in_both_directions() {
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+
+    for direction in [-1.0, 1.0] {
+        let mut core = lane_change_snapshot_fixture(direction);
+        let length = core.transit_network.lane_system.lanes[0].length;
+        let id = core.agents.spawn_housed_agent(0, 0.0, 0.0);
+        core.agents.transit[id] = TRANSIT_NETWORK;
+        core.agents.transit_mode[id] = MODE_CAR;
+        core.agents.current_lane_id[id] = 1;
+        core.agents.lane_change_from_lane_id[id] = 0;
+        core.agents.lane_change_start_d[id] = length * 0.125;
+        core.agents.lane_change_length_m[id] = length * 0.5;
+        for (fraction, lateral) in [(0.125, 0.0), (0.375, 1.75), (0.625, 3.5)] {
+            core.agents.lane_distance[id] = length * fraction;
+            let snapshot = core.build_snapshot();
+            let (&key, pose) = snapshot.car_transforms.iter().next().unwrap();
+            assert_eq!(pose.len(), 12);
+            assert!((pose[3] - direction * 80.0 * fraction).abs() < 0.001);
+            assert!((pose[7] - 8.0 * fraction - 0.02).abs() < 0.001);
+            assert!((pose[11] - direction * lateral).abs() < 0.001);
+            assert_eq!(snapshot.car_ground_flags[&key], [0]);
+            if lateral == 1.75 {
+                assert!(
+                    pose[10] * direction < -0.01,
+                    "car must turn into the lane change"
+                );
+            }
+        }
+        // A remapped/unrelated source lane must not bend a car away from its current road.
+        core.transit_network.lane_system.lanes[0].edge_id = 1;
+        core.agents.lane_distance[id] = length * 0.375;
+        let snapshot = core.build_snapshot();
+        let pose = snapshot.car_transforms.values().next().unwrap();
+        assert!((pose[11] - direction * 3.5).abs() < 0.001);
+    }
+}
+
+#[test]
+#[ignore = "unprofiled lane-change snapshot measurement; run alone with --release --ignored --nocapture"]
+fn lane_change_snapshot_benchmark() {
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
+
+    for count in [100, 1_000, 10_000] {
+        let mut core = lane_change_snapshot_fixture(1.0);
+        let length = core.transit_network.lane_system.lanes[0].length;
+        for _ in 0..count {
+            let id = core.agents.spawn_housed_agent(0, 0.0, 0.0);
+            core.agents.transit[id] = TRANSIT_NETWORK;
+            core.agents.transit_mode[id] = MODE_CAR;
+            core.agents.current_lane_id[id] = 1;
+            core.agents.lane_distance[id] = length * 0.375;
+            core.agents.lane_change_start_d[id] = length * 0.125;
+            core.agents.lane_change_length_m[id] = length * 0.5;
+        }
+        for active in [false, true] {
+            core.agents
+                .lane_change_from_lane_id
+                .fill(if active { 0 } else { u32::MAX });
+            let mut snapshot = core.build_snapshot();
+            for _ in 0..10 {
+                snapshot = core.build_snapshot_reusing(snapshot);
+            }
+            let mut samples = Vec::with_capacity(100);
+            for _ in 0..100 {
+                let start = std::time::Instant::now();
+                snapshot = std::hint::black_box(core.build_snapshot_reusing(snapshot));
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "lane_change_snapshot: cars={count} active={active} p50_ms={:.4} p90_ms={:.4}",
+                samples[50], samples[90]
+            );
+        }
+    }
 }

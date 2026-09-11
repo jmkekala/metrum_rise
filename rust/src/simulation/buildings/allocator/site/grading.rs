@@ -159,6 +159,101 @@ pub(crate) fn building_site_support_tie_in_is_valid(
     })
 }
 
+/// Chooses the closest feasible level pad to the preferred road-connection height.
+/// Intersects exact unions of the existing ray-height intervals, plus driveway grade intervals;
+/// it does not raise the slope limit or move the road. Ties choose the lower height.
+pub(crate) fn solve_building_site_support_height(
+    footprint: &[Vector2],
+    preferred: f32,
+    connections: &[(Vector2, f32)],
+    terrain: &TerrainSystem,
+    graph: &RegionGraph,
+    surface: &RoadSurfaceSystem,
+) -> Option<f32> {
+    if footprint.len() < 3 || !preferred.is_finite() || connections.is_empty() {
+        return None;
+    }
+    let mut low = f32::NEG_INFINITY;
+    let mut high = f32::INFINITY;
+    for &(point, height) in connections {
+        let distance = if point_in_polygon_slice(point, footprint) {
+            0.0
+        } else {
+            (0..footprint.len())
+                .map(|i| {
+                    let a = footprint[i];
+                    let delta = footprint[(i + 1) % footprint.len()] - a;
+                    let t = ((point - a).dot(delta) / delta.length_squared()).clamp(0.0, 1.0);
+                    point.distance_to(a + delta * t)
+                })
+                .fold(f32::INFINITY, f32::min)
+        };
+        let budget = distance * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+        low = low.max(height - budget);
+        high = high.min(height + budget);
+    }
+    if low > high {
+        return None;
+    }
+    let context = SiteGradingContext::new(
+        terrain,
+        graph,
+        surface,
+        BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M,
+        terrain_cdt_local_sample_margin_m(terrain, BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M),
+    );
+    let mut intervals = vec![(low, high)];
+    let mut next = Vec::new();
+    let valid = visit_footprint_grading_rays(footprint, context.safe_step_m, |seam, outward| {
+        next.clear();
+        for d in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
+            let target = building_site_raw_tie_in_target_height(
+                seam + outward * d,
+                d,
+                terrain,
+                context.roads,
+            );
+            let budget = d * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
+            for &(lo, hi) in &intervals {
+                let a = lo.max(target - budget);
+                let b = hi.min(target + budget);
+                if a <= b {
+                    next.push((a, b));
+                }
+            }
+        }
+        next.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        intervals.clear();
+        for &(lo, hi) in &next {
+            if let Some(last) = intervals.last_mut().filter(|last| lo <= last.1) {
+                last.1 = last.1.max(hi);
+            } else {
+                intervals.push((lo, hi));
+            }
+        }
+        !intervals.is_empty()
+    });
+    if !valid {
+        return None;
+    }
+    intervals
+        .into_iter()
+        .map(|(lo, hi)| preferred.clamp(lo, hi))
+        .min_by(|a, b| {
+            (a - preferred)
+                .abs()
+                .total_cmp(&(b - preferred).abs())
+                .then(a.total_cmp(b))
+        })
+}
+
+/// Padding needed to capture every terrain and nearest-road dependency of site grading.
+pub(crate) fn site_feasibility_dependency_margin_m(terrain: &TerrainSystem) -> f32 {
+    terrain_cdt_local_sample_margin_m(terrain, BUILDING_SITE_SUPPORT_TIE_IN_SAMPLE_STEP_M)
+        + BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M
+        + terrain.cell_size_m()
+}
+
 fn visit_footprint_grading_rays(
     footprint_world: &[Vector2],
     safe_step_m: f32,
@@ -291,13 +386,16 @@ fn grading_ring_distances(safe_step_m: f32, max_distance_m: f32) -> impl Iterato
     let mut previous_distance_m = 0.0_f32;
     BUILDING_SITE_GRADING_RING_MULTIPLIERS
         .into_iter()
-        .filter_map(move |multiplier| {
-            let distance_m = (safe_step_m * multiplier).min(max_distance_m);
+        .map(move |multiplier| (safe_step_m * multiplier).min(max_distance_m))
+        // The envelope need not be a power-of-two multiple of the render step (Kuopio: 20 m).
+        // Validation and guide generation must both reach its actual outer boundary.
+        .chain(std::iter::once(max_distance_m))
+        .filter(move |&distance_m| {
             if distance_m <= previous_distance_m + f32::EPSILON {
-                return None;
+                return false;
             }
             previous_distance_m = distance_m;
-            Some(distance_m)
+            true
         })
 }
 

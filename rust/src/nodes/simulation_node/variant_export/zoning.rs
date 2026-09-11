@@ -4,6 +4,34 @@
 
 use super::super::*;
 
+pub(in crate::nodes::simulation_node) fn prepare_zoning_site_queries(core: &mut SimCore) {
+    core.allocator
+        .prepare_building_site_query_index(core.config.zone_cell_m);
+    core.transit_network.road_surface.compile_dirty_with_reason(
+        &core.region_graph,
+        &core.heightmap,
+        crate::simulation::network::surface::RoadSurfaceCompileReason::SimCommit,
+    );
+}
+
+pub(in crate::nodes::simulation_node) fn zoning_geometry_feasibility(
+    core: &SimCore,
+    geometry: &crate::simulation::zoning::ParcelGeometry,
+    runtime_id: u16,
+) -> Result<(), &'static str> {
+    core.allocator.zoning_site_feasibility(
+        geometry,
+        runtime_id,
+        &core.zoning,
+        &core.region_graph,
+        core.demand.runtime_catalog(),
+        crate::simulation::buildings::allocator::BuildingSiteEnvironment {
+            road_surface: &core.transit_network.road_surface,
+            terrain: &core.heightmap,
+        },
+    )
+}
+
 pub(in crate::nodes::simulation_node) fn zoning_parcel_geometry_dict(
     core: &SimCore,
     geometry: &crate::simulation::zoning::ParcelGeometry,
@@ -16,7 +44,16 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_geometry_dict(
         corners.push(corner);
     }
 
-    let color = zoning_parcel_color(core, runtime_id, occupied);
+    let verdict = if occupied {
+        Ok(())
+    } else {
+        zoning_geometry_feasibility(core, geometry, runtime_id)
+    };
+    let color = if verdict.is_ok() {
+        zoning_parcel_color(core, runtime_id, occupied)
+    } else {
+        Color::from_rgba(0.95, 0.15, 0.1, 0.4)
+    };
 
     let mut dict = VarDictionary::new();
     dict.set("id", i64::try_from(parcel_id).unwrap_or(i64::MAX));
@@ -24,6 +61,8 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_geometry_dict(
     dict.set("occupied", occupied);
     dict.set("corners", corners);
     dict.set("color", color);
+    dict.set("valid", verdict.is_ok());
+    dict.set("reason", GString::from(verdict.err().unwrap_or("")));
     dict
 }
 
@@ -63,17 +102,14 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_geometries_array(
     arr
 }
 
-pub(in crate::nodes::simulation_node) fn zoning_geometries_without_explicit_sites(
+pub(in crate::nodes::simulation_node) fn zoning_buildable_geometries(
     core: &SimCore,
     geometries: Vec<crate::simulation::zoning::ParcelGeometry>,
+    runtime_id: u16,
 ) -> Vec<crate::simulation::zoning::ParcelGeometry> {
     geometries
         .into_iter()
-        .filter(|geometry| {
-            !core
-                .allocator
-                .parcel_geometry_overlaps_explicit_site(geometry)
-        })
+        .filter(|geometry| zoning_geometry_feasibility(core, geometry, runtime_id).is_ok())
         .collect()
 }
 
@@ -83,7 +119,22 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_geometries_packed_dict(
     runtime_id: u16,
 ) -> VarDictionary {
     let mut corners = PackedVector3Array::new();
+    let mut colors = PackedColorArray::new();
+    let mut valid_count = 0;
+    let mut reason = "";
     for geometry in geometries {
+        let verdict = zoning_geometry_feasibility(core, geometry, runtime_id);
+        if verdict.is_ok() {
+            valid_count += 1;
+        }
+        if let Err(error) = verdict {
+            reason = error;
+        }
+        colors.push(if verdict.is_ok() {
+            zoning_parcel_color(core, runtime_id, false)
+        } else {
+            Color::from_rgba(0.95, 0.15, 0.1, 0.4)
+        });
         for corner in zoning_parcel_surface_corners(core, geometry) {
             corners.push(corner);
         }
@@ -96,6 +147,9 @@ pub(in crate::nodes::simulation_node) fn zoning_parcel_geometries_packed_dict(
     );
     dict.set("corners", corners);
     dict.set("color", zoning_parcel_color(core, runtime_id, false));
+    dict.set("colors", colors);
+    dict.set("valid_count", valid_count);
+    dict.set("reason", GString::from(reason));
     dict
 }
 

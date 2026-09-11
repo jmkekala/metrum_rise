@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Demand-driven building placement candidate discovery and frontage-slot resolution.
+//! Placement-mode discovery and shared roadside building-site preparation and installation.
+
+mod feasibility;
+pub(crate) use feasibility::{BuildingSiteEnvironment, SiteFeasibilityCache};
 
 use crate::assets::AnchorType;
-use crate::assets::asset::PlacementMode;
 use crate::config::SIDEWALK_WIDTH;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
@@ -41,7 +43,9 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         commercial_spawn_resource_priorities: &[(ResourceRuntimeId, f32)],
+        environment: BuildingSiteEnvironment<'_>,
     ) -> DemandSpawnCandidatesByUse {
+        self.prune_site_feasibility(zoning);
         let asset_candidates_by_profile =
             self.collect_spawn_asset_candidates_by_profile(zoning, catalog);
         let candidates = zoning
@@ -80,20 +84,21 @@ impl BuildingAllocator {
                     let resolved = if zone_type == ZoneType::Commercial {
                         self.select_deterministic_fresh_commercial_spawn_asset(
                             profile_candidates,
-                            profile_runtime_id,
                             parcel,
                             zoning,
                             graph,
                             catalog,
                             commercial_spawn_resource_priorities,
+                            environment,
                         )
                     } else {
                         self.select_deterministic_fresh_spawn_asset(
                             profile_candidates,
-                            profile_runtime_id,
                             parcel,
                             zoning,
                             graph,
+                            environment,
+                            |_| true,
                         )
                     };
                     let Some(resolved) = resolved else {
@@ -196,24 +201,32 @@ impl BuildingAllocator {
     fn select_deterministic_fresh_spawn_asset(
         &self,
         profile_candidates: &SpawnProfileAssetCandidates,
-        profile_runtime_id: u16,
         parcel: &ZoningParcel,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
+        environment: BuildingSiteEnvironment<'_>,
+        accepts: impl Fn(&str) -> bool,
     ) -> Option<ResolvedPlacement> {
-        if profile_candidates.candidates.is_empty() {
-            return None;
-        }
+        let profile_runtime_id = parcel.zone_profile_runtime_id();
 
         let mut best = None;
         for candidate in &profile_candidates.candidates {
-            if let Some(resolved) = self.resolve_slot(
+            if !accepts(&candidate.qualified_id) {
+                continue;
+            }
+            if let Some(mut resolved) = self.resolve_slot(
                 &candidate.qualified_id,
                 &candidate.params,
                 parcel,
                 zoning,
                 graph,
             ) {
+                if self
+                    .prepare_site_support_cached(&mut resolved, graph, environment)
+                    .is_err()
+                {
+                    continue;
+                }
                 let selection_key = (
                     stable_strip_family_hash(
                         profile_runtime_id,
@@ -230,8 +243,7 @@ impl BuildingAllocator {
                 );
                 if best
                     .as_ref()
-                    .map(|(best_key, _)| selection_key < *best_key)
-                    .unwrap_or(true)
+                    .is_none_or(|(best_key, _)| selection_key < *best_key)
                 {
                     best = Some((selection_key, resolved));
                 }
@@ -244,25 +256,24 @@ impl BuildingAllocator {
     fn select_deterministic_fresh_commercial_spawn_asset(
         &self,
         profile_candidates: &SpawnProfileAssetCandidates,
-        profile_runtime_id: u16,
         parcel: &ZoningParcel,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
         catalog: &RuntimeEconomyCatalog,
         resource_priorities: &[(ResourceRuntimeId, f32)],
+        environment: BuildingSiteEnvironment<'_>,
     ) -> Option<ResolvedPlacement> {
         for &(resource_runtime_id, unmet_units) in resource_priorities {
             if unmet_units <= 0.0 {
                 continue;
             }
-            if let Some(resolved) = self.select_deterministic_fresh_spawn_asset_with_output(
+            if let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
                 profile_candidates,
-                profile_runtime_id,
                 parcel,
                 zoning,
                 graph,
-                catalog,
-                resource_runtime_id,
+                environment,
+                |asset_id| self.asset_outputs_resource(catalog, asset_id, resource_runtime_id),
             ) {
                 return Some(resolved);
             }
@@ -270,60 +281,12 @@ impl BuildingAllocator {
 
         self.select_deterministic_fresh_spawn_asset(
             profile_candidates,
-            profile_runtime_id,
             parcel,
             zoning,
             graph,
+            environment,
+            |_| true,
         )
-    }
-
-    fn select_deterministic_fresh_spawn_asset_with_output(
-        &self,
-        profile_candidates: &SpawnProfileAssetCandidates,
-        profile_runtime_id: u16,
-        parcel: &ZoningParcel,
-        zoning: &ZoningSystem,
-        graph: &RegionGraph,
-        catalog: &RuntimeEconomyCatalog,
-        resource_runtime_id: ResourceRuntimeId,
-    ) -> Option<ResolvedPlacement> {
-        let mut best = None;
-        for candidate in &profile_candidates.candidates {
-            if !self.asset_outputs_resource(catalog, &candidate.qualified_id, resource_runtime_id) {
-                continue;
-            }
-            if let Some(resolved) = self.resolve_slot(
-                &candidate.qualified_id,
-                &candidate.params,
-                parcel,
-                zoning,
-                graph,
-            ) {
-                let selection_key = (
-                    stable_strip_family_hash(
-                        profile_runtime_id,
-                        parcel.id().raw(),
-                        &candidate.family_key,
-                    ),
-                    candidate.family_key.as_str(),
-                    stable_site_variant_hash(
-                        profile_runtime_id,
-                        parcel.id().raw(),
-                        &candidate.qualified_id,
-                    ),
-                    candidate.qualified_id.as_str(),
-                );
-                if best
-                    .as_ref()
-                    .map(|(best_key, _)| selection_key < *best_key)
-                    .unwrap_or(true)
-                {
-                    best = Some((selection_key, resolved));
-                }
-            }
-        }
-
-        best.map(|(_, resolved)| resolved)
     }
 
     fn asset_outputs_resource(
@@ -389,6 +352,18 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
+        self.resolve_slot_replacing(asset_id, params, parcel, zoning, graph, None)
+    }
+
+    fn resolve_slot_replacing(
+        &self,
+        asset_id: &str,
+        params: &AssetPlacementParams,
+        parcel: &ZoningParcel,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+        replaced_building: Option<usize>,
+    ) -> Option<ResolvedPlacement> {
         let edge_idx = parcel.edge_idx();
         let edge = graph.edge(edge_idx);
         let edge_width = edge.width;
@@ -420,6 +395,7 @@ impl BuildingAllocator {
         let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
         let placement = ResolvedPlacement {
+            replaced_building,
             asset_id: asset_id.to_owned(),
             zone_profile_runtime_id: frontage_profile_runtime_id,
             zone_type: params.zone_type,
@@ -453,13 +429,6 @@ impl BuildingAllocator {
         let parcel_id = placement.parcel_id;
         let building_idx = self.place_building_instance(placement, catalog, tuning);
         zoning.occupy_parcel(parcel_id, building_idx);
-        self.bump_building_ref_revision();
-        self.dirty = true;
-        self.dirty_index = true;
-        self.entrances_dirty = true;
-        if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[building_idx].zone_type) {
-            self.dirty_zones[zone_idx] = true;
-        }
         debug_log!(
             "economy",
             "demand placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1}) support_height_m={:.2} site_surfaces={}",
@@ -498,9 +467,7 @@ impl BuildingAllocator {
         else {
             return Err(DemandSpawnPlacementRejection::SlotUnavailable);
         };
-        resolved.support_height_m =
-            self.resolve_site_support_height(&resolved, graph, road_surface, terrain)?;
-        self.validate_site_support_tie_in(&resolved, graph, road_surface, terrain)?;
+        self.prepare_site_support(&mut resolved, graph, road_surface, terrain)?;
         Ok(self.commit_resolved_slot(resolved, zoning, catalog, tuning))
     }
 
@@ -515,51 +482,48 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let mut placement =
+        let placement =
             self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        placement.support_height_m = self
-            .resolve_site_support_height(&placement, graph, road_surface, terrain)
+        self.preview_resolved_site(placement, graph, road_surface, terrain)
+    }
+
+    fn preview_resolved_site(
+        &self,
+        mut placement: ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
+        // Keep a resolved invalid pose, but avoid apron work when cheap overlap checks reject it.
+        let (preferred_height, connections) = self
+            .resolve_site_support_connections(&placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
-        if let Err(rejection) = self.validate_explicit_site_overlap(&placement) {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
+        placement.support_height_m = preferred_height;
+        let rejection = self
+            .validate_explicit_site_overlap(&placement)
+            .err()
+            .or_else(|| {
+                self.validate_explicit_site_road_overlap(&placement, graph)
+                    .err()
+            })
+            .or_else(|| {
+                self.finalize_site_support(
+                    &mut placement,
+                    &connections,
+                    graph,
+                    road_surface,
+                    terrain,
+                )
+                .err()
+                .map(explicit_rejection_from_site_rejection)
             });
-        }
-        if let Err(rejection) = self.validate_explicit_site_road_overlap(&placement, graph) {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
-            });
-        }
-        if let Err(rejection) = self
-            .validate_site_support_tie_in(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)
-        {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
-            });
-        }
         Ok(ExplicitServicePlacementPreview {
             corners: self.placement_site_corners(&placement),
             center_2d: placement.center_2d,
             support_height_m: placement.support_height_m,
             facing_dir: placement.facing_dir,
-            valid: true,
-            rejection: None,
+            valid: rejection.is_none(),
+            rejection,
         })
     }
 
@@ -575,33 +539,9 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_service_placement_params(asset_id, catalog)?;
-        let mut placement =
+        let placement =
             self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        placement.support_height_m = self
-            .resolve_site_support_height(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)?;
-        self.validate_explicit_site_overlap(&placement)?;
-        self.validate_explicit_site_road_overlap(&placement, graph)?;
-        self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)?;
-
-        let building_idx = self.place_building_instance(placement, catalog, tuning);
-        self.bump_building_ref_revision();
-        self.dirty = true;
-        self.dirty_index = true;
-        self.entrances_dirty = true;
-        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
-        debug_log!(
-            "economy",
-            "explicit service placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
-            building_idx,
-            self.buildings[building_idx].asset_id,
-            self.buildings[building_idx].edge_idx,
-            self.buildings[building_idx].center_x,
-            self.buildings[building_idx].center_y,
-            self.buildings[building_idx].support_height_m,
-        );
-        Ok(building_idx)
+        self.commit_explicit_site(placement, graph, road_surface, terrain, catalog, tuning)
     }
 
     pub(crate) fn preview_explicit_industry_placement(
@@ -615,52 +555,9 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
     ) -> Result<ExplicitServicePlacementPreview, ExplicitServicePlacementRejection> {
         let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let mut placement =
+        let placement =
             self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        placement.support_height_m = self
-            .resolve_site_support_height(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)?;
-        if let Err(rejection) = self.validate_explicit_site_overlap(&placement) {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
-            });
-        }
-        if let Err(rejection) = self.validate_explicit_site_road_overlap(&placement, graph) {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
-            });
-        }
-        if let Err(rejection) = self
-            .validate_site_support_tie_in(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)
-        {
-            return Ok(ExplicitServicePlacementPreview {
-                corners: self.placement_site_corners(&placement),
-                center_2d: placement.center_2d,
-                support_height_m: placement.support_height_m,
-                facing_dir: placement.facing_dir,
-                valid: false,
-                rejection: Some(rejection),
-            });
-        }
-        Ok(ExplicitServicePlacementPreview {
-            corners: self.placement_site_corners(&placement),
-            center_2d: placement.center_2d,
-            support_height_m: placement.support_height_m,
-            facing_dir: placement.facing_dir,
-            valid: true,
-            rejection: None,
-        })
+        self.preview_resolved_site(placement, graph, road_surface, terrain)
     }
 
     pub(crate) fn execute_explicit_industry_placement(
@@ -675,25 +572,29 @@ impl BuildingAllocator {
         tuning: &RuntimeEconomyTuning,
     ) -> Result<usize, ExplicitServicePlacementRejection> {
         let params = self.explicit_industry_placement_params(asset_id, catalog)?;
-        let mut placement =
+        let placement =
             self.resolve_explicit_service_placement(asset_id, &params, point, zone_cell_m, graph)?;
-        placement.support_height_m = self
-            .resolve_site_support_height(&placement, graph, road_surface, terrain)
-            .map_err(explicit_rejection_from_site_rejection)?;
+        self.commit_explicit_site(placement, graph, road_surface, terrain, catalog, tuning)
+    }
+
+    fn commit_explicit_site(
+        &mut self,
+        mut placement: ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+        catalog: &RuntimeEconomyCatalog,
+        tuning: &RuntimeEconomyTuning,
+    ) -> Result<usize, ExplicitServicePlacementRejection> {
         self.validate_explicit_site_overlap(&placement)?;
         self.validate_explicit_site_road_overlap(&placement, graph)?;
-        self.validate_site_support_tie_in(&placement, graph, road_surface, terrain)
+        self.prepare_site_support(&mut placement, graph, road_surface, terrain)
             .map_err(explicit_rejection_from_site_rejection)?;
 
         let building_idx = self.place_building_instance(placement, catalog, tuning);
-        self.bump_building_ref_revision();
-        self.dirty = true;
-        self.dirty_index = true;
-        self.entrances_dirty = true;
-        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
         debug_log!(
             "economy",
-            "explicit industry placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
+            "explicit site placed building idx={} asset_id={} edge={} center=({:.1}, {:.1}) support_height_m={:.2}",
             building_idx,
             self.buildings[building_idx].asset_id,
             self.buildings[building_idx].edge_idx,
@@ -862,6 +763,7 @@ impl BuildingAllocator {
         .ok_or(ExplicitServicePlacementRejection::RoadFrontageUnavailable)?;
 
         Ok(ResolvedPlacement {
+            replaced_building: None,
             asset_id: asset_id.to_owned(),
             zone_profile_runtime_id: 0,
             zone_type: params.zone_type,
@@ -1135,13 +1037,109 @@ impl BuildingAllocator {
         Err(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)
     }
 
-    fn resolve_site_support_height(
+    /// Validates new asset support at the committed pose/height, excluding only its own old site.
+    pub(super) fn replacement_site_is_valid(
+        &self,
+        building_idx: usize,
+        asset_id: &str,
+        zone_cell_m: f32,
+        graph: &RegionGraph,
+        environment: BuildingSiteEnvironment<'_>,
+    ) -> bool {
+        let building = &self.buildings[building_idx];
+        let Some(edge) = graph
+            .get_edge(building.edge_idx)
+            .filter(|edge| !edge.deleted)
+        else {
+            return false;
+        };
+        let mut placement = ResolvedPlacement {
+            replaced_building: Some(building_idx),
+            asset_id: asset_id.to_owned(),
+            zone_profile_runtime_id: building.zone_profile_runtime_id,
+            zone_type: building.zone_type,
+            initial_level: building.level,
+            parcel_id: building.parcel_id,
+            edge_idx: building.edge_idx,
+            side: building.side,
+            cell_x: building.cell_x,
+            width_cells: building.width_cells as usize,
+            depth_cells: building.depth_cells as usize,
+            zone_cell_m,
+            center_2d: Vector2::new(building.center_x, building.center_y),
+            support_height_m: building.support_height_m,
+            facing_dir: building.facing_dir,
+            frontage_t: building.frontage_t,
+            edge_width: edge.width,
+        };
+        if self.placement_overlaps_existing_flat_support(&placement) {
+            return false;
+        }
+        let Ok((_, connections)) = self.resolve_site_support_connections(
+            &placement,
+            graph,
+            environment.road_surface,
+            environment.terrain,
+        ) else {
+            return false;
+        };
+        self.finalize_site_support(
+            &mut placement,
+            &connections,
+            graph,
+            environment.road_surface,
+            environment.terrain,
+        )
+        .is_ok()
+            && placement.support_height_m == building.support_height_m
+    }
+
+    // All placement modes resolve and validate the same road-attached support plane.
+    fn prepare_site_support(
+        &self,
+        placement: &mut ResolvedPlacement,
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Result<(), DemandSpawnPlacementRejection> {
+        let (preferred_height, connections) =
+            self.resolve_site_support_connections(placement, graph, road_surface, terrain)?;
+        placement.support_height_m = preferred_height;
+        self.finalize_site_support(placement, &connections, graph, road_surface, terrain)
+    }
+
+    fn finalize_site_support(
+        &self,
+        placement: &mut ResolvedPlacement,
+        connections: &[(Vector2, f32)],
+        graph: &RegionGraph,
+        road_surface: &RoadSurfaceSystem,
+        terrain: &TerrainSystem,
+    ) -> Result<(), DemandSpawnPlacementRejection> {
+        let footprint = self.placement_required_flat_support_footprint(placement);
+        placement.support_height_m = super::site::solve_building_site_support_height(
+            &footprint,
+            placement.support_height_m,
+            connections,
+            terrain,
+            graph,
+            road_surface,
+        )
+        .ok_or(DemandSpawnPlacementRejection::SiteSupportTieInInvalid)?;
+        self.validate_neighbor_site_height(placement, placement.support_height_m)?;
+        self.validate_site_support_tie_in(placement, graph, road_surface, terrain)
+    }
+
+    fn resolve_site_support_connections(
         &self,
         placement: &ResolvedPlacement,
         graph: &RegionGraph,
         road_surface: &RoadSurfaceSystem,
         terrain: &TerrainSystem,
-    ) -> Result<f32, DemandSpawnPlacementRejection> {
+    ) -> Result<(f32, Vec<(Vector2, f32)>), DemandSpawnPlacementRejection> {
+        if !road_surface.published_generation_matches_source() {
+            return Err(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing);
+        }
         let driveway_candidates =
             self.driveway_connection_candidates(placement, graph, road_surface, terrain);
         if !driveway_candidates.is_empty() {
@@ -1183,7 +1181,13 @@ impl BuildingAllocator {
                     return Err(DemandSpawnPlacementRejection::DrivewayHeightConflict);
                 }
             }
-            return self.validate_neighbor_site_height(placement, primary_height);
+            return Ok((
+                primary_height,
+                driveway_candidates
+                    .into_iter()
+                    .filter_map(|c| c.height_m.map(|h| (c.connection_pos, h)))
+                    .collect(),
+            ));
         }
 
         if self.driveway_anchor_count(placement) > 0 {
@@ -1199,14 +1203,14 @@ impl BuildingAllocator {
         if let Some(frontage_height) =
             self.frontage_connection_height(placement, graph, road_surface, terrain)
         {
-            return self.validate_neighbor_site_height(placement, frontage_height);
-        }
-
-        if self.asset_allows_source_terrain_site_fallback(&placement.asset_id) {
-            let terrain_height = terrain
-                .sample_height_world(placement.center_2d.x, placement.center_2d.y)
-                * crate::config::HEIGHT_SCALE;
-            return self.validate_neighbor_site_height(placement, terrain_height);
+            let point = Self::claimed_road_side_connection_pos(
+                graph,
+                placement.edge_idx,
+                placement.side,
+                placement.frontage_t,
+            )
+            .ok_or(DemandSpawnPlacementRejection::FrontageRoadSurfaceMissing)?;
+            return Ok((frontage_height, vec![(point, frontage_height)]));
         }
 
         debug_log!(
@@ -1289,6 +1293,7 @@ impl BuildingAllocator {
                     connection_pos.y,
                 );
                 Some(DrivewayConnectionCandidate {
+                    connection_pos,
                     name: anchor.name.clone(),
                     authored_order,
                     distance_to_frontage_m: (pos - frontage_center).dot(inward_dir).abs(),
@@ -1335,13 +1340,6 @@ impl BuildingAllocator {
         Some(center + normal * road_connection_lateral_offset_m(edge))
     }
 
-    fn asset_allows_source_terrain_site_fallback(&self, asset_id: &str) -> bool {
-        self.registry
-            .get(asset_id)
-            .and_then(|entry| entry.manifest.building.as_ref())
-            .is_some_and(|building| building.placement_mode == PlacementMode::Explicit)
-    }
-
     fn validate_neighbor_site_height(
         &self,
         placement: &ResolvedPlacement,
@@ -1371,7 +1369,8 @@ impl BuildingAllocator {
                 && flat_support_footprints_overlap(
                     &footprint_world,
                     &site.footprint_world,
-                    BUILDING_SITE_NEIGHBOR_EPS_M,
+                    // Unlike the occupancy prefilter, height compatibility includes contact.
+                    -BUILDING_SITE_NEIGHBOR_EPS_M,
                 )
             {
                 debug_log!(
@@ -1401,7 +1400,9 @@ impl BuildingAllocator {
             || self.building_sites.len() != self.buildings.len()
             || self.building_chunks.is_empty()
         {
-            return (0..self.building_sites.len()).collect();
+            return (0..self.building_sites.len())
+                .filter(|i| Some(*i) != placement.replaced_building)
+                .collect();
         }
 
         let margin_m = self.max_lot_radius_cells * placement.zone_cell_m
@@ -1423,7 +1424,9 @@ impl BuildingAllocator {
         }
         candidates.sort_unstable();
         candidates.dedup();
-        candidates.retain(|&idx| idx < self.building_sites.len());
+        candidates.retain(|&idx| {
+            idx < self.building_sites.len() && Some(idx) != placement.replaced_building
+        });
         candidates
     }
 
@@ -1639,6 +1642,15 @@ impl BuildingAllocator {
         });
         let building_idx = self.buildings.len() - 1;
         self.push_building_site_client(building_idx, zone_cell_m);
+        // Site publication belongs to placement, not to demand/service/industry callers.
+        self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
+        self.bump_building_ref_revision();
+        self.dirty = true;
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[building_idx].zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
         building_idx
     }
 }
@@ -1721,6 +1733,7 @@ const BUILDING_SITE_NEIGHBOR_EPS_M: f32 = 0.05;
 const BUILDING_SITE_ROAD_SAMPLE_INSET_M: f32 = 0.05;
 
 struct DrivewayConnectionCandidate {
+    connection_pos: Vector2,
     name: String,
     authored_order: usize,
     distance_to_frontage_m: f32,
@@ -1889,6 +1902,7 @@ struct SpawnProfileAssetCandidates {
 }
 
 struct ResolvedPlacement {
+    replaced_building: Option<usize>,
     asset_id: String,
     zone_profile_runtime_id: u16,
     zone_type: ZoneType,
@@ -2042,6 +2056,7 @@ mod tests {
         allocator
             .building_sites
             .push(super::super::site::BuildingSiteClient {
+                foundation_mesh: Default::default(),
                 footprint_world: square_footprint(0.0, 0.0, 10.0, 10.0),
                 lot_footprint_world: [
                     Vector2::new(0.0, 0.0),
@@ -2053,6 +2068,7 @@ mod tests {
                 surfaces: Vec::new(),
             });
         let touching = ResolvedPlacement {
+            replaced_building: None,
             asset_id: "test:asset".to_owned(),
             zone_profile_runtime_id: 1,
             zone_type: ZoneType::Residential,
@@ -2071,6 +2087,7 @@ mod tests {
             edge_width: 8.0,
         };
         let overlapping = ResolvedPlacement {
+            replaced_building: None,
             asset_id: "test:asset".to_owned(),
             zone_profile_runtime_id: 1,
             zone_type: ZoneType::Residential,
@@ -2091,6 +2108,14 @@ mod tests {
 
         assert!(!allocator.placement_overlaps_existing_flat_support(&touching));
         assert!(allocator.placement_overlaps_existing_flat_support(&overlapping));
+        assert_eq!(
+            allocator.validate_neighbor_site_height(&touching, 14.0),
+            Err(DemandSpawnPlacementRejection::NeighborSiteHeightConflict)
+        );
+        assert_eq!(
+            allocator.validate_neighbor_site_height(&touching, 12.0),
+            Ok(12.0)
+        );
     }
 
     #[test]
@@ -2160,18 +2185,21 @@ mod tests {
         let mut candidates = vec![
             DrivewayConnectionCandidate {
                 name: "z_far".to_owned(),
+                connection_pos: Vector2::ZERO,
                 authored_order: 1,
                 distance_to_frontage_m: 4.0,
                 height_m: Some(0.0),
             },
             DrivewayConnectionCandidate {
                 name: "b_near_second".to_owned(),
+                connection_pos: Vector2::ZERO,
                 authored_order: 3,
                 distance_to_frontage_m: 1.0,
                 height_m: Some(0.0),
             },
             DrivewayConnectionCandidate {
                 name: "a_near_first".to_owned(),
+                connection_pos: Vector2::ZERO,
                 authored_order: 2,
                 distance_to_frontage_m: 1.0,
                 height_m: Some(0.0),
