@@ -4,6 +4,7 @@
 
 use super::runtime::RuntimeEconomyTuning;
 use super::serde_helpers::{default_duration_days, default_one, deserialize_u32_from_number};
+use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use serde::{Deserialize, Serialize};
 
 pub(super) const PROFILE_KIND_PRODUCER: &str = "producer";
@@ -71,6 +72,9 @@ pub(super) struct EconomyProfile {
     pub(super) description: String,
     #[serde(default, deserialize_with = "deserialize_u32_from_number")]
     pub(super) worker_capacity: u32,
+    /// Field/extraction area receiving the authored worker count; output stays per hectare.
+    #[serde(default = "default_worker_capacity_area_m2")]
+    pub(super) worker_capacity_area_m2: f32,
     #[serde(default)]
     pub(super) base_rate_units_per_day: f32,
     #[serde(default)]
@@ -107,6 +111,15 @@ impl EconomyProfile {
     pub(super) fn authored_kind(&self) -> AuthoredProfileKind {
         AuthoredProfileKind::from_str(self.kind.as_str())
     }
+
+    /// Converts the staffing reference area to the hectare baseline used by production.
+    pub(super) fn workers_per_hectare(&self) -> f32 {
+        self.worker_capacity as f32 * (EXPLICIT_WORK_AREA_BASE_M2 / self.worker_capacity_area_m2)
+    }
+}
+
+fn default_worker_capacity_area_m2() -> f32 {
+    EXPLICIT_WORK_AREA_BASE_M2
 }
 
 #[derive(Clone, Serialize, Deserialize)]

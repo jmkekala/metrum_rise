@@ -89,6 +89,7 @@ pub(super) unsafe fn handle_in_building(
             };
             if let Some((target_building, activity)) = maybe_schedule_work_trip(
                 curr_bldg,
+                *s_activity.get(i),
                 *s_home.get(i),
                 *s_work.get(i),
                 *s_has_car.get(i),
@@ -117,6 +118,12 @@ pub(super) unsafe fn handle_in_building(
             || curr_bldg >= allocator.buildings.len()
         {
             // No actionable next trip.
+        } else if next_bldg == curr_bldg {
+            // Home and work may share a farm: change activity without entering the road network.
+            *s_activity.get_mut(i) = next_act;
+            *s_plan_b.get_mut(i) = usize::MAX;
+            *s_plan_act.get_mut(i) = 0;
+            *s_next_replan_time.get_mut(i) = 0.0;
         } else if sim_time < *s_next_replan_time.get(i) {
             // Cooldown gate blocks replanning this tick.
         } else if let Some(plan) = plan_building_origin_trip(

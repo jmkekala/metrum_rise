@@ -132,7 +132,6 @@ impl BuildingSiteTerrainSnapshot {
             }
             append_building_site_grading_guides_from_parts(
                 &site.footprint_world,
-                site.support_height_m,
                 &context,
                 &mut sink,
             );
@@ -319,28 +318,21 @@ pub(super) fn append_building_site_grading_guides(
     context: &SiteGradingContext<'_>,
     sink: &mut SiteGradingGuideSink<'_>,
 ) {
-    append_building_site_grading_guides_from_parts(
-        &site.footprint_world,
-        site.support_height_m,
-        context,
-        sink,
-    );
+    append_building_site_grading_guides_from_parts(&site.footprint_world, context, sink);
 }
 
 fn append_building_site_grading_guides_from_parts(
     footprint_world: &[Vector2],
-    support_height_m: f32,
     context: &SiteGradingContext<'_>,
     sink: &mut SiteGradingGuideSink<'_>,
 ) {
     visit_footprint_grading_rays(footprint_world, context.safe_step_m, |seam, outward| {
-        append_building_site_grading_ray(support_height_m, seam, outward, context, sink);
+        append_building_site_grading_ray(seam, outward, context, sink);
         true
     });
 }
 
 fn append_building_site_grading_ray(
-    seam_height_m: f32,
     seam: Vector2,
     outward: Vector2,
     context: &SiteGradingContext<'_>,
@@ -348,13 +340,10 @@ fn append_building_site_grading_ray(
 ) {
     for distance_m in grading_ring_distances(context.safe_step_m, context.max_distance_m) {
         let pos = seam + outward * distance_m;
-        let height_m = building_site_grading_target_height(
-            seam_height_m,
-            pos,
-            distance_m,
-            context.terrain,
-            context.roads,
-        );
+        // Road and site guides sample the same ground. Only the footprint boundary
+        // owns the pad elevation; CDT derives its tie-in from that constraint.
+        let height_m =
+            context.terrain.sample_visual_height_world(pos.x, pos.y) * crate::config::HEIGHT_SCALE;
         push_building_site_grading_sample(
             TerrainCdtVertex::new(pos.x as f64, height_m, pos.y as f64),
             &mut *sink.samples,
@@ -399,18 +388,8 @@ fn grading_ring_distances(safe_step_m: f32, max_distance_m: f32) -> impl Iterato
         })
 }
 
-pub(super) fn building_site_grading_target_height(
-    seam_height_m: f32,
-    pos: Vector2,
-    distance_m: f32,
-    terrain: &dyn TerrainVisualSource,
-    roads: RoadSurfaceView<'_>,
-) -> f32 {
-    let raw_height_m = building_site_raw_tie_in_target_height(pos, distance_m, terrain, roads);
-    grade_limited_site_tie_in_height(seam_height_m, raw_height_m, distance_m)
-}
-
-fn building_site_raw_tie_in_target_height(
+/// Samples the road or terrain target used to validate a proposed pad's support height.
+pub(super) fn building_site_raw_tie_in_target_height(
     pos: Vector2,
     distance_m: f32,
     terrain: &dyn TerrainVisualSource,
@@ -508,20 +487,6 @@ pub(super) fn building_site_road_connection_lateral_offset_m(
         SIDEWALK_WIDTH
     };
     (edge.width * 0.5 + sidewalk_m - BUILDING_SITE_ROAD_SURFACE_PROBE_INSET_M).max(0.0)
-}
-
-fn grade_limited_site_tie_in_height(
-    seam_height_m: f32,
-    terrain_height_m: f32,
-    distance_m: f32,
-) -> f32 {
-    let max_delta_m = distance_m.max(0.0) * MAX_TERRAIN_TIE_IN_SLOPE_RATIO;
-    let delta_m = terrain_height_m - seam_height_m;
-    if delta_m.abs() <= max_delta_m {
-        terrain_height_m
-    } else {
-        seam_height_m + delta_m.signum() * max_delta_m
-    }
 }
 
 fn corrected_footprint_outward(

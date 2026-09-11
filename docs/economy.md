@@ -1336,7 +1336,7 @@ Rules:
 - the downstream production formula still does not use a utility throughput gate in `v0.1`; utility failures are represented as local service coverage and external fallback cost
 - `power_plant_basic` is coal-fueled in the starter runtime: it requests `coal` through ordinary freight logistics, can import coal from `OWA` while no local coal mine is producing reachable coal, and produces no local `power` when staffed but out of coal
 - authored coal deposits can now be painted in WorldEditor; explicit coal-mine assets bind to `coal_mine_basic`, commit a player-drawn extraction polygon within 10 m of the building footprint, snapshot the enclosed reserve, consume that reserve into local `coal` output during hourly operation, persist both deposits and extractor depletion through city saves, and render committed pits through a terrain-shader coal-texture mask rather than a separate decal mesh; the committed area scales physical hourly output and physical worker capacity against a 10,000 m2 authored baseline, scheduled `OWA` exports can back area-scaled active worker slots when a connected outside freight gateway exists, and the first committed extraction area tops up startup operating budget to the area-scaled payroll runway
-- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; the profile's daily output and physical worker capacity are interpreted per hectare of committed field area, scheduled `OWA` exports can back area-scaled active worker slots when a connected outside freight gateway exists, and the first committed field tops up startup operating budget to the area-scaled payroll runway
+- explicit grain farms bind to `grain_farm_basic`, commit a player-drawn field polygon within 10 m of the building footprint, and produce renewable `grain` during hourly operation without consuming a map-authored resource deposit; daily output stays per hectare while worker capacity uses a separate authored staffing area (one worker per 100,000 m2 for grain farms), scheduled `OWA` exports can back area-scaled active worker slots when a connected outside freight gateway exists, and the first committed field tops up startup operating budget to the area-scaled payroll runway
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential power, water, and sewage charges post to split household utility ledger buckets in `v0.1`
@@ -1500,7 +1500,8 @@ Residents draw from their household supply reserve while at home.
 
 ### Household runtime representation
 
-Households should be explicit lightweight runtime records anchored to residential buildings.
+Households are explicit lightweight runtime records anchored to residential buildings or to the
+single household slot provided by a farm (`ECON-08`).
 
 This means:
 
@@ -2233,7 +2234,7 @@ A good starter chain for both simulation and developer-tool tuning is:
 - `grain_farm`
   - inputs: `labor`
   - outputs: `grain`
-  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 of field receives the authored output rate and authored worker count
+  - placement: explicit farm building plus player-drawn field polygon; 10,000 m2 receives the authored output rate, while `worker_capacity_area_m2` determines the area receiving the authored worker count
 - `food_processor`
   - inputs: `grain`, `labor`
   - outputs: `packaged_food`
@@ -2283,7 +2284,7 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 - residential stay reserve thresholds by level: `0.5`, `3.0`, `6.0` days
 - household replenishment check cadence: every `6` in-game hours
 - `grain_farm` `base_rate`: `290 grain / day / hectare`
-- `grain_farm` worker capacity: `8 / hectare`
+- `grain_farm` worker capacity: `1 / 10 hectares`, rounded up with a two-worker minimum for committed fields
 - `grain_farm` wage band: `80-100 currency / workday`
 - `food_processor` `base_rate`: `160 packaged_food / day`
 - `food_processor` worker capacity: `10`
@@ -2603,7 +2604,7 @@ cash-limited: it pays only while a positive treasury balance remains and never d
 An adult member is eligible for unemployment benefit on a given day if **all** of the following hold:
 
 - `household.member_count > 0`
-- `household.home_building_id` is a valid, non-broken residential building
+- `household.home_building_id` is a valid, operational building with household capacity (including a farm)
 - the member is an adult
 - the adult member has `work_building == usize::MAX` (is unemployed)
 - `household.unemployment_days_elapsed < unemployment_max_days`
@@ -2718,7 +2719,8 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `coal_mine_basic.worker_capacity` | 5 / hectare | Full-staffed starter coal-mine worker demand for a 10,000 m2 extraction area |
 | `coal_mine_basic.unit_price_currency` | 8.0 | Baseline local coal unit price used for local sourcing and OWA import pricing |
 | `grain_farm_basic.base_rate_units_per_day` | 290.0 units/day/hectare | Full-staffed starter farm output before staffing and buffer limits |
-| `grain_farm_basic.worker_capacity` | 8 / hectare | Full-staffed starter farm worker demand for a 10,000 m2 field area |
+| `grain_farm_basic.worker_capacity` | 1 | Worker count for the profile's staffing reference area |
+| `grain_farm_basic.worker_capacity_area_m2` | 100,000 m2 | One worker per ten hectares, rounded up with a two-worker minimum |
 | `power_plant_basic.base_rate_units_per_day` | 1200.0 units/day | Full-staffed starter power service production before staffing and coal-input limits |
 | `power_plant_basic.inputs.coal` | 96.0 units/day | Coal fuel consumed by a fully staffed starter power plant |
 | `power_plant_basic.unit_price_currency` | 3.0 | Local power service price per aggregate power unit |
@@ -2727,6 +2729,339 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `owa_import_price_multiplier` | 1.75 | OWA import and missing local utility fallback price multiplier |
 | `owa_export_price_multiplier` | 0.60 | Scheduled OWA surplus export price multiplier |
 | `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
+
+## Farm Households (`ECON-08`)
+
+Each explicit field-producing farm provides exactly one household slot, independent of field
+area and worker capacity. Ordinary demand-owned immigration or household relocation fills that
+slot; placing a farm does not manufacture residents. A pending arrival reserves the slot once
+and materializes the whole household through the existing carrier lifecycle.
+
+Farm residents are ordinary agents linked to one ordinary household, with the existing adult,
+child, and elder composition, shared supplies, budget, shopping, and transfer payments. Only
+adults may work. No ownership, inheritance, family trees, or aging transitions are introduced.
+Farmhouse living area uses `flat_size_m2`, defaulting to 120 m2 when unspecified, and the normal
+deterministic starter-family sizing rules. The asset editor fixes farm household capacity at one
+and preserves the farmhouse living-area setting.
+Rust's building asset contract owns the farmhouse default and one-family capacity; editor
+import/export preserves custom living areas and normalizes farm capacity to one.
+
+The farm retains `max(2, ceil(field_hectares / 10))` physical grain-farm jobs for a committed
+field. These are total positions, not two additional vacancies beyond the resident workers.
+Resident adults consider their own farm with zero commute cost and claim available on-site jobs
+before external applicants in the same assignment pass. Remaining positions use normal hiring
+from other homes; growth does not create extra households. Existing market, affordability, job
+lock, and payroll rules still apply. Employed resident adults switch home/work activity at their
+authored shift times, including overnight shifts, without planning or taking a road trip.
+
+Housing and employment remain separate: shrinking a field can reduce jobs but preserves the
+household and its residence. Losing an on-site job returns an agent at home to home activity.
+Ordinary housing affordability, relocation, abandonment, demolition, and save/load rules still
+apply. Farm operating money remains separate from household money; existing farm business taxes
+remain in place.
+Bankruptcy withdraws any remaining vacancy immediately, before admission or forced rehousing.
+Automatic removal invalidates the home address while preserving household membership and family
+money/supplies; the ordinary unhoused-household lifecycle handles the displaced family.
+
+Farms share the residential vacancy list while remaining explicit industry sites outside the
+residential zoning/growth index. Housing capacity and claims remain O(1). Demand's existing
+parallel building reduction counts the farm's home and jobs independently. On-site employment
+reuses the sorted job-supply snapshot in O(log J) per home option build, with deterministic
+resident-first claims; it adds no spatial index or per-agent job scan. The movement addition is
+allocation-free O(1) per in-building worker and performs no pathfinding for on-site work.
+The farm inspector displays household occupancy out of its one slot, resident children/adults/elders,
+and the ordinary household budget, supplies, and replenishment details alongside the business.
+It reuses the residential inspector's O(H) household aggregation on opening/hourly refresh;
+there is no additional simulation-tick work or agent scan, and commuting workers are excluded.
+
+Pre-audit validation on 2026-09-11: `cargo test --lib` passed 1,681 tests (13 ignored), including
+family admission/relocation, mixed-age employment, housing/job counts, in-place shifts,
+home-bound trip preservation, and occupied-farm SQLite load, removal/remapping and demolition
+undo. `cargo build` and `cargo doc --no-deps` passed without warnings. The deployed extension
+passed the headless field-tool regression and inspector/asset-editor script checks.
+Logs: `/tmp/metrum-farm-household-all-tests.log`, `/tmp/metrum-farm-household-build.log`,
+`/tmp/metrum-farm-household-rustdoc.log`, `/tmp/metrum-farm-household-field-ui.log`,
+and `/tmp/metrum-farm-household-godot-check.log`.
+
+Matched unprofiled release timing compares idle residents with on-site workers in the same
+minimal one-road/one-building fixture, with four Rayon workers, one test thread, three warmup
+ticks, and 21 samples of ten ticks each. Agent creation and fixture setup are untimed; the
+synthetic population isolates movement and does not model household admission or economy cost.
+Both cases preserve in-building state and issue zero pathfinding requests.
+
+| In-building agents | Idle, ms/tick | On-site work, ms/tick |
+|---|---|---|
+| 1,000 | 0.056 | 0.031 |
+| 10,000 | 0.059 | 0.069 |
+| 100,000 | 0.634 | 0.575 |
+
+These timings show comparable tick cost, not a speedup claim; small batches include scheduling
+overhead. Build identity: `325f0402` plus the farm changes; release test binary SHA-256
+`5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107`;
+`agents/tick/schedule.rs` SHA-256
+`df8b76823bcbbcaf404317304090fb6a719e846c1fb45d8a7ffeaa53c3cb3e13`;
+`households/tests/farms.rs` SHA-256
+`d475a97bb4dec9d1b8c758078a1cf5b1198cf1ed28d13cb378f48affdc381782`.
+Commands from `rust/`: `cargo test --release --lib --no-run`, then
+`RAYON_NUM_THREADS=4 target/release/deps/metrum_rise-9cc8d57998aa4451 benchmark_farm_household_tick --ignored --nocapture --test-threads=1`.
+Build/run logs: `/tmp/metrum-farm-household-release-build.log` and
+`/tmp/metrum-farm-household-benchmark.log`. Timing ran after builds and other checks finished.
+
+### Farm audit validation (2026-09-11)
+
+The audit fixed lost farmhouse living-area exports, stale bankrupt-farm vacancies, household
+membership loss during automatic removal, and attachment checks using a differently rotated lot
+from the visible guide. Farm classification/defaults, the field worker floor, vacancy removal,
+and the plot-boundary payload now have shared owners. Unused agent-owned home selection and
+person-counted occupancy rebuilding were removed; housing fixtures claim household slots through
+the allocator.
+
+Fresh checks: `cargo test --lib` passed 1,684 tests (14 ignored); `cargo build` and
+`cargo doc --no-deps` passed without warnings. The rebuilt/deployed extension passed the headless
+field-tool regression and industry-tool, inspector, and asset-editor script checks. Logs:
+`/tmp/metrum-farm-audit-all-tests-final.log`, `/tmp/metrum-farm-audit-build.log`,
+`/tmp/metrum-farm-audit-doc.log`, and `/tmp/metrum-farm-audit-{field-tool,industry-tool,inspector,asset-editor}-stdout.log`.
+
+Release checks ran after compilation finished. The vacancy benchmark holds 10,000 claim/release
+pairs on one farm fixed, with untimed setup and index allocation, three warmups, 21 samples, one
+test thread, and `RAYON_NUM_THREADS=4`. Median times were 0.583 / 0.580 / 0.560 ms with
+1 / 1,000 / 100,000 buildings, consistent with allocation-free O(1) claims independent of
+background housing. The capacity benchmark retained 2.43 ns/query for the field minimum through
+1,000,000 queries (`RAYON_NUM_THREADS=1`). Logs: `/tmp/metrum-farm-audit-vacancies.log` and
+`/tmp/metrum-farm-audit-capacity.log`. Run the release test binary with
+`benchmark_farm_vacancy_claims` or `benchmark_work_area_capacity`, then
+`--ignored --nocapture --test-threads=1`.
+
+Matched pre/post-audit resident-worker tick runs reuse the fixture above and its unchanged
+three-warmup/21-sample/ten-tick protocol with four Rayon workers. Six alternating before/after
+runs gave the following medians of run medians; every run retained in-building state and zero
+pathfinding requests:
+
+| Resident workers | Before audit, ms/tick | After audit, ms/tick |
+|---|---|---|
+| 1,000 | 0.022 | 0.021 |
+| 10,000 | 0.072 | 0.082 |
+| 100,000 | 0.619 | 0.567 |
+
+Sub-millisecond timings vary between runs; these isolated checks show no consistent regression
+with population, and do not measure end-to-end city economy cost. The full idle/working samples
+are in `/tmp/metrum-farm-audit-tick-comparison.json`; individual runs are
+`/tmp/metrum-farm-audit-{before,after}-tick-{0..5}.log`.
+Build command: `cargo test --release --lib --no-run`; build log:
+`/tmp/metrum-farm-audit-release-build.log`. Compare `/tmp/metrum-farm-audit-before-tests` and
+`rust/target/release/deps/metrum_rise-9cc8d57998aa4451` using
+`benchmark_farm_household_tick --ignored --nocapture --test-threads=1`.
+Build identity is `325f0402` plus the working farm changes and audit fixes. Before/after release
+binary SHA-256: `5f0663cc15bc2c67996e309dad22b618d2e55e3caf2ea2b0b2b4fe4d97460107` /
+`5db37fd42543f05b5d62dd6c34792693a4a1d21fd4085eecf93ee28a0726ff9a`.
+Audit `allocator/index.rs` SHA-256:
+`550e5d36c95865740f6c71e33ef10991f2c140204fa9cf2b50d98a0b95f2917e`;
+`households/tests/farms.rs` SHA-256:
+`a12909922973c94c3d06dd0a7e2d1e3f281707336733a10f3d1d9bfd92ceddfd`.
+
+### Full changed-file cleanup (2026-09-11)
+
+The 85-file audit removes unused native/editor APIs, duplicate polygon-area/yield helpers,
+repeated housing checks, and manifest-worker fallbacks in live UI/accounting paths. Field and
+extractor validation return the already-computed finite area; both reuse the hectare scaler.
+Field preview and commit share readiness preparation. Road-footprint preparation computes bounds
+while converting vertices, eliminating its intermediate polygon buffer without changing geometry.
+Housing checks use the allocator's capacity contract. City diagnostics classify both farm job
+capacity and filled jobs through the same helper, correcting missing employed farm workers.
+
+Industry placement resets only when deactivated or completed, preserves committed farms during
+cleanup, and displays placement errors in the tool notification. It performs no inactive frame
+work. Regressions cover cancellation exactly once, committed-farm preservation, finite production
+areas, and farm household/job diagnostics. The existing field, household, terrain and camera
+regressions remain in place.
+
+Fresh verification: **1,689 release Rust tests pass**, with 15 measurement cases ignored by the
+ordinary suite; release build and rustdoc have no warnings. All 12 changed GDScripts parse, and
+nine headless runs pass: field editing, vehicle support, network chunks, road metrics, junction
+preview, preview streaming, camera save/load in both modes, and two actual farm-save load → New
+Game cycles. The latter checks 22 grounded model parts and successful chunk `(22, 0)` publication.
+Logs use `/tmp/metrum-full-audit-`, including `final-tests.log`, `build.log`, `rustdoc.log`,
+`field_edit_tool.log`, and `farms_load_new_game.log`. The original farm save remains unchanged.
+Default Clippy still rejects the pre-existing `mut_from_ref` in unchanged agent `tick/slices.rs`;
+the audit run allowing only that lint completes with the existing lint warnings and no errors.
+
+Unprofiled release locality uses `populated_field_road_plan_scaling --ignored --nocapture`,
+24 Rayon workers, 100 samples per level and the existing fixed four-site neighborhood. Both
+builds retain identical local products as background fields/buildings/parcels grow, reaching
+391 remote roads and 600,024 agents. Build and renderer checks finish before timing.
+
+| Remote fields/buildings | Compile p50 before / after (ms) | Readiness p50 before / after (ms) |
+|---:|---:|---:|
+| 0 | 20.302 / 19.986 | 0.101 / 0.091 |
+| 1,000 | 19.816 / 19.476 | 0.102 / 0.099 |
+| 10,000 | 20.375 / 19.789 | 0.107 / 0.104 |
+| 100,000 | 20.240 / 20.884 | 0.116 / 0.121 |
+
+Repeated planning remains local; the existing one-time snapshot is separate and reaches
+3.369 / 3.394 ms at the largest size. Logs: `/tmp/metrum-full-audit-field-perf-{before,after}.log`.
+Before/after release test binaries have SHA-256 `320340841a98d0a72e7e025e3108b2cf1cb7bf991fd0f0bf0f3abc17202326cc`
+and `eae0e5612f497741331efb9600b1db2d96e55480db7fc3ab656920b052599fd8`;
+paths and deployed-library identity are in `/tmp/metrum-full-audit-build-identity.json`.
+
+Three alternating headless before/after industry-tool runs use 21 timed batches of 10,000 manual
+idle updates after three warmups. Median cost falls from 1.116–1.150 to 0.066–0.069 microseconds
+per direct call; actual inactive tools now disable processing entirely. Setup is untimed, both
+scripts use the same release extension, and no build or other benchmark runs concurrently.
+Reproduction script: `/tmp/metrum-full-audit-idle-benchmark.gd`, selecting the saved baseline or
+current tool with `METRUM_AUDIT_INDUSTRY_SCRIPT`; logs: `/tmp/metrum-full-audit-idle-{before,after}-{1,2,3}.log`.
+
+## Field Staffing Density (`ECON-06`)
+
+Field producers and extractors keep output and storage rates per 10,000 m2. Their integer
+`worker_capacity` applies to `worker_capacity_area_m2` instead, which defaults to 10,000 m2
+and must be positive and finite. Ordinary building profiles still use fixed worker counts.
+The economy editor exposes the staffing area for fields/extractors; its sandbox uses a
+one-hectare site for both output and payroll.
+
+The runtime compiles workers per hectare once, then calculates physical field jobs as
+`max(2, ceil(workers_per_hectare * field_hectares))` for positive areas and worker densities.
+Uncommitted fields and disabled worker densities have zero jobs; extractors retain ordinary
+rounding without the field minimum. Market availability and payroll funding still gate active
+jobs. Grain farms provide two jobs up to 20 ha, three just above 20 ha, and ten at 100 ha.
+The two-worker floor preserves the authored one-worker-per-ten-hectares scaling above it.
+This is a game-balance starting point, not a measured real-world agricultural staffing rate.
+
+Full staffing still produces 290 grain/day/hectare. Partial staffing uses the new physical
+capacity as its denominator; demand equivalents, export reserves, and first-field startup
+payroll use the same density and minimum. The editor sandbox applies this minimum too.
+Saved field areas rebuild this scale on load, and the daily wage pass releases surplus workers
+through the existing assignment lifecycle. No save migration
+or new per-agent work is needed. The inspector reports physical field capacity, with active
+positions shown separately when market-limited. Density queries remain allocation-free O(1).
+
+This corrects job density, not total farm profitability: reduced payroll increases margins.
+Crop yields, sale prices, wages, and mechanization costs need a separate economy calibration.
+
+Regression coverage checks hectare boundaries, hourly yield, startup payroll, demand equivalents,
+surplus-worker release, export reserves, invalid staffing areas, and editor export/reload.
+Validation before the two-worker floor: `cargo test --lib` passed 1,663 tests (11 ignored), `cargo doc --no-deps`
+reported no warnings, and Godot `--check-only` passed for the economy editor and building inspector.
+The Rust test log is `/tmp/metrum-farm-all-tests.log`.
+The isolated release timing is reproducible from `rust/` with
+`cargo test --release benchmark_work_area_capacity -- --ignored --nocapture`.
+
+Capacity-only timing before the two-worker floor on 2026-09-11 used the release build from
+`325f0402` plus the initial staffing change, one test thread, 21 unprofiled samples per size,
+and eight fixed hectare values repeated across each query batch. With other builds finished, median times were
+0.023 ms / 10,000 queries, 0.233 ms / 100,000, and 2.328 ms / 1,000,000 (about 2.33 ns/query).
+This measures the capacity helper only; it is not an end-to-end city-speed comparison.
+The measured `work_area.rs` SHA-256 is
+`4002cbb2b49af54bef393c29cf211aa28463016345d3889bbdd44fd3eef2719c`.
+Build/run logs: `/tmp/metrum-farm-capacity-benchmark.log` and
+`/tmp/metrum-farm-capacity-benchmark-quiet.log`; the latter reruns the built release test binary
+with `benchmark_work_area_capacity --ignored --nocapture --test-threads=1`.
+
+Fresh validation with the two-worker floor and plot guides on 2026-09-11:
+`cargo test --lib` passed 1,674 tests (12 ignored), and `cargo build` plus
+`cargo doc --no-deps` completed without warnings. The deployed debug extension passed the
+headless field-tool regression; industry-tool and inspector script checks also passed.
+Logs: `/tmp/metrum-farm-minimum-tests.log`, `/tmp/metrum-farm-boundary-build.log`,
+`/tmp/metrum-farm-boundary-rustdoc.log`, `/tmp/metrum-farm-boundary-ui.log`, and
+`/tmp/metrum-farm-boundary-parse.log`. Headless checks used `--log-file /tmp/...` so they
+did not need to write the game's user-data directory.
+
+The current release capacity benchmark compares the same helper with minimums of zero and
+two, using the same eight hectare values, 21 unprofiled samples per size, one test thread,
+and `RAYON_NUM_THREADS=1`. It performs no city setup or allocation in the timed query loop.
+After builds finished, medians were:
+
+| Queries | Density only, minimum 0 | Farm, minimum 2 |
+|---|---|---|
+| 10,000 | 0.047 ms | 0.024 ms |
+| 100,000 | 0.254 ms | 0.243 ms |
+| 1,000,000 | 2.499 ms | 2.431 ms |
+
+This checks O(1) capacity-query cost in the current build; it is not a whole-city comparison
+or a comparison against the old implementation. Build identity: `325f0402` plus the field
+changes, `work_area.rs` SHA-256
+`da5d368d395d3e8dec02b9e3574efdf637d7f07453ade6e12f65310a74851048`, release test binary SHA-256
+`fd548c59bc9d5574a705be67d6cc9a0bbc7952569cac14c8810d671ac932ad15`.
+Commands from `rust/`: `cargo test --release --lib --no-run`, then
+`RAYON_NUM_THREADS=1 target/release/deps/metrum_rise-9cc8d57998aa4451 benchmark_work_area_capacity --ignored --nocapture --test-threads=1`.
+Logs: `/tmp/metrum-farm-minimum-release-build.log` and `/tmp/metrum-farm-minimum-benchmark.log`.
+
+## Field Placement and Editing (`ECON-07`)
+
+Committed fields reserve their polygon interiors. A new or resized field must stay inside the
+world, meet the existing 100 m2 minimum and 10 m farm-link rule, and avoid road carriageways,
+curbs, sidewalks, building sites (including its own farm), every authored zoning parcel, and
+other fields. Shared edges/vertices are allowed. Clearance uses polygon intersection, including
+concave shapes and full containment. Empty/free parcels still reserve their land.
+
+Road creation, explicit building placement, and zoned building/parcel placement reject field
+overlap too. Final road-plan validation checks the compiled local junctions as well as the
+stroke width; it rechecks live reservations before consuming the plan. Road preview caches
+include the field revision, so editing or deleting a field invalidates their land-use verdict.
+
+The farm inspector's **Edit Field** button exposes its existing vertices. Each mouse release
+validates and commits the new polygon atomically, updates area/work-area scale and the field
+reservation, and returns current worker capacity and production ratio to the open inspector.
+Rejected moves restore the last accepted polygon and show the reason. Escape/right-click ends
+editing and discards only the unfinished drag. Previously accepted releases remain committed.
+Resize grants no additional startup money. Hourly output uses the new area; the existing daily
+employment pass handles any surplus workers after shrinking. A changed building identity or
+previous polygon rejects a stale editor session.
+
+Initial field drawing and inspector resizing display the farm lot in yellow and the exact
+blocking building/yard footprint in red, with a translucent red fill and a matching legend.
+These guides remain visible throughout polygon authoring and clear when the tool finishes or
+cancels. Rust exports both authoritative boundaries when the farm is placed or inspected;
+Godot builds the guide once per tool session, without per-frame simulation queries. Boundary
+export, outlines, and the convex site fill are O(V).
+Attachment checks reuse the same authored lot as the guide, including custom frontage rotation;
+the separate road-aligned footprint reconstruction and duplicate bridge payload are removed.
+
+Agriculture owns saved polygons. The allocator keeps derived field references in the existing
+512 m world chunk layout, covering their entire bounds: the building-center index alone cannot
+find distant field corners without increasing every building query's search radius. Replacement
+touches only the old/new field chunks. Parcel and building checks reuse their existing indices;
+road checks reuse the surface query grid. Query cost follows touched chunks and local polygon
+geometry, independent of remote population/field count. Rectangle broad-phase queries use stack
+storage; exact intersection scratch is limited to local candidates. There is no new per-agent
+work or city-wide render snapshot on vertex release.
+
+SQLite load rebuilds reservations from saved sites. Both ordinary allocator cleanup and explicit
+demolition publish production-site owner remaps; demolition undo restores the field reservation.
+Rust regressions cover land conflicts, stale/invalid drag rollback, capacity changes, startup
+funding, owner remapping, SQLite load and demolition undo. The headless
+`godot/tests/field_edit_tool_test.gd` exercises vertex selection, release, rollback, cancellation,
+and boundary-guide visibility during drawing and resizing. It runs in `./run.sh --test`.
+
+Validation before plot guides and the two-worker floor on 2026-09-11:
+`cargo test --lib` passed 1,673 tests (12 ignored); `cargo build`
+and `cargo doc --no-deps` completed without warnings. The rebuilt extension passed the headless
+field editor and native road junction/preview regressions. Input manager and inspector script
+checks also passed. Logs: `/tmp/metrum-field-all-tests.log`, `/tmp/metrum-field-ui-test.log`,
+`/tmp/metrum-field-road-bridge.log`, `/tmp/metrum-field-native-build.log`,
+`/tmp/metrum-field-rustdoc.log`.
+
+Matched unprofiled release runs used four Rayon workers, one test thread, 100 measured samples
+per size after three warmups, and the same fixed local road/sites. Fixture setup was untimed;
+the existing once-per-edit snapshot grew from 0.007 to 3.464 ms and is excluded from repeated
+planning. Both runs preserved identical local terrain products through 100,000 background
+buildings/parcels, 391 background roads, and 600,024 total agents. The field run also adds one
+fixed local reservation and one per background building.
+
+| Remote buildings/fields | Compile p50, no fields / fields (ms) | Readiness p50, no fields / fields (ms) |
+|---:|---:|---:|
+| 0 | 18.818 / 18.628 | 0.016 / 0.094 |
+| 1,000 | 18.662 / 18.673 | 0.017 / 0.101 |
+| 10,000 | 18.854 / 18.600 | 0.017 / 0.103 |
+| 100,000 | 18.740 / 18.645 | 0.017 / 0.101 |
+
+Reproduce from `rust/`: build with `cargo test --release --lib --no-run`, then run the emitted
+test binary separately with `RAYON_NUM_THREADS=4` and either `populated_road_plan_scaling` or
+`populated_field_road_plan_scaling`, followed by `--ignored --nocapture --test-threads=1`.
+Build: `325f04021c2f1d8be7f189aa3e46120bb1010c03` plus these working-tree changes; binary SHA-256
+`03157cecf2434837da368ae298433024367b9817967ea5bb897b47ae9e5b9ded`.
+Results: `/tmp/metrum-field-road-baseline.log`, `/tmp/metrum-field-road-scaling.log`,
+`/tmp/metrum-field-benchmark-identity.json`. These measure local placement, not whole-city tick
+throughput or interactive GPU rendering.
 
 ## Building Bankruptcy
 

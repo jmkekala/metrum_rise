@@ -4,14 +4,33 @@
 
 use crate::nodes::sim::core::SERVICE_BUILD_COST_PER_LOT_CELL;
 use crate::simulation::agriculture::FIELD_POLYGON_LINK_DISTANCE_M;
-use crate::simulation::extraction::{
-    EXTRACTOR_POLYGON_LINK_DISTANCE_M, building_footprint_polygon,
-};
+use crate::simulation::extraction::EXTRACTOR_POLYGON_LINK_DISTANCE_M;
 
 use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
+    /// Exports the authoritative lot and blocking site when a field tool opens.
+    pub(super) fn set_production_plot_boundaries(
+        core: &SimCore,
+        building_id: usize,
+        dict: &mut VarDictionary,
+    ) {
+        if let Some(site) = core.allocator.building_sites.get(building_id) {
+            for (key, polygon) in [
+                ("plot_corners", site.lot_footprint_world.as_slice()),
+                ("building_site_corners", site.footprint_world.as_slice()),
+            ] {
+                let corners = PackedVector3Array::from_iter(
+                    polygon
+                        .iter()
+                        .map(|point| Vector3::new(point.x, site.support_height_m + 0.25, point.y)),
+                );
+                dict.set(key, corners);
+            }
+        }
+    }
+
     /// Returns available zoning profiles for tool palettes and asset editing.
     #[func]
     pub fn get_zone_profiles(&self) -> VarArray {
@@ -92,6 +111,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::RoadOverlap => {
                 "building footprint overlaps an existing road"
             }
+            ExplicitServicePlacementRejection::FieldOverlap => {
+                "building footprint overlaps an existing field"
+            }
         }
     }
 
@@ -142,6 +164,9 @@ impl SimulationNode {
             ExplicitServicePlacementRejection::RoadOverlap => {
                 "building footprint overlaps an existing road"
             }
+            ExplicitServicePlacementRejection::FieldOverlap => {
+                "building footprint overlaps an existing field"
+            }
         }
     }
 
@@ -176,7 +201,7 @@ impl SimulationNode {
     #[func]
     pub fn get_service_building_assets(&self) -> VarArray {
         let core = self.lock_core();
-        let catalog = load_runtime_economy_catalog().ok();
+        let catalog = core.demand.runtime_catalog();
         let mut ids = core
             .allocator
             .registry
@@ -196,13 +221,10 @@ impl SimulationNode {
             let Some(service_class) = core.allocator.registry.service_class(asset_id) else {
                 continue;
             };
-            let worker_capacity = catalog
-                .as_ref()
-                .and_then(|catalog| {
-                    core.allocator
-                        .worker_capacity_for_asset_with_catalog(asset_id, catalog)
-                })
-                .unwrap_or_else(|| core.allocator.worker_capacity_for_asset(asset_id));
+            let worker_capacity = core
+                .allocator
+                .worker_capacity_for_asset_with_catalog(asset_id, catalog)
+                .unwrap_or(0);
 
             let mut dict = VarDictionary::new();
             dict.set("asset_id", GString::from(asset_id));
@@ -223,7 +245,7 @@ impl SimulationNode {
     #[func]
     pub fn get_industry_building_assets(&self) -> VarArray {
         let core = self.lock_core();
-        let catalog = load_runtime_economy_catalog().ok();
+        let catalog = core.demand.runtime_catalog();
         let mut ids = core
             .allocator
             .registry
@@ -253,13 +275,10 @@ impl SimulationNode {
             } else {
                 EXTRACTOR_POLYGON_LINK_DISTANCE_M
             };
-            let worker_capacity = catalog
-                .as_ref()
-                .and_then(|catalog| {
-                    core.allocator
-                        .worker_capacity_for_asset_with_catalog(asset_id, catalog)
-                })
-                .unwrap_or_else(|| core.allocator.worker_capacity_for_asset(asset_id));
+            let worker_capacity = core
+                .allocator
+                .worker_capacity_for_asset_with_catalog(asset_id, catalog)
+                .unwrap_or(0);
 
             let mut dict = VarDictionary::new();
             dict.set("asset_id", GString::from(asset_id));
@@ -440,27 +459,14 @@ impl SimulationNode {
         };
         match result {
             Ok(building_id) => {
-                let footprint_corners = {
+                {
                     let core = self.lock_core();
-                    let mut corners = PackedVector3Array::new();
-                    if let Some(building) = core.allocator.buildings.get(building_id) {
-                        for corner in
-                            building_footprint_polygon(building, core.zoning.config.zone_cell_m)
-                        {
-                            corners.push(Vector3::new(
-                                corner.x,
-                                building.support_height_m + 0.08,
-                                corner.y,
-                            ));
-                        }
-                    }
-                    corners
-                };
+                    Self::set_production_plot_boundaries(&core, building_id, &mut dict);
+                }
                 self.refresh_snapshot_from_core();
                 dict.set("ok", true);
                 dict.set("error", GString::new());
                 dict.set("building_id", building_id as i64);
-                dict.set("footprint_corners", footprint_corners);
                 let (area_kind, polygon_link_distance_m) = {
                     let core = self.lock_core();
                     if let Some(building) = core.allocator.buildings.get(building_id) {
@@ -575,6 +581,103 @@ impl SimulationNode {
                 dict.set("area_m2", 0.0f64);
             }
         }
+        dict
+    }
+
+    /// Checks a field drag without changing its committed polygon or economic state.
+    #[func]
+    pub fn validate_field_polygon(
+        &self,
+        building_id: i32,
+        polygon_points: PackedVector2Array,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Some(mut core) = self.try_lock_core() else {
+            dict.set("ok", false);
+            dict.set("pending", true);
+            dict.set("error", "Simulation busy; release to validate this move.");
+            return dict;
+        };
+        let result = usize::try_from(building_id)
+            .map_err(|_| "invalid field building id".to_owned())
+            .and_then(|idx| core.validate_field_polygon_internal(idx, polygon_points.as_slice()));
+        match result {
+            Ok(area) => {
+                dict.set("ok", true);
+                dict.set("area_m2", f64::from(area));
+            }
+            Err(error) => {
+                dict.set("ok", false);
+                dict.set("error", GString::from(error.as_str()));
+            }
+        }
+        dict
+    }
+
+    /// Commits one vertex drag if the farm and previous polygon still match the edit session.
+    #[func]
+    pub fn resize_field_polygon(
+        &mut self,
+        building_id: i32,
+        expected_center: Vector2,
+        expected_polygon: PackedVector2Array,
+        polygon_points: PackedVector2Array,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let Ok(idx) = usize::try_from(building_id) else {
+            dict.set("ok", false);
+            dict.set("error", "invalid field building id");
+            return dict;
+        };
+        {
+            let mut core = self.lock_core();
+            match core.resize_field_polygon_internal(
+                idx,
+                expected_center,
+                expected_polygon.as_slice(),
+                polygon_points.as_slice().to_vec(),
+            ) {
+                Ok(summary) => {
+                    dict.set("ok", true);
+                    dict.set("building_id", building_id);
+                    dict.set("center_x", expected_center.x);
+                    dict.set("center_z", expected_center.y);
+                    dict.set("field_has_site", true);
+                    dict.set("field_area_m2", f64::from(summary.area_m2));
+                    dict.set("field_polygon", polygon_points);
+                    let building = &core.allocator.buildings[idx];
+                    dict.set("worker_count", building.worker_count as i64);
+                    let catalog = core.demand.runtime_catalog();
+                    dict.set(
+                        "worker_capacity",
+                        core.allocator.worker_capacity_with_catalog(idx, catalog) as i64,
+                    );
+                    if let Some(profile) =
+                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                    {
+                        let factors =
+                            crate::simulation::economy::households::building_operation_factors(
+                                catalog, building, profile,
+                            );
+                        dict.set(
+                            "business_active_worker_capacity",
+                            factors.active_worker_capacity as i64,
+                        );
+                        dict.set(
+                            "business_production_ratio",
+                            f64::from(factors.throughput_factor),
+                        );
+                    }
+                }
+                Err(error) => {
+                    dict.set("ok", false);
+                    dict.set("error", GString::from(error.as_str()));
+                    return dict;
+                }
+            }
+        }
+        // Field overlays read their own revision; the compact response refreshes the inspector.
+        // Avoid rebuilding a city-wide agent/render snapshot after every vertex release.
         dict
     }
 

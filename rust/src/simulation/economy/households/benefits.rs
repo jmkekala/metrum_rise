@@ -9,7 +9,6 @@ use crate::debug_log;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::{AgentSystem, age_group_can_work};
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
-use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 impl HouseholdSystem {
@@ -74,7 +73,7 @@ impl HouseholdSystem {
                 .min(u32::from(u16::MAX)) as u16;
             daily_ledgers[hid].unemployed_adults = unemployed;
             let unemployment_claim =
-                if !valid_unemployment_benefit_home(allocator, household.home_building_id) {
+                if allocator.household_capacity(household.home_building_id) == 0 {
                     0.0
                 } else if unemployed == 0 {
                     household.unemployment_days_elapsed = 0;
@@ -148,17 +147,4 @@ fn pay_transfer_claim(treasury_balance: &mut f64, claim: f32) -> f32 {
         *treasury_balance = 0.0;
         paid
     }
-}
-
-fn valid_unemployment_benefit_home(allocator: &BuildingAllocator, home_building_id: usize) -> bool {
-    allocator
-        .buildings
-        .get(home_building_id)
-        .is_some_and(|building| {
-            building.zone_type == ZoneType::Residential
-                && !building.broken
-                && !building.economy_broken
-                && !building.is_deserted
-                && !building.is_under_construction()
-        })
 }

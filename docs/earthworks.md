@@ -950,9 +950,71 @@ Shared placement lifecycle:
   by road sampling and save/load. Mixing 2D projection distance with 3D sampling moves sites along
   sloped roads and is forbidden.
 - This is one geometry/update contract, not a new atomic building/terrain renderer transaction.
-  The reported floating/buried-house screenshot scene still needs exact-save reproduction;
-  construction animation and delayed/failed terrain publication must be distinguished from a
-  wrong final support plane.
+  The `farms.sqlite` save reproduces rejected terrain publication: overlapping site/road guide
+  heights and ungraded building aprons at tile sides are corrected below. The unsaved live view
+  remains unavailable; construction animation and delayed/failed terrain publication must still
+  be distinguished from a wrong final support plane.
+
+### Saved Farm City Terrain Rejection (2026-09-11)
+
+`buildings.log` records rejected terrain patch `(22, 0)` after loading `farms.sqlite`. An engine-free
+replay with the save's seven asset manifests and imported model bounds reproduces the failure.
+Road guides sampled source terrain while site guides independently targeted nearby road heights:
+two samples roughly 2.5 cm apart differed by 0.88 m, producing triangle slopes above 490. The
+exporter correctly rejected those faces and therefore the patch. Separately, building footprints
+were excluded from shared-side halo grading, allowing a pad apron to meet an ungraded tile edge.
+
+Site and road guides now share the source-terrain height authority. Pad boundaries retain their
+fixed support height, and CDT derives the graded transition. The obsolete separate site-guide
+height solver is removed; support-placement feasibility still checks actual road connection
+heights. Both tiles grade their boundary samples against the uncut building footprint, including
+when only its apron enters the neighboring tile. CDT contract revision 14 invalidates older
+derived geometry. Mesh rejection thresholds and the prohibition on raw-heightmap fallback remain.
+
+A failed live terrain batch can retain the previous ground while newly placed buildings already
+use their pad elevations; a reload has no previous ground to retain. This explains a mechanism
+consistent with the reported floating/buried buildings followed by a missing chunk. The original
+unsaved view was not recorded. The corrected save replay validates every rebuilt patch and samples
+the visible support height at each foundation triangle's centre.
+
+The change uses the existing local tile inputs and spatial queries. Canonical grading remains
+O(samples × local boundary edges), and guide generation replaces nearest-road searches with O(1)
+terrain samples. No per-agent or per-tick work, new spatial index, or city-wide scan is added.
+New Game clears city/terrain state as before, now advances the terrain payload generation, and
+resets its camera and save filename; unchanged camera framing did not indicate two simulation maps.
+
+Fresh verification for this change:
+
+- Release Rust suite: **1,688 passed**, 15 ignored measurement cases; log
+  `/tmp/metrum-terrain-final-suite.log`. Includes populated-city reset, rejection of old-world
+  terrain acknowledgements, matching apron heights across tile sides, and a Rust/Godot contract
+  version check. Release build, rustdoc and formatting/diff checks pass without compiler warnings.
+- Godot camera/save-load and terrain/road renderer regressions pass. The actual gameplay scene
+  also passes two `farms.sqlite` load → New Game cycles on the deployed release: chunk `(22, 0)`
+  publishes, 22 model-part bases match their support, and old terrain, models, foundations, camera
+  framing and save filename clear/reset. Log: `/tmp/metrum-farms-release-scene-stdout.log`.
+  These are headless CPU geometry/frame and instance-count checks; Xvfb could not create a display,
+  so GPU readback was not verified. User data is isolated under `/tmp/metrum-farms-godot`; the
+  original save's SHA-256 still matches the untouched reproduction copy.
+- Unprofiled release measurement: `RAYON_NUM_THREADS=24` and the test binary with
+  `--exact nodes::sim::core::tests::building_site_terrain::building_site_terrain_rebuild_benchmark
+  --ignored --nocapture`. Three separate processes, two warmups and 20 measured rebuilds each,
+  use the existing four-yard Kuopio fixture; placement and road compilation are outside timing.
+  All **27 patches / 586 tiles** pass final mesh validation. Assembly p50: **86.203 / 84.163 /
+  88.706 ms**; CDT/buffer build p50: **45.912 / 46.483 / 43.565 ms**. This measures complete
+  fixture terrain rebuilding, not a single building placement or a before/after speedup.
+  Logs: `/tmp/metrum-terrain-rebuild-final-{1,2,3}.log`.
+- Populated-map locality: same executable and 24 Rayon workers, run alone with
+  `--exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored
+  --nocapture`. Across 0 / 1,000 / 10,000 / 100,000 remote buildings, matching remote parcels,
+  0 / 4 / 40 / 391 remote roads and 24–600,024 agents, the four local paved sites produce
+  identical terrain products. Plan p50 stays **22.196 / 21.769 / 21.015 / 21.240 ms**, and
+  worker p50 stays **22.750 / 22.170 / 22.468 / 22.105 ms** (100 samples/level).
+  One-time snapshot cost, outside those timings, is **0.010 / 0.052 / 0.352 / 3.359 ms**.
+  Log: `/tmp/metrum-terrain-populated-locality.log`.
+- Build identity: release test executable SHA-256
+  `a92c2250a3fa3f04f671f7e7339157457bfe1ad31da2cee7ac1a1190686364b7`;
+  deployed library SHA-256 `725c26f69ad6230e0407407df7d39449551060497d2ae1a640f370e54127c708`.
 
 ### 6. Determinism And Performance
 

@@ -97,7 +97,11 @@ text in the label itself (for example `Save [Ctrl+S]`) rather than using a separ
 accelerator column.
 
 Gameplay `New Game` still opens a file picker rooted at `user://worlds/` and loads the selected
-`WorldDefinition` into the live scene.
+`WorldDefinition` into the live scene. It resets the camera to the new world's centre and initial
+orbit, clears the previous city's save filename, and pauses after rebuilding the scene.
+Normal play and debug inspection use the same terrain-anchored focus, initial framing, movement,
+and zoom. Debug only extends the orbit pitch to look upward from beneath terrain; the focus
+continues to follow the ground while the camera may pass below it in that upward view.
 Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
 City snapshots also store the active `CameraNode` focus point, yaw, pitch, orbit distance, and
 projection in the same SQLite transaction as the world (format version 59). Loading restores
@@ -105,6 +109,7 @@ those controls immediately after world replacement, before terrain/water residen
 the next pan, orbit, or zoom therefore continues from the saved view. The saved focus height
 already includes terrain clearance and is restored without another terrain adjustment. Versions
 57/58 and simulation-only snapshots have no camera state and keep the scene's current view.
+Loading an upward debug view in normal mode clamps its pitch to the normal downward limit.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`,
 `WorldEditor`).
@@ -362,6 +367,27 @@ opened. They do not hold Rust-side state. The Building Inspector additionally re
 visible inspector windows on each in-game hour boundary; other live windows should stay
 snapshot-on-open unless there is a clear need for an explicit low-frequency refresh path.
 
+Farm inspectors provide **Edit Field** for committed polygons. `field_edit_tool.gd` displays
+the existing vertex handles, previews each drag through Rust validation, and commits on release.
+Accepted releases refresh the field overlay and merge Rust's updated area, worker capacity and
+production ratio into the open inspector immediately. Rejected moves restore the last accepted
+shape and display the conflict. Escape/right-click finishes editing; switching tools or loading
+a world also cancels an unfinished drag. No field geometry or economy decisions live in GDScript.
+During initial field drawing and resizing, a yellow outline shows the farm lot and a red outline
+with translucent fill marks the building/yard footprint the field must avoid. A visible legend
+explains the colors. These guides persist until drawing or editing ends and use the authoritative
+Rust site geometry, cached once when the tool opens.
+See [`economy.md`](economy.md#field-placement-and-editing-econ-07) for land-use rules.
+Industry placement clears pending state on deactivation and stops processing while inactive.
+Completing a polygon shares that cleanup while preserving the committed farm; placement and
+polygon errors appear in the existing tool notification.
+
+Farm inspectors show **Farm Household** occupancy out of one slot, followed by **Children**,
+**Adults**, and **Elders**, and the same household money, supplies, and replenishment details as
+residential homes. Business workers and production remain in their own section. Counts describe
+the resident family, excluding commuting workers, and refresh with the existing hourly inspector
+update. Farm housing is independent of the number of jobs (`ECON-08`).
+
 ---
 
 ### 5. Overlays
@@ -604,14 +630,34 @@ Camera ownership rules:
   - pan math
   - zoom semantics
   - focus-on framing
-  - terrain-clearance clamping so gameplay and WorldEditor cameras never go under terrain or
-    inside hills
+  - terrain-following focus and camera clearance in gameplay and WorldEditor, identical in
+    normal and debug modes when looking downward
+  - debug extends pitch to look upward from beneath terrain, bypassing camera clearance only
+    for that upward orbit while keeping the same terrain-following focus
 - gameplay `input_manager.gd` and `editors/world_editor_camera_input.gd` are input-routing
   wrappers only; they decide when UI owns input and which scene-local camera policy applies
+- both wrappers call `CameraNode.configure_world_camera()` for shared terrain setup and the
+  existing native application debug flag; clearance defaults and debug parsing are not duplicated
+  in GDScript, and the native camera has no input/frame callbacks
+- projection and orthographic size updates have one native implementation; changing distance
+  bounds updates both the orbit distance and orthographic view immediately
 - zoom bounds, far clip policy, and focus padding may differ between gameplay and WorldEditor as
   explicit scene policy
 - AssetEditor keeps its own separate sandbox camera controller because it is not terrain/world
   constrained and uses a different viewport layout
+
+Camera validation (2026-09-11): targeted Rust tests and the headless
+`res://tests/camera_save_load_test.gd` pass, covering shared zoom endpoints, hillside movement,
+mode changes, saved underground views and immediate orthographic updates when bounds change.
+The suite and a WorldEditor policy smoke test pass under both `METRUM_DEBUG=0` and `1`.
+Updates remain O(1), with at most two existing heightmap samples and no new allocations.
+Matched unprofiled release timing for the cleanup used `METRUM_DEBUG=0 RAYON_NUM_THREADS=24
+godot --headless --path godot --script /tmp/metrum-camera-cleanup-benchmark.gd`, with the same
+256 m flat-world fixture: one warmup plus 15 batches of 2,000 pan updates in each of three
+processes, excluding setup. Before/after library SHA-256 prefixes: `49a1d0bf1c39` /
+`8f7f61265fa8`. Normal median times were 1.952–1.980 / 2.034–2.067 µs per update; debug
+times were 1.938–1.944 / 1.972–2.023 µs. Both remain about 2 µs per input update.
+Local logs: `/tmp/metrum-camera-cleanup-benchmark-{before,after}-{1,2,3}.log`.
 
 ---
 

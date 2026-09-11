@@ -288,12 +288,8 @@ impl VacancyPlanner {
             .buildings
             .get(candidate.building_idx)
             .is_some_and(|building| {
-                !building.broken
-                    && !building.economy_broken
-                    && !building.is_deserted
-                    && !building.is_under_construction()
-                    && !building.pending_redevelopment
-                    && matches!(building.zone_type, ZoneType::Residential)
+                !building.pending_redevelopment
+                    && allocator.household_capacity(candidate.building_idx) > 0
             })
     }
 }
@@ -303,13 +299,7 @@ fn vacancy_candidate_for_building(
     building_idx: usize,
 ) -> Option<VacancyCandidate> {
     let building = allocator.buildings.get(building_idx)?;
-    if building.broken
-        || building.economy_broken
-        || building.is_deserted
-        || building.is_under_construction()
-        || building.pending_redevelopment
-        || !matches!(building.zone_type, ZoneType::Residential)
-    {
+    if building.pending_redevelopment {
         return None;
     }
     let remaining_slots = allocator
@@ -424,8 +414,6 @@ fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Buildin
 fn building_chunk(building: &Building) -> (i32, i32) {
     RegionGraph::get_chunk_coords(Vector3::new(building.center_x, 0.0, building.center_y))
 }
-
-/// Explicit household runtime record anchored to a residential building.
 
 impl HouseholdSystem {
     pub(super) fn resolve_household_housing(

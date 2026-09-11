@@ -1793,11 +1793,12 @@ Optional fields:
 - `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment). Ordinary zoned commercial service assets such as barbers and pharmacies select reusable commercial profiles such as `personal_service_small` or `health_essentials_small`; they do not set `service_class` or define barber/pharmacy-specific economy fields.
 - `[building.extractor]`: optional explicit extraction contract with `resource` and `area_mode = "player_polygon"`.
 - `[building.field]`: optional explicit agricultural field contract with `resource` and `area_mode = "player_polygon"`; the economy profile must be a `field_producer` that outputs the same resource, and its authored daily output is interpreted per 10,000 m2 of committed field area.
+- Field/extractor economy profiles use `worker_capacity_area_m2` for staffing independently of hectare-based output. It defaults to 10,000 m2; the grain farm uses one worker per 100,000 m2. The economy editor exposes this as “Area for Worker Capacity (m²)”.
 - `min_zone_width_cells`: integer, default `lot_width_cells`
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
-- `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential.
+- `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential. Explicit field-producing farms always provide exactly one slot; the editor displays this as a fixed value.
 - `worker_capacity`: integer, `>= 0`. Defines the total staffing capacity. Required for commercial/industrial. Note: if an `economy_profile` is selected, this value is read authoritatively from the profile and cannot be overridden at the asset level.
-- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members.
+- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members. Farmhouses preserve this value through export/re-import, defaulting to 120 m2 when unspecified. Rust owns that default and exports the effective farm housing values to the editor.
 
 Placement-mode interpretation:
 

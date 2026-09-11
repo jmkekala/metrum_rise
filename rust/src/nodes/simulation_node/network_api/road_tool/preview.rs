@@ -134,21 +134,6 @@ impl SimulationNode {
         dict.to_variant()
     }
 
-    /// Validates a road-tool candidate by compiling temporary surface geometry.
-    ///
-    /// This is intentionally not used by the interactive road-tool click path because complex
-    /// junctions can take hundreds of milliseconds to compile. Keep it for diagnostics and tests
-    /// that need to compare the fast placement contract against the full surface compiler.
-    #[func]
-    pub fn validate_road_candidate_for_commit(
-        &self,
-        points: PackedVector3Array,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
-    ) -> Variant {
-        self.validate_road_candidate_for_commit_with_snap(points, fwd_lanes, bkw_lanes, true)
-    }
-
     /// Validates a road-tool candidate by compiling temporary surface geometry with optional snap.
     #[func]
     pub fn validate_road_candidate_for_commit_with_snap(
@@ -388,7 +373,14 @@ impl SimulationNode {
                 dict.set("is_valid", false);
                 dict.set(
                     "invalid_reason",
-                    terrain.failure_reason().unwrap_or("road_plan_invalid"),
+                    if plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.overlaps_fields(&core))
+                    {
+                        "field_overlap"
+                    } else {
+                        terrain.failure_reason().unwrap_or("road_plan_invalid")
+                    },
                 );
             }
             if valid && state == "ready" && preview.junction_preview.is_some() {
@@ -541,10 +533,19 @@ impl SimulationNode {
             let overlaps = core
                 .zoning
                 .parcel_ids_overlapping_road_corridor(prepared_points, half_width);
+            if core
+                .allocator
+                .field_clearance
+                .overlaps_road_corridor(prepared_points, half_width)
+            {
+                dict.set("is_valid", false);
+                dict.set("invalid_reason", "field_overlap");
+            }
             dict.set(
                 "zoning_revision",
                 i64::try_from(core.zoning.overlay_revision()).unwrap_or(i64::MAX),
             );
+            dict.set("field_revision", core.agriculture.visual_revision() as i64);
             if let Some(&first) = overlaps.first() {
                 dict.set("is_valid", false);
                 dict.set("invalid_reason", "parcel_overlap");

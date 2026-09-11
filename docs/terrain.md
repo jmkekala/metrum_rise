@@ -318,6 +318,9 @@ Current deterministic rules:
 - resource deposit chunks are terrain-aligned `u16` richness grids keyed by `resource_id`,
   starting with `coal`
 - loading a `WorldDefinition` resets runtime state to a fresh blank city on that world
+- world replacement clears derived terrain ownership, caches and asynchronous render requests;
+  its global terrain payload generation advances so old-world payloads and acknowledgements
+  cannot match an unchanged patch key in the new world
 - the current `WorldDefinition` format stores:
   - world metadata
   - terrain config

@@ -914,10 +914,11 @@ fn owa_export_buffer_uses_active_explicit_work_area_output() {
         ZoneType::None,
         industrial_edge,
         &field_asset,
-        120.0,
+        3_000.0,
         0.0,
     ));
-    allocator.buildings[0].work_area_scale = 0.25;
+    // One of two workers produces 2,900/day, leaving 100 units above the export reserve.
+    allocator.buildings[0].work_area_scale = 20.0;
     allocator.buildings[0].commercial_activity_floor_scale = 1.0;
     allocator.buildings[0].worker_count = 1;
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -951,7 +952,7 @@ fn owa_export_buffer_ignores_output_headroom_throttle() {
     ));
     allocator.buildings[0].work_area_scale = 0.25;
     allocator.buildings[0].commercial_activity_floor_scale = 1.0;
-    allocator.buildings[0].worker_count = 1;
+    allocator.buildings[0].worker_count = 2;
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
@@ -963,7 +964,8 @@ fn owa_export_buffer_ignores_output_headroom_throttle() {
         shipments.shipments[0].destination,
         ShipmentEndpoint::OwaBorder(border_node)
     );
-    assert_eq!(shipments.shipments[0].amount, 240.0);
+    // Two workers fully staff this small field: reserve 72.5/day despite its full buffer.
+    assert_eq!(shipments.shipments[0].amount, 200.0);
 }
 
 #[test]

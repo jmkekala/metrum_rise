@@ -826,8 +826,19 @@ impl SimCore {
 
     /// Publishes allocator-owned site changes through one terrain invalidation path for every mode.
     pub(crate) fn publish_pending_building_site_changes(&mut self) {
+        self.publish_pending_production_site_removals();
         if let Some(bounds) = self.allocator.take_pending_site_dirty_bounds() {
             self.mark_building_site_terrain_dirty_bounds(bounds);
+        }
+    }
+
+    /// Keeps saved production polygons aligned with allocator swap removals before further use.
+    pub(crate) fn publish_pending_production_site_removals(&mut self) {
+        for (removed, last) in self.allocator.pending_production_site_removals.drain(..) {
+            self.agriculture
+                .remove_building_after_swap_remove(removed, last);
+            self.resource_extraction
+                .remove_building_after_swap_remove(removed, last);
         }
     }
 

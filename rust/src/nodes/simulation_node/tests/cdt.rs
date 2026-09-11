@@ -4,6 +4,20 @@
 
 use super::*;
 
+#[test]
+fn terrain_cdt_renderer_contract_matches_native_payload() {
+    let renderer = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../godot/scripts/renderers/terrain.gd"
+    ));
+    let expected =
+        format!("const TERRAIN_CDT_CONTRACT_REVISION := {TERRAIN_CDT_CONTRACT_REVISION}");
+    assert!(
+        renderer.lines().any(|line| line == expected),
+        "Godot would reject native terrain payloads with a different contract revision"
+    );
+}
+
 fn test_cached_cdt_window(
     min_x_mm: i64,
     mesh_result: Result<TerrainCdtMesh, TerrainCdtError>,

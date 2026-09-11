@@ -850,11 +850,9 @@ impl BuildingSnapshotAccumulator {
             .unwrap_or(1.0);
 
         if building.is_under_construction() {
-            if matches!(building.zone_type, ZoneType::Residential) {
-                self.under_construction_household_slots = self
-                    .under_construction_household_slots
-                    .saturating_add(allocator.registry.household_capacity(&building.asset_id));
-            }
+            self.under_construction_household_slots = self
+                .under_construction_household_slots
+                .saturating_add(allocator.registry.household_capacity(&building.asset_id));
             if let Some(profile) = active_profile {
                 for output_port in &profile.outputs {
                     add_resource_amount(
@@ -893,8 +891,8 @@ impl BuildingSnapshotAccumulator {
             return;
         }
 
-        if matches!(building.zone_type, ZoneType::Residential) {
-            let household_capacity = allocator.household_capacity(idx);
+        let household_capacity = allocator.household_capacity(idx);
+        if household_capacity > 0 {
             self.total_household_slots = self
                 .total_household_slots
                 .saturating_add(household_capacity);

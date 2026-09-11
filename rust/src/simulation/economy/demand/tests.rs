@@ -1614,16 +1614,48 @@ fn runtime_snapshot_counts_cached_explicit_work_area_jobs_when_commercial_floor_
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
 
-    assert_eq!(
-        snapshot.physical_worker_capacity,
-        farm_profile.worker_capacity
-    );
-    assert_eq!(
-        snapshot.funded_worker_capacity,
-        farm_profile.worker_capacity
-    );
-    assert_eq!(snapshot.open_job_slots, 0);
+    assert_eq!(snapshot.physical_worker_capacity, 2);
+    assert_eq!(snapshot.funded_worker_capacity, 2);
+    assert_eq!(snapshot.open_job_slots, 1);
     assert_eq!(snapshot.existing_unemployed_member_count, 0);
+}
+
+#[test]
+fn farm_snapshot_counts_one_home_alongside_area_scaled_jobs() {
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_utility_asset(&mut allocator, "farm_household", "grain_farm_basic");
+    let mut manifest = allocator.registry.get(&asset).unwrap().manifest.clone();
+    let authored = manifest.building.as_mut().unwrap();
+    authored.service_class = None;
+    authored.household_capacity = Some(9); // Farm housing is exactly one slot, even in an authored override.
+    authored.field = Some(crate::assets::asset::BuildingFieldData {
+        resource: "grain".into(),
+        area_mode: "player_polygon".into(),
+    });
+    allocator.registry.register("test", manifest, String::new());
+    let mut farm = building(ZoneType::None, 0.0, 0, 0, asset);
+    farm.economy_profile_runtime_id = load_runtime_economy_catalog()
+        .unwrap()
+        .profile_for_id("grain_farm_basic")
+        .unwrap()
+        .runtime_id;
+    farm.work_area_scale = 30.0;
+    farm.commercial_activity_floor_scale = 1.0;
+    farm.operating_budget = 10_000.0;
+    allocator.buildings.push(farm);
+    allocator.rebuild_zone_index();
+    let graph = graph_with_connected_border();
+    let households = HouseholdSystem::new();
+    let config = load_builtin_demand_config().unwrap();
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.vacant_household_slots, 1);
+    assert_eq!(snapshot.open_job_slots, 3);
+    allocator.claim_vacancy(0);
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.vacant_household_slots, 0);
+    assert_eq!(snapshot.open_job_slots, 3);
 }
 
 #[test]

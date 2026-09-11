@@ -123,6 +123,7 @@ Single-parcel placement is all-or-nothing.
 - The parcel must not overlap existing parcels.
 - The parcel must not overlap another road-owned corridor.
 - The parcel must not overlap an explicit service-building site reservation.
+- The parcel must not overlap a committed field (`ECON-07`), including when its profile is free/unzoned.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
 - A nonzero profile needs at least one legal initial-level asset with a valid shared flat-site
   solution. Zoning preview tests the same support solver used by demand and explicit placement;

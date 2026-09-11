@@ -117,6 +117,12 @@ private removal path so parcel occupancy is cleared, agents are evicted, househo
 invalidate building references, swap-removed building IDs are remapped through dependent stores,
 site terrain bounds are marked dirty, and entrance caches are rebuilt.
 
+Production-site remaps are published after ordinary cleanup as well as player demolition.
+Field reservations follow swap-removal immediately and are restored with their saved polygons
+on demolition undo (`ECON-07`; see [`economy.md`](economy.md#field-placement-and-editing-econ-07)).
+The bulldoze command retains the actual footprint center for revalidation: an offset imported
+building footprint need not contain the logical lot center.
+
 ## Build-Site Model
 
 In the live runtime, a build site is one frontage-attached roadside candidate footprint. It is not a
@@ -314,8 +320,10 @@ Current vacancy rule:
 
 - a building enters the residential vacancy index when `household_capacity(idx) > occupancy`
 - `claim_vacancy()` and `release_vacancy()` update that index in O(1)
-- `household_capacity(idx)` and `worker_capacity(idx)` now come only from the resolved authored asset manifest; the live runtime no longer invents fallback capacities when asset data is missing.
-- Note: `worker_capacity(idx)` is authoritatively overridden by the building's bound economy profile if one is present.
+- `mark_building_deserted()` removes remaining vacancies immediately in O(1), including farms; admission and forced rehousing never wait for a later full index rebuild.
+- Housing capacity comes from the resolved asset, with exactly one household slot for explicit field-producing farms. Unresolved, broken, deserted, and under-construction buildings offer no usable housing.
+- Farms share the residential vacancy list without joining the residential zoning/growth index; household capacity does not grow with field area. Farmhouse area uses the authored `flat_size_m2`, defaulting to 120 m2 when unspecified.
+- `worker_capacity_with_catalog(idx, catalog)` uses the bound economy profile and committed production area. Inspector, toolbar and city diagnostics reuse the live catalog; unresolved profiles offer zero jobs. Manifest capacity applies only to assets without an economy profile.
 
 This index is allocator-owned because household admission and home claiming still route through the
 allocator today.

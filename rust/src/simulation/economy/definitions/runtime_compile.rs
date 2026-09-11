@@ -182,6 +182,19 @@ fn compile_runtime_profile(
     profile: &EconomyProfile,
     resource_by_id: &BTreeMap<String, ResourceRuntimeId>,
 ) -> Result<EconomyProfileRuntime, String> {
+    if !profile.worker_capacity_area_m2.is_finite() || profile.worker_capacity_area_m2 <= 0.0 {
+        return Err(format!(
+            "profile '{}'.worker_capacity_area_m2 must be finite and > 0",
+            profile.id
+        ));
+    }
+    let workers_per_hectare = profile.workers_per_hectare();
+    if !workers_per_hectare.is_finite() {
+        return Err(format!(
+            "profile '{}'.worker_capacity_area_m2 produces a non-finite worker density",
+            profile.id
+        ));
+    }
     let kind = match profile.authored_kind() {
         AuthoredProfileKind::Producer => EconomyProfileRuntimeKind::Producer,
         AuthoredProfileKind::FieldProducer => EconomyProfileRuntimeKind::FieldProducer,
@@ -252,6 +265,7 @@ fn compile_runtime_profile(
         wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
         wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
         worker_capacity: profile.worker_capacity,
+        workers_per_hectare,
         stock_target_days: profile.stock_target_days.max(0.0),
         starting_inventory_days: profile.starting_inventory_days.max(0.0),
         reorder_threshold_days: profile.reorder_threshold_days.max(0.0),
@@ -263,4 +277,30 @@ fn compile_runtime_profile(
         outputs: compiled_outputs,
         runtime_supported,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staffing_reference_area_compiles_fractional_density_without_changing_output() {
+        let mut profile: EconomyProfile = toml::from_str(
+            "id = 'test_farm'\ndisplay_name = 'Farm'\nkind = 'field_producer'\nworker_capacity = 5\nbase_rate_units_per_day = 290.0",
+        ).unwrap();
+        let resources = BTreeMap::new();
+        let default_area = compile_runtime_profile(1, &profile, &resources).unwrap();
+        assert_eq!(default_area.workers_per_hectare, 5.0);
+        profile.worker_capacity = 1;
+        profile.worker_capacity_area_m2 = 100_000.0;
+        let farm = compile_runtime_profile(1, &profile, &resources).unwrap();
+        assert_eq!(farm.worker_capacity, 1);
+        assert_eq!(farm.workers_per_hectare, 0.1);
+        assert_eq!(farm.base_rate_units_per_day, 290.0);
+
+        for invalid_area in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::MIN_POSITIVE] {
+            profile.worker_capacity_area_m2 = invalid_area;
+            assert!(compile_runtime_profile(1, &profile, &resources).is_err());
+        }
+    }
 }

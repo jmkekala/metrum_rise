@@ -198,8 +198,6 @@ impl HouseholdSystem {
             });
     }
 
-    /// Step 1 of the daily settlement sequence: mark bankrupt any building that ended yesterday
-
     #[cfg(test)]
     pub(super) fn assign_agent_workplaces(
         &mut self,
@@ -386,7 +384,13 @@ impl HouseholdSystem {
                 )
             })
             .collect();
-        plans.sort_unstable_by_key(|plan| plan.agent_idx);
+        // Resolve resident workers first when their best available job is at home.
+        plans.sort_unstable_by_key(|plan| {
+            (
+                plan.choices[0].building_idx != agents.home_building[plan.agent_idx],
+                plan.agent_idx,
+            )
+        });
         let plan_count = plans.len();
         let plan_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
@@ -1182,7 +1186,10 @@ impl JobSupplySnapshot {
                     foot_components.building_components(allocator, graph, idx, TransitFlags::FOOT);
                 let car_components =
                     car_components.building_components(allocator, graph, idx, TransitFlags::CAR);
-                if foot_components.as_slice().is_empty() && car_components.as_slice().is_empty() {
+                if foot_components.as_slice().is_empty()
+                    && car_components.as_slice().is_empty()
+                    && allocator.household_capacity(idx) == 0
+                {
                     return None;
                 }
                 Some(JobSupplyEntry {
@@ -1426,6 +1433,28 @@ fn build_home_job_options_for_key(
     let mut options = empty_home_job_options();
     let mut option_count = 0usize;
     scratch.begin_query(job_supply.entries.len());
+
+    // The sorted supply snapshot also answers on-site jobs without a road-component query.
+    if allocator.household_capacity(key.home_idx) > 0
+        && let Ok(entry_idx) = job_supply
+            .entries
+            .binary_search_by_key(&key.home_idx, |entry| entry.building_idx)
+    {
+        let entry = &job_supply.entries[entry_idx];
+        scratch.mark_seen(entry_idx);
+        insert_home_job_option(
+            &mut options.options,
+            &mut option_count,
+            HomeJobOption {
+                building_idx: key.home_idx,
+                commute_seconds: 0,
+                commute_penalty: 0.0,
+                average_daily_wage: entry.average_daily_wage,
+                effective_capacity: entry.effective_capacity,
+                open_slots: entry.open_slots,
+            },
+        );
+    }
 
     let home_foot_components =
         foot_components.building_components(allocator, graph, key.home_idx, TransitFlags::FOOT);
@@ -1679,7 +1708,7 @@ fn cached_commute_seconds(
     new_route_entry_count: &mut usize,
 ) -> Option<u16> {
     if home_idx == work_idx {
-        return Some(1);
+        return Some(0);
     }
     let key = (home_idx, work_idx, has_car);
     if let Some(result) = route_cache.get(&key) {

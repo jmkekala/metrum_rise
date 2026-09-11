@@ -10,7 +10,7 @@ use super::geometry::{signed_polygon_area, site_radius_m};
 use super::grading::{
     BUILDING_SITE_NEAREST_ROAD_SURFACE_MAX_RADIUS_M, BuildingSiteGradingRequest,
     SiteGradingContext, SiteGradingGuideSink, append_building_site_grading_guides,
-    building_site_grading_target_height, building_site_road_connection_lateral_offset_m,
+    building_site_raw_tie_in_target_height, building_site_road_connection_lateral_offset_m,
     nearest_building_site_road_surface_sample,
 };
 use super::model::{
@@ -144,7 +144,7 @@ fn flat_site_from_bounds(
 }
 
 #[test]
-fn site_grading_target_uses_visible_road_surface() {
+fn site_support_validation_target_uses_visible_road_surface() {
     let terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 1.0);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(
@@ -169,8 +169,7 @@ fn site_grading_target_uses_visible_road_surface() {
     let expected_height_m = road_surface
         .sample_visible_surface_height(&graph, &terrain, pos.x, pos.y)
         .expect("bridge surface should own the grading sample");
-    let graded_height_m = building_site_grading_target_height(
-        10.0,
+    let graded_height_m = building_site_raw_tie_in_target_height(
         pos,
         100.0,
         &terrain,
@@ -231,9 +230,9 @@ fn site_grading_guides_are_soft_samples_outside_flat_support() {
         samples.iter().any(|sample| {
             (sample.vertex.x + 6.0).abs() <= 0.001
                 && sample.vertex.z.abs() <= 1.001
-                && (sample.vertex.height_m - 3.5).abs() <= 0.001
+                && sample.vertex.height_m.abs() <= 0.001
         }),
-        "first apron ring should sit outside the footprint and respect the tie-in slope budget"
+        "apron samples must share the source terrain authority; CDT owns the final grade"
     );
     assert!(samples.iter().all(|sample| {
         !site.contains_point(Vector2::new(sample.vertex.x as f32, sample.vertex.z as f32))
@@ -276,7 +275,7 @@ fn site_grading_apron_reaches_a_tile_whose_core_misses_the_footprint() {
         samples.iter().any(|sample| {
             (sample.vertex.x - 64.0).abs() <= 0.001
                 && (sample.vertex.z - 12.0).abs() <= 0.001
-                && (sample.vertex.height_m - 3.0).abs() <= 0.001
+                && sample.vertex.height_m.abs() <= 0.001
         }),
         "the apron must enter the right tile even though the site footprint ends at x=62"
     );

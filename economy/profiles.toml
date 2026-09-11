@@ -2,8 +2,9 @@
 id = "grain_farm_basic"
 display_name = "Grain Farm"
 kind = "field_producer"
-description = "Starter field-backed farm producing grain from player-drawn fields; authored output is per hectare."
-worker_capacity = 8
+description = "Field-backed grain farm with one worker per ten hectares; authored output is per hectare."
+worker_capacity = 1
+worker_capacity_area_m2 = 100000.0
 base_rate_units_per_day = 290.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0

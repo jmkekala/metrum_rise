@@ -200,6 +200,7 @@ func _place_window_near_cursor(window: Window, screen_pos: Vector2) -> void:
 	window.position = Vector2i(int(round(x)), int(round(y)))
 
 func _populate(entry: Dictionary, info: Dictionary) -> void:
+	entry["info"] = info
 	var window: Window = entry["window"]
 	var title_label: Label = entry["title_label"]
 	var stats_body: VBoxContainer = entry["stats_body"]
@@ -223,8 +224,12 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			]
 		)
 
-	if zone == "residential":
-		_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
+	var is_farm := info.has("field_resource")
+	if zone == "residential" or is_farm:
+		if is_farm:
+			_add_row(stats_body, "Farm Household", "%d / %d" % [int(info.get("occupancy", 0)), int(info.get("household_capacity", 1))])
+		else:
+			_add_row(stats_body, "Households", str(info.get("household_count", info.get("occupancy", 0))))
 		_add_row(stats_body, "Children", str(info.get("child_count", 0)))
 		_add_row(stats_body, "Adults", str(info.get("adult_count", 0)))
 		_add_row(stats_body, "Elders", str(info.get("elder_count", 0)))
@@ -253,7 +258,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				"Active Replenishment",
 				str(info.get("household_replenishment_active", 0))
 			)
-	else:
+	if zone != "residential":
 		_add_section(stats_body, "Business")
 		if info.get("business_summary", false):
 			_add_row(stats_body, "Status", str(info.get("business_status", "-")))
@@ -263,14 +268,11 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			var workers := int(info.get("worker_count", 0))
 			var active_capacity := int(info.get("business_active_worker_capacity", info.get("worker_capacity", 0)))
 			var max_capacity := int(info.get("worker_capacity", 0))
-			var has_explicit_work_area := info.has("extractor_resource") or info.has("field_resource")
 			var is_power_utility := str(info.get("utility_service", "")) == "power"
 			var worker_text := str(workers)
 			if not is_power_utility:
 				worker_text = "%d / %d" % [workers, max_capacity]
-				if has_explicit_work_area and active_capacity != max_capacity:
-					worker_text = "%d / %d active (%d/ha)" % [workers, active_capacity, max_capacity]
-				elif active_capacity != max_capacity:
+				if active_capacity != max_capacity:
 					worker_text = "%d / %d active (%d max)" % [workers, active_capacity, max_capacity]
 			_add_row(stats_body, "Workers", worker_text)
 			_add_row(
@@ -427,6 +429,23 @@ func _add_field_section(stats_body: VBoxContainer, info: Dictionary) -> void:
 
 	var area_m2 := maxf(float(info.get("field_area_m2", 0.0)), 0.0)
 	_add_row(stats_body, "%s Area" % resource_name, "%.0f m2" % area_m2)
+	var edit_button := Button.new()
+	edit_button.text = "Edit Field"
+	edit_button.pressed.connect(func():
+		get_node("../InputManager").edit_farm_field(info)
+	)
+	stats_body.add_child(edit_button)
+
+func apply_field_edit(building_id: int, details: Dictionary) -> void:
+	# Merge the bounded edit response; avoid querying all occupants on every release.
+	for entry: Dictionary in _open_windows.values():
+		var info: Dictionary = entry.get("info", {})
+		if int(info.get("building_id", -1)) != building_id:
+			continue
+		if info.get("center_x") != details.get("center_x") or info.get("center_z") != details.get("center_z"):
+			continue
+		info.merge(details, true)
+		_populate(entry, info)
 
 func _add_service_funding_slider(stats_body: VBoxContainer, info: Dictionary) -> void:
 	var hbox := HBoxContainer.new()

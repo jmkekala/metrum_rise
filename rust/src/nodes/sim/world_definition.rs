@@ -565,6 +565,7 @@ impl SimCore {
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
+        self.bump_global_terrain_payload_generation();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
         // World replacement explicitly rebuilds renderer residency. Dirty flags describe actual
@@ -1187,6 +1188,22 @@ mod tests {
         assert_eq!(core.config.terrain_render_chunk_span_m(), 8.0);
         assert_eq!(core.heightmap.chunk_span_m(), 8.0);
         assert_eq!(core.transit_network.road_surface.chunk_span_m(), 8.0);
+    }
+
+    #[test]
+    fn new_world_rejects_terrain_payloads_from_previous_world() {
+        let mut core = test_core_with_small_world();
+        let first_generation = core.terrain_payload_generation_for_patch(0, 0);
+        core.bump_terrain_payload_patch_generations(&[(1, 1)]);
+        let edited_generation = core.terrain_payload_generation_for_patch(1, 1);
+        core.create_blank_world_internal(40.0, 40.0, 8.0, 16.0, 50.0)
+            .unwrap();
+        for (key, stale) in [((0, 0), first_generation), ((1, 1), edited_generation)] {
+            core.heightmap.mark_render_patch_dirty(key.0, key.1);
+            assert!(core.terrain_payload_generation_for_patch(key.0, key.1) > stale);
+            assert!(!core.acknowledge_terrain_render_patch(key.0, key.1, stale));
+            assert!(core.heightmap.dirty_render_patches().contains(&key));
+        }
     }
 
     #[test]

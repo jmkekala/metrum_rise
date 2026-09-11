@@ -10,8 +10,8 @@ use crate::simulation::economy::definitions::{
     RuntimeEconomyTuning, RuntimeResourcePort, load_runtime_economy_tuning,
 };
 use crate::simulation::work_area::{
-    profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
-    scaled_work_area_worker_capacity,
+    minimum_work_area_workers, profile_kind_uses_explicit_work_area, sanitize_work_area_scale,
+    scaled_work_area_worker_capacity, work_area_worker_equivalent,
 };
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
@@ -402,12 +402,17 @@ fn service_store_profile_activity_scale(
         .clamp(0.0, 1.0)
 }
 
-fn physical_worker_capacity_for_profile(
+/// Returns whole physical worker slots before market or payroll limits, including field area.
+pub(crate) fn physical_worker_capacity_for_profile(
     building: &Building,
     profile: &EconomyProfileRuntime,
 ) -> u32 {
     if profile_kind_uses_explicit_work_area(profile.kind) {
-        scaled_work_area_worker_capacity(profile.worker_capacity, building.work_area_scale)
+        scaled_work_area_worker_capacity(
+            profile.workers_per_hectare,
+            building.work_area_scale,
+            minimum_work_area_workers(profile.kind),
+        )
     } else {
         profile.worker_capacity
     }
@@ -666,8 +671,7 @@ pub(crate) fn active_worker_capacity_for_profile_with_floor_scale(
         return 0;
     }
     if profile_kind_uses_explicit_work_area(profile.kind) {
-        let physical_capacity =
-            scaled_work_area_worker_capacity(worker_capacity, building.work_area_scale);
+        let physical_capacity = physical_worker_capacity_for_profile(building, profile);
         let activity_scale = floor_scale.clamp(0.0, 1.0);
         if physical_capacity == 0 || activity_scale <= MIN_POSITIVE_VALUE {
             return 0;
@@ -706,9 +710,11 @@ pub(crate) fn active_worker_capacity_equivalent_for_profile_with_floor_scale(
         return 0.0;
     }
     if profile_kind_uses_explicit_work_area(profile.kind) {
-        return worker_capacity as f32
-            * sanitize_work_area_scale(building.work_area_scale)
-            * floor_scale.clamp(0.0, 1.0);
+        return work_area_worker_equivalent(
+            profile.workers_per_hectare,
+            building.work_area_scale,
+            minimum_work_area_workers(profile.kind),
+        ) * floor_scale.clamp(0.0, 1.0);
     }
     if is_service_scaled_commercial_store(building, profile) {
         return worker_capacity as f32 * floor_scale.clamp(0.0, 1.0);

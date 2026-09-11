@@ -5,6 +5,57 @@
 use super::*;
 
 #[test]
+fn building_pad_grades_both_tiles_when_only_its_apron_crosses_the_side() {
+    let pad = sourced_road_loop(
+        7,
+        0,
+        vec![
+            TerrainCdtVertex::new(58.0, 4.0, 10.0),
+            TerrainCdtVertex::new(63.99, 4.0, 10.0),
+            TerrainCdtVertex::new(63.99, 4.0, 14.0),
+            TerrainCdtVertex::new(58.0, 4.0, 14.0),
+        ],
+        TerrainCdtRoadBoundarySource::BuildingSiteBoundary {
+            building_idx: 7,
+            local_loop_index: 0,
+            local_edge_index: 0,
+        },
+    );
+    let sides = [0.0, 64.0].map(|min_x| {
+        let samples = (0..=32)
+            .map(|z| TerrainCdtVertex::new(64.0, 0.0, f64::from(z * 2)))
+            .collect();
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            TerrainCdtPatch::new(min_x, 0.0, min_x + 64.0, 64.0, [0.0; 4]),
+            vec![pad.clone()],
+            samples,
+        ))
+        .unwrap();
+        assert!(
+            mesh.stats.max_face_slope_ratio < 2.0,
+            "{}",
+            mesh.stats.max_face_slope_ratio
+        );
+        let mut side = mesh
+            .vertices
+            .iter()
+            .filter(|p| p.x == 64.0)
+            .map(|p| (p.z, p.height_m))
+            .collect::<Vec<_>>();
+        side.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert!(
+            side.iter()
+                .any(|&(z, y)| z == 12.0 && (y - 3.995).abs() < 0.001)
+        );
+        side
+    });
+    assert_eq!(
+        sides[0], sides[1],
+        "uncut pad authority must reach the neighboring tile"
+    );
+}
+
+#[test]
 fn bounded_halo_grading_matches_complete_halo() {
     for offset in [0.2, 2.0, 12.0, -4.0] {
         for slope in [0.0, 0.1, -0.1] {

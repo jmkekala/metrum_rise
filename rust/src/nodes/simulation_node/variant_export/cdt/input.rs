@@ -732,7 +732,6 @@ impl SimulationNode {
         // parent-edge offsets can meet at the same XZ with different elevations. Sample
         // the common terrain here; CDT applies the same seam/widening rules as for DEM
         // samples. Shared-side samples get canonical halo grading instead of removal.
-        // Site-owned guides are appended afterwards and retain their pad authority.
         let prepare_guide = |vertex: &mut TerrainCdtVertex| {
             // Weld guide coordinates in the boundary's canonical 1 mm identity cell.
             // Keeping a sub-millimetre interior offset creates a sliver with a separate
@@ -754,13 +753,6 @@ impl SimulationNode {
             vertex.height_m = terrain.sample_visual_height_world(vertex.x as f32, vertex.z as f32)
                 * crate::config::HEIGHT_SCALE;
         };
-        for sample in &mut tie_in_guide_samples {
-            prepare_guide(&mut sample.vertex);
-        }
-        for constraint in &mut tie_in_guide_constraints {
-            prepare_guide(&mut constraint.start);
-            prepare_guide(&mut constraint.end);
-        }
         let safe_render_step_m = render_step_m.max(f32::EPSILON);
         let patch_model = Self::terrain_cdt_patch_for_bounds(terrain, min_x, min_z, max_x, max_z);
         let mut source_samples = Vec::new();
@@ -787,6 +779,13 @@ impl SimulationNode {
                 &mut tie_in_guide_samples,
                 &mut sample_keys,
             );
+        }
+        for sample in &mut tie_in_guide_samples {
+            prepare_guide(&mut sample.vertex);
+        }
+        for constraint in &mut tie_in_guide_constraints {
+            prepare_guide(&mut constraint.start);
+            prepare_guide(&mut constraint.end);
         }
         Self::append_terrain_cdt_grid_samples(
             terrain,

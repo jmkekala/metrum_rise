@@ -3,6 +3,7 @@
 //! Regression tests for simulation state, snapshots, demand cadence, and budget behavior.
 
 mod building_site_terrain;
+pub(super) mod fields;
 mod ghost_lines;
 mod road_plan_scaling;
 mod road_terrain_plan;

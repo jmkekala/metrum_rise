@@ -35,7 +35,7 @@ fn child_only_household_cannot_keep_housing() {
     agents.age_group[child] = AGE_CHILD;
     agents.transit[child] = TRANSIT_IN_BUILDING;
     agents.current_building[child] = 0;
-    agents.recalculate_occupancy(&mut allocator);
+    allocator.claim_vacancy(0);
     assert_eq!(allocator.buildings[0].occupancy, 1);
 
     households.resolve_household_housing(&mut agents, &mut allocator);
@@ -103,7 +103,8 @@ fn demand_household_removal_prioritizes_unhoused_households() {
     agents.home_building[unhoused] = usize::MAX;
     agents.target_building[unhoused] = usize::MAX;
     agents.household_id[housed_b] = 2;
-    agents.recalculate_occupancy(&mut allocator);
+    allocator.claim_vacancy(0);
+    allocator.claim_vacancy(1);
 
     let mut logistics = ShipmentSystem::new();
     households.execute_demand_household_removal(1, &mut agents, &mut allocator, &mut logistics);
@@ -149,7 +150,7 @@ fn demand_household_removal_remaps_moved_freight_carrier() {
     agents.target_building[freight] = usize::MAX;
     agents.freight_shipment_id[freight] = 77;
     agents.vehicle_type[freight] = VEHICLE_FREIGHT_DELIVERY;
-    agents.recalculate_occupancy(&mut allocator);
+    allocator.claim_vacancy(0);
 
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
@@ -212,7 +213,8 @@ fn demand_household_removal_uses_weaker_housed_households_after_unhoused_pool() 
     agents.household_id[unhoused] = 2;
     agents.home_building[unhoused] = usize::MAX;
     agents.target_building[unhoused] = usize::MAX;
-    agents.recalculate_occupancy(&mut allocator);
+    allocator.claim_vacancy(0);
+    allocator.claim_vacancy(1);
 
     let mut logistics = ShipmentSystem::new();
     households.execute_demand_household_removal(2, &mut agents, &mut allocator, &mut logistics);

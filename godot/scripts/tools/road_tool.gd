@@ -20,7 +20,6 @@ var current_path: Path3D
 
 var fwd_lanes: int = 1
 var bkw_lanes: int = 1
-var lanes_label: Label
 var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
@@ -437,7 +436,10 @@ func _preview_surface_generation_is_current(preview: Dictionary) -> bool:
 	return generation == simulation_node.get_road_tool_surface_generation() and _preview_zoning_revision_is_current(preview)
 
 func _preview_zoning_revision_is_current(preview: Dictionary) -> bool:
-	return not preview.has("zoning_revision") or int(preview["zoning_revision"]) == simulation_node.get_zoning_overlay_revision()
+	return (
+		(not preview.has("zoning_revision") or int(preview["zoning_revision"]) == simulation_node.get_zoning_overlay_revision())
+		and (not preview.has("field_revision") or int(preview["field_revision"]) == simulation_node.get_agriculture_field_overlay_revision())
+	)
 
 func _poll_pending_preview_result() -> bool:
 	if not _preview_result_pending or _preview_request == null:

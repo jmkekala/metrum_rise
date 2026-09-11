@@ -3,7 +3,6 @@
 //! Agent references to building allocator indices.
 
 use super::data::AgentSystem;
-use super::determinism::stable_index;
 use super::tick::{BuiltTripPlan, plan_building_origin_trip, plan_building_to_border_trip};
 use super::{
     ACCESS_FREIGHT_BORDER_DESTINATION, ACTIVITY_HOME, MODE_CAR, MODE_WALK, TRANSIT_ACCESS_INGRESS,
@@ -182,11 +181,17 @@ impl AgentSystem {
             self.clear_schedule_building_cache(agent_idx);
             if old_work != usize::MAX {
                 let mut needs_replan = false;
-                if self.agents.target_building[agent_idx] == old_work {
+                // A farm can also be home: changing jobs must preserve a trip home from shopping.
+                let work_is_home = old_work == self.agents.home_building[agent_idx];
+                if self.agents.target_building[agent_idx] == old_work
+                    && (!work_is_home || self.agents.activity[agent_idx] == 1)
+                {
                     self.agents.target_building[agent_idx] = usize::MAX;
                     needs_replan = true;
                 }
-                if self.agents.planned_target_building[agent_idx] == old_work {
+                if self.agents.planned_target_building[agent_idx] == old_work
+                    && (!work_is_home || self.agents.planned_activity[agent_idx] == 1)
+                {
                     self.agents.planned_target_building[agent_idx] = usize::MAX;
                     needs_replan = true;
                 }
@@ -194,6 +199,13 @@ impl AgentSystem {
                     self.clear_access_plan_and_path(agent_idx);
                     self.agents.next_replan_time[agent_idx] = 0.0;
                     self.agents.network_replan_failures[agent_idx] = 0;
+                }
+                if work_is_home
+                    && self.agents.current_building[agent_idx] == old_work
+                    && self.agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+                    && self.agents.activity[agent_idx] == 1
+                {
+                    self.agents.activity[agent_idx] = 0;
                 }
             }
         }
@@ -216,7 +228,7 @@ impl AgentSystem {
             }
             if self.agents.home_building[i] == building_id {
                 self.agents.home_building[i] = usize::MAX;
-                self.agents.household_id[i] = usize::MAX;
+                // The household survives losing its home; its owner invalidates the address.
                 self.agents.pending_household_size[i] = 0;
                 clear_schedule_cache = true;
             }
@@ -580,31 +592,6 @@ impl AgentSystem {
         }
     }
 
-    /// Finds a residential building with available vacancy.
-    /// Uses the allocator's `vacancy_index` for O(1) deterministic selection.
-    pub fn find_available_home(&mut self, allocator: &mut BuildingAllocator) -> Option<usize> {
-        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
-            return None;
-        };
-
-        let total_vacant = allocator.vacancy_index[residential_slot].len();
-        if total_vacant == 0 {
-            return None;
-        }
-
-        let seed = (self.sim_time.to_bits() as u64)
-            ^ ((self.agents.len() as u64) << 32)
-            ^ (total_vacant as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let pick = stable_index(seed, total_vacant);
-        let list = &allocator.vacancy_index[residential_slot];
-        let building_idx = list.get(pick).copied().unwrap_or(usize::MAX);
-        if building_idx != usize::MAX {
-            allocator.claim_vacancy(building_idx);
-            return Some(building_idx);
-        }
-        None
-    }
-
     fn claim_available_home_except(
         allocator: &mut BuildingAllocator,
         excluded_building: usize,
@@ -616,20 +603,6 @@ impl AgentSystem {
             .find(|&idx| idx != excluded_building && idx < allocator.buildings.len())?;
         allocator.claim_vacancy(building_idx);
         Some(building_idx)
-    }
-
-    /// Re-calculates building occupancy and vacancy index from scratch.
-    pub fn recalculate_occupancy(&mut self, allocator: &mut BuildingAllocator) {
-        for b in &mut allocator.buildings {
-            b.occupancy = 0;
-        }
-        for i in 0..self.agents.len() {
-            let h = self.agents.home_building[i];
-            if h != usize::MAX && h < allocator.buildings.len() {
-                allocator.buildings[h].occupancy += 1;
-            }
-        }
-        allocator.rebuild_zone_index();
     }
 
     fn clear_route_and_lane_state(&mut self, agent_idx: usize) {

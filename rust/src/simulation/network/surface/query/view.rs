@@ -28,6 +28,39 @@ impl std::fmt::Debug for PlannedRoadSurfaceQuery {
 }
 
 impl PlannedRoadSurfaceQuery {
+    /// Tests finalized local carrier polygons against live field reservations before adoption.
+    pub(crate) fn overlaps_fields(
+        &self,
+        fields: &crate::simulation::agriculture::FieldClearanceIndex,
+    ) -> bool {
+        if fields.is_empty() {
+            return false;
+        }
+        self.surface
+            .compiled_visual_span_pieces
+            .values()
+            .any(|piece| {
+                piece
+                    .road_surface_polygons
+                    .iter()
+                    .chain(&piece.curb_surface_polygons)
+                    .chain(&piece.sidewalk_surface_polygons)
+                    .any(|polygon| fields.overlaps_road_polygon(polygon))
+            })
+            || self
+                .surface
+                .compiled_visual_node_pieces
+                .values()
+                .any(|piece| {
+                    piece
+                        .road_surface_polygons
+                        .iter()
+                        .chain(&piece.curb_surface_polygons)
+                        .chain(&piece.sidewalk_surface_polygons)
+                        .any(|polygon| fields.overlaps_road_polygon(polygon))
+                })
+    }
+
     /// Retains only the validation excerpt; compiled owner products remain shared by Arc.
     pub(in crate::simulation::network::surface) fn capture(
         graph: &RegionGraph,

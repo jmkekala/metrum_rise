@@ -65,24 +65,25 @@ struct ServiceStoreCapacity {
 
 impl HouseholdSystem {
     pub(super) fn run_bankruptcy_check(&mut self, allocator: &mut BuildingAllocator) {
-        let registry = &allocator.registry;
-        for building in &mut allocator.buildings {
+        // Vacancy removals mutate shared indices, so this existing daily pass remains serial.
+        for idx in 0..allocator.buildings.len() {
+            let building = &allocator.buildings[idx];
             if building.broken
                 || building.economy_broken
                 || building.is_deserted
                 || building.is_under_construction()
-                || registry.is_city_service_asset(&building.asset_id)
+                || allocator.registry.is_city_service_asset(&building.asset_id)
             {
                 continue;
             }
             if building.budget_distress && building.operating_budget < 0.0 {
-                building.is_deserted = true;
                 debug_log!(
                     "economy",
                     "building asset={} bankrupt: budget_distress=true budget={:.2}",
                     building.asset_id,
                     building.operating_budget
                 );
+                allocator.mark_building_deserted(idx);
             }
         }
     }

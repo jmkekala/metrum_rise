@@ -860,6 +860,10 @@ Failed planning or replanning must:
 - Agent is hidden or represented as inside the building.
 - `current_building` is valid.
 - No local path is being reconstructed.
+- When home and work are the same farm, the authored shift changes activity in place. A same-building
+  target clears the pending transition without entering `ACCESS_EGRESS` or planning a road path.
+  Changing that job preserves any home-bound shopping trip and returns an on-site idle worker to
+  home activity. Home/work assignment changes invalidate the existing schedule cache (`ECON-08`).
 - If the economy has selected a destination and `sim_time >= next_replan_time`, the agent may attempt exactly one trip plan build at the start of the tick.
 - For household shopping, the economy-owned request must already have selected this agent as the
   carrier before writing `planned_target_building`; the entrance/exit system does not choose the

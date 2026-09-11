@@ -6,7 +6,7 @@
 //! live simulation state: a placed building owns one player-drawn polygon, a
 //! reserve snapshot derived from the deposit grid, and a depletion counter.
 
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
@@ -161,7 +161,6 @@ impl ResourceExtractionSystem {
         polygon_world: Vec<Vector2>,
         deposits: &ResourceDepositSystem,
         allocator: &mut BuildingAllocator,
-        zone_cell_m: f32,
     ) -> Result<ExtractorSiteSummary, String> {
         let building = allocator
             .buildings
@@ -173,10 +172,13 @@ impl ResourceExtractionSystem {
             .ok_or_else(|| "selected building is not a resource extractor".to_owned())?
             .to_owned();
         let area_m2 = validate_extractor_polygon_world(&polygon_world)?;
+        let site = allocator
+            .building_sites
+            .get(building_idx)
+            .ok_or_else(|| "extractor building site does not exist".to_owned())?;
         validate_polygon_near_building(
-            building,
+            &site.lot_footprint_world,
             &polygon_world,
-            zone_cell_m,
             "extractor",
             EXTRACTOR_POLYGON_LINK_DISTANCE_M,
         )?;
@@ -200,7 +202,7 @@ impl ResourceExtractionSystem {
         self.sites.sort_unstable_by_key(|site| site.building_idx);
         self.bump_visual_revision();
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            let area_scale = extractor_area_yield_factor(area_m2);
+            let area_scale = explicit_work_area_scale(area_m2);
             building.set_work_area_scale(area_scale);
             if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
                 top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
@@ -218,7 +220,7 @@ impl ResourceExtractionSystem {
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
         for site in &self.sites {
             if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
-                building.set_work_area_scale(extractor_area_yield_factor(site.area_m2));
+                building.set_work_area_scale(explicit_work_area_scale(site.area_m2));
             }
         }
     }
@@ -262,7 +264,7 @@ impl ResourceExtractionSystem {
             if factors.throughput_factor <= 0.0 {
                 continue;
             }
-            let area_factor = extractor_area_yield_factor(site.area_m2);
+            let area_factor = explicit_work_area_scale(site.area_m2);
             if area_factor <= 0.0 {
                 continue;
             }
@@ -307,20 +309,15 @@ fn reserve_units_for_resource(
 
 /// Validates extractor geometry and returns its unsigned world-space area.
 pub(crate) fn validate_extractor_polygon_world(polygon_world: &[Vector2]) -> Result<f32, String> {
-    validate_player_polygon(polygon_world, "extractor", MIN_EXTRACTOR_POLYGON_AREA_M2)?;
-    Ok(polygon_area_abs(polygon_world))
+    validate_player_polygon(polygon_world, "extractor", MIN_EXTRACTOR_POLYGON_AREA_M2)
 }
 
-fn extractor_area_yield_factor(area_m2: f32) -> f32 {
-    explicit_work_area_scale(area_m2)
-}
-
-/// Validates a player-authored polygon for one linked building area.
+/// Validates a player-authored polygon and returns its finite unsigned area in square metres.
 pub(crate) fn validate_player_polygon(
     polygon_world: &[Vector2],
     label: &str,
     min_area_m2: f32,
-) -> Result<(), String> {
+) -> Result<f32, String> {
     if polygon_world.len() < 3 {
         return Err(format!("{label} polygon needs at least three points"));
     }
@@ -329,25 +326,27 @@ pub(crate) fn validate_player_polygon(
             return Err(format!("{label} polygon contains a non-finite point"));
         }
     }
-    if polygon_area_abs(polygon_world) < min_area_m2 {
+    let area_m2 = polygon_area_abs(polygon_world);
+    if !area_m2.is_finite() {
+        return Err(format!("{label} polygon area is not finite"));
+    }
+    if area_m2 < min_area_m2 {
         return Err(format!("{label} polygon is too small"));
     }
     if polygon_has_crossing_edges(polygon_world) {
         return Err(format!("{label} polygon edges cannot cross"));
     }
-    Ok(())
+    Ok(area_m2)
 }
 
 /// Validates that a player-authored polygon is linked to a building footprint.
 pub(crate) fn validate_polygon_near_building(
-    building: &Building,
+    footprint: &[Vector2],
     polygon_world: &[Vector2],
-    zone_cell_m: f32,
     label: &str,
     max_distance_m: f32,
 ) -> Result<(), String> {
-    let footprint = building_footprint_polygon(building, zone_cell_m);
-    let distance = polygon_distance_m(&footprint, polygon_world);
+    let distance = polygon_distance_m(footprint, polygon_world);
     if distance > max_distance_m {
         return Err(format!(
             "{label} polygon must be within {:.0} m of the building",
@@ -355,27 +354,6 @@ pub(crate) fn validate_polygon_near_building(
         ));
     }
     Ok(())
-}
-
-/// Returns the world-space footprint polygon used to link extraction sites to a building.
-pub(crate) fn building_footprint_polygon(building: &Building, zone_cell_m: f32) -> [Vector2; 4] {
-    let safe_cell_m = zone_cell_m.max(f32::EPSILON);
-    let half_width = f32::from(building.width_cells) * safe_cell_m * 0.5;
-    let half_depth = f32::from(building.depth_cells) * safe_cell_m * 0.5;
-    let center = Vector2::new(building.center_x, building.center_y);
-    let facing = if building.facing_dir.length_squared() > 1e-8 {
-        building.facing_dir.normalized()
-    } else {
-        Vector2::new(0.0, -1.0)
-    };
-    let depth_axis = -facing;
-    let width_axis = Vector2::new(-depth_axis.y, depth_axis.x);
-    [
-        center - width_axis * half_width - depth_axis * half_depth,
-        center + width_axis * half_width - depth_axis * half_depth,
-        center + width_axis * half_width + depth_axis * half_depth,
-        center - width_axis * half_width + depth_axis * half_depth,
-    ]
 }
 
 fn polygon_area_abs(points: &[Vector2]) -> f32 {
@@ -529,6 +507,18 @@ mod tests {
         let reserve = deposits.coal_reserve_units_for_polygon(&polygon, 2.0);
 
         assert!((reserve - 300.0).abs() <= 0.001);
+    }
+
+    #[test]
+    fn production_polygons_reject_non_finite_area() {
+        let polygon = [
+            Vector2::new(0.0, 0.0),
+            Vector2::new(f32::MAX, 0.0),
+            Vector2::new(f32::MAX, f32::MAX),
+            Vector2::new(0.0, f32::MAX),
+        ];
+        assert!(validate_extractor_polygon_world(&polygon).is_err());
+        assert!(crate::simulation::agriculture::validate_field_polygon_world(&polygon).is_err());
     }
 
     #[test]

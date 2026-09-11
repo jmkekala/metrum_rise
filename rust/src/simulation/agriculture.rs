@@ -7,6 +7,9 @@
 //! extraction sites, fields do not snapshot or deplete a map-authored resource
 //! deposit.
 
+mod clearance;
+pub(crate) use clearance::{FieldClearanceIndex, PolygonFootprint};
+
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
@@ -15,15 +18,15 @@ use crate::simulation::economy::households::{
     building_operation_factors, scaled_output_buffer_capacity_units_for_building,
 };
 use crate::simulation::extraction::{validate_player_polygon, validate_polygon_near_building};
+use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::work_area::{
-    EXPLICIT_WORK_AREA_BASE_M2, top_up_explicit_work_area_startup_budget,
+    explicit_work_area_scale, top_up_explicit_work_area_startup_budget,
 };
+use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the farm footprint to its field polygon.
 pub(crate) const FIELD_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
-/// Field area that receives exactly the authored daily output rate.
-pub(crate) const FIELD_YIELD_BASE_AREA_M2: f32 = EXPLICIT_WORK_AREA_BASE_M2;
 
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 const MIN_FIELD_POLYGON_AREA_M2: f32 = 100.0;
@@ -93,8 +96,9 @@ impl AgricultureSystem {
     /// Returns the field site attached to one building, if present.
     pub(crate) fn site_for_building(&self, building_idx: usize) -> Option<&FieldSite> {
         self.sites
-            .iter()
-            .find(|site| site.building_idx == building_idx)
+            .binary_search_by_key(&building_idx, |site| site.building_idx)
+            .ok()
+            .map(|idx| &self.sites[idx])
     }
 
     /// Removes sites for a swap-removed building and remaps the moved last building.
@@ -103,21 +107,27 @@ impl AgricultureSystem {
         removed_building_idx: usize,
         last_building_idx_before_remove: usize,
     ) {
-        let old_len = self.sites.len();
-        self.sites
-            .retain(|site| site.building_idx != removed_building_idx);
-        let mut changed = self.sites.len() != old_len;
-        if removed_building_idx == last_building_idx_before_remove {
-            if changed {
-                self.bump_visual_revision();
-            }
-            return;
+        let mut changed = false;
+        if let Ok(idx) = self
+            .sites
+            .binary_search_by_key(&removed_building_idx, |site| site.building_idx)
+        {
+            self.sites.remove(idx);
+            changed = true;
         }
-        for site in &mut self.sites {
-            if site.building_idx == last_building_idx_before_remove {
-                site.building_idx = removed_building_idx;
-                changed = true;
-            }
+        if removed_building_idx != last_building_idx_before_remove
+            && self
+                .sites
+                .last()
+                .is_some_and(|site| site.building_idx == last_building_idx_before_remove)
+            && let Some(mut site) = self.sites.pop()
+        {
+            site.building_idx = removed_building_idx;
+            let idx = self
+                .sites
+                .partition_point(|site| site.building_idx < removed_building_idx);
+            self.sites.insert(idx, site);
+            changed = true;
         }
         if changed {
             self.bump_visual_revision();
@@ -130,7 +140,17 @@ impl AgricultureSystem {
         restored_building_idx: usize,
         last_building_idx_before_remove: usize,
         restored_sites: Vec<FieldSite>,
+        allocator: &mut BuildingAllocator,
     ) {
+        allocator.field_clearance.set(restored_building_idx, &[]);
+        allocator
+            .field_clearance
+            .set(last_building_idx_before_remove, &[]);
+        for site in &restored_sites {
+            allocator
+                .field_clearance
+                .set(site.building_idx, &site.polygon_world);
+        }
         self.sites.retain(|site| {
             site.building_idx != restored_building_idx
                 && site.building_idx != last_building_idx_before_remove
@@ -146,8 +166,10 @@ impl AgricultureSystem {
         building_idx: usize,
         polygon_world: Vec<Vector2>,
         allocator: &mut BuildingAllocator,
-        zone_cell_m: f32,
+        zoning: &ZoningSystem,
+        roads: &RoadSurfaceSystem,
     ) -> Result<FieldSiteSummary, String> {
+        let area_m2 = self.validate_site(building_idx, &polygon_world, allocator, zoning, roads)?;
         let building = allocator
             .buildings
             .get(building_idx)
@@ -157,31 +179,24 @@ impl AgricultureSystem {
             .field_resource(&building.asset_id)
             .ok_or_else(|| "selected building is not a field producer".to_owned())?
             .to_owned();
-        let area_m2 = validate_field_polygon_world(&polygon_world)?;
-        validate_polygon_near_building(
-            building,
-            &polygon_world,
-            zone_cell_m,
-            "field",
-            FIELD_POLYGON_LINK_DISTANCE_M,
-        )?;
-
-        let had_site = self
+        let position = self
             .sites
-            .iter()
-            .any(|site| site.building_idx == building_idx);
+            .binary_search_by_key(&building_idx, |site| site.building_idx);
+        let had_site = position.is_ok();
+        allocator.field_clearance.set(building_idx, &polygon_world);
         let site = FieldSite {
             building_idx,
             resource_id,
             polygon_world,
             area_m2,
         };
-        self.sites.retain(|site| site.building_idx != building_idx);
-        self.sites.push(site);
-        self.sites.sort_unstable_by_key(|site| site.building_idx);
+        match position {
+            Ok(idx) => self.sites[idx] = site,
+            Err(idx) => self.sites.insert(idx, site),
+        }
         self.bump_visual_revision();
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            let area_scale = field_area_yield_factor(area_m2);
+            let area_scale = explicit_work_area_scale(area_m2);
             building.set_work_area_scale(area_scale);
             if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
                 top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
@@ -191,11 +206,80 @@ impl AgricultureSystem {
         Ok(FieldSiteSummary { area_m2 })
     }
 
+    /// Validates geometry, farm attachment and land-use clearance without changing the saved field.
+    pub(crate) fn validate_site(
+        &self,
+        building_idx: usize,
+        polygon_world: &[Vector2],
+        allocator: &BuildingAllocator,
+        zoning: &ZoningSystem,
+        roads: &RoadSurfaceSystem,
+    ) -> Result<f32, String> {
+        let building = allocator
+            .buildings
+            .get(building_idx)
+            .ok_or_else(|| "field building does not exist".to_owned())?;
+        if !allocator
+            .registry
+            .is_field_producer_asset(&building.asset_id)
+        {
+            return Err("selected building is not a field producer".to_owned());
+        }
+        let area_m2 = validate_field_polygon_world(polygon_world)?;
+        let site = allocator
+            .building_sites
+            .get(building_idx)
+            .ok_or_else(|| "farm building site does not exist".to_owned())?;
+        validate_polygon_near_building(
+            &site.lot_footprint_world,
+            polygon_world,
+            "field",
+            FIELD_POLYGON_LINK_DISTANCE_M,
+        )?;
+        let footprint = PolygonFootprint::new(polygon_world);
+        if footprint.min.x < -zoning.config.width_m * 0.5
+            || footprint.max.x > zoning.config.width_m * 0.5
+            || footprint.min.y < -zoning.config.height_m * 0.5
+            || footprint.max.y > zoning.config.height_m * 0.5
+        {
+            return Err("field must remain inside the world".to_owned());
+        }
+        if allocator
+            .field_clearance
+            .overlaps(&footprint, Some(building_idx))
+        {
+            return Err("field overlaps another field".to_owned());
+        }
+        if zoning.parcels.overlaps_polygon(&footprint) {
+            return Err("field overlaps a zoning parcel".to_owned());
+        }
+        for idx in allocator.site_candidate_indices_for_bounds(
+            footprint.min.x,
+            footprint.min.y,
+            footprint.max.x,
+            footprint.max.y,
+        ) {
+            if let Some(site) = allocator.building_sites.get(idx)
+                && footprint.overlaps(&PolygonFootprint::new(&site.footprint_world))
+            {
+                return Err("field overlaps a building site".to_owned());
+            }
+        }
+        if footprint.overlaps_roads(roads) {
+            return Err("field overlaps a road".to_owned());
+        }
+        Ok(area_m2)
+    }
+
     /// Rebuilds cached building work-area scales from committed field sites.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
+        allocator.field_clearance.clear();
         for site in &self.sites {
+            allocator
+                .field_clearance
+                .set(site.building_idx, &site.polygon_world);
             if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
-                building.set_work_area_scale(field_area_yield_factor(site.area_m2));
+                building.set_work_area_scale(explicit_work_area_scale(site.area_m2));
             }
         }
     }
@@ -235,7 +319,7 @@ impl AgricultureSystem {
             if factors.throughput_factor <= 0.0 {
                 continue;
             }
-            let area_factor = field_area_yield_factor(site.area_m2);
+            let area_factor = explicit_work_area_scale(site.area_m2);
             if area_factor <= 0.0 {
                 continue;
             }
@@ -262,27 +346,7 @@ impl AgricultureSystem {
 
 /// Validates field geometry and returns its unsigned world-space area.
 pub(crate) fn validate_field_polygon_world(polygon_world: &[Vector2]) -> Result<f32, String> {
-    validate_player_polygon(polygon_world, "field", MIN_FIELD_POLYGON_AREA_M2)?;
-    Ok(field_polygon_area_m2(polygon_world))
-}
-
-/// Returns the unsigned world-space area of a field polygon in square metres.
-pub(crate) fn field_polygon_area_m2(points: &[Vector2]) -> f32 {
-    let mut area = 0.0f32;
-    let mut prev = points[points.len() - 1];
-    for &curr in points {
-        area += prev.x * curr.y - curr.x * prev.y;
-        prev = curr;
-    }
-    (area * 0.5).abs()
-}
-
-fn field_area_yield_factor(area_m2: f32) -> f32 {
-    if area_m2.is_finite() {
-        area_m2.max(0.0) / FIELD_YIELD_BASE_AREA_M2
-    } else {
-        0.0
-    }
+    validate_player_polygon(polygon_world, "field", MIN_FIELD_POLYGON_AREA_M2)
 }
 
 #[cfg(test)]
@@ -298,13 +362,6 @@ mod tests {
             Vector2::new(0.0, 10.0),
         ];
 
-        assert!((field_polygon_area_m2(&polygon) - 200.0).abs() <= f32::EPSILON);
-    }
-
-    #[test]
-    fn field_yield_factor_uses_one_hectare_baseline() {
-        assert!((field_area_yield_factor(5_000.0) - 0.5).abs() <= f32::EPSILON);
-        assert!((field_area_yield_factor(10_000.0) - 1.0).abs() <= f32::EPSILON);
-        assert!((field_area_yield_factor(20_000.0) - 2.0).abs() <= f32::EPSILON);
+        assert!((validate_field_polygon_world(&polygon).unwrap() - 200.0).abs() <= f32::EPSILON);
     }
 }

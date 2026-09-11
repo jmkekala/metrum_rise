@@ -37,7 +37,8 @@ impl BuildingAllocator {
             }
             if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(idx);
-
+            }
+            if let Some(zi) = self.housing_vacancy_slot(idx) {
                 let resident_cap = self.household_capacity(idx);
                 if resident_cap > 0 && b.occupancy < resident_cap {
                     let v_idx = self.vacancy_index[zi].len();
@@ -73,7 +74,8 @@ impl BuildingAllocator {
         if !b.is_under_construction() {
             if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(building_idx);
-
+            }
+            if let Some(zi) = self.housing_vacancy_slot(building_idx) {
                 let resident_cap = self.household_capacity(building_idx);
                 if resident_cap > 0 && b.occupancy < resident_cap {
                     let v_idx = self.vacancy_index[zi].len();
@@ -92,7 +94,7 @@ impl BuildingAllocator {
             return;
         }
         let cap = self.household_capacity(building_idx);
-        if cap == 0 {
+        if cap == 0 || self.buildings[building_idx].occupancy >= cap {
             return;
         }
         let b = &mut self.buildings[building_idx];
@@ -100,18 +102,33 @@ impl BuildingAllocator {
 
         // If it was in the vacancy list and is now full, remove it
         if b.occupancy >= cap {
-            let Some(zi) = baseline_private_zone_slot(b.zone_type) else {
-                return;
-            };
-            let v_pos = self.vacancy_pos[building_idx];
-            if v_pos != usize::MAX {
-                let list = &mut self.vacancy_index[zi];
-                let last_b_idx = *list.last().unwrap();
-                list.swap_remove(v_pos);
-                self.vacancy_pos[last_b_idx] = v_pos;
-                self.vacancy_pos[building_idx] = usize::MAX;
-            }
+            self.remove_housing_vacancy(building_idx);
         }
+    }
+
+    fn remove_housing_vacancy(&mut self, building_idx: usize) {
+        let Some(zi) = self.housing_vacancy_slot(building_idx) else {
+            return;
+        };
+        let Some(&position) = self.vacancy_pos.get(building_idx) else {
+            return;
+        };
+        if position == usize::MAX {
+            return;
+        }
+        let list = &mut self.vacancy_index[zi];
+        list.swap_remove(position);
+        if let Some(&moved) = list.get(position) {
+            self.vacancy_pos[moved] = position;
+        }
+        self.vacancy_pos[building_idx] = usize::MAX;
+    }
+
+    /// Latches abandonment and immediately withdraws the home from admission and rehousing. O(1).
+    pub(crate) fn mark_building_deserted(&mut self, building_idx: usize) {
+        self.buildings[building_idx].is_deserted = true;
+        self.remove_housing_vacancy(building_idx);
+        self.dirty = true;
     }
 
     /// Predicts the vacancy claims made by forced rehousing without mutating allocator indices.
@@ -166,6 +183,7 @@ impl BuildingAllocator {
             return;
         }
         let cap = self.household_capacity(building_idx);
+        let vacancy_slot = self.housing_vacancy_slot(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy = b.occupancy.saturating_sub(1);
         if cap == 0 {
@@ -174,7 +192,7 @@ impl BuildingAllocator {
 
         // If it was full and now has space, add it back to vacancy index
         if b.occupancy + 1 == cap {
-            let Some(zi) = baseline_private_zone_slot(b.zone_type) else {
+            let Some(zi) = vacancy_slot else {
                 return;
             };
             if self.vacancy_pos[building_idx] == usize::MAX {
@@ -183,6 +201,17 @@ impl BuildingAllocator {
                 self.vacancy_pos[building_idx] = v_idx;
             }
         }
+    }
+
+    // Farms share the residential vacancy list without entering residential zoning/growth indices.
+    fn housing_vacancy_slot(&self, building_idx: usize) -> Option<usize> {
+        let building = &self.buildings[building_idx];
+        baseline_private_zone_slot(building.zone_type).or_else(|| {
+            self.registry
+                .is_field_producer_asset(&building.asset_id)
+                .then(|| baseline_private_zone_slot(ZoneType::Residential))
+                .flatten()
+        })
     }
 
     /// Pick a random building from a specific zone type. O(1).
@@ -250,37 +279,5 @@ impl BuildingAllocator {
         }
 
         sources
-    }
-
-    /// Pick a random building from any of the specified zone types. O(1).
-    pub fn get_random_building_by_zones(
-        &self,
-        zones: &[ZoneType],
-        rng: &mut impl rand::Rng,
-    ) -> Option<usize> {
-        // We sum the counts and pick based on weighted probability of lengths
-        let mut total = 0;
-        for &zone in zones {
-            total += baseline_private_zone_slot(zone)
-                .map(|zone_idx| self.zone_index[zone_idx].len())
-                .unwrap_or(0);
-        }
-
-        if total == 0 {
-            return None;
-        }
-
-        let mut pick = rng.gen_range(0..total);
-        for &zone in zones {
-            let Some(zone_idx) = baseline_private_zone_slot(zone) else {
-                continue;
-            };
-            let list = &self.zone_index[zone_idx];
-            if pick < list.len() {
-                return Some(list[pick]);
-            }
-            pick -= list.len();
-        }
-        None
     }
 }

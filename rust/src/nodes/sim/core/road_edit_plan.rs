@@ -77,7 +77,7 @@ impl RoadEditPlan {
         plan
     }
 
-    /// Complete backend readiness. Local water and parcel queries are repeated under the commit
+    /// Complete backend readiness. Local water, parcel and field queries repeat under the commit
     /// lock, so changes in these independent systems cannot authorize an obsolete result.
     pub(crate) fn status(&self, core: &SimCore) -> &'static str {
         if !self.validation.is_valid {
@@ -125,6 +125,7 @@ impl RoadEditPlan {
         );
         let width = (f32::from(fwd) + f32::from(bkw)) * crate::config::LANE_WIDTH;
         if !validation.is_valid
+            || self.overlaps_fields(core)
             || !core
                 .zoning
                 .parcel_ids_overlapping_road_corridor(
@@ -139,6 +140,18 @@ impl RoadEditPlan {
             return "provisional";
         }
         "ready"
+    }
+
+    /// Rechecks current field reservations against final local road and junction footprints.
+    pub(crate) fn overlaps_fields(&self, core: &SimCore) -> bool {
+        self.topology
+            .as_ref()
+            .and_then(|topology| topology.earthworks())
+            .is_some_and(|earthworks| {
+                earthworks
+                    .roads
+                    .overlaps_fields(&core.allocator.field_clearance)
+            })
     }
 
     /// Retains the worker's preparation, solved graph delta and optional canonical surface products.

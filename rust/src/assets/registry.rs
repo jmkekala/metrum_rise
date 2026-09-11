@@ -182,14 +182,14 @@ impl AssetRegistry {
             .map(String::as_str)
     }
 
-    /// Returns the household capacity declared by a building asset's manifest.
+    /// Returns one household slot for farms, otherwise the manifest's household capacity.
     ///
-    /// Returns `0` if the asset is not a building or has no declared household capacity.
+    /// Other buildings without declared housing, and unresolved assets, return zero.
     pub fn household_capacity(&self, qualified_id: &str) -> u32 {
         self.entries
             .get(qualified_id)
             .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.household_capacity)
+            .map(|building| building.effective_household_capacity())
             .unwrap_or(0)
     }
 
@@ -260,10 +260,7 @@ impl AssetRegistry {
         self.entries
             .get(qualified_id)
             .and_then(|entry| entry.manifest.building.as_ref())
-            .is_some_and(|building| {
-                building.placement_mode == PlacementMode::Explicit
-                    && self.field_resource(qualified_id).is_some()
-            })
+            .is_some_and(|building| building.is_field_producer())
     }
 
     /// Returns whether the asset is an explicit industry building that owns a player area.
@@ -282,12 +279,12 @@ impl AssetRegistry {
             })
     }
 
-    /// Returns the target floor area per household in square meters.
+    /// Returns floor area per household; farms default to a 120 m² farmhouse when unspecified.
     pub fn flat_size_m2(&self, qualified_id: &str) -> f32 {
         self.entries
             .get(qualified_id)
             .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.flat_size_m2)
+            .map(|building| building.effective_flat_size_m2())
             .unwrap_or(0.0)
     }
 

@@ -278,6 +278,7 @@ impl SimCore {
             &mut self.transit_network,
             &mut self.region_graph,
         );
+        self.publish_pending_production_site_removals();
         use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
         for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
             if self.allocator.dirty_zones[zone_idx] {
@@ -350,7 +351,7 @@ impl SimCore {
         let candidates = self
             .allocator
             .site_candidate_indices_for_bounds(pos.x, pos.y, pos.x, pos.y);
-        let mut best: Option<(usize, f32)> = None;
+        let mut best: Option<(usize, f32, Vector2)> = None;
         for idx in candidates {
             let Some(site) = self.allocator.building_sites.get(idx) else {
                 continue;
@@ -366,17 +367,17 @@ impl SimCore {
                 / site.footprint_world.len().max(1) as f32;
             let dist_sq = (center.x - pos.x).mul_add(center.x - pos.x, (center.y - pos.y).powi(2));
             let replace = best
-                .map(|(best_idx, best_dist_sq)| {
+                .map(|(best_idx, best_dist_sq, _)| {
                     dist_sq < best_dist_sq - f32::EPSILON
                         || ((dist_sq - best_dist_sq).abs() <= f32::EPSILON && idx < best_idx)
                 })
                 .unwrap_or(true);
             if replace {
-                best = Some((idx, dist_sq));
+                best = Some((idx, dist_sq, center));
             }
         }
 
-        let (building_idx, _) = best?;
+        let (building_idx, _, center) = best?;
         let site = self.allocator.building_sites.get(building_idx)?;
         let mut points = Vec::with_capacity(site.footprint_world.len());
         for point in &site.footprint_world {
@@ -386,14 +387,13 @@ impl SimCore {
                 point.y,
             ));
         }
-        let building = self.allocator.buildings.get(building_idx)?;
         Some(BulldozeTarget {
             kind: BulldozeTargetKind::Building,
             id: building_idx,
             center: Vector3::new(
-                building.center_x,
+                center.x,
                 site.support_height_m + BULLDOZE_HIGHLIGHT_Y_OFFSET_M,
-                building.center_y,
+                center.y,
             ),
             points,
             width_m: 0.0,
@@ -514,7 +514,6 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
-        let last_building_idx_before_remove = self.allocator.buildings.len().saturating_sub(1);
         let removed = self.allocator.remove_building_for_bulldoze(
             building_idx,
             &mut self.zoning,
@@ -528,10 +527,7 @@ impl SimCore {
             }
             return false;
         }
-        self.resource_extraction
-            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
-        self.agriculture
-            .remove_building_after_swap_remove(building_idx, last_building_idx_before_remove);
+        self.publish_pending_production_site_removals();
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -947,6 +943,25 @@ impl SimCore {
         snap_to_existing_roads: bool,
         edit_plan: Option<&RoadEditPlan>,
     ) -> RoadAddOutcome {
+        // Non-preview callers must also validate final junction geometry, not only the stroke.
+        let fallback_plan = if edit_plan.is_none() && !self.allocator.field_clearance.is_empty() {
+            self.allocator
+                .prepare_building_site_query_index(self.config.zone_cell_m);
+            Some(RoadEditPlan::compile(
+                self,
+                crate::nodes::sim::core::RoadPreviewRequest {
+                    request_id: 0,
+                    surface_generation: self.road_tool_surface_generation,
+                    points: points.clone(),
+                    fwd_lanes,
+                    bkw_lanes,
+                    snap_to_existing_roads,
+                },
+            ))
+        } else {
+            None
+        };
+        let edit_plan = edit_plan.or(fallback_plan.as_ref());
         if let Some(plan) = edit_plan
             && (plan.status(self) != "ready"
                 || plan
@@ -1143,6 +1158,16 @@ impl SimCore {
                 "rejected=parcel_overlap parcels={}",
                 overlapping_parcels.len()
             );
+            return RoadAddOutcome::rejected();
+        }
+
+        if self
+            .allocator
+            .field_clearance
+            .overlaps_road_corridor(&fixed_points, corridor_half_width_m)
+            || edit_plan.is_some_and(|plan| plan.overlaps_fields(self))
+        {
+            self.last_road_timing = "rejected=field_overlap".to_owned();
             return RoadAddOutcome::rejected();
         }
 
@@ -1439,21 +1464,76 @@ impl SimCore {
             polygon_world,
             &self.resource_deposits,
             &mut self.allocator,
-            self.zoning.config.zone_cell_m,
         )
     }
 
-    /// Commits or replaces a field polygon for one placed agricultural building.
+    fn prepare_field_polygon_validation(&mut self) -> Result<(), String> {
+        if !self
+            .transit_network
+            .road_surface
+            .published_generation_matches_source()
+        {
+            return Err("road surfaces are updating; try again shortly".to_owned());
+        }
+        self.allocator
+            .prepare_building_site_query_index(self.zoning.config.zone_cell_m);
+        Ok(())
+    }
+
+    /// Validates a field preview without changing its saved polygon or work area.
+    pub(crate) fn validate_field_polygon_internal(
+        &mut self,
+        building_idx: usize,
+        polygon_world: &[Vector2],
+    ) -> Result<f32, String> {
+        self.prepare_field_polygon_validation()?;
+        self.agriculture.validate_site(
+            building_idx,
+            polygon_world,
+            &self.allocator,
+            &self.zoning,
+            &self.transit_network.road_surface,
+        )
+    }
+
+    /// Replaces only the field and farm identity captured when the drag began.
+    pub(crate) fn resize_field_polygon_internal(
+        &mut self,
+        building_idx: usize,
+        expected_center: Vector2,
+        expected_polygon: &[Vector2],
+        polygon_world: Vec<Vector2>,
+    ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
+        let same_building = self
+            .allocator
+            .buildings
+            .get(building_idx)
+            .is_some_and(|building| {
+                Vector2::new(building.center_x, building.center_y) == expected_center
+            });
+        let same_field = self
+            .agriculture
+            .site_for_building(building_idx)
+            .is_some_and(|site| site.polygon_world == expected_polygon);
+        if !same_building || !same_field {
+            return Err("the farm or field changed; reopen Edit Field".to_owned());
+        }
+        self.commit_field_polygon_internal(building_idx, polygon_world)
+    }
+
+    /// Commits a validated field and immediately rebuilds its area and placement reservation.
     pub(crate) fn commit_field_polygon_internal(
         &mut self,
         building_idx: usize,
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
+        self.prepare_field_polygon_validation()?;
         self.agriculture.commit_site(
             building_idx,
             polygon_world,
             &mut self.allocator,
-            self.zoning.config.zone_cell_m,
+            &self.zoning,
+            &self.transit_network.road_surface,
         )
     }
 
@@ -2468,6 +2548,26 @@ mod tests {
             assert_eq!(restored.lot_footprint_world, original.lot_footprint_world);
             assert_eq!(restored.support_height_m, original.support_height_m);
         }
+    }
+
+    #[test]
+    fn bulldoze_revalidates_offset_building_footprint() {
+        let mut core = test_core();
+        core.allocator.buildings = vec![test_building("offset", -20.0, 3.0)];
+        core.allocator
+            .rebuild_building_site_clients(core.config.zone_cell_m);
+        let site = &mut core.allocator.building_sites[0];
+        for point in &mut site.footprint_world {
+            *point += Vector2::new(0.0, 40.0);
+        }
+        let point = site.footprint_world.iter().copied().sum::<Vector2>()
+            / site.footprint_world.len() as f32;
+        core.allocator.recompute_max_site_radius_m();
+        core.allocator.rebuild_zone_index();
+        let target = core.resolve_bulldoze_target(point.x, point.y).unwrap();
+        assert_eq!(Vector2::new(target.center.x, target.center.z), point);
+        assert_eq!(core.bulldoze_prepared_target_internal(target), Some(false));
+        assert!(core.undo_action_internal());
     }
 
     #[test]

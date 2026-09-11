@@ -558,6 +558,11 @@ first parcel id; empty/free parcels remain parcel authority and are not silently
 caches include the zoning revision as well as road geometry/generation. A busy simulation mutex
 produces a retryable pending result, never a cached valid verdict or a blocking hover wait.
 
+Committed farm fields also reserve land (`ECON-07`). Road creation rejects `field_overlap` from
+both the stroke corridor and finalized local carriageway/curb/sidewalk/junction polygons. The
+final guard queries live field reservations before adopting or consuming a road plan. Preview
+caches include the agriculture revision; see [`economy.md`](economy.md#field-placement-and-editing-econ-07).
+
 Placement validity also includes local road-surface compileability. A preview or commit replays the
 candidate's local post-split topology before acceptance, including interior crossings against nearby
 road edges. Any edit that would fail to compile the new span or its required endpoint `Terminal` /

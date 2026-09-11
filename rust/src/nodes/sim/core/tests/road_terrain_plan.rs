@@ -314,6 +314,40 @@ fn new_parcel_rejects_ready_plan_without_consuming_it() {
 }
 
 #[test]
+fn new_field_rejects_ready_road_plan_and_releasing_land_restores_readiness() {
+    let mut core = test_core();
+    commit_ready(
+        &mut core,
+        vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
+    );
+    let points = vec![Vector3::new(0.0, 0.0, -48.0), Vector3::ZERO];
+    let plan = prepare_with_lanes(&mut core, points.clone(), 1, 1);
+    assert_eq!(plan.status(&core), "ready");
+    let field = [
+        godot::prelude::Vector2::new(-10.0, -40.0),
+        godot::prelude::Vector2::new(10.0, -40.0),
+        godot::prelude::Vector2::new(10.0, -15.0),
+        godot::prelude::Vector2::new(-10.0, -15.0),
+    ];
+    core.allocator.field_clearance.set(0, &field);
+    assert!(plan.overlaps_fields(&core));
+    assert_eq!(plan.status(&core), "invalid");
+    let before = (core.region_graph.edge_count(), core.undo_stack.len());
+    assert!(
+        !core
+            .add_road_internal_with_snap_and_validation(points.clone(), 1, 1, true, Some(&plan))
+            .committed
+    );
+    assert!(!core.add_road_internal(points, 1, 1).committed);
+    assert_eq!(
+        (core.region_graph.edge_count(), core.undo_stack.len()),
+        before
+    );
+    core.allocator.field_clearance.clear();
+    assert_eq!(plan.status(&core), "ready");
+}
+
+#[test]
 fn structural_road_plans_adopt_with_and_without_terrain_cutouts() {
     for height in [-3.0, 10.0] {
         let mut core = test_core();
@@ -843,14 +877,14 @@ fn planned_patch_reuse_keeps_new_building_site_geometry_authoritative() {
         vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
     );
     let terrain_plan = plan.terrain().unwrap();
-    assert!(terrain_plan.sites_match(&mut core));
+    assert!(terrain_plan.sites_match(&core));
     // Derive an actual site through the allocator after the road-only preview was prepared.
     let asset_id = register_test_asset(&mut core.allocator, "plan_site", ZoneType::Residential);
     add_test_complete_building(&mut core, asset_id, ZoneType::Residential);
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    assert!(!terrain_plan.sites_match(&mut core));
-    assert_eq!(terrain_plan.status(&mut core), "stale");
+    assert!(!terrain_plan.sites_match(&core));
+    assert_eq!(terrain_plan.status(&core), "stale");
     let cold = SimCore::build_refined_terrain_patch_cache_entries(inputs(&mut core));
     let mut warm_inputs = inputs(&mut core);
     assert!(
@@ -933,16 +967,16 @@ fn planned_patches_include_existing_site_grading_and_track_readiness() {
     let points = vec![Vector3::new(32.0, 0.0, -48.0), Vector3::new(32.0, 0.0, 0.0)];
     let plan = prepare_with_lanes(&mut core, points.clone(), 1, 1);
     let terrain = plan.terrain().unwrap();
-    assert_eq!(terrain.status(&mut core), "compiled");
+    assert_eq!(terrain.status(&core), "compiled");
     core.allocator.dirty_index = true;
-    assert_eq!(terrain.status(&mut core), "pending");
+    assert_eq!(terrain.status(&core), "pending");
     assert!(
         core.allocator.dirty_index,
         "checking readiness must not rebuild the city index"
     );
     core.allocator
         .prepare_building_site_query_index(core.config.zone_cell_m);
-    assert_eq!(terrain.status(&mut core), "compiled");
+    assert_eq!(terrain.status(&core), "compiled");
     core.terrain_stroke_active = true;
     assert_eq!(terrain.status(&core), "pending");
     core.terrain_stroke_active = false;
@@ -975,7 +1009,7 @@ fn planned_patches_include_existing_site_grading_and_track_readiness() {
         assert_eq!(actual.clip_error_label, expected.clip_error_label);
     }
     core.heightmap.set_height(0, 0, 0.25);
-    assert_eq!(terrain.status(&mut core), "stale");
+    assert_eq!(terrain.status(&core), "stale");
 }
 
 #[test]

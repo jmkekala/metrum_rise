@@ -20,6 +20,7 @@ extends Node
 var cul_de_sac_tool: Node3D
 var service_building_tool: Node3D
 var industry_building_tool: Node3D
+var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
@@ -27,7 +28,7 @@ var bulldoze_tool: Node3D
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, FIELD_EDIT }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const DEPOSITS_OVERLAY_MODE := 4
@@ -35,8 +36,6 @@ const SAVES_DIR := "user://saves"
 const WORLD_CAMERA_NEAR_CLIP_M := 0.5
 const WORLD_CAMERA_MIN_FAR_M := 9000.0
 const WORLD_CAMERA_FAR_MARGIN_M := 1000.0
-const WORLD_CAMERA_PIVOT_CLEARANCE_M := 0.25
-const WORLD_CAMERA_CLEARANCE_M := 1.5
 
 var _current_save_path := ""
 var _simulation_speed: float = 0.0
@@ -77,6 +76,12 @@ func _ready():
 	else:
 		industry_building_tool = get_node("../IndustryBuildingTool")
 
+	field_edit_tool = Node3D.new()
+	field_edit_tool.name = "FieldEditTool"
+	field_edit_tool.set_script(load("res://scripts/tools/field_edit_tool.gd"))
+	get_parent().call_deferred("add_child", field_edit_tool)
+	field_edit_tool.field_changed.connect(_on_field_changed)
+
 	if not has_node("../BulldozeTool"):
 		var bt = Node3D.new()
 		bt.name = "BulldozeTool"
@@ -98,30 +103,18 @@ func _ready():
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
 		cul_de_sac_tool.get_node("PreviewMesh").visible = false
-	# Removed old continuous sculpting polling
 	call_deferred("_configure_world_camera_policy")
 
 func _configure_world_camera_policy() -> void:
-	var camera = get_parent().find_child("CameraNode", true, false)
-	var debug_under_terrain: bool = _debug_camera_can_go_under_terrain()
-	if camera and camera.has_method("set_clip_policy"):
-		camera.set_clip_policy(
-			WORLD_CAMERA_NEAR_CLIP_M,
-			WORLD_CAMERA_MIN_FAR_M,
-			WORLD_CAMERA_FAR_MARGIN_M
-		)
-	if camera and camera.has_method("set_terrain_clearance_policy"):
-		camera.set_terrain_clearance_policy(
-			not debug_under_terrain,
-			WORLD_CAMERA_PIVOT_CLEARANCE_M,
-			WORLD_CAMERA_CLEARANCE_M
-		)
-	if camera and camera.has_method("set_debug_under_terrain_enabled"):
-		camera.set_debug_under_terrain_enabled(debug_under_terrain)
-
-func _debug_camera_can_go_under_terrain() -> bool:
-	var debug_value: String = OS.get_environment("METRUM_DEBUG").strip_edges()
-	return not debug_value.is_empty() and debug_value != "0"
+	var camera := get_parent().find_child("CameraNode", true, false) as CameraNode
+	if not camera:
+		return
+	camera.set_clip_policy(
+		WORLD_CAMERA_NEAR_CLIP_M,
+		WORLD_CAMERA_MIN_FAR_M,
+		WORLD_CAMERA_FAR_MARGIN_M
+	)
+	camera.configure_world_camera()
 
 func _process(delta):
 	if _ui_captures_keyboard_input():
@@ -135,7 +128,7 @@ func _input(event):
 		_handle_zoom_wheel(event)
 
 func _handle_camera_controls(delta):
-	var camera = get_viewport().get_camera_3d()
+	var camera := get_viewport().get_camera_3d() as CameraNode
 	if not camera: return
 	
 	# WASD Panning
@@ -145,11 +138,11 @@ func _handle_camera_controls(delta):
 	if Input.is_key_pressed(KEY_A): pan_dir.x -= 1.0
 	if Input.is_key_pressed(KEY_D): pan_dir.x += 1.0
 	
-	if pan_dir.length() > 0.0 and camera.has_method("pan"):
+	if pan_dir.length_squared() > 0.0:
 		camera.pan(pan_dir, 1.0, delta)
 		
 	# MMB Orbit
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE) and camera.has_method("orbit"):
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE):
 		var mouse_vel = Input.get_last_mouse_velocity()
 		if mouse_vel.length() > 0.1:
 			camera.orbit(mouse_vel * delta)
@@ -221,8 +214,8 @@ func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 	else:
 		return
 
-	var camera = get_viewport().get_camera_3d()
-	if camera and camera.has_method("zoom"):
+	var camera := get_viewport().get_camera_3d() as CameraNode
+	if camera:
 		camera.zoom(zoom_delta)
 
 func _ui_has_modal_popup() -> bool:
@@ -279,9 +272,21 @@ func _cancel_active_tool():
 		_activate_tool_logic(current_tool, false)
 		current_tool = Tool.NONE
 
+func edit_farm_field(info: Dictionary) -> void:
+	_cancel_active_tool()
+	current_tool = Tool.FIELD_EDIT
+	_activate_tool_logic(current_tool, true)
+	field_edit_tool.begin_edit(info)
+
+func _on_field_changed(building_id: int, details: Dictionary) -> void:
+	if building_inspector:
+		building_inspector.apply_field_edit(building_id, details)
+	if road_tool:
+		road_tool.mark_network_topology_dirty()
+
 func _activate_tool_logic(tool_type: Tool, enabled: bool):
-	# Close the building inspector whenever any dedicated tool activates.
-	if enabled and building_inspector:
+	# Keep farm details visible while vertex releases update their values.
+	if enabled and tool_type != Tool.FIELD_EDIT and building_inspector:
 		building_inspector.close_window()
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
@@ -328,6 +333,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if select_tool: select_tool.active = enabled
 		Tool.BULLDOZE:
 			if bulldoze_tool: bulldoze_tool.active = enabled
+		Tool.FIELD_EDIT:
+			if not enabled and field_edit_tool:
+				field_edit_tool.cancel_edit()
 
 func _toggle_zoning_overlay():
 	_toggle_tool(Tool.ZONING)
@@ -587,6 +595,7 @@ func menu_load_world_definition(path: String) -> bool:
 	if path.is_empty():
 		return false
 	if simulation_node.load_world_definition(path):
+		_current_save_path = ""
 		_refresh_after_world_load()
 		set_simulation_speed(0.0)
 		print("Loaded world definition: ", path)

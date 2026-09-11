@@ -377,6 +377,8 @@ func _build_profile_inspector() -> void:
 	_add_line_field("Kind", str(profile.get("kind", "")), true, _update_selected_entry.bind("kind"))
 	_add_line_field("Description", str(profile.get("description", "")), true, _update_selected_entry.bind("description"))
 	_add_spin_field("Worker Capacity", float(profile.get("worker_capacity", 0)), 0, 9999, 1, _update_selected_entry.bind("worker_capacity"))
+	if str(profile.get("kind", "")) in ["field_producer", "extractor"]:
+		_add_spin_field("Area for Worker Capacity (m²)", float(profile.get("worker_capacity_area_m2", 10000.0)), 1, 100000000, 1000, _update_selected_entry.bind("worker_capacity_area_m2"))
 	_add_spin_field("Base Rate / Day", float(profile.get("base_rate_units_per_day", 0.0)), 0, 10000, 1, _update_selected_entry.bind("base_rate_units_per_day"))
 	_add_spin_field("Unit Price", float(profile.get("unit_price_currency", 0.0)), 0, 1000, 0.1, _update_selected_entry.bind("unit_price_currency"))
 	_add_spin_field("Wage Min", float(profile.get("wage_min_currency_per_day", 0.0)), 0, 1000, 1, _update_selected_entry.bind("wage_min_currency_per_day"))

@@ -16,6 +16,7 @@ use crate::simulation::economy::definitions::schema::{
     AuthoredProfileKind, EconomyController, EconomyProfile, EconomyProject, NODE_REF_KIND_PROFILE,
     ScenarioNode,
 };
+use crate::simulation::work_area::{MIN_FIELD_WORKERS, scaled_work_area_worker_capacity};
 use std::collections::BTreeMap;
 
 pub(in crate::simulation::economy::definitions) fn run_sandbox(
@@ -158,8 +159,22 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
                 );
             }
 
-            let daily_labor_cost =
-                profile.worker_capacity as f32 * profile.wage_max_currency_per_day;
+            // Sandbox field/extraction nodes produce the authored one-hectare output.
+            let worker_capacity = match profile.authored_kind() {
+                AuthoredProfileKind::FieldProducer | AuthoredProfileKind::Extractor => {
+                    scaled_work_area_worker_capacity(
+                        profile.workers_per_hectare(),
+                        1.0,
+                        if profile.authored_kind() == AuthoredProfileKind::FieldProducer {
+                            MIN_FIELD_WORKERS
+                        } else {
+                            0
+                        },
+                    )
+                }
+                _ => profile.worker_capacity,
+            };
+            let daily_labor_cost = worker_capacity as f32 * profile.wage_max_currency_per_day;
 
             let mut daily_input_cost = 0.0;
             for input in &profile.inputs {

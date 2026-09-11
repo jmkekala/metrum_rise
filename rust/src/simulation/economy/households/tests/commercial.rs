@@ -61,7 +61,7 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
     building.economy_profile_runtime_id = profile.runtime_id;
     building.work_area_scale = 0.2731;
     building.commercial_activity_floor_scale = 1.0;
-    building.worker_count = 3;
+    building.worker_count = 2;
     let output_port = profile.outputs.first().expect("grain output");
     let output_capacity =
         scaled_output_buffer_capacity_units_for_building(&building, profile, output_port);
@@ -79,18 +79,23 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
 
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &building, profile),
-        3
+        2
     );
     let factors = building_operation_factors(&catalog, &building, profile);
-    assert_eq!(factors.active_worker_capacity, 3);
-    assert_eq!(factors.effective_workers, 3);
+    assert_eq!(factors.active_worker_capacity, 2);
+    assert_eq!(factors.effective_workers, 2);
     assert!(
         (factors.throughput_factor - 1.0).abs() < 0.001,
-        "area-scaled full staffing should not divide throughput by the authored one-hectare worker count"
+        "a small field should reach full throughput with its rounded worker capacity"
     );
     assert!(
         (factors.output_headroom_factor - 1.0).abs() < 0.001,
         "area-scaled producers should compare storage headroom to scaled hourly output"
+    );
+    building.worker_count = 1;
+    assert!(
+        (building_operation_factors(&catalog, &building, profile).throughput_factor - 0.5).abs()
+            < 0.001
     );
 }
 
@@ -102,7 +107,7 @@ fn explicit_work_area_market_scale_limits_jobs_and_output() {
         .expect("grain farm runtime profile");
     let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
     building.economy_profile_runtime_id = profile.runtime_id;
-    building.work_area_scale = 2.0;
+    building.work_area_scale = 160.0;
     building.commercial_activity_floor_scale = 0.25;
     building.worker_count = 4;
 
@@ -147,7 +152,7 @@ fn explicit_work_area_activity_uses_owa_as_external_market() {
     );
     assert_eq!(
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
-        16
+        2
     );
 }
 
@@ -178,6 +183,82 @@ fn explicit_work_area_activity_requires_owa_gateway_or_local_demand() {
         active_worker_capacity_for_profile(&catalog, &allocator.buildings[0], farm_profile),
         0
     );
+}
+
+#[test]
+fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
+    use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
+    use crate::simulation::economy::households::metrics::active_worker_capacity_equivalent_for_profile_with_floor_scale;
+    use crate::simulation::work_area::top_up_explicit_work_area_startup_budget;
+
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let profile = catalog
+        .profile_for_id("grain_farm_basic")
+        .expect("grain farm");
+    let output = profile.outputs.first().expect("grain output");
+    for (hectares, workers) in [
+        (0.0, 0),
+        (0.01, 2),
+        (1.0, 2),
+        (10.0, 2),
+        (10.01, 2),
+        (20.0, 2),
+        (20.01, 3),
+        (100.0, 10),
+    ] {
+        let mut allocator = BuildingAllocator::new();
+        let mut farm = make_building(0.0, ZoneType::None, "test:farm", 0.0);
+        farm.economy_profile_runtime_id = profile.runtime_id;
+        farm.commercial_activity_floor_scale = 1.0;
+        farm.worker_count = workers;
+        farm.operating_budget = 500.0;
+        farm.profit_tax_budget_baseline = 500.0;
+        allocator.buildings.push(farm);
+        let mut agriculture = AgricultureSystem::from_sites(vec![FieldSite {
+            building_idx: 0,
+            resource_id: "grain".to_owned(),
+            polygon_world: Vec::new(),
+            area_m2: hectares * 10_000.0,
+        }]);
+        // Load reconstructs the hectare scale from saved sites using this same path.
+        agriculture.apply_work_area_scales(&mut allocator);
+        assert_eq!(allocator.worker_capacity_with_catalog(0, &catalog), workers);
+        let farm = &mut allocator.buildings[0];
+        top_up_explicit_work_area_startup_budget(farm, &catalog, hectares);
+        assert_eq!(
+            active_worker_capacity_for_profile(&catalog, farm, profile),
+            workers
+        );
+        assert!(
+            (active_worker_capacity_equivalent_for_profile_with_floor_scale(
+                &catalog, farm, profile, 1.0
+            ) - if hectares > 0.0 {
+                (hectares / 10.0).max(2.0)
+            } else {
+                0.0
+            })
+            .abs()
+                < 0.001
+        );
+        assert_eq!(
+            farm.operating_budget,
+            (workers as f32 * 90.0 * 7.0).max(500.0)
+        );
+        assert_eq!(farm.profit_tax_budget_baseline, farm.operating_budget);
+        assert!(
+            (scaled_output_units_per_day_for_building(farm, profile, output) - 290.0 * hectares)
+                .abs()
+                < 0.01
+        );
+
+        agriculture.produce_hourly(&mut allocator, &catalog);
+        assert!(
+            (allocator.buildings[0].inventory_units(output.resource_runtime_id)
+                - 290.0 * hectares / 24.0)
+                .abs()
+                < 0.001
+        );
+    }
 }
 
 #[test]

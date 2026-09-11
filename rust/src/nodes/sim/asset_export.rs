@@ -239,16 +239,14 @@ fn toml_string(value: &str) -> String {
 }
 
 fn build_pack_toml(p: &ExportParams) -> String {
-    let desc_line = format!("description = \"\"\n");
     format!(
-        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\n{}",
+        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\ndescription = \"\"\n",
         toml_string(&p.pack_id),
         CURRENT_SCHEMA_VERSION,
         toml_string(&p.pack_name),
         toml_string(&p.pack_version),
         toml_string(&p.pack_author),
-        toml_string(&p.pack_license),
-        desc_line
+        toml_string(&p.pack_license)
     )
 }
 
@@ -286,6 +284,8 @@ fn build_asset_toml(p: &ExportParams) -> String {
             let placement_mode = normalized_placement_mode_key(&p.placement_mode);
             let zone = p.zone_type.as_deref().unwrap_or("residential");
             let is_zoned_residential = placement_mode == "zoned_private" && zone == "residential";
+            let is_farm = placement_mode == "explicit"
+                && non_empty_optional_string(&p.field_resource).is_some();
             out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
             if placement_mode == "zoned_private" {
                 out.push_str(&format!("zone_type = {}\n", toml_string(zone)));
@@ -307,7 +307,9 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 }
             }
             out.push_str(&format!("level = {}\n", p.level));
-            if is_zoned_residential {
+            if is_farm {
+                out.push_str("household_capacity = 1\n");
+            } else if is_zoned_residential {
                 if let Some(h) = p.household_capacity {
                     if h > 0 {
                         out.push_str(&format!("household_capacity = {h}\n"));
@@ -321,7 +323,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
                     }
                 }
             }
-            if is_zoned_residential {
+            if is_zoned_residential || is_farm {
                 if let Some(f) = p.flat_size_m2 {
                     if f > 0.0 {
                         out.push_str(&format!("flat_size_m2 = {f:.1}\n"));
@@ -937,8 +939,16 @@ pub fn get_asset_manifest_json_internal(
         obj["min_zone_width_cells"] = serde_json::json!(b.min_zone_width_cells);
         obj["min_zone_depth_cells"] = serde_json::json!(b.min_zone_depth_cells);
         obj["level"] = serde_json::json!(b.level);
-        obj["household_capacity"] = serde_json::json!(b.household_capacity);
-        obj["flat_size_m2"] = serde_json::json!(b.flat_size_m2);
+        obj["household_capacity"] = serde_json::json!(if b.is_field_producer() {
+            Some(b.effective_household_capacity())
+        } else {
+            b.household_capacity
+        });
+        obj["flat_size_m2"] = serde_json::json!(if b.is_field_producer() {
+            Some(b.effective_flat_size_m2())
+        } else {
+            b.flat_size_m2
+        });
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
@@ -1280,6 +1290,38 @@ mod tests {
         assert!(!asset_toml.contains("worker_capacity"));
         assert!(!asset_toml.contains("household_capacity"));
         assert!(!asset_toml.contains("flat_size_m2"));
+    }
+
+    #[test]
+    fn farm_export_preserves_living_area_and_reloads_one_household() {
+        for area in [None, Some(180.0)] {
+            let mut json: serde_json::Value =
+                serde_json::from_str(&minimal_building_json("building.farm")).unwrap();
+            json["placement_mode"] = serde_json::json!("explicit");
+            json["zone_type"] = serde_json::Value::Null;
+            json["density"] = serde_json::Value::Null;
+            json["economy_profile"] = serde_json::json!("grain_farm_basic");
+            json["field_resource"] = serde_json::json!("grain");
+            json["household_capacity"] = serde_json::json!(9);
+            json["flat_size_m2"] = serde_json::json!(area);
+            let params: ExportParams = serde_json::from_value(json).unwrap();
+            validate_building_export_contract(&params).unwrap();
+            let manifest = AssetManifest::from_str(&build_asset_toml(&params)).unwrap();
+            let building = manifest.building.as_ref().unwrap();
+            assert_eq!(building.household_capacity, Some(1));
+            assert_eq!(building.flat_size_m2, area);
+            let mut registry = crate::assets::registry::AssetRegistry::new();
+            registry.register("test-pack", manifest, String::new());
+            let id = "test-pack:building.farm";
+            let resolved_area =
+                area.unwrap_or(crate::assets::asset::BuildingData::DEFAULT_FARMHOUSE_AREA_M2);
+            assert_eq!(registry.household_capacity(id), 1);
+            assert_eq!(registry.flat_size_m2(id), resolved_area);
+            let imported: serde_json::Value =
+                serde_json::from_str(&get_asset_manifest_json_internal(&registry, id)).unwrap();
+            assert_eq!(imported["household_capacity"], 1);
+            assert_eq!(imported["flat_size_m2"], serde_json::json!(resolved_area));
+        }
     }
 
     #[test]

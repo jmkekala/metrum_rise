@@ -154,13 +154,11 @@ impl SimulationNode {
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
     /// `worker_capacity`, compact business summary fields, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
-    /// `economy_profile`, `center_x`, `center_z`, residential household aggregates,
+    /// `economy_profile`, `center_x`, `center_z`, residential/farm household aggregates,
     /// extractor reserve fields, and `inventory` (Array of `{name, amount}` Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
-        use crate::simulation::economy::definitions::{
-            EconomyProfileRuntimeKind, load_runtime_economy_catalog,
-        };
+        use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
         use crate::simulation::economy::households::{
             REPLENISHMENT_COOLDOWN, REPLENISHMENT_FAILED_TERMINAL, REPLENISHMENT_FULFILLED,
             REPLENISHMENT_NEEDS, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
@@ -190,7 +188,7 @@ impl SimulationNode {
         }
 
         let b = &core.allocator.buildings[best_idx];
-        let catalog = load_runtime_economy_catalog().ok();
+        let catalog = core.demand.runtime_catalog();
 
         let zone_type_str = match b.zone_type {
             ZoneType::None => "utility",
@@ -201,39 +199,30 @@ impl SimulationNode {
             ZoneType::Mixed => "mixed",
         };
 
-        let profile_id = catalog
-            .as_ref()
-            .and_then(|c| c.profile_by_runtime_id(b.economy_profile_runtime_id))
-            .map(|p| p.id.clone())
-            .unwrap_or_default();
-
-        let worker_capacity = catalog
-            .as_ref()
-            .map(|catalog| {
-                core.allocator
-                    .worker_capacity_with_catalog(best_idx, catalog.as_ref())
-            })
-            .unwrap_or_else(|| core.allocator.worker_capacity(best_idx));
+        let profile = catalog.profile_by_runtime_id(b.economy_profile_runtime_id);
+        let profile_id = profile.map(|p| p.id.as_str()).unwrap_or_default();
+        let worker_capacity = core
+            .allocator
+            .worker_capacity_with_catalog(best_idx, catalog);
 
         // Inventory: only non-zero resource slots.
         let mut inv_arr = VarArray::new();
-        if let Some(cat) = &catalog {
-            for (slot, &amount) in b.resource_inventory.iter().enumerate() {
-                if amount > 0.001 {
-                    let runtime_id = (slot + 1) as u16;
-                    let name = cat
-                        .resource_id_for_runtime_id(runtime_id)
-                        .unwrap_or("unknown");
-                    let mut entry = VarDictionary::new();
-                    entry.set("name", GString::from(name));
-                    entry.set("amount", amount as f64);
-                    inv_arr.push(&entry.to_variant());
-                }
+        for (slot, &amount) in b.resource_inventory.iter().enumerate() {
+            if amount > 0.001 {
+                let runtime_id = (slot + 1) as u16;
+                let name = catalog
+                    .resource_id_for_runtime_id(runtime_id)
+                    .unwrap_or("unknown");
+                let mut entry = VarDictionary::new();
+                entry.set("name", GString::from(name));
+                entry.set("amount", amount as f64);
+                inv_arr.push(&entry.to_variant());
             }
         }
 
         let mut dict = VarDictionary::new();
         dict.set("asset_id", GString::from(b.asset_id.as_str()));
+        dict.set("building_id", best_idx as i64);
         let asset_display_name = core
             .allocator
             .registry
@@ -250,6 +239,10 @@ impl SimulationNode {
         );
         dict.set("construction_progress", b.construction_progress() as f64);
         dict.set("occupancy", b.occupancy as i32);
+        dict.set(
+            "household_capacity",
+            core.allocator.household_capacity(best_idx),
+        );
         dict.set("center_x", b.center_x as f64);
         dict.set("center_z", b.center_y as f64);
         if let Some(resource_id) = core.allocator.registry.extractor_resource(&b.asset_id) {
@@ -276,15 +269,24 @@ impl SimulationNode {
         }
         if let Some(resource_id) = core.allocator.registry.field_resource(&b.asset_id) {
             dict.set("field_resource", GString::from(resource_id));
+            Self::set_production_plot_boundaries(&core, best_idx, &mut dict);
             if let Some(site) = core.agriculture.site_for_building(best_idx) {
                 dict.set("field_has_site", true);
                 dict.set("field_area_m2", f64::from(site.area_m2.max(0.0)));
+                dict.set(
+                    "field_polygon",
+                    PackedVector2Array::from(site.polygon_world.as_slice()),
+                );
             } else {
                 dict.set("field_has_site", false);
                 dict.set("field_area_m2", 0.0f64);
             }
         }
 
+        // Reuse the inspector's household aggregation for farms, including residents awaiting
+        // rehousing from an inactive farm. This read runs on inspection/hour refresh, not each tick.
+        let has_household_details = b.zone_type == ZoneType::Residential
+            || core.allocator.registry.is_field_producer_asset(&b.asset_id);
         let mut total_agents = 0i32;
         let mut child_agents = 0i32;
         let mut adult_agents = 0i32;
@@ -297,7 +299,7 @@ impl SimulationNode {
         let mut household_replenishment_active = 0i32;
         let mut first_replenishment_state = None;
         let mut mixed_replenishment_state = false;
-        if b.zone_type == ZoneType::Residential {
+        if has_household_details {
             for h in &core.households.households {
                 if h.home_building_id == best_idx {
                     household_count += 1;
@@ -328,7 +330,7 @@ impl SimulationNode {
         dict.set("child_count", child_agents);
         dict.set("adult_count", adult_agents);
         dict.set("elder_count", elder_agents);
-        if b.zone_type == ZoneType::Residential {
+        if has_household_details {
             let household_divisor = household_count.max(1) as f32;
             let replenishment_state = if household_count == 0 {
                 "-"
@@ -380,11 +382,9 @@ impl SimulationNode {
         dict.set("operating_budget", b.operating_budget as f64);
         dict.set("revenue", b.revenue as f64);
         if b.zone_type != ZoneType::Residential {
-            if let Some(cat) = &catalog
-                && let Some(profile) = cat.profile_by_runtime_id(b.economy_profile_runtime_id)
-            {
-                let factors = building_operation_factors(cat.as_ref(), b, profile);
-                let inventory_fill = building_inventory_fill_ratio(cat.as_ref(), b, profile);
+            if let Some(profile) = profile {
+                let factors = building_operation_factors(catalog, b, profile);
+                let inventory_fill = building_inventory_fill_ratio(catalog, b, profile);
                 let profit_today = b.operating_budget - b.profit_tax_budget_baseline;
                 let business_status = if b.broken {
                     "Asset broken"
@@ -461,7 +461,7 @@ impl SimulationNode {
                         );
                     }
                     if let Some(fuel_port) = profile.inputs.first() {
-                        let fuel_name = cat
+                        let fuel_name = catalog
                             .resource_id_for_runtime_id(fuel_port.resource_runtime_id)
                             .unwrap_or("fuel");
                         let fuel_units = b.inventory_units(fuel_port.resource_runtime_id).max(0.0);
@@ -502,7 +502,7 @@ impl SimulationNode {
         dict.set("is_deserted", b.is_deserted);
         dict.set("pending_redevelopment", b.pending_redevelopment);
         dict.set("rezone_grace_days", b.rezone_grace_days_remaining as i32);
-        dict.set("economy_profile", GString::from(profile_id.as_str()));
+        dict.set("economy_profile", GString::from(profile_id));
         dict.set("inventory", inv_arr.to_variant());
         dict
     }
@@ -519,6 +519,12 @@ impl SimulationNode {
         let result =
             validate_and_export_asset_internal(&params_json.to_string(), &output_dir.to_string());
         GString::from(result.as_str())
+    }
+
+    /// Returns the simulation's default interior area for a newly authored farmhouse.
+    #[func]
+    pub fn get_default_farmhouse_area_m2(&self) -> f32 {
+        crate::assets::asset::BuildingData::DEFAULT_FARMHOUSE_AREA_M2
     }
 
     /// Returns a JSON object describing the manifest for an already-registered asset,

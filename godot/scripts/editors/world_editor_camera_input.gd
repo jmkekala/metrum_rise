@@ -10,44 +10,27 @@ var panel_right_w := 0.0
 var panel_top_h := 28.0
 var panel_bot_h := 104.0
 
-var _cam: Camera3D
+var _cam: CameraNode
 
 const MIN_DISTANCE := 0.5
 const MAX_DISTANCE := 200000.0
 const MIN_FAR_M := 20000.0
 const FAR_MARGIN_M := 5000.0
 const FOCUS_PADDING_MULT := 3.25
-const TERRAIN_PIVOT_CLEARANCE_M := 0.25
-const TERRAIN_CAMERA_CLEARANCE_M := 1.5
 const WORLD_KEYBOARD_PASSTHROUGH_META := "world_editor_keyboard_passthrough"
 
 var _orbit_active := false
 var _pan_active := false
 
 func _ready() -> void:
-	_cam = get_parent().find_child("CameraNode", true, false) as Camera3D
+	_cam = get_parent().find_child("CameraNode", true, false) as CameraNode
 	if not _cam:
 		push_error("WorldEditorCameraInput: no CameraNode found in parent scene")
 		return
-	if _cam.has_method("set_distance_bounds"):
-		_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
-	if _cam.has_method("set_clip_policy"):
-		_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
-	if _cam.has_method("set_focus_padding"):
-		_cam.set_focus_padding(FOCUS_PADDING_MULT)
-	var debug_under_terrain: bool = _debug_camera_can_go_under_terrain()
-	if _cam.has_method("set_terrain_clearance_policy"):
-		_cam.set_terrain_clearance_policy(
-			not debug_under_terrain,
-			TERRAIN_PIVOT_CLEARANCE_M,
-			TERRAIN_CAMERA_CLEARANCE_M
-		)
-	if _cam.has_method("set_debug_under_terrain_enabled"):
-		_cam.set_debug_under_terrain_enabled(debug_under_terrain)
-
-func _debug_camera_can_go_under_terrain() -> bool:
-	var debug_value: String = OS.get_environment("METRUM_DEBUG").strip_edges()
-	return not debug_value.is_empty() and debug_value != "0"
+	_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
+	_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
+	_cam.set_focus_padding(FOCUS_PADDING_MULT)
+	_cam.configure_world_camera()
 
 func _process(delta: float) -> void:
 	if not _cam:
@@ -70,16 +53,13 @@ func _process(delta: float) -> void:
 	if pan_axis.length_squared() == 0.0:
 		return
 
-	if _cam.has_method("pan"):
-		pan_axis = pan_axis.normalized()
-		_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
+	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
 
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
 	if not _cam:
 		return
-	if _cam.has_method("focus_on"):
-		_cam.focus_on(center, radius)
+	_cam.focus_on(center, radius)
 
 func _input(event: InputEvent) -> void:
 	if not _cam:
@@ -99,23 +79,19 @@ func _input(event: InputEvent) -> void:
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_UP:
 				if not over_ui:
-					if _cam.has_method("zoom"):
-						_cam.zoom(1.0)
+					_cam.zoom(1.0)
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if not over_ui:
-					if _cam.has_method("zoom"):
-						_cam.zoom(-1.0)
+					_cam.zoom(-1.0)
 					get_viewport().set_input_as_handled()
 
 	elif event is InputEventMouseMotion:
 		if _orbit_active:
-			if _cam.has_method("orbit"):
-				_cam.orbit(event.relative)
+			_cam.orbit(event.relative)
 			get_viewport().set_input_as_handled()
 		elif _pan_active:
-			if _cam.has_method("pan_screen"):
-				_cam.pan_screen(event.relative)
+			_cam.pan_screen(event.relative)
 			get_viewport().set_input_as_handled()
 
 func _is_mouse_in_3d_area() -> bool:

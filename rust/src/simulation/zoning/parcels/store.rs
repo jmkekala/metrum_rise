@@ -7,6 +7,7 @@ use super::geometry::{
     point_inside_parcel, rectangles_overlap_geometry, segment_touches_parcel,
 };
 use super::types::{ParcelGeometry, ParcelId, ZoningParcel};
+use crate::simulation::agriculture::PolygonFootprint;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
 
@@ -299,6 +300,26 @@ impl ParcelStore {
     pub(crate) fn overlaps_existing(&self, geometry: &ParcelGeometry) -> bool {
         let mut visited = HashSet::new();
         self.overlaps_existing_with_scratch(geometry, &mut visited)
+    }
+
+    /// Tests an arbitrary field polygon against locally indexed authored parcels.
+    pub(crate) fn overlaps_polygon(&self, footprint: &PolygonFootprint) -> bool {
+        let mut tested = HashSet::new();
+        for chunk in chunks_for_aabb(footprint.min, footprint.max) {
+            let Some(ids) = self.chunk_index.get(&chunk) else {
+                continue;
+            };
+            for id in ids {
+                if tested.insert(*id)
+                    && self.get(*id).is_some_and(|parcel| {
+                        footprint.overlaps(&PolygonFootprint::new(&parcel.corners()))
+                    })
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub(crate) fn overlaps_existing_with_scratch(

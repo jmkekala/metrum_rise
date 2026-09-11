@@ -8,6 +8,7 @@
 extends Node3D
 
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
+const ProductionPlotOverlay := preload("res://scripts/tools/production_plot_overlay.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
@@ -15,7 +16,14 @@ const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 
 enum Mode { PLACE_BUILDING, DRAW_POLYGON }
 
-var active: bool = false
+var active: bool = false:
+	set(value):
+		if active == value:
+			return
+		active = value
+		set_process(active)
+		if not active and is_node_ready():
+			_reset_tool_state()
 var selected_asset_id: String = ""
 
 var preview_mesh: MeshInstance3D
@@ -44,7 +52,7 @@ var _mode: Mode = Mode.PLACE_BUILDING
 var _pending_building_id: int = -1
 var _pending_building_footprint: PackedVector2Array = PackedVector2Array()
 var _pending_area_kind: String = "extractor"
-var _pending_polygon_link_distance_m: float = 10.0
+var _pending_polygon_link_distance_m: float = POLYGON_LINK_DISTANCE_M
 var _polygon_points: Array[Vector2] = []
 var _notification_layer: CanvasLayer
 var _notification_panel: PanelContainer
@@ -53,6 +61,8 @@ var _notification_hide_at_msec: int = 0
 var _hud_canvas: CanvasLayer = null
 var _price_label: Label = null
 var _label_world_pos: Vector3 = Vector3.ZERO
+var _plot_overlay := ProductionPlotOverlay.new()
+var _field_hint := Label.new()
 
 const PREVIEW_REFRESH_DISTANCE_M := 1.0
 const PREVIEW_LABEL_Y_OFFSET_M := 2.0
@@ -150,10 +160,19 @@ func _ready() -> void:
 	_preview_invalid_material = _make_ghost_material(Color(1.0, 0.23, 0.12, 0.48))
 	_create_preview_price_label()
 	_create_tool_notification()
+	add_child(_plot_overlay)
+	_field_hint.position = Vector2(24, 130)
+	_field_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_field_hint.text = ProductionPlotOverlay.LEGEND + "\nClick the first field point again to finish."
+	_field_hint.add_theme_color_override("font_shadow_color", Color.BLACK)
+	_field_hint.add_theme_constant_override("shadow_offset_x", 1)
+	_field_hint.add_theme_constant_override("shadow_offset_y", 1)
+	_hud_canvas.add_child(_field_hint)
+	_field_hint.hide()
+	set_process(active)
 
 func _process(_delta: float) -> void:
 	if not active:
-		_reset_tool_state()
 		return
 	_update_tool_notification()
 	if _mode == Mode.PLACE_BUILDING:
@@ -198,12 +217,12 @@ func _commit_building_at_mouse() -> void:
 		return
 	var result: Dictionary = simulation_node.place_industry_building(selected_asset_id, wp.x, wp.y)
 	if not bool(result.get("ok", false)):
-		print("Industry placement rejected: " + str(result.get("error", "")))
+		_show_tool_notification("Industry placement rejected: " + str(result.get("error", "")))
 		_clear_preview_cache()
 		return
 	_pending_building_id = int(result.get("building_id", -1))
 	_pending_building_footprint = _footprint_from_result(
-		result.get("footprint_corners", PackedVector3Array())
+		result.get("plot_corners", PackedVector3Array())
 	)
 	_pending_area_kind = str(result.get("area_kind", "extractor"))
 	_pending_polygon_link_distance_m = float(
@@ -219,8 +238,10 @@ func _commit_building_at_mouse() -> void:
 		terrain_node.update_terrain_visuals()
 	_mode = Mode.DRAW_POLYGON
 	_polygon_points.clear()
+	if _pending_area_kind == "field":
+		_plot_overlay.show_boundaries(result)
+		_field_hint.show()
 	_clear_preview_cache()
-	print("Draw production area: left-click points, then click the first point again to commit.")
 
 func _add_polygon_point_at_mouse() -> void:
 	var wp = _mouse_world_pos()
@@ -235,14 +256,14 @@ func _add_polygon_point_at_mouse() -> void:
 	if not _polygon_points.is_empty() and wp.distance_to(_polygon_points[0]) <= POLYGON_CLOSE_RADIUS_M:
 		if _polygon_points.size() >= 3:
 			if _would_closing_polygon_edge_cross():
-				print("Production area edges cannot cross.")
+				_show_tool_notification("Production area edges cannot cross.")
 				return
 			_commit_polygon()
 		else:
-			print("Production area needs at least three points before it can be closed.")
+			_show_tool_notification("Production area needs at least three points before it can be closed.")
 		return
 	if _would_new_polygon_edge_cross(wp):
-		print("Production area edges cannot cross.")
+		_show_tool_notification("Production area edges cannot cross.")
 		return
 	_polygon_points.append(wp)
 	_update_polygon_mesh()
@@ -251,10 +272,10 @@ func _commit_polygon() -> void:
 	if _pending_building_id < 0:
 		return
 	if _polygon_points.size() < 3:
-		print("Production area needs at least three points.")
+		_show_tool_notification("Production area needs at least three points.")
 		return
 	if _would_closing_polygon_edge_cross():
-		print("Production area edges cannot cross.")
+		_show_tool_notification("Production area edges cannot cross.")
 		return
 	var packed := PackedVector2Array()
 	for point in _polygon_points:
@@ -265,30 +286,17 @@ func _commit_polygon() -> void:
 	else:
 		result = simulation_node.commit_extractor_polygon(_pending_building_id, packed)
 	if not bool(result.get("ok", false)):
-		print("Production area rejected: " + str(result.get("error", "")))
+		_show_tool_notification("Production area rejected: " + str(result.get("error", "")))
 		return
 	if _pending_area_kind == "field":
-		var area_m2 := float(result.get("area_m2", 0.0))
-		print("Field committed. Area: %.0f m2" % area_m2)
 		if terrain_node and terrain_node.has_method("mark_field_overlay_dirty"):
 			terrain_node.mark_field_overlay_dirty()
 	else:
-		var area_m2 := float(result.get("area_m2", 0.0))
-		var reserve := float(result.get("total_reserve_units", 0.0))
-		if reserve <= 0.0:
-			print("Extractor polygon committed. Area: %.0f m2, reserve: 0" % area_m2)
-		else:
-			print("Extractor polygon committed. Area: %.0f m2, reserve units: %.0f" % [area_m2, reserve])
 		if terrain_node and terrain_node.has_method("mark_coal_pit_overlay_dirty"):
 			terrain_node.mark_coal_pit_overlay_dirty()
+	# A committed site must survive the shared pending-placement cleanup.
 	_pending_building_id = -1
-	_pending_building_footprint = PackedVector2Array()
-	_pending_area_kind = "extractor"
-	_pending_polygon_link_distance_m = POLYGON_LINK_DISTANCE_M
-	_polygon_points.clear()
-	_mode = Mode.PLACE_BUILDING
-	_update_polygon_mesh()
-	_update_polygon_cursor_marker()
+	_reset_tool_state()
 
 func _update_preview() -> void:
 	if selected_asset_id.is_empty():
@@ -355,6 +363,8 @@ func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.visible = mesh != null
 
 func _reset_tool_state() -> void:
+	_plot_overlay.clear_boundaries()
+	_field_hint.hide()
 	_discard_pending_building()
 	_pending_building_id = -1
 	_pending_building_footprint = PackedVector2Array()

@@ -10,22 +10,28 @@ use std::time::Instant;
 #[test]
 #[ignore = "unprofiled scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_road_plan_scaling() {
-    measure_populated_road_plan_scaling(false, false);
+    measure_populated_road_plan_scaling(false, false, false);
+}
+
+#[test]
+#[ignore = "unprofiled field reservation scaling; run alone with --release --ignored --nocapture"]
+fn populated_field_road_plan_scaling() {
+    measure_populated_road_plan_scaling(false, false, true);
 }
 
 #[test]
 #[ignore = "unprofiled paved-site scaling measurement; run alone with --release --ignored --nocapture"]
 fn populated_paved_road_plan_scaling() {
-    measure_populated_road_plan_scaling(true, false);
+    measure_populated_road_plan_scaling(true, false, false);
 }
 
 #[test]
 #[ignore = "unprofiled cached zoning feasibility scaling; run alone with --release --ignored --nocapture"]
 fn populated_zoning_feasibility_scaling() {
-    measure_populated_road_plan_scaling(true, true);
+    measure_populated_road_plan_scaling(true, true, false);
 }
 
-fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool) {
+fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: bool) {
     let mut core = test_core();
     road_terrain_plan::commit_ready(
         &mut core,
@@ -79,6 +85,17 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool) {
     let mut background_roads = 0;
     let mut previous_patches: Option<Vec<_>> = None;
     let mut initial_site_solves = None;
+    if fields {
+        core.allocator.field_clearance.set(
+            0,
+            &[
+                Vector2::new(100.0, 60.0),
+                Vector2::new(120.0, 60.0),
+                Vector2::new(120.0, 80.0),
+                Vector2::new(100.0, 80.0),
+            ],
+        );
+    }
     for remote_buildings in [0usize, 1_000, 10_000, 100_000] {
         // Detached fixture insertion uses indexed graph/parcel mutators. Each remote
         // street fronts a row of 256 lots, outside the measured edit's neighborhood.
@@ -115,6 +132,18 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool) {
             building.edge_idx = 1 + index / 256;
             building.frontage_t = ((index % 256) as f32 * 24.0 + 12.0) / 6144.0;
             building.occupancy = 6;
+            if fields {
+                let p = Vector2::new(building.center_x, building.center_y + 12.0);
+                core.allocator.field_clearance.set(
+                    index + 4,
+                    &[
+                        p,
+                        p + Vector2::new(8.0, 0.0),
+                        p + Vector2::new(8.0, 4.0),
+                        p + Vector2::new(0.0, 4.0),
+                    ],
+                );
+            }
             insert_populated_site(&mut core, building);
         }
         core.allocator.dirty_index = true;
@@ -234,6 +263,7 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool) {
             "ROAD_PLAN_SCALING {}",
             serde_json::json!({
                 "remote_buildings": remote_buildings, "remote_roads": background_roads,
+                "field_reservations": fields,
                 "agents": core.agents.len(), "parcels": core.zoning.parcels.parcels().len(),
                 "rayon_threads": rayon::current_num_threads(), "samples": samples.len(),
                 "compile_p50_ms": (samples[49] + samples[50]) * 0.5, "compile_p95_ms": samples[94],

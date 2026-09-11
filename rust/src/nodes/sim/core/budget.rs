@@ -324,20 +324,6 @@ enum DailyCityFlowWorkBucket {
     Service,
 }
 
-fn profile_offers_daily_city_flow_work(
-    building_zone: ZoneType,
-    profile: &EconomyProfileRuntime,
-) -> bool {
-    matches!(building_zone, ZoneType::Commercial | ZoneType::Industrial)
-        || matches!(
-            profile.kind,
-            EconomyProfileRuntimeKind::Extractor
-                | EconomyProfileRuntimeKind::FieldProducer
-                | EconomyProfileRuntimeKind::UtilityProducer
-                | EconomyProfileRuntimeKind::UtilityProcessor
-        )
-}
-
 fn daily_city_flow_work_bucket(
     building_zone: ZoneType,
     profile: Option<&EconomyProfileRuntime>,
@@ -823,46 +809,35 @@ impl SimCore {
     }
 
     fn daily_city_flow_diagnostics(&self) -> DailyCityFlowDiagnostics {
-        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-
         let mut diagnostics = DailyCityFlowDiagnostics::default();
-        let catalog = load_runtime_economy_catalog().ok();
-        let commercial_activity_floor_scale = catalog
-            .as_ref()
-            .map(|catalog| {
-                commercial_activity_signal_for_city(
-                    catalog.as_ref(),
-                    &self.households.households,
-                    &self.allocator,
-                )
-                .activity_floor_scale
-            })
-            .unwrap_or(0.0);
+        let catalog = self.demand.runtime_catalog();
+        let commercial_activity_floor_scale = commercial_activity_signal_for_city(
+            catalog,
+            &self.households.households,
+            &self.allocator,
+        )
+        .activity_floor_scale;
         let mut service_funding_by_building = vec![1.0; self.allocator.buildings.len()];
-        if let Some(catalog) = catalog.as_ref() {
-            let city_funding = self.service_policy.electricity_funding;
-            service_funding_by_building
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(idx, value)| {
-                    let building = &self.allocator.buildings[idx];
-                    let Some(profile) =
-                        catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-                    else {
-                        return;
-                    };
-                    if profile.utility_service.as_deref() == Some("power") {
-                        *value = effective_service_funding(
-                            building.service_funding_override,
-                            city_funding,
-                        );
-                    }
-                });
-        }
+        let city_funding = self.service_policy.electricity_funding;
+        service_funding_by_building
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(idx, value)| {
+                let building = &self.allocator.buildings[idx];
+                let Some(profile) =
+                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                else {
+                    return;
+                };
+                if profile.utility_service.as_deref() == Some("power") {
+                    *value =
+                        effective_service_funding(building.service_funding_override, city_funding);
+                }
+            });
 
         for (building_idx, building) in self.allocator.buildings.iter().enumerate() {
-            if matches!(building.zone_type, ZoneType::Residential) {
-                let household_capacity = self.allocator.household_capacity(building_idx);
+            let household_capacity = self.allocator.household_capacity(building_idx);
+            if household_capacity > 0 {
                 diagnostics.total_household_slots = diagnostics
                     .total_household_slots
                     .saturating_add(household_capacity);
@@ -873,19 +848,13 @@ impl SimCore {
                     );
             }
 
-            let theoretical_profile = catalog.as_ref().and_then(|catalog| {
-                catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
-            });
-            let worker_capacity = catalog
-                .as_ref()
-                .map(|catalog| {
-                    self.allocator
-                        .worker_capacity_with_catalog(building_idx, catalog.as_ref())
-                })
-                .unwrap_or_else(|| self.allocator.worker_capacity(building_idx));
-            if let Some(work_bucket) =
-                daily_city_flow_work_bucket(building.zone_type, theoretical_profile)
-            {
+            let theoretical_profile =
+                catalog.profile_by_runtime_id(building.economy_profile_runtime_id);
+            let worker_capacity = self
+                .allocator
+                .worker_capacity_with_catalog(building_idx, catalog);
+            let work_bucket = daily_city_flow_work_bucket(building.zone_type, theoretical_profile);
+            if let Some(work_bucket) = work_bucket {
                 match work_bucket {
                     DailyCityFlowWorkBucket::Commercial => {
                         diagnostics.commercial_job_capacity = diagnostics
@@ -908,16 +877,12 @@ impl SimCore {
             {
                 continue;
             }
-            let Some((catalog, profile)) = catalog.as_ref().and_then(|catalog| {
-                catalog
-                    .profile_by_runtime_id(building.economy_profile_runtime_id)
-                    .map(|profile| (catalog.as_ref(), profile))
-            }) else {
+            let Some(profile) = theoretical_profile else {
                 continue;
             };
-            if !profile_offers_daily_city_flow_work(building.zone_type, profile) {
+            let Some(work_bucket) = work_bucket else {
                 continue;
-            }
+            };
             let activity_floor_scale = daily_city_flow_activity_floor_scale(
                 building.zone_type,
                 building.commercial_activity_floor_scale,
@@ -943,10 +908,6 @@ impl SimCore {
                 profile,
             );
             let active_filled_jobs = building.worker_count.min(active_worker_capacity);
-            let Some(work_bucket) = daily_city_flow_work_bucket(building.zone_type, Some(profile))
-            else {
-                continue;
-            };
             match work_bucket {
                 DailyCityFlowWorkBucket::Commercial => {
                     diagnostics.commercial_active_job_capacity = diagnostics
@@ -980,17 +941,11 @@ impl SimCore {
                 continue;
             }
             diagnostics.active_households = diagnostics.active_households.saturating_add(1);
-            let live_home = self
+            if self
                 .allocator
-                .buildings
-                .get(household.home_building_id)
-                .is_some_and(|building| {
-                    !building.broken
-                        && !building.economy_broken
-                        && !building.is_deserted
-                        && building.is_operational()
-                });
-            if live_home {
+                .household_capacity(household.home_building_id)
+                > 0
+            {
                 diagnostics.housed_households = diagnostics.housed_households.saturating_add(1);
             } else {
                 diagnostics.unhoused_households = diagnostics.unhoused_households.saturating_add(1);
@@ -1042,25 +997,25 @@ impl SimCore {
                 diagnostics.unemployed_agents = diagnostics.unemployed_agents.saturating_add(1);
                 continue;
             }
-            let worker_capacity = catalog
-                .as_ref()
-                .map(|catalog| {
-                    self.allocator
-                        .worker_capacity_with_catalog(work_building, catalog.as_ref())
-                })
-                .unwrap_or_else(|| self.allocator.worker_capacity(work_building));
+            let worker_capacity = self
+                .allocator
+                .worker_capacity_with_catalog(work_building, catalog);
             if worker_capacity == 0 {
                 diagnostics.unemployed_agents = diagnostics.unemployed_agents.saturating_add(1);
                 continue;
             }
 
             diagnostics.employed_agents = diagnostics.employed_agents.saturating_add(1);
-            match self.allocator.buildings[work_building].zone_type {
-                ZoneType::Commercial => {
+            let workplace = &self.allocator.buildings[work_building];
+            match daily_city_flow_work_bucket(
+                workplace.zone_type,
+                catalog.profile_by_runtime_id(workplace.economy_profile_runtime_id),
+            ) {
+                Some(DailyCityFlowWorkBucket::Commercial) => {
                     diagnostics.commercial_filled_jobs =
                         diagnostics.commercial_filled_jobs.saturating_add(1);
                 }
-                ZoneType::Industrial => {
+                Some(DailyCityFlowWorkBucket::Industrial) => {
                     diagnostics.industrial_filled_jobs =
                         diagnostics.industrial_filled_jobs.saturating_add(1);
                 }
@@ -1529,5 +1484,28 @@ impl SimCore {
     /// Called once per in-game day by the tick loop to emit per-building economy lines.
     pub fn print_daily_building_economy_for_day(&mut self, day_index: u32) {
         self.print_daily_building_economy(day_index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::nodes::sim::core::tests::fields::{add_farm_household, farm_fixture};
+
+    #[test]
+    fn farm_diagnostics_count_filled_jobs_and_household_independently() {
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        add_farm_household(&mut core, farm);
+        let diagnostics = core.daily_city_flow_diagnostics();
+        assert_eq!(diagnostics.total_household_slots, 1);
+        assert_eq!(diagnostics.housed_households, 1);
+        assert_eq!(diagnostics.vacant_household_slots, 0);
+        assert_eq!(diagnostics.industrial_job_capacity, 2);
+        assert_eq!(
+            diagnostics.industrial_filled_jobs,
+            diagnostics.employed_agents
+        );
+        assert!(diagnostics.industrial_filled_jobs > 0);
+        assert_eq!(diagnostics.commercial_filled_jobs, 0);
     }
 }

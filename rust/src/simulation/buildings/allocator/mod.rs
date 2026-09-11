@@ -27,11 +27,14 @@ pub(crate) use site::{BuildingSiteSurfaceClient, SitePavingPartition};
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
+use crate::simulation::agriculture::FieldClearanceIndex;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
+use crate::simulation::economy::households::physical_worker_capacity_for_profile;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
+use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::Vector2;
 use std::collections::HashMap;
@@ -109,6 +112,8 @@ pub(crate) enum ExplicitServicePlacementRejection {
     SiteOverlap,
     /// The selected footprint overlaps an existing road corridor.
     RoadOverlap,
+    /// The selected footprint overlaps a committed agricultural field.
+    FieldOverlap,
 }
 
 /// A placed building occupying one authored parcel or an explicit non-zoned site.
@@ -158,9 +163,9 @@ pub struct Building {
     pub cell_x: usize,
     /// Depth offset of the building's leading cell (0 = frontage row).
     pub cell_y: u16,
-    /// Total households (for residential) or general occupants currently in this building.
+    /// Assigned households, including a reserved household arrival, for every housing provider.
     ///
-    /// For residential buildings, this is the count of assigned households (family slots),
+    /// For residential buildings and farmhouses, this counts family slots,
     /// which must be <= `household_capacity`. Total residents (agents) are tracked
     /// by the AgentSystem referencing these households.
     pub occupancy: u32,
@@ -251,7 +256,7 @@ pub struct Building {
     pub commercial_activity_floor_scale: f32,
     /// Cached scale from an explicit player-drawn production area to authored full-area capacity.
     ///
-    /// `1.0` means the authored profile worker/output rates apply as written. Explicit farms and
+    /// `1.0` means one hectare of output and profile-defined worker density. Explicit farms and
     /// extractors start at `0.0` until their nearby field or extraction polygon is committed.
     pub work_area_scale: f32,
     /// True when the current painted zoning profile is incompatible and the building is waiting
@@ -311,6 +316,10 @@ pub struct BuildingAllocator {
     pub vacancy_pos: Vec<usize>,
     /// Coarse 512 m chunk index of building centers for bounded nearby-economy queries.
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
+    /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo.
+    pub(crate) field_clearance: FieldClearanceIndex,
+    /// Ordered swap removals awaiting production-site owner remapping in SimCore.
+    pub(crate) pending_production_site_removals: Vec<(usize, usize)>,
     /// Maximum half-diagonal of placed lots in zoning cells, rebuilt with [`Self::building_chunks`].
     pub(crate) max_lot_radius_cells: f32,
     /// Maximum support-footprint distance from its indexed lot center, in world metres.
@@ -542,6 +551,15 @@ pub(crate) fn zone_type_to_zone_class(zone: ZoneType) -> Option<ZoneClass> {
 }
 
 impl BuildingAllocator {
+    fn record_production_site_removal(&mut self, removed: usize, last: usize) {
+        if [removed, last].iter().any(|&idx| {
+            self.registry
+                .is_industry_area_asset(&self.buildings[idx].asset_id)
+        }) {
+            self.pending_production_site_removals.push((removed, last));
+        }
+    }
+
     /// Creates an empty allocator.
     pub fn new() -> Self {
         Self {
@@ -552,6 +570,8 @@ impl BuildingAllocator {
             vacancy_index: [const { Vec::new() }; 3],
             vacancy_pos: Vec::new(),
             building_chunks: HashMap::new(),
+            field_clearance: FieldClearanceIndex::default(),
+            pending_production_site_removals: Vec::new(),
             max_lot_radius_cells: 0.0,
             max_site_radius_m: 0.0,
             dirty_index: true,
@@ -734,6 +754,8 @@ impl BuildingAllocator {
         let had_sites = !self.building_sites.is_empty();
         self.site_feasibility = placement::SiteFeasibilityCache::default();
         self.buildings.clear();
+        self.field_clearance.clear();
+        self.pending_production_site_removals.clear();
         self.building_sites.clear();
         self.edge_occupancy.clear();
         for list in &mut self.zone_index {
@@ -778,14 +800,14 @@ impl BuildingAllocator {
         self.entrance_ref_revision = self.entrance_ref_revision.wrapping_add(1);
     }
 
-    /// Returns the household capacity declared by a building asset.
+    /// Returns usable household slots: one for farms, otherwise the asset's declared capacity.
     ///
     /// Unresolved assets or undeclared capacities count as zero.
     pub fn household_capacity(&self, building_idx: usize) -> u32 {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken || b.economy_broken || b.is_under_construction() {
+        if b.broken || b.economy_broken || b.is_deserted || b.is_under_construction() {
             return 0;
         }
         self.registry.household_capacity(&b.asset_id)
@@ -817,11 +839,6 @@ impl BuildingAllocator {
         self.registry.flat_size_m2(&b.asset_id)
     }
 
-    /// Returns the worker capacity authored on the asset manifest.
-    pub fn worker_capacity_for_asset(&self, asset_id: &str) -> u32 {
-        self.registry.worker_capacity(asset_id)
-    }
-
     /// Returns the economy-profile worker capacity for an asset, failing safe on unresolved profiles.
     pub(crate) fn worker_capacity_for_asset_with_catalog(
         &self,
@@ -839,20 +856,7 @@ impl BuildingAllocator {
         Some(self.registry.worker_capacity(asset_id))
     }
 
-    /// Returns the manifest worker capacity for a placed building when no runtime catalog is available.
-    ///
-    /// Unresolved assets, broken buildings, and deserted buildings count as zero.
-    pub fn worker_capacity(&self, building_idx: usize) -> u32 {
-        let Some(b) = self.buildings.get(building_idx) else {
-            return 0;
-        };
-        if b.broken || b.economy_broken || b.is_deserted || b.is_under_construction() {
-            return 0;
-        }
-        self.worker_capacity_for_asset(&b.asset_id)
-    }
-
-    /// Returns the live economy worker capacity for a placed building.
+    /// Returns physical worker slots for a placed building, including its committed work area.
     pub(crate) fn worker_capacity_with_catalog(
         &self,
         building_idx: usize,
@@ -863,6 +867,11 @@ impl BuildingAllocator {
         };
         if b.broken || b.economy_broken || b.is_deserted || b.is_under_construction() {
             return 0;
+        }
+        if let Some(profile) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id)
+            && profile_kind_uses_explicit_work_area(profile.kind)
+        {
+            return physical_worker_capacity_for_profile(b, profile);
         }
         self.worker_capacity_for_asset_with_catalog(&b.asset_id, catalog)
             .unwrap_or(0)

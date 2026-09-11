@@ -2002,13 +2002,16 @@ func _update_building_mode_visibility() -> void:
 
 func _sync_capacity_field_state() -> void:
 	var residential := _selected_placement_mode() == "zoned_private" and _selected_zone_type() == "residential"
+	var farm := _selected_placement_mode() == "explicit" and _is_field_enabled()
 	if _residents_spin:
 		_residents_spin.editable = residential
 		if not residential:
-			_residents_spin.value = 0
+			_residents_spin.value = 1 if farm else 0
 	if _flat_size_spin:
-		_flat_size_spin.editable = residential
-		if not residential:
+		_flat_size_spin.editable = residential or farm
+		if farm and _flat_size_spin.value <= 0:
+			_flat_size_spin.value = sim.get_default_farmhouse_area_m2()
+		elif not residential and not farm:
 			_flat_size_spin.value = 0
 	_sync_workers_to_profile()
 
@@ -2093,6 +2096,7 @@ func _on_extractor_toggled(enabled: bool) -> void:
 		_auto_select_profile_for_extractor(_extractor_resource_id())
 	if _extractor_resource_edit:
 		_extractor_resource_edit.editable = enabled
+	_sync_capacity_field_state()
 	_auto_suggest_asset_id()
 	_update_economy_profile_status()
 
@@ -2116,6 +2120,7 @@ func _on_field_toggled(enabled: bool) -> void:
 		_auto_select_profile_for_field(_field_resource_id())
 	if _field_resource_edit:
 		_field_resource_edit.editable = enabled
+	_sync_capacity_field_state()
 	_auto_suggest_asset_id()
 	_update_economy_profile_status()
 
@@ -3726,8 +3731,8 @@ func _export_asset(move_original_after_export: bool) -> void:
 		"extractor_area_mode": "player_polygon" if extractor_enabled else null,
 		"field_resource": field_resource if field_enabled else null,
 		"field_area_mode": "player_polygon" if field_enabled else null,
-		"household_capacity": int(_residents_spin.value) if is_zoned_residential and _residents_spin.value > 0 else null,
-		"flat_size_m2":      _flat_size_spin.value if is_zoned_residential and _flat_size_spin.value > 0 else null,
+		"household_capacity": 1 if field_enabled else (int(_residents_spin.value) if is_zoned_residential and _residents_spin.value > 0 else null),
+		"flat_size_m2":      _flat_size_spin.value if (is_zoned_residential or field_enabled) and _flat_size_spin.value > 0 else null,
 		"worker_capacity":    int(_workers_spin.value) if not is_zoned_residential and economy_profile_id.is_empty() and _workers_spin.value > 0 else null,
 		"mesh_parts": mesh_parts,
 		"anchors": anchors,
@@ -5437,16 +5442,6 @@ func _mesh_part_contains_world_xz(part_index: int, world_pos: Vector3) -> bool:
 	var min_z := aabb.position.z - 0.75
 	var max_z := aabb.position.z + aabb.size.z + 0.75
 	return local.x >= min_x and local.x <= max_x and local.z >= min_z and local.z <= max_z
-
-func _set_selected_mesh_part_position(position: Vector3) -> void:
-	if not _has_selected_mesh_part():
-		return
-	_part_positions[_selected_part_index] = _clamp_mesh_part_position_to_lot(
-		_selected_part_index,
-		position
-	)
-	_sync_selected_mesh_part_controls()
-	_apply_selected_part_transform_from_state()
 
 func _set_selected_mesh_part_rotation_y(rotation_y: float) -> void:
 	if not _has_selected_mesh_part():

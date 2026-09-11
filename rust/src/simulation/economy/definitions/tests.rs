@@ -296,10 +296,10 @@ fn export_project_writes_cache_file() {
     let _ = std::fs::remove_dir_all(&dir);
     write_fixture_project(&dir);
     let loaded = load_project_json(&dir).unwrap();
-    let project_json = serde_json::to_string(
-        &serde_json::from_str::<serde_json::Value>(&loaded).unwrap()["project"],
-    )
-    .unwrap();
+    let mut project =
+        serde_json::from_str::<serde_json::Value>(&loaded).unwrap()["project"].clone();
+    project["profiles"][0]["worker_capacity_area_m2"] = serde_json::json!(100_000.0);
+    let project_json = serde_json::to_string(&project).unwrap();
 
     let out_dir = project_dir("metrum_economy_editor_export_out");
     let _ = std::fs::remove_dir_all(&out_dir);
@@ -310,6 +310,12 @@ fn export_project_writes_cache_file() {
     assert!(out_dir.join(CONTROLLERS_FILE).exists());
     assert!(out_dir.join(SCENARIOS_FILE).exists());
     assert!(out_dir.join(INDEX_FILE).exists());
+    let reloaded: serde_json::Value =
+        serde_json::from_str(&load_project_json(&out_dir).unwrap()).unwrap();
+    assert_eq!(
+        reloaded["project"]["profiles"][0]["worker_capacity_area_m2"],
+        100_000.0
+    );
 }
 
 #[test]
@@ -355,4 +361,36 @@ fn sandbox_accepts_integer_like_float_fields_from_editor_json() {
     let result = run_sandbox_json(&project_json, "grocery_bottleneck").unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert!(parsed["ok"].as_bool().unwrap());
+}
+
+#[test]
+fn sandbox_field_payroll_uses_one_hectare_of_staffing_density() {
+    let dir = project_dir("metrum_economy_editor_field_staffing");
+    let _ = std::fs::remove_dir_all(&dir);
+    write_fixture_project(&dir);
+    let loaded: serde_json::Value =
+        serde_json::from_str(&load_project_json(&dir).unwrap()).unwrap();
+    let mut project = loaded["project"].clone();
+    for (area_m2, insolvent) in [(10_000.0, true), (100_000.0, false)] {
+        project["profiles"][0]["worker_capacity_area_m2"] = serde_json::json!(area_m2);
+        let result = run_sandbox_json(
+            &serde_json::to_string(&project).unwrap(),
+            "grocery_bottleneck",
+        )
+        .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            result["result"]["bottlenecks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| {
+                    message
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Node 'grain_farm' is insolvent:")
+                }),
+            insolvent
+        );
+    }
 }

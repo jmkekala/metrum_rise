@@ -111,6 +111,11 @@ impl SimulationNode {
             Ok(()) => {
                 self.clear_runtime_render_async_jobs();
                 self.refresh_snapshot_from_core();
+                if let Some(mut camera) = self.active_game_camera() {
+                    let height_m = self.lock_core().heightmap.sample_height_world(0.0, 0.0)
+                        * config::HEIGHT_SCALE;
+                    camera.bind_mut().reset_for_world(height_m);
+                }
                 true
             }
             Err(err) => {
@@ -352,29 +357,6 @@ impl SimulationNode {
     #[func]
     pub fn get_coal_pit_overlay_revision(&self) -> i64 {
         self.lock_core().get_coal_pit_overlay_revision_internal() as i64
-    }
-
-    /// Returns committed agricultural field polygons for diagnostics and editor tools.
-    #[func]
-    pub fn get_agriculture_field_polygons(&self) -> VarArray {
-        let core = self.lock_core();
-        let mut arr = VarArray::new();
-        for site in core.agriculture.sites() {
-            if site.polygon_world.len() < 3 {
-                continue;
-            }
-            let mut points = PackedVector2Array::new();
-            for point in &site.polygon_world {
-                points.push(*point);
-            }
-            let mut dict = VarDictionary::new();
-            dict.set("building_id", site.building_idx as i64);
-            dict.set("resource_id", GString::from(site.resource_id.as_str()));
-            dict.set("area_m2", f64::from(site.area_m2.max(0.0)));
-            dict.set("points", points);
-            arr.push(&dict.to_variant());
-        }
-        arr
     }
 
     /// Returns a monotonic revision for committed agricultural field visuals.

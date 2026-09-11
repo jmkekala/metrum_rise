@@ -150,9 +150,7 @@ impl BuildingAllocator {
             let compatibility = {
                 let b = &self.buildings[i];
                 let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
-                if !edge_ok {
-                    None
-                } else if graph.edge(b.edge_idx).no_building_spawn {
+                if !edge_ok || graph.edge(b.edge_idx).no_building_spawn {
                     None
                 } else {
                     match self.registry.get(&b.asset_id) {
@@ -246,6 +244,8 @@ impl BuildingAllocator {
                     zoning.remap_parcel_occupancy(last_idx, i);
                 }
 
+                self.field_clearance.remove_and_remap(i, last_idx);
+                self.record_production_site_removal(i, last_idx);
                 self.buildings.swap_remove(i);
                 if self.building_sites.len() > i {
                     self.building_sites.swap_remove(i);
@@ -1085,6 +1085,9 @@ impl BuildingAllocator {
             None
         };
 
+        self.field_clearance
+            .remove_and_remap(building_idx, last_idx);
+        self.record_production_site_removal(building_idx, last_idx);
         self.buildings.swap_remove(building_idx);
         if self.building_sites.len() > building_idx {
             self.building_sites.swap_remove(building_idx);

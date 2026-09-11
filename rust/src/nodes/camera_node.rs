@@ -8,8 +8,12 @@
 use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::save::SavedCameraState;
 use godot::classes::camera_3d::ProjectionType;
-use godot::classes::{Camera3D, ICamera3D, InputEvent};
+use godot::classes::{Camera3D, ICamera3D};
 use godot::prelude::*;
+
+const INITIAL_YAW: f32 = -0.785;
+const INITIAL_PITCH: f32 = -0.785;
+const INITIAL_DISTANCE_M: f32 = 400.0;
 
 #[derive(GodotClass)]
 #[class(base=Camera3D)]
@@ -51,7 +55,7 @@ pub struct CameraNode {
     /// Whether this camera should stay above the terrain surface.
     #[export]
     terrain_clearance_enabled: bool,
-    /// Debug inspection mode: disables terrain clearance and permits orbiting below the pivot.
+    /// Debug inspection mode: extends pitch to permit looking up from below terrain.
     debug_under_terrain_enabled: bool,
     /// Minimum focus-point clearance above terrain in metres.
     #[export]
@@ -98,36 +102,33 @@ impl ICamera3D for CameraNode {
             terrain_pivot_clearance_m: 0.25,
             terrain_camera_clearance_m: 1.5,
             pivot: Vector3::new(0.0, 0.0, 0.0),
-            yaw: -0.785,   // -45 degrees
-            pitch: -0.785, // -45 degrees
-            distance: 400.0,
+            yaw: INITIAL_YAW,
+            pitch: INITIAL_PITCH,
+            distance: INITIAL_DISTANCE_M,
             simulation_node: None,
             orthogonal: false,
         }
     }
 
     fn ready(&mut self) {
-        if self.orthogonal {
-            self.base_mut().set_projection(ProjectionType::ORTHOGONAL);
-            let distance = self.distance;
-            self.base_mut().set_size(distance * 0.5);
-        } else {
-            self.base_mut().set_projection(ProjectionType::PERSPECTIVE);
-        }
+        self.update_projection();
         self.update_camera_transform();
-    }
-
-    fn input(&mut self, _event: Gd<InputEvent>) {
-        // Input handling moved to InputManager.gd
-    }
-
-    fn process(&mut self, _delta: f64) {
-        // Input handling moved to InputManager.gd for centralized routing
     }
 }
 
 #[godot_api]
 impl CameraNode {
+    /// Starts a new world at its centre without retaining the previous city's orbit.
+    pub(crate) fn reset_for_world(&mut self, surface_height_m: f32) {
+        self.restore_saved_state(SavedCameraState {
+            pivot: [0.0, surface_height_m + self.terrain_pivot_clearance_m, 0.0],
+            yaw: INITIAL_YAW,
+            pitch: INITIAL_PITCH,
+            distance: INITIAL_DISTANCE_M,
+            orthogonal: self.orthogonal,
+        });
+    }
+
     /// Captures orbit controls rather than a transform that the next camera input would overwrite.
     pub(crate) fn saved_state(&self) -> SavedCameraState {
         SavedCameraState {
@@ -143,17 +144,11 @@ impl CameraNode {
     pub(crate) fn restore_saved_state(&mut self, state: SavedCameraState) {
         self.pivot = Vector3::new(state.pivot[0], state.pivot[1], state.pivot[2]);
         self.yaw = state.yaw;
-        self.pitch = state.pitch;
+        // A saved debug view must still respect the active mode's pitch limits.
+        self.pitch = Self::clamp_pitch(state.pitch, self.debug_under_terrain_enabled);
         self.distance = state.distance;
         self.orthogonal = state.orthogonal;
-        self.base_mut().set_projection(if state.orthogonal {
-            ProjectionType::ORTHOGONAL
-        } else {
-            ProjectionType::PERSPECTIVE
-        });
-        if state.orthogonal {
-            self.base_mut().set_size(state.distance * 0.5);
-        }
+        self.update_projection();
         // The saved pivot already includes terrain clearance. Applying it directly preserves
         // the view and avoids a terrain callback into the SimulationNode still finishing load.
         self.apply_camera_transform(self.camera_offset());
@@ -165,7 +160,7 @@ impl CameraNode {
         if direction.length() > 0.0 {
             let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
             // Scale pan speed by zoom distance: faster when zoomed out, slower when close
-            let zoom_factor = (self.distance / 400.0).max(0.1);
+            let zoom_factor = (self.distance / INITIAL_DISTANCE_M).max(0.1);
             let move_vec =
                 (yaw_rot * direction.normalized()) * self.speed * speed_mult * zoom_factor * delta;
             self.pivot += move_vec;
@@ -209,12 +204,7 @@ impl CameraNode {
             } else {
                 self.distance *= self.zoom_speed;
             }
-            self.distance = self.distance.clamp(self.min_distance, self.max_distance);
-
-            if self.orthogonal {
-                let distance = self.distance;
-                self.base_mut().set_size(distance * 0.5);
-            }
+            self.set_orbit_distance(self.distance);
             self.update_camera_transform();
         }
     }
@@ -223,13 +213,7 @@ impl CameraNode {
     #[func]
     pub fn focus_on(&mut self, center: Vector3, radius: f32) {
         self.pivot = center;
-        self.distance = (radius * self.focus_padding_mult)
-            .max(self.min_distance)
-            .clamp(self.min_distance, self.max_distance);
-        if self.orthogonal {
-            let size = self.distance * 0.5;
-            self.base_mut().set_size(size);
-        }
+        self.set_orbit_distance(radius * self.focus_padding_mult);
         self.update_camera_transform();
     }
 
@@ -238,7 +222,7 @@ impl CameraNode {
     pub fn set_distance_bounds(&mut self, min_distance: f32, max_distance: f32) {
         self.min_distance = min_distance.max(0.01);
         self.max_distance = max_distance.max(self.min_distance);
-        self.distance = self.distance.clamp(self.min_distance, self.max_distance);
+        self.set_orbit_distance(self.distance);
         self.update_camera_transform();
     }
 
@@ -257,26 +241,41 @@ impl CameraNode {
         self.focus_padding_mult = focus_padding_mult.max(1.0);
     }
 
-    /// Enables or disables terrain clearance and sets the shared world-camera offsets.
+    /// Applies the shared terrain-following policy and the application's debug orbit setting.
     #[func]
-    pub fn set_terrain_clearance_policy(
-        &mut self,
-        enabled: bool,
-        pivot_clearance_m: f32,
-        camera_clearance_m: f32,
-    ) {
-        self.terrain_clearance_enabled = enabled;
-        self.terrain_pivot_clearance_m = pivot_clearance_m.max(0.0);
-        self.terrain_camera_clearance_m = camera_clearance_m.max(self.terrain_pivot_clearance_m);
-        self.update_camera_transform();
+    pub fn configure_world_camera(&mut self) {
+        self.terrain_clearance_enabled = true;
+        self.set_debug_under_terrain_enabled(crate::debug::is_enabled());
     }
 
-    /// Enables debug inspection below terrain by disabling terrain-follow clamping and relaxing pitch.
+    /// Extends orbit pitch for upward inspection beneath the shared terrain-following focus.
     #[func]
     pub fn set_debug_under_terrain_enabled(&mut self, enabled: bool) {
         self.debug_under_terrain_enabled = enabled;
         self.pitch = Self::clamp_pitch(self.pitch, enabled);
         self.update_camera_transform();
+    }
+
+    fn set_orbit_distance(&mut self, distance: f32) {
+        self.distance = distance.clamp(self.min_distance, self.max_distance);
+        self.update_orthographic_size();
+    }
+
+    fn update_projection(&mut self) {
+        let projection = if self.orthogonal {
+            ProjectionType::ORTHOGONAL
+        } else {
+            ProjectionType::PERSPECTIVE
+        };
+        self.base_mut().set_projection(projection);
+        self.update_orthographic_size();
+    }
+
+    fn update_orthographic_size(&mut self) {
+        if self.orthogonal {
+            let size = self.distance * 0.5;
+            self.base_mut().set_size(size);
+        }
     }
 
     fn resolve_simulation_node_if_needed(&mut self) {
@@ -290,7 +289,7 @@ impl CameraNode {
     }
 
     fn terrain_height_at(&mut self, world_x: f32, world_z: f32) -> Option<f32> {
-        if !self.terrain_clearance_enabled || self.debug_under_terrain_enabled {
+        if !self.terrain_clearance_enabled {
             return None;
         }
         self.resolve_simulation_node_if_needed();
@@ -334,17 +333,22 @@ impl CameraNode {
 
     fn update_camera_transform(&mut self) {
         let offset = self.camera_offset();
-        let mut pivot = self.pivot;
+        let pivot = self.pivot;
         if let Some(pivot_surface_y) = self.terrain_height_at(pivot.x, pivot.z) {
-            let camera_surface_y = self.terrain_height_at(pivot.x + offset.x, pivot.z + offset.z);
-            pivot.y = Self::terrain_follow_pivot_y(
+            // Both modes follow the same terrain anchor. Only the upward orbit enabled
+            // by debug may place the camera below it without being lifted back above ground.
+            let camera_surface_y = if offset.y >= 0.0 {
+                self.terrain_height_at(pivot.x + offset.x, pivot.z + offset.z)
+            } else {
+                None
+            };
+            self.pivot.y = Self::terrain_follow_pivot_y(
                 offset.y,
                 pivot_surface_y,
                 camera_surface_y,
                 self.terrain_pivot_clearance_m,
                 self.terrain_camera_clearance_m,
             );
-            self.pivot.y = pivot.y;
         }
         self.apply_camera_transform(offset);
     }
@@ -372,6 +376,9 @@ mod tests {
 
         let anchored = CameraNode::terrain_follow_pivot_y(-20.0, 100.0, Some(70.0), 0.25, 1.5);
         assert!((anchored - 100.25).abs() < 0.001);
+
+        let underground = CameraNode::terrain_follow_pivot_y(-20.0, 100.0, None, 0.25, 1.5);
+        assert!((underground - 100.25).abs() < 0.001);
     }
 
     #[test]

@@ -612,6 +612,7 @@ impl SimCore {
             building_idx,
             last_idx,
             undo.field_sites,
+            &mut self.allocator,
         );
 
         for (carrier_idx, carrier) in undo.removed_carriers {

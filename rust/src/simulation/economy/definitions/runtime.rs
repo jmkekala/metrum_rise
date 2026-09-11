@@ -270,7 +270,6 @@ pub(crate) struct EconomyProfileRuntime {
     /// Authored stable profile id.
     pub id: String,
     /// Broad runtime behavior kind used by the starter live economy.
-    #[allow(dead_code)]
     pub kind: EconomyProfileRuntimeKind,
     /// Optional authored work schedule profile id.
     pub work_schedule_profile: Option<String>,
@@ -284,8 +283,10 @@ pub(crate) struct EconomyProfileRuntime {
     pub wage_min_currency_per_day: f32,
     /// Fixed maximum daily wage offered by this profile.
     pub wage_max_currency_per_day: f32,
-    /// Maximum number of workers this building can employ, as authored in the economy profile.
+    /// Authored worker slots, per staffing reference area for field/extraction profiles.
     pub worker_capacity: u32,
+    /// Precompiled field/extraction worker density, independent of output per hectare.
+    pub workers_per_hectare: f32,
     /// Authored target stock horizon in days for the starter live runtime.
     pub stock_target_days: f32,
     /// Output units pre-seeded into inventory when the building is first placed.

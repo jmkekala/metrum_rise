@@ -17,10 +17,10 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   missing terrain patch without disabling mesh validation; terrain debugging also reports rejected
   patch publication. Shared-side sample welding now precedes containment in both adjacent tiles,
   closing the reproduced narrow commercial-yard gap without changing assets or flattening the
-  graded apron. Rust/Godot terrain contract revision 13 also invalidates products with the old
-  opposite-sign building-part yaw.
+  graded apron. Contract revision 14 also fixes the `farms.sqlite` rejection: site and road guides
+  share source heights, and building aprons grade both sides of tile boundaries.
   See [`terrain.md`](terrain.md).
-- **Level building yards (`EARTH-02`)**: buildings and usable yard interiors share a level pad; 2 m lot-edge strips provide graded road/neighbor/terrain tie-ins. Zoned, service and explicit industry placement now share support preparation, installation and site-terrain invalidation. Mixed 2D/3D frontage projection and the explicit-mode raw-height fallback are removed. Paired zoned/service tests compare final site and terrain geometry; the reported floating/buried-house scene is not yet reproduced from an exact save. See [`earthworks.md`](earthworks.md).
+- **Level building yards (`EARTH-02`)**: buildings and usable yard interiors share a level pad; 2 m lot-edge strips provide graded road/neighbor/terrain tie-ins. Zoned, service and explicit industry placement now share support preparation, installation and site-terrain invalidation. Mixed 2D/3D frontage projection and the explicit-mode raw-height fallback are removed. Paired zoned/service tests compare final site and terrain geometry; `farms.sqlite` now reproduces and verifies the corrected terrain-rejection path; the original unsaved view remains unavailable. See [`earthworks.md`](earthworks.md).
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
 - **Zoning and building allocation**: Rust-owned road-aligned parcels, parcel occupancy, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code. Cars and pedestrians share road/pad/graded-terrain height ownership in both access directions; source terrain no longer overrides cut or filled yards. Off-lane cars now use mesh-sized rigid footprint support, including after interpolation, so grade breaks cannot bury the sampled bottom contacts despite a correctly grounded centre. The shared Rust solver preserves horizontal heading and remains level on wholly flat pads; lane/access handoffs do not blend across height owners.
@@ -149,6 +149,35 @@ reopening requires a current reproduction, not an assumption that the old geomet
 | Road surface / roadbed replacement                         | [`roads.md`](roads.md)               |
 
 ## Recent Structural Changes
+
+- `EARTH-02`: fixed the missing farm-city terrain chunk caused by conflicting site/road guide
+  heights and ungraded building aprons at tile sides. New Game advances terrain payload versions,
+  resets camera framing and clears the old save filename. See
+  [`earthworks.md`](earthworks.md#saved-farm-city-terrain-rejection-2026-09-11).
+  Normal and debug cameras share terrain anchoring, initial framing, pan and zoom; debug only
+  extends orbit pitch for upward views beneath terrain. Camera regressions compare both modes'
+  zoom endpoints, terrain following, and transitions into and out of underground inspection.
+  Cleanup centralizes camera setup and projection updates, removes empty native callbacks and
+  obsolete API checks, and fixes orthographic zoom synchronization when distance bounds change.
+
+- `ECON-08`: each farm provides one normal household slot alongside its area-scaled jobs.
+  Resident adults can work on site without road trips; larger farms can hire commuters.
+  Farm inspectors include resident age-group counts and shared household economy details.
+  Field resizing preserves the family home. Audit fixes preserve farmhouse area through asset
+  export, withdraw bankrupt vacancies, and keep families intact after automatic removal.
+  Shared housing/worker rules and authored plot geometry replace duplicate and unused paths.
+  The full changed-file audit also removes stale manifest-capacity fallbacks, shared-area math
+  duplication and unused APIs; city diagnostics now include filled farm jobs consistently.
+  See [`economy.md`](economy.md#farm-households-econ-08).
+
+- `ECON-07`: fields reserve land against road, building and parcel placement, with matching
+  checks when fields are created or resized. Farm inspectors now offer **Edit Field**; dragging
+  existing vertices commits and recalculates on each valid release, with invalid moves restored.
+  Drawing and resizing show the farm lot in yellow and the blocking building/yard in red.
+  `ECON-06` keeps the existing staffing density with a minimum capacity of two workers per field.
+  Saved fields retain reservations through load, building removal/remapping and demolition undo.
+  Industry-tool cleanup runs on deactivation; inactive tools no longer reset every frame.
+  See [`economy.md`](economy.md#field-placement-and-editing-econ-07) and [`ui.md`](ui.md).
 
 - `EARTH-02` audit: rendering and structural support now share editor-consistent part yaw and
   allocator frontage transforms. Duplicate asset/lifecycle/bounds paths and the superseded
@@ -357,8 +386,10 @@ reopening requires a current reproduction, not an assumption that the old geomet
   Godot upload workloads across increasing resident-chunk counts. See [`roads.md`](roads.md).
 - Explicit grain farms now follow the coal-mine style placement flow: the player places the farm
   building, draws a nearby field polygon, and the saved field site gates renewable `grain`
-  production without consuming a map resource deposit. The committed field area scales both output
-  and physical worker capacity against a 10,000 m2 authored baseline; the weaker `OWA` export bid
+  production without consuming a map resource deposit. `ECON-06` corrects grain-farm staffing from
+  eight workers per hectare to one per ten hectares, rounded up with a two-worker minimum. Output stays at
+  290 grain/day/hectare; staffing, demand, startup payroll, and export reserves share the new
+  authored worker density, and the inspector shows total field capacity. The weaker `OWA` export bid
   remains a real external market when a connected outside freight gateway exists, so starter farms
   can advertise their area-scaled jobs even before local processing demand is large enough to absorb
   the crop.

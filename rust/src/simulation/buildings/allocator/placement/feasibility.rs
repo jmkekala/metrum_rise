@@ -183,6 +183,9 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         env: BuildingSiteEnvironment<'_>,
     ) -> Result<(), &'static str> {
+        if self.field_clearance.overlaps_polygon(&geometry.corners) {
+            return Err("field_overlap");
+        }
         if self.parcel_geometry_overlaps_explicit_site(geometry) {
             return Err("parcel overlaps a placed building site");
         }

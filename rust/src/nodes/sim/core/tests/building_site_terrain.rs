@@ -680,6 +680,63 @@ fn kuopio_yard_fixture() -> SimCore {
 }
 
 #[test]
+fn new_world_clears_populated_city_and_engineered_terrain() {
+    let mut core = kuopio_yard_fixture();
+    let registry_len = core.allocator.registry.len();
+    assert!(!core.refined_terrain_patch_cache.is_empty());
+    core.create_blank_world_internal(256.0, 256.0, 8.0, 128.0, 50.0)
+        .unwrap();
+    assert!(core.allocator.buildings.is_empty());
+    assert!(core.allocator.building_sites.is_empty());
+    assert!(core.region_graph.edges().is_empty());
+    assert!(core.zoning.parcels().is_empty());
+    assert!(core.refined_terrain_patch_cache.is_empty());
+    assert!(core.engineered_terrain_patch_keys.is_empty());
+    assert!(core.building_site_owned_terrain_patch_keys.is_empty());
+    assert!(core.cached_road_mesh_chunks.is_empty());
+    assert!(
+        core.collect_refined_terrain_patch_build_inputs(2.0)
+            .is_empty()
+    );
+    assert_eq!(core.allocator.registry.len(), registry_len);
+    assert_eq!(core.heightmap.sample_height_world(0.0, 0.0), 50.0);
+}
+
+#[test]
+#[ignore = "unprofiled local terrain rebuild measurement; run alone with --release --ignored --nocapture"]
+fn building_site_terrain_rebuild_benchmark() {
+    let mut core = kuopio_yard_fixture();
+    // Fixture placement and road compilation are outside this terrain-only measurement.
+    core.refined_terrain_patch_cache.clear();
+    let mut samples = Vec::new();
+    for round in 0..22 {
+        let start = std::time::Instant::now();
+        let inputs = core.collect_refined_terrain_patch_build_inputs(2.0);
+        let tiles = inputs.iter().map(|p| p.windows.len()).sum::<usize>();
+        let assembled_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let start = std::time::Instant::now();
+        let patches = SimCore::build_refined_terrain_patch_cache_entries(inputs);
+        let built_ms = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            patches
+                .iter()
+                .all(|p| SimulationNode::cached_refined_cdt_failure_label(p).is_none())
+        );
+        if round >= 2 {
+            samples.push((assembled_ms, built_ms, patches.len(), tiles));
+        }
+    }
+    let mut assembly = samples.iter().map(|p| p.0).collect::<Vec<_>>();
+    let mut build = samples.iter().map(|p| p.1).collect::<Vec<_>>();
+    assembly.sort_by(f64::total_cmp);
+    build.sort_by(f64::total_cmp);
+    eprintln!(
+        "building_site_terrain_rebuild: samples=20 patches={} tiles={} assembly_p50_ms={:.3} build_p50_ms={:.3} assembly_p90_ms={:.3} build_p90_ms={:.3}",
+        samples[0].2, samples[0].3, assembly[10], build[10], assembly[18], build[18]
+    );
+}
+
+#[test]
 fn yard_material_changes_reuse_cdt_but_not_final_paving_buffers() {
     let mut core = kuopio_yard_fixture();
     let previous = core.refined_terrain_patch_cache.clone();

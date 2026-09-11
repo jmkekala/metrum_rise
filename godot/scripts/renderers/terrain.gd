@@ -131,7 +131,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
-const TERRAIN_CDT_CONTRACT_REVISION := 13
+const TERRAIN_CDT_CONTRACT_REVISION := 14
 const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 const ROAD_CLIP_LOOP_ROLE_OUTER := 0
 const ROAD_CLIP_LOOP_ROLE_HOLE := 1
@@ -3313,10 +3313,6 @@ func _bind_empty_water_texture(patch: Dictionary, material: ShaderMaterial) -> v
 	patch["water_sample_width"] = 2
 	patch["water_sample_height"] = 2
 	patch["water_depth_nonzero_count"] = 0
-
-func _sync_water_patch_textures() -> void:
-	_queue_all_water_patch_texture_syncs()
-	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
 
 func _queue_all_water_patch_texture_syncs() -> void:
 	var keys: Array[Vector2i] = get_resident_patch_keys()

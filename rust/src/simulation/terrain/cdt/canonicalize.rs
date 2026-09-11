@@ -148,13 +148,10 @@ pub(super) fn canonicalize_input_with_grading_bounds(
         {
             continue;
         }
-        if original_source_edges.iter().all(|edge| {
-            !terrain_cdt_boundary_source_allows_retaining_wall(edge.source)
-                && !matches!(
-                    edge.source,
-                    TerrainCdtRoadBoundarySource::BuildingSiteBoundary { .. }
-                )
-        }) {
+        if original_source_edges
+            .iter()
+            .all(|edge| !terrain_cdt_boundary_source_allows_retaining_wall(edge.source))
+        {
             let edge_sources = terrain_cdt_loop_edge_sources_in_bounds(
                 &original_points,
                 &original_source_edges,
@@ -260,7 +257,8 @@ pub(super) fn canonicalize_input_with_grading_bounds(
 
     // Keep shared-side samples and grade them once against the uncut halo. Dropping
     // them lets adjacent tile triangulations bridge different heights across the side.
-    // Structural retaining walls and building pads keep their own height authority.
+    // Structural retaining walls keep their own height authority. Building pads
+    // grade shared-side samples against the same uncut footprint in both tiles.
     let boundary_height = |mut vertex: TerrainCdtVertex| {
         // A sample accepted as lying on a tile side must lie on that exact side.
         // Snap before containment: the neighboring tile must retain the same sample,

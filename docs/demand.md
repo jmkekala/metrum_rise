@@ -555,6 +555,11 @@ the following exact formulas.
 
 Baseline derived economy values:
 
+Household-slot totals include the single home provided by each operational farm. Its field area
+scales employment independently; the farm stays outside residential zoning/growth candidates.
+The normal vacancy and admission rules fill its home (`ECON-08`; see
+[`economy.md`](economy.md#farm-households-econ-08)).
+
 ```text
 vacant_household_slots =
     max(total_household_slots - occupied_household_slots, 0)

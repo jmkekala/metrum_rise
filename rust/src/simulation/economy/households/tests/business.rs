@@ -637,7 +637,7 @@ fn service_store_fake_inventory_cannot_liquidate_for_payroll() {
 }
 
 #[test]
-fn explicit_work_area_wage_pass_keeps_owa_backed_area_workers() {
+fn explicit_work_area_wage_pass_keeps_capacity_and_releases_surplus_workers() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let farm_profile = catalog
         .profile_for_id("grain_farm_basic")
@@ -667,7 +667,7 @@ fn explicit_work_area_wage_pass_keeps_owa_backed_area_workers() {
     );
     let mut farm = make_building(10.0, ZoneType::None, &farm_asset, 0.0);
     farm.economy_profile_runtime_id = farm_profile.runtime_id;
-    farm.work_area_scale = 1.0;
+    farm.work_area_scale = 80.0;
     farm.commercial_activity_floor_scale = 1.0;
     farm.worker_count = 8;
     farm.operating_budget = 10_000.0;
@@ -693,6 +693,21 @@ fn explicit_work_area_wage_pass_keeps_owa_backed_area_workers() {
     );
     for &agent in &workers {
         assert_eq!(agents.work_building[agent], 1);
+        assert_eq!(agents.consecutive_unpaid_days[agent], 0);
+    }
+
+    allocator.buildings[1].set_work_area_scale(1.0);
+    let budget_before = allocator.buildings[1].operating_budget;
+    households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
+    assert_eq!(allocator.buildings[1].worker_count, 2);
+    assert_eq!(
+        allocator.buildings[1].operating_budget,
+        budget_before - 180.0
+    );
+    assert_eq!(agents.work_building[workers[0]], 1);
+    assert_eq!(agents.work_building[workers[1]], 1);
+    for &agent in &workers[2..] {
+        assert_eq!(agents.work_building[agent], usize::MAX);
         assert_eq!(agents.consecutive_unpaid_days[agent], 0);
     }
 }

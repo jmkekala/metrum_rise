@@ -23,7 +23,9 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::work_area::{explicit_work_area_startup_budget, initial_work_area_scale};
+use crate::simulation::work_area::{
+    explicit_work_area_startup_budget, initial_work_area_scale, minimum_work_area_workers,
+};
 use crate::simulation::zoning::{ParcelGeometry, ZoneType, ZoningParcel, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
@@ -843,6 +845,12 @@ impl BuildingAllocator {
         &self,
         placement: &ResolvedPlacement,
     ) -> Result<(), ExplicitServicePlacementRejection> {
+        if self
+            .field_clearance
+            .overlaps_polygon(&self.placement_site_corners(placement))
+        {
+            return Err(ExplicitServicePlacementRejection::FieldOverlap);
+        }
         let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
         for building_idx in
             self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z)
@@ -969,6 +977,12 @@ impl BuildingAllocator {
     }
 
     fn placement_overlaps_existing_flat_support(&self, placement: &ResolvedPlacement) -> bool {
+        if self
+            .field_clearance
+            .overlaps_polygon(&self.placement_site_corners(placement))
+        {
+            return true;
+        }
         if self.building_sites.is_empty() {
             return false;
         }
@@ -1537,9 +1551,10 @@ impl BuildingAllocator {
                     .profile_by_runtime_id(economy_binding.runtime_id)
                     .expect("explicit industry area profile checked above");
                 explicit_work_area_startup_budget(
-                    profile.worker_capacity,
+                    profile.workers_per_hectare,
                     profile.average_daily_wage(),
                     work_area_scale,
+                    minimum_work_area_workers(profile.kind),
                 )
             }
             ZoneType::Commercial | ZoneType::Industrial => {

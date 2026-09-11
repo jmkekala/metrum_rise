@@ -116,6 +116,38 @@ fn default_level() -> u8 {
 }
 
 impl BuildingData {
+    /// Interior area used by farms whose manifests omit farmhouse sizing.
+    pub(crate) const DEFAULT_FARMHOUSE_AREA_M2: f32 = 120.0;
+
+    /// Identifies explicit farms independently of authored zoning or housing capacity.
+    pub(crate) fn is_field_producer(&self) -> bool {
+        self.placement_mode == PlacementMode::Explicit
+            && self
+                .field
+                .as_ref()
+                .is_some_and(|field| !field.resource.trim().is_empty())
+    }
+
+    /// Farms provide one family home; other buildings use their authored household slots.
+    pub(crate) fn effective_household_capacity(&self) -> u32 {
+        if self.is_field_producer() {
+            1
+        } else {
+            self.household_capacity.unwrap_or(0)
+        }
+    }
+
+    /// Resolves farmhouse sizing while preserving an explicitly authored living area.
+    pub(crate) fn effective_flat_size_m2(&self) -> f32 {
+        self.flat_size_m2.unwrap_or_else(|| {
+            if self.is_field_producer() {
+                Self::DEFAULT_FARMHOUSE_AREA_M2
+            } else {
+                0.0
+            }
+        })
+    }
+
     /// Returns `true` when this building participates in painted zoning.
     pub fn is_zoned_private(&self) -> bool {
         self.placement_mode == PlacementMode::ZonedPrivate

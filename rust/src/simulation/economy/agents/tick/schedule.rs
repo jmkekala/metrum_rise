@@ -57,6 +57,7 @@ impl ScheduleCacheMut<'_> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn maybe_schedule_work_trip(
     current_building: usize,
+    current_activity: u8,
     home_building: usize,
     work_building: usize,
     has_car: bool,
@@ -79,6 +80,22 @@ pub(super) fn maybe_schedule_work_trip(
     if current_building != home_building && current_building != work_building {
         cache.clear_departure_if_cached();
         return None;
+    }
+
+    if home_building == work_building {
+        cache.clear_departure_if_cached();
+        *cache.cached_commute_minutes = 0;
+        let profile_index = cached_work_profile_index_for_building(
+            work_building,
+            cache.cached_schedule_work_building,
+            cache.cached_work_profile_index,
+            allocator,
+            operational_clock,
+            economy_catalog,
+        )?;
+        let profile = operational_clock.work_profiles.get(profile_index)?;
+        let activity = on_site_work_activity(profile, schedule_seed, minute_of_day)?;
+        return (activity != current_activity).then_some((home_building, activity));
     }
 
     if *cache.next_departure_target_building != usize::MAX
@@ -185,6 +202,27 @@ pub(super) fn maybe_schedule_work_trip(
     None
 }
 
+// A resident farmer starts/ends the authored shift in place, including overnight shifts.
+fn on_site_work_activity(profile: &WorkTimingProfile, seed: u32, minute: u16) -> Option<u8> {
+    if profile.arrival_windows.is_empty()
+        || profile.arrival_windows.len() != profile.departure_windows.len()
+    {
+        return None;
+    }
+    let shift = (seed % profile.arrival_windows.len() as u32) as usize;
+    let start = stable_minute_in_window(profile, &profile.arrival_windows[shift], seed);
+    let end = stable_minute_in_window(
+        profile,
+        &profile.departure_windows[shift],
+        seed.rotate_left(11),
+    );
+    Some(u8::from(if start <= end {
+        minute >= start && minute < end
+    } else {
+        minute >= start || minute < end
+    }))
+}
+
 fn cached_departure_matches_assignment(
     current_building: usize,
     home_building: usize,
@@ -284,4 +322,35 @@ fn stable_minute_in_window(
     let span = window.end_minute.saturating_sub(window.start_minute).max(1);
     let mixed_seed = schedule_seed ^ profile.id.len() as u32;
     window.start_minute + (mixed_seed % u32::from(span)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_shifts_switch_activity_at_authored_boundaries_and_across_midnight() {
+        let tuning =
+            crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+        let profile = tuning
+            .operational_clock
+            .work_profiles
+            .iter()
+            .find(|profile| profile.id == "three_shift_work")
+            .unwrap();
+        for seed in 0..3 {
+            let shift = seed as usize;
+            let start = stable_minute_in_window(profile, &profile.arrival_windows[shift], seed);
+            let end = stable_minute_in_window(
+                profile,
+                &profile.departure_windows[shift],
+                seed.rotate_left(11),
+            );
+            assert_eq!(on_site_work_activity(profile, seed, start - 1), Some(0));
+            assert_eq!(on_site_work_activity(profile, seed, start), Some(1));
+            assert_eq!(on_site_work_activity(profile, seed, end - 1), Some(1));
+            assert_eq!(on_site_work_activity(profile, seed, end), Some(0));
+        }
+        assert_eq!(on_site_work_activity(profile, 2, 0), Some(1));
+    }
 }
