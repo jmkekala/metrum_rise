@@ -10,6 +10,7 @@ mod paving;
 mod query;
 mod terrain_clip;
 
+pub(crate) use derive::zoning_support_footprint;
 pub(crate) use grading::{BuildingSiteGradingRequest, building_site_support_tie_in_is_valid};
 pub(crate) use grading::{
     site_feasibility_dependency_margin_m, solve_building_site_support_height,

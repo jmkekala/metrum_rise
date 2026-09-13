@@ -1364,20 +1364,26 @@ the hill. Ray validation and guide generation both include the exact grading-env
 This changed terrain compiler inputs to CDT contract revision **8**; the subsequent exact
 pad-boundary update uses revision **9**.
 
-Demand evaluates support before ranking compatible assets. Zoning preview/commit reuse this
-non-mutating feasibility path; unsupported new lots are red with a reason and are not accepted.
-Existing blocked lots remain authored intent and are re-evaluated after relevant changes. Both
-positive and negative results are cached with exact pose/asset keys and local terrain/road/site
-dependencies; unchanged or remote-only edits do not repeat local geometry solves. Queued placement
+Demand evaluates support before ranking compatible assets. Zoning preview/commit use the same
+solver for the selected lot's level interior and perimeter grading strip, regardless of density
+or installed assets. Support failures are red and are not accepted as new zoned lots. Missing
+compatible assets permit terrain-valid zoning, with the actual building footprint checked when
+content becomes available; see the current contract in `zoning.md`.
+Existing blocked lots remain authored intent and are re-evaluated after relevant changes. Positive
+and negative results are cached with exact lot-pose keys for zoning and pose/asset keys for buildings,
+using local terrain/road/site dependencies. Unchanged or remote-only edits do not repeat local
+geometry solves; switching density reuses the same zoning terrain result. Queued placement
 revalidates current state before insertion. See [`zoning.md`](zoning.md) and
 [`building_allocator.md`](building_allocator.md) for API and complexity contracts.
 
 `benchmarks/fixtures/kuopio-terrain/residential-buildability.json` is a portable hillside fixture:
 a local source grid, three road profiles, parcel attachments and two house manifests.
 It has no mesh dependency and does not replace the Kuopio SQLite or `building-site.toml` fixture.
-Portable tests evaluate and construct all five empty lots, require the family house on parcel 7,
-compile final terrain patches, check terrain-neutral feasibility, remote-cache reuse, local
-terrain/road invalidation, asset removal, stale queued-action rejection and unzoning.
+Portable tests compare zoning terrain verdicts across all profiles and construct all five existing
+empty lots, requiring the family house on parcel 7. That lot's full zoning pad fails where the
+smaller actual building footprint fits. Tests compile final terrain patches and check terrain-neutral
+feasibility, remote-cache reuse, local terrain/road invalidation, asset-independent terrain checks,
+stale queued-action rejection and unzoning.
 
 Fresh unprofiled locality measurements used Rust 1.98.1 release settings, 24 Rayon workers,
 the working tree over `91af8afca4eb2e9a493ab3bc7f2025a2b87195d9`, and the existing four-local-site

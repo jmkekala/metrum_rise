@@ -10,8 +10,9 @@ use super::types::{ParcelGeometry, ParcelPlacementError};
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector2;
 
+pub(crate) use projection::{project_buildable_road_point_at, project_point_to_edge, road_edge_at};
 pub(crate) use run::{
-    ParcelRunProjection, project_parcel_run_from_existing, project_parcel_run_layouts_at,
+    ParcelRunProjection, next_non_overlapping_run_geometry_with, project_parcel_run_layouts_at,
 };
 
 pub(crate) fn project_default_parcel_at(

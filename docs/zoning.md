@@ -121,24 +121,29 @@ Single-parcel placement is all-or-nothing.
 - The selected zoning profile must exist, except runtime id `0` for free/unzoned parcels.
 - The parcel must attach to a buildable road edge.
 - The frontage must stay within the physical road edge span.
-- Curved-run spacing rechecks the persisted normalized attachment after advancing a candidate;
-  the initial station check alone does not bound the final frontage.
+- Run spacing checks the final station and keeps its normalized saved attachment within the
+  strict frontage bounds. If normalization rounds a legal endpoint outside those bounds, it
+  moves one representable float inward; actual frontage overhang still fails.
 - Every corner must stay within world bounds.
 - The parcel must not overlap existing parcels.
 - The parcel must not overlap another road-owned corridor.
 - The parcel must not overlap an explicit service-building site reservation.
 - The parcel must not overlap a committed field (`ECON-07`), including when its profile is free/unzoned.
 - Roads with `Edge::no_building_spawn = true` reject parcel attachment.
-- A nonzero profile needs at least one legal initial-level asset with a valid shared flat-site
-  solution. Zoning preview tests the same support solver used by demand and explicit placement;
-  preview and commit never stamp terrain or insert a building. Unsupported lots remain visible
-  in red with a reason, but cannot be committed as newly zoned lots. Runtime id `0` remains usable
-  for free/unzoned parcels even without compatible building assets.
+- Missing compatible initial-level assets do not block zoning, including when installed assets
+  have another density, require a later building level or exceed the selected lot dimensions.
+  Such parcels retain their selected profile and wait for compatible content before growth.
+- Every density tests the selected lot's level interior and shared 2 m perimeter grading strip
+  through the existing site-support solver, independent of installed assets. The footprint follows
+  the selected frontage and depth; tiny lots use the same capped inset as building lots. Failed
+  road, terrain or neighboring-site tie-ins remain red and cannot become new zoned lots.
+  Preview and commit never stamp terrain or insert a building. Runtime id `0` remains available
+  for free/unzoned parcels even when terrain support fails.
 - Successful parcel placement records only zoning/legal intent. Terrain integration is deferred
   until `BuildingAllocator` accepts an actual building placement and the `EARTH-02` building-site
   client is registered.
 
-Drag-run placement projects bounded deterministic same-road candidate layouts across the current
+An unanchored drag projects bounded deterministic same-road candidate layouts across the current
 drag span, then keeps the best legal layout. Rust may re-layout the candidate phase as the span
 changes so legal parcels can pack beside existing parcels and near road-corridor blockers. Layout
 selection prefers more legal parcels, then the layout that reaches closest toward the dragged end.
@@ -148,13 +153,15 @@ cancelling the whole preview or commit. If no generated candidate is legal, the 
 mutation. On curves, Rust may widen spacing between generated
 parcels to preserve non-overlap, then stops when no further parcel fits inside the dragged span.
 
-Site feasibility filters the geometrically legal layout: drag previews retain invalid lots in red,
-and commit accepts only currently buildable lots. Existing saved parcels are not silently deleted
-when blocked. Demand re-evaluates their compatible assets through the same dependency-aware cache;
-hovering/repainting exposes a rejection reason. Road, terrain, neighboring-site and asset changes
-invalidate affected solutions. Redevelopment ignores the parcel's own occupied site, not neighbors.
-This guarantees geometric feasibility under unchanged inputs, not construction regardless of
-demand, economic gates, later edits or installed assets.
+Site feasibility filters every geometrically legal layout; previews retain failed lots in red.
+The common lot result is cached by footprint and road attachment, without profile or asset keys,
+so switching density cannot change its terrain verdict. Road, terrain and neighboring-site edits
+invalidate affected solutions; asset registration alone does not. Geometry and reservations remain
+enforced independently. Existing saved parcels are not silently deleted when blocked. Demand uses
+the same grading solver with each actual asset's footprint and dependency-aware cache; a smaller
+building may still fit an existing lot whose full zoning pad fails. Redevelopment ignores the
+parcel's own occupied site, not neighbors. Buildings still require compatible assets, valid site
+support, demand and economic eligibility at construction time.
 
 When dragging from an existing parcel, the first generated parcel starts after:
 
@@ -162,7 +169,46 @@ When dragging from an existing parcel, the first generated parcel starts after:
 existing_frontage / 2 + requested_gap_m + new_frontage / 2
 ```
 
-This keeps the requested gap meaningful for extension runs.
+This keeps the requested gap meaningful for extension runs. Manual drags and automatic road fill
+share the same anchored layout routine in `system/preview/road.rs`. Existing lots within or beside
+the dragged interval anchor manual placement even when the gesture starts on empty ground. A drag
+affects only its selected side and interval; an unanchored drag retains its free-placement layout
+search. Standalone off-road clicks still place one parcel at the cursor.
+
+### Both-side road zoning (`ZONE-03`)
+
+Hovering a road or its sidewalk previews new parcels along both sides of that graph edge, using
+the selected profile, frontage, depth and gap. The target is one segment between graph nodes;
+selection does not traverse connected streets. Equal-distance road picks use the lowest edge ID.
+No-build roads remain hover targets but reject placement.
+
+On an empty side, candidates start half a frontage from the physical edge start. Otherwise, existing
+parcels anchor that side: fill extends toward both road ends from the outermost lots and from both
+ends of each gap between existing lots. The first offset uses the existing and selected frontages
+plus the requested gap. Different widths, insertion order and the opposite row do not impose a
+new station grid on a manual group. Full-size lots are preserved; if a gap between separate groups
+cannot hold another full lot, the remainder stays between the new rows. Existing parcels are never
+moved or resized to consume that remainder.
+
+Each advancing front steps by at least `frontage + gap`, using the manual drag spacing solver.
+Parcel rectangles measure frontage in XZ while road stations measure 3D distance; a slope or bend
+can therefore need a small additional advance to clear an overlap. The road fill adjusts that
+station instead of discarding an entire lot. Rows remain independent of pointer movement, and a
+temporary `ParcelStore` checks all projected candidates through the existing local index. Existing
+parcels participate in spacing before final filtering, so overlaps shift the row instead of
+discarding lots from an unrelated endpoint grid. A queue retires completed fronts; opposing fronts
+update their stop limits as they advance, avoiding searches through already filled spans.
+Endpoint normalization cannot cancel a row merely because its first legal station rounds just
+outside the road span when converted to a saved attachment.
+The existing run validator then skips lots outside the world, occupied by existing parcels or
+intersecting other road corridors. Site feasibility marks unsupported
+geometry red, with the same terrain, service-site and field checks used by drag zoning.
+This operation creates new lots in available space; existing parcels keep their profiles.
+
+A left-button press commits the currently valid lots on both sides immediately. Rust re-picks the
+road and validates the layout under one simulation lock; a stale hover ID cannot select another
+edge at commit. Release performs no second action. Zoning remains terrain-neutral, and ordinary
+off-road single placement, extension drags and rezone gestures retain their existing behavior.
 
 ---
 
@@ -181,15 +227,20 @@ Parcel creation and preview:
 ```text
 get_zoning_parcel_preview(...)
 get_zoning_parcel_drag_preview_packed(...)
+get_zoning_road_at(world_x, world_z) -> int # edge id, or -1 outside road corridors
+get_zoning_road_preview_packed(edge_idx, profile, frontage_cells, depth_cells, gap_m)
 get_zoning_site_dependencies() -> PackedInt64Array
 apply_zoning_parcel_at(...)
 apply_zoning_parcel_drag(...)
+apply_zoning_road_at(world_x, world_z, profile, frontage_cells, depth_cells, gap_m)
 ```
 
-Single preview dictionaries include `valid` and `reason`. Packed drag dictionaries additionally
+Single preview dictionaries include `valid` and `reason`. Packed drag and road dictionaries additionally
 include `valid_count` and per-parcel `colors`; `parcel_count` includes rejected preview lots.
-The tool displays the Rust-provided reason and drops retained preview geometry whenever dependency
-epochs change, including while the cursor is stationary. Commit always checks current inputs.
+Reasons remain available in the Rust API for diagnostics. The zoning tool uses preview colors for
+feedback and shows no cursor warning text, including after filling a road or for frontage failures.
+It drops retained preview geometry whenever dependency epochs change, including while the cursor
+is stationary. Commit always checks current inputs.
 
 Parcel rezone:
 
@@ -233,6 +284,7 @@ preview, submit, and render Rust-authored results.
 - selected zoning profile
 - parcel width/depth in zoning cells
 - parcel gap in metres
+- both-side road hover preview and immediate press-to-zone
 - single-click create/rezone
 - drag-run create, with Rust-authored legal-candidate filtering
 - drag rezone over existing parcels
@@ -241,6 +293,11 @@ preview, submit, and render Rust-authored results.
 Single-parcel hover preview keeps the last Rust-authored legal parcel visible while the mouse is
 over an illegal placement position. The preview moves only after Rust returns a new legal parcel.
 Changing the selected profile or parcel dimensions clears this retained preview.
+
+Road previews cache the selected edge, profile, dimensions, gap and existing site dependencies.
+Pointer movement along the same edge reuses the mesh. Switching edges, changing options or changing
+dependencies rebuilds it, even with a stationary cursor. A blocked road clears prior preview
+geometry; road previews are never retained over another road or adjacent land.
 
 Drag preview follows the same retained-preview rule during one drag gesture: while the current
 cursor position has no legal candidate set, Godot keeps showing the last Rust-authored legal drag
@@ -263,6 +320,8 @@ Godot must not rasterize zoning state into an authoritative grid or resolve plac
 The building allocator consumes parcels as private-building candidate authority.
 
 - Candidate discovery scans available parcels.
+- Parcels without compatible initial assets remain zoned but produce no growth candidate. Loading
+  suitable assets makes them eligible through the existing discovery and registry invalidation path.
 - Zone legality comes from parcel runtime profile id plus `ZoningProfileRegistry`.
 - Placement claims a parcel through `ZoningSystem::occupy_parcel`.
 - Removal or allocator remap clears/remaps parcel occupancy through zoning helpers.
@@ -327,6 +386,191 @@ Hot placement checks use existing bounded spatial structures:
 - parcel overlap uses `ParcelStore` chunk lookup
 - road-corridor conflict checks query nearby road AABBs before SAT tests
 - explicit service-site blockers use the allocator building-site chunk index before SAT tests
+
+Road hover uses the allocation-free edge visitor in O(log E + S), where E is indexed edges and S
+is polyline segments in the existing 128 m corridor-query neighborhood. Uncached road geometry
+costs O(Q * S_e + P * log E + K log K + C), where P is projected lots, S_e is the selected edge's
+polyline size, K is existing anchors, Q is spacing-solver probes, and C is total local
+parcel/road/chunk overlap work. Anchor lookup clips the road polyline to the requested station
+interval and visits its parcel chunks once, then sorts matching attachments by station and ID.
+Manual lookup includes one maximum attachment offset beyond each gesture boundary; it never
+collects the whole road's parcels for a short drag. Its final ordering adds O(P log P).
+The existing solver
+advances by 0.5 m while blocked and refines each accepted bracket in ten binary steps, giving
+Q = O(L / 0.5 m + 10P + K) for the covered road length L. Temporary projected parcels reuse `ParcelStore`, and
+overlap-query scratch is reused across probes; no probe scans the entire previously projected row.
+The shared run validator supplies final legality filtering. Ordered acceptance is sequential because
+each accepted lot constrains later lots; this editor action does not iterate over city residents.
+The advancing-front queue is preallocated for at most two fronts per span and uses O(K + P) queue
+operations, without repeatedly visiting completed spans. No persistent spatial structure is added.
+Only a target/options/dependency change allocates and rebuilds the road preview payload/mesh.
+
+`ZONE-03` spacing correction (2026-09-13): fixed stations discarded whole lots when road grade
+or curvature produced a small XZ overlap. New regressions fail on the original implementation:
+a 120 m road rising 18 m fits only 6 rather than 12 lots, and a 140 m-radius inner curve fits only
+5 rather than the 8 lots produced by manual extension. Reusing the drag-run spacing solver with
+an indexed projected-parcel query corrects both. The solver now probes the remaining endpoint
+interval before rejecting a last lot when its 0.5 m search step would overshoot; forward and
+reverse graded extensions both keep that last lot. Saved frontage bounds and overlap tolerance
+remain enforced. Earlier tests checked non-overlap but missed packing density.
+
+`ZONE-03` endpoint correction (2026-09-13): on some road lengths, dividing the first legal
+station by edge length and multiplying it back rounds below half a frontage. Both rows stopped
+before generating any candidate. A controlled 140.17 m acute-junction fixture accepts nine manual
+lots but rejects automatic fill before this fix; the fix retains at least nine automatic lots
+in total across both sides, and their saved attachments restore successfully. A second regression
+covers rounding at either endpoint and keeps actually out-of-bounds requests rejected. Both tests were run and
+failed before the correction. This reproduces the reported symptom, not the unavailable original
+map. Normalizing a legal endpoint inward costs O(1) per spacing probe with no allocation.
+
+Fresh verification after shared anchored fill: the full release library suite passes
+**1,779 tests** (61 ignored), including flat/graded/curved manual groups, mixed frontages,
+nonzero gaps, insertion-order independence, matching manual/automatic layouts, identical hillside
+terrain verdicts across profiles, missing-content growth eligibility, field reservations,
+endpoint/spacing and cross-system tests.
+Headless `zoning_road_tool_test.gd` passes all nine zoning profiles without assets, matching hillside
+red/valid masks across residential densities, single-lot terrain rejection and partial road commit,
+preview/commit geometry equality, invalid-profile and no-build rejection, repeated clicks, cache
+invalidation and off-road gestures. It also compares manual and automatic packed geometry around
+three- and five-lot manual groups, verifies zero-gap joins at both ends, exact preview/commit
+equality, unchanged authored parcels/profiles and a second click producing no duplicates.
+The headless `road_junction_preview_test.gd` also passes. Rustdoc and benchmark-target compilation pass.
+The rebuilt release library is deployed to
+`godot/bin/libmetrum_rise.so`.
+
+The earlier endpoint-correction measurement used three alternating unprofiled release pairs with the ignored
+`simulation::zoning::tests::placement::road::benchmark_road_zoning_locality` test with a fixed
+120 m road and twelve 20 x 20 m lots while distant roads and parcels increase together. CPU 0,
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, three warmups and nine samples of 64 calls are fixed.
+Both builds measure the graded case that exercises spacing adjustment.
+Median of run medians, in microseconds:
+
+| Background roads and parcels (each) | Flat preview before | Flat preview after | Graded preview before | Graded preview after |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 3.620 | 3.480 | 14.243 | 14.877 |
+| 1,000 | 4.185 | 4.081 | 14.829 | 15.519 |
+| 10,000 | 4.280 | 4.274 | 14.961 | 15.627 |
+| 100,000 | 4.656 | 4.478 | 15.094 | 15.986 |
+
+The extra normalization during refinement adds 0.6–0.9 µs to the graded fixture (4–6%); flat previews
+show no regression and work remains local. Road picking remains 0.017–0.052 µs.
+The graded case verifies twelve lots and neighboring frontage gaps within
+2 mm; flat before/after checks preserve twelve lots at matching local stations and sides. Setup
+is timed separately and excluded. These measurements cover Rust picking and geometry validation,
+excluding site feasibility, Godot transfer/rendering and resident simulation. Sources and binaries
+stay fixed during measurement with no competing build/test work. Historical first-implementation
+and spacing results remain in `/tmp/metrum-zoning-road/` and `/tmp/metrum-zoning-gap/`; they do not
+validate this endpoint correction.
+
+Build: `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
+(48a229cea 2026-09-01). Before/after test executable SHA-256 values:
+`261b5793fba3b04401ccfe9356f03d21bc132c0761cbe5c83c13b0fb0f8e6c89` and
+`1cc51de4d10e85c9bbfc8f23c0bad382f688079293a1805a9c62c0ff59dbf16b`.
+Exact commands, source snapshots, retained binaries, regression failures, raw runs and summary
+are in `/tmp/metrum-zoning-endpoint/`; replay with `python3 /tmp/metrum-zoning-endpoint/measure.py`.
+Native/tool validation: `godot --headless --path godot --script res://tests/zoning_road_tool_test.gd`
+(Godot 4.7.2).
+
+Shared zoning terrain verification (2026-09-13): the previous missing-asset exemption skipped
+terrain checks for densities without matching content, while low density checked the installed
+houses. The new native hillside regression fails against that preceding library and passes with
+the common selected-lot terrain check. All densities now agree with and without assets; the junction
+bridge test also covers asset-free single placement, medium-density drag and rezoning. Portable
+Rust tests cover asset-independent terrain failures, lot-size cache keys, pruning, road publication,
+remote terrain reuse and local terrain invalidation. Missing content leaves flat lots zoned without
+growth; only a matching density, initial level and fitting footprint permits a growth candidate.
+The existing grading solver, neighbor checks and local dependency snapshots are reused. Warm
+zoning queries need no asset scan or allocation and share one terrain verdict across profiles.
+
+Three alternating matched unprofiled before/after Godot pairs use the installed low-density houses on a flat
+192 m road with eighteen 20 x 20 m lots. Every density retains identical geometry; valid counts
+remain 18/18/18. Median road-preview API time in µs (before → after): low
+30.844 → 28.516, medium 26.203 → 28.578, high 26.188 → 28.438. CPU 0, one Rayon worker,
+`METRUM_DEBUG=0`, three warmups and nine samples of 64 calls are fixed; setup is excluded.
+Site queries are warm, while road geometry and Godot payloads are rebuilt per call. This is
+2.3 µs faster for low density and 2.3–2.4 µs extra per 18-lot query for the previously exempt
+densities, with no rendering or resident simulation included. The first low-density call solves
+the eighteen lots in 0.624 ms (previously 0.674 ms); first medium/high calls reuse those solutions
+and take 0.040/0.039 ms. These cold-call values are medians of one initial call per process,
+not tail-latency measurements.
+
+Three alternating release pairs also run the existing
+`nodes::sim::core::tests::road_plan_scaling::populated_zoning_feasibility_scaling` test. The four
+local sites remain fixed while background reaches 100,000 buildings, 100,004 total parcels,
+600,024 agents and 391 remote roads. CPU affinity is `0,2,4,6,8,10,12,14`, with eight Rayon workers
+and `METRUM_DEBUG=0`. Each size checks 300 warm queries; verdicts stay valid and the total local
+solve count stays one. Median of run medians in µs:
+
+| Background buildings | Before | After |
+| ---: | ---: | ---: |
+| 0 | 0.731 | 0.178 |
+| 1,000 | 0.752 | 0.178 |
+| 10,000 | 0.748 | 0.178 |
+| 100,000 | 0.727 | 0.177 |
+
+Cached feasibility remains local and is about four times faster in this comparison. The initial
+solve takes 0.046 ms; revalidation after remote edits takes 0.011–0.017 ms without another solve.
+Fixture setup is excluded. No competing build or test work ran during measurements. These
+measurements validate the shared terrain check before the subsequent anchoring change;
+the endpoint table above records still earlier builds.
+Rust 1.98.1 release and Godot 4.7.2 are used over base `0b813dfed291a8b250c204b376dbea9127b76308`.
+Before/after shared-library SHA-256 values are
+`164c2871ce23cc3d57cdebf8b46c4f99c4ab107b69bd5426901aff7b83c8ce55` and
+`4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42`.
+Build commands are `cargo build --offline --manifest-path rust/Cargo.toml --release` and
+`cargo test --offline --manifest-path rust/Cargo.toml --release --lib`. Exact measurement commands,
+test-executable identities, changed-source snapshots, retained binaries, regression failures and
+raw results are in `/tmp/metrum-zoning-terrain/` (`metadata.json`, `measure.py`, `measure.gd`,
+`summary.json`, and logs). Replay with `python3 /tmp/metrum-zoning-terrain/measure.py`.
+The previous missing-asset policy's measurements remain historical in `/tmp/metrum-zoning-assets/`.
+
+Shared manual/automatic anchoring verification (2026-09-13): the preceding endpoint-based fill
+dropped whole candidates overlapping manual lots, leaving unused fractions at both group ends.
+Rust and native Godot regressions reproduce this before the change and pass afterward. Existing
+lots now determine the phase, using one interval-fill routine for road fill and manual drags.
+The former separate existing-parcel drag generator is removed. No terrain or asset rules change.
+
+Fresh matched unprofiled release measurements use three alternating process pairs, CPU 0,
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, three warmups and nine samples of 64 queries. The existing
+`simulation::zoning::tests::placement::road::benchmark_road_zoning_locality` workload holds a
+120 m road and twelve lots fixed while background roads and parcels increase together. Both
+builds retain identical flat geometry and graded packing within 2 mm; setup is excluded.
+Median of process medians, in µs:
+
+| Background roads/parcels (each) | Flat before → after | Graded before → after |
+| ---: | ---: | ---: |
+| 0 | 3.562 → 4.151 | 14.884 → 15.751 |
+| 1,000 | 4.486 → 5.146 | 15.903 → 17.600 |
+| 10,000 | 4.601 → 5.080 | 15.895 → 17.504 |
+| 100,000 | 4.827 → 5.550 | 16.124 → 18.051 |
+
+Local anchor discovery and live-parcel spacing add 0.5–0.7 µs on flat roads and 0.9–1.9 µs on this
+graded fixture; neither introduces a city-wide scan. Picking is unchanged at 0.017–0.052 µs.
+
+Three matched Godot process pairs also measure road and drag previews on a flat 192 m road,
+before and after placing the eight manual lots. Geometry and payloads rebuild per call; terrain
+solutions are warm. Same CPU/worker/sample settings, with no resident simulation or rendering:
+
+| Request | Valid new lots before → after | API median before → after (µs) |
+| --- | ---: | ---: |
+| Empty road fill | 18 → 18 | 28.828 → 30.891 |
+| Fill around manual groups | 8 → 10 | 19.422 → 20.672 |
+| Empty manual drag | 9 → 9 | 61.453 → 63.953 |
+| Manual drag through existing groups | 6 → 6 | 59.875 → 13.938 |
+
+The corrected fill computes two additional lots for the same input. Its first query after manual
+placement takes 0.364 ms versus 0.041 ms previously: new anchored poses need terrain solves, whereas
+the old endpoint grid reused the earlier empty-road results. The initial empty-road query takes
+0.671 ms versus 0.640 ms. These are medians of one first call per process, not tail-latency estimates.
+No assistant builds or tests ran alongside these timings. Rust 1.98.1 release and Godot 4.7.2 are
+used over base `0b813dfed291a8b250c204b376dbea9127b76308`; before/after shared-library SHA-256 values are
+`4e2b12e22de94d975a49352c77d6c007394bd47a4138a6ebb71e0b5d049bef42` and
+`8ea7dc9ef42bc571460fcc7ccf4e92588098b0aea7ec25108ed32b3bb4a68fae`.
+Build with `cargo test --offline --manifest-path rust/Cargo.toml --release --lib` and
+`cargo build --offline --manifest-path rust/Cargo.toml --release`. Exact commands, test-binary hashes,
+changed-source snapshots, retained binaries, failed/passing regressions and raw results are in
+`/tmp/metrum-zoning-anchors/`. Replay with `measure-locality.py` and `measure-native.py`; results
+are in `summary.json` and `native-summary.json`, with identities in the corresponding metadata files.
 
 Per-candidate placement, preview and rezone conflict checks use local indices. Updating one known
 parcel's occupant uses the stable-id map in O(1) expected time. Bulk save/load reconstructs the

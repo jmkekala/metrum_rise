@@ -375,25 +375,11 @@ impl BuildingAllocator {
         }
 
         let frontage_profile_runtime_id = parcel.zone_profile_runtime_id();
-        if frontage_profile_runtime_id == 0 {
-            return None;
-        }
-        if !zoning.profiles.asset_is_legal(
-            frontage_profile_runtime_id,
-            params.zone_type,
-            &params.density,
-            &params.tags,
-        ) {
+        if !params.fits_zoned_parcel(parcel, zoning) {
             return None;
         }
 
-        let width_m = params.width_cells as f32 * zone_cell_m;
         let depth_m = params.depth_cells as f32 * zone_cell_m;
-        if width_m > parcel.frontage_m() + f32::EPSILON || depth_m > parcel.depth_m() + f32::EPSILON
-        {
-            return None;
-        }
-
         let center_2d = parcel.front_center() + parcel.normal() * (depth_m * 0.5);
 
         let placement = ResolvedPlacement {
@@ -1377,11 +1363,29 @@ impl BuildingAllocator {
             return Ok(support_height_m);
         }
         let footprint_world = self.placement_required_flat_support_footprint(placement);
-        let (min_x, min_z, max_x, max_z) = polygon_bounds(&footprint_world);
-        let candidate_indices = self.lot_candidate_indices_for_bounds(
-            (min_x, min_z, max_x, max_z),
+        self.validate_footprint_neighbor_height(
+            &footprint_world,
+            support_height_m,
             placement.zone_cell_m,
             placement.replaced_building,
+        )
+    }
+
+    fn validate_footprint_neighbor_height(
+        &self,
+        footprint_world: &[Vector2],
+        support_height_m: f32,
+        zone_cell_m: f32,
+        replaced_building: Option<usize>,
+    ) -> Result<f32, DemandSpawnPlacementRejection> {
+        if self.building_sites.is_empty() {
+            return Ok(support_height_m);
+        }
+        let (min_x, min_z, max_x, max_z) = polygon_bounds(footprint_world);
+        let candidate_indices = self.lot_candidate_indices_for_bounds(
+            (min_x, min_z, max_x, max_z),
+            zone_cell_m,
+            replaced_building,
         );
         for building_idx in candidate_indices {
             let Some(site) = self.building_sites.get(building_idx) else {
@@ -1398,7 +1402,7 @@ impl BuildingAllocator {
             if (site.support_height_m - support_height_m).abs()
                 > BUILDING_SITE_NEIGHBOR_HEIGHT_EPS_M
                 && flat_support_footprints_overlap(
-                    &footprint_world,
+                    footprint_world,
                     &site.footprint_world,
                     // Unlike the occupancy prefilter, height compatibility includes contact.
                     -BUILDING_SITE_NEIGHBOR_EPS_M,
@@ -1406,9 +1410,7 @@ impl BuildingAllocator {
             {
                 debug_log!(
                     "economy",
-                    "building placement rejected: asset={} parcel={} site height {:.2} conflicts with overlapping neighboring building {} height {:.2}",
-                    placement.asset_id,
-                    placement.parcel_id,
+                    "site height {:.2} conflicts with overlapping neighboring building {} height {:.2}",
                     support_height_m,
                     building_idx,
                     site.support_height_m,
@@ -1892,6 +1894,21 @@ struct AssetPlacementParams {
     width_cells: usize,
     depth_cells: usize,
     initial_level: u8,
+}
+
+impl AssetPlacementParams {
+    // Keep missing content distinct from a compatible building whose physical site is blocked.
+    fn fits_zoned_parcel(&self, parcel: &ZoningParcel, zoning: &ZoningSystem) -> bool {
+        zoning.profiles.asset_is_legal(
+            parcel.zone_profile_runtime_id(),
+            self.zone_type,
+            &self.density,
+            &self.tags,
+        ) && self.width_cells as f32 * zoning.config.zone_cell_m
+            <= parcel.frontage_m() + f32::EPSILON
+            && self.depth_cells as f32 * zoning.config.zone_cell_m
+                <= parcel.depth_m() + f32::EPSILON
+    }
 }
 
 struct SpawnAssetCandidate {

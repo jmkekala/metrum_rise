@@ -899,6 +899,106 @@ impl SimulationNode {
         zoning_parcel_geometries_array(&core, &geometries, runtime_id)
     }
 
+    /// Returns the road segment under the zoning cursor, or `-1` outside road corridors.
+    #[func]
+    pub fn get_zoning_road_at(&self, world_x: f32, world_z: f32) -> i64 {
+        let core = self.lock_core();
+        core.zoning
+            .road_edge_at(world_x, world_z, &core.region_graph)
+            .map(|edge| edge as i64)
+            .unwrap_or(-1)
+    }
+
+    /// Returns both-side road zoning geometry with the same site feasibility as commit.
+    #[func]
+    pub fn get_zoning_road_preview_packed(
+        &self,
+        edge_idx: i64,
+        target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
+        gap_m: f32,
+    ) -> VarDictionary {
+        let mut core = self.lock_core();
+        prepare_zoning_site_queries(&mut core);
+        let (Ok(edge_idx), Ok(runtime_id)) = (
+            usize::try_from(edge_idx),
+            u16::try_from(target_profile_runtime_id),
+        ) else {
+            return VarDictionary::new();
+        };
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return VarDictionary::new();
+        };
+        match core.zoning.preview_parcels_on_road(
+            edge_idx,
+            frontage_m,
+            depth_m,
+            gap_m,
+            &core.region_graph,
+        ) {
+            Ok(geometries) => zoning_parcel_geometries_packed_dict(&core, &geometries, runtime_id),
+            Err(_) => {
+                let mut payload = VarDictionary::new();
+                payload.set("reason", "No available zoning lots on this road");
+                payload
+            }
+        }
+    }
+
+    /// Immediately zones the valid lots on both sides of the road currently under the cursor.
+    /// Re-picks and validates under one lock so a stale hover cannot commit an old edge ID.
+    #[func]
+    pub fn apply_zoning_road_at(
+        &mut self,
+        world_x: f32,
+        world_z: f32,
+        target_profile_runtime_id: i32,
+        frontage_cells: i32,
+        depth_cells: i32,
+        gap_m: f32,
+    ) -> bool {
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return false;
+        };
+        let mut core = self.lock_core();
+        let core = &mut *core;
+        prepare_zoning_site_queries(core);
+        let Some(edge_idx) = core
+            .zoning
+            .road_edge_at(world_x, world_z, &core.region_graph)
+        else {
+            return false;
+        };
+        let Some((frontage_m, depth_m)) =
+            zoning_parcel_cell_dimensions(&core.config, frontage_cells, depth_cells)
+        else {
+            return false;
+        };
+        let Ok(geometries) = core.zoning.preview_parcels_on_road(
+            edge_idx,
+            frontage_m,
+            depth_m,
+            gap_m,
+            &core.region_graph,
+        ) else {
+            return false;
+        };
+        let geometries = zoning_buildable_geometries(core, geometries, runtime_id);
+        match core
+            .zoning
+            .place_prevalidated_parcel_geometries(geometries, runtime_id)
+        {
+            Ok(ids) if !ids.is_empty() => {
+                core.allocator.dirty = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Returns packed preview geometry for legal parcels in a road-side parcel drag run.
     #[func]
     pub fn get_zoning_parcel_drag_preview_packed(

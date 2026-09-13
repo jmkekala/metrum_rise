@@ -99,7 +99,12 @@ fn fixture() -> SimCore {
             )
             .unwrap();
     }
-    for asset in f.assets {
+    register_houses(&mut core, f.assets);
+    core
+}
+
+fn register_houses(core: &mut SimCore, assets: Vec<String>) {
+    for asset in assets {
         let mut manifest: AssetManifest = toml::from_str(&asset).unwrap();
         // Keep this feasibility fixture's structural box geometry explicit and engine-independent.
         for part in &mut manifest.mesh_parts {
@@ -109,6 +114,23 @@ fn fixture() -> SimCore {
             .registry
             .register("kenney", manifest, String::new());
     }
+}
+
+fn flat_fixture() -> SimCore {
+    let mut core = test_core();
+    road_terrain_plan::commit_ready(
+        &mut core,
+        vec![Vector3::new(-96.0, 0.0, 0.0), Vector3::new(96.0, 0.0, 0.0)],
+    );
+    let f: Fixture = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../benchmarks/fixtures/kuopio-terrain/residential-buildability.json"
+    )))
+    .unwrap();
+    register_houses(&mut core, f.assets);
+    core.zoning
+        .restore_parcel_from_attachment(7, 0, -1, 0.5, 20.0, 20.0, 1, &core.region_graph)
+        .unwrap();
     core
 }
 
@@ -116,6 +138,108 @@ fn environment(core: &SimCore) -> BuildingSiteEnvironment<'_> {
     BuildingSiteEnvironment {
         road_surface: &core.transit_network.road_surface,
         terrain: &core.heightmap,
+    }
+}
+
+#[test]
+fn missing_assets_allow_zoning_and_growth_waits_for_a_compatible_initial_asset() {
+    let mut core = flat_fixture();
+    let mut house = core
+        .allocator
+        .registry
+        .get("kenney:building.residential.family_single_house")
+        .unwrap()
+        .manifest
+        .clone();
+    let parcel = core.zoning.parcel_by_raw_id(7).unwrap();
+    let geometry = core
+        .zoning
+        .parcel_geometry_at(parcel.center().x, parcel.center().y)
+        .unwrap();
+    core.allocator.registry.clear();
+    for profile in core.zoning.profiles.profiles() {
+        assert_eq!(
+            core.allocator.zoning_site_feasibility(
+                &geometry,
+                profile.runtime_id,
+                &core.zoning,
+                &core.region_graph,
+                environment(&core),
+            ),
+            Ok(()),
+            "missing assets must not block {}",
+            profile.id
+        );
+    }
+    core.zoning
+        .place_or_rezone_parcel_at(
+            geometry.center.x,
+            geometry.center.y,
+            2,
+            geometry.frontage_m,
+            geometry.depth_m,
+            &core.region_graph,
+        )
+        .unwrap();
+    let candidates = |core: &SimCore| {
+        core.allocator.collect_demand_spawn_candidates_by_use(
+            &core.zoning,
+            &core.region_graph,
+            core.demand.runtime_catalog(),
+            &[],
+            environment(core),
+        )
+    };
+    let empty = candidates(&core);
+    assert!(
+        empty.residential.is_empty() && empty.commercial.is_empty() && empty.industrial.is_empty()
+    );
+    for (density, level, width, can_grow) in [
+        ("low", 1, 2, false),
+        ("medium", 2, 2, false),
+        ("medium", 1, 20, false),
+        ("medium", 1, 2, true),
+    ] {
+        let data = house.building.as_mut().unwrap();
+        data.density = Some(density.to_owned());
+        data.level = level;
+        data.lot_width_cells = width;
+        core.allocator.registry.clear();
+        core.allocator
+            .registry
+            .register("kenney", house.clone(), String::new());
+        let solves = core.allocator.site_feasibility_solve_count();
+        assert_eq!(
+            core.allocator.zoning_site_feasibility(
+                &geometry,
+                2,
+                &core.zoning,
+                &core.region_graph,
+                environment(&core),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            core.allocator.site_feasibility_solve_count(),
+            solves,
+            "asset changes cannot change the parcel terrain calculation"
+        );
+        assert_eq!(
+            candidates(&core)
+                .residential
+                .iter()
+                .any(|c| c.action.parcel_id == 7),
+            can_grow,
+            "density={density}, level={level}, width={width}"
+        );
+        assert_eq!(
+            core.zoning
+                .parcel_by_raw_id(7)
+                .unwrap()
+                .zone_profile_runtime_id(),
+            2
+        );
+        assert!(core.allocator.buildings.is_empty());
     }
 }
 
@@ -134,18 +258,27 @@ fn hillside_residential_sites_select_constructible_houses() {
             .zoning
             .parcel_geometry_at(p.center().x, p.center().y)
             .unwrap();
-        assert_eq!(
-            core.allocator.zoning_site_feasibility(
-                &geometry,
-                1,
-                &core.zoning,
-                &core.region_graph,
-                core.demand.runtime_catalog(),
-                environment(&core)
-            ),
-            Ok(()),
-            "parcel {id}"
+        let verdict = core.allocator.zoning_site_feasibility(
+            &geometry,
+            1,
+            &core.zoning,
+            &core.region_graph,
+            environment(&core),
         );
+        for profile in core.zoning.profiles.profiles() {
+            assert_eq!(
+                core.allocator.zoning_site_feasibility(
+                    &geometry,
+                    profile.runtime_id,
+                    &core.zoning,
+                    &core.region_graph,
+                    environment(&core)
+                ),
+                verdict,
+                "parcel {id}, profile {}",
+                profile.id
+            );
+        }
     }
     assert_eq!(
         before,
@@ -203,7 +336,7 @@ fn hillside_residential_sites_select_constructible_houses() {
 
 #[test]
 fn feasibility_invalidates_changed_terrain_and_assets() {
-    let mut core = fixture();
+    let mut core = flat_fixture();
     let p = core.zoning.parcel_by_raw_id(7).unwrap();
     let geometry = core
         .zoning
@@ -215,7 +348,6 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
             1,
             &core.zoning,
             &core.region_graph,
-            core.demand.runtime_catalog(),
             environment(core),
         )
     };
@@ -230,15 +362,62 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
         core.allocator.site_feasibility_solve_count() > 0,
         "reset must discard even empty-city cached verdicts"
     );
+    let deeper = crate::simulation::zoning::parcels::geometry_from_attachment(
+        &core.region_graph,
+        geometry.edge_idx,
+        geometry.side,
+        geometry.frontage_center_t,
+        20.0,
+        30.0,
+    );
+    let solves = core.allocator.site_feasibility_solve_count();
+    assert!(
+        core.allocator
+            .zoning_site_feasibility(
+                &deeper,
+                2,
+                &core.zoning,
+                &core.region_graph,
+                environment(&core)
+            )
+            .is_ok()
+    );
+    assert_eq!(
+        core.allocator.site_feasibility_solve_count(),
+        solves + 1,
+        "changed lot dimensions must use their own terrain footprint"
+    );
+    core.zoning.clear();
+    core.allocator.prune_site_feasibility(&core.zoning);
+    core.zoning
+        .restore_parcel_from_attachment(
+            7,
+            geometry.edge_idx,
+            geometry.side,
+            geometry.frontage_center_t,
+            geometry.frontage_m,
+            geometry.depth_m,
+            1,
+            &core.region_graph,
+        )
+        .unwrap();
+    let solves = core.allocator.site_feasibility_solve_count();
+    assert!(check(&core).is_ok());
+    assert_eq!(
+        core.allocator.site_feasibility_solve_count(),
+        solves + 1,
+        "removed parcel cache entries must be pruned"
+    );
     // A changed road generation must not reuse a cached success from retained old products.
     core.transit_network
         .road_surface
-        .mark_edge_dirty(&core.region_graph, 1);
+        .mark_edge_dirty(&core.region_graph, geometry.edge_idx);
     assert!(check(&core).is_err());
     core.precompute_road_mesh_data();
     assert!(check(&core).is_ok());
     let solves = core.allocator.site_feasibility_solve_count();
-    core.heightmap.set_height(1000, 1000, 30.0);
+    // The road is at the world center; the corner sample is outside its local dependency chunks.
+    core.heightmap.set_height(0, 0, 30.0);
     assert!(check(&core).is_ok());
     assert_eq!(
         core.allocator.site_feasibility_solve_count(),
@@ -284,7 +463,30 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
     assert_eq!(core.allocator.buildings.len(), before);
     assert!(core.zoning.parcel_by_raw_id(7).unwrap().is_available());
     core.allocator.registry.clear();
-    assert!(check(&core).unwrap_err().contains("asset"));
+    let solves = core.allocator.site_feasibility_solve_count();
+    assert!(
+        check(&core).is_err(),
+        "missing assets cannot bypass the common terrain rule"
+    );
+    for profile in core.zoning.profiles.profiles() {
+        assert_eq!(
+            core.allocator.zoning_site_feasibility(
+                &geometry,
+                profile.runtime_id,
+                &core.zoning,
+                &core.region_graph,
+                environment(&core)
+            ),
+            check(&core),
+            "profile {}",
+            profile.id
+        );
+    }
+    assert_eq!(
+        core.allocator.site_feasibility_solve_count(),
+        solves,
+        "profiles and asset removal reuse one terrain verdict"
+    );
     assert!(
         core.allocator
             .zoning_site_feasibility(
@@ -292,7 +494,6 @@ fn feasibility_invalidates_changed_terrain_and_assets() {
                 0,
                 &core.zoning,
                 &core.region_graph,
-                core.demand.runtime_catalog(),
                 environment(&core)
             )
             .is_ok(),

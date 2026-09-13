@@ -168,7 +168,6 @@ fn measure_populated_road_plan_scaling(paved: bool, zoning_only: bool, fields: b
                     1,
                     &core.zoning,
                     &core.region_graph,
-                    core.demand.runtime_catalog(),
                     crate::simulation::buildings::allocator::BuildingSiteEnvironment {
                         road_surface: &core.transit_network.road_surface,
                         terrain: &core.heightmap,

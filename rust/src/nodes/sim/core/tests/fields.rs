@@ -279,7 +279,6 @@ fn buildings_and_zoning_reject_a_reserved_field_even_after_cached_preview() {
                     profile,
                     &core.zoning,
                     &core.region_graph,
-                    core.demand.runtime_catalog(),
                     BuildingSiteEnvironment {
                         road_surface: &core.transit_network.road_surface,
                         terrain: &core.heightmap

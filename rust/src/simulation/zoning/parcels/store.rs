@@ -215,6 +215,65 @@ impl ParcelStore {
         touched
     }
 
+    /// Finds attached parcels in a 3D road-station interval through the existing chunk index.
+    /// Only chunks beside the clipped interval are visited; results follow station then stable ID.
+    pub(crate) fn attached_to_road_span(
+        &self,
+        edge_idx: usize,
+        edge: &crate::simulation::network::graph::Edge,
+        range: [f32; 2],
+    ) -> Vec<&ZoningParcel> {
+        let pad = edge.width * 0.5
+            + crate::config::SIDEWALK_WIDTH
+            + crate::simulation::zoning::MIN_PARCEL_DEPTH_M * 0.5;
+        let mut station = 0.0;
+        let mut chunks_seen = HashSet::new();
+        let mut parcels_seen = HashSet::new();
+        let mut found = Vec::new();
+        for points in edge.physical_geometry.windows(2) {
+            if station > range[1] {
+                break;
+            }
+            let length = points[0].distance_to(points[1]);
+            let start_s = station;
+            station += length;
+            if length <= 1e-6 || station < range[0] {
+                continue;
+            }
+            let start = points[0].lerp(points[1], ((range[0] - start_s) / length).clamp(0.0, 1.0));
+            let end = points[0].lerp(points[1], ((range[1] - start_s) / length).clamp(0.0, 1.0));
+            let min = Vector2::new(start.x.min(end.x) - pad, start.z.min(end.z) - pad);
+            let max = Vector2::new(start.x.max(end.x) + pad, start.z.max(end.z) + pad);
+            for chunk in chunks_for_aabb(min, max) {
+                if !chunks_seen.insert(chunk) {
+                    continue;
+                }
+                let Some(ids) = self.chunk_index.get(&chunk) else {
+                    continue;
+                };
+                for &id in ids {
+                    if !parcels_seen.insert(id) {
+                        continue;
+                    }
+                    let Some(parcel) = self.get(id) else {
+                        continue;
+                    };
+                    let center_s = parcel.frontage_center_t() * edge.physical_length;
+                    if parcel.edge_idx() == edge_idx && center_s >= range[0] && center_s <= range[1]
+                    {
+                        found.push(parcel);
+                    }
+                }
+            }
+        }
+        found.sort_unstable_by(|a, b| {
+            a.frontage_center_t()
+                .total_cmp(&b.frontage_center_t())
+                .then_with(|| a.id().cmp(&b.id()))
+        });
+        found
+    }
+
     pub(crate) fn ids_overlapping_road_corridor(
         &self,
         points: &[Vector3],

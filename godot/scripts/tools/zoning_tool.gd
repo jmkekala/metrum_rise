@@ -4,6 +4,7 @@
 ##
 ## Rust methods called: get_zone_profiles(), get_zoning_parcel_preview(),
 ##   get_zoning_parcel_drag_preview_packed(), apply_zoning_parcel_at(),
+##   get_zoning_road_at(), get_zoning_road_preview_packed(), apply_zoning_road_at(),
 ##   apply_zoning_parcel_drag(), get_zoning_parcel_profile_runtime_id_at(),
 ##   get_zoning_parcel_rezone_drag_preview_packed(),
 ##   apply_zoning_parcel_rezone_drag(), get_zoning_site_dependencies(), intersect_world_surface()
@@ -21,7 +22,6 @@ var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
 var preview_mesh: MeshInstance3D
-var _feasibility_label: Label
 var _site_dependencies := PackedInt64Array()
 var dragging: bool = false
 var drag_start_world = null
@@ -35,6 +35,7 @@ var _preview_cache_width_cells: int = -1
 var _preview_cache_depth_cells: int = -1
 var _preview_cache_gap_m: float = -1.0
 var _preview_cache_mesh: Mesh = null
+var _preview_cache_road_edge: int = -1
 var _last_valid_single_preview_mesh: Mesh = null
 var _last_valid_drag_preview_mesh: Mesh = null
 var _last_valid_drag_preview_kind: int = -1
@@ -46,18 +47,13 @@ const PREVIEW_REFRESH_DISTANCE_M: float = 1.0
 const PREVIEW_KIND_SINGLE: int = 0
 const PREVIEW_KIND_CREATE_DRAG: int = 1
 const PREVIEW_KIND_REZONE_DRAG: int = 2
+const PREVIEW_KIND_ROAD: int = 3
 const DRAG_MODE_NONE: int = 0
 const DRAG_MODE_CREATE: int = 1
 const DRAG_MODE_REZONE: int = 2
 
 func _ready():
 	_reload_profiles()
-	_feasibility_label = Label.new()
-	_feasibility_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_feasibility_label.add_theme_color_override("font_shadow_color", Color.BLACK)
-	_feasibility_label.add_theme_constant_override("shadow_offset_x", 1)
-	_feasibility_label.add_theme_constant_override("shadow_offset_y", 1)
-	add_child(_feasibility_label)
 
 	preview_mesh = MeshInstance3D.new()
 	preview_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -134,6 +130,13 @@ func _begin_drag() -> void:
 	drag_start_world = _mouse_world_pos()
 	dragging = drag_start_world != null
 	drag_mode = DRAG_MODE_NONE
+	# A press on a road is one complete zoning action; its release cannot start a parcel drag.
+	if dragging and simulation_node.get_zoning_road_at(drag_start_world.x, drag_start_world.y) >= 0:
+		_commit_road_at(drag_start_world)
+		dragging = false
+		drag_start_world = null
+		_clear_preview_cache()
+		return
 	if dragging:
 		var start_profile: int = int(simulation_node.get_zoning_parcel_profile_runtime_id_at(
 			drag_start_world.x,
@@ -171,6 +174,18 @@ func _finish_drag() -> void:
 	else:
 		_commit_single_at(start)
 	_clear_preview_cache()
+
+func _commit_road_at(wp: Vector2) -> void:
+	if simulation_node.apply_zoning_road_at(
+		wp.x,
+		wp.y,
+		current_profile_runtime_id,
+		parcel_width_cells,
+		parcel_depth_cells,
+		parcel_gap_m
+	):
+		if zoning_overlay:
+			zoning_overlay.mark_zone_dirty()
 
 func _commit_single_at(wp: Vector2) -> void:
 	if simulation_node.apply_zoning_parcel_at(
@@ -214,13 +229,10 @@ func _update_preview() -> void:
 	if dependencies != _site_dependencies:
 		_site_dependencies = dependencies
 		_clear_preview_cache()
-	_feasibility_label.position = get_viewport().get_mouse_position() + Vector2(18, 18)
 	var wp = _mouse_world_pos()
 	if wp == null:
 		preview_mesh.visible = false
-		_feasibility_label.visible = false
 		return
-	_feasibility_label.visible = not _feasibility_label.text.is_empty()
 	if dragging and drag_start_world != null and drag_start_world.distance_to(wp) >= DRAG_THRESHOLD_M:
 		if drag_mode == DRAG_MODE_REZONE:
 			if _preview_cache_matches(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp):
@@ -235,7 +247,6 @@ func _update_preview() -> void:
 				current_profile_runtime_id
 			)
 			var rezone_mesh := _build_packed_parcels_mesh(rezone_payload, true)
-			_show_feasibility(rezone_payload)
 			_store_preview_cache(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
 			_apply_drag_preview_mesh(PREVIEW_KIND_REZONE_DRAG, drag_start_world, wp, rezone_mesh)
 			return
@@ -255,10 +266,17 @@ func _update_preview() -> void:
 			parcel_gap_m
 		)
 		var drag_mesh := _build_packed_parcels_mesh(drag_payload, true)
-		_show_feasibility(drag_payload)
 		_store_preview_cache(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
 		_apply_drag_preview_mesh(PREVIEW_KIND_CREATE_DRAG, drag_start_world, wp, drag_mesh)
 		return
+
+	if not dragging:
+		var road_edge: int = simulation_node.get_zoning_road_at(wp.x, wp.y)
+		if road_edge >= 0:
+			_update_road_preview(road_edge)
+			return
+		if _preview_cache_kind == PREVIEW_KIND_ROAD:
+			_clear_preview_cache()
 
 	if _preview_cache_matches(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp):
 		_apply_single_preview_mesh(_preview_cache_mesh)
@@ -272,9 +290,22 @@ func _update_preview() -> void:
 		parcel_depth_cells
 	)
 	var mesh: Mesh = null if payload.is_empty() else _build_parcels_mesh([payload], true)
-	_show_feasibility(payload)
 	_store_preview_cache(PREVIEW_KIND_SINGLE, Vector2.ZERO, wp, mesh)
 	_apply_single_preview_mesh(mesh)
+
+func _update_road_preview(edge_idx: int) -> void:
+	if _preview_cache_road_edge == edge_idx and _preview_cache_matches(PREVIEW_KIND_ROAD, Vector2.ZERO, Vector2.ZERO):
+		_apply_preview_mesh(_preview_cache_mesh)
+		return
+	# Never retain another road's lots or an off-road single preview over an empty/blocked road.
+	_clear_preview_cache()
+	var payload: Dictionary = simulation_node.get_zoning_road_preview_packed(
+		edge_idx, current_profile_runtime_id, parcel_width_cells, parcel_depth_cells, parcel_gap_m
+	)
+	var mesh := _build_packed_parcels_mesh(payload, true)
+	_store_preview_cache(PREVIEW_KIND_ROAD, Vector2.ZERO, Vector2.ZERO, mesh)
+	_preview_cache_road_edge = edge_idx
+	_apply_preview_mesh(mesh)
 
 func _preview_cache_matches(kind: int, start: Vector2, end: Vector2) -> bool:
 	if not _preview_cache_valid:
@@ -303,10 +334,9 @@ func _store_preview_cache(kind: int, start: Vector2, end: Vector2, mesh: Mesh) -
 	_preview_cache_mesh = mesh
 
 func _clear_preview_cache() -> void:
-	if _feasibility_label != null:
-		_feasibility_label.visible = false
 	_preview_cache_valid = false
 	_preview_cache_mesh = null
+	_preview_cache_road_edge = -1
 	_last_valid_single_preview_mesh = null
 	_last_valid_drag_preview_mesh = null
 	_last_valid_drag_preview_kind = -1
@@ -316,10 +346,6 @@ func _clear_preview_cache() -> void:
 func _apply_preview_mesh(mesh: Mesh) -> void:
 	preview_mesh.mesh = mesh
 	preview_mesh.visible = mesh != null
-
-func _show_feasibility(payload: Dictionary) -> void:
-	_feasibility_label.text = str(payload.get("reason", ""))
-	_feasibility_label.visible = not _feasibility_label.text.is_empty()
 
 func _apply_single_preview_mesh(mesh: Mesh) -> void:
 	if mesh != null:

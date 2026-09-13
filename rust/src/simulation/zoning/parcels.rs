@@ -20,6 +20,6 @@ pub(crate) use geometry::{
     geometry_inside_world, geometry_overlaps_road,
 };
 pub(crate) use placement::{
-    ParcelRunProjection, project_default_parcel_at, project_parcel_run_from_existing,
-    project_parcel_run_layouts_at,
+    ParcelRunProjection, next_non_overlapping_run_geometry_with, project_buildable_road_point_at,
+    project_default_parcel_at, project_parcel_run_layouts_at, project_point_to_edge, road_edge_at,
 };

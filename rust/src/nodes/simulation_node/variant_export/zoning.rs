@@ -24,7 +24,6 @@ pub(in crate::nodes::simulation_node) fn zoning_geometry_feasibility(
         runtime_id,
         &core.zoning,
         &core.region_graph,
-        core.demand.runtime_catalog(),
         crate::simulation::buildings::allocator::BuildingSiteEnvironment {
             road_surface: &core.transit_network.road_surface,
             terrain: &core.heightmap,

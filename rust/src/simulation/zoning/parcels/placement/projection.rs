@@ -7,7 +7,40 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::parcels::ParcelPlacementError;
 use godot::prelude::{Vector2, Vector3};
 
-pub(super) fn project_buildable_road_point_at(
+/// Picks a road under the cursor, including no-build roads so the tool can reject them explicitly.
+/// Uses the existing corridor-query bound and R-tree; allocates no candidate buffer.
+pub(crate) fn road_edge_at(graph: &RegionGraph, world_pos: Vector2) -> Option<usize> {
+    if !world_pos.is_finite() {
+        return None;
+    }
+    let radius = crate::simulation::zoning::parcels::ROAD_OVERLAP_QUERY_PAD_M;
+    let min = Vector3::new(world_pos.x - radius, 0.0, world_pos.y - radius);
+    let max = Vector3::new(world_pos.x + radius, 0.0, world_pos.y + radius);
+    let mut best: Option<ProjectedRoadPoint> = None;
+    graph.visit_edges_near_aabb(min, max, |edge_idx| {
+        let edge = graph.edge(edge_idx);
+        if edge.deleted || edge.primary_type != crate::simulation::network::types::TransitType::Road
+        {
+            return;
+        }
+        let Some(projected) = project_point_to_edge(graph, edge_idx, world_pos) else {
+            return;
+        };
+        if projected.dist_m > edge.width * 0.5 + crate::config::SIDEWALK_WIDTH {
+            return;
+        }
+        if best.is_none_or(|current| {
+            projected.dist_m < current.dist_m
+                || (projected.dist_m == current.dist_m && edge_idx < current.edge_idx)
+        }) {
+            best = Some(projected);
+        }
+    });
+    best.map(|projected| projected.edge_idx)
+}
+
+/// Resolves the nearest buildable frontage in the bounded parcel-placement search neighborhood.
+pub(crate) fn project_buildable_road_point_at(
     graph: &RegionGraph,
     world_pos: Vector2,
     frontage_m: f32,
@@ -50,16 +83,23 @@ pub(super) fn project_buildable_road_point_at(
     Ok(projected)
 }
 
+/// A cursor projection with a 3D station and XZ frontage side and distance.
 #[derive(Clone, Copy)]
-pub(super) struct ProjectedRoadPoint {
-    pub(super) edge_idx: usize,
-    pub(super) side: i8,
-    pub(super) s_m: f32,
-    pub(super) edge_len_m: f32,
-    pub(super) dist_m: f32,
+pub(crate) struct ProjectedRoadPoint {
+    /// Owning graph edge.
+    pub(crate) edge_idx: usize,
+    /// Signed side of the road's forward tangent.
+    pub(crate) side: i8,
+    /// Distance along the physical 3D road polyline.
+    pub(crate) s_m: f32,
+    /// Total physical polyline length.
+    pub(crate) edge_len_m: f32,
+    /// Horizontal distance from the cursor to the road centerline.
+    pub(crate) dist_m: f32,
 }
 
-pub(super) fn project_point_to_edge(
+/// Projects a cursor onto a known edge without requiring it to remain in the frontage band.
+pub(crate) fn project_point_to_edge(
     graph: &RegionGraph,
     edge_idx: usize,
     point: Vector2,

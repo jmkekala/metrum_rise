@@ -228,22 +228,29 @@ Zoning legality/occupancy, service/industry eligibility and charging, and privat
 timers remain mode-specific. The private-building rise animation still lowers the model during
 construction; it never changes the authoritative site plane or terrain geometry.
 
-Site feasibility is shared with non-mutating zoning previews. Cache epochs cover asset registration,
-source/visual terrain, road publication and building references. After an epoch change, existing
-terrain chunk snapshots, road chunk owner identities and indexed nearby site snapshots distinguish
-local changes from unrelated city edits. Failed/pending road compilation cannot reuse a verdict.
-Cloned allocators start with an empty cache. Removed/occupied/reattached/rezoned parcel entries are
-pruned during the existing hourly collection; cursor-only poses have a separate 256-entry-per-asset
-cap. New assets invalidate old decisions without requiring save edits.
+The same grading solver serves non-mutating zoning previews and actual building placement.
+Zoning always checks the selected lot interior with the shared perimeter inset, independent of
+density and assets. Missing compatible initial assets therefore permit terrain-valid zoning but
+supply no building-growth candidate. Growth checks each actual asset's footprint separately.
+Both caches live in `placement/feasibility.rs`; the asset-independent zoning path is in its
+`zoning.rs` submodule. Cache epochs cover source/visual terrain, road publication and building
+references; building-specific entries also cover asset registration. After an epoch change,
+existing terrain chunk snapshots, road chunk owner identities and indexed nearby site snapshots
+distinguish local changes from unrelated city edits. Failed/pending road compilation cannot reuse
+a verdict. Cloned allocators start with an empty cache. Obsolete stored-parcel poses are pruned
+during the existing hourly collection; cursor poses have a separate 256-entry zoning cap and
+256-entry-per-asset building cap. Zoning keys include the lot footprint and attachment but omit
+the profile and asset registry, so density switches and asset registration reuse the terrain result.
+New assets invalidate building-specific decisions without requiring save edits.
 Replacing an asset removes its previous zone, density and upgrade-family index memberships before
 registering the new manifest, so re-evaluation cannot discover stale classifications.
 
 Complexity: the existing hourly Rayon pass remains O(P × A) for P parcels and A compatible assets;
-unchanged feasibility lookup is O(1) per resolved asset/pose. Cold solves and changed-epoch dependency
+unchanged feasibility lookup is O(1) per resolved asset/pose or zoning lot pose. Cold solves and changed-epoch dependency
 checks visit only the existing bounded terrain/road/building indices near that lot. For K grading
 rays and R sampled rings, the interval solver has at most O(KR) interval endpoints, with a conservative
-O(K²R² log(KR)) bound; K follows the asset perimeter at the fixed sample spacing, and R is at most six.
-It does not scale with the city. Cache storage follows evaluated parcel/asset poses and their local
+O(K²R² log(KR)) bound; K follows the checked pad perimeter at the fixed sample spacing, and R is at most six.
+It does not scale with the city. Cache storage follows evaluated parcel and asset poses and their local
 dependencies, plus bounded cursor poses. Index preparation is maintained outside the parallel pass.
 
 The allocator must reject placement instead of repairing geometry when:

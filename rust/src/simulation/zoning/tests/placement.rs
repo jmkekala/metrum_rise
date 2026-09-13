@@ -3,4 +3,5 @@
 //! Parcel placement test modules.
 
 mod drag_run;
+mod road;
 mod single;

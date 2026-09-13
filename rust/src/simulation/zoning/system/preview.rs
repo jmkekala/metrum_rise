@@ -7,8 +7,15 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::parcels::{self, ParcelGeometry, ParcelPlacementError};
 use crate::simulation::zoning::{DEFAULT_PARCEL_DEPTH_M, DEFAULT_PARCEL_FRONTAGE_M};
 use godot::prelude::Vector2;
+mod road;
 
 impl ZoningSystem {
+    /// Returns the road segment under the cursor, including its sidewalks and no-build segments.
+    /// Selection uses local edge bounds and lowest edge ID to break equal-distance ties.
+    pub fn road_edge_at(&self, world_x: f32, world_z: f32, graph: &RegionGraph) -> Option<usize> {
+        parcels::road_edge_at(graph, Vector2::new(world_x, world_z))
+    }
+
     /// Projects a default 20 x 20 m parcel at a world position without mutating storage.
     pub fn preview_default_parcel_at(
         &self,
@@ -61,19 +68,15 @@ impl ZoningSystem {
         Self::validate_parcel_gap(gap_m)?;
         let start_point = Vector2::new(start_x, start_z);
         let end_point = Vector2::new(end_x, end_z);
-        let existing_start = self
-            .parcel_at(start_point)
-            .map(parcels::geometry_for_parcel);
-        if let Some(existing_geometry) = existing_start.as_ref() {
-            let geometries = parcels::project_parcel_run_from_existing(
-                graph,
-                existing_geometry,
-                end_point,
-                frontage_m,
-                depth_m,
-                gap_m,
-            )?;
-            return self.valid_parcel_run_geometries(geometries, graph);
+        if let Some(geometries) = self.preview_anchored_parcel_run(
+            start_point,
+            end_point,
+            frontage_m,
+            depth_m,
+            gap_m,
+            graph,
+        )? {
+            return Ok(geometries);
         }
 
         let projection = parcels::project_parcel_run_layouts_at(

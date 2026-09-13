@@ -2,6 +2,8 @@
 
 //! Shared, bounded site feasibility for demand and non-mutating zoning checks.
 
+mod zoning;
+
 use super::*;
 use crate::simulation::buildings::allocator::BuildingSiteTerrainSnapshot;
 use crate::simulation::network::surface::{RoadSurfaceVisualNodePiece, RoadSurfaceVisualSpanPiece};
@@ -109,6 +111,14 @@ impl Dependencies {
         env: BuildingSiteEnvironment<'_>,
     ) -> Self {
         let b = allocator.placement_site_bounds(p);
+        Self::capture_bounds(allocator, b, env)
+    }
+
+    fn capture_bounds(
+        allocator: &BuildingAllocator,
+        b: Bounds,
+        env: BuildingSiteEnvironment<'_>,
+    ) -> Self {
         let margin = super::super::site::site_feasibility_dependency_margin_m(env.terrain);
         let bounds = (b.0 - margin, b.1 - margin, b.2 + margin, b.3 + margin);
         let mut terrain = TerrainVisualOverlay::new(env.terrain);
@@ -146,10 +156,23 @@ impl Dependencies {
     }
 }
 
+#[derive(Clone)]
 struct CachedSite {
     epoch: Epoch,
     dependencies: Arc<Dependencies>,
     verdict: Verdict,
+}
+
+impl CachedSite {
+    fn is_current(
+        &self,
+        epoch: Epoch,
+        allocator: &BuildingAllocator,
+        env: BuildingSiteEnvironment<'_>,
+    ) -> bool {
+        self.epoch.4 == epoch.4
+            && (self.epoch == epoch || self.dependencies.matches(allocator, env))
+    }
 }
 
 /// Derived cache only: cloning an allocator starts empty so independent edits cannot share epochs.
@@ -157,6 +180,7 @@ struct CachedSite {
 pub(crate) struct SiteFeasibilityCache {
     entries: Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>,
     previews: Mutex<HashMap<String, HashMap<PoseKey, CachedSite>>>,
+    zoning: zoning::ZoningSiteCache,
     #[cfg(test)]
     solves: std::sync::atomic::AtomicU64,
 }
@@ -178,74 +202,6 @@ impl Clone for SiteFeasibilityCache {
 }
 
 impl BuildingAllocator {
-    /// Tests at least one legal initial asset without inserting a parcel, building or terrain edit.
-    /// Existing occupied parcels are evaluated as redevelopment, excluding only their own site.
-    pub(crate) fn zoning_site_feasibility(
-        &self,
-        geometry: &ParcelGeometry,
-        profile_id: u16,
-        zoning: &ZoningSystem,
-        graph: &RegionGraph,
-        catalog: &RuntimeEconomyCatalog,
-        env: BuildingSiteEnvironment<'_>,
-    ) -> Result<(), &'static str> {
-        if self.field_clearance.overlaps_polygon(&geometry.corners) {
-            return Err("field_overlap");
-        }
-        if self.parcel_geometry_overlaps_explicit_site(geometry, zoning.config.zone_cell_m) {
-            return Err("parcel overlaps a placed building site");
-        }
-        if profile_id == 0 {
-            return Ok(());
-        }
-        let profile = zoning
-            .profiles
-            .profile_by_runtime_id(profile_id)
-            .ok_or("unknown zoning profile")?;
-        let zone_class =
-            zone_type_to_zone_class(profile.zone_type).ok_or("unsupported zoning profile")?;
-        let existing = zoning.parcel_at(geometry.center);
-        let parcel = ZoningParcel::new(
-            existing.map(|p| p.id()).unwrap_or_default(),
-            *geometry,
-            profile_id,
-        );
-        let mut reason = "no compatible initial building asset fits this parcel";
-        for id in self
-            .registry
-            .buildings_for_zone_density(zone_class, profile.density.as_str())
-        {
-            let Some(params) = self.asset_placement_params(id, catalog) else {
-                continue;
-            };
-            if params.initial_level != 1 {
-                continue;
-            }
-            let Some(mut p) = self.resolve_slot_replacing(
-                id,
-                &params,
-                &parcel,
-                zoning,
-                graph,
-                existing.and_then(|p| p.occupied_building()),
-            ) else {
-                continue;
-            };
-            match self.prepare_site_support_cached(&mut p, graph, env) {
-                Ok(()) => return Ok(()),
-                Err(DemandSpawnPlacementRejection::SiteSupportTieInInvalid) => {
-                    reason =
-                        "flat yard cannot connect to road and terrain within the grading envelope"
-                }
-                Err(_) => {
-                    reason =
-                        "building site cannot connect to the frontage road or neighboring sites"
-                }
-            }
-        }
-        Err(reason)
-    }
-
     pub(super) fn prepare_site_support_cached(
         &self,
         p: &mut ResolvedPlacement,
@@ -269,13 +225,11 @@ impl BuildingAllocator {
             cache
                 .get(&p.asset_id)
                 .and_then(|poses| poses.get(&key))
-                .map(|old| (old.epoch, Arc::clone(&old.dependencies), old.verdict))
+                .cloned()
         };
-        let verdict = if let Some((old_epoch, dependencies, verdict)) =
-            previous.filter(|(e, _, _)| e.4 == epoch.4)
-        {
-            if old_epoch == epoch || dependencies.matches(self, env) {
-                if old_epoch != epoch
+        let verdict =
+            if let Some(previous) = previous.filter(|old| old.is_current(epoch, self, env)) {
+                if previous.epoch != epoch
                     && let Some(old) = self
                         .site_feasibility
                         .poses(key)
@@ -286,13 +240,10 @@ impl BuildingAllocator {
                 {
                     old.epoch = epoch;
                 }
-                verdict
+                previous.verdict
             } else {
                 self.cache_site_solution(p, graph, env, key, epoch)
-            }
-        } else {
-            self.cache_site_solution(p, graph, env, key, epoch)
-        };
+            };
         p.support_height_m = verdict?;
         Ok(())
     }
@@ -332,6 +283,7 @@ impl BuildingAllocator {
 
     /// Drops results for removed, occupied, rezoned or reattached parcels during hourly collection.
     pub(crate) fn prune_site_feasibility(&self, zoning: &ZoningSystem) {
+        self.site_feasibility.zoning.prune(zoning);
         self.site_feasibility
             .entries
             .lock()
