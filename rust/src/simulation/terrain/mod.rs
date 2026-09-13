@@ -150,7 +150,7 @@ impl TerrainSystem {
             config.terrain_grid_width(),
             config.terrain_grid_height(),
             config.terrain_cell_m,
-            terrain_chunk_cells_for_config(config),
+            config.terrain_storage_chunk_cells(),
             config.terrain_base_elevation_m,
         )
         .with_render_chunk_span(config.terrain_render_chunk_span_m())
@@ -1030,10 +1030,6 @@ impl TerrainSystem {
             world_z,
         )
     }
-}
-
-fn terrain_chunk_cells_for_config(config: &WorldConfig) -> usize {
-    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
 }
 
 fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {

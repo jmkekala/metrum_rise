@@ -103,6 +103,18 @@ Normal play and debug inspection use the same terrain-anchored focus, initial fr
 and zoom. Debug only extends the orbit pitch to look upward from beneath terrain; the focus
 continues to follow the ground while the camera may pass below it in that upward view.
 Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
+City and world-definition saves commit and close an adjacent temporary SQLite file before
+replacing the destination. A failed write leaves the previous save intact.
+Both city-save and world-definition replacement reset the speed display to paused and close
+building inspectors anchored to the previous world. The first pause toggle then resumes play.
+Speed requests update the controller/HUD only after the Rust API accepts the command into its
+queue. Non-finite values and speeds above 32× are rejected; finite negative values retain pause
+clamping. The controls read the existing ascending steps from Rust's clock, which also owns
+save-speed validation. The `simulation_speed_input_test.gd` regression is externally time-bounded
+because both infinity and huge finite multipliers stalled the old clock loop (`AUDIT-01-C10/C11`).
+Asset-editor camera input also calls the shared Rust `CameraNode` directly, with editor-specific
+bounds and framing; it keeps no second orbit/transform implementation.
+
 City snapshots also store the active `CameraNode` focus point, yaw, pitch, orbit distance, and
 projection in the same SQLite transaction as the world (format version 59). Loading restores
 those controls immediately after world replacement, before terrain/water residency refreshes;
@@ -336,6 +348,37 @@ side instead.
 | Building clicked with no active tool | Building Inspector window |
 | Building clicked while `SelectTool` is active | Building Inspector window |
 
+Selection gestures (`AUDIT-01-F7`) are owned by `SelectTool`, including lane connections and
+crosswalk controls. The inactive duplicate `LaneTool` and its scene node are removed. Tool
+switching and right-click clearing cancel both lane and edge gestures. Release is observed before
+GUI/unhandled routing; if a later handler consumes it, deferred cleanup cancels without applying
+a world edit. A newer press survives that deferred cleanup. Missing world hits clear the ribbon,
+and matching edge/lane IDs only clear the source when the target handle is incoming; an outgoing
+self-loop handle still creates a connection. Clicks use their event position. Each press or drag
+update resolves the terrain hit once, sharing it across control picking.
+
+`selection_gesture_test.gd` sends real viewport input and verifies command identity/counts,
+consumed releases, tool changes, right-click cancellation, self-loop direction, crosswalk precedence,
+source clearing and continued ordinary edge dragging. Five assertions fail against the old tool;
+the corrected tool passes. The consumed-release fixture explicitly verifies interception by a later
+input handler; it does not claim window-system mouse capture or focus-loss coverage.
+
+Five alternating matched headless process pairs use Godot 4.7.2, CPU 0, one Rayon worker and
+`METRUM_DEBUG=0`. A fixed two-lane junction runs ten warmups and nine samples of 256 drag updates.
+The real tool rebuilds its ribbon against controlled simulation responses; assertions outside the
+timer check all 22 vertices, both snapped endpoints and the final connection. Median process
+medians are 232.121 → 232.113 µs per update, while terrain-query calls fall from two to one. This
+isolates GDScript/mesh construction and establishes no whole-frame or native terrain speedup.
+Control lookup remains O(local lane/crosswalk handles), and ribbon geometry has ten fixed segments.
+
+Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script res://tests/selection_gesture_test.gd -- --benchmark-selection-drag`.
+The before runs add `--tool-path=/tmp/metrum-full-audit/selection-gesture-original-source/godot/scripts/tools/select_tool.gd`.
+Both use release extension SHA-256 `f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`.
+Exact script hashes, commands, samples and query counts are in
+`/tmp/metrum-full-audit/selection-gesture-{original,after}-identity.json`, `selection-gesture-bench.json`
+and `selection-gesture-summary.json`. No builds, tests or source mutations overlapped measurement.
+The final scene also corrects its resource load-step count; this metadata is outside the drag fixture.
+
 ---
 
 ### 4. Floating Windows
@@ -388,6 +431,33 @@ residential homes. Business workers and production remain in their own section. 
 the resident family, excluding commuting workers, and refresh with the existing hourly inspector
 update. Farm housing is independent of the number of jobs (`ECON-08`).
 
+Settings recovery and scaling (`AUDIT-01-F8`) use the default UI scale for NaN/infinite input.
+Finite values retain the 0.8–1.5 clamp and 0.05 steps. Failed config reads discard the whole
+partially parsed state before defaults are installed; valid reads preserve unrelated layout values.
+A font/window refresh reads the scale once and passes it through the existing tree traversal and
+size helpers. Later operations still read current settings; there is no persistent settings cache.
+Traversal remains O(scene nodes), with one config read rather than one per styled control plus two
+per sized window. Font rounding/minimum size, viewport bounds and retained larger windows remain.
+
+`ui_settings_test.gd` verifies normalization, reset versus valid-load preservation, invalid-value
+saving, nested font/window sizes and repeated refresh after changing settings. Five assertions fail
+on the baseline. A separate native ConfigFile probe confirms that parse failure retains earlier
+keys (`ui-settings-probe.log`); the regression exercises the shared recovery helper without emitting
+an expected engine parse error in the normal suite.
+
+Five alternating matched headless process pairs use Godot 4.7.2, CPU 0, one Rayon worker and
+`METRUM_DEBUG=0`. Valid settings with scale 1.25 and 16/256/4,096 labels measure one warmup and nine
+refresh samples, excluding setup and assertions. Every label retains font size 16. Median process
+medians change from 316/5,122/87,932 µs to 120/1,749/31,565 µs. This is a UI-refresh measurement,
+not simulation or whole-frame acceptance. Both styles use the same settings reader on valid data;
+the before run loads the original UIStyle script, and the after run uses the corrected script.
+
+Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 godot --headless --path godot --script res://tests/ui_settings_test.gd -- --benchmark-ui-scale`.
+Before runs add `--style-path=/tmp/metrum-full-audit/ui-settings-original-source/godot/scripts/ui/ui_style.gd`.
+Release extension: `f3647c04fc3714b8f84a1f2fa506d3d93417bd47292deb4d22ee13e2b1ad605e`.
+Source hashes, full commands, samples and results are in `/tmp/metrum-full-audit/ui-settings-*`.
+No builds, tests or source changes overlapped accepted measurement.
+
 ---
 
 ### 5. Overlays
@@ -397,6 +467,18 @@ View menu or keyboard shortcuts `7`, `8`, `9`, `0`, and `-`.
 
 Current implementation detail: `terrain.gd` exposes five overlay modes through
 `overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`, `4=Deposits`.
+
+Pollution, noise and desirability refresh after each published daily settlement while open.
+The renderer uses the existing snapshot day, caches successful uploads, and retries failures;
+world replacement and resource editing retain explicit invalidation. Updating image pixels
+reuses existing material bindings. Pixel sampling uses world-space texture centres and authored
+environmental cell spacing. `environment_overlay_test.gd` covers cadence/cache lifecycle and real
+RGBA image uploads across world-size changes (`AUDIT-01-F6/G4`).
+Environmental intensity controls the terrain blend through the image's alpha channel, and the
+texture clamps at world edges. `terrain_overlay_shader_test.gd` verifies actual rendered pixels
+(`AUDIT-01-G5`). `./run.sh --test` runs this additional regression when `xvfb-run` is installed;
+otherwise it explicitly reports the rendering check as skipped. It can also run from a graphical
+session with `godot --path godot --rendering-method gl_compatibility --script res://tests/terrain_overlay_shader_test.gd`.
 Gameplay keyboard shortcuts expose all five values through `input_manager.gd`; WorldEditor also
 selects mode `4` while the coal-resource tools are active.
 
@@ -554,7 +636,6 @@ godot/
       move_tool.gd
       select_tool.gd
       cul_de_sac_tool.gd
-      lane_tool.gd
       network_tool.gd
       zoning_tool.gd
     renderers/                    Thin render bridges — read Rust state, update meshes

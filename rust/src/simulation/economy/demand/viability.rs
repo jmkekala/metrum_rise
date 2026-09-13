@@ -11,15 +11,13 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::households::{
-    HouseholdSystem, building_operating_buffer_days, building_staffing_ratio,
-    building_total_output_inventory, industrial_input_coverage_factor,
-    industrial_output_headroom_factor, level_tuning_value,
+    building_operating_buffer_days, building_staffing_ratio, building_total_output_inventory,
+    industrial_input_coverage_factor, industrial_output_headroom_factor, level_tuning_value,
 };
 use crate::simulation::zoning::ZoneType;
 
 pub(super) fn building_is_viable_for_upgrade(
     allocator: &BuildingAllocator,
-    households: &HouseholdSystem,
     catalog: &RuntimeEconomyCatalog,
     economy_tuning: &RuntimeEconomyTuning,
     residential_occupants: &ResidentialOccupantSnapshot,
@@ -35,7 +33,6 @@ pub(super) fn building_is_viable_for_upgrade(
     match building.zone_type {
         ZoneType::Residential => residential_upgrade_viable(
             allocator,
-            households,
             economy_tuning,
             residential_occupants,
             building_idx,
@@ -61,12 +58,10 @@ pub(super) fn building_is_viable_for_upgrade(
 
 pub(super) fn building_is_viable_for_downgrade(
     allocator: &BuildingAllocator,
-    households: &HouseholdSystem,
     catalog: &RuntimeEconomyCatalog,
     economy_tuning: &RuntimeEconomyTuning,
     residential_occupants: &ResidentialOccupantSnapshot,
     building_idx: usize,
-    _target_asset_id: &str,
 ) -> bool {
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
@@ -77,7 +72,6 @@ pub(super) fn building_is_viable_for_downgrade(
     match building.zone_type {
         ZoneType::Residential => residential_downgrade_viable(
             allocator,
-            households,
             economy_tuning,
             residential_occupants,
             building_idx,
@@ -94,7 +88,6 @@ pub(super) fn building_is_viable_for_downgrade(
 
 pub(super) fn residential_upgrade_viable(
     allocator: &BuildingAllocator,
-    households: &HouseholdSystem,
     economy_tuning: &RuntimeEconomyTuning,
     residential_occupants: &ResidentialOccupantSnapshot,
     building_idx: usize,
@@ -140,13 +133,11 @@ pub(super) fn residential_upgrade_viable(
         return false;
     }
 
-    let _ = households;
     true
 }
 
 pub(super) fn residential_downgrade_viable(
     allocator: &BuildingAllocator,
-    households: &HouseholdSystem,
     economy_tuning: &RuntimeEconomyTuning,
     residential_occupants: &ResidentialOccupantSnapshot,
     building_idx: usize,
@@ -174,7 +165,6 @@ pub(super) fn residential_downgrade_viable(
         return false;
     }
 
-    let _ = households;
     true
 }
 

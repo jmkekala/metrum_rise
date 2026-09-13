@@ -210,46 +210,71 @@ fn explicit_service_preview_rejects_site_overlapping_nearby_road() {
 }
 
 #[test]
-fn zoning_projection_overlaps_explicit_service_site_is_blocked() {
-    let map_cfg = WorldConfig::default();
-    let mut zoning = ZoningSystem::new(&map_cfg);
+fn zoning_reserves_full_explicit_lot_across_chunk_boundaries() {
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
+    use crate::simulation::zoning::parcels::geometry_from_attachment;
+
+    let config = WorldConfig::new(2_000.0, 2_000.0, 10.0, 10.0);
     let mut graph = RegionGraph::new();
-    let mut network = TransitNetwork::new();
-    let mut allocator = BuildingAllocator::new();
-    let asset_id = register_test_power_service_asset(&mut allocator, "base", "building.power.test");
+    let points = vec![
+        Vector3::new(-900.0, 0.0, 25.0),
+        Vector3::new(900.0, 0.0, 25.0),
+    ];
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(points[1], NodeType::Junction);
+    let edge = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        width: 7.0,
+        physical_length: 1_800.0,
+        geometry: points.clone(),
+        physical_geometry: points,
+        ..Edge::default()
+    });
+    for center_x in [-510.0, 510.0] {
+        let mut allocator = BuildingAllocator::new();
+        let asset_id = register_test_power_service_asset(&mut allocator, "test", "power");
+        let mut manifest = allocator.registry.get(&asset_id).unwrap().manifest.clone();
+        let building_data = manifest.building.as_mut().unwrap();
+        building_data.lot_width_cells = 20;
+        building_data.lot_depth_cells = 4;
+        manifest.mesh_parts[0].imported_bounds = Some([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
+        manifest.validate().unwrap();
+        allocator.registry.register("test", manifest, String::new());
+        let mut building = indexed_test_building(asset_id, ZoneType::None, 0);
+        building.center_x = center_x;
+        building.center_y = 50.0;
+        building.width_cells = 20;
+        building.depth_cells = 4;
+        building.edge_idx = edge;
+        building.frontage_t = (center_x + 900.0) / 1_800.0;
+        building.facing_dir = Vector2::new(0.0, -1.0);
+        building.side = -1;
+        building.side_offset = 5.0;
+        allocator.buildings.push(building);
+        allocator.rebuild_building_site_clients(config.zone_cell_m);
+        assert!(
+            allocator.max_site_radius_m < 10.0,
+            "the asset's support occupies only the centre of its full lot"
+        );
 
-    network.add_road(
-        &mut graph,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        1,
-        1,
-        crate::simulation::network::types::EdgeClass::Standard,
-        &mut zoning,
-        &mut allocator,
-    );
-    let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
-    let tuning =
-        crate::simulation::economy::definitions::load_runtime_economy_tuning().expect("tuning");
-
-    allocator
-        .execute_explicit_service_placement(
-            &asset_id,
-            Vector2::new(50.0, 8.0),
-            map_cfg.zone_cell_m,
-            &graph,
-            &network.road_surface,
-            &terrain,
-            &catalog,
-            &tuning,
-        )
-        .expect("flat service placement should commit");
-    let parcel_geometry = zoning
-        .preview_parcel_at(50.0, 8.0, 20.0, 20.0, &graph)
-        .expect("zoning projection should still resolve geometrically");
-
-    assert!(
-        allocator.parcel_geometry_overlaps_explicit_site(&parcel_geometry),
-        "explicit service lot should reserve land against zoning placement"
-    );
+        // The lot is 200 m wide. The overlapping parcel lies across the 512 m chunk boundary;
+        // the outer parcel touches its edge and must remain legal under the existing tolerance.
+        for indexed in [false, true] {
+            if indexed {
+                allocator.prepare_building_site_query_index(config.zone_cell_m);
+            }
+            for (offset, expected) in [(40.0, true), (110.0, false)] {
+                let x = center_x + center_x.signum() * offset;
+                let geometry =
+                    geometry_from_attachment(&graph, edge, -1, (x + 900.0) / 1_800.0, 20.0, 20.0);
+                assert_eq!(
+                    allocator.parcel_geometry_overlaps_explicit_site(&geometry, config.zone_cell_m),
+                    expected,
+                    "centre={center_x}, offset={offset}, indexed={indexed}"
+                );
+            }
+        }
+    }
 }

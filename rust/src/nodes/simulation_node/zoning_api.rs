@@ -821,7 +821,7 @@ impl SimulationNode {
         if let Some(geometry) = core.zoning.parcel_geometry_at(world_x, world_z) {
             if core
                 .allocator
-                .parcel_geometry_overlaps_explicit_site(&geometry)
+                .parcel_geometry_overlaps_explicit_site(&geometry, core.config.zone_cell_m)
             {
                 return VarDictionary::new();
             }
@@ -838,7 +838,7 @@ impl SimulationNode {
         };
         if core
             .allocator
-            .parcel_geometry_overlaps_explicit_site(&geometry)
+            .parcel_geometry_overlaps_explicit_site(&geometry, core.config.zone_cell_m)
         {
             return VarDictionary::new();
         }

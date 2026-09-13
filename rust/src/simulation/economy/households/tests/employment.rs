@@ -6,6 +6,74 @@ use super::support::*;
 use super::*;
 
 #[test]
+#[ignore = "manual matched release timing of payroll plus final money publication"]
+fn benchmark_payroll_phase() {
+    use std::{hint::black_box, time::Instant};
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    for count in [1_024_usize, 8_192, 65_536] {
+        let mut allocator = BuildingAllocator::new();
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, "test:home", 0.0));
+        let capacity = profile.worker_capacity as usize;
+        for _ in 0..count.div_ceil(capacity) {
+            let mut factory = make_building(30.0, ZoneType::Industrial, "test:factory", 0.0);
+            factory.operating_budget = 1_000_000.0;
+            for input in &profile.inputs {
+                factory.set_inventory_units(input.resource_runtime_id, 1_000.0);
+            }
+            allocator.buildings.push(factory);
+        }
+        let mut agents = AgentSystem::new();
+        let mut households = HouseholdSystem::new();
+        for idx in 0..count {
+            households
+                .households
+                .push(make_household(0, 1, 1_000.0, 5.0));
+            let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
+            agents.household_id[agent] = idx;
+            let work = 1 + idx / capacity;
+            agents.assign_work_building(agent, work, 0);
+            allocator.buildings[work].worker_count += 1;
+        }
+        let logistics = ShipmentSystem::new();
+        let mut treasury = 0.0;
+        let mut phase = || {
+            black_box(households.pay_daily_wages_with_service_funding(
+                &mut agents,
+                &mut allocator,
+                0.12,
+                &mut treasury,
+                &[],
+                &logistics,
+                true,
+            ));
+            households.sync_agent_money_from_households(&mut agents);
+        };
+        phase();
+        let mut samples = [0.0; 11];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..4 {
+                phase();
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
+        }
+        assert!(agents.work_building.iter().all(|&work| work != usize::MAX));
+        assert!(
+            agents
+                .money
+                .iter()
+                .zip(&households.households)
+                .all(|(&money, home)| money == home.budget)
+        );
+        samples.sort_by(f64::total_cmp);
+        eprintln!("payroll_phase workers={count} median_ms={:.3}", samples[5]);
+    }
+}
+
+#[test]
 fn no_car_agent_can_take_walk_reachable_job() {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -58,7 +126,7 @@ fn no_car_agent_can_take_walk_reachable_job() {
     agents.current_building[agent] = 0;
     agents.has_car[agent] = false;
 
-    households.recount_worker_assignments(&agents, &mut allocator);
+    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[agent], 1);
@@ -113,7 +181,7 @@ fn children_and_elders_do_not_take_jobs() {
     agents.transit[elder] = TRANSIT_IN_BUILDING;
     agents.current_building[elder] = 0;
 
-    households.recount_worker_assignments(&agents, &mut allocator);
+    households.rebuild_household_and_worker_counts(&agents, &mut allocator);
     households.assign_agent_workplaces(&mut agents, &mut allocator, &network, &graph);
 
     assert_eq!(agents.work_building[child], usize::MAX);

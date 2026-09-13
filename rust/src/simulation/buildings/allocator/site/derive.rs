@@ -86,18 +86,29 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
-        let client = self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
         if self.building_sites.len() != self.buildings.len() {
             self.rebuild_building_site_clients(zone_cell_m);
-        } else if let Some(slot) = self.building_sites.get_mut(building_idx) {
-            *slot = client;
-            self.recompute_max_site_radius_m();
+        } else {
+            let client =
+                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
+            let radius_m = site_radius_m(&client);
+            // Only shrinking a previous maximum needs a city-wide reduction. Otherwise
+            // radius maintenance examines this site's vertices and keeps the exact bound.
+            let maximum_decreased = radius_m < self.max_site_radius_m
+                && site_radius_m(&self.building_sites[building_idx]) == self.max_site_radius_m;
+            self.building_sites[building_idx] = client;
+            if maximum_decreased {
+                self.recompute_max_site_radius_m();
+            } else {
+                self.max_site_radius_m = self.max_site_radius_m.max(radius_m);
+            }
         }
     }
 
     pub(crate) fn push_building_site_client(&mut self, building_idx: usize, zone_cell_m: f32) {
-        let client = self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
         if self.building_sites.len() == building_idx {
+            let client =
+                self.derive_building_site_client(&self.buildings[building_idx], zone_cell_m);
             self.max_site_radius_m = self.max_site_radius_m.max(site_radius_m(&client));
             self.building_sites.push(client);
         } else {
@@ -105,12 +116,25 @@ impl BuildingAllocator {
         }
     }
 
+    /// Removes the swapped building's site record and preserves the exact spatial-query radius.
+    pub(crate) fn remove_building_site_client(&mut self, building_idx: usize) {
+        let Some(site) = self.building_sites.get(building_idx) else {
+            return;
+        };
+        let removed_maximum = site_radius_m(site) == self.max_site_radius_m;
+        self.building_sites.swap_remove(building_idx);
+        if removed_maximum {
+            self.recompute_max_site_radius_m();
+        }
+    }
+
     pub(crate) fn recompute_max_site_radius_m(&mut self) {
         self.max_site_radius_m = self
             .building_sites
-            .iter()
+            .par_iter()
+            .with_min_len(4_096)
             .map(site_radius_m)
-            .fold(0.0, f32::max);
+            .reduce(|| 0.0, f32::max);
     }
 
     pub(super) fn derive_building_site_client(

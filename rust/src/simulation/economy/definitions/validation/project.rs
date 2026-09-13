@@ -2,7 +2,7 @@
 
 //! Project-level authored economy validation orchestration.
 
-use super::common::duplicate_ids;
+use super::common::{duplicate_ids, validate_range};
 use super::messages::{ValidationMessage, error};
 use super::runtime_tuning::validate_runtime_tuning;
 use super::scenario::validate_scenario;
@@ -84,6 +84,24 @@ pub(in crate::simulation::economy::definitions) fn validate_project(
     validate_runtime_tuning_messages(&project.runtime_tuning, &mut messages);
 
     for controller in &project.controllers {
+        for (field, value, minimum, maximum) in [
+            ("default_weight", controller.default_weight, 0.0, 1.0),
+            ("min_multiplier", controller.min_multiplier, 0.0, f32::MAX),
+            (
+                "max_multiplier",
+                controller.max_multiplier,
+                controller.min_multiplier,
+                f32::MAX,
+            ),
+        ] {
+            if let Err(message) = validate_range(value, minimum, maximum, field) {
+                messages.push(error(
+                    "invalid_controller_parameter",
+                    format!("controller.{}.{}", controller.id, field),
+                    message,
+                ));
+            }
+        }
         if controller.display_name.trim().is_empty() {
             messages.push(error(
                 "missing_controller_display_name",
@@ -101,10 +119,23 @@ pub(in crate::simulation::economy::definitions) fn validate_project(
     }
 
     for scenario in &project.scenarios {
+        for resource in &scenario.owa_import_resources {
+            if !project.resources.iter().any(|entry| &entry.id == resource) {
+                messages.push(error(
+                    "unknown_import_resource",
+                    format!("scenario.{}", scenario.id),
+                    format!("OWA import resource '{resource}' is not declared"),
+                ));
+            }
+        }
         validate_scenario(scenario, &profile_map, &controller_map, &mut messages);
     }
 
-    if let Err(err) = compile_runtime_catalog(&project.profiles, &project.runtime_tuning) {
+    if let Err(err) = compile_runtime_catalog(
+        &project.profiles,
+        &project.resources,
+        &project.runtime_tuning,
+    ) {
         messages.push(error("invalid_runtime_catalog", "project.profiles", err));
     }
 

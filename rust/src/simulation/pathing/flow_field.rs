@@ -2,20 +2,10 @@
 
 //! Flow-field routing: multi-source reverse Dijkstra per zone type.
 //!
-//! A [`FlowField`] answers "from any node V, which node should I move to next
-//! in order to reach the nearest building of a given zone type?" in O(1) per
-//! agent per step. This replaces per-agent CCH `find_path` calls for routine
-//! work/shop trips, reducing per-tick pathfinding cost from O(A × CCH) to
-//! O(M × (V+E) log V) where M ≤ 6 (zone types) and A ≫ V.
-//!
-//! Flow fields are rebuilt lazily when their zone type is marked dirty.
-//! Dirty flags are set by topology changes and by building spawns/removals.
-//!
-//! ## IDM hook
-//!
-//! [`FlowField::look_ahead`] returns the next N nodes from any position by
-//! chaining `next_node` lookups. IDM can call this cheaply to anticipate the
-//! upcoming lane sequence for gap-acceptance and merge decisions.
+//! Each field stores the next node and nearest destination building for one zone/mode.
+//! Fields provide an optional path for an already selected trip; CCH remains authoritative.
+//! Topology edits and building changes mark the affected fields dirty for the next tick.
+//! Reverse Dijkstra stages compact incoming edges for cache locality during the search.
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -69,7 +59,7 @@ impl FlowField {
     /// `sources` is a slice of `(frontage_node, building_index)` pairs — one
     /// per building of the target zone type. All sources start at cost 0.
     ///
-    /// Complexity: O((V + E) log V).
+    /// Complexity: O((V + E) log V), with O(V + E) temporary storage plus the search heap.
     pub fn build(sources: &[(u32, usize)], graph: &RegionGraph, flags: u8) -> Self {
         let node_count = graph.node_count();
         let mut dist = vec![f32::INFINITY; node_count];
@@ -77,28 +67,22 @@ impl FlowField {
         let mut nearest_building = vec![usize::MAX; node_count];
         let mut nearest_source_node = vec![u32::MAX; node_count];
 
-        // Reverse adjacency: rev_adj[u] = [(v, cost)] meaning
-        // "the original graph has edge v → u with this cost, so in the
-        //  reverse graph u → v costs the same."
-        // When we process u from the heap, we update v: from v, go to u.
+        // Keep compact incoming endpoints/costs together during Dijkstra. Direct traversal of
+        // graph adjacency reads the large Edge records in search order and was slower on large
+        // matched grids; this temporary table is a measured locality cache, not persistent state.
         let mut rev_adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); node_count];
         for edge in graph.edges() {
-            if edge.deleted {
+            if edge.deleted || edge.allowed_types & flags == 0 {
                 continue;
             }
-            if (edge.allowed_types & flags) == 0 {
-                continue;
-            }
+            let start = edge.start_node as usize;
+            let end = edge.end_node as usize;
             let cost = edge.base_cost.max(1e-6);
-            let s = edge.start_node as usize;
-            let e = edge.end_node as usize;
-            if edge.fwd_lanes > 0 && e < node_count && s < node_count {
-                // Original forward edge: s → e.  Reverse: from e, update s.
-                rev_adj[e].push((edge.start_node, cost));
+            if edge.traversal_flags(true) & flags != 0 {
+                rev_adj[end].push((edge.start_node, cost));
             }
-            if edge.bkw_lanes > 0 && s < node_count && e < node_count {
-                // Original backward edge: e → s.  Reverse: from s, update e.
-                rev_adj[s].push((edge.end_node, cost));
+            if edge.traversal_flags(false) & flags != 0 {
+                rev_adj[start].push((edge.end_node, cost));
             }
         }
 
@@ -110,10 +94,7 @@ impl FlowField {
                 continue;
             }
             let better_source = 0.0 < dist[fn_idx]
-                || (dist[fn_idx] == 0.0
-                    && (building_idx < nearest_building[fn_idx]
-                        || (building_idx == nearest_building[fn_idx]
-                            && source_node < nearest_source_node[fn_idx])));
+                || (dist[fn_idx] == 0.0 && building_idx < nearest_building[fn_idx]);
             if better_source {
                 dist[fn_idx] = 0.0;
                 // At a source node: you're already there, no next hop needed.
@@ -165,15 +146,6 @@ impl FlowField {
         }
     }
 
-    /// Returns the next node to move to from `node`, or `u32::MAX` if unreachable.
-    #[inline]
-    pub fn next_hop(&self, node: u32) -> u32 {
-        self.next_node
-            .get(node as usize)
-            .copied()
-            .unwrap_or(u32::MAX)
-    }
-
     /// Builds a path `Vec<u32>` from `from_node` to the nearest destination by
     /// following `next_node` hops. Returns `None` if `from_node` is unreachable
     /// or if the chain loops (cycle guard via `max_hops`).
@@ -201,29 +173,6 @@ impl FlowField {
         }
         // Exceeded max_hops without reaching a destination.
         None
-    }
-
-    /// Returns up to `hops` next nodes from `node` by chaining `next_node` lookups.
-    ///
-    /// Used by IDM for multi-hop lane lookahead: pass the result to the car-following
-    /// model to determine which edges the agent will traverse in the next few seconds.
-    /// Returns an empty Vec if the agent is at a source node or `node` is unreachable.
-    pub fn look_ahead(&self, node: u32, hops: usize) -> Vec<u32> {
-        let mut result = Vec::with_capacity(hops);
-        let mut current = node;
-        for _ in 0..hops {
-            let next = self
-                .next_node
-                .get(current as usize)
-                .copied()
-                .unwrap_or(u32::MAX);
-            if next == u32::MAX || next == current {
-                break;
-            }
-            result.push(next);
-            current = next;
-        }
-        result
     }
 }
 
@@ -367,60 +316,39 @@ mod tests {
         }
     }
 
-    /// Linear graph: n0 — n1 — n2 — n3 (dest)
-    /// Flow field from n3 should route: n0→n1→n2→n3, n1→n2→n3, n2→n3.
-    #[test]
-    fn test_flow_field_linear_chain() {
-        let mut g = RegionGraph::new();
-        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = g.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-        let n3 = g.add_node(Vector3::new(150.0, 0.0, 0.0), NodeType::Junction);
-        g.add_edge(make_edge(n0, n1, 1.0));
-        g.add_edge(make_edge(n1, n2, 1.0));
-        g.add_edge(make_edge(n2, n3, 1.0));
-        g.rebuild_adjacency_list();
-
-        let sources = vec![(n3, 0usize)];
-        let ff = FlowField::build(&sources, &g, TransitFlags::CAR);
-
-        assert_eq!(ff.next_hop(n0), n1, "n0 should route to n1");
-        assert_eq!(ff.next_hop(n1), n2, "n1 should route to n2");
-        assert_eq!(ff.next_hop(n2), n3, "n2 should route to n3");
-        assert_eq!(ff.nearest_building[n0 as usize], 0);
+    fn linear_graph(node_count: u32) -> RegionGraph {
+        let mut graph = RegionGraph::new();
+        for node in 0..node_count {
+            graph.add_node(
+                Vector3::new(node as f32 * 50.0, 0.0, 0.0),
+                NodeType::Junction,
+            );
+            if node > 0 {
+                graph.add_edge(make_edge(node - 1, node, 1.0));
+            }
+        }
+        graph
     }
 
     /// Build path from n0 should give [n0, n1, n2, n3].
     #[test]
     fn test_flow_field_build_path() {
-        let mut g = RegionGraph::new();
-        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = g.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-        let n3 = g.add_node(Vector3::new(150.0, 0.0, 0.0), NodeType::Junction);
-        g.add_edge(make_edge(n0, n1, 1.0));
-        g.add_edge(make_edge(n1, n2, 1.0));
-        g.add_edge(make_edge(n2, n3, 1.0));
-        g.rebuild_adjacency_list();
+        let g = linear_graph(4);
+        let [n0, n1, n2, n3] = [0, 1, 2, 3];
 
         let ff = FlowField::build(&[(n3, 0)], &g, TransitFlags::CAR);
         let path = ff.build_path(n0, 100).expect("path should exist");
         assert_eq!(path, vec![n0, n1, n2, n3]);
+        assert_eq!(ff.nearest_building, vec![0; 4]);
+        assert!(ff.build_path(n0, 2).is_none());
+        assert!(ff.build_path(4, 100).is_none());
     }
 
-    /// Multi-source: two destinations n2 and n3. From n0 via equal-cost paths,
-    /// it should route to the nearer one (n2 via n0→n1→n2 costs 2, n3 via n0→n1→n2→n3 costs 3).
+    /// Multi-source chains select the nearer destination before comparing building IDs.
     #[test]
     fn test_flow_field_multi_source_picks_nearest() {
-        let mut g = RegionGraph::new();
-        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = g.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-        let n3 = g.add_node(Vector3::new(150.0, 0.0, 0.0), NodeType::Junction);
-        g.add_edge(make_edge(n0, n1, 1.0));
-        g.add_edge(make_edge(n1, n2, 1.0));
-        g.add_edge(make_edge(n2, n3, 1.0));
-        g.rebuild_adjacency_list();
+        let g = linear_graph(4);
+        let [n0, n2, n3] = [0, 2, 3];
 
         // Two sources: building 0 at n2, building 1 at n3.
         let sources = vec![(n2, 0usize), (n3, 1usize)];
@@ -443,50 +371,135 @@ mod tests {
         g.add_edge(make_edge(n0, n2, 1.0));
         g.rebuild_adjacency_list();
 
-        let ff = FlowField::build(&[(n1, 1usize), (n2, 0usize)], &g, TransitFlags::CAR);
-        assert_eq!(ff.nearest_building[n0 as usize], 0);
-        let path = ff.build_path(n0, 100).unwrap();
-        assert_eq!(*path.last().unwrap(), n2);
-    }
-
-    /// look_ahead from n0 with 3 hops should return [n1, n2, n3].
-    #[test]
-    fn test_flow_field_look_ahead() {
-        let mut g = RegionGraph::new();
-        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = g.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-        let n3 = g.add_node(Vector3::new(150.0, 0.0, 0.0), NodeType::Junction);
-        g.add_edge(make_edge(n0, n1, 1.0));
-        g.add_edge(make_edge(n1, n2, 1.0));
-        g.add_edge(make_edge(n2, n3, 1.0));
-        g.rebuild_adjacency_list();
-
-        let ff = FlowField::build(&[(n3, 0)], &g, TransitFlags::CAR);
-        let ahead = ff.look_ahead(n0, 3);
-        assert_eq!(ahead, vec![n1, n2, n3]);
-    }
-
-    /// Timing test: FlowField on a 1000-node linear chain must build in < 5 ms.
-    #[test]
-    fn test_flow_field_build_under_5ms_on_1000_nodes() {
-        let mut g = RegionGraph::new();
-        let mut prev = g.add_node(Vector3::ZERO, NodeType::Junction);
-        for i in 1..1000u32 {
-            let n = g.add_node(Vector3::new(i as f32 * 10.0, 0.0, 0.0), NodeType::Junction);
-            g.add_edge(make_edge(prev, n, 1.0));
-            prev = n;
+        for (mut sources, expected_end) in [([(n1, 1), (n2, 0)], n2), ([(n1, 0), (n2, 0)], n1)] {
+            for _ in 0..2 {
+                let ff = FlowField::build(&sources, &g, TransitFlags::CAR);
+                assert_eq!(ff.nearest_building[n0 as usize], 0);
+                assert_eq!(ff.build_path(n0, 100).unwrap(), vec![n0, expected_end]);
+                sources.reverse();
+            }
         }
-        g.rebuild_adjacency_list();
+    }
 
-        let sources = vec![(prev, 0usize)]; // dest = last node
-        let start = std::time::Instant::now();
-        let _ff = FlowField::build(&sources, &g, TransitFlags::CAR);
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed.as_millis() < 5,
-            "FlowField build on 1000-node graph took {}ms, expected < 5ms",
-            elapsed.as_millis()
-        );
+    #[test]
+    fn flow_field_respects_mode_directions() {
+        for (primary_type, fwd, bkw) in [
+            (TransitType::Road, 1, 0),
+            (TransitType::Road, 0, 1),
+            (TransitType::Foot, 0, 0),
+        ] {
+            let mut graph = RegionGraph::new();
+            graph.add_node(Vector3::ZERO, NodeType::Junction);
+            graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+            let mut edge = make_edge(0, 1, 1.0);
+            edge.primary_type = primary_type;
+            edge.fwd_lanes = fwd;
+            edge.bkw_lanes = bkw;
+            if primary_type == TransitType::Foot {
+                edge.allowed_types = TransitFlags::FOOT;
+            }
+            graph.add_edge(edge);
+            graph.rebuild_adjacency_list();
+            for mode in [TransitFlags::FOOT, TransitFlags::CAR] {
+                for (start, end, vehicle_lanes) in [(0, 1, fwd), (1, 0, bkw)] {
+                    let field = FlowField::build(&[(end, 7)], &graph, mode);
+                    let reachable = mode == TransitFlags::FOOT || vehicle_lanes > 0;
+                    assert_eq!(
+                        field.build_path(start, 3),
+                        reachable.then_some(vec![start, end]),
+                        "{primary_type:?} lanes={fwd}/{bkw} mode={mode} {start}->{end}"
+                    );
+                    assert_eq!(
+                        field.nearest_building[start as usize],
+                        if reachable { 7 } else { usize::MAX }
+                    );
+                }
+            }
+            graph.edge_mut(0).deleted = true;
+            graph.rebuild_adjacency_list();
+            for mode in [TransitFlags::FOOT, TransitFlags::CAR] {
+                assert!(
+                    FlowField::build(&[(1, 7)], &graph, mode)
+                        .build_path(0, 3)
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "matched release flow-field build benchmark; excludes graph setup and verification"]
+    fn benchmark_flow_field_build() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for side in [32_u32, 100, 316] {
+            let setup = Instant::now();
+            let mut graph = RegionGraph::new();
+            for y in 0..side {
+                for x in 0..side {
+                    graph.add_node(
+                        Vector3::new(x as f32 * 50.0, 0.0, y as f32 * 50.0),
+                        NodeType::Junction,
+                    );
+                }
+            }
+            for y in 0..side {
+                for x in 0..side {
+                    let node = y * side + x;
+                    if x + 1 < side {
+                        graph.add_edge(make_edge(node, node + 1, 1.0));
+                    }
+                    if y + 1 < side {
+                        graph.add_edge(make_edge(node, node + side, 1.0));
+                    }
+                }
+            }
+            graph.rebuild_adjacency_list();
+            let setup_us = setup.elapsed().as_secs_f64() * 1e6;
+            let sources = [(0, 7), (side * side - 1, 3)];
+            let fingerprint = |field: &FlowField| {
+                let mut hash = 0xcbf29ce484222325_u64;
+                for (node, (&next, &building)) in field
+                    .next_node
+                    .iter()
+                    .zip(&field.nearest_building)
+                    .enumerate()
+                {
+                    let x = node as u32 % side;
+                    let y = node as u32 / side;
+                    let expected = if x + y < side - 1 { 7 } else { 3 };
+                    assert_eq!(building, expected);
+                    let dest = if building == 7 { 0 } else { side * side - 1 };
+                    let remaining = x.abs_diff(dest % side) + y.abs_diff(dest / side);
+                    if remaining == 0 {
+                        assert_eq!(next, node as u32);
+                    } else {
+                        let next_remaining = (next % side).abs_diff(dest % side)
+                            + (next / side).abs_diff(dest / side);
+                        assert_eq!(next_remaining + 1, remaining);
+                    }
+                    for value in [next as u64, building as u64] {
+                        hash = (hash ^ value).wrapping_mul(0x100000001b3);
+                    }
+                }
+                hash
+            };
+            let expected = fingerprint(&FlowField::build(&sources, &graph, TransitFlags::CAR));
+            let mut samples = Vec::with_capacity(21);
+            for _ in 0..21 {
+                let begin = Instant::now();
+                let field =
+                    FlowField::build(black_box(&sources), black_box(&graph), TransitFlags::CAR);
+                samples.push(begin.elapsed().as_secs_f64() * 1e6);
+                assert_eq!(fingerprint(&field), expected);
+                black_box(field);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "FLOW_BUILD_BENCH {}",
+                serde_json::json!({"side":side,"nodes":graph.node_count(),"edges":graph.edge_count(),"samples":samples.len(),"median_us":samples[samples.len()/2],"setup_us":setup_us,"fingerprint":format!("{expected:016x}")})
+            );
+        }
     }
 }

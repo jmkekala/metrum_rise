@@ -72,6 +72,11 @@ Current defaults:
 Current deterministic rules:
 
 - `WorldConfig` is saved and loaded as part of every city save.
+- City saves, world definitions and blank-world creation validate the same metadata before
+  allocating world storage. Invalid spacing is rejected rather than clamped. Terrain spacing
+  must meet the runtime minimum; terrain/environment/chunk dimensions must fit signed grid
+  coordinates and dense-buffer allocation layouts. Environmental grids must contain at least
+  one cell per axis. These structural checks do not impose a fixed world-size or RAM budget.
 - old save migration is intentionally not required; version mismatch is a hard rejection.
 - authored terrain chunk count is:
   - `terrain_chunk_columns = ceil(width_m / terrain_chunk_m)`
@@ -88,14 +93,157 @@ Current deterministic rule:
 - `water.height = terrain_grid_height()`
 - `terrain_grid_width = round(width_m / terrain_cell_m) + 1`
 - `terrain_grid_height = round(height_m / terrain_cell_m) + 1`
-- runtime sparse chunk span in cells is:
-  - `ceil(terrain_chunk_m / terrain_cell_m)`
+- runtime sparse chunk span in cells comes from `WorldConfig.terrain_storage_chunk_cells()`:
+  - `max(1, ceil(terrain_chunk_m / terrain_cell_m))` (shared by terrain, water and deposits)
 
 Implication:
 
 - terrain sample density is now configurable independently from zoning density
 - runtime world-space XZ is now canonical metres
 - terrain, zoning, and environment each use their own cell spacing explicitly
+
+Environmental pollution and noise keep their existing `DataGrid<f32>` buffers. The daily order
+is pollution, noise, then desirability. Their shared four-neighbor diffusion kernel preserves
+left/right/up/down summation order and adds today's emissions before the existing 0–100 limit.
+Pollution retains own/neighbor weights `0.60/0.40` and retention `0.995`; noise uses `0.50/0.50`
+and `0.90`. The kernel expands separately for each field so Rayon receives constant coefficients.
+Desirability reads the two resulting fields; it has no zoning dependency.
+
+Environmental bilinear sampling clamps to the edge and interpolates along the remaining axis
+for single-row/column grids; a single cell stays constant and an empty grid returns zero
+(`AUDIT-01-G3`). Five CPU-0 matched release pairs (24 configured Rayon workers; sampling itself
+is serial) measure 1,048,576 queries per sample, 11 samples per process:
+1 × 1 costs 5.671 → 1.059 ms; 1 × 512 costs 5.672 → 2.798 ms; 512 × 1 costs
+5.769 → 2.711 ms; 512 × 512 costs 6.548 → 6.165 ms. The ordinary 2D interpolation
+path is unchanged. Command: the recorded release test binary with
+`--exact simulation::grid::data_grid::tests::benchmark_bilinear_grid_sampling --ignored --nocapture`.
+Identities and raw results are under `/tmp/metrum-full-audit/grid-sampling-*`. This isolates
+sampling arithmetic and does not measure whole-overlay rasterization or GPU upload.
+
+Environmental RGBA pixels sample their world-space texture centres through
+`WorldConfig.world_to_env_grid`, so rounded source-grid dimensions cannot stretch cell spacing
+(`AUDIT-01-G4`). Texture UVs cover the actual terrain-render extent, which can differ from the
+authored world dimensions after terrain-sample rounding; environmental coordinates retain the
+authored origin and spacing. The bridge uses the same terrain extent as the published shader
+snapshot (`AUDIT-01-G4` follow-up). The bridge retains terrain-sized images, existing colors, the 0.01 transparent
+threshold and the 0–200 alpha scale for 0–100 field values. All three getters share dimensions
+and image conversion. Raster rows use Rayon; column coordinates are calculated once and reused.
+Work is O(W×H), with one RGBA output and O(W) temporary coordinates, no per-pixel allocation or
+persistent duplicate state. The small O(W) setup stays serial to avoid a second parallel dispatch.
+
+Five matched unprofiled release process pairs on eight physical P cores
+(`RAYON_NUM_THREADS=8`, affinity `0,2,4,6,8,10,12,14`) measure complete CPU raster generation,
+including allocations and destruction:
+
+| Image | Before (ms) | Corrected (ms) |
+| --- | ---: | ---: |
+| 129 × 129 | 0.113324 | 0.027582 |
+| 1025 × 1025 | 7.056572 | 1.030466 |
+| 2001 × 2001 | 26.893081 | 3.880396 |
+
+Three CPU-0 single-worker pairs cost 0.113 → 0.125 ms, 7.065 → 7.336 ms, and
+26.941 → 27.957 ms, respectively: about 4% additional large-image cost for correct world mapping.
+The first corrected version recomputed column coordinates in every row and cost about 24% extra;
+that version is retained only as a measured intermediate (`overlay-raster-matched-bench.json`).
+Column reuse preserves its exact result bytes across 1/8/24 workers. Three mixed-core 24-worker
+pairs also improve the larger workloads, but physical-core comparisons above are the primary evidence.
+
+Command: the recorded release test binary with
+`--exact nodes::sim::render::zoning::tests::benchmark_environmental_overlay_raster --ignored --nocapture --test-threads=1`.
+The deterministic source fields include zero/negative, intermediate and saturated values;
+three warmups precede 21 samples of four rasterizations each. No world-constructor work is timed.
+Identities/source snapshots are `overlay-raster-{before,columns}-*`, and raw results are
+`/tmp/metrum-full-audit/overlay-columns-matched-bench.json`. Corrected alignment intentionally
+changes old pixels; checksums match within each build across all repetitions/worker counts.
+This CPU test excludes the Godot array bridge and GPU texture upload.
+
+The later explicit-terrain-extent correction retains comparable raster cost: five eight-core
+pairs measure 0.0281 → 0.0278, 1.0288 → 1.0305 and 3.8871 → 3.8820 ms; three CPU-0
+single-worker pairs remain comparable as well. Aligned-world bytes match exactly; the added
+45 × 35 m authored / 50 × 40 m rendered fixture verifies the intentionally corrected case.
+Build identities and raw rows are in `/tmp/metrum-full-audit/extraction-{before,final}-identity.json`
+and `extraction-matched-bench.json`; the raster baseline is `overlay-raster-columns-tests`.
+
+Deposit sampling, mine attachment and field/pit rendering share their exact f32 ray-crossing
+predicate (`AUDIT-01-G6`). Separate boundary-inclusive and higher-precision road predicates retain
+their own contracts. Five CPU-0 release pairs of the ignored
+`nodes::sim::render::resources::tests::benchmark_work_area_polygon_queries` benchmark cost
+1.400 → 1.417 / 3.970 → 4.038 / 14.416 → 15.358 ms for 262,144 queries against
+4 / 16 / 64 vertices, respectively. This records a 1.2–6.5% measured cost for sharing, not a
+speedup. Outputs match exactly; work remains O(vertices), allocation-free per query. Three warmups
+precede 21 samples; polygon construction and weighted output checksums are outside timing.
+The same extraction identity/result artifacts retain source, binary hashes, commands and rows.
+
+Five further alternating headless Godot process pairs measure the actual three image getters,
+including the core lock, raster allocation and Godot byte-array copy. They use the same eight
+physical cores, blank worlds, three warmups and nine measured calls per getter; world creation,
+payload validation and hashing are outside timing. Per-getter process medians:
+
+| Image | Pollution before → after (ms) | Noise before → after (ms) | Desirability before → after (ms) |
+| --- | ---: | ---: | ---: |
+| 129 × 129 | 0.101 → 0.051 | 0.101 → 0.030 | 0.101 → 0.026 |
+| 1025 × 1025 | 6.372 → 1.187 | 6.376 → 1.157 | 6.533 → 1.171 |
+| 2001 × 2001 | 25.574 → 5.821 | 25.470 → 5.873 | 25.447 → 5.710 |
+
+All blank RGBA bytes/checksums match. This is CPU bridge acceptance; GPU upload and full gameplay
+frame cost remain outside the timing. Command/script and raw rows are preserved under
+`/tmp/metrum-full-audit/overlay-raster-bridge-benchmark.gd` and
+`overlay-bridge-matched-bench.json`; extension identities are in the corresponding
+`overlay-raster-{before,columns}-identity.json` files. The initial harness used an unavailable
+`PackedByteArray.hash()` member; it was corrected to Godot's `hash()` before any matched timing.
+
+`AUDIT-01-G2` preserves O(C) diffusion work and existing row parallelism, with no per-cell
+allocation or new grid state. Five matched unprofiled release pairs on eight physical P cores
+(`RAYON_NUM_THREADS=8`, affinity `0,2,4,6,8,10,12,14`) measure combined pollution/noise passes:
+
+| Grid per field | Before (ms) | After (ms) |
+| --- | ---: | ---: |
+| 32 × 32 | 0.014645 | 0.014453 |
+| 256 × 256 | 0.111181 | 0.113025 |
+| 512 × 512 | 0.303329 | 0.298051 |
+
+Command: the recorded release test binary with
+`--exact simulation::grid::tests::benchmark_environmental_diffusion --ignored --nocapture`.
+Each sample resets deterministic source fields outside timing and measures eight paired ticks;
+25 samples produce each process median. Empty building/road collections isolate diffusion,
+excluding emission scaling and world construction. All output-bit checksums match across builds
+and 1/8/24 workers. CPU-0 single-worker timings also remain comparable; 24-worker timings on
+mixed core types are noisy. Exact identities and raw results are in
+`/tmp/metrum-full-audit/environment-{before,zipped}-identity.json`,
+`environment-zipped-matched-bench.json` and `environment-physical-matched-bench.json`.
+
+The terrain shader blends environmental colors with their encoded alpha (`alpha × 0.6`) and
+clamps overlay sampling at the world edge (`AUDIT-01-G5`). Previously every nonzero value used
+the same blend, and the default sampler wrapped the opposite edge into the border. The
+constant-zero baked-normal blend control/varying and constant grass-visibility aliases are
+removed; height-derived normals and existing active material settings remain authoritative.
+
+An actual OpenGL compatibility render regression (`terrain_overlay_shader_test.gd`) checks
+increasing intensity in all three environmental modes and both texture edges. The old shader
+fails six intensity and two edge assertions. The corrected shader passes; 44 reference images
+covering normal, terrain-debug and grass-debug views of baked/unbaked sloped fixtures match
+exactly after cleanup. This is rendered-pixel verification, rather than headless shader parsing.
+
+Five matched unprofiled software-renderer process pairs use Godot 4.7.2, Mesa 26.2.2 llvmpipe,
+`LP_NUM_THREADS=8`, and CPU affinity `0,2,4,6,8,10,12,14`. Three warmups precede 21 samples per
+viewport/mode; timing includes frame synchronization, rendering and image readback:
+
+| Viewport | Overlay | Before (ms) | After (ms) |
+| --- | --- | ---: | ---: |
+| 128 × 128 | Off | 0.891 | 0.887 |
+| 128 × 128 | Pollution | 0.890 | 0.866 |
+| 512 × 512 | Off | 4.661 | 4.756 |
+| 512 × 512 | Pollution | 4.730 | 4.812 |
+
+These timings are comparable, not a hardware-GPU or gameplay speedup claim. Work remains
+O(pixels); alpha adds one scalar multiply and cleanup removes unused shader state. Output is
+repeatable within each build, and inactive-overlay controls match across builds. Exact shader
+identities, raw timings and image comparison results are under
+`/tmp/metrum-full-audit/terrain-shader-{before,after}-identity.json`,
+`terrain-shader-matched-bench.json`, and `terrain-shader-reference-comparison.json`.
+`terrain-shader-benchmark.gd` and `match_terrain_shader.py` preserve the workload/commands.
+The sandbox denied Xvfb's local listening socket; rendered checks ran with that restriction
+lifted. No display/network service is needed by the simulation tests.
 
 ### 3. Terrain Uses Dual Sparse Buffers
 
@@ -200,6 +348,36 @@ Allowed dense boundaries today:
 - temporary compatibility scratch buffers inside water ticking
 - undo snapshots
 
+Dense restoration scans independent storage chunks with Rayon and only allocates payloads for
+chunks containing a non-default cell (`AUDIT-01-G7`). It retains O(width × height) work and the
+existing sparse map, with O(materialized chunks) temporary collection entries and no per-cell
+allocation. Sixteen-chunk minimum work units avoid dispatching small grids. Default-only chunks
+have no payload allocation; partial edge padding and copy-on-write snapshots retain their contracts.
+
+Five alternating, unprofiled release process pairs on eight physical P cores
+(`RAYON_NUM_THREADS=8`, affinity `0,2,4,6,8,10,12,14`) measure repeated dense replacement with
+52-cell chunks, the default 512 m / 10 m storage layout:
+
+| Grid | Blank before → after (ms) | Sparse before → after (ms) | Full before → after (ms) |
+| --- | ---: | ---: | ---: |
+| 129 × 129 | 0.00833 → 0.00713 | 0.00852 → 0.00746 | 0.00272 → 0.00286 |
+| 1025 × 1025 | 0.50869 → 0.06358 | 0.52016 → 0.06455 | 0.20430 → 0.05371 |
+| 2001 × 2001 | 1.93417 → 0.22558 | 1.97056 → 0.23241 | 0.97296 → 0.33166 |
+
+Three CPU-0 single-worker pairs improve blank/sparse cases by roughly 10–16%; full cases cost
+0.00279 → 0.00288, 0.20644 → 0.21799 and 0.95955 → 0.99002 ms. Those small full-grid
+costs are retained explicitly. The first four-chunk batch had roughly 4–7 µs excess small-grid
+overhead; it is a measured intermediate, not the accepted implementation.
+
+Command: preserved release test binary with
+`--exact simulation::core::sparse_chunk_grid::tests::benchmark_sparse_dense_replacement --ignored --nocapture --test-threads=1`.
+Three warmups precede 21 samples of eight replacements, including old-chunk destruction and
+allocation. Input setup, dense reconstruction and weighted-bit checksums are outside timing.
+Sparse fixtures fill the final cell of every sixty-fourth chunk; all output checksums and chunk
+counts match across builds and worker counts. Identities/source snapshots are
+`/tmp/metrum-full-audit/sparse-load-{before,final}-*`; raw rows are `sparse-grain-matched-bench.json`.
+This isolates sparse reconstruction, excluding SQLite decoding, water filling and renderer upload.
+
 ### 8. Engineered Ground Is A Chunk-Local Visual Derivation Step
 
 Shared engineered-ground semantics now live in [`earthworks.md`](earthworks.md). This document owns
@@ -272,6 +450,78 @@ Current deterministic rules:
 - water save/load persists one dense row-major baseline-depth snapshot at the serialization boundary
 - no source/sink, velocity, or flux state exists in the shipped runtime
 
+Water diagnostics compare cached upload bytes with the current authored baseline (`AUDIT-01-W1`).
+The retired `depth_data` array fallback and duplicate baseline/visible source-statistics fields are
+removed. Cached min/max/count/sum decode the actual native f32 payload; they no longer report a
+filled patch as all-zero. Decoding occurs only for explicitly requested diagnostics, with O(patch
+samples) temporary data, and does not add work to regular texture uploads. The headless
+`surface_patch_debug_test.gd` regression exercises an actual authored fill, asynchronous native
+payload, live source statistics and formatted diagnostic output, alongside regular/refined terrain
+payloads with negative heights.
+
+Three CPU-0 headless helper runs compare the existing calculation on a prepared float array with
+native-byte decoding plus that same calculation: 7 × 7 samples cost 0.00309 → 0.00341 ms,
+55 × 55 cost 0.16156 → 0.16113 ms, and 515 × 515 cost 14.382 → 14.121 ms. Outputs match.
+This isolates diagnostic decoding overhead; it does **not** compare with the old production
+reader that incorrectly returned zero. Three warmups precede 21 samples, with 128 / 16 / 1
+repetitions respectively; setup is excluded. Command/script, renderer identity and raw results
+are under `/tmp/metrum-full-audit/water-stats-benchmark.gd`, `water-stats-final-identity.json`
+and `water-stats-benchmark.json`. These timings do not cover full diagnostic formatting or frames.
+
+Terrain, including refined and road-preview patches, exports a single native `height_bytes` buffer
+(`AUDIT-01-G8`). The retired parallel `height_data` export and frontend fallback are removed;
+failed refinement payloads still omit drawable heights intentionally. Terrain and water share
+`render_debug.gd` for count/min/max/sum with the same 0.001 visibility threshold and summation
+order. This is stateless, explicitly requested diagnostic work, not simulation state.
+
+Three CPU-0 headless comparisons against the retained previous water reader give 7 × 7 / 55 × 55 /
+515 × 515 diagnostic costs of 0.00337 → 0.00307 / 0.15981 → 0.14063 / 13.985 → 12.381 ms.
+Both sides decode the same byte payload and produce equal statistics; eliminating the redundant
+per-value conversion is included. Setup is excluded; three warmups precede 21 measured samples.
+Scripts, before/after renderer identities and raw rows are `/tmp/metrum-full-audit/surface-stats-benchmark.gd`,
+`surface-payload-{before,after}-identity.json` and `surface-stats-benchmark.json`.
+
+Five alternating native bridge process pairs on eight physical P cores measure completed
+asynchronous payload requests for blank nonzero terrain, with regular and refined paths:
+
+| Authored patch span | Regular before → after (ms) | Refined before → after (ms) | Removed duplicate height bytes per refined payload |
+| --- | ---: | ---: | ---: |
+| 40 m | 0.07075 → 0.07050 | 0.07525 → 0.07488 | 676 |
+| 512 m | 0.08263 → 0.08063 | 0.09963 → 0.09850 | 14,400 |
+| 1024 m | 0.09975 → 0.10025 | 0.11225 → 0.12125 | 49,284 |
+
+This records comparable default-patch latency and a 9 µs larger refined median for the largest
+fixture; there is no general latency-speedup claim. Largest refined process ranges overlap
+(0.0831–0.1238 ms before, 0.1125–0.1305 ms after). Measurements include request/poll scheduling,
+with 10 µs sleeps between empty polls, native export and completed return; cold world creation and
+first refinement are excluded. Only completed payloads count, and explicit generation retries are
+honored. Three warmups precede 21 samples of eight requests. All canonical render dictionaries
+have equal checksums after excluding the removed duplicate array; raw height bytes, metadata and
+mesh products are unchanged. Work remains O(payload samples/mesh size), with one fewer height
+buffer and bulk byte copies. The benchmark changes no road-planning algorithm.
+
+Command: `taskset -c 0,2,4,6,8,10,12,14 godot --headless --path godot --script
+/tmp/metrum-full-audit/surface-payload-benchmark.gd`, `RAYON_NUM_THREADS=8`.
+Raw commands, rows and extension identities are `surface-payload-matched-bench.json` and
+`surface-payload-{before,after}-identity.json`. This excludes texture upload and full gameplay frames.
+
+Geometry diagnostics also share clip aggregation, signed polygon area, bounds formatting and mesh
+labels (`AUDIT-01-G9`). The clip result is built once from the decoded groups; it no longer validates
+the same packed loops twice or initializes a duplicate statistics dictionary. Mesh labels read
+`ArrayMesh.surface_get_array_len()` instead of requesting all vertex attributes. This leaves
+O(surface count) work for mesh labels and O(decoded clip points/groups) work for clip diagnostics.
+No persistent cache or simulation state is added.
+
+Three CPU-0 headless before/after helper runs preserve every result. Single-surface mesh labels
+cost 0.00128 → 0.00093 ms at three vertices, 0.00300 → 0.00094 ms at 3,072 vertices and
+0.07450 → 0.00100 ms at 98,304 vertices. Clip diagnostics with one hole per outer loop cost
+0.01027 → 0.00873 / 0.21669 → 0.21094 / 1.748 → 1.708 ms at 1 / 32 / 256 groups.
+Three warmups precede 21 samples; fixture/mesh construction is excluded and output checksums match.
+The existing surface regression also verifies multiple surfaces, primitive/null meshes, hole area,
+negative-coordinate bounds and actual native payload logs. Commands, source identities and raw rows
+are `/tmp/metrum-full-audit/render-geometry-benchmark.gd`, `render-geometry-{before,after}-identity.json`
+and `render-geometry-benchmark.json`. These are explicit diagnostic costs, not gameplay frame timings.
+
 ### 10. Live Water Runtime Is Baseline Still Water Only
 
 The live repository intentionally keeps only deterministic authored still water.
@@ -318,6 +568,19 @@ Current deterministic rules:
 - resource deposit chunks are terrain-aligned `u16` richness grids keyed by `resource_id`,
   starting with `coal`
 - loading a `WorldDefinition` resets runtime state to a fresh blank city on that world
+- City load and blank-world reset share transient cleanup, including terrain brush state,
+  render ownership, undo history, diagnostics and camera culling bounds. The final network-render
+  invalidation advances the global terrain payload generation; an extra pre-publication bump
+  is not needed. New Game retains the loaded asset registry by ownership transfer.
+  Audit `AUDIT-01-AS4`: five alternating unprofiled release process pairs, pinned to CPU 0,
+  `RAYON_NUM_THREADS=24`, three warmups then 11 samples of five resets. The fixture has no agents,
+  buildings or roads; every measured replacement creates the same flat 256 m square world
+  with 8 m samples and retains 128 / 4,096 registered assets. Registration and the initial test
+  world are outside timing. Median reset time is `0.056421 / 1.804271 → 0.002045 / 0.002033 ms`.
+  This isolates Rust world replacement and catalog retention, excluding file I/O and rendering.
+  Command: `nodes::sim::core::tests::benchmark_blank_world_reset_with_assets --exact --ignored --nocapture`
+  on matched release executables. Raw rows and source/executable identities are in
+  `/tmp/metrum-full-audit/world-reset-matched-bench.json` and `world-reset-{before,after}-identity.json`.
 - world replacement clears derived terrain ownership, caches and asynchronous render requests;
   its global terrain payload generation advances so old-world payloads and acknowledgements
   cannot match an unchanged patch key in the new world
@@ -339,6 +602,8 @@ Current deterministic rules:
 Authoritative rule:
 
 - city saves and `WorldDefinition` are separate persistence products with different ownership
+- both writers share temporary-file publication: commit and close the replacement database
+  before atomically renaming it over the destination; failed saves preserve the previous file
 
 ### 13. Godot Bridge Uses Patch Snapshots For Terrain / Water Rendering
 

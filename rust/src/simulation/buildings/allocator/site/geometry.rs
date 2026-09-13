@@ -54,10 +54,6 @@ pub(super) fn signed_polygon_area(points: &[Vector2]) -> f32 {
     area * 0.5
 }
 
-pub(super) fn polygon_quad_bounds(points: [Vector2; 4]) -> (f32, f32, f32, f32) {
-    polygon_slice_bounds(&points)
-}
-
 pub(super) fn polygon_slice_bounds(points: &[Vector2]) -> (f32, f32, f32, f32) {
     let mut min_x = f32::INFINITY;
     let mut min_z = f32::INFINITY;
@@ -82,8 +78,9 @@ pub(super) fn site_radius_m(site: &BuildingSiteClient) -> f32 {
                 .iter()
                 .flat_map(|surface| &surface.vertices_world),
         )
-        .map(|point| point.distance_to(lot_center))
+        .map(|point| point.distance_squared_to(lot_center))
         .fold(0.0, f32::max)
+        .sqrt()
 }
 
 pub(super) fn update_site_plane_ray_hit(

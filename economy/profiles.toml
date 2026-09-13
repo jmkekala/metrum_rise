@@ -1,3 +1,42 @@
+# Resource IDs are persisted in saves. Append IDs; never renumber existing resources.
+[[resources]]
+id = "household_supplies"
+runtime_id = 1
+
+[[resources]]
+id = "packaged_food"
+runtime_id = 2
+
+[[resources]]
+id = "grain"
+runtime_id = 3
+
+[[resources]]
+id = "coal"
+runtime_id = 4
+
+[[resources]]
+id = "health_essentials"
+runtime_id = 5
+
+[[resources]]
+id = "personal_services"
+runtime_id = 6
+
+[[resources]]
+id = "machinery"
+runtime_id = 7
+
+[[resources]]
+id = "steel"
+runtime_id = 8
+import_unit_price_currency = 8.0
+
+[[resources]]
+id = "metals"
+runtime_id = 9
+import_unit_price_currency = 16.0
+
 [[profiles]]
 id = "grain_farm_basic"
 display_name = "Grain Farm"
@@ -17,11 +56,14 @@ consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
-inputs = []
 
 [[profiles.outputs]]
 resource = "grain"
 units_per_day = 290.0
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 1.0
 
 [[profiles]]
 id = "food_processor_basic"
@@ -49,6 +91,10 @@ units_per_day = 160.0
 [[profiles.outputs]]
 resource = "packaged_food"
 units_per_day = 160.0
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 2.0
 
 [[profiles]]
 id = "grocery_basic"
@@ -207,11 +253,14 @@ consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
 freight_timing_profile = "always_open"
-inputs = []
 
 [[profiles.outputs]]
 resource = "coal"
 units_per_day = 120.0
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 4.0
 
 [[profiles]]
 id = "power_plant_basic"
@@ -238,6 +287,10 @@ outputs = []
 resource = "coal"
 units_per_day = 96.0
 
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 4.0
+
 [[profiles]]
 id = "water_plant_basic"
 display_name = "Water Treatment Plant"
@@ -248,15 +301,20 @@ base_rate_units_per_day = 0.0
 wage_min_currency_per_day = 90.0
 wage_max_currency_per_day = 110.0
 unit_price_currency = 2.0
-stock_target_days = 0.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
+stock_target_days = 7.0
+reorder_threshold_days = 3.0
+critical_threshold_days = 1.0
+min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "water"
-inputs = []
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
 outputs = []
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 0.5
 
 [[profiles]]
 id = "wastewater_treatment_basic"
@@ -268,15 +326,53 @@ base_rate_units_per_day = 0.0
 wage_min_currency_per_day = 90.0
 wage_max_currency_per_day = 110.0
 unit_price_currency = 1.5
-stock_target_days = 0.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
+stock_target_days = 7.0
+reorder_threshold_days = 3.0
+critical_threshold_days = 1.0
+min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 utility_service = "sewage"
-inputs = []
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
 outputs = []
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 0.5
+
+[[profiles]]
+id = "machinery_factory_basic"
+display_name = "Small Machinery Factory"
+kind = "processor"
+description = "Small industrial factory converting steel and non-steel metals into machinery and spare parts. Produces 42 units/day, including 2 for its own upkeep (40 net)."
+worker_capacity = 4
+base_rate_units_per_day = 42.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 20.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 40.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+
+[[profiles.inputs]]
+resource = "steel"
+units_per_day = 12.0
+
+[[profiles.inputs]]
+resource = "metals"
+units_per_day = 4.0
+
+[[profiles.inputs]]
+resource = "machinery"
+units_per_day = 2.0
+
+[[profiles.outputs]]
+resource = "machinery"
+units_per_day = 42.0
 
 [runtime_tuning]
 owa_import_price_multiplier = 1.75

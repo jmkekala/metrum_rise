@@ -20,7 +20,6 @@ use super::viability::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingSiteEnvironment};
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
-use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use rayon::prelude::*;
@@ -86,7 +85,6 @@ impl DemandSystem {
     pub(super) fn plan_private_building_actions(
         &mut self,
         allocator: &BuildingAllocator,
-        households: &HouseholdSystem,
         graph: &RegionGraph,
         zoning: &ZoningSystem,
         snapshot: &DailyDemandSnapshot,
@@ -114,7 +112,7 @@ impl DemandSystem {
             &commercial_spawn_resource_priorities,
             environment,
         );
-        let absorption_context = &snapshot.output_absorption;
+        let mut absorption_context = snapshot.output_absorption.clone();
         for use_kind in [
             DemandUse::Residential,
             DemandUse::Commercial,
@@ -126,7 +124,6 @@ impl DemandSystem {
             let spawn_candidates = spawn_candidates_by_use.take_zone_type(zone_type);
             let existing_candidates = self.collect_existing_building_candidates(
                 allocator,
-                households,
                 catalog,
                 economy_tuning,
                 &residential_occupants,
@@ -205,7 +202,6 @@ impl DemandSystem {
                 spawn_credit_after,
                 spawns_today,
             );
-            let spawn_rejected_labour = 0_usize;
             let mut spawn_rejected_absorption = 0_usize;
             let mut spawn_skipped_budget = 0_usize;
             let selected_spawns: Vec<_> = if zone_type == ZoneType::Residential {
@@ -221,10 +217,9 @@ impl DemandSystem {
             } else {
                 // Non-residential: output absorption is the final ordinary hard gate. Cheat mode
                 // bypasses it explicitly, while staffing remains an operational outcome after spawn.
-                let mut passed = 0;
                 let mut selected = Vec::new();
                 for candidate in spawn_candidates {
-                    if passed >= spawns_today {
+                    if selected.len() >= spawns_today {
                         spawn_skipped_budget += 1;
                         continue;
                     }
@@ -232,14 +227,20 @@ impl DemandSystem {
                         && !nonresidential_passes_absorption_gate(
                             allocator,
                             catalog,
-                            absorption_context,
+                            &absorption_context,
                             &candidate.action.asset_id,
                         )
                     {
                         spawn_rejected_absorption += 1;
                         continue;
                     }
-                    passed += 1;
+                    if let Some(profile) = super::spawn_need::candidate_economy_profile(
+                        allocator,
+                        catalog,
+                        &candidate.action.asset_id,
+                    ) {
+                        absorption_context.reserve_candidate(profile);
+                    }
                     selected.push(candidate.action);
                 }
                 selected
@@ -349,7 +350,6 @@ impl DemandSystem {
                 spawn_credit_after,
                 spawn_planned: spawns_today,
                 spawn_selected,
-                spawn_rejected_labour,
                 spawn_rejected_absorption,
                 spawn_skipped_budget,
                 upgrade_candidates: upgrade_candidate_count,
@@ -386,7 +386,6 @@ impl DemandSystem {
     pub(super) fn collect_existing_building_candidates(
         &self,
         allocator: &BuildingAllocator,
-        households: &HouseholdSystem,
         catalog: &RuntimeEconomyCatalog,
         economy_tuning: &RuntimeEconomyTuning,
         residential_occupants: &ResidentialOccupantSnapshot,
@@ -479,12 +478,10 @@ impl DemandSystem {
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_downgrade(
                         allocator,
-                        households,
                         catalog,
                         economy_tuning,
                         residential_occupants,
                         building_idx,
-                        target_asset_id,
                     )
                 {
                     return Some(CollectedExistingBuildingCandidate::Downgrade(
@@ -504,7 +501,6 @@ impl DemandSystem {
                     && level_change_is_compatible(allocator, catalog, building_idx, target_asset_id)
                     && building_is_viable_for_upgrade(
                         allocator,
-                        households,
                         catalog,
                         economy_tuning,
                         residential_occupants,

@@ -10,6 +10,7 @@ use metrum_rise::assets::asset::{
 };
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
 use metrum_rise::simulation::core::config::WorldConfig;
+use metrum_rise::simulation::core::time::TimeSystem;
 use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
     ACCESS_PLAN_VALID, AGE_ADULT, AgentSystem, MODE_CAR, TRANSIT_ACCESS_EGRESS,
@@ -545,11 +546,13 @@ fn build_access_state(shared: &AccessSharedSetup, count: usize, phase: u8) -> Ac
     let mut allocator_agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
-    allocator.tick(
+    allocator.maintain(
+        0,
         &mut zoning,
         &mut allocator_agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &mut transit,
         &mut graph,
     );
@@ -701,6 +704,13 @@ fn make_on_road_agent(shared: &SharedSetup, route: Vec<u32>, progression: f32) -
 }
 
 fn bench_agent_tick(c: &mut Criterion) {
+    let clock = TimeSystem {
+        time_elapsed: 0.0,
+        speed_multiplier: 1.0,
+        day_index: 0,
+        minute_of_day: 0,
+        seconds_per_day: 1440.0,
+    };
     let shared = build_shared();
     let access_shared = build_access_shared();
 
@@ -740,8 +750,7 @@ fn bench_agent_tick(c: &mut Criterion) {
                         black_box(&mut transit),
                         black_box(&mut graph),
                         black_box(0.016),
-                        black_box(0_u32),
-                        black_box(0_u16),
+                        black_box(&clock),
                     );
                 });
             },
@@ -773,8 +782,7 @@ fn bench_agent_tick(c: &mut Criterion) {
                         black_box(&mut transit),
                         black_box(&mut graph),
                         black_box(0.016),
-                        black_box(0_u32),
-                        black_box(0_u16),
+                        black_box(&clock),
                     );
                 });
             },
@@ -804,8 +812,7 @@ fn bench_agent_tick(c: &mut Criterion) {
                             black_box(&mut state.transit),
                             black_box(&mut state.graph),
                             black_box(0.016),
-                            black_box(0_u32),
-                            black_box(0_u16),
+                            black_box(&clock),
                         );
                     },
                     BatchSize::LargeInput,
@@ -827,8 +834,7 @@ fn bench_agent_tick(c: &mut Criterion) {
                             black_box(&mut state.transit),
                             black_box(&mut state.graph),
                             black_box(0.016),
-                            black_box(0_u32),
-                            black_box(0_u16),
+                            black_box(&clock),
                         );
                     },
                     BatchSize::LargeInput,

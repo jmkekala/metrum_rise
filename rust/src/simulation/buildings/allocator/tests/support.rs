@@ -12,7 +12,8 @@ pub(super) fn flat_test_terrain() -> TerrainSystem {
     TerrainSystem::new(32, 32)
 }
 
-pub(super) fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: i32) -> Building {
+/// Creates a completed empty building in the deterministic 16-metre index fixture layout.
+pub(crate) fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: i32) -> Building {
     Building {
         center_x: idx as f32 * 16.0,
         center_y: 0.0,
@@ -273,56 +274,6 @@ pub(super) fn register_test_power_service_asset(
     format!("{pack_id}:{asset_id}")
 }
 
-pub(super) fn stable_hash_bytes(parts: &[&[u8]]) -> u64 {
-    let mut state = 0xcbf29ce484222325u64;
-    for part in parts {
-        for &byte in *part {
-            state ^= byte as u64;
-            state = state.wrapping_mul(0x100000001b3);
-        }
-        state ^= 0xff;
-        state = state.wrapping_mul(0x100000001b3);
-    }
-    state
-}
-
-pub(super) fn stable_strip_family_hash(
-    profile_runtime_id: u16,
-    parcel_id: u64,
-    family_key: &str,
-) -> u64 {
-    stable_hash_bytes(&[
-        &profile_runtime_id.to_le_bytes(),
-        &parcel_id.to_le_bytes(),
-        family_key.as_bytes(),
-    ])
-}
-
-pub(super) fn stable_site_variant_hash(
-    profile_runtime_id: u16,
-    parcel_id: u64,
-    qualified_asset_id: &str,
-) -> u64 {
-    stable_hash_bytes(&[
-        &profile_runtime_id.to_le_bytes(),
-        &parcel_id.to_le_bytes(),
-        qualified_asset_id.as_bytes(),
-    ])
-}
-
-pub(super) fn frontage_profile_runtime_id_for_building(
-    allocator: &BuildingAllocator,
-    building: &Building,
-    zoning: &crate::simulation::zoning::ZoningSystem,
-    graph: &RegionGraph,
-) -> u16 {
-    let _ = (allocator, graph);
-    zoning
-        .parcel_by_raw_id(building.parcel_id)
-        .map(|parcel| parcel.zone_profile_runtime_id())
-        .unwrap_or(0)
-}
-
 pub(super) fn execute_startup_demand_building_pass(
     allocator: &mut BuildingAllocator,
     zoning: &mut crate::simulation::zoning::ZoningSystem,
@@ -345,6 +296,7 @@ pub(super) fn execute_startup_demand_building_pass(
             agents,
             households,
             logistics,
+            &mut 0.0,
             graph,
             &network.lane_system,
             &network.road_surface,
@@ -356,188 +308,4 @@ pub(super) fn execute_startup_demand_building_pass(
             break;
         }
     }
-}
-
-pub(super) fn setup_startup_spawn_city_for_rezoning() -> (
-    BuildingAllocator,
-    crate::simulation::zoning::ZoningSystem,
-    AgentSystem,
-    HouseholdSystem,
-    ShipmentSystem,
-    crate::simulation::network::TransitNetwork,
-    RegionGraph,
-    usize,
-) {
-    use crate::simulation::economy::demand::{DemandBuildingActionPlan, DemandSystem};
-    use crate::simulation::network::TransitNetwork;
-    use crate::simulation::network::types::NodeType;
-    use crate::simulation::zoning::ZoningSystem;
-    use godot::prelude::Vector3;
-
-    let mut allocator = BuildingAllocator::new();
-    register_test_asset(
-        &mut allocator,
-        "base",
-        "b.res.house",
-        ZoneClass::Residential,
-    );
-    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
-
-    let map_cfg = WorldConfig::default();
-    let mut zoning = ZoningSystem::new(&map_cfg);
-    let mut agents = AgentSystem::new();
-    let mut households = HouseholdSystem::new();
-    let mut logistics = ShipmentSystem::new();
-    let mut graph = RegionGraph::new();
-    let mut network = TransitNetwork::new();
-
-    network.add_road(
-        &mut graph,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        1,
-        1,
-        crate::simulation::network::types::EdgeClass::Standard,
-        &mut zoning,
-        &mut allocator,
-    );
-    graph.set_node_type(0, NodeType::Border);
-    paint_zone_rect(
-        &mut zoning,
-        &graph,
-        -50.0,
-        -50.0,
-        45.0,
-        50.0,
-        ZoneType::Residential,
-    );
-    paint_zone_rect(
-        &mut zoning,
-        &graph,
-        55.0,
-        -50.0,
-        150.0,
-        50.0,
-        ZoneType::Commercial,
-    );
-
-    let mut demand = DemandSystem::new();
-    // Jack up demand and credits to ensure we get buildings in the first tick
-    demand.residential = 1.0;
-    demand.commercial = 1.0;
-    demand.spawn_action_credit.residential = 10.0;
-    demand.spawn_action_credit.commercial = 10.0;
-
-    demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);
-    let mut startup_plan = DemandBuildingActionPlan::default();
-    if let Some(action) = demand.building_actions.residential.spawns.first() {
-        startup_plan.residential.spawns.push(action.clone());
-    }
-    if let Some(action) = demand.building_actions.commercial.spawns.first() {
-        startup_plan.commercial.spawns.push(action.clone());
-    }
-    let terrain = compiled_flat_test_terrain(&mut network, &graph);
-    allocator.execute_demand_building_actions(
-        &startup_plan,
-        &mut zoning,
-        &mut agents,
-        &mut households,
-        &mut logistics,
-        &graph,
-        &network.lane_system,
-        &network.road_surface,
-        &terrain,
-        demand.runtime_catalog(),
-        demand.runtime_tuning(),
-    );
-
-    allocator.execute_demand_household_admission(2, &mut agents, &network, &graph); // Occupy buildings to protect from instant removal
-
-    // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
-    // so push one commercial building directly to give rezoning tests a 2-building city.
-    {
-        let zone_cell_m = map_cfg.zone_cell_m;
-        let parcel = zoning
-            .parcels()
-            .iter()
-            .find(|parcel| {
-                zoning
-                    .profiles
-                    .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
-                    == ZoneType::Commercial
-                    && parcel.is_available()
-            })
-            .expect("commercial test parcel")
-            .clone();
-        let edge = graph.edge(parcel.edge_idx());
-        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
-        let center = parcel.front_center() + parcel.normal() * (zone_cell_m * 0.5);
-        let building_idx = allocator.buildings.len();
-        allocator.buildings.push(Building {
-            center_x: center.x,
-            center_y: center.y,
-            support_height_m: 0.0,
-            width_cells: 1,
-            depth_cells: 1,
-            zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
-            parcel_id: parcel.id().raw(),
-            zone_type: ZoneType::Commercial,
-            facing_dir: parcel.normal(),
-            frontage_t: parcel.frontage_center_t(),
-            side_offset: curb_dist,
-            is_deserted: false,
-            budget_distress: false,
-            edge_idx: parcel.edge_idx(),
-            side: parcel.side(),
-            cell_x: 0,
-            cell_y: 0,
-            occupancy: 0,
-            worker_count: 0,
-            service_funding_override: -1.0,
-            asset_id: "base:b.com.shop".to_owned(),
-            level: 1,
-            construction_total_hours: 0,
-            construction_remaining_hours: 0,
-            broken: false,
-            economy_profile_runtime_id: 0,
-            economy_broken: false,
-            resource_inventory: Vec::new(),
-            revenue: 0.0,
-            operating_budget: 500.0,
-            profit_tax_budget_baseline: 500.0,
-            last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
-            daily_owa_input_value: 0.0,
-            daily_local_input_value: 0.0,
-            daily_city_funded_input_cost: 0.0,
-            daily_household_sales_value: 0.0,
-            daily_power_service_units: 0.0,
-            daily_power_served_units: 0.0,
-            recent_power_service_units: 0.0,
-            recent_power_served_units: 0.0,
-            recent_household_sales_value: 0.0,
-            commercial_activity_floor_scale: 0.0,
-            work_area_scale: 1.0,
-            pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
-        });
-        zoning.occupy_parcel(parcel.id().raw(), building_idx);
-        allocator.rebuild_zone_index();
-    }
-
-    let residential_idx = allocator
-        .buildings
-        .iter()
-        .position(|building| building.zone_type == ZoneType::Residential)
-        .expect("pioneer demand should create one seeded residential building for rezoning tests");
-
-    (
-        allocator,
-        zoning,
-        agents,
-        households,
-        logistics,
-        network,
-        graph,
-        residential_idx,
-    )
 }

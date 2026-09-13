@@ -12,9 +12,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::economy::demand::DemandSystem;
-use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -51,14 +49,6 @@ impl SimCore {
         terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> Result<(), String> {
-        validate_positive_f32(width_m, "width_m")?;
-        validate_positive_f32(height_m, "height_m")?;
-        validate_positive_f32(terrain_cell_m, "terrain_cell_m")?;
-        validate_positive_f32(terrain_chunk_m, "terrain_chunk_m")?;
-        if !base_elevation_m.is_finite() {
-            return Err("base_elevation_m must be finite".to_owned());
-        }
-
         let config = WorldConfig::new(
             width_m,
             height_m,
@@ -67,6 +57,7 @@ impl SimCore {
         )
         .with_terrain_resolution(terrain_cell_m)
         .with_chunking(terrain_chunk_m, base_elevation_m);
+        config.validate()?;
         debug_log!(
             "world-editor",
             "create_blank_world width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
@@ -512,7 +503,6 @@ impl SimCore {
     }
 
     fn reset_to_blank_world_runtime(&mut self, config: WorldConfig, terrain: TerrainSystem) {
-        let registry = self.allocator.registry.clone();
         debug_log!(
             "world-editor",
             "reset_blank_world_runtime width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
@@ -540,21 +530,31 @@ impl SimCore {
         self.logistics = ShipmentSystem::new();
 
         let mut allocator = BuildingAllocator::new();
-        allocator.registry = registry;
+        std::mem::swap(&mut allocator.registry, &mut self.allocator.registry);
         self.allocator = allocator;
 
-        self.treasury = CityTreasury::new(startup_treasury_balance());
+        self.treasury = CityTreasury::default();
         self.service_policy = Default::default();
-        self.fiscal_policy = startup_fiscal_policy();
+        self.fiscal_policy = Default::default();
         self.budget_history.clear();
         self.budget_last_lifetime_build_cost = self.treasury.lifetime_build_cost;
         self.debug_household_admissions_since_daily = 0;
-        self.undo_stack.clear();
-        self.world_lake_fills.clear();
-        self.world_open_water_fills.clear();
         self.resource_deposits = ResourceDepositSystem::from_world_config(&self.config);
         self.resource_extraction.clear();
         self.agriculture.clear();
+        self.clear_world_transient_state();
+        // World replacement explicitly rebuilds renderer residency. Dirty flags describe actual
+        // patch ledgers; an empty flat world has no payload acknowledgements to clear a forced flag.
+        self.terrain_dirty = !self.heightmap.dirty_render_patches().is_empty();
+        self.water_dirty = !self.watermap.dirty_render_patches().is_empty();
+        self.mark_network_render_dirty();
+    }
+
+    /// Drops state tied to the previous world before the caller publishes fresh render generations.
+    pub(crate) fn clear_world_transient_state(&mut self) {
+        self.undo_stack.clear();
+        self.world_lake_fills.clear();
+        self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
         self.authored_water_patch_fill_debug_cache.clear();
         self.refined_terrain_patch_cache.clear();
@@ -565,14 +565,8 @@ impl SimCore {
         self.engineered_terrain_patch_keys.clear();
         self.engineered_terrain_patch_margins.clear();
         self.terrain_payload_patch_generations.clear();
-        self.bump_global_terrain_payload_generation();
         self.terrain_stroke_active = false;
         self.terrain_stroke_has_changes = false;
-        // World replacement explicitly rebuilds renderer residency. Dirty flags describe actual
-        // patch ledgers; an empty flat world has no payload acknowledgements to clear a forced flag.
-        self.terrain_dirty = !self.heightmap.dirty_render_patches().is_empty();
-        self.water_dirty = !self.watermap.dirty_render_patches().is_empty();
-        self.mark_network_render_dirty();
         self.last_tick_duration = 0.0;
         self.last_agent_tick_us = 0;
         self.last_road_timing.clear();
@@ -629,25 +623,6 @@ impl SimCore {
             preview.surface_elevation_m,
         ));
     }
-}
-
-fn startup_treasury_balance() -> f64 {
-    load_runtime_economy_tuning()
-        .map(|tuning| tuning.startup_treasury_balance)
-        .unwrap_or(100_000.0)
-}
-
-fn startup_fiscal_policy() -> CityFiscalPolicy {
-    load_runtime_economy_tuning()
-        .map(|tuning| CityFiscalPolicy::from_runtime_tuning(tuning.as_ref()))
-        .unwrap_or_default()
-}
-
-fn validate_positive_f32(value: f32, label: &str) -> Result<(), String> {
-    if !value.is_finite() || value <= 0.0 {
-        return Err(format!("{label} must be finite and > 0"));
-    }
-    Ok(())
 }
 
 fn richness_percent_to_storage(richness_percent: f32) -> u16 {

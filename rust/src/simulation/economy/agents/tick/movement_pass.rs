@@ -4,9 +4,10 @@
 
 use super::claims::LaneClaimContext;
 use super::runtime::dispatch_agents;
-use super::slices::{MovementSlices, RawSlice};
+use super::slices::MovementSlices;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::data::AgentSystem;
+use crate::simulation::core::time::TimeSystem;
+use crate::simulation::economy::agents::data::{AgentSystem, MovementClaimMode};
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
@@ -21,70 +22,15 @@ impl AgentSystem {
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         delta: f32,
-        day_index: u32,
-        minute_of_day: u16,
+        time: &TimeSystem,
         n: usize,
     ) {
-        self.prepare_claim_serial_agents(allocator, transit_network, graph, delta, n);
+        self.prepare_lane_claims(allocator, transit_network, graph, delta, n);
 
-        let slices = MovementSlices {
-            home: RawSlice::new(&mut self.agents.home_building),
-            work: RawSlice::new(&mut self.agents.work_building),
-            age_group: RawSlice::new(&mut self.agents.age_group),
-            pos_x: RawSlice::new(&mut self.agents.pos_x),
-            pos_y: RawSlice::new(&mut self.agents.pos_y),
-            activity: RawSlice::new(&mut self.agents.activity),
-            transit: RawSlice::new(&mut self.agents.transit),
-            happiness: RawSlice::new(&mut self.agents.happiness),
-            jstart: RawSlice::new(&mut self.agents.journey_start_time),
-            schedule_seed: RawSlice::new(&mut self.agents.schedule_seed),
-            cached_commute_minutes: RawSlice::new(&mut self.agents.cached_commute_minutes),
-            next_commute_refresh_time: RawSlice::new(&mut self.agents.next_commute_refresh_time),
-            next_departure_day: RawSlice::new(&mut self.agents.next_departure_day),
-            next_departure_minute: RawSlice::new(&mut self.agents.next_departure_minute),
-            next_departure_origin: RawSlice::new(&mut self.agents.next_departure_origin_building),
-            next_departure_target: RawSlice::new(&mut self.agents.next_departure_target_building),
-            next_departure_activity: RawSlice::new(&mut self.agents.next_departure_activity),
-            cached_schedule_work_building: RawSlice::new(
-                &mut self.agents.cached_schedule_work_building,
-            ),
-            cached_work_profile_index: RawSlice::new(&mut self.agents.cached_work_profile_index),
-            pending_household_size: RawSlice::new(&mut self.agents.pending_household_size),
-            freight_shipment_id: RawSlice::new(&mut self.agents.freight_shipment_id),
-            cur_b: RawSlice::new(&mut self.agents.current_building),
-            tgt_b: RawSlice::new(&mut self.agents.target_building),
-            planned_tgt_b: RawSlice::new(&mut self.agents.planned_target_building),
-            freight_target_border_node: RawSlice::new(&mut self.agents.freight_target_border_node),
-            cur_n: RawSlice::new(&mut self.agents.current_node),
-            planned_attach_n: RawSlice::new(&mut self.agents.planned_attach_node),
-            planned_detach_n: RawSlice::new(&mut self.agents.planned_detach_node),
-            planned_attach_lane: RawSlice::new(&mut self.agents.planned_attach_lane_id),
-            planned_detach_lane: RawSlice::new(&mut self.agents.planned_detach_lane_id),
-            planned_attach_lane_d: RawSlice::new(&mut self.agents.planned_attach_lane_d),
-            planned_detach_lane_d: RawSlice::new(&mut self.agents.planned_detach_lane_d),
-            access_flags: RawSlice::new(&mut self.agents.access_flags),
-            next_replan_time: RawSlice::new(&mut self.agents.next_replan_time),
-            network_replan_failures: RawSlice::new(&mut self.agents.network_replan_failures),
-            cur_e: RawSlice::new(&mut self.agents.current_edge),
-            lane_id: RawSlice::new(&mut self.agents.current_lane_id),
-            lane_d: RawSlice::new(&mut self.agents.lane_distance),
-            lane_change_from_lane: RawSlice::new(&mut self.agents.lane_change_from_lane_id),
-            lane_change_start_d: RawSlice::new(&mut self.agents.lane_change_start_d),
-            lane_change_length: RawSlice::new(&mut self.agents.lane_change_length_m),
-            overtake_blocked_time: RawSlice::new(&mut self.agents.overtake_blocked_time_s),
-            overtake_cooldown: RawSlice::new(&mut self.agents.overtake_cooldown_s),
-            tmode: RawSlice::new(&mut self.agents.transit_mode),
-            planned_activity: RawSlice::new(&mut self.agents.planned_activity),
-            path: RawSlice::new(&mut self.agents.current_path),
-            path_idx: RawSlice::new(&mut self.agents.current_path_index),
-            has_car: RawSlice::new(&mut self.agents.has_car),
-            speed: RawSlice::new(&mut self.agents.speed),
-            walk_phase: RawSlice::new(&mut self.agents.walk_phase),
-        };
+        let slices = MovementSlices::new(&mut self.agents);
 
         let lane_buckets = &self.lane_buckets;
-        let lane_claims =
-            LaneClaimContext::new(&self.lane_attach_claimed, &self.claim_serial_agents);
+        let lane_claims = LaneClaimContext::new(&self.lane_claim_owner, &self.movement_claim_modes);
         let sim_time = self.sim_time;
         let economy_tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
@@ -92,15 +38,14 @@ impl AgentSystem {
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
         dispatch_agents(n, |i| unsafe {
-            if self.claim_serial_agents[i] {
+            if self.movement_claim_modes[i] == MovementClaimMode::Dynamic {
                 return;
             }
             Self::process_agent_movement(
                 i,
                 delta,
                 sim_time,
-                day_index,
-                minute_of_day,
+                time,
                 allocator,
                 transit_network,
                 graph,
@@ -114,7 +59,7 @@ impl AgentSystem {
         });
 
         for i in 0..n {
-            if !self.claim_serial_agents[i] {
+            if self.movement_claim_modes[i] != MovementClaimMode::Dynamic {
                 continue;
             }
             unsafe {
@@ -122,8 +67,7 @@ impl AgentSystem {
                     i,
                     delta,
                     sim_time,
-                    day_index,
-                    minute_of_day,
+                    time,
                     allocator,
                     transit_network,
                     graph,
@@ -138,3 +82,6 @@ impl AgentSystem {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

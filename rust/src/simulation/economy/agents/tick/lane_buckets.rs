@@ -28,7 +28,7 @@ impl AgentSystem {
             self.rebuild_lane_occupancy_snapshot(lane_count, n);
         }
 
-        self.reset_lane_attach_claims(lane_count);
+        self.reset_lane_claims(lane_count);
 
         (lane_count, self.lane_bucket_live_agent_count)
     }

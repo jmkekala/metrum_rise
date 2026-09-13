@@ -104,7 +104,25 @@ At `1.0x` speed, the target economy pacing is:
 - `1 in-game hour = 60 real seconds`
 - `1 in-game minute = 1 real second`
 
-This is the design target for economy balancing. The current prototype clock may use a different placeholder value, but economy rules should not be authored against an ultra-compressed day.
+This is the authored default for economy balancing. Clock construction uses validated tuning; it does not silently substitute another day length on configuration errors. Authored and saved day durations must both be finite and at least 60 seconds, validated without narrowing to `f32`. The supported live/save speed range is 0–32×; the shared Rust clock owns the existing UI steps (0, 0.5, 1, 2, 4, 8, 16, 32). These bounds keep a fixed 1/60-second runtime tick below 13 operational minute crossings (`AUDIT-01-C11`).
+
+Trip estimators return physical travel seconds. The schedule cache converts those to operational
+minutes using the live world's day duration; refresh intervals make the inverse conversion before
+being added to physical agent simulation time. Employment ranking continues to use physical seconds.
+Agent movement and scheduling borrow the same `TimeSystem` for date, minute and conversion rate.
+The saved day duration remains authoritative when current tuning changes (`AUDIT-01-A2`);
+configuration supplies the default for new worlds and the authored schedule/refresh intervals.
+`AUDIT-01-A1` covers half, default and double day durations, including departure marks and refresh
+deadlines. Five matched release process pairs (`benchmark_commute_cache_recording --ignored
+--nocapture`, 24 Rayon workers, 11 samples of one million recordings) measure about 1.00 ms before
+and 2.13–2.22 ms after the correction. This periodic O(1) arithmetic adds no allocation; it does not
+measure route-search cost. Identities and raw logs are under `/tmp/metrum-full-audit/clock-*`.
+The later live-clock ownership correction measures 2.172–2.178 → 2.409–2.425 ms per million
+recordings in five CPU-0 matched release pairs. Full farm tick comparisons retain comparable
+cost at 1,000/10,000/100,000 agents; 24-worker runs are noisy, while three CPU-0/one-worker
+pairs give 1.375/1.775 → 1.322/1.717 ms for 100,000 idle/working agents. These are
+movement-only fixtures with no route search, not whole-city economy timings; commands,
+source/binary identities and raw logs are under `/tmp/metrum-full-audit/live-clock-*`.
 
 ### Why this scale is the target
 
@@ -161,6 +179,34 @@ Deterministic day-boundary rule:
 5. Run the daily demand pass exactly once from that frozen snapshot.
 6. Execute `households_to_remove_today` from the already-frozen settled household snapshot before
    the next operational day's sub-daily economy steps begin.
+
+The daily agent-state pass retains its existing idle-in-building happiness bonus, nearest-cell
+pollution penalty, happiness limits and nonnegative per-agent cash field. It now zips the existing
+SoA arrays in Rayon with a minimum work length of 8,192; no additional agent state or per-agent
+allocation is introduced (`AUDIT-01-A3`). Work remains O(A). Boundary/activity regressions exercise
+8 and 32,768 agents, and matched release benchmarks verify identical result bits through one million.
+
+Five matched process pairs on eight physical P cores (`RAYON_NUM_THREADS=8`, affinity
+`0,2,4,6,8,10,12,14`) measure this daily pass:
+
+| Agents | Before (ms) | After (ms) |
+| ---: | ---: | ---: |
+| 1,000 | 0.005727 | 0.008621 |
+| 10,000 | 0.056888 | 0.067419 |
+| 100,000 | 0.581686 | 0.090967 |
+| 1,000,000 | 5.831440 | 0.893865 |
+
+The 24-worker million-agent median improves 5.820677 → 0.649441 ms. The accepted tradeoff is
+roughly 3–11 microseconds of extra daily work in the small physical-core fixtures and about 16%
+overhead in the CPU-0/one-worker million-agent case (5.844838 → 6.762297 ms). These results concern
+one daily state pass, not the full daily settlement or frame time. Initial fine-grained dispatch
+was substantially worse for small collections and is retained only as diagnostic evidence.
+The benchmark uses minimal agent SoA setup, a fixed pollution field, three warmups and 21 samples
+of eight updates, resetting happiness outside timing. Command: the recorded test binary with
+`--exact simulation::economy::agents::daily::tests::benchmark_daily_agent_update --ignored --nocapture`.
+Identities, commands and raw measurements are under `/tmp/metrum-full-audit/environment-*`;
+final comparisons are `environment-zipped-matched-bench.json` and
+`environment-physical-matched-bench.json`.
 
 Deterministic hourly-demand rule:
 
@@ -401,6 +447,8 @@ Rules:
 Baseline fiscal defaults live in `economy/profiles.toml` under `runtime_tuning.fiscal`. Runtime
 simulation stores the active values in `CityFiscalPolicy`, which is persisted with the save and may
 be changed by the player through the Economy Overview Policy tab.
+There is no second hardcoded fiscal fallback. Tuning and the compiled catalog share one validated
+startup file snapshot; invalid configuration reports an error instead of silently changing policy.
 
 - `income_tax_rate`: fraction withheld from gross daily wages before households receive income
 - `household_vat_rate`: fraction added to household store purchases
@@ -714,8 +762,8 @@ Local supply chains should usually beat permanent `OWA` dependence through:
 
 The logistics system tries local suppliers first and falls back to the `OWA` only when no valid local source is available. The `OWA` import price is derived as `local_unit_price × owa_import_price_multiplier` (configured in `[runtime_tuning]` in `economy/profiles.toml`), ensuring that a healthy local producer is always cheaper than the `OWA` alternative.
 
-Local commercial input demand also has priority over industrial exports. Before an industrial
-building exports surplus output, the export planner computes affordable, non-terminal commercial
+Local business and utility input demand also has priority over industrial exports. Before an industrial
+building exports surplus output, the export planner computes affordable, non-terminal customer
 input requests using the same truckload quantization, compatible-supplier index, component
 reachability, and exact freight-route feasibility as inbound freight. Only demand that can be
 served by a valid local supplier creates a source-specific output hold. Active inbound
@@ -723,13 +771,14 @@ reservations already count toward the buyer's expected inventory coverage, so th
 without double-counting open freight jobs or blocking exports for disconnected/unreachable
 buyers.
 
-Daily demand snapshots read commercial `OWA` input reliance as import-substitution pressure for
+Daily demand snapshots read business and utility `OWA` input reliance as import-substitution pressure for
 industrial growth. That pressure is diagnostic of actual outside-input use; industrial spawn
 quantity remains guarded by the demand-side committed local input-capacity accounting in
 [`demand.md`](demand.md).
 
 Exports work as a lower-priced outside market for surplus. When an industrial building's
-unreserved output inventory exceeds a **one-day production buffer** after local input holds, the
+unreserved output inventory exceeds a **one-day production buffer** after local input holds and
+its own same-resource input reserve, the
 logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal.
 For explicit field producers and extractors, output inventory capacity uses the committed
 area-scaled daily output, while the export buffer uses current active staffed output so a weakly
@@ -831,6 +880,9 @@ Eviction and unhoused rule:
 
 - if a housed household fails the stay rule and no affordable vacant home exists, the household is
   evicted from its current home and becomes `unhoused`
+- eviction cancels an active grocery trip through the normal reservation lifecycle: before pickup,
+  the household receives its reserved payment and the store regains reserved stock; after pickup,
+  the settled sale remains paid. Cancellation is recorded once in the household ledger.
 - becoming `unhoused` is not the same thing as immediate city removal
 - the household remains an explicit runtime record until demand later decides whether
   `households_to_remove_today` should remove it from the city
@@ -840,6 +892,35 @@ Eviction and unhoused rule:
   `0` on the day a household is first evicted
 - demand owns the authored thresholds that interpret `unhoused_days_elapsed`, current `budget`,
   and the `stock_days` household supply-days value into persistent-exit eligibility
+
+Housing audit (`AUDIT-01`, 2026-09-12): relocation reuses the economy chunk-ring iterator and
+distance bound, visits only the ring perimeter, and does not clone level lists per household.
+Scanning through radius `R` now visits O(R²) chunks instead of performing O(R³) interior checks;
+candidate evaluation and existing chunk-index lookup costs are unchanged. Equal-distance candidates
+on a later ring still participate in the building-ID tie-break.
+
+Matched unprofiled release measurements used `RAYON_NUM_THREADS=24 cargo test --offline
+--manifest-path rust/Cargo.toml --release --lib benchmark_housing_chunk_bounds -- --ignored
+--nocapture`, 11 samples of 1,000 bound queries, without concurrent compilation or Godot work.
+Median microseconds/query before → after: radius 8 `0.302 → 0.161`, 32 `4.954 → 0.639`,
+80 `28.543 → 1.590`, 128 `71.441 → 2.541`. This measures the chunk-distance bound, not city FPS.
+Source identities, baseline diff and logs are under `/tmp/metrum-full-audit/housing-*`.
+The household suite freshly passes 102 tests (3 manual benchmarks ignored), including pre/post-pickup
+eviction accounting and cross-ring distance ties; whole-codebase audit validation remains ongoing.
+
+Household-removal index repair now composes chained swap moves and updates surviving agents once
+in parallel: O(A + R) household-reference work and O(R) temporary mappings for A agents and R
+removed households, instead of O(A × R). Candidate ranking and freight-carrier remapping are
+separate costs. Resident and freight removal share the agent-record mutator; it repairs a moved
+shopper's household reference immediately in O(1), preserving the active shopping reservation.
+
+Matched unprofiled release removal measurements used `RAYON_NUM_THREADS=24 cargo test --offline
+--manifest-path rust/Cargo.toml --release --lib benchmark_household_removal -- --ignored
+--nocapture`, seven samples per size, 256 removed households and one resident per household.
+Setup is excluded. Median milliseconds before → after: 1,024 households `1.547 → 0.113`,
+8,192 `14.185 → 0.394`, 65,536 `116.395 → 2.535`. These fixtures have no freight orders;
+they measure selection/removal and household-ID repair, not all possible emigration workloads.
+Logs and pre-change source copies are under `/tmp/metrum-full-audit/removal-*`.
 
 Deterministic `v0.1` household-removal selection rule:
 
@@ -1170,6 +1251,18 @@ It is also the main developer surface for validating and debugging shortages, de
 
 If a profile is renamed or deleted while still referenced by assets or authored economy content, the economy editor should show reverse-reference warnings before export. It must not silently remap dependent assets to a different profile.
 
+The current sandbox is a daily aggregate chain calculation. Its scenario controls are duration,
+household count/size, starting pantry stock and explicit OWA import resources. The former scenario
+target-stock, trigger-stock and pickup-cadence controls had no execution path and are removed;
+live household replenishment remains owned by its runtime profile and operational-clock settings.
+If several demand sinks are authored, validation warns and playback uses only the first authored
+sink, excluding the others from both household consumption and incoming stock allocation.
+
+Profile rates, wages and stock settings must be finite and nonnegative. Scenario duration must be
+positive, average household size at least one, and starting stock finite and nonnegative.
+Controller weights lie in `[0, 1]`; multipliers are finite, nonnegative and ordered. Startup
+treasury must be finite, and export-saturation load/recovery settings finite and positive.
+
 #### Business Solvency Validation
 
 The economy editor sandbox must validate financial solvency alongside physical logistics flow. A supply chain that circulates goods perfectly but leaves businesses fundamentally bankrupt is a failed economy design that causes "zombie businesses" at runtime.
@@ -1330,6 +1423,7 @@ Rules:
 - households keep their authored base utility cost split across power, water, and sewage ledger buckets; the daily utility settlement routes the locally covered share to local utility revenue and applies only the missing-service `OWA` surcharge to household budgets
 - a valid connected local `power` producer contributes the service units actually accumulated during hourly operation from `base_rate_units_per_day * current throughput`, capped by fuel/input availability at those hours; end-of-day settlement must not credit unproduced capacity
 - city service funding policies are runtime simulation state owned by Rust; the live electricity funding policy sets the default funded worker slots for city-owned power plants, and production follows the resulting staffed workers plus fuel/input availability
+- live city and per-building funding controls reject NaN/infinite values without changing policy or staffing; finite values retain the existing `[0, 1]` slider clamp, and per-building controls reject non-finite pick coordinates
 - individual city-owned power plants may carry a per-building funding override; citywide electricity funding changes do not clear those plant overrides
 - if a valid connected local `water` producer or `sewage` processor exists and has positive current operational throughput, that service is treated as locally available to eligible consumers in `v0.1`
 - if no valid connected local utility producer or processor exists for a service, that service falls back to `OWA` independently of the other utility services
@@ -1687,6 +1781,13 @@ Where:
 - `job_availability_score` is `0.0` when no valid reachable open job exists and otherwise reflects the best currently available work option
 - `commute_penalty` is derived from expected travel cost or time for the candidate job
 
+Job candidate pruning uses the same capped commute penalty as candidate ranking. A strictly
+larger penalty lower bound can stop the chunk scan; equal penalties must keep searching because
+wage, capacity, vacancy count and building ID can still decide the order. At the 30-minute physical
+travel cap, farther candidates therefore remain eligible. This preserves the existing O(J)
+worst-case search bound over reachable jobs; saturated searches may inspect more jobs than the
+incorrect early-stop path. This bound correction is covered by a regression, not a route-timing claim.
+
 Recommended seed weights for the first implementation:
 
 - `w_income = 0.35`
@@ -1791,6 +1892,11 @@ Rules:
   cargo on the next logistics pass rather than on the exact render frame of arrival
 - after cargo settlement, the shipment remains open in `Returning` only to track and clean up the
   empty carrier; the return leg must not keep source inventory or destination demand reserved
+- delivery starts a fresh return-leg clock. Both traveling legs are bounded by
+  `max(6, 4 * eta_hours + 2)` operational hours (saturating at the stored hour limit).
+  A missing or timed-out return carrier closes the already settled shipment as fulfilled without
+  another inventory or money transfer. Carrier cleanup checks both vehicle class and stable
+  shipment ID before removing an agent slot.
 - `eta_hours` is an estimate for timing/debug/capacity decisions, not the authority that completes a
   shipment
 - active carrier removal, building removal, invalid endpoint state, or a trip that exceeds its
@@ -1798,6 +1904,59 @@ Rules:
   expired; no carrier may remain orphaned after its shipment is closed
 
 This keeps goods visible in traffic without adding a second movement stack.
+
+The `AUDIT-01` return-clock/identity fix adds O(1) allocation-free work per active shipment.
+Five alternating unprofiled release process pairs, 24 Rayon workers, 11 × 16 progression calls
+per size, measured 65,536 active returns at median `0.335 → 0.399 ms` per logistics pass.
+This isolates progression with no arrivals/removals or route planning. The additional 0.064 ms
+buys the missing bounded lifecycle; it does not establish cleanup-batch scaling. Before/after
+executables, hashes and raw runs are under `/tmp/metrum-full-audit/carrier-*`.
+
+Carrier swap repair uses the moved agent's stable shipment ID and binary-searches the existing
+ordered shipment vector. Appends, retention, SQLite load and undo preserve ID order; undo stores
+jobs without a duplicate historical vector index. Repair is O(1) for a moved resident and
+O(log S) for a moved freight carrier, with no new index or allocation. Five alternating release
+process pairs (24 Rayon workers, 11 samples of 256 repairs, setup/SoA removal excluded) measured
+1,024 / 8,192 / 65,536 shipments at median `0.155 / 0.560 / 12.413 ms` before and
+`0.004 / 0.005 / 0.005 ms` after. Exact sources, executables, hashes and raw runs:
+`/tmp/metrum-full-audit/carrier-remap-*`. Actual cleanup regressions also exercise mixed resident
+and freight swap moves with noncontiguous shipment IDs.
+
+### Agent Initialization Audit Measurements (2026-09-12)
+
+`AUDIT-01-A13` shares initialization and SoA insertion between housed residents, household
+arrival carriers and freight. Role-specific state remains explicit: freight has no household,
+home or resident money, and its existing non-working age marker remains unchanged. Schedule and
+visual seeds still use the origin building and insertion index; render IDs use the existing
+monotonic allocator. The unused random-spawn helper and three unused border-spawn arguments are
+removed. Initialization is O(1), with amortized O(1) column insertion and no additional storage or
+allocation. Insertion remains serial because it appends to coupled columns and allocates identity.
+
+Five alternating unprofiled release process pairs use CPU 0 with one worker. The fixture reserves
+column capacity, then measures three warmups and 21 batches per case. Capacity reservation,
+clearing, clock/ID reset and a hash of every generated column are outside timing. Housed cases
+include all three age classes; border cases include whole-household carrier sizes; all cases
+include ordinary and sentinel origin IDs. Every output hash matches across builds and runs.
+
+| Agents | Housed before → after, ms | Border before → after, ms | Freight before → after, ms | Mixed before → after, ms |
+| --- | --- | --- | --- | --- |
+| 1,024 | 0.044233 → 0.045014 | 0.045033 → 0.045690 | 0.043986 → 0.045065 | 0.044633 → 0.045611 |
+| 16,384 | 0.752458 → 0.768472 | 0.749509 → 0.757451 | 0.758311 → 0.779345 | 0.766196 → 0.784328 |
+| 131,072 | 22.883909 → 22.814488 | 6.022510 → 6.106335 | 8.815425 → 8.959475 | 8.846070 → 9.011130 |
+
+These median process medians show comparable cost with a measured 1–2.8% increase in most
+cases; the largest mixed batch adds 0.165 ms. This measures warmed insertion, excluding route
+planning, household admission, capacity growth and gameplay ticking. It is not a frame-time or
+full immigration benchmark. No other builds or benchmark jobs ran during these comparisons.
+
+Reproduce with `python3 /tmp/metrum-full-audit/match_agent_spawning.py`. The runner records
+commands for `BINARY --exact simulation::economy::agents::lifecycle::tests::benchmark_agent_spawning
+--ignored --nocapture --test-threads=1`, with `taskset -c 0`, `RAYON_NUM_THREADS=1` and
+`METRUM_DEBUG=0`. Raw runs and summaries are in `agent-spawn-matched-{bench,summary}.json` under
+that directory. `agent-spawn-{before,after}-identity.json` records source hashes and Rust 1.98.1
+(`48a229cea`, 2026-09-01). Binary SHA-256 values are
+`e6beeb312519a402df54cd27681ccf134968dda35970feebacc144b479087d83` before and
+`bf921775fe34e6a3db8b1f496ae64797959d3a62622527c39c25f81ce7373ecb` after.
 
 ### Compression rule
 
@@ -1862,6 +2021,12 @@ Rules:
 - when a carrier is dispatched from a building source, the source inventory is moved out of the
   building and into the shipment; seller revenue is still credited only on successful delivery
 - if a shipment fails, expires, or is canceled, both reservations must be released deterministically
+- building removal cancels unsettled orders through the same payment refund path: private buyers
+  regain operating funds; city-service orders refund the treasury and reverse the service's input
+  expense. This also applies when the removed building is the city-service destination itself.
+- delivered shipments with returning carriers remain settled when either endpoint is removed;
+  no goods or payment are refunded again. Building-deletion undo restores the order and reverses
+  only that deletion's city refund, preserving unrelated treasury transactions.
 
 This prevents double-selling, phantom shortages, and duplicate jobs.
 
@@ -1923,6 +2088,18 @@ This prevents retry storms and makes debugging easier.
 
 ### Household replenishment
 
+Shopping and sampled service visits share their bounded nearest-destination selection and
+round-trip feasibility checks. Candidate replacement never grows an already reserved buffer;
+distance ties still prefer the lower building ID. Grocery retry-cursor ordering is preserved.
+`AUDIT-01-H15` validation used the isolated `benchmark_shopping_candidate_selection --ignored
+--nocapture` release fixture: 1,000 queries per sample, 11 samples, descending candidate streams
+with distance ties, limits/scans of 8/128 and 24/384, and five alternating process pairs with
+`RAYON_NUM_THREADS=24`. Median milliseconds per 1,000 queries were `0.656 → 0.667` and
+`2.862 → 2.907`; this establishes no speedup. The verified improvement is removing transient
+capacity growth. Selection remains O(K) per candidate and O(K) scratch storage for fixed K;
+index construction complexity is unchanged. Sources, executable identities and raw runs are
+under `/tmp/metrum-full-audit/shopping-*`.
+
 Household replenishment in `v0.1` uses one visible fulfillment mode:
 
 - a bounded household-shopping carrier task, represented by one selected household member making
@@ -1955,7 +2132,9 @@ Rules:
 - when an eligible member later returns home, the next household economy pass may claim store inventory
   and assign that shopper
 - reservation and shopper assignment are one deterministic serial apply step; store inventory and
-  household budget must not be held without an assigned shopper
+household budget must not be held without an assigned shopper
+- an agent swap-remove must repair a moved shopper's household reference in the same operation;
+  the schedule-seed guard remains a stale-reference check, not a substitute for index repair
 - candidate stores must be reachable by the same ordinary building-origin trip planner the selected
   shopper will use for both `Home -> Store` and `Store -> Home`; unreachable candidates are rejected
   before inventory or budget is reserved
@@ -2148,9 +2327,7 @@ Recommended direction:
 
 - use TOML as the canonical exported rule format
 - keep the exported files readable and editable in a normal text editor
-- treat any compiled or binary representation as optional derived cache only
-- require the game and the economy editor to load correctly even when caches are missing
-- regenerate caches whenever they disagree with the text source files
+- compile the validated TOML into the shared in-memory runtime catalog at startup
 
 Manual editing is allowed. If a developer or modder wants to tweak the values in a text editor instead of the economy editor UI, that should be supported as long as the files still validate.
 
@@ -2163,7 +2340,6 @@ economy/
   profiles.toml        # economy profiles and recipe definitions
   controllers.toml     # controller definitions and parameters
   scenarios.toml       # scenario overrides and test setups
-  economy.index.bin    # optional derived cache
 ```
 
 These filenames and this top-level folder layout are the baseline contract for the first implementation.
@@ -2171,7 +2347,7 @@ These filenames and this top-level folder layout are the baseline contract for t
 The important runtime rules are:
 
 - text files are authoritative
-- caches are derived
+- compiled runtime data is derived from those text files
 - exported economy data remains inspectable and editable outside the tool
 
 Examples of compiled forms:
@@ -2307,7 +2483,7 @@ These are shipped `economy/profiles.toml` values, not Rust defaults:
 
 **`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
 
-**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local commercial input holds, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.60` means the OWA initially pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
+**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer after reachable local business/utility input holds and its own same-resource input reserve, the logistics system creates an outbound export shipment. The initial OWA bid is `local_unit_price × owa_export_price_multiplier`. A value of `0.60` means the OWA initially pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Repeated same-resource exports apply the authored saturation factor only after the freight reaches the `OWA` border and revenue settles. Values outside `[0.0, 1.0]` are rejected at validation time.
 
 **Commercial store scaling implementation:** commercial store active worker capacity and input
 inventory targets scale from the larger of recent household sales and local essential demand.
@@ -2729,6 +2905,231 @@ Live values in `economy/profiles.toml` `[runtime_tuning]`:
 | `owa_import_price_multiplier` | 1.75 | OWA import and missing local utility fallback price multiplier |
 | `owa_export_price_multiplier` | 0.60 | Scheduled OWA surplus export price multiplier |
 | `owa_distress_liquidation_multiplier` | 0.25 | Forced liquidation fire-sale price multiplier; must be no higher than scheduled export |
+
+## Machinery Upkeep (`ECON-09`)
+
+Machinery is one freight resource representing equipment and spare parts. It is a recurring
+production input; there are no individual machines, wear timers, replacement events or agent
+life-cycle rules. Inputs are bought locally first, then imported from OWA through existing
+paid freight. Until a Machinery factory asset is installed, all Machinery comes from OWA.
+
+Initial full-operation rates in `economy/profiles.toml`:
+
+| Consumer profile | Machinery / operational day | Scaling |
+| --- | ---: | --- |
+| `grain_farm_basic` | 1 | Per hectare of committed field |
+| `coal_mine_basic` | 4 | Per hectare of committed extraction area |
+| `food_processor_basic` | 2 | Per building |
+| `power_plant_basic` | 4 | Per building |
+| `water_plant_basic` | 0.5 | Per building |
+| `wastewater_treatment_basic` | 0.5 | Per building |
+| `machinery_factory_basic` | 2 | Per building, retained from its own product stock |
+
+A 10-hectare mine requires 40 Machinery/day; a 10-hectare farm requires 10. Farms keep their
+existing worker density and two-worker minimum. Staffing, input availability and output headroom
+scale actual consumption. Farms and mines consume inputs exactly once alongside actual production;
+a nearly exhausted mine pays only for the output remaining in its reserve. An idle producer
+consumes nothing. Depletion clears the mine's cached productive area, removing its worker capacity,
+committed output capacity and Machinery orders/demand. The saved pit and extracted stock remain;
+loading reconstructs the same zero capacity from the depleted reserve. Water/sewage operation and
+power generation require Machinery stock as well as staff; the existing OWA utility fallback remains
+available.
+
+Changing an existing mine's extraction polygon retains that mine's cumulative extracted amount
+(`AUDIT-01-M1`). The new authored-deposit sample sets its total reserve, floored at the amount
+already extracted. Shrinking below that amount leaves zero remaining reserve/capacity; expanding
+again adds only the reserve above cumulative extraction. Editing never grants startup funds again.
+Commit, save and load share finite non-negative reserve validation with `extracted <= total`;
+invalid depletion is rejected, and a failed save preserves the previous file. This retains the
+existing per-building aggregate reserve model and save schema.
+
+Farm and mine sites retain unique ascending building-owner indices through placement, deletion,
+swap-remapping and undo (`AUDIT-01-M2`). Lookup and unrelated building removal cost O(log S)
+without allocation. Replacing an existing mine updates its slot; adding or remapping a site may
+shift O(S) entries in the existing vector, with no additional persistent index. Farm clearance
+remains owned by the allocator and its existing lifecycle calls.
+
+Five alternating, unprofiled release process pairs on CPU 0 with one Rayon worker measured 128
+queries after three warmups, with 21 samples per process. Isolated site construction, checksums
+and assertions are outside timing; the fixture does not run placement or production.
+
+| Mine sites | Lookup before → after, ms | Unrelated removal before → after, ms |
+| --- | --- | --- |
+| 16 | 0.000497 → 0.000432 | 0.001608 → 0.000433 |
+| 1,024 | 0.017615 → 0.001215 | 0.065513 → 0.001203 |
+| 65,536 | 4.907083 → 0.003491 | 13.201446 → 0.002077 |
+
+The release command is `taskset -c 0 BINARY --exact
+simulation::extraction::tests::benchmark_extraction_site_lookup --ignored --nocapture
+--test-threads=1`, with `RAYON_NUM_THREADS=1`. Source/binary identities, individual logs and
+results are `/tmp/metrum-full-audit/site-order-{before,after}-identity.json` and
+`site-order-matched-bench.json`. These timings cover lookup and removal of buildings without
+production sites; they do not measure the O(S) shifts required by affected-site edits.
+
+Machinery reference price is 20 currency/unit; OWA imports cost 35 at the shipped 1.75 multiplier.
+These are initial game-balance values. Heavy mines are intended to benefit from local customers
+and local Machinery: at full operation per hectare, 120 Coal sells locally for 960, imported
+Machinery costs 140 and five workers cost 450/day before other charges. Low-price OWA exports
+alone do not guarantee a profitable mine. Existing output and staffing rates are preserved.
+A regression checks positive full-operation margins after maximum authored wages, Machinery/raw-material
+imports, property tax, conservative utility charges and profit tax: existing grain/coal inputs are
+local, new Machinery/Steel/Metals are imported, producers have local buyers, and utility plants have
+sufficient service demand. Water/sewage examples use 200/250 daily service units. This proves viable
+operating cases, not profitability for tiny fields, insufficient customers or every import/export
+mix. Personal services and groceries do not receive Machinery inputs in this first pass.
+
+Input stock targets scale with work area and hold at least two minimum shipment quantities
+(80 units with the shipped 40-unit minimum). Positive reorder thresholds retain at least one
+shipment quantity; zero thresholds use the existing target-minus-minimum-batch rule. This lets
+small consumers reorder before running empty without dispatching tiny deliveries every hour.
+Commercial activity scaling runs before this minimum is applied, so small shops retain the same
+two-batch reserve. Input orders and export protection share the restock decision and indexed
+supplier query; a buyer's export holds share one remaining purchase budget across all recipe ports.
+An uncommitted field/mine requests nothing. Private startup capital covers seven days of wages
+and the first input buffers at OWA prices; input inventory is delivered and paid for normally.
+City service inputs are treasury-funded and included for every utility in daily city expenses;
+power input costs and actual power-worker wages remain separate service subtotals. Refunds reduce
+input spending on the day they arrive, including refunds for an earlier day's order; negative
+input spending is displayed as returned money. The old money-divided-by-coal-price purchase
+estimate was removed because mixed input spending cannot measure coal units. Coal stock and
+consumption remain visible. Household consumption summaries derive their total from the supply
+and service costs instead of maintaining a duplicate hourly ledger counter. Format 60 removed
+the obsolete coal-purchase history field; format 61 also preserves unsettled household utility
+payments and continues to read formats 57–60. Local demand is
+protected before exports, including industrial, farm, mine and utility customers. A producer that
+consumes its own output keeps its input target stock available when offering goods to local freight,
+scheduled OWA exports or emergency liquidation. All three paths share the same stock-reserve helper.
+Hourly output headroom uses net inventory growth when a recipe consumes its own output, including
+the storage freed by that same production step.
+The inspector shows all input buffers, including empty Machinery stock, and nominal daily usage.
+Its fill percentage counts each resource once; a shared input/output slot uses the larger of its
+input target and finite output capacity, rather than counting the same stock twice.
+
+### Incoming small Machinery factory asset
+
+The reusable `machinery_factory_basic` processor profile is ready; there is deliberately no
+placeholder production asset. Register the user's model as a level-1, low-density, zoned-private
+industrial building and select that profile. Staffing is four workers at 80–100 currency/day.
+At full operation its recipe is **12 Steel + 4 Metals + 2 Machinery → 42 Machinery/day**,
+leaving **40 Machinery/day net** for customers. Steel and Metals are separate goods: Metals
+means non-steel metals. Their import-only reference prices are 8 and 16, so OWA prices are 14 and
+28. Both materials can be imported immediately; ore/coal-to-steel and metal refining assets are
+future content. The net output can cover one 10-hectare mine, four 10-hectare farms, or twenty
+food-processing buildings at these initial rates.
+
+Industrial demand now counts actual staffed business/area/utility input needs as well as the
+existing market-scaled commercial inputs. Input shortages and OWA purchases do not erase the
+local production opportunity; full output buffers and inactive worker slots do not create upstream
+needs. Retained farm workers above current active capacity are excluded using the production
+system's staffing rule. Matching resource deficits determine eligible factory types and spawn
+volume. Existing, under-construction and selected factory outputs reserve capacity, including the factory's own
+same-resource upkeep. Adding a profile without an asset cannot spawn a building. See
+[`demand.md`](demand.md) and the authoring checklist in [`asset_editor.md`](asset_editor.md).
+
+### Resource identity and cost
+
+`[[resources]]` entries in `economy/profiles.toml` own explicit, contiguous, one-based `runtime_id`
+values. These IDs are persisted by inventories, shipments and freight bookkeeping: append new
+IDs and never reassign existing ones. IDs 1–6 retain the previous resource identities; Machinery,
+Steel and Metals are 7, 8 and 9. File/name ordering no longer assigns identity. Import-only goods
+may specify `import_unit_price_currency` without introducing a fake producer profile. Remove
+that import-only price when an output profile becomes the resource's price owner. The economy
+editor JSON/export round trip preserves the resource definitions. The unused exported compatibility
+cache is removed; runtime compilation reads the canonical TOML. Profile IDs remain append-only by
+authored order. Input and output ports share one compiler:
+each resource appears at most once per direction, with a finite nonnegative rate. A resource may
+appear on both sides for internal upkeep; duplicate entries cannot cause unaccounted consumption.
+
+Sandbox scenarios declare `owa_import_resources` explicitly. The shipped grocery scenario imports
+Machinery; its farms and processor pay the OWA price for actual missing input units while local
+connected inputs retain their graph price. Undeclared disconnected inputs remain validation errors.
+The economy editor exposes the import list on the scenario inspector and accepts fractional port
+rates. This is aggregate editor playback; live freight still uses deliveries and stock batches.
+
+### Runtime bounds and verification
+
+Hourly production remains O(buildings) for a fixed catalog, with Rayon on the ordinary-building pass;
+area production keeps its existing indexed site traversal. Input consumption allocates no memory
+per building. Recipe work traverses inputs/outputs and performs bounded same-resource port lookups.
+Demand computes each profile's capacity scale once per building and reuses its output-port pass
+for the relevant resource totals. It reuses the existing parallel resource reduction and compact
+resource arrays; with a fixed catalog it remains O(buildings), plus candidate output-port checks. No agent traversal
+or additional spatial index is introduced. Freight uses the existing supplier/component indices,
+route cache, reservations and bounded border capacity; protecting additional customer types adds
+recipe-port work to its existing building pass.
+The outbound-only reservation query scans active shipments in O(S), retains only source inventory
+slots, and does not allocate inbound or border-job views. Its flattened storage ends at the last
+active source/resource slot, independently of destination IDs. Both views share source-cargo
+eligibility and reject resource IDs outside the catalog. A matched unprofiled release fixture with
+4,096 orders, 256 sources and destination IDs through 69,631 improves from `0.741` to `0.015 ms`
+per query (11 × 100 queries, 24 Rayon workers); logs and binary identities are under
+`/tmp/metrum-full-audit/reservations-*`. This is a reservation-query measurement, not whole freight
+throughput or a city-frame claim.
+Daily-to-hourly production conversion has one shared constant. Demand and household settlement
+share the same compact-resource aggregation helpers, and service activity/sales share one demand-rate
+query. Service stores and explicit production areas also share their profile activity-scale calculation.
+Resource order and accumulation order are preserved. Mine depletion updates its existing
+cache in O(1) per site; inventory inspection and reserve protection perform bounded recipe-port work
+without adding allocations or city-wide scans.
+
+The `AUDIT-01` follow-up uses shared fixed-size parallel chunk folds and input-order merging for
+floating-point activity and demand totals. Accumulators update in place; worker scheduling cannot
+change the totals. Work remains O(buildings + households) for a fixed catalog, with O(N / chunk size)
+temporary accumulators. No per-resident allocation or sort of chunk results is needed.
+
+Fresh matched unprofiled release comparison: six alternating process pairs, `RAYON_NUM_THREADS=24`,
+the existing `benchmark_business_demand_snapshot` factory fixture, 10 warmups then 11 samples of
+100 snapshots per size; setup is excluded and no compilation/Godot work runs concurrently.
+Median milliseconds/snapshot before → after: 1,024 buildings `0.092 → 0.028`,
+8,192 `0.125 → 0.094`, 65,536 `0.2905 → 0.252`. This measures business snapshots, not city FPS
+or all mixed household/industry workloads. Command on each saved release test executable:
+`benchmark_business_demand_snapshot --ignored --nocapture`. Raw runs and exact binary identities:
+`/tmp/metrum-full-audit/reduction-long-matched-bench.json` and `reduction-long-binaries.sha256`.
+The before build restores the initially inventoried metrics/snapshot sources in the isolated
+`reduction-baseline/` crate. Earlier short-window timings are superseded by this comparison.
+
+Follow-up audit verification on 2026-09-12: the release Rust suite passed 1,709 tests (16 ignored),
+including proportional upkeep, paid startup imports, shared-budget local holds, inactive farm demand, net
+output headroom, small-shop restocking, invalid recipe rejection, industrial absorption and save
+round trips. Added regressions cover depleted-mine capacity restoration, upkeep/shipment reserves
+during liquidation, and distinct-resource inventory fill. Profitability checks include maximum
+authored wages and farm/mine property taxes; utility accounting checks distinguish power payroll
+and include prior-day input refunds.
+All eight headless Godot regressions passed, including native economy-editor export/playback,
+the Machinery asset selector, refund display, farm inspector and camera save/load. A copy of the
+existing `farms.sqlite` passed two load/New Game cycles with 22 grounded models and chunk `(22, 0)`
+published; the original save was untouched. Logs: `/tmp/metrum-machinery-audit2-tests.log`,
+`/tmp/metrum-machinery-audit2-<test_script>.log`, `/tmp/metrum-machinery-audit2-farms-load.log`.
+The editor checks cover Godot's floating-point JSON representation of whole-number resource IDs
+and construction durations; fractional durations remain invalid. The release library was rebuilt
+and deployed. The 15 Python runner/report checks, benchmark-target compile check, formatting and
+diff checks pass. Rustdoc reports no missing-doc warnings. Clippy reports no warnings on changed
+lines; it completes with existing repository warnings when the pre-existing `clippy::mut_from_ref`
+error in `agents/tick/slices.rs` is allowed. Compiler/check logs use the same
+`/tmp/metrum-machinery-audit2-` prefix (`build`, `clippy`, `rustdoc`, `bench-check`,
+`python-terrain`, `python-report`).
+
+Fresh follow-up audit demand benchmark on 2026-09-12: matched, unprofiled release builds, 24 Rayon
+workers, 11 samples per size, median snapshot time. The fixture holds the road graph fixed and varies
+staffed food processors with stocked input buffers and a 10,000 operating budget; setup/cloning
+is excluded. Both builds include Machinery. Before is the previously audited working tree over
+`a91d6159`, captured in `/tmp/metrum-machinery-audit2-before.diff`; after includes the follow-up
+fixes and shared resource helpers.
+
+| Buildings | Before audit | After audit |
+| ---: | ---: | ---: |
+| 1,024 | 0.106 ms | 0.108 ms |
+| 8,192 | 0.141 ms | 0.132 ms |
+| 65,536 | 0.448 ms | 0.281 ms |
+
+Command: `RAYON_NUM_THREADS=24 cargo test --offline --manifest-path rust/Cargo.toml --release --lib benchmark_business_demand_snapshot -- --ignored --nocapture`.
+Fixture: `rust/src/simulation/economy/demand/tests.rs::benchmark_business_demand_snapshot`.
+Logs: `/tmp/metrum-machinery-audit2-bench-before.log`, `/tmp/metrum-machinery-audit2-bench-after.log`.
+The audited source/config identity is recorded in `/tmp/metrum-machinery-audit2-source.sha256`
+(`750a4070e2bf599585e849e7a479b48975c4a77dbe1313f5be1c2dce60aae987`).
+The final run saves 0.167 ms at 65,536 buildings; small-fixture results are shown above.
+The fixed-catalog linear bound is unchanged. These measurements cover demand aggregation,
+not end-to-end freight or million-agent throughput.
 
 ## Farm Households (`ECON-08`)
 
@@ -3156,14 +3557,43 @@ self-terminate after `JOB_UNPAID_ABANDON_DAYS` (currently 2) consecutive unpaid 
 building budget does not go negative from wage payments — a building that cannot pay a worker
 simply fails to pay, not force-debits. The city treasury may go negative as a fiscal state.
 
+Household budgets remain authoritative throughout settlement. Agent money mirrors are published
+once after wages, transfers, taxes, utility settlement and housing/workplace updates; payroll does
+not publish an intermediate copy that no settlement phase reads.
+
+Employment cleanup (`AUDIT-01`, 2026-09-12) shares active/funded/budget-backed job capacity and
+quota enforcement. Staffing retains lower agent IDs first in O(A + B), with O(B) temporary storage;
+when no buildings need a quota, it skips the O(A) retention scan. Capacity evaluation remains
+parallel; final integer count publication is serial. The funding limit vector now uses explicit
+optional capacities (eight rather than four bytes per building), replacing the sentinel convention.
+Ordered Rayon collection already preserves agent/building/key order, so duplicate sorting is gone;
+the distinct resident-first workplace assignment sort remains.
+
+Matched unprofiled release measurements use 1,024/8,192/65,536 workers, 11 timing samples, five
+alternating process pairs, and 24 or one Rayon worker. Setup/reset is outside staffing timing;
+`benchmark_payroll_phase` includes payroll and final money publication, four calls per sample.
+At 65,536 workers, 24-worker medians are 0.235 → 0.253 ms without power quotas,
+0.463 → 0.580 ms with quotas, and 2.683 → 2.081 ms for payroll. Process variation is substantial
+(power before 0.379–1.841 ms, after 0.395–0.665 ms), so these do not establish an overall speedup.
+Single-worker staffing medians are 0.130 → 0.106 ms and 0.377 → 0.317 ms; payroll ranges overlap.
+The bounded quota overhead is accepted for the existing hourly/daily cadence; there is no new
+per-agent allocation or city-wide index. Commands are the two ignored benchmark names with
+`--ignored --nocapture --test-threads=1` on preserved release binaries. Exact identities, workload
+source and raw samples are under `/tmp/metrum-full-audit/employment-{before,final}-*` and
+`employment-final-matched-bench.json`. These fixtures do not measure complete job route searches.
+
 **Step 3 — Pay utility cost.**
 
-Deduct the daily utility cost unconditionally. Budget may go negative from this step.
+Private businesses pay daily utility costs even when this makes their operating budget negative.
+Each private non-residential or explicit field/extractor business consumes one aggregate unit per
+service daily. The authored baseline prices are shared across these businesses:
 
-| Zone type   | OWA rate if all services are missing | OWA fallback per missing service |
-|-------------|--------------------------------------|----------------------------------|
-| Commercial  | 8.0 / day                            | 1/3 of commercial OWA rate       |
-| Industrial  | 12.0 / day                           | 1/3 of industrial OWA rate       |
+| Service | Local unit price | OWA unit price (× 1.75) |
+| --- | ---: | ---: |
+| Power | 3.0 | 5.25 |
+| Water | 2.0 | 3.50 |
+| Sewage | 1.5 | 2.625 |
+| Total daily cost | 6.5 | 11.375 |
 
 `power`, `water`, and `sewage` resolve independently. `Power` uses aggregate daily produced units:
 consumers pay the local authored utility price only for the covered share, and uncovered private
@@ -3177,6 +3607,33 @@ cadence. The hourly charge is split into power, water, and sewage ledger buckets
 settlement routes the power bucket into local power revenue only up to aggregate local power
 coverage, and routes water/sewage buckets to local providers only when those services are available,
 without charging households a second time.
+Only cash actually deducted is recorded as a household utility payment. The hourly base charge
+and daily OWA surcharge are capped by remaining household cash; they do not create household
+debt. Unpaid amounts cannot become provider revenue or recorded OWA spending. The base utility
+prices and service-name lookup are shared with operating-buffer estimates.
+
+Save format 61 stores the three collected utility payments with each household and restores them
+before load-time repair or settlement, without charging cash again. Formats 57–60 had no such
+fields and start those amounts at zero; previously discarded payments cannot be reconstructed.
+Other diagnostic counters begin a new report window after loading. Saved payment amounts must be
+finite and nonnegative, and all four household age/member counts must fit their `u16` storage.
+The daily simulation step owns the accounting-window reset after settlement and reporting;
+diagnostic printing is read-only. The unused `HouseholdSystem::clone` implementation is removed.
+
+
+Utility accounting validation (`AUDIT-01`, 2026-09-12): both cash-limit regressions failed before
+the fix; the full release suite now passes 1,731 tests (25 ignored). The matched unprofiled release
+fixture runs 24 hourly household charge/stock passes plus one daily utility settlement, with
+11 samples and five alternating process pairs, 24 Rayon workers. At 1,024/8,192/65,536 households,
+median daily-block time is 1.689/1.869/4.723 → 1.519/1.904/5.187 ms. Large-fixture process ranges
+overlap (before 3.823–6.467 ms, after 3.543–5.463 ms); no speedup is claimed. The fix adds O(1)
+arithmetic per household to the existing O(H + B) settlement, with no new allocation. Setup and
+ledger reset are excluded; the fixture uses funded households and OWA-only utility service.
+Run `benchmark_household_utility_settlement --ignored --nocapture --test-threads=1` on the
+preserved release binaries. Source/binary identities, raw runs and tests are under
+`/tmp/metrum-full-audit/utility-*`. The subsequent save/lifecycle batch validates mid-day payment persistence separately.
+
+
 
 **Step 4 — Distress resolution.**
 
@@ -3335,7 +3792,7 @@ As of the first full implementation of the agent-driven demand system, the simul
 
 ### 1. ~~The "Salary Bomb" Deadlock~~ — Fixed
 
-Startup capital is now computed as `max(500, worker_capacity * avg_daily_wage * 7 + first_owa_input_import_cost)` for all commercial and industrial buildings at spawn. The shipped `food_processor_basic` profile has 10 workers at an average 90/day wage, so it receives **6,300** at spawn. The shipped `grocery_basic` profile also pre-budgets its first full `OWA` input import, so it receives **22,050** at spawn with current prices and `owa_import_price_multiplier = 1.75`. The `500` floor still applies to low-wage or zero-worker buildings.
+Startup capital is computed as `max(500, worker_capacity * avg_daily_wage * 7 + first_owa_input_import_cost)` for all commercial and industrial buildings at spawn. The shipped `food_processor_basic` receives **15,820**: 6,300 for wages, 6,720 for Grain and 2,800 for Machinery. The shipped `grocery_basic` receives **22,050**, and `machinery_factory_basic` receives **8,680**, including their first full input buffers at `owa_import_price_multiplier = 1.75`. The `500` floor still applies to low-wage or zero-worker buildings.
 
 ### 2. The "Starving Pioneer" Trap — Mostly Resolved
 
@@ -3419,13 +3876,13 @@ enters `is_deserted`, which is the correct signal for the demand system to consi
 
 **Observed**: Adding roads between two daily ticks caused commercial candidates to jump from 13 → 79 and industrial from 34 → 90, spawning 4 grocery stores and 5 farms in a single day — far exceeding the 0–1 that is normal when the road network is stable.
 
-**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path now computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial spawn quantity is based on committed commercial input capacity not covered by local industrial output. Industrial growth pressure can also rise from actual commercial `OWA` input dependency. The exact formulas are owned by [`demand.md`](demand.md).
+**Fix**: Demand spawn planning no longer sums candidate pressure into the spawn rate. The spawn path computes a deterministic missing-building need from the frozen city snapshot, multiplies that need by the average normalized spawn pressure for eligible candidates, and uses `eligible_spawn_count` only as the final placement cap. Residential need is based on missing household slots against a small vacancy reserve, commercial need is based on unmet household-facing output units/day, and industrial need uses resource-specific business/utility input gaps divided by eligible factories' net output. Existing, pending and selected output capacity reserves that demand. Industrial growth pressure can also rise from actual business/utility `OWA` input dependency. The exact formulas are owned by [`demand.md`](demand.md).
 
 ### 10. ECON-05: Pioneer Demand Floor Leaks into Non-Residential Spawn Rate
 
 **Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
 
-**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth now comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active commercial inputs and actual commercial `OWA` input dependency. Household transfers are the bootstrap income source for households.
+**Fix**: The pioneer spawn floor and non-residential `spawn_limit` path have been removed. Commercial growth comes from household purchase stability and missing household-facing shop capacity; industrial growth comes from missing local industrial capacity for active business/utility inputs and actual `OWA` input dependency. Household transfers are the bootstrap income source for households.
 
 ## Future Calibration Targets
 

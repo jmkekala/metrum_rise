@@ -176,10 +176,8 @@ impl RoadSurfaceSystem {
         chunks
     }
 
-    pub(in crate::simulation::network::surface) fn query_chunk_coords_for_world(
-        world_x: f64,
-        world_z: f64,
-    ) -> SurfaceChunkKey {
+    /// Maps world coordinates to the fixed fine query grid, independent of render chunk layout.
+    pub(crate) fn query_chunk_coords_for_world(world_x: f64, world_z: f64) -> SurfaceChunkKey {
         (
             (world_x / SURFACE_QUERY_CHUNK_SPAN_M).floor() as i32,
             (world_z / SURFACE_QUERY_CHUNK_SPAN_M).floor() as i32,

@@ -3,7 +3,7 @@
 ## Asset editor shell — launched via `--asset-editor` command-line argument.
 ## Shares the same SimulationNode and compiled .so as the game, but runs a
 ## 500 m sandbox with no agents, no demand simulation, and no background tick thread.
-## Calls: sim.is_asset_editor_mode(), sim.load_asset_packs(dir, filter),
+## Calls: sim.is_asset_editor_mode(), sim.load_all_asset_packs(dir),
 ##        sim.get_registered_asset_ids(), sim.validate_and_export_asset(),
 ##        sim.get_asset_manifest_json(), sim.get_pack_manifest_json(),
 ##        sim.load_economy_project()
@@ -296,7 +296,7 @@ func _ready() -> void:
 	_set_main_entrance_forward(_frontage_fwd)
 	_set_main_entrance_position(_default_main_entrance_position(), true)
 	_load_economy_profiles()
-	_load_packs()
+	_refresh_asset_browser()
 	_apply_template(0)
 
 func _configure_preview_environment() -> void:
@@ -547,7 +547,7 @@ func menu_new_asset() -> void:
 	_start_new_asset()
 
 func menu_reload_packs() -> void:
-	_load_packs()
+	_refresh_asset_browser()
 
 func menu_import_mesh() -> void:
 	_on_import_glb_pressed()
@@ -984,22 +984,9 @@ func _build_bottom_panel(parent: Control) -> void:
 # Pack loading
 # ──────────────────────────────────────────────────────────────────────────────
 
-func _load_packs() -> void:
-	var mods_path: String = ProjectSettings.globalize_path("user://mods/")
-	if not DirAccess.dir_exists_absolute(mods_path):
-		_log("No mods directory at %s — skipping pack scan." % mods_path)
-		return
-
-	var warnings: String = sim.load_asset_packs(mods_path, "")
-	for line in warnings.split("\n"):
-		if line != "":
-			_log("[color=yellow]Warning:[/color] " + line)
-
-	_refresh_asset_browser()
-
 func _refresh_asset_browser() -> void:
 	var mods_path: String = ProjectSettings.globalize_path("user://mods/")
-	var warnings: String = sim.load_asset_packs(mods_path, "")
+	var warnings: String = sim.load_all_asset_packs(mods_path)
 	if not warnings.is_empty():
 		_log("[color=yellow]%s[/color]" % warnings)
 	_asset_ids.clear()

@@ -8,10 +8,10 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
+use crate::simulation::save::sqlite::write_sqlite_snapshot;
 use crate::simulation::terrain::TerrainSystem;
 use rusqlite::{Connection, params};
 use std::fmt::{Display, Formatter};
-use std::fs;
 use std::path::Path;
 
 const WORLD_DEFINITION_FORMAT_VERSION: i64 = 5;
@@ -149,23 +149,22 @@ pub(crate) fn save_world_definition_to_sqlite(
     view: WorldDefinitionView<'_>,
 ) -> WorldDefinitionResult<()> {
     validate_world_name(view.name)?;
-    validate_world_config(view.config)?;
+    view.config
+        .validate()
+        .map_err(WorldDefinitionError::custom)?;
     validate_terrain_dimensions(view.config, view.terrain)?;
     validate_resource_deposit_dimensions(view.config, view.resource_deposits)?;
     validate_authored_water(view.config, view.lake_fills, view.open_water_fills)?;
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
+    write_sqlite_snapshot(path, WORLD_DEFINITION_SCHEMA, |tx| {
+        write_world_definition(tx, view)
+    })
+}
 
-    let mut conn = Connection::open(path)?;
-    conn.execute_batch(WORLD_DEFINITION_SCHEMA)?;
-    let tx = conn.transaction()?;
+fn write_world_definition(
+    tx: &rusqlite::Transaction<'_>,
+    view: WorldDefinitionView<'_>,
+) -> WorldDefinitionResult<()> {
     tx.execute(
         "INSERT INTO world_definition_meta(format_version, name, width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
@@ -292,7 +291,6 @@ pub(crate) fn save_world_definition_to_sqlite(
     }
     drop(resource_stmt);
 
-    tx.commit()?;
     Ok(())
 }
 
@@ -300,7 +298,7 @@ pub(crate) fn save_world_definition_to_sqlite(
 pub(crate) fn load_world_definition_from_sqlite(
     path: &Path,
 ) -> WorldDefinitionResult<LoadedWorldDefinition> {
-    let conn = Connection::open(path)?;
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (format_version, name, width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m): (
         i64,
         String,
@@ -337,7 +335,7 @@ pub(crate) fn load_world_definition_from_sqlite(
     let config = WorldConfig::new(width_m, height_m, env_cell_m, zone_cell_m)
         .with_terrain_resolution(terrain_cell_m)
         .with_chunking(terrain_chunk_m, terrain_base_elevation_m);
-    validate_world_config(&config)?;
+    config.validate().map_err(WorldDefinitionError::custom)?;
 
     let mut terrain = TerrainSystem::from_world_config(&config);
     let chunk_size = authored_chunk_cells(&config);
@@ -491,30 +489,6 @@ fn validate_world_name(name: &str) -> WorldDefinitionResult<()> {
         return Err(WorldDefinitionError::custom(
             "world definition name must not be empty",
         ));
-    }
-    Ok(())
-}
-
-fn validate_world_config(config: &WorldConfig) -> WorldDefinitionResult<()> {
-    validate_positive_f32(config.width_m, "width_m")?;
-    validate_positive_f32(config.height_m, "height_m")?;
-    validate_positive_f32(config.terrain_cell_m, "terrain_cell_m")?;
-    validate_positive_f32(config.terrain_chunk_m, "terrain_chunk_m")?;
-    validate_positive_f32(config.env_cell_m, "env_cell_m")?;
-    validate_positive_f32(config.zone_cell_m, "zone_cell_m")?;
-    if !config.terrain_base_elevation_m.is_finite() {
-        return Err(WorldDefinitionError::custom(
-            "terrain_base_elevation_m must be finite",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_positive_f32(value: f32, label: &str) -> WorldDefinitionResult<()> {
-    if !value.is_finite() || value <= 0.0 {
-        return Err(WorldDefinitionError::custom(format!(
-            "{label} must be finite and > 0"
-        )));
     }
     Ok(())
 }
@@ -753,6 +727,47 @@ mod tests {
     }
 
     #[test]
+    fn world_definition_rejects_unrepresentable_grid_layouts() {
+        let config = WorldConfig::new(100.0, 100.0, 40.0, 10.0);
+        for invalid in [
+            WorldConfig {
+                width_m: f32::MAX,
+                ..config
+            },
+            WorldConfig {
+                terrain_cell_m: f32::MIN_POSITIVE,
+                ..config
+            },
+            WorldConfig {
+                env_cell_m: f32::MIN_POSITIVE,
+                ..config
+            },
+            WorldConfig {
+                zone_cell_m: f32::MIN_POSITIVE,
+                ..config
+            },
+            WorldConfig {
+                terrain_chunk_m: f32::MAX,
+                ..config
+            },
+            WorldConfig {
+                width_m: 1.0e12,
+                height_m: 1.0e12,
+                ..config
+            },
+            WorldConfig {
+                env_cell_m: 1000.0,
+                ..config
+            },
+        ] {
+            assert!(
+                invalid.validate().is_err(),
+                "unusable grid config accepted: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
     fn world_definition_only_persists_touched_terrain_chunks() {
         let path = temp_path("chunk_count");
         let config = WorldConfig::new(100.0, 100.0, 40.0, 10.0)
@@ -828,6 +843,19 @@ CREATE TABLE world_terrain_chunks(
         assert!(loaded.lake_fills.is_empty());
         assert!(loaded.open_water_fills.is_empty());
         assert!(loaded.resource_deposits.coal_is_empty());
+        let conn = Connection::open(&path).unwrap();
+        for invalid in [-1.0, 0.0] {
+            conn.execute(
+                "UPDATE world_definition_meta SET terrain_cell_m = ?1",
+                [invalid],
+            )
+            .unwrap();
+            assert!(
+                load_world_definition_from_sqlite(&path).is_err(),
+                "invalid terrain spacing {invalid} was silently clamped"
+            );
+        }
+        drop(conn);
         std::fs::remove_file(path).ok();
     }
 }

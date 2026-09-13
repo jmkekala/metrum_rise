@@ -3,14 +3,18 @@
 //! Customizable Contraction Hierarchy (CCH) pathfinding.
 //!
 //! Provides fast queries and lower-triangle metric customization for dynamic traffic.
-//! Replaces HPA* as the primary routing engine for agents.
 
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{TransitFlags, TransitType};
+use crate::simulation::network::types::TransitFlags;
 use crate::traffic_log;
 use rayon::prelude::*;
 use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+
+type SearchKey = (u32, usize);
+type SearchRecord = (f32, f32, Option<usize>, SearchKey);
+type SearchData = HashMap<SearchKey, SearchRecord>;
 
 /// A shortcut edge in the contracted graph.
 ///
@@ -46,28 +50,16 @@ pub struct CchShortcut {
 
 /// A pre-computed contraction hierarchy used for routing.
 pub struct CchGraph {
-    /// Mapping from node ID to its rank in the contraction order.
-    pub node_rank: Vec<u32>,
-    /// Mapping from rank to the corresponding original node ID.
-    pub node_order: Vec<u32>,
-    /// Parent pointers in the elimination tree, ordered by contraction rank.
-    pub elimination_tree: Vec<Option<u32>>,
     /// All shortcuts formed during contraction.
     pub shortcuts: Vec<CchShortcut>,
     /// Outgoing upward shortcuts for forward search: u -> v where Original u -> v and rank(u) < rank(v).
     /// Stores indices into `shortcuts`.
     pub fwd_up: Vec<Vec<usize>>,
-    /// Incoming upward shortcuts for backward search: v -> u where Original u -> v and rank(u) < rank(v).
-    /// Used to go from v to u (backwards) where rank(u) > rank(v).
+    /// Incoming shortcuts u -> v with rank(u) > rank(v), indexed by v.
+    /// Backward search follows these from v upward to u; entries index `shortcuts`.
     pub bwd_up: Vec<Vec<usize>>,
-    /// Precomputed maximum speed in the network for heuristic calculations.
-    pub max_v: f32,
     /// Monotonically incremented each time the graph is rebuilt; used to reset per-build debug counters.
     pub build_generation: u32,
-    /// Per-node index of shortcuts whose `start_node` equals the index. Used during contraction.
-    shortcuts_by_start: Vec<Vec<usize>>,
-    /// Per-node index of shortcuts whose `target_node` equals the index. Used during contraction.
-    shortcuts_by_end: Vec<Vec<usize>>,
     // One arc per endpoint/boundary-edge/mode state, with all lower-triangle alternatives.
     // Retaining choices avoids both exponential path expansion and first-seen-path pruning.
     shortcut_alternatives: Vec<Vec<(usize, usize)>>,
@@ -78,16 +70,10 @@ impl CchGraph {
     /// Returns an empty `CchGraph`.
     pub fn new(n_nodes: usize) -> Self {
         Self {
-            node_rank: vec![u32::MAX; n_nodes],
-            node_order: Vec::with_capacity(n_nodes),
-            elimination_tree: vec![None; n_nodes],
             shortcuts: Vec::new(),
             fwd_up: vec![Vec::new(); n_nodes],
             bwd_up: vec![Vec::new(); n_nodes],
-            max_v: 1.0,
             build_generation: 0,
-            shortcuts_by_start: vec![Vec::new(); n_nodes],
-            shortcuts_by_end: vec![Vec::new(); n_nodes],
             shortcut_alternatives: Vec::new(),
             customization_order: Vec::new(),
         }
@@ -109,15 +95,32 @@ impl CchGraph {
 
         let mut cch = Self::new(n);
         cch.build_generation = generation;
-        cch.compute_node_order(graph);
-        cch.contract(graph);
+        {
+            let (node_order, node_rank) = Self::compute_node_order(graph);
+            cch.contract(graph, &node_order, &node_rank);
+        }
+        // Topology is fixed until the next build. Return construction growth capacity rather
+        // than retaining it for the lifetime of the world; customization only updates entries.
+        cch.shortcuts.shrink_to_fit();
+        cch.shortcut_alternatives.shrink_to_fit();
+        cch.customization_order.shrink_to_fit();
+        cch.fwd_up
+            .iter_mut()
+            .chain(cch.bwd_up.iter_mut())
+            .for_each(Vec::shrink_to_fit);
+        cch.shortcut_alternatives
+            .iter_mut()
+            .for_each(Vec::shrink_to_fit);
         cch.customize(graph);
 
         cch
     }
 
-    fn compute_node_order(&mut self, graph: &RegionGraph) {
+    // Return original node IDs in contraction order and the inverse rank lookup.
+    fn compute_node_order(graph: &RegionGraph) -> (Vec<u32>, Vec<u32>) {
         let n = graph.node_count();
+        let mut node_order = Vec::with_capacity(n);
+        let mut node_rank = vec![u32::MAX; n];
         let mut adj = vec![HashSet::new(); n];
         for edge in graph.edges().iter().filter(|edge| !edge.deleted) {
             if edge.start_node != edge.end_node {
@@ -163,11 +166,11 @@ impl CchGraph {
         while let Some(NodePriority { node, importance }) = heap.pop() {
             let u = node as usize;
             // Priorities can increase OR decrease. Both directions leave obsolete heap entries.
-            if self.node_rank[u] != u32::MAX || importance != priorities[u] {
+            if node_rank[u] != u32::MAX || importance != priorities[u] {
                 continue;
             }
-            self.node_rank[u] = self.node_order.len() as u32;
-            self.node_order.push(node);
+            node_rank[u] = node_order.len() as u32;
+            node_order.push(node);
             neighbors.clear();
             neighbors.extend(adj[u].iter().copied());
             neighbors.sort_unstable();
@@ -204,7 +207,7 @@ impl CchGraph {
             for v in changed.drain(..) {
                 let v_index = v as usize;
                 marked[v_index] = false;
-                if self.node_rank[v_index] != u32::MAX {
+                if node_rank[v_index] != u32::MAX {
                     continue;
                 }
                 let real_p = fill_importance(adj[v_index].len(), triangles[v_index]);
@@ -217,10 +220,13 @@ impl CchGraph {
                 }
             }
         }
+        (node_order, node_rank)
     }
 
-    fn contract(&mut self, graph: &RegionGraph) {
+    fn contract(&mut self, graph: &RegionGraph, node_order: &[u32], node_rank: &[u32]) {
         let n = graph.node_count();
+        let mut shortcuts_by_start = vec![Vec::new(); n];
+        let mut shortcuts_by_end = vec![Vec::new(); n];
         // Debug: log nodes that have user vehicle connections (whitelist mode).
         if crate::debug::is_traffic_enabled() {
             for i in 0..n {
@@ -245,19 +251,27 @@ impl CchGraph {
                 continue;
             }
 
-            if edge.fwd_lanes > 0
-                || (edge.primary_type == TransitType::Foot
-                    && (edge.allowed_types & TransitFlags::FOOT != 0))
-            {
-                self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge);
-            }
-            if edge.bkw_lanes > 0
-                || (edge.primary_type == TransitType::Foot
-                    && (edge.allowed_types & TransitFlags::FOOT != 0))
-            {
-                self.add_direct_shortcut(edge.end_node, edge.start_node, edge_idx, edge);
+            for (start, end, is_fwd) in [
+                (edge.start_node, edge.end_node, true),
+                (edge.end_node, edge.start_node, false),
+            ] {
+                let allowed_types = edge.traversal_flags(is_fwd);
+                if allowed_types != 0 {
+                    let idx = self.add_direct_shortcut(start, end, edge_idx, edge, allowed_types);
+                    shortcuts_by_start[start as usize].push(idx);
+                    shortcuts_by_end[end as usize].push(idx);
+                }
             }
         }
+
+        // When a direction is walking-only, keeping both FOOT and CAR|FOOT compound
+        // states partitions pedestrian alternatives by irrelevant vehicle reachability.
+        // Use disjoint mode sets so all pedestrian alternatives for one boundary share an arc.
+        // Fully shared networks retain the single combined hierarchy.
+        let separate_foot = self
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.allowed_types == TransitFlags::FOOT);
 
         let turn_restricted: Vec<bool> = (0..n)
             .into_par_iter()
@@ -266,23 +280,22 @@ impl CchGraph {
         let mut compound_arcs: HashMap<(u32, u32, usize, usize, u8), usize> = HashMap::new();
         let mut neighbors_in = Vec::new();
         let mut neighbors_out = Vec::new();
-        for rank in 0..n {
-            let u = self.node_order[rank];
-            let u_rank = self.node_rank[u as usize];
+        for (rank, &u) in node_order.iter().enumerate() {
+            let u_rank = rank as u32;
 
             neighbors_in.clear();
             neighbors_out.clear();
 
             // Use per-node index instead of scanning all shortcuts — O(degree) not O(S).
-            for &idx in &self.shortcuts_by_end[u as usize] {
+            for &idx in &shortcuts_by_end[u as usize] {
                 let s = &self.shortcuts[idx];
-                if self.node_rank[s.start_node as usize] > u_rank {
+                if node_rank[s.start_node as usize] > u_rank {
                     neighbors_in.push(idx);
                 }
             }
-            for &idx in &self.shortcuts_by_start[u as usize] {
+            for &idx in &shortcuts_by_start[u as usize] {
                 let s = &self.shortcuts[idx];
-                if self.node_rank[s.target_node as usize] > u_rank {
+                if node_rank[s.target_node as usize] > u_rank {
                     neighbors_out.push(idx);
                 }
             }
@@ -334,62 +347,74 @@ impl CchGraph {
                         continue;
                     }
 
-                    if !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first) {
+                    let mut mask = s_in_mask & s_out_mask;
+                    if mask != TransitFlags::FOOT
+                        && turn_restricted[u as usize]
+                        && !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first)
+                    {
                         traffic_log!(
-                            "[CCH_BUILD] blocked shortcut: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})"
+                            "[CCH_BUILD] vehicle turn blocked: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})"
                         );
+                        // A vehicle whitelist does not govern sidewalk connectivity. Preserve
+                        // pedestrian-only alternatives; the trip planner validates their lanes.
+                        mask &= TransitFlags::FOOT;
+                    }
+                    if mask == 0 {
                         continue;
                     }
 
                     traffic_log!(
                         "[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
                     );
-                    let mask = s_in_mask & s_out_mask;
-                    if mask == 0 {
-                        continue;
-                    }
-                    // Boundary-edge identity only distinguishes legal continuations at restricted
-                    // endpoints. Merge equivalent open-end states, retaining all metric choices.
-                    let first_key = if turn_restricted[s_in_start as usize] {
-                        s_in_first
+                    let masks = if separate_foot {
+                        [mask & !TransitFlags::FOOT, mask & TransitFlags::FOOT]
                     } else {
-                        usize::MAX
+                        [mask, 0]
                     };
-                    let last_key = if turn_restricted[s_out_target as usize] {
-                        s_out_last
-                    } else {
-                        usize::MAX
-                    };
-                    let key = (s_in_start, s_out_target, first_key, last_key, mask);
-                    if let Some(&idx) = compound_arcs.get(&key) {
-                        self.shortcut_alternatives[idx].push((idx_in, idx_out));
-                        continue;
+                    for mask in masks.into_iter().filter(|&mask| mask != 0) {
+                        // Only vehicle-capable arcs need boundary identity at restricted endpoints.
+                        // Pedestrian-only alternatives can merge there as well as at open nodes.
+                        let first_key =
+                            if mask != TransitFlags::FOOT && turn_restricted[s_in_start as usize] {
+                                s_in_first
+                            } else {
+                                usize::MAX
+                            };
+                        let last_key = if mask != TransitFlags::FOOT
+                            && turn_restricted[s_out_target as usize]
+                        {
+                            s_out_last
+                        } else {
+                            usize::MAX
+                        };
+                        let key = (s_in_start, s_out_target, first_key, last_key, mask);
+                        if let Some(&idx) = compound_arcs.get(&key) {
+                            self.shortcut_alternatives[idx].push((idx_in, idx_out));
+                            continue;
+                        }
+                        let idx = self.add_compound_shortcut(
+                            s_in_start,
+                            s_out_target,
+                            idx_in,
+                            idx_out,
+                            s_in_first,
+                            s_out_last,
+                            mask,
+                        );
+                        shortcuts_by_start[s_in_start as usize].push(idx);
+                        shortcuts_by_end[s_out_target as usize].push(idx);
+                        compound_arcs.insert(key, idx);
                     }
-                    let idx = self.add_compound_shortcut(
-                        s_in_start,
-                        s_out_target,
-                        idx_in,
-                        idx_out,
-                        s_in_first,
-                        s_out_last,
-                        mask,
-                    );
-                    compound_arcs.insert(key, idx);
                 }
             }
         }
 
-        // 3. Populate fwd_up, bwd_up and elimination tree
+        // Publish only the directional indices used by live queries.
         for (idx, s) in self.shortcuts.iter().enumerate() {
             let u = s.start_node;
             let v = s.target_node;
-            if self.node_rank[u as usize] < self.node_rank[v as usize] {
+            if node_rank[u as usize] < node_rank[v as usize] {
                 self.fwd_up[u as usize].push(idx);
-                // Parent in elimination tree is the lowest-rank higher neighbor
-                let p = self.elimination_tree[u as usize];
-                if p.is_none() || self.node_rank[v as usize] < self.node_rank[p.unwrap() as usize] {
-                    self.elimination_tree[u as usize] = Some(v);
-                }
             } else {
                 self.bwd_up[v as usize].push(idx);
             }
@@ -402,7 +427,8 @@ impl CchGraph {
         end: u32,
         edge_idx: usize,
         edge: &crate::simulation::network::graph::Edge,
-    ) {
+        allowed_types: u8,
+    ) -> usize {
         let idx = self.shortcuts.len();
         self.shortcuts.push(CchShortcut {
             start_node: start,
@@ -414,11 +440,10 @@ impl CchGraph {
             mid_r: usize::MAX,
             first_edge: edge_idx,
             last_edge: edge_idx,
-            allowed_types: edge.allowed_types,
+            allowed_types,
         });
         self.shortcut_alternatives.push(Vec::new());
-        self.shortcuts_by_start[start as usize].push(idx);
-        self.shortcuts_by_end[end as usize].push(idx);
+        idx
     }
 
     fn add_compound_shortcut(
@@ -445,29 +470,23 @@ impl CchGraph {
             allowed_types: mask,
         });
         self.shortcut_alternatives.push(vec![(l_idx, r_idx)]);
-        self.shortcuts_by_start[start as usize].push(idx);
-        self.shortcuts_by_end[end as usize].push(idx);
         idx
     }
 
-    /// Expands a shortcut into its sequence of concrete base-edge indices.
-    ///
-    /// Uses an iterative stack to avoid recursion depth issues on long paths.
-    fn collect_base_edges(&self, idx: usize) -> Vec<usize> {
-        let mut result = Vec::new();
-        let mut stack = vec![idx];
+    // Drain reverse-ordered shortcuts into traversal-ordered base edges. Both halves of a
+    // query reuse these buffers; unpacking a compound shortcut needs no temporary result Vec.
+    fn unpack_shortcuts(&self, stack: &mut Vec<usize>, base_edges: &mut Vec<usize>) {
         while let Some(i) = stack.pop() {
             let s = &self.shortcuts[i];
             if s.mid_l == usize::MAX {
                 // Direct shortcut — emit the base edge.
-                result.push(s.base_edge);
+                base_edges.push(s.base_edge);
             } else {
                 // Compound shortcut — push right then left so left is processed first.
                 stack.push(s.mid_r);
                 stack.push(s.mid_l);
             }
         }
-        result
     }
 
     /// Re-evaluates all retained lower-triangle alternatives for current dynamic edge costs.
@@ -475,11 +494,6 @@ impl CchGraph {
     /// O(base edges + shortcuts + alternatives), allocation-free. Alternatives are evaluated in
     /// increasing lower-endpoint rank, so every child is finalized before its parent.
     pub fn customize(&mut self, graph: &RegionGraph) {
-        self.max_v = graph
-            .edges()
-            .iter()
-            .filter(|edge| !edge.deleted)
-            .fold(1.0_f32, |speed, edge| speed.max(edge.speed_limit));
         for &idx in &self.customization_order {
             if self.shortcuts[idx].base_edge != usize::MAX {
                 let edge = graph.edge(self.shortcuts[idx].base_edge);
@@ -508,6 +522,9 @@ impl CchGraph {
     }
 
     /// Finds a path from `start` to `end` using bidirectional upward search.
+    ///
+    /// Meeting checks use incident base edges from the matching graph revision: O(node degree)
+    /// expected map lookups per expanded state, without scanning unrelated search states.
     pub fn find_path(
         &self,
         start: u32,
@@ -528,17 +545,14 @@ impl CchGraph {
         let mut fwd_heap = BinaryHeap::new();
         let mut bwd_heap = BinaryHeap::new();
 
-        let mut fwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> =
-            HashMap::new();
-        let mut bwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> =
-            HashMap::new();
+        let mut fwd_data = SearchData::new();
+        let mut bwd_data = SearchData::new();
 
         fwd_data.insert(
             (start, start_edge),
             (0.0, 0.0, None, (u32::MAX, usize::MAX)),
         );
         fwd_heap.push(CchState {
-            priority: 0.0,
             cost: 0.0,
             node: start,
             incoming_edge: start_edge,
@@ -546,7 +560,6 @@ impl CchGraph {
 
         bwd_data.insert((end, usize::MAX), (0.0, 0.0, None, (u32::MAX, usize::MAX)));
         bwd_heap.push(CchState {
-            priority: 0.0,
             cost: 0.0,
             node: end,
             incoming_edge: usize::MAX,
@@ -564,20 +577,33 @@ impl CchGraph {
                 }
                 let (cost, node, l_edge) = (state.cost, state.node, state.incoming_edge);
                 if cost < min_total_cost
-                    && let Some(&(best_cost, _, _, _)) = fwd_data.get(&(node, l_edge))
+                    && let Some(&(best_cost, best_dist, _, _)) = fwd_data.get(&(node, l_edge))
                 {
                     if cost > best_cost {
                         continue;
                     }
 
-                    for (&(b_node, b_out_edge), &(b_cost, _, _, _)) in &bwd_data {
-                        if b_node == node {
-                            let allowed = self.is_turn_allowed(node, l_edge, b_out_edge, graph);
+                    // Shortcut boundary edges are incident to this node. The destination's
+                    // initial state is the only backward state without a concrete edge.
+                    for b_out_edge in graph
+                        .node_adjacency(node)
+                        .iter()
+                        .copied()
+                        .chain((node == end).then_some(usize::MAX))
+                    {
+                        if let Some(&(b_cost, _, _, _)) = bwd_data.get(&(node, b_out_edge)) {
+                            let allowed =
+                                self.is_turn_allowed(node, l_edge, b_out_edge, graph, allowed_mask);
                             if !allowed {
                                 traffic_log!(
                                     "[CCH_REJECT] fwd meeting blocked at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
                                 );
-                            } else if cost + b_cost < min_total_cost {
+                            } else if cost + b_cost < min_total_cost
+                                || (meeting_node != u32::MAX
+                                    && cost + b_cost == min_total_cost
+                                    && (node, l_edge, b_out_edge)
+                                        < (meeting_node, meeting_f_edge, meeting_b_edge))
+                            {
                                 traffic_log!(
                                     "[DEBUG:CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
                                 );
@@ -596,18 +622,26 @@ impl CchGraph {
                             continue;
                         }
 
-                        if self.is_turn_allowed(node, l_edge, shortcut.first_edge, graph) {
+                        if self.is_turn_allowed(
+                            node,
+                            l_edge,
+                            shortcut.first_edge,
+                            graph,
+                            allowed_mask,
+                        ) {
                             let next_cost = cost + shortcut.cost;
                             let state_key = (shortcut.target_node, shortcut.last_edge);
-                            if next_cost < fwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX)
-                            {
-                                let dist = fwd_data.get(&(node, l_edge)).unwrap().1 + shortcut.dist;
-                                fwd_data.insert(
-                                    state_key,
-                                    (next_cost, dist, Some(s_idx), (node, l_edge)),
-                                );
+                            if relax_search_state(
+                                &mut fwd_data,
+                                state_key,
+                                (
+                                    next_cost,
+                                    best_dist + shortcut.dist,
+                                    Some(s_idx),
+                                    (node, l_edge),
+                                ),
+                            ) {
                                 fwd_heap.push(CchState {
-                                    priority: next_cost,
                                     cost: next_cost,
                                     node: shortcut.target_node,
                                     incoming_edge: shortcut.last_edge,
@@ -625,18 +659,36 @@ impl CchGraph {
                 }
                 let (cost, node, outgoing_edge) = (state.cost, state.node, state.incoming_edge);
                 if cost < min_total_cost
-                    && let Some(&(best_cost, _, _, _)) = bwd_data.get(&(node, outgoing_edge))
+                    && let Some(&(best_cost, best_dist, _, _)) =
+                        bwd_data.get(&(node, outgoing_edge))
                 {
                     if cost > best_cost {
                         continue;
                     }
 
-                    // Check for meeting point against fwd_data
-                    for (&(f_node, f_in_edge), &(f_cost, _, _, _)) in &fwd_data {
-                        if f_node == node
-                            && self.is_turn_allowed(node, f_in_edge, outgoing_edge, graph)
+                    // Include the supplied origin edge explicitly, even if it is a sentinel
+                    // or no longer present in adjacency. A repeated incident edge is harmless.
+                    for f_in_edge in graph
+                        .node_adjacency(node)
+                        .iter()
+                        .copied()
+                        .chain((node == start).then_some(start_edge))
+                    {
+                        if let Some(&(f_cost, _, _, _)) = fwd_data.get(&(node, f_in_edge))
+                            && self.is_turn_allowed(
+                                node,
+                                f_in_edge,
+                                outgoing_edge,
+                                graph,
+                                allowed_mask,
+                            )
                         {
-                            if cost + f_cost < min_total_cost {
+                            if cost + f_cost < min_total_cost
+                                || (meeting_node != u32::MAX
+                                    && cost + f_cost == min_total_cost
+                                    && (node, f_in_edge, outgoing_edge)
+                                        < (meeting_node, meeting_f_edge, meeting_b_edge))
+                            {
                                 min_total_cost = cost + f_cost;
                                 meeting_node = node;
                                 meeting_f_edge = f_in_edge;
@@ -652,19 +704,26 @@ impl CchGraph {
                             continue;
                         }
 
-                        if self.is_turn_allowed(node, shortcut.last_edge, outgoing_edge, graph) {
+                        if self.is_turn_allowed(
+                            node,
+                            shortcut.last_edge,
+                            outgoing_edge,
+                            graph,
+                            allowed_mask,
+                        ) {
                             let next_cost = cost + shortcut.cost;
                             let state_key = (shortcut.start_node, shortcut.first_edge);
-                            if next_cost < bwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX)
-                            {
-                                let dist =
-                                    bwd_data.get(&(node, outgoing_edge)).unwrap().1 + shortcut.dist;
-                                bwd_data.insert(
-                                    state_key,
-                                    (next_cost, dist, Some(s_idx), (node, outgoing_edge)),
-                                );
+                            if relax_search_state(
+                                &mut bwd_data,
+                                state_key,
+                                (
+                                    next_cost,
+                                    best_dist + shortcut.dist,
+                                    Some(s_idx),
+                                    (node, outgoing_edge),
+                                ),
+                            ) {
                                 bwd_heap.push(CchState {
-                                    priority: next_cost,
                                     cost: next_cost,
                                     node: shortcut.start_node,
                                     incoming_edge: shortcut.first_edge,
@@ -684,36 +743,37 @@ impl CchGraph {
 
         // Forward part: MEETING -> START (reconstruct backwards)
         let mut curr_key = (meeting_node, meeting_f_edge);
-        let mut fwd_indices = Vec::new();
+        let mut shortcut_stack = Vec::new();
         while let Some(&(_, _, s_opt, prev_key)) = fwd_data.get(&curr_key) {
             if let Some(s_idx) = s_opt {
-                fwd_indices.push(s_idx);
+                shortcut_stack.push(s_idx);
                 curr_key = prev_key;
             } else {
                 break;
             }
         }
-        fwd_indices.reverse();
-        for idx in fwd_indices {
-            full_edges.extend(self.collect_base_edges(idx));
-        }
+        self.unpack_shortcuts(&mut shortcut_stack, &mut full_edges);
 
         // Backward part: MEETING -> TARGET
         let mut curr_key = (meeting_node, meeting_b_edge);
         while let Some(&(_, _, s_opt, next_key)) = bwd_data.get(&curr_key) {
             if let Some(s_idx) = s_opt {
-                full_edges.extend(self.collect_base_edges(s_idx));
+                shortcut_stack.push(s_idx);
                 curr_key = next_key;
             } else {
                 break;
             }
         }
 
+        shortcut_stack.reverse();
+        self.unpack_shortcuts(&mut shortcut_stack, &mut full_edges);
+
         if full_edges.is_empty() {
             return None;
         }
 
-        let mut nodes = vec![start];
+        let mut nodes = Vec::with_capacity(full_edges.len() + 1);
+        nodes.push(start);
         let mut curr_n = start;
         for &e_idx in &full_edges {
             let edge = graph.edge(e_idx);
@@ -763,8 +823,9 @@ impl CchGraph {
         in_edge: usize,
         out_edge: usize,
         graph: &RegionGraph,
+        allowed_mask: u8,
     ) -> bool {
-        if in_edge == usize::MAX || out_edge == usize::MAX {
+        if allowed_mask == TransitFlags::FOOT || in_edge == usize::MAX || out_edge == usize::MAX {
             return true;
         }
         Self::vehicle_turn_allowed(graph.node(node), in_edge, out_edge)
@@ -814,13 +875,14 @@ impl CchGraph {
             .any(|&(_, lane)| lane != 100 && lane != -100)
     }
 
-    /// Returns `true` if every turn in `path` is permitted under the current turn
-    /// restrictions. A path with fewer than 3 nodes has no intermediate junctions and
+    /// Returns `true` if every turn in `path` is permitted under the current vehicle
+    /// restrictions. Pedestrian trips validate lane connectors separately. A path with fewer
+    /// than 3 nodes has no intermediate junctions and
     /// is always valid. Paths where consecutive edge IDs cannot be resolved are skipped
     /// (treated as open).
     ///
     /// Complexity: O(path.len() × node_degree) — cheap for typical city paths.
-    pub fn path_has_valid_turns(path: &[u32], graph: &RegionGraph) -> bool {
+    pub fn path_has_valid_vehicle_turns(path: &[u32], graph: &RegionGraph) -> bool {
         if path.len() < 3 {
             return true;
         }
@@ -877,9 +939,26 @@ impl PartialOrd for NodePriority {
     }
 }
 
-#[derive(Copy, Clone, PartialEq)]
+// Both query directions retain the first equal-cost predecessor and hash each relaxed key once.
+fn relax_search_state(states: &mut SearchData, key: SearchKey, candidate: SearchRecord) -> bool {
+    if candidate.0 >= f32::MAX || candidate.0.is_nan() {
+        return false;
+    }
+    match states.entry(key) {
+        Entry::Vacant(entry) => {
+            entry.insert(candidate);
+            true
+        }
+        Entry::Occupied(mut entry) if candidate.0 < entry.get().0 => {
+            entry.insert(candidate);
+            true
+        }
+        Entry::Occupied(_) => false,
+    }
+}
+
+#[derive(Copy, Clone)]
 struct CchState {
-    priority: f32,
     cost: f32,
     node: u32,
     incoming_edge: usize,
@@ -887,12 +966,21 @@ struct CchState {
 
 impl Eq for CchState {}
 
+impl PartialEq for CchState {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost.to_bits() == other.cost.to_bits()
+            && self.node == other.node
+            && self.incoming_edge == other.incoming_edge
+    }
+}
+
 impl Ord for CchState {
     fn cmp(&self, other: &Self) -> Ordering {
         other
-            .priority
-            .partial_cmp(&self.priority)
-            .unwrap_or(Ordering::Equal)
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| other.node.cmp(&self.node))
+            .then_with(|| other.incoming_edge.cmp(&self.incoming_edge))
     }
 }
 

@@ -11,39 +11,25 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::{Lane, LaneSystem, LaneType};
 use godot::prelude::Vector2;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 const LANE_REATTACH_MAX_DIST_M: f32 = 30.0;
 
 impl AgentSystem {
-    /// Remaps the edge indices stored in all agents from old IDs to new IDs.
-    pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
-        for i in 0..self.agents.len() {
-            if self.agents.current_edge[i] != usize::MAX {
-                if let Some(&new_id) = mapping.get(&self.agents.current_edge[i]) {
-                    self.agents.current_edge[i] = new_id;
-                    self.agents.current_path[i].clear();
-                    self.agents.network_replan_failures[i] = 0;
-                } else {
-                    self.agents.current_edge[i] = usize::MAX;
-                    self.agents.current_path[i].clear();
-                    self.agents.network_replan_failures[i] = 0;
-                }
-            }
-        }
-        self.invalidate_lane_bucket_snapshot();
-    }
-
     /// Remaps household indices after a `swap_remove` in `HouseholdSystem`. O(A).
     pub fn remap_household_indices(&mut self, mapping: &HashMap<usize, usize>) {
         if mapping.is_empty() {
             return;
         }
-        for i in 0..self.agents.len() {
-            if let Some(&new_id) = mapping.get(&self.agents.household_id[i]) {
-                self.agents.household_id[i] = new_id;
-            }
-        }
+        self.agents
+            .household_id
+            .par_iter_mut()
+            .for_each(|household_id| {
+                if let Some(&new_id) = mapping.get(household_id) {
+                    *household_id = new_id;
+                }
+            });
     }
 
     /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).
@@ -354,9 +340,9 @@ fn log_road_edit_affected(
     crate::traffic_log!(
         "[ROAD_EDIT_AFFECTED] phase={} input_edges={:?} closure_edges={:?} affected_nodes={:?} affected_lane_count={}",
         phase,
-        sorted_usize_ids(input_edges),
-        sorted_usize_ids(closure_edges),
-        sorted_u32_ids(&affected_nodes),
+        sorted_ids(input_edges),
+        sorted_ids(closure_edges),
+        sorted_ids(&affected_nodes),
         affected_lane_ids.len(),
     );
 }
@@ -381,14 +367,8 @@ fn log_agent_route_clear_after_road_edit(agents: &AgentSystem, i: usize) {
     );
 }
 
-fn sorted_usize_ids(values: &HashSet<usize>) -> Vec<usize> {
-    let mut ids: Vec<usize> = values.iter().copied().collect();
-    ids.sort_unstable();
-    ids
-}
-
-fn sorted_u32_ids(values: &HashSet<u32>) -> Vec<u32> {
-    let mut ids: Vec<u32> = values.iter().copied().collect();
+fn sorted_ids<T: Copy + Ord>(values: &HashSet<T>) -> Vec<T> {
+    let mut ids: Vec<T> = values.iter().copied().collect();
     ids.sort_unstable();
     ids
 }
@@ -553,13 +533,12 @@ fn best_reattach_lane(
             if dist_sq > max_dist_sq {
                 continue;
             }
-            let replace = match &best {
-                None => true,
-                Some(best) => {
-                    dist_sq < best.dist_sq - 1e-4
-                        || ((dist_sq - best.dist_sq).abs() <= 1e-4 && lane_id < best.lane_id)
-                }
-            };
+            let replace = best.as_ref().is_none_or(|best| {
+                dist_sq
+                    .total_cmp(&best.dist_sq)
+                    .then_with(|| lane_id.cmp(&best.lane_id))
+                    .is_lt()
+            });
             if replace {
                 best = Some(LaneReattachCandidate {
                     lane_id,
@@ -605,10 +584,10 @@ fn project_point_to_lane(point: Vector2, lane: &Lane) -> Option<(f32, Vector2, f
 
 #[cfg(test)]
 mod tests {
-    use super::super::data::{Agent, AgentSystem};
+    use super::super::data::AgentSystem;
     use super::super::{
         ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PATH_FROM_FLOW_FIELD, ACCESS_PLAN_VALID,
-        ACCESS_ZERO_HOP_NODE_PATH, AGE_ADULT, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
+        ACCESS_ZERO_HOP_NODE_PATH, MODE_CAR, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION,
         TRANSIT_NETWORK,
     };
     use super::*;
@@ -633,7 +612,7 @@ mod tests {
             crate::simulation::network::types::NodeType::Junction,
         );
 
-        let _e0 = graph.add_edge(Edge {
+        graph.add_edge(Edge {
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
@@ -652,7 +631,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             ..Default::default()
         });
-        let _e1 = graph.add_edge(Edge {
+        graph.add_edge(Edge {
             start_node: n1,
             end_node: n2,
             primary_type: TransitType::Road,
@@ -678,12 +657,109 @@ mod tests {
         (graph, lanes)
     }
 
+    #[test]
+    fn reattachment_chooses_nearest_lane_independently_of_candidate_order() {
+        let (graph, _) = make_simple_lane_system();
+        let mut lanes = LaneSystem::new();
+        for (lane_id, z) in [0.012, 0.008, 0.0, 0.0].into_iter().enumerate() {
+            lanes.lanes.push(Lane {
+                edge_id: 0,
+                lane_idx: lane_id as i8,
+                geometry: vec![Vector3::new(0.0, 0.0, z), Vector3::new(100.0, 0.0, z)],
+                length: 100.0,
+                cum_dist: vec![0.0, 100.0],
+                ..Lane::default()
+            });
+        }
+        let affected = HashSet::from([0]);
+        // Adjacent squared distances differ by less than the old epsilon, while the endpoints
+        // differ by more. Approximate tie-breaking can therefore depend on iteration order.
+        for order in [
+            [0, 1, 2, 3],
+            [0, 2, 1, 3],
+            [1, 0, 2, 3],
+            [1, 2, 0, 3],
+            [2, 0, 1, 3],
+            [2, 1, 0, 3],
+            [3, 2, 1, 0],
+        ] {
+            lanes.edge_lanes.insert(0, order.to_vec());
+            let nearest = best_reattach_lane(
+                Vector2::new(50.0, 0.0),
+                LaneType::Vehicle,
+                &affected,
+                &lanes,
+                &graph,
+                900.0,
+            )
+            .unwrap();
+            assert_eq!(nearest.lane_id, 2, "candidate order {order:?}");
+            assert_eq!(nearest.dist_sq, 0.0);
+            assert_eq!(nearest.lane_d, 50.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual matched release timing of local lane reattachment queries"]
+    fn benchmark_lane_reattachment() {
+        use std::{hint::black_box, time::Instant};
+        let (graph, lanes) = make_simple_lane_system();
+        let affected = HashSet::from([0, 1]);
+        for count in [1_024, 16_384, 131_072] {
+            let positions: Vec<_> = (0..count)
+                .map(|index| Vector2::new((index % 201) as f32, (index % 11) as f32 - 5.0))
+                .collect();
+            let mut samples = [0.0; 21];
+            for sample in 0..24 {
+                let start = Instant::now();
+                for &position in &positions {
+                    black_box(best_reattach_lane(
+                        black_box(position),
+                        LaneType::Vehicle,
+                        &affected,
+                        &lanes,
+                        &graph,
+                        900.0,
+                    ));
+                }
+                if sample >= 3 {
+                    samples[sample - 3] = start.elapsed().as_secs_f64() * 1_000.0;
+                }
+            }
+            let checksum = positions.iter().fold(0_u64, |hash, &position| {
+                let selected = best_reattach_lane(
+                    position,
+                    LaneType::Vehicle,
+                    &affected,
+                    &lanes,
+                    &graph,
+                    900.0,
+                )
+                .unwrap();
+                [
+                    selected.lane_id as u64,
+                    u64::from(selected.lane_d.to_bits()),
+                    u64::from(selected.dist_sq.to_bits()),
+                ]
+                .into_iter()
+                .fold(hash, |hash, value| {
+                    hash.wrapping_mul(31).wrapping_add(value)
+                })
+            });
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "lane_reattachment queries={count} median_ms={:.6} checksum={checksum}",
+                samples[10]
+            );
+        }
+    }
+
     struct TurnConnectorFixture {
         graph: RegionGraph,
         lane_system: LaneSystem,
         n_west: u32,
         n_center: u32,
-        n_north: u32,
+        north_edge: usize,
         inbound_lane: usize,
         connector_lane: usize,
     }
@@ -730,7 +806,7 @@ mod tests {
             })
         };
         let west_edge = add_edge(&mut graph, n_west, n_center);
-        let _east_edge = add_edge(&mut graph, n_center, n_east);
+        add_edge(&mut graph, n_center, n_east);
         let north_edge = add_edge(&mut graph, n_center, n_north);
         graph.rebuild_adjacency_list();
 
@@ -767,7 +843,7 @@ mod tests {
             lane_system,
             n_west,
             n_center,
-            n_north,
+            north_edge,
             inbound_lane,
             connector_lane,
         }
@@ -805,129 +881,16 @@ mod tests {
         let e1_lane = lane_system.edge_lanes[&1][0];
 
         let mut sys = AgentSystem::new();
-        let render_id_0 = sys.allocate_render_id();
-        sys.agents.push(Agent {
-            home_building: usize::MAX,
-            household_id: usize::MAX,
-            age_group: AGE_ADULT,
-            pending_household_size: 0,
-            freight_shipment_id: u64::MAX,
-            work_building: usize::MAX,
-            pos_x: 0.0,
-            pos_y: 0.0,
-            render_id: render_id_0,
-            activity: 0,
-            transit: TRANSIT_NETWORK,
-            happiness: 50.0,
-            money: 100.0,
-            journey_start_time: 0.0,
-            schedule_seed: 0,
-            cached_commute_minutes: 0,
-            next_commute_refresh_time: 0.0,
-            next_departure_day: u32::MAX,
-            next_departure_minute: 0,
-            next_departure_origin_building: usize::MAX,
-            next_departure_target_building: usize::MAX,
-            next_departure_activity: 0,
-            cached_schedule_work_building: usize::MAX,
-            cached_work_profile_index: u16::MAX,
-            current_building: usize::MAX,
-            target_building: usize::MAX,
-            planned_target_building: usize::MAX,
-            freight_target_border_node: u32::MAX,
-            current_node: 0,
-            planned_attach_node: u32::MAX,
-            planned_detach_node: u32::MAX,
-            planned_attach_lane_id: u32::MAX,
-            planned_detach_lane_id: u32::MAX,
-            planned_attach_lane_d: 0.0,
-            planned_detach_lane_d: 0.0,
-            access_flags: 0,
-            next_replan_time: 0.0,
-            network_replan_failures: 0,
-            current_edge: 0,
-            current_lane_id: e0_lane,
-            lane_distance: 10.0,
-            lane_change_from_lane_id: u32::MAX,
-            lane_change_start_d: 0.0,
-            lane_change_length_m: 0.0,
-            overtake_blocked_time_s: 0.0,
-            overtake_cooldown_s: 0.0,
-            speed: 10.0,
-            transit_mode: MODE_CAR,
-            planned_activity: 0,
-            current_path: vec![],
-            current_path_index: 0,
-            has_car: true,
-            vehicle_type: 0,
-            pedestrian_type: 0,
-            walk_phase: 0.0,
-            job_lock_days: 0,
-            consecutive_unpaid_days: 0,
-        });
-        let render_id_1 = sys.allocate_render_id();
-        sys.agents.push(Agent {
-            home_building: usize::MAX,
-            household_id: usize::MAX,
-            age_group: AGE_ADULT,
-            pending_household_size: 0,
-            freight_shipment_id: u64::MAX,
-            work_building: usize::MAX,
-            pos_x: 150.0,
-            pos_y: 0.0,
-            render_id: render_id_1,
-            activity: 0,
-            transit: TRANSIT_NETWORK,
-            happiness: 50.0,
-            money: 100.0,
-            journey_start_time: 0.0,
-            schedule_seed: 1,
-            cached_commute_minutes: 0,
-            next_commute_refresh_time: 0.0,
-            next_departure_day: u32::MAX,
-            next_departure_minute: 0,
-            next_departure_origin_building: usize::MAX,
-            next_departure_target_building: usize::MAX,
-            next_departure_activity: 0,
-            cached_schedule_work_building: usize::MAX,
-            cached_work_profile_index: u16::MAX,
-            current_building: usize::MAX,
-            target_building: usize::MAX,
-            planned_target_building: usize::MAX,
-            freight_target_border_node: u32::MAX,
-            current_node: 1,
-            planned_attach_node: u32::MAX,
-            planned_detach_node: u32::MAX,
-            planned_attach_lane_id: u32::MAX,
-            planned_detach_lane_id: u32::MAX,
-            planned_attach_lane_d: 0.0,
-            planned_detach_lane_d: 0.0,
-            access_flags: 0,
-            next_replan_time: 0.0,
-            network_replan_failures: 0,
-            current_edge: 1,
-            current_lane_id: e1_lane,
-            lane_distance: 10.0,
-            lane_change_from_lane_id: u32::MAX,
-            lane_change_start_d: 0.0,
-            lane_change_length_m: 0.0,
-            overtake_blocked_time_s: 0.0,
-            overtake_cooldown_s: 0.0,
-            speed: 10.0,
-            transit_mode: MODE_CAR,
-            planned_activity: 0,
-            current_path: vec![],
-            current_path_index: 0,
-            has_car: true,
-            vehicle_type: 0,
-            pedestrian_type: 0,
-            walk_phase: 0.0,
-            job_lock_days: 0,
-            consecutive_unpaid_days: 0,
-        });
+        for (edge_id, lane_id, x) in [(0, e0_lane, 0.0), (1, e1_lane, 150.0)] {
+            let i = sys.spawn_border_arrival_agent(usize::MAX, edge_id as u32, x, 0.0);
+            sys.agents.transit[i] = TRANSIT_NETWORK;
+            sys.agents.current_edge[i] = edge_id;
+            sys.agents.current_lane_id[i] = lane_id;
+            sys.agents.lane_distance[i] = 10.0;
+            sys.agents.speed[i] = 10.0;
+        }
 
-        let mut affected = HashSet::new();
-        affected.insert(0usize);
+        let affected = HashSet::from([0]);
         sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
 
         assert_eq!(sys.agents.current_lane_id[0], usize::MAX);
@@ -945,71 +908,19 @@ mod tests {
         let (graph, lane_system) = make_simple_lane_system();
 
         let mut sys = AgentSystem::new();
-        let render_id = sys.allocate_render_id();
-        sys.agents.push(Agent {
-            home_building: usize::MAX,
-            household_id: usize::MAX,
-            age_group: AGE_ADULT,
-            pending_household_size: 0,
-            freight_shipment_id: u64::MAX,
-            work_building: usize::MAX,
-            pos_x: 0.0,
-            pos_y: 0.0,
-            render_id,
-            activity: 0,
-            transit: TRANSIT_IN_BUILDING,
-            happiness: 50.0,
-            money: 100.0,
-            journey_start_time: 0.0,
-            schedule_seed: 0,
-            cached_commute_minutes: 0,
-            next_commute_refresh_time: 0.0,
-            next_departure_day: u32::MAX,
-            next_departure_minute: 0,
-            next_departure_origin_building: usize::MAX,
-            next_departure_target_building: usize::MAX,
-            next_departure_activity: 0,
-            cached_schedule_work_building: usize::MAX,
-            cached_work_profile_index: u16::MAX,
-            current_building: 0,
-            target_building: 0,
-            planned_target_building: usize::MAX,
-            freight_target_border_node: u32::MAX,
-            current_node: 0,
-            planned_attach_node: u32::MAX,
-            planned_detach_node: u32::MAX,
-            planned_attach_lane_id: u32::MAX,
-            planned_detach_lane_id: u32::MAX,
-            planned_attach_lane_d: 0.0,
-            planned_detach_lane_d: 0.0,
-            access_flags: 0,
-            next_replan_time: 0.0,
-            network_replan_failures: 0,
-            current_edge: usize::MAX,
-            current_lane_id: usize::MAX,
-            lane_distance: 0.0,
-            lane_change_from_lane_id: u32::MAX,
-            lane_change_start_d: 0.0,
-            lane_change_length_m: 0.0,
-            overtake_blocked_time_s: 0.0,
-            overtake_cooldown_s: 0.0,
-            speed: 0.0,
-            transit_mode: MODE_CAR,
-            planned_activity: 0,
-            current_path: vec![],
-            current_path_index: 0,
-            has_car: false,
-            vehicle_type: 0,
-            pedestrian_type: 0,
-            walk_phase: 0.0,
-            job_lock_days: 0,
-            consecutive_unpaid_days: 0,
-        });
-
-        let mut affected = HashSet::new();
-        affected.insert(0usize);
-        sys.invalidate_lane_ids_for_edges(&affected, &lane_system, &graph);
-        assert_eq!(sys.agents.current_lane_id[0], usize::MAX);
+        for (transit, lane_id) in [
+            (TRANSIT_IN_BUILDING, usize::MAX),
+            (TRANSIT_NETWORK, usize::MAX),
+            (TRANSIT_NETWORK, lane_system.lanes.len()),
+        ] {
+            let i = sys.spawn_housed_agent(0, 12.0, -8.0);
+            sys.agents.transit[i] = transit;
+            sys.agents.current_lane_id[i] = lane_id;
+            sys.agents.lane_distance[i] = 7.0;
+        }
+        let before = format!("{:?}", sys.agents);
+        sys.invalidate_lane_ids_for_edges(&HashSet::from([0]), &lane_system, &graph);
+        assert_eq!(format!("{:?}", sys.agents), before);
     }
 
     #[test]
@@ -1026,7 +937,7 @@ mod tests {
         let old_lane_d = 75.0;
         let old_pos = sample_lane_position_xz(&lane_system.lanes[old_lane_id], old_lane_d).unwrap();
         let mut sys = AgentSystem::new();
-        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, old_pos.x, old_pos.y);
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, old_pos.x, old_pos.y);
         sys.agents.transit[idx] = TRANSIT_NETWORK;
         sys.agents.current_node[idx] = 0;
         sys.agents.current_edge[idx] = 0;
@@ -1103,7 +1014,7 @@ mod tests {
             .expect("forward vehicle lane on edge 1");
 
         let mut sys = AgentSystem::new();
-        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 10.0, 0.0);
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 10.0, 0.0);
         sys.agents.transit[idx] = TRANSIT_NETWORK;
         sys.agents.transit_mode[idx] = MODE_CAR;
         sys.agents.current_node[idx] = 0;
@@ -1144,17 +1055,16 @@ mod tests {
     #[test]
     fn test_route_clear_drops_intersection_connector_lane_after_road_edit() {
         let TurnConnectorFixture {
-            graph: _graph,
             lane_system,
             n_west,
             n_center,
-            n_north,
             inbound_lane,
             connector_lane,
+            ..
         } = make_turn_connector_lane_system();
 
         let mut sys = AgentSystem::new();
-        let idx = sys.spawn_border_arrival_agent(usize::MAX, n_north, 0.0, 0.0, n_west, 100.0, 0.0);
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, n_west, 100.0, 0.0);
         sys.agents.transit[idx] = TRANSIT_INTERSECTION;
         sys.agents.transit_mode[idx] = MODE_CAR;
         sys.agents.current_node[idx] = n_center;
@@ -1208,7 +1118,7 @@ mod tests {
         let border_node = graph.edge(1).end_node;
 
         let mut sys = AgentSystem::new();
-        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 10.0, 0.0);
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, 0, 10.0, 0.0);
         sys.agents.transit[idx] = TRANSIT_NETWORK;
         sys.agents.transit_mode[idx] = MODE_CAR;
         sys.agents.current_node[idx] = 0;
@@ -1244,92 +1154,21 @@ mod tests {
 
     #[test]
     fn test_reattach_repairs_agent_invalidated_inside_connector() {
-        let mut graph = RegionGraph::new();
-        let n_west = graph.add_node(
-            Vector3::new(-100.0, 0.0, 0.0),
-            crate::simulation::network::types::NodeType::Junction,
-        );
-        let n_center = graph.add_node(
-            Vector3::ZERO,
-            crate::simulation::network::types::NodeType::Junction,
-        );
-        let n_east = graph.add_node(
-            Vector3::new(100.0, 0.0, 0.0),
-            crate::simulation::network::types::NodeType::Junction,
-        );
-        let n_north = graph.add_node(
-            Vector3::new(0.0, 0.0, -100.0),
-            crate::simulation::network::types::NodeType::Junction,
-        );
-        let add_edge = |graph: &mut RegionGraph, start_node: u32, end_node: u32| {
-            let start = graph.node(start_node).pos;
-            let end = graph.node(end_node).pos;
-            graph.add_edge(Edge {
-                start_node,
-                end_node,
-                primary_type: TransitType::Road,
-                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-                class: EdgeClass::Standard,
-                width: 7.0,
-                fwd_lanes: 1,
-                bkw_lanes: 1,
-                speed_limit: 50.0,
-                base_cost: 1.0,
-                physical_length: start.distance_to(end),
-                current_congestion: 0.0,
-                start_clip: 0.0,
-                end_clip: 0.0,
-                geometry: vec![start, end],
-                physical_geometry: vec![start, end],
-                ..Default::default()
-            })
-        };
-        let west_edge = add_edge(&mut graph, n_west, n_center);
-        let _east_edge = add_edge(&mut graph, n_center, n_east);
-        let north_edge = add_edge(&mut graph, n_center, n_north);
-        graph.rebuild_adjacency_list();
-
-        let mut lane_system = LaneSystem::new();
-        lane_system.rebuild(&mut graph);
-
-        let inbound_lane = lane_system.edge_lanes[&west_edge]
-            .iter()
-            .copied()
-            .find(|&lane_id| {
-                let lane = &lane_system.lanes[lane_id];
-                lane.lane_type == LaneType::Vehicle && lane.is_fwd
-            })
-            .expect("west inbound vehicle lane");
-        let connector_lane = lane_system.lanes[inbound_lane]
-            .next_lanes
-            .iter()
-            .copied()
-            .find(|&lane_id| {
-                let lane = &lane_system.lanes[lane_id];
-                lane.edge_id == usize::MAX
-                    && lane.lane_type == LaneType::Vehicle
-                    && lane.next_lanes.first().is_some_and(|&target_lane_id| {
-                        lane_system
-                            .lanes
-                            .get(target_lane_id)
-                            .is_some_and(|target_lane| target_lane.edge_id == north_edge)
-                    })
-            })
-            .expect("west-to-north vehicle connector");
+        let TurnConnectorFixture {
+            mut graph,
+            mut lane_system,
+            n_west,
+            n_center,
+            north_edge,
+            connector_lane,
+            ..
+        } = make_turn_connector_lane_system();
         let old_lane_d = lane_system.lanes[connector_lane].length * 0.5;
         let old_pos =
             sample_lane_position_xz(&lane_system.lanes[connector_lane], old_lane_d).unwrap();
 
         let mut sys = AgentSystem::new();
-        let idx = sys.spawn_border_arrival_agent(
-            usize::MAX,
-            n_north,
-            0.0,
-            0.0,
-            n_west,
-            old_pos.x,
-            old_pos.y,
-        );
+        let idx = sys.spawn_border_arrival_agent(usize::MAX, n_west, old_pos.x, old_pos.y);
         sys.agents.transit[idx] = TRANSIT_INTERSECTION;
         sys.agents.transit_mode[idx] = MODE_CAR;
         sys.agents.current_node[idx] = n_center;

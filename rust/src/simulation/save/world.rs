@@ -17,6 +17,7 @@ use crate::simulation::economy::logistics::{
 };
 use crate::simulation::extraction::{
     ExtractorSite, ResourceExtractionSystem, validate_extractor_polygon_world,
+    validate_extractor_reserve,
 };
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
@@ -36,8 +37,8 @@ use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
     db_to_optional_usize, i64_to_i8, i64_to_u8, i64_to_u16, i64_to_u32, i64_to_u64, i64_to_usize,
-    optional_building_to_db, pack_f32_slice, pack_u16_slice, u32_to_i64, u64_to_i64,
-    unpack_f32_blob, unpack_u16_blob, usize_to_i64,
+    optional_building_to_db, pack_f32_slice, pack_u16_slice, u64_to_i64, unpack_f32_blob,
+    unpack_u16_blob, usize_to_i64,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -232,7 +233,7 @@ pub(super) fn save_world(
             demand_spawn_zone_to_db(pending.zone_type)?,
             u64_to_i64(pending.action.parcel_id)?,
             &pending.action.asset_id,
-            u32_to_i64(pending.planned_day_index)?,
+            i64::from(pending.planned_day_index),
             i64::from(pending.planned_minute_of_day),
         ])?;
     }
@@ -282,12 +283,7 @@ pub(super) fn save_world(
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
-    for (old_bid, b) in buildings.buildings.iter().enumerate() {
-        let saved_bid = maps
-            .building_old_to_new
-            .get(&old_bid)
-            .copied()
-            .ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
+    for (saved_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid_db = usize_to_i64(saved_bid)?;
         let saved_eid = maps
             .edge_old_to_new
@@ -304,8 +300,8 @@ pub(super) fn save_world(
             usize_to_i64(b.cell_x)?,
             usize_to_i64(b.cell_y as usize)?,
             i64::from(b.zone_profile_runtime_id),
-            u32_to_i64(b.occupancy)?,
-            u32_to_i64(b.worker_count)?,
+            i64::from(b.occupancy),
+            i64::from(b.worker_count),
             b.service_funding_override,
             b.revenue,
             b.operating_budget,
@@ -340,8 +336,13 @@ pub(super) fn save_world(
     }
     save_resource_extraction(tx, resource_extraction, maps)?;
     save_agriculture(tx, agriculture, maps)?;
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, power_consumption_cost, water_consumption_cost, sewage_consumption_cost) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)")?;
     for (hid, household) in households.households.iter().enumerate() {
+        let ledger = households
+            .daily_ledgers()
+            .get(hid)
+            .copied()
+            .unwrap_or_default();
         household_stmt.execute(params![
             usize_to_i64(hid)?,
             optional_building_to_db(household.home_building_id, maps)?,
@@ -364,13 +365,16 @@ pub(super) fn save_world(
             } else {
                 usize_to_i64(household.shopping_agent_id)?
             },
-            u32_to_i64(household.shopping_agent_schedule_seed)?,
+            i64::from(household.shopping_agent_schedule_seed),
             i64::from(household.shopping_timeout_hours_remaining),
-            u32_to_i64(household.replenishment_search_cursor)?,
+            i64::from(household.replenishment_search_cursor),
             i64::from(household.stay_failure_days),
             i64::from(household.unhoused_days_elapsed),
             i64::from(household.replenishment_offset_hours),
             i64::from(household.unemployment_days_elapsed),
+            ledger.power_consumption_cost,
+            ledger.water_consumption_cost,
+            ledger.sewage_consumption_cost,
         ])?;
     }
 
@@ -487,6 +491,8 @@ fn save_resource_extraction(
         "INSERT INTO resource_extractor_site_points(site_id, point_index, x, z) VALUES (?1, ?2, ?3, ?4)",
     )?;
     for (site_id, site) in resource_extraction.sites().iter().enumerate() {
+        validate_extractor_reserve(site.total_reserve_units, site.extracted_units)
+            .map_err(SaveLoadError::custom)?;
         let saved_building_id = optional_building_to_db(site.building_idx, maps)?;
         if saved_building_id == NONE_REF {
             return Err(SaveLoadError::custom(
@@ -802,10 +808,10 @@ pub(super) fn load_buildings(
             center_x: 0.0,
             center_y: 0.0,
             support_height_m: row.get(33)?,
-            width_cells: i64_to_usize(row.get(16)?)? as u16,
-            depth_cells: i64_to_usize(row.get(17)?)? as u16,
+            width_cells: i64_to_u16(row.get(16)?)?,
+            depth_cells: i64_to_u16(row.get(17)?)?,
             zone_profile_runtime_id: profile_runtime_id,
-            parcel_id: i64_to_usize(row.get(1)?)? as u64,
+            parcel_id: i64_to_u64(row.get(1)?)?,
             zone_type,
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(3)?,
@@ -813,9 +819,9 @@ pub(super) fn load_buildings(
             is_deserted: row.get::<_, i64>(25)? != 0,
             budget_distress: row.get::<_, i64>(26)? != 0,
             edge_idx: i64_to_usize(row.get(2)?)?,
-            side: (row.get::<_, i64>(4)?) as i8,
+            side: i64_to_i8(row.get(4)?)?,
             cell_x: i64_to_usize(row.get(5)?)?,
-            cell_y: i64_to_usize(row.get(6)?)? as u16,
+            cell_y: i64_to_u16(row.get(6)?)?,
             occupancy: i64_to_u32(row.get(8)?)?,
             worker_count: i64_to_u32(row.get(9)?)?,
             service_funding_override: row.get::<_, f32>(10)?.clamp(-1.0, 1.0),
@@ -887,8 +893,10 @@ pub(super) fn load_resource_extraction(
             ));
         }
         let resource_id: String = row.get(2)?;
-        let total_reserve_units: f32 = row.get::<_, f32>(3)?.max(0.0);
-        let extracted_units: f32 = row.get::<_, f32>(4)?.clamp(0.0, total_reserve_units);
+        let total_reserve_units: f32 = row.get(3)?;
+        let extracted_units: f32 = row.get(4)?;
+        validate_extractor_reserve(total_reserve_units, extracted_units)
+            .map_err(SaveLoadError::custom)?;
         sites.push(ExtractorSite {
             building_idx,
             resource_id,
@@ -903,7 +911,6 @@ pub(super) fn load_resource_extraction(
         "SELECT site_id, point_index, x, z FROM resource_extractor_site_points ORDER BY site_id, point_index",
     )?;
     let mut point_rows = point_stmt.query([])?;
-    let mut last_point_index_by_site = vec![0usize; sites.len()];
     while let Some(row) = point_rows.next()? {
         let site_id = i64_to_usize(row.get(0)?)?;
         if site_id >= sites.len() {
@@ -912,12 +919,11 @@ pub(super) fn load_resource_extraction(
             ));
         }
         let point_index = i64_to_usize(row.get(1)?)?;
-        if point_index != last_point_index_by_site[site_id] {
+        if point_index != sites[site_id].polygon_world.len() {
             return Err(SaveLoadError::custom(
                 "non-contiguous extractor polygon point ids",
             ));
         }
-        last_point_index_by_site[site_id] += 1;
         sites[site_id]
             .polygon_world
             .push(Vector2::new(row.get(2)?, row.get(3)?));
@@ -968,7 +974,6 @@ pub(super) fn load_agriculture(
         "SELECT site_id, point_index, x, z FROM agriculture_field_site_points ORDER BY site_id, point_index",
     )?;
     let mut point_rows = point_stmt.query([])?;
-    let mut last_point_index_by_site = vec![0usize; sites.len()];
     while let Some(row) = point_rows.next()? {
         let site_id = i64_to_usize(row.get(0)?)?;
         if site_id >= sites.len() {
@@ -977,12 +982,11 @@ pub(super) fn load_agriculture(
             ));
         }
         let point_index = i64_to_usize(row.get(1)?)?;
-        if point_index != last_point_index_by_site[site_id] {
+        if point_index != sites[site_id].polygon_world.len() {
             return Err(SaveLoadError::custom(
                 "non-contiguous field polygon point ids",
             ));
         }
-        last_point_index_by_site[site_id] += 1;
         sites[site_id]
             .polygon_world
             .push(Vector2::new(row.get(2)?, row.get(3)?));
@@ -1000,19 +1004,24 @@ pub(super) fn load_agriculture(
     Ok(AgricultureSystem::from_sites(sites))
 }
 
-pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
+pub(super) fn load_households(conn: &Connection, version: i64) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
+    let utility_columns = if version >= 61 {
+        "power_consumption_cost, water_consumption_cost, sewage_consumption_cost"
+    } else {
+        "0.0, 0.0, 0.0"
+    };
+    let mut stmt = conn.prepare(&format!("SELECT household_id, home_building, budget, stock, member_count, child_count, adult_count, elder_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, replenishment_failure_count, reserved_store_building_id, reserved_amount, reserved_total_cost, shopping_agent_id, shopping_agent_schedule_seed, shopping_timeout_hours_remaining, replenishment_search_cursor, stay_failure_days, unhoused_days_elapsed, replenishment_offset_hours, unemployment_days_elapsed, {utility_columns} FROM households ORDER BY household_id"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
         if hid != households.households.len() {
             return Err(SaveLoadError::custom("non-contiguous household ids"));
         }
-        let member_count = i64_to_u32(row.get(4)?)? as u16;
-        let child_count = i64_to_u32(row.get(5)?)? as u16;
-        let adult_count = i64_to_u32(row.get(6)?)? as u16;
-        let elder_count = i64_to_u32(row.get(7)?)? as u16;
+        let member_count = i64_to_u16(row.get(4)?)?;
+        let child_count = i64_to_u16(row.get(5)?)?;
+        let adult_count = i64_to_u16(row.get(6)?)?;
+        let elder_count = i64_to_u16(row.get(7)?)?;
         if u32::from(child_count)
             .saturating_add(u32::from(adult_count))
             .saturating_add(u32::from(elder_count))
@@ -1047,6 +1056,14 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             replenishment_offset_hours: i64_to_u16(row.get(22)?)?,
             unemployment_days_elapsed: i64_to_u32(row.get(23)?)?,
         });
+        let paid: [f32; 3] = [row.get(24)?, row.get(25)?, row.get(26)?];
+        if paid
+            .iter()
+            .any(|amount| !amount.is_finite() || *amount < 0.0)
+        {
+            return Err(SaveLoadError::custom("invalid household utility payment"));
+        }
+        households.restore_utility_payments(hid, paid);
     }
     Ok(households)
 }
@@ -1124,6 +1141,7 @@ pub(super) fn repair_quarantined_loaded_parcels(
     allocator: &mut BuildingAllocator,
     households: &mut HouseholdSystem,
     logistics: &mut ShipmentSystem,
+    treasury_balance: &mut f64,
     resource_extraction: &mut ResourceExtractionSystem,
     agriculture: &mut AgricultureSystem,
     agents: &mut AgentSystem,
@@ -1152,6 +1170,7 @@ pub(super) fn repair_quarantined_loaded_parcels(
             agents,
             households,
             logistics,
+            treasury_balance,
         ) {
             return Err(SaveLoadError::custom(
                 "legacy invalid parcel repair could not remove building",

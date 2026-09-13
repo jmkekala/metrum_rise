@@ -22,6 +22,7 @@ use junction::{LaneEndAction, handle_lane_end};
 use lane_change::prepare_lane_change_and_overtake;
 use lane_entry::{LaneEntryAction, prepare_lane_entry};
 use pose::update_network_pose;
+pub(super) use replan::apply_network_replan;
 use replan::prepare_network_replan;
 use std::sync::atomic::AtomicU32;
 
@@ -86,8 +87,14 @@ pub(super) unsafe fn handle_network_movement(
                 break;
             }
 
-            lane_id =
-                prepare_lane_change_and_overtake(i, lane_id, lane_buckets, transit_network, slices);
+            lane_id = prepare_lane_change_and_overtake(
+                i,
+                lane_id,
+                lane_buckets,
+                transit_network,
+                lane_claims,
+                slices,
+            );
 
             let lane = &transit_network.lane_system.lanes[lane_id];
             let dist_to_end = lane.length - *s_lane_d.get(i);

@@ -9,7 +9,7 @@ use crate::simulation::economy::agents::TRANSIT_NETWORK;
 use crate::simulation::economy::agents::data::AgentSystem;
 use rayon::prelude::*;
 use std::cmp::Ordering as CmpOrdering;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 impl AgentSystem {
     pub(super) fn ensure_lane_bucket_buffers(&mut self, lane_count: usize) {
@@ -19,13 +19,13 @@ impl AgentSystem {
         }
     }
 
-    pub(super) fn reset_lane_attach_claims(&mut self, lane_count: usize) {
-        if self.lane_attach_claimed.len() < lane_count {
-            self.lane_attach_claimed
-                .resize_with(lane_count, || AtomicBool::new(false));
+    pub(super) fn reset_lane_claims(&mut self, lane_count: usize) {
+        if self.lane_claim_owner.len() < lane_count {
+            self.lane_claim_owner
+                .resize_with(lane_count, || AtomicUsize::new(usize::MAX));
         }
-        for claimed in &self.lane_attach_claimed {
-            claimed.store(false, Ordering::Relaxed);
+        for owner in &self.lane_claim_owner {
+            owner.store(usize::MAX, Ordering::Relaxed);
         }
     }
 

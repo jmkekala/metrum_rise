@@ -3,7 +3,6 @@
 //! Input restock request planning for profile-driven buildings.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use rayon::prelude::*;
@@ -83,37 +82,20 @@ impl ShipmentSystem {
                     continue;
                 }
 
-                let (target_units, reorder_units, critical_units) =
-                    scaled_input_inventory_targets_for_building(
+                let Some((desired_amount, allow_emergency)) =
+                    super::resource::input_restock_request(
                         &catalog,
                         &allocator.buildings[dest_idx],
                         profile,
                         input_port,
-                    );
-                if target_units <= 0.0 {
-                    continue;
-                }
-                let effective_input_stock = allocator.buildings[dest_idx]
-                    .inventory_units(input_port.resource_runtime_id)
-                    + planning
-                        .reservations
-                        .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id);
-                if reorder_units > 0.0 && effective_input_stock >= reorder_units {
+                        planning
+                            .reservations
+                            .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id),
+                    )
+                else {
                     self.clear_request_failure(request_key);
                     continue;
-                }
-                if reorder_units <= 0.0 && effective_input_stock >= target_units {
-                    self.clear_request_failure(request_key);
-                    continue;
-                }
-                let allow_emergency = effective_input_stock <= critical_units;
-                let desired_amount = (target_units - effective_input_stock).max(0.0);
-                if desired_amount <= 0.0 {
-                    continue;
-                }
-                if desired_amount < profile.min_shipment_units && !allow_emergency {
-                    continue;
-                }
+                };
 
                 if self.try_local_supplier_for_resource(
                     dest_idx,

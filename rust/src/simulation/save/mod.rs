@@ -8,7 +8,9 @@ use crate::nodes::sim::core::{
 use crate::simulation::agriculture::AgricultureSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
-use crate::simulation::core::time::TimeSystem;
+use crate::simulation::core::time::{
+    MINUTES_PER_DAY, TimeSystem, validate_day_duration, validated_simulation_speed,
+};
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
@@ -29,13 +31,13 @@ use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
-use std::fs;
 use std::path::Path;
 
 pub mod agents;
 mod camera;
 pub mod network;
 pub mod schema;
+pub(crate) mod sqlite;
 #[cfg(test)]
 pub mod tests;
 pub mod world;
@@ -143,7 +145,7 @@ fn save_budget_history(
     budget_history: &VecDeque<DailyBudgetLedgerEntry>,
 ) -> SaveLoadResult<()> {
     let mut stmt = tx.prepare(
-        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
+        "INSERT INTO city_budget_history(sequence, day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
     )?;
     for (sequence, entry) in budget_history.iter().enumerate() {
         stmt.execute(params![
@@ -175,7 +177,6 @@ fn save_budget_history(
             entry.power_unmet,
             entry.power_coverage,
             entry.coal_inventory,
-            entry.coal_bought,
             entry.coal_consumed,
             entry.electricity_fuel_cost,
             entry.electricity_wage_cost,
@@ -193,7 +194,7 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
     }
 
     let mut stmt = conn.prepare(
-        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net FROM city_budget_history ORDER BY sequence",
+        "SELECT day_index, income, expenses, net, treasury, tax_income, income_tax, household_vat, business_profit_tax, property_tax, residential_property_tax, commercial_property_tax, industrial_property_tax, utility_service_revenue, benefits, unemployment_benefits, pensions, child_support, city_wages, fuel_input_purchases, imports_owa, construction_service_costs, power_produced, power_consumed, power_unmet, power_coverage, coal_inventory, coal_consumed, electricity_fuel_cost, electricity_wage_cost, electricity_revenue, electricity_net FROM city_budget_history ORDER BY sequence",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -229,7 +230,6 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             row.get::<_, f64>(29)?,
             row.get::<_, f64>(30)?,
             row.get::<_, f64>(31)?,
-            row.get::<_, f64>(32)?,
         ))
     })?;
     for row in rows {
@@ -261,7 +261,6 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             power_unmet,
             power_coverage,
             coal_inventory,
-            coal_bought,
             coal_consumed,
             electricity_fuel_cost,
             electricity_wage_cost,
@@ -296,7 +295,6 @@ fn load_budget_history(conn: &Connection) -> SaveLoadResult<VecDeque<DailyBudget
             power_unmet,
             power_coverage,
             coal_inventory,
-            coal_bought,
             coal_consumed,
             electricity_fuel_cost,
             electricity_wage_cost,
@@ -342,28 +340,28 @@ impl From<String> for SaveLoadError {
 pub(super) struct SnapshotMaps {
     pub node_old_to_new: HashMap<u32, u32>,
     pub edge_old_to_new: HashMap<usize, usize>,
-    pub building_old_to_new: HashMap<usize, usize>,
+    /// Bounds for building references; storage order is preserved without ID remapping.
+    pub building_count: usize,
 }
 
 /// Entry point to save the live simulation state to a SQLite database.
 pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadResult<()> {
+    view.config.validate()?;
+    validate_time_state(view.time, view.agents.sim_time)?;
     if let Some(camera) = view.camera {
         camera.validate()?;
     }
-    if let Some(p) = path.parent() {
-        if !p.as_os_str().is_empty() {
-            fs::create_dir_all(p)?;
-        }
-    }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    let mut conn = Connection::open(path)?;
-    conn.execute_batch(SCHEMA)?;
     let maps = build_snapshot_maps(view.graph, view.allocator, view.agents)?;
-    let tx = conn.transaction()?;
+    sqlite::write_sqlite_snapshot(path, SCHEMA, |tx| write_snapshot(tx, view, &maps))
+}
+
+fn write_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    view: SaveGameView<'_>,
+    maps: &SnapshotMaps,
+) -> SaveLoadResult<()> {
     if let Some(camera) = view.camera {
-        camera::save_camera_state(&tx, camera)?;
+        camera::save_camera_state(tx, camera)?;
     }
     tx.execute(
         "INSERT INTO save_meta(version, saved_at_unix, game_build) VALUES (?1, ?2, ?3)",
@@ -429,10 +427,10 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             view.fiscal_policy.property_tax_level_multiplier,
         ],
     )?;
-    save_budget_history(&tx, view.budget_history)?;
+    save_budget_history(tx, view.budget_history)?;
 
     world::save_world(
-        &tx,
+        tx,
         view.terrain,
         view.water,
         view.resource_deposits,
@@ -446,12 +444,11 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         view.pending_demand_spawns,
         view.pollution,
         view.noise,
-        &maps,
+        maps,
     )?;
-    network::save_network(&tx, view.graph, &maps)?;
-    agents::save_agents(&tx, view.agents, view.graph, view.network, &maps)?;
+    network::save_network(tx, view.graph, maps)?;
+    agents::save_agents(tx, view.agents, view.graph, view.network, maps)?;
 
-    tx.commit()?;
     Ok(())
 }
 
@@ -460,11 +457,11 @@ pub(crate) fn load_from_sqlite(
     path: &Path,
     registry: &crate::assets::AssetRegistry,
 ) -> SaveLoadResult<LoadedSimulation> {
-    let conn = Connection::open(path)?;
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| {
         row.get(0)
     })?;
-    if version != SAVE_VERSION && version != 58 && version != 57 {
+    if !(57..=SAVE_VERSION).contains(&version) {
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let camera = if version >= 59 {
@@ -483,6 +480,7 @@ pub(crate) fn load_from_sqlite(
             )
         },
     )?;
+    config.validate()?;
     let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {
         time_elapsed: time_r.0,
@@ -491,6 +489,7 @@ pub(crate) fn load_from_sqlite(
         minute_of_day: i64_to_u16(time_r.3)?,
         seconds_per_day: time_r.4,
     };
+    validate_time_state(&time, time_r.5)?;
 
     let mut terrain = world::load_terrain(&conn, &config)?;
     let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
@@ -548,17 +547,67 @@ pub(crate) fn load_from_sqlite(
     let mut graph = network::load_graph(&conn)?;
     let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
-    let mut households = world::load_households(&conn)?;
+    let mut households = world::load_households(&conn, version)?;
     let mut logistics = world::load_shipments(&conn)?;
     let mut resource_extraction =
         world::load_resource_extraction(&conn, allocator.buildings.len())?;
     let mut agriculture = world::load_agriculture(&conn, allocator.buildings.len())?;
     let mut agents = agents::load_agents(&conn, time_r.5)?;
+    let treasury_row: (
+        f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64,
+    ) = conn.query_row(
+        "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax FROM city_treasury LIMIT 1",
+        [],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+                r.get(8)?,
+                r.get(9)?,
+                r.get(10)?,
+                r.get(11)?,
+                r.get(12)?,
+                r.get(13)?,
+                r.get(14)?,
+                r.get(15)?,
+                r.get(16)?,
+                r.get(17)?,
+            ))
+        },
+    )?;
+    let mut treasury = CityTreasury {
+        balance: treasury_row.0,
+        lifetime_build_cost: treasury_row.1,
+        lifetime_tax_revenue: treasury_row.2,
+        last_daily_upkeep: treasury_row.3,
+        last_daily_income_tax: treasury_row.4,
+        last_daily_household_vat: treasury_row.5,
+        last_daily_business_profit_tax: treasury_row.6,
+        last_daily_property_tax: treasury_row.7,
+        last_daily_residential_property_tax: treasury_row.8,
+        last_daily_commercial_property_tax: treasury_row.9,
+        last_daily_industrial_property_tax: treasury_row.10,
+        pending_income_tax: treasury_row.11,
+        pending_household_vat: treasury_row.12,
+        pending_business_profit_tax: treasury_row.13,
+        pending_property_tax: treasury_row.14,
+        pending_residential_property_tax: treasury_row.15,
+        pending_commercial_property_tax: treasury_row.16,
+        pending_industrial_property_tax: treasury_row.17,
+    };
+
     world::repair_quarantined_loaded_parcels(
         &mut zoning,
         &mut allocator,
         &mut households,
         &mut logistics,
+        &mut treasury.balance,
         &mut resource_extraction,
         &mut agriculture,
         &mut agents,
@@ -594,56 +643,8 @@ pub(crate) fn load_from_sqlite(
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
 
     let mut desirability = DesirabilitySystem::new(&config);
-    desirability.tick(&zoning, &pollution, &noise);
+    desirability.tick(&pollution, &noise);
 
-    let treasury_row: (
-        f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64, f64,
-    ) = conn.query_row(
-        "SELECT balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax FROM city_treasury LIMIT 1",
-        [],
-        |r| {
-            Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-                r.get(10)?,
-                r.get(11)?,
-                r.get(12)?,
-                r.get(13)?,
-                r.get(14)?,
-                r.get(15)?,
-                r.get(16)?,
-                r.get(17)?,
-            ))
-        },
-    )?;
-    let treasury = CityTreasury {
-        balance: treasury_row.0,
-        lifetime_build_cost: treasury_row.1,
-        lifetime_tax_revenue: treasury_row.2,
-        last_daily_upkeep: treasury_row.3,
-        last_daily_income_tax: treasury_row.4,
-        last_daily_household_vat: treasury_row.5,
-        last_daily_business_profit_tax: treasury_row.6,
-        last_daily_property_tax: treasury_row.7,
-        last_daily_residential_property_tax: treasury_row.8,
-        last_daily_commercial_property_tax: treasury_row.9,
-        last_daily_industrial_property_tax: treasury_row.10,
-        pending_income_tax: treasury_row.11,
-        pending_household_vat: treasury_row.12,
-        pending_business_profit_tax: treasury_row.13,
-        pending_property_tax: treasury_row.14,
-        pending_residential_property_tax: treasury_row.15,
-        pending_commercial_property_tax: treasury_row.16,
-        pending_industrial_property_tax: treasury_row.17,
-    };
     let service_policy = if sqlite_table_exists(&conn, "city_service_policy")? {
         match conn.query_row(
             "SELECT electricity_funding FROM city_service_policy LIMIT 1",
@@ -690,6 +691,22 @@ pub(crate) fn load_from_sqlite(
         fiscal_policy,
         budget_history,
     })
+}
+
+fn validate_time_state(time: &TimeSystem, agent_sim_time: f32) -> SaveLoadResult<()> {
+    validate_day_duration(time.seconds_per_day).map_err(SaveLoadError::custom)?;
+    let seconds_per_minute = time.seconds_per_minute();
+    if !time.time_elapsed.is_finite()
+        || !(0.0..seconds_per_minute).contains(&time.time_elapsed)
+        || validated_simulation_speed(time.speed_multiplier) != Some(time.speed_multiplier)
+        || time.day_index == 0
+        || time.minute_of_day >= MINUTES_PER_DAY
+        || !agent_sim_time.is_finite()
+        || agent_sim_time < 0.0
+    {
+        return Err(SaveLoadError::custom("invalid saved clock state"));
+    }
+    Ok(())
 }
 
 fn load_fiscal_policy(conn: &Connection) -> SaveLoadResult<CityFiscalPolicy> {
@@ -802,17 +819,15 @@ fn build_snapshot_maps(
         .enumerate()
         .map(|(n, o)| (o, n as u32))
         .collect();
-    let mut building_old_to_new = HashMap::new();
-    for (old, b) in allocator.buildings.iter().enumerate() {
+    for b in &allocator.buildings {
         if !edge_old_to_new.contains_key(&b.edge_idx) {
             return Err(SaveLoadError::custom("bld edge missing"));
         }
-        building_old_to_new.insert(old, building_old_to_new.len());
     }
     Ok(SnapshotMaps {
         node_old_to_new,
         edge_old_to_new,
-        building_old_to_new,
+        building_count: allocator.buildings.len(),
     })
 }
 
@@ -853,13 +868,10 @@ pub(super) fn unpack_u16_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<u16>> 
 pub(super) fn optional_building_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<i64> {
     if v == usize::MAX {
         Ok(NONE_REF)
+    } else if v < m.building_count {
+        usize_to_i64(v)
     } else {
-        usize_to_i64(
-            m.building_old_to_new
-                .get(&v)
-                .copied()
-                .ok_or_else(|| SaveLoadError::custom("missing bld map"))?,
-        )
+        Err(SaveLoadError::custom("building reference out of bounds"))
     }
 }
 pub(super) fn optional_edge_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<i64> {
@@ -915,7 +927,7 @@ pub(super) fn db_to_optional_u64(v: i64) -> SaveLoadResult<u64> {
     if v == NONE_REF {
         Ok(u64::MAX)
     } else {
-        u64::try_from(v).map_err(|_| SaveLoadError::custom("u64 underflow"))
+        i64_to_u64(v)
     }
 }
 pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> {
@@ -926,9 +938,6 @@ pub(super) fn u64_to_i64(v: u64) -> SaveLoadResult<i64> {
 }
 pub(super) fn i64_to_u64(v: i64) -> SaveLoadResult<u64> {
     u64::try_from(v).map_err(|_| SaveLoadError::custom("u64 underflow"))
-}
-pub(super) fn u32_to_i64(v: u32) -> SaveLoadResult<i64> {
-    Ok(i64::from(v))
 }
 pub(super) fn i64_to_usize(v: i64) -> SaveLoadResult<usize> {
     usize::try_from(v).map_err(|_| SaveLoadError::custom("usize underflow"))

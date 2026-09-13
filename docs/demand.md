@@ -15,6 +15,23 @@ It answers questions like:
 
 It does not own household data layout, freight movement, or door-to-door travel.
 
+## Machinery and production-chain demand (`ECON-09`)
+
+Machinery upkeep creates upstream industrial demand through existing input/output ports. OWA
+imports fulfill orders while leaving local production opportunities visible. Industrial spawn
+counts use resource-specific unmet demand against matching asset output, rather than dividing an
+aggregate currency deficit by unrelated factory output. Selected candidates immediately reserve
+net output for the remaining selection pass, preventing repeated factories for the same demand.
+Depleted mines clear productive area, so they contribute neither future output capacity nor
+Machinery input demand; their saved geometry and remaining saleable stock are retained.
+Factories under construction reserve their output minus their own same-resource upkeep; live
+factories count gross output and actual upkeep demand. Input demand uses the same active staffing
+cap as production, including farm jobs reduced by available customers. No producer asset means no
+corresponding spawn, even though an import-dependent city can still display industrial pressure.
+
+Initial rates, material recipes and authoring details are owned by
+[`economy.md`](economy.md#machinery-upkeep-econ-09).
+
 ## Cross-Doc Implementation Order
 
 This document is intended to be implemented after the profile-based zoning and asset-editor
@@ -61,6 +78,9 @@ Current live behavior:
   outcomes from the settled daily economy pass before computing the next demand snapshot
 - the live runtime now executes private building spawn, despawn, upgrade, and downgrade actions
   hourly from demand-owned building-action plans instead of allocator-owned heuristics
+- selected existing-building actions use current parcel ownership and revalidate the full selection
+  key before mutation; lookup does not copy the whole city (`AUDIT-01-B2`, measured in
+  [`building_allocator.md`](building_allocator.md))
 - those building-action plans now also pass through economy-side viability gates backed by the
   authored `runtime_tuning` block in `economy/profiles.toml`
 - industrial building actions now read explicit input-coverage and output-headroom signals from the
@@ -475,14 +495,14 @@ Baseline `v0.1` city-level signal families:
 - `average_move_in_job_wage_per_day`
 - `regional_growth_household_pull` — an authored outside-world household attraction signal after
   external connection, city-health damping, and the soft household target are applied
-- `industrial_input_capacity_deficit` — fraction of commercial input value not covered by live
+- `industrial_input_capacity_deficit` — fraction of business input value not covered by live
   local industrial output capacity; this is one `IndustrialGrowth` pressure source
-- `commercial_input_need_value` — daily value of active commercial input capacity demand
+- `business_input_need_value` — daily value of active business and utility input demand
 - `local_industrial_input_capacity_value` — daily value of live local industrial output capacity
-  for resources consumed by commercial profiles
-- `industrial_missing_input_value` — daily commercial input value still missing after local
+  for resources consumed by business and utility profiles
+- `industrial_missing_input_value` — daily business input value still missing after local
   industrial capacity is subtracted resource-by-resource
-- `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
+- `business_owa_dependency` — fraction of business input value sourced from OWA imports rather
   than local industrial; this is the actual-throughput import-substitution signal for
   `IndustrialGrowth`
 
@@ -528,16 +548,16 @@ Baseline ownership rule:
   slots describe physical jobs that would unlock after admission; fractional marginal commercial
   worker-equivalents describe expected partial employment/income from the candidate's own demand.
   Neither form hires a live worker before the household exists.
-- `commercial_input_need_value`, `local_industrial_input_capacity_value`,
+- `business_input_need_value`, `local_industrial_input_capacity_value`,
   `industrial_missing_input_value`, and `industrial_input_capacity_deficit` are derived by the
-  demand snapshot from compiled economy-profile ports. Active commercial inputs define the target;
-  live non-deserted industrial outputs for those same resources define local capacity; missing
+  demand snapshot from compiled economy-profile ports. Market-scaled commercial inputs plus staffed industry, farm, mine and utility inputs define the target;
+  live non-deserted industrial and area-producer outputs for those same resources define local capacity; missing
   value is computed resource-by-resource before being summed.
-- `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
+- `business_owa_dependency` is derived by the demand snapshot from daily per-building
   `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
-  `total_owa / max(total_owa + total_local, total_expected_commercial_input_value)` across active
-  commercial buildings, `0.0` when no commercial buildings exist or none have transacted yet. This
-  raises industrial pressure when commercial actually relies on outside inputs, but it does not
+  `total_owa / max(total_owa + total_local, total_expected_business_input_value)` across active
+  business and utility buildings, `0.0` when none have transacted yet. This
+  raises industrial pressure when the city actually relies on outside inputs, but it does not
   directly set industrial spawn count.
 
 Normalization rule:
@@ -662,13 +682,13 @@ Baseline helper terms:
 goods_shortage   = 1.0 - household_stock_stability
 commercial_need  = max(goods_shortage, commercial_capacity_deficit)
 industrial_input_capacity_deficit =
-    if commercial_input_need_value <= EPSILON then 0.0
+    if business_input_need_value <= EPSILON then 0.0
     else clamp(
-        industrial_missing_input_value / commercial_input_need_value,
+        industrial_missing_input_value / business_input_need_value,
         0.0,
         1.0
     )
-industrial_import_substitution_pressure = commercial_owa_dependency
+industrial_import_substitution_pressure = business_owa_dependency
 industrial_need =
     max(industrial_input_capacity_deficit, industrial_import_substitution_pressure)
 household_purchase_power =
@@ -739,7 +759,6 @@ move_in_runway_factor =
         1.0
     )
 move_in_acceptance = move_in_runway_factor
-construction_move_in_acceptance = move_in_runway_factor
 
 admission_unhoused_factor =
     1.0 - admission_unhoused_ratio_penalty * unhoused_household_ratio
@@ -752,7 +771,7 @@ admission_failure_factor =
     * admission_zero_budget_factor
     * admission_recent_failure_factor
 residential_construction_viability =
-    construction_move_in_acceptance * admission_failure_factor
+    move_in_acceptance * admission_failure_factor
 open_job_household_pull =
     if candidate_effective_workers <= EPSILON then 0.0
     else net_open_job_slots / candidate_effective_workers
@@ -859,10 +878,10 @@ Interpretation:
   unstable or commercial output capacity is missing, households have enough short-run buying power
   for essential purchases, and the city is connected enough to support more commerce
 - `IndustrialGrowth` is driven by the stronger of local industrial input-capacity deficit and
-  actual commercial OWA input dependency. Active commercial profiles define daily input need, live
-  industrial profiles define local output capacity for those input resources, and the missing value
-  ratio captures paper capacity shortage. `commercial_owa_dependency` captures actual outside-input
-  reliance when commercial buildings bought inputs from OWA instead of local industry. Industrial
+  actual business/utility OWA input dependency. Commercial activity and staffed industrial, farm, mine
+  and utility operation define input need; industrial and area producers define local output capacity, and the missing value
+  ratio captures paper capacity shortage. `business_owa_dependency` captures actual outside-input
+  reliance when customer buildings bought inputs from OWA instead of local industry. Industrial
   spawn quantity still uses committed missing input capacity, so existing or under-construction
   local factories prevent duplicate factory spawns even when the pressure signal exposes a failing
   local supply chain.
@@ -957,7 +976,7 @@ as:
 - household affordability (commercial demand and soft household-admission damping)
 - zero-budget household ratio (soft household-admission damping)
 - household stock stability (commercial demand)
-- industrial input-capacity deficit for active commercial inputs (industrial spawn pressure)
+- industrial input-capacity deficit for active business and utility inputs (industrial spawn pressure)
 - existence of at least one external connection (hard gate for admission and residential spawn)
 - negative city treasury (soft household-admission damping)
 - recent household failure/removal memory (soft household-admission damping)
@@ -1097,8 +1116,6 @@ are the first place to check when a visible RCI pressure does not become a build
 - `spawn_norm`, `spawn_need`, and `spawn_credit` show the hourly spawn-need credit calculation
 - `spawn_plan` is the whole-building spawn attempt count before final non-residential gates
 - `spawn_selected` is the number of candidates that entered the action plan
-- `spawn_reject_labour` is retained as diagnostic telemetry but baseline `v0.1` does not hard-block
-  non-residential spawning on pre-existing full staffing
 - `spawn_reject_absorption` counts non-residential candidates rejected by the deterministic
   output-absorption gate
 - `spawn_skip_budget` counts otherwise unprocessed candidates left over because the hourly
@@ -1199,23 +1216,20 @@ raw_spawn_need_buildings[residential] =
     )
 
 raw_spawn_need_buildings[commercial] =
-    ceil(
-        unmet_commercial_consumer_demand_units_per_day
-        / average_household-demand_output_units_per_day_of_eligible_commercial_spawn_candidates
-    )
+    max over household-demand resources:
+        ceil(committed_unmet_units_for_resource / average_matching_candidate_output_units_per_day)
 
 raw_spawn_need_buildings[industrial] =
-    ceil(
-        industrial_missing_input_value_per_day
-        / average_commercial-input_output_value_per_day_of_eligible_industrial_spawn_candidates
-    )
+    max over eligible candidate profiles and their output resources:
+        ceil(unmet_units_for_resource / candidate_net_output_units_per_day_for_resource)
 ```
 
-If any denominator is `<= EPSILON`, that use's raw spawn need is `0.0` for the pass. The candidate
-count does not multiply spawn need; it only caps how many deterministic empty sites can be selected.
+Resources with unmet units or matching output `<= EPSILON` contribute zero need. Residential
+need is zero when average candidate capacity is `<= EPSILON`. The candidate count does not multiply
+spawn need; it only caps how many deterministic empty sites can be selected.
 This means one valid industrial parcel can receive the full one-factory need immediately instead of
 turning the need into `1 / 24` of a parcel-count-scaled daily drip.
-Commercial `unmet_commercial_consumer_demand_units_per_day` includes baseline resident consumption,
+Commercial unmet units are kept per resource and include baseline resident consumption,
 aggregate service demand from `service_store` sink profiles, plus below-target household pantry
 recovery spread over the authored stock target window. Existing live commercial shops subtract only
 their effective demand-responsive output capacity, not their raw full-profile output, while
@@ -1223,9 +1237,8 @@ under-construction shops remain committed future capacity so the planner does no
 already-started site. Commercial spawn need is matched by resource and averages output only across
 candidates that produce that resource: a candidate grocery can satisfy `household_supplies` demand
 but not unresolved `personal_services` or `health_essentials` demand.
-Because
-`industrial_missing_input_value_per_day` subtracts existing local capacity from active commercial
-input need, one commercial building that actively needs `160` input units/day and one industrial
+Industrial unmet units subtract committed local capacity from active business/utility input need
+for the candidate resource. Thus one commercial building that actively needs `160` input units/day and one industrial
 building that outputs `160` compatible units/day yields zero further industrial spawn need even if
 the commercial building imported a large one-time OWA starter shipment earlier in the day.
 
@@ -1392,7 +1405,7 @@ Deterministic `v0.1` day-boundary rule:
    - `external_connection_available`
    - `commercial_capacity_deficit`
    - `industrial_input_capacity_deficit`
-   - `commercial_owa_dependency`
+   - `business_owa_dependency`
 5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
 6. Compute `households_to_remove_today` from that same frozen snapshot.
 7. Execute the resulting demand-owned removal action before the next operational day's sub-daily
@@ -1577,6 +1590,11 @@ Interpretation:
   from one bad hourly dip or one direct poverty-to-deletion shortcut
 
 ## Deterministic `v0.1` Rules
+
+Floating-point city activity and demand totals use fixed input chunks, parallel work within the
+collection, and chunk results merged in input order. Changing the Rayon worker count must not
+change the resulting totals. The shared economy reduction costs O(N) work and O(N / chunk size)
+temporary accumulators; it does not allocate per resident or sort chunk results.
 
 For `v0.1`, the immigration rules are simple and deterministic:
 
@@ -1778,10 +1796,11 @@ output_capacity_already_placed =
 total_consumer_demand =
     for each output resource in the candidate's bound economy profile:
         resident demand for that resource
-        + existing commercial input need for that resource
+        + existing business and utility input need for that resource
 
 output_absorption_gate_passes =
-    output_capacity_already_placed < total_consumer_demand
+    any candidate resource with positive net output and:
+        output_capacity_already_placed_for_resource < total_consumer_demand_for_resource
 
 If the candidate asset has no resolvable economy profile binding, the gate fails safe and rejects
 the spawn candidate. Existing buildings with unresolved runtime profiles contribute no placed
@@ -1793,13 +1812,14 @@ Where:
 - resident demand is computed from the settled snapshot's `housed_resident_count` and the
   per-resident consumption rates declared in the compiled economy catalog for connected demand-sink
   profiles
-- commercial input need is computed from live non-deserted commercial input ports for the same
-  resource, so industrial producers are gated by downstream store demand rather than household
-  demand directly
-- `output_capacity_already_placed` sums `base_rate_units_per_day` over all live buildings with
-  matching output resources; broken or economy-broken buildings are excluded
+- business input need includes market-scaled commercial ports and staffed industry, farm, mine and
+  utility ports, with area scaling and output headroom. Input shortages do not suppress demand;
+  unstaffed producers and full output buffers do. A candidate cannot create its own customers
+- `output_capacity_already_placed` sums matching output-port rates with area/commercial scaling;
+  pending construction and selected candidates reserve net output. Broken, economy-broken and
+  deserted buildings are excluded
 - if the candidate profile has no declared outputs, or none of its output resources have resident
-  demand or commercial input need, the gate fails safe
+  demand or business input need, the gate fails safe
 - if the economy profile binding cannot be resolved the gate fails safe (spawn is rejected)
 
 Interpretation:
@@ -2069,7 +2089,7 @@ A deserted building:
 
 - occupies its parcel claim, blocking new spawns at that location
 - is ineligible for upgrade or downgrade consideration
-- is not counted in building-level demand snapshot signals (e.g. `commercial_owa_dependency`)
+- is not counted in building-level demand snapshot signals (e.g. `business_owa_dependency`)
 - is removed when the player demolishes it, or when the demand system's despawn pressure
   selects it (deserted buildings are always first in the despawn queue)
 
@@ -2117,11 +2137,49 @@ The target end state is:
 - demand computes whether private buildings should appear, disappear, upgrade, or downgrade
 - shipped fresh-map startup and continuing household growth use demand-owned bootstrap and
   regional-migration signals; any future special founding-placement scenario rule must stay outside
-  allocator tick
+  allocator maintenance
 - economy creates the admitted household records
 - building systems execute legal placement, removal, and level changes once demand has already decided the pressure outcome
 - housing/vacancy logic claims real homes
 - transport either visualizes the move or does nothing, but it does not decide growth
+
+## Commercial need cleanup measurements (`AUDIT-01-D5`)
+
+The snapshot keeps one resource-specific committed-shortage vector. The obsolete aggregate scalar
+and fallback averaging function are removed; tests now populate the same representation as live
+snapshots. Staffing remains an operational outcome after spawning, and the retired always-zero
+labour rejection counter is removed from diagnostics. Selected spawn count comes from the result
+vector instead of a second counter. Candidate ordering, resource averaging and immediate absorption
+reservations are unchanged. Empty shortage vectors still return in O(1); nonempty work keeps the
+existing candidate/output/catalog-resource bound, independent of population outside snapshot input.
+
+Five alternating unprofiled release pairs ran the ignored `benchmark_commercial_spawn_need` on
+CPU 0 with one Rayon worker, three warmups and 21 batches of 32 queries. Fixtures use a 200-unit/day
+grocery profile and either no shortage or 401 missing units; every result remains exactly 0 or 3.
+Candidate and snapshot setup are excluded. Median milliseconds per nonempty query:
+
+| Eligible candidates | Before | After |
+| --- | ---: | ---: |
+| 16 | 0.000511 | 0.000505 |
+| 256 | 0.007023 | 0.007028 |
+| 4,096 | 0.109900 | 0.108741 |
+
+Empty queries measured roughly 1.9–2.2 ns, below useful resolution for a speedup claim. Three
+alternating eight-core pairs also ran the existing `benchmark_business_demand_snapshot` fixture
+on CPUs 0,2,4,6,8,10,12,14: 1,024/8,192/65,536 factories measured 0.030/0.046/0.294 ms before and
+0.028/0.044/0.276 ms after. This industrial fixture checks general snapshot cost; its timing loop
+has no output checksum and does not exercise a commercial shortage. Correctness comes from the
+separate full release suite and resource-by-resource determinism regression, not those timings.
+The cleanup does not establish a general performance improvement.
+
+Builds used `cargo test --offline --manifest-path rust/Cargo.toml --release --lib` and Rust
+1.98.1 (48a229cea 2026-09-01). Runs use `METRUM_DEBUG=0`, `--exact`, `--ignored`, `--nocapture` and
+`--test-threads=1`; `match_demand_legacy.py` records exact commands, affinity and worker counts.
+Before/after test executable SHA-256 values are
+`163c0d9acf10345cbaf03e5b5a9ef20640db91715885a808a26090848230e940` and
+`ce6bfc820b9e28188c6cb67d3473b4139af3ec99ed4ac3619c15e124b28bc948`.
+Sources and binaries remained fixed during timings, with no competing builds/tests. Source hashes,
+raw logs and matched summaries are under `/tmp/metrum-full-audit/demand-legacy-*`.
 
 ## Remaining Follow-Up Limitations
 

@@ -3,4 +3,5 @@ godot/.godot
 godot/**/*.blend
 logs/
 benchmark-results/
+audit-state/
 tools/__pycache__/

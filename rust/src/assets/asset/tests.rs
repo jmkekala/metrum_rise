@@ -224,86 +224,50 @@ fn building_qualified_id() {
 
 #[test]
 fn building_rejects_zero_lot_cells() {
-    let toml = r#"
-asset_id = "building.residential.bad"
-display_name = "Bad"
-[building]
-placement_mode = "zoned_private"
-zone_type = "residential"
-density = "low"
-lot_width_cells = 0
-lot_depth_cells = 3
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
+    let base = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    for (width, depth) in [(0, 3), (3, 0)] {
+        let mut manifest = base.clone();
+        let building = manifest.building.as_mut().unwrap();
+        building.lot_width_cells = width;
+        building.lot_depth_cells = depth;
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("lot_width_cells and lot_depth_cells"),
+            "wrong validation: {error}"
+        );
+    }
 }
 
 #[test]
-fn building_rejects_missing_main_entrance() {
-    let toml = r#"
-asset_id = "building.residential.bad"
-display_name = "Bad"
-[building]
-placement_mode = "zoned_private"
-zone_type = "residential"
-density = "low"
-lot_width_cells = 2
-lot_depth_cells = 2
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
+fn building_requires_exactly_one_main_entrance() {
+    let base = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    for main_count in [0, 2] {
+        let mut manifest = base.clone();
+        let main = manifest.anchors.remove(0);
+        manifest
+            .anchors
+            .extend(std::iter::repeat_n(main, main_count));
+        let error = manifest.validate().unwrap_err();
+        assert!(
+            error.to_string().contains("require exactly one"),
+            "wrong validation: {error}"
+        );
+    }
 }
 
 #[test]
 fn building_rejects_secondary_entrance_anchor() {
-    let toml = r#"
-asset_id = "building.residential.bad"
-display_name = "Bad"
-[building]
-placement_mode = "zoned_private"
-zone_type = "residential"
-density = "low"
-lot_width_cells = 2
-lot_depth_cells = 2
-
-[[anchors]]
-type = "entrance"
-name = "main"
-position = [0.0, 0.0, 2.0]
-forward = [0.0, 0.0, 1.0]
-
-[[anchors]]
-type = "entrance"
-name = "rear"
-position = [0.0, 0.0, -2.0]
-forward = [0.0, 0.0, -1.0]
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
-}
-
-#[test]
-fn building_rejects_duplicate_main_entrance_anchor() {
-    let toml = r#"
-asset_id = "building.residential.bad"
-display_name = "Bad"
-[building]
-placement_mode = "zoned_private"
-zone_type = "residential"
-density = "low"
-lot_width_cells = 2
-lot_depth_cells = 2
-
-[[anchors]]
-type = "entrance"
-name = "main"
-position = [0.0, 0.0, 2.0]
-forward = [0.0, 0.0, 1.0]
-
-[[anchors]]
-type = "entrance"
-name = "main"
-position = [0.0, 0.0, -2.0]
-forward = [0.0, 0.0, -1.0]
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
+    let mut manifest = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    let mut secondary = manifest.anchors[0].clone();
+    secondary.name = "rear".to_owned();
+    manifest.anchors.push(secondary);
+    let error = manifest.validate().unwrap_err();
+    assert!(
+        error.to_string().contains("additional entrance anchor"),
+        "wrong validation: {error}"
+    );
 }
 
 #[test]
@@ -643,6 +607,20 @@ fn prop_manifest_round_trip() {
     assert_eq!(p.terrain_behavior, TerrainBehavior::FlatGround);
     assert_eq!(p.bounding_size_m, [1.5, 0.9, 0.6]);
     assert_eq!(m.lods[0].distance_max_m, None);
+    let mut flat = m.clone();
+    flat.prop.as_mut().unwrap().bounding_size_m[1] = 0.0;
+    flat.validate()
+        .expect("planar props retain zero-height bounds");
+    for invalid in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for axis in 0..3 {
+            let mut manifest = m.clone();
+            manifest.prop.as_mut().unwrap().bounding_size_m[axis] = invalid;
+            assert!(
+                manifest.validate().is_err(),
+                "prop axis {axis} accepted {invalid}"
+            );
+        }
+    }
 }
 
 // ── Vehicle ─────────────────────────────────────────────────────────────
@@ -693,18 +671,23 @@ fn vehicle_manifest_round_trip() {
 }
 
 #[test]
-fn vehicle_rejects_zero_dimensions() {
-    let toml = r#"
-asset_id = "vehicle.civil.bad"
-display_name = "Bad"
-[vehicle]
-vehicle_class = "civil"
-vehicle_family = "sedan"
-length_m = 0.0
-width_m = 1.8
-height_m = 1.5
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
+fn vehicle_rejects_invalid_dimensions() {
+    for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for axis in 0..3 {
+            let mut manifest = VEHICLE_TOML.parse::<AssetManifest>().unwrap();
+            let vehicle = manifest.vehicle.as_mut().unwrap();
+            let dimension = match axis {
+                0 => &mut vehicle.length_m,
+                1 => &mut vehicle.width_m,
+                _ => &mut vehicle.height_m,
+            };
+            *dimension = invalid;
+            assert!(
+                manifest.validate().is_err(),
+                "vehicle axis {axis} accepted {invalid}"
+            );
+        }
+    }
 }
 
 // ── Character ────────────────────────────────────────────────────────────
@@ -810,23 +793,15 @@ distance_min_m = 0.0
 
 #[test]
 fn explicit_building_rejects_zone_fields() {
-    let toml = r#"
-asset_id = "building.service.bad_explicit"
-display_name = "Bad Explicit"
-[building]
-placement_mode = "explicit"
-zone_type = "residential"
-density = "low"
-lot_width_cells = 2
-lot_depth_cells = 2
-
-[[anchors]]
-type = "entrance"
-name = "main"
-position = [0.0, 0.0, 1.0]
-forward = [0.0, 0.0, 1.0]
-"#;
-    assert!(toml.parse::<AssetManifest>().is_err());
+    let mut manifest = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    manifest.building.as_mut().unwrap().placement_mode = PlacementMode::Explicit;
+    let error = manifest.validate().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("must not declare zone_type or density"),
+        "wrong validation: {error}"
+    );
 }
 
 #[test]
@@ -841,4 +816,106 @@ snap_mode = "free"
 terrain_behavior = "flat_ground"
 "#;
     assert!(toml.parse::<AssetManifest>().is_err());
+}
+
+#[test]
+fn building_rejects_non_finite_mesh_transforms() {
+    let base = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for part in [
+            MeshPart {
+                position: [invalid, 0.0, 0.0],
+                ..base.mesh_parts[0].clone()
+            },
+            MeshPart {
+                rotation_degrees: [0.0, invalid, 0.0],
+                ..base.mesh_parts[0].clone()
+            },
+            MeshPart {
+                pivot_offset: Some([0.0, invalid, 0.0]),
+                ..base.mesh_parts[0].clone()
+            },
+        ] {
+            let mut manifest = base.clone();
+            manifest.mesh_parts[0] = part;
+            assert!(
+                manifest.validate().is_err(),
+                "non-finite mesh transform accepted: {:?}",
+                manifest.mesh_parts[0]
+            );
+        }
+    }
+}
+
+#[test]
+fn building_rejects_invalid_living_area() {
+    let mut manifest = BUILDING_TOML.parse::<AssetManifest>().unwrap();
+    for area in [0.0, 120.0] {
+        manifest.building.as_mut().unwrap().flat_size_m2 = Some(area);
+        manifest.validate().unwrap();
+    }
+    for invalid in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        manifest.building.as_mut().unwrap().flat_size_m2 = Some(invalid);
+        assert!(
+            manifest.validate().is_err(),
+            "living area accepted {invalid}"
+        );
+    }
+}
+
+#[test]
+fn declared_lods_share_validation_across_asset_classes() {
+    let valid_lod = LodEntry {
+        file: "lod0.glb".to_owned(),
+        distance_min_m: 0.0,
+        distance_max_m: None,
+    };
+    for source in [BUILDING_TOML, PROP_TOML, VEHICLE_TOML, CHARACTER_TOML] {
+        let base = source.parse::<AssetManifest>().unwrap();
+        for invalid_lods in [
+            vec![LodEntry {
+                file: String::new(),
+                ..valid_lod.clone()
+            }],
+            vec![LodEntry {
+                distance_min_m: -1.0,
+                ..valid_lod.clone()
+            }],
+            vec![LodEntry {
+                distance_min_m: f32::NAN,
+                ..valid_lod.clone()
+            }],
+            vec![LodEntry {
+                distance_min_m: f32::INFINITY,
+                ..valid_lod.clone()
+            }],
+            vec![LodEntry {
+                distance_max_m: Some(0.0),
+                ..valid_lod.clone()
+            }],
+            vec![LodEntry {
+                distance_max_m: Some(f32::INFINITY),
+                ..valid_lod.clone()
+            }],
+            vec![
+                LodEntry {
+                    distance_min_m: 100.0,
+                    ..valid_lod.clone()
+                },
+                valid_lod.clone(),
+            ],
+        ] {
+            let mut manifest = base.clone();
+            if manifest.building.is_some() {
+                manifest.mesh_parts[0].lods = invalid_lods;
+            } else {
+                manifest.lods = invalid_lods;
+            }
+            assert!(
+                manifest.validate().is_err(),
+                "invalid LODs accepted for {:?}",
+                manifest.class().unwrap()
+            );
+        }
+    }
 }

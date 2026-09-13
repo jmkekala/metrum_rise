@@ -10,8 +10,7 @@ pub(super) struct BottleneckInputs<'a> {
     pub(super) household_demand_per_day: f32,
     pub(super) lowest_stock_days: f32,
     pub(super) day_stock_zeroed: Option<u32>,
-    pub(super) total_daily_supply: f32,
-    pub(super) supply_day_count: u32,
+    pub(super) total_delivered_units: f32,
     pub(super) total_unmet_units: f32,
     pub(super) node_cumulative_profits: &'a BTreeMap<String, f32>,
 }
@@ -20,17 +19,13 @@ pub(super) fn build_bottlenecks(inputs: BottleneckInputs<'_>) -> Vec<String> {
     let scenario = inputs.scenario;
     let mut bottlenecks = Vec::new();
 
-    let avg_daily_supply = if inputs.supply_day_count > 0 {
-        inputs.total_daily_supply / inputs.supply_day_count as f32
-    } else {
-        0.0
-    };
+    let avg_daily_supply = inputs.total_delivered_units / scenario.duration_days as f32;
     let daily_deficit = inputs.household_demand_per_day - avg_daily_supply;
 
     if inputs.lowest_stock_days < 1.0 {
         if let Some(zero_day) = inputs.day_stock_zeroed {
             bottlenecks.push(format!(
-                "Households ran out of supplies on day {zero_day} (of {}) and never recovered. \
+                "Household reserves first reached zero on day {zero_day} (of {}). \
                  Supply ({:.1}/day) covers only {:.0}% of the {:.1}/day demand. \
                  To keep up, increase the final node's output by at least {:.1} units/day.",
                 scenario.duration_days,

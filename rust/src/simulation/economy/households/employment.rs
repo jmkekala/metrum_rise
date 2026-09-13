@@ -5,8 +5,6 @@
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU32;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 
 use super::building_economy::liquidate_outputs_until_budget;
 use super::data::{Household, HouseholdSystem};
@@ -18,11 +16,10 @@ use super::metrics::{
 };
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
-    BuildingModeComponents, ModeComponentIndex, NO_COMPONENT, ReachableBucketEntry,
-    ReachableBucketIndex, ReachableBucketScanEvent, chunk_for_point, lower_bound_travel_seconds,
-    max_speed_for_modes,
+    BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
+    chunk_for_point, lower_bound_travel_seconds, max_speed_for_modes,
 };
-use crate::simulation::economy::agents::tick::estimate_building_origin_trip_minutes;
+use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING, age_group_can_work};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -57,7 +54,6 @@ const EMPTY_JOB_CHOICE: JobChoice = JobChoice {
 };
 const EMPTY_HOME_JOB_OPTION: HomeJobOption = HomeJobOption {
     building_idx: usize::MAX,
-    commute_seconds: u16::MAX,
     commute_penalty: 1.0,
     average_daily_wage: 0.0,
     effective_capacity: 0,
@@ -85,7 +81,6 @@ struct HomeJobOptionsKey {
 #[derive(Clone, Copy)]
 struct HomeJobOption {
     building_idx: usize,
-    commute_seconds: u16,
     commute_penalty: f32,
     average_daily_wage: f32,
     effective_capacity: u32,
@@ -171,33 +166,6 @@ impl HomeJobBuildScratch {
 }
 
 impl HouseholdSystem {
-    #[cfg(test)]
-    pub(super) fn recount_worker_assignments(
-        &mut self,
-        agents: &AgentSystem,
-        allocator: &mut BuildingAllocator,
-    ) {
-        let building_count = allocator.buildings.len();
-        self.reset_worker_count_scratch(building_count);
-        let worker_count_scratch = &self.worker_count_scratch;
-        agents
-            .work_building
-            .par_iter()
-            .zip(agents.age_group.par_iter())
-            .for_each(|(&work, &age_group)| {
-                if age_group_can_work(age_group) && work < building_count {
-                    worker_count_scratch[work].fetch_add(1, Ordering::Relaxed);
-                }
-            });
-        allocator
-            .buildings
-            .par_iter_mut()
-            .zip(worker_count_scratch.par_iter())
-            .for_each(|(building, count)| {
-                building.worker_count = count.load(Ordering::Relaxed);
-            });
-    }
-
     #[cfg(test)]
     pub(super) fn assign_agent_workplaces(
         &mut self,
@@ -453,60 +421,30 @@ impl HouseholdSystem {
             allocator,
             owa_exports_available,
         );
-        let funded_capacity_by_building: Vec<u32> = allocator
+        let funded_capacity_by_building: Vec<Option<u32>> = allocator
             .buildings
             .par_iter()
             .enumerate()
             .map(|(building_idx, building)| {
-                let Some(profile) = active_work_profile(&catalog, building) else {
-                    return u32::MAX;
-                };
+                let profile = active_work_profile(&catalog, building)?;
                 if profile.utility_service.as_deref() != Some(UTILITY_SERVICE_POWER) {
-                    return u32::MAX;
+                    return None;
                 }
                 let capacity = active_worker_capacity_for_profile(&catalog, building, profile);
-                service_funded_worker_capacity(
+                Some(service_funded_worker_capacity(
                     capacity,
                     profile,
                     building_idx,
                     service_funding_by_building,
-                )
+                ))
             })
             .collect();
-        let mut kept_by_building = vec![0u32; allocator.buildings.len()];
-        for agent_idx in 0..agents.len() {
-            let work = agents.work_building[agent_idx];
-            if work >= funded_capacity_by_building.len() {
-                continue;
-            }
-            let funded_capacity = funded_capacity_by_building[work];
-            if funded_capacity == u32::MAX {
-                continue;
-            }
-            if !age_group_can_work(agents.age_group[agent_idx]) {
-                continue;
-            }
-            if kept_by_building[work] < funded_capacity {
-                kept_by_building[work] = kept_by_building[work].saturating_add(1);
-                continue;
-            }
-            agents.assign_work_building(agent_idx, usize::MAX, 0);
-            agents.consecutive_unpaid_days[agent_idx] = 0;
-        }
-        for (building_idx, building) in allocator.buildings.iter_mut().enumerate() {
-            if funded_capacity_by_building
-                .get(building_idx)
-                .copied()
-                .unwrap_or(u32::MAX)
-                != u32::MAX
-            {
-                building.worker_count = kept_by_building[building_idx];
-            }
-        }
+        enforce_worker_capacities(agents, allocator, &funded_capacity_by_building);
     }
 
     /// Pays wages into each employed agent's household budget.
-    pub fn pay_daily_wages(
+    #[cfg(test)]
+    pub(super) fn pay_daily_wages(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
@@ -514,7 +452,7 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
     ) -> f32 {
         let empty_logistics = ShipmentSystem::new();
-        self.pay_daily_wages_with_service_funding(
+        let tax = self.pay_daily_wages_with_service_funding(
             agents,
             allocator,
             income_tax_rate,
@@ -522,7 +460,9 @@ impl HouseholdSystem {
             &[],
             &empty_logistics,
             true,
-        )
+        );
+        self.sync_agent_money_from_households(agents);
+        tax
     }
 
     pub(crate) fn pay_daily_wages_with_service_funding(
@@ -548,7 +488,7 @@ impl HouseholdSystem {
         );
         eject_inactive_work_assignments(agents, allocator, &catalog);
         shed_overstaffed_active_capacity_workers(agents, allocator, &catalog);
-        self.last_city_service_wage_cost = 0.0;
+        self.last_city_service_wages = super::data::CityServiceWages::default();
         let city_funded_by_building: Vec<bool> = allocator
             .buildings
             .iter()
@@ -573,7 +513,7 @@ impl HouseholdSystem {
                     .unwrap_or(0)
             })
             .collect();
-        let mut plans: Vec<_> = (0..agents.len())
+        let plans: Vec<_> = (0..agents.len())
             .into_par_iter()
             .filter_map(|i| {
                 let work = agents.work_building[i];
@@ -597,32 +537,14 @@ impl HouseholdSystem {
                 })
             })
             .collect();
-        plans.sort_unstable_by_key(|plan| plan.agent_idx);
         self.ensure_daily_ledger_len();
 
         let mut income_tax_collected = 0.0;
         let mut paid_workers_by_building = vec![0u32; allocator.buildings.len()];
         for plan in plans {
-            if plan.agent_idx >= agents.len()
-                || agents.work_building[plan.agent_idx] != plan.work_building
-                || agents.household_id[plan.agent_idx] != plan.household_id
-                || plan.work_building >= allocator.buildings.len()
-                || plan.household_id >= self.households.len()
-            {
-                continue;
-            }
-            let within_active_capacity = paid_workers_by_building
-                .get(plan.work_building)
-                .copied()
-                .unwrap_or(0)
-                < active_worker_capacity_by_building
-                    .get(plan.work_building)
-                    .copied()
-                    .unwrap_or(0);
-            let city_funded = city_funded_by_building
-                .get(plan.work_building)
-                .copied()
-                .unwrap_or(false);
+            let within_active_capacity = paid_workers_by_building[plan.work_building]
+                < active_worker_capacity_by_building[plan.work_building];
+            let city_funded = city_funded_by_building[plan.work_building];
             if within_active_capacity
                 && !city_funded
                 && allocator.buildings[plan.work_building].operating_budget < plan.wage
@@ -645,7 +567,17 @@ impl HouseholdSystem {
                 let net_wage = plan.wage - income_tax;
                 if city_funded {
                     *treasury_balance -= plan.wage as f64;
-                    self.last_city_service_wage_cost += plan.wage;
+                    self.last_city_service_wages.total += plan.wage;
+                    if catalog
+                        .profile_by_runtime_id(
+                            allocator.buildings[plan.work_building].economy_profile_runtime_id,
+                        )
+                        .is_some_and(|profile| {
+                            profile.utility_service.as_deref() == Some(UTILITY_SERVICE_POWER)
+                        })
+                    {
+                        self.last_city_service_wages.power += plan.wage;
+                    }
                 } else {
                     allocator.buildings[plan.work_building].operating_budget -= plan.wage;
                 }
@@ -674,7 +606,6 @@ impl HouseholdSystem {
                 }
             }
         }
-        self.sync_agent_money_from_households(agents);
         income_tax_collected
     }
 
@@ -883,27 +814,13 @@ fn apply_workplace_plan(
             continue;
         }
 
-        let average_daily_wage = economy_profile.average_daily_wage();
-        let worker_capacity =
-            active_worker_capacity_for_profile(catalog, building, economy_profile);
-        let worker_capacity = service_funded_worker_capacity(
-            worker_capacity,
-            economy_profile,
+        let effective_capacity = effective_job_capacity(
+            allocator,
+            catalog,
             job,
+            economy_profile,
             service_funding_by_building,
         );
-        if worker_capacity == 0 {
-            continue;
-        }
-        let city_funded = allocator.is_city_service_building(building);
-        let budget_capacity = if city_funded {
-            worker_capacity
-        } else if average_daily_wage > 0.1 {
-            (building.operating_budget / average_daily_wage).floor() as u32
-        } else {
-            worker_capacity
-        };
-        let effective_capacity = worker_capacity.min(budget_capacity);
         if effective_capacity.saturating_sub(building.worker_count) == 0 {
             continue;
         }
@@ -935,7 +852,7 @@ fn eject_inactive_work_assignments(
     allocator: &mut BuildingAllocator,
     catalog: &RuntimeEconomyCatalog,
 ) {
-    let mut ejected_agents: Vec<_> = (0..agents.len())
+    let ejected_agents: Vec<_> = (0..agents.len())
         .into_par_iter()
         .filter(|&i| {
             let work = agents.work_building[i];
@@ -948,17 +865,11 @@ fn eject_inactive_work_assignments(
             active_work_profile(catalog, &allocator.buildings[work]).is_none()
         })
         .collect();
-    ejected_agents.sort_unstable();
     for i in ejected_agents {
         let work = agents.work_building[i];
-        if work < allocator.buildings.len()
-            && (!age_group_can_work(agents.age_group[i])
-                || active_work_profile(catalog, &allocator.buildings[work]).is_none())
-        {
-            allocator.buildings[work].worker_count =
-                allocator.buildings[work].worker_count.saturating_sub(1);
-            agents.assign_work_building(i, usize::MAX, 0);
-        }
+        allocator.buildings[work].worker_count =
+            allocator.buildings[work].worker_count.saturating_sub(1);
+        agents.assign_work_building(i, usize::MAX, 0);
     }
 }
 
@@ -983,6 +894,14 @@ fn shed_overstaffed_active_capacity_workers(
             }
         })
         .collect();
+    enforce_worker_capacities(agents, allocator, &active_capacity_by_building);
+}
+
+fn enforce_worker_capacities(
+    agents: &mut AgentSystem,
+    allocator: &mut BuildingAllocator,
+    active_capacity_by_building: &[Option<u32>],
+) {
     if active_capacity_by_building
         .iter()
         .all(|capacity| capacity.is_none())
@@ -991,6 +910,7 @@ fn shed_overstaffed_active_capacity_workers(
     }
 
     let mut kept_workers_by_building = vec![0u32; allocator.buildings.len()];
+    // Keep lower agent IDs first when workers compete for a limited capacity.
     for agent_idx in 0..agents.len() {
         let work = agents.work_building[agent_idx];
         let Some(active_capacity) = active_capacity_by_building.get(work).copied().flatten() else {
@@ -1008,20 +928,18 @@ fn shed_overstaffed_active_capacity_workers(
         agents.consecutive_unpaid_days[agent_idx] = 0;
     }
 
-    allocator
+    // Publishing one count per building is cheaper than another Rayon dispatch after the
+    // ordered retention pass (matched staffing benchmark); capacity evaluation stays parallel.
+    for ((building, capacity), kept_workers) in allocator
         .buildings
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(building_idx, building)| {
-            if active_capacity_by_building
-                .get(building_idx)
-                .copied()
-                .flatten()
-                .is_some()
-            {
-                building.worker_count = kept_workers_by_building[building_idx];
-            }
-        });
+        .iter_mut()
+        .zip(active_capacity_by_building)
+        .zip(kept_workers_by_building)
+    {
+        if capacity.is_some() {
+            building.worker_count = kept_workers;
+        }
+    }
 }
 
 fn active_work_profile<'a>(
@@ -1063,8 +981,8 @@ fn household_income_pressure(
     (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
-fn normalized_commute_penalty_seconds(commute_seconds: u16) -> f32 {
-    (commute_seconds as f32 / COMMUTE_PENALTY_MAX_SECONDS).clamp(0.0, 1.0)
+fn normalized_commute_penalty_seconds(commute_seconds: f32) -> f32 {
+    (commute_seconds / COMMUTE_PENALTY_MAX_SECONDS).clamp(0.0, 1.0)
 }
 
 fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) -> bool {
@@ -1078,6 +996,31 @@ fn building_offers_work(building: &Building, profile: &EconomyProfileRuntime) ->
             | EconomyProfileRuntimeKind::UtilityProducer
             | EconomyProfileRuntimeKind::UtilityProcessor
     )
+}
+
+fn effective_job_capacity(
+    allocator: &BuildingAllocator,
+    catalog: &RuntimeEconomyCatalog,
+    building_idx: usize,
+    profile: &EconomyProfileRuntime,
+    service_funding_by_building: &[f32],
+) -> u32 {
+    let building = &allocator.buildings[building_idx];
+    let active_capacity = active_worker_capacity_for_profile(catalog, building, profile);
+    let funded_capacity = service_funded_worker_capacity(
+        active_capacity,
+        profile,
+        building_idx,
+        service_funding_by_building,
+    );
+    let average_daily_wage = profile.average_daily_wage();
+    if allocator.is_city_service_building(building) || average_daily_wage <= 0.1 {
+        funded_capacity
+    } else {
+        let budget_capacity =
+            (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32;
+        funded_capacity.min(budget_capacity)
+    }
 }
 
 fn has_potential_job_supply(
@@ -1105,28 +1048,14 @@ fn has_potential_job_supply(
             if !building_offers_work(building, profile) {
                 return false;
             }
-            let worker_capacity = active_worker_capacity_for_profile(catalog, building, profile);
-            let worker_capacity = service_funded_worker_capacity(
-                worker_capacity,
-                profile,
+            effective_job_capacity(
+                allocator,
+                catalog,
                 idx,
+                profile,
                 service_funding_by_building,
-            );
-            if worker_capacity == 0 {
-                return false;
-            }
-            let average_daily_wage = profile.average_daily_wage();
-            let city_funded = allocator.is_city_service_building(building);
-            let budget_capacity = if city_funded {
-                worker_capacity
-            } else if average_daily_wage > 0.1 {
-                (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
-            } else {
-                worker_capacity
-            };
-            worker_capacity
-                .min(budget_capacity)
-                .saturating_sub(building.worker_count)
+            )
+            .saturating_sub(building.worker_count)
                 > 0
         })
 }
@@ -1140,7 +1069,7 @@ impl JobSupplySnapshot {
         car_components: &ModeComponentIndex,
         service_funding_by_building: &[f32],
     ) -> Self {
-        let mut entries: Vec<_> = allocator
+        let entries: Vec<_> = allocator
             .buildings
             .par_iter()
             .enumerate()
@@ -1158,26 +1087,13 @@ impl JobSupplySnapshot {
                     return None;
                 }
                 let average_daily_wage = profile.average_daily_wage();
-                let worker_capacity =
-                    active_worker_capacity_for_profile(catalog, building, profile);
-                let worker_capacity = service_funded_worker_capacity(
-                    worker_capacity,
-                    profile,
+                let effective_capacity = effective_job_capacity(
+                    allocator,
+                    catalog,
                     idx,
+                    profile,
                     service_funding_by_building,
                 );
-                if worker_capacity == 0 {
-                    return None;
-                }
-                let city_funded = allocator.is_city_service_building(building);
-                let budget_capacity = if city_funded {
-                    worker_capacity
-                } else if average_daily_wage > 0.1 {
-                    (building.operating_budget.max(0.0) / average_daily_wage).floor() as u32
-                } else {
-                    worker_capacity
-                };
-                let effective_capacity = worker_capacity.min(budget_capacity);
                 let open_slots = effective_capacity.saturating_sub(building.worker_count);
                 if open_slots == 0 {
                     return None;
@@ -1203,20 +1119,17 @@ impl JobSupplySnapshot {
                 })
             })
             .collect();
-        entries.sort_unstable_by_key(|entry| entry.building_idx);
 
         let mut foot_bucket_entries = Vec::with_capacity(entries.len());
         let mut car_bucket_entries = Vec::with_capacity(entries.len());
         for (entry_idx, entry) in entries.iter().enumerate() {
-            index_job_components(
+            entry.foot_components.append_bucket_entries(
                 &mut foot_bucket_entries,
-                entry.foot_components,
                 entry.chunk,
                 entry_idx,
             );
-            index_job_components(
+            entry.car_components.append_bucket_entries(
                 &mut car_bucket_entries,
-                entry.car_components,
                 entry.chunk,
                 entry_idx,
             );
@@ -1226,19 +1139,6 @@ impl JobSupplySnapshot {
             entries,
             foot_buckets: ReachableBucketIndex::from_entries(foot_bucket_entries),
             car_buckets: ReachableBucketIndex::from_entries(car_bucket_entries),
-        }
-    }
-}
-
-fn index_job_components(
-    target: &mut Vec<ReachableBucketEntry>,
-    components: BuildingModeComponents,
-    chunk: (i32, i32),
-    entry_idx: usize,
-) {
-    for &component in components.as_slice() {
-        if component != NO_COMPONENT {
-            target.push(ReachableBucketEntry::new(component, chunk, entry_idx));
         }
     }
 }
@@ -1311,7 +1211,7 @@ fn build_home_job_options(
     Vec<WorkplaceRouteCacheEntry>,
 ) {
     let exact_entrance_cache_available = allocator.entrances.len() == allocator.buildings.len();
-    let mut builds: Vec<_> = keys
+    let builds: Vec<_> = keys
         .par_iter()
         .map_init(HomeJobBuildScratch::new, |scratch, &key| {
             let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
@@ -1344,7 +1244,6 @@ fn build_home_job_options(
             }
         })
         .collect();
-    builds.sort_unstable_by_key(|build| build.key);
 
     let mut home_options = BTreeMap::new();
     let mut route_entries = Vec::new();
@@ -1361,7 +1260,7 @@ fn build_home_job_options(
         );
     }
 
-    let mut current_builds: Vec<_> = current_job_keys
+    let current_builds: Vec<_> = current_job_keys
         .par_iter()
         .map(|&key| {
             let mut route_entries = [EMPTY_WORKPLACE_ROUTE_ENTRY; JOB_ROUTE_SCAN_CANDIDATES];
@@ -1387,7 +1286,6 @@ fn build_home_job_options(
             }
         })
         .collect();
-    current_builds.sort_unstable_by_key(|build| build.key);
 
     let mut current_job_options = BTreeMap::new();
     for build in current_builds {
@@ -1447,7 +1345,6 @@ fn build_home_job_options_for_key(
             &mut option_count,
             HomeJobOption {
                 building_idx: key.home_idx,
-                commute_seconds: 0,
                 commute_penalty: 0.0,
                 average_daily_wage: entry.average_daily_wage,
                 effective_capacity: entry.effective_capacity,
@@ -1557,8 +1454,7 @@ fn scan_home_job_bucket(
                 option_count,
                 HomeJobOption {
                     building_idx: entry.building_idx,
-                    commute_seconds,
-                    commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
+                    commute_penalty: normalized_commute_penalty_seconds(commute_seconds as f32),
                     average_daily_wage: entry.average_daily_wage,
                     effective_capacity: entry.effective_capacity,
                     open_slots: entry.open_slots,
@@ -1586,8 +1482,10 @@ fn home_job_search_can_stop(
     if option_count < JOB_SEARCH_CANDIDATES {
         return false;
     }
-    let worst_commute_seconds = options.options[option_count - 1].commute_seconds as f32;
-    lower_bound_travel_seconds(next_min_distance_sq, max_commute_speed) > worst_commute_seconds
+    let lower_bound = lower_bound_travel_seconds(next_min_distance_sq, max_commute_speed);
+    // Equal capped penalties can still be beaten by wage, capacity, or building ID.
+    normalized_commute_penalty_seconds(lower_bound)
+        > options.options[option_count - 1].commute_penalty
 }
 
 fn empty_home_job_options() -> HomeJobOptions {
@@ -1628,26 +1526,16 @@ fn build_current_job_option_for_key(
         new_route_entry_count,
     )?;
     let average_daily_wage = profile.average_daily_wage();
-    let worker_capacity = active_worker_capacity_for_profile(catalog, work, profile);
-    let worker_capacity = service_funded_worker_capacity(
-        worker_capacity,
-        profile,
+    let effective_capacity = effective_job_capacity(
+        allocator,
+        catalog,
         work_idx,
+        profile,
         service_funding_by_building,
     );
-    let city_funded = allocator.is_city_service_building(work);
-    let budget_capacity = if city_funded {
-        worker_capacity
-    } else if average_daily_wage > 0.1 {
-        (work.operating_budget.max(0.0) / average_daily_wage).floor() as u32
-    } else {
-        worker_capacity
-    };
-    let effective_capacity = worker_capacity.min(budget_capacity);
     Some(HomeJobOption {
         building_idx: work_idx,
-        commute_seconds,
-        commute_penalty: normalized_commute_penalty_seconds(commute_seconds),
+        commute_penalty: normalized_commute_penalty_seconds(commute_seconds as f32),
         average_daily_wage,
         effective_capacity,
         open_slots: effective_capacity.saturating_sub(work.worker_count),
@@ -1717,7 +1605,7 @@ fn cached_commute_seconds(
     if !exact_entrance_cache_available {
         return None;
     }
-    let result = estimate_building_origin_trip_minutes(
+    let result = estimate_building_origin_trip_seconds(
         home_idx,
         work_idx,
         has_car,
@@ -1731,4 +1619,42 @@ fn cached_commute_seconds(
         *new_route_entry_count += 1;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_search_keeps_farther_candidates_that_can_win_a_capped_commute_tie() {
+        let mut options = empty_home_job_options();
+        let mut count = 0;
+        for building_idx in 0..JOB_SEARCH_CANDIDATES {
+            insert_home_job_option(
+                &mut options.options,
+                &mut count,
+                HomeJobOption {
+                    building_idx,
+                    commute_penalty: 1.0,
+                    average_daily_wage: 100.0,
+                    effective_capacity: 4,
+                    open_slots: 4,
+                },
+            );
+        }
+        let farther = HomeJobOption {
+            building_idx: 100,
+            commute_penalty: 1.0,
+            average_daily_wage: 200.0,
+            effective_capacity: 4,
+            open_slots: 4,
+        };
+        assert!(home_job_option_order(farther, options.options[count - 1]).is_lt());
+        assert!(!home_job_search_can_stop(
+            &options,
+            count,
+            2_500.0_f32.powi(2),
+            1.0
+        ));
+    }
 }

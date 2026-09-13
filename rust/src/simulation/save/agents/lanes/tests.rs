@@ -39,11 +39,14 @@ fn fixture() -> (RegionGraph, TransitNetwork) {
             end_clip: 5.0,
             geometry: geometry.clone(),
             physical_geometry: geometry,
-            deleted: i == 0,
+            deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         });
     }
+    // add_edge publishes a live edge regardless of the supplied deleted flag.
+    graph.edge_mut(0).deleted = true;
+    graph.rebuild_all_indices();
     let mut network = TransitNetwork::new();
     network.lane_system.rebuild(&mut graph);
     (graph, network)
@@ -66,7 +69,7 @@ fn add_agent(
             edge.end_node
         }
     };
-    let i = agents.spawn_border_arrival_agent(usize::MAX, node, 0.0, 0.0, node, 0.0, 0.0);
+    let i = agents.spawn_border_arrival_agent(usize::MAX, node, 0.0, 0.0);
     agents.transit_mode[i] = if lane.lane_type == LaneType::Foot {
         MODE_WALK
     } else {
@@ -114,6 +117,10 @@ fn add_agent(
 #[test]
 fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction() {
     let (mut graph, mut network) = fixture();
+    assert!(
+        graph.edge(0).deleted,
+        "fixture must contain a deleted edge to exercise compaction"
+    );
     network
         .lane_system
         .rebuild_edges_incremental(&mut graph, &HashSet::from([1]));
@@ -141,6 +148,8 @@ fn snapshot_remaps_all_lane_roles_after_incremental_rebuild_and_edge_compaction(
     tx.commit().unwrap();
     let mut restored = load_agents(&conn, 0.0).unwrap();
     let mut new_graph = crate::simulation::save::network::load_graph(&conn).unwrap();
+    assert_eq!(new_graph.edge_count(), graph.edge_count() - 1);
+    assert_eq!(new_graph.node_count(), graph.node_count() - 1);
     let mut new_network = TransitNetwork::new();
     new_network.lane_system.rebuild(&mut new_graph);
     restore_lane_references(

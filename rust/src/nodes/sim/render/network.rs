@@ -2,7 +2,7 @@
 
 //! Network-specific rendering logic for Godot interaction.
 //!
-//! Handles road mesh generation and road connection utility calculations.
+//! Handles road chunk generation, publication and debug exports.
 
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::render::NetworkMeshData;
@@ -324,26 +324,5 @@ impl SimCore {
             .road_surface
             .build_road_surface_probe_debug_dump(&self.region_graph, &self.heightmap, world_pos);
         GString::from(dump.as_str())
-    }
-
-    /// Calculates the normalized T-coordinates of the connection between two edges.
-    pub fn get_connection_rust(&self, edge_a: usize, edge_b: usize) -> (f32, f32) {
-        let (p_a0, _) = self.get_edge_pos_and_tangent(edge_a, 0.0);
-        let (p_a1, _) = self.get_edge_pos_and_tangent(edge_a, 1.0);
-        let (p_b0, _) = self.get_edge_pos_and_tangent(edge_b, 0.0);
-        let (p_b1, _) = self.get_edge_pos_and_tangent(edge_b, 1.0);
-
-        let thr = 400.0;
-        if p_a1.distance_squared_to(p_b0) < thr {
-            (1.0, 0.0)
-        } else if p_a1.distance_squared_to(p_b1) < thr {
-            (1.0, 1.0)
-        } else if p_a0.distance_squared_to(p_b0) < thr {
-            (0.0, 0.0)
-        } else if p_a0.distance_squared_to(p_b1) < thr {
-            (0.0, 1.0)
-        } else {
-            (1.0, 0.0)
-        }
     }
 }

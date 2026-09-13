@@ -13,6 +13,8 @@ use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
 
+mod node_geometry;
+
 const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
 /// Inverse of the dependent records changed by one staged edge split.
@@ -228,173 +230,67 @@ impl RegionGraph {
         l
     }
 
-    /// Removes a node and merges its two connected edges if they are compatible.
-    pub fn remove_node_and_merge_edges(&mut self, node_id: u32) -> Option<(usize, usize)> {
-        if (node_id as usize) >= self.node_count() {
-            return None;
-        }
-
-        // Find edges connected to this node
-        let mut e1_idx = None;
-        let mut e2_idx = None;
-
-        for (i, edge) in self.edges().iter().enumerate() {
-            if edge.deleted {
-                continue;
-            } // Important: Skip already deleted edges
-            if edge.start_node == node_id || edge.end_node == node_id {
-                if e1_idx.is_none() {
-                    e1_idx = Some(i);
-                } else if e2_idx.is_none() {
-                    e2_idx = Some(i);
-                } else {
-                    // More than 2 edges? This node is likely a real intersection now.
-                    // DO NOT MERGE.
-                    return None;
-                }
-            }
-        }
-
-        if let (Some(i1), Some(i2)) = (e1_idx, e2_idx) {
-            // Check if they are compatible for merging
-            let (_target_end_node, mid_node, target_start_node) = {
-                let e1 = self.edge(i1);
-                let e2 = self.edge(i2);
-                if e1.primary_type != e2.primary_type
-                    || e1.width != e2.width
-                    || e1.vehicle_frontage_access != e2.vehicle_frontage_access
-                {
-                    return None;
-                }
-
-                // Determine the flow: A -> node_id -> B
-                let a = if e1.start_node == node_id {
-                    e1.end_node
-                } else {
-                    e1.start_node
-                };
-                let b = if e2.start_node == node_id {
-                    e2.end_node
-                } else {
-                    e2.start_node
-                };
-
-                (a, node_id, b)
-            };
-
-            // Combine geometry
-            let mut new_geom = Vec::new();
-            let (first_edge_idx, second_edge_idx) = {
-                if self.edge(i1).end_node == mid_node {
-                    (i1, i2)
-                } else {
-                    (i2, i1)
-                }
-            };
-
-            for p in &self.edge(first_edge_idx).geometry {
-                new_geom.push(*p);
-            }
-            // Skip the first point of the second edge as it's the same as the last point of the first
-            for i in 1..self.edge(second_edge_idx).geometry.len() {
-                new_geom.push(self.edge(second_edge_idx).geometry[i]);
-            }
-
-            // Update the first edge to span the whole distance
-            self.edges[first_edge_idx].end_node = target_start_node;
-            self.edges[first_edge_idx].geometry = new_geom;
-            // Also combine physical geometry to keep lengths and rendering stable until next rebuild
-            let mut new_phys = self.edge(first_edge_idx).physical_geometry.clone();
-            if !self.edge(second_edge_idx).physical_geometry.is_empty() {
-                new_phys.extend_from_slice(&self.edge(second_edge_idx).physical_geometry[1..]);
-            }
-            self.edges[first_edge_idx].physical_geometry = new_phys;
-            self.edges[first_edge_idx].physical_length =
-                self.calculate_length(&self.edges[first_edge_idx].physical_geometry);
-
-            // Mark the second edge as deleted instead of removing it to keep indices stable
-            let to_remove = second_edge_idx;
-            self.edges[to_remove].deleted = true;
-            self.remove_from_spatial_index(to_remove);
-
-            // Re-index the first edge as its geometry changed
-            self.remove_from_spatial_index(first_edge_idx);
-            self.add_to_spatial_index(first_edge_idx);
-
-            return Some((first_edge_idx, second_edge_idx));
-        }
-        None
-    }
-
-    /// Merges two nodes into one, updating all connected edges.
+    /// Merges canonical nodes under the lower ID and repairs their incident-edge indices.
+    /// Uses O(K log K) local ordering plus per-edge geometry/index work; no full edge scan.
     pub fn unite_nodes(&mut self, id1: u32, id2: u32) {
-        if id1 == id2 {
-            return;
-        }
-        // Ensure we always map to the ultimate valid parent and don't loop
-        let keep = self.get_valid_node(id1.min(id2));
-        let remove = self.get_valid_node(id1.max(id2));
+        let first = self.get_valid_node(id1);
+        let second = self.get_valid_node(id2);
+        let keep = first.min(second);
+        let remove = first.max(second);
         if keep == remove {
             return;
         }
 
         let new_pos = self.node(keep).pos;
+        self.remove_node_from_spatial_index(remove, self.node(remove).pos);
         self.node_aliases.insert(remove, keep);
-
-        // Merging two network pieces transforms any restrictive node type into a Junction
         self.nodes[keep as usize].node_type = NodeType::Junction;
         self.nodes[keep as usize].lane_connections.clear();
 
-        // Update all edges using the 'remove' node to use 'keep' node instead
-        let mut affected_edges = Vec::new();
-        for (i, edge) in self.edges.iter_mut().enumerate() {
-            if edge.deleted {
-                continue;
-            }
-            let mut changed = false;
+        let mut affected = std::mem::take(&mut self.adjacency[remove as usize]);
+        affected.retain(|&edge_id| !self.edges[edge_id].deleted);
+        // Preserve incidence multiplicity: a self-loop contributes both endpoints.
+        self.adjacency[keep as usize].extend(affected.iter().copied());
+        self.adjacency[keep as usize].sort_unstable();
+        affected.sort_unstable();
+        affected.dedup();
+
+        for edge_id in affected {
+            self.remove_from_spatial_index(edge_id);
+            let edge = &mut self.edges[edge_id];
             if edge.start_node == remove {
                 edge.start_node = keep;
-                if !edge.geometry.is_empty() {
-                    edge.geometry[0] = new_pos;
+                if let Some(point) = edge.geometry.first_mut() {
+                    *point = new_pos;
                 }
                 if let Some(point) = edge.physical_geometry.first_mut() {
                     *point = new_pos;
                 }
-                changed = true;
             }
             if edge.end_node == remove {
                 edge.end_node = keep;
-                if !edge.geometry.is_empty() {
-                    let last = edge.geometry.len() - 1;
-                    edge.geometry[last] = new_pos;
+                if let Some(point) = edge.geometry.last_mut() {
+                    *point = new_pos;
                 }
                 if let Some(point) = edge.physical_geometry.last_mut() {
                     *point = new_pos;
                 }
-                changed = true;
             }
-            if changed {
-                affected_edges.push(i);
-            }
-        }
-
-        for i in affected_edges {
-            self.adjacency[remove as usize].retain(|&edge_idx| edge_idx != i);
-            if !self.adjacency[keep as usize].contains(&i) {
-                self.adjacency[keep as usize].push(i);
-            }
-            self.remove_from_spatial_index(i);
-            self.add_to_spatial_index(i);
+            (edge.base_cost, edge.physical_length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
+            self.add_to_spatial_index(edge_id);
         }
     }
 
     /// Moves a node to a new position, smoothly deforming all connected edges.
     ///
-    /// Uses the adjacency list for O(degree) edge lookup instead of an O(E) full scan.
+    /// Uses adjacency and O(K log K) local ordering to update each edge once. Profile work is
+    /// O(control + physical points), retaining distinct heights at shared horizontal stations.
     /// Does NOT rebuild intersection clips — callers that need visual clip updates
     /// (e.g. `move_network_node_internal`) must call `rebuild_intersection_clips` explicitly.
     /// The topology path (`process_intersections` → `add_road`) calls it after all splits.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
+        let node_id = self.get_valid_node(node_id);
         let old_pos = self.node(node_id).pos;
         let delta = new_pos - old_pos;
 
@@ -403,12 +299,15 @@ impl RegionGraph {
         self.add_node_to_spatial_index(node_id);
 
         // Collect connected edges via adjacency list — O(degree), not O(E).
-        let connected: Vec<usize> = self
+        let mut connected: Vec<usize> = self
             .node_adjacency(node_id)
             .iter()
             .copied()
             .filter(|&i| !self.edge(i).deleted)
             .collect();
+
+        connected.sort_unstable();
+        connected.dedup();
 
         // Pre-remove from spatial index while geometry/physical_geometry still have old values.
         for &i in &connected {
@@ -432,24 +331,11 @@ impl RegionGraph {
                 {
                     *pt += delta;
                 }
-            } else if is_start {
-                for idx in 0..count {
-                    let w = 1.0 - (idx as f32 / (count - 1) as f32);
-                    let w_smooth = w * w * (3.0 - 2.0 * w);
-                    let d = delta * w_smooth;
-                    edge.geometry[idx] += d;
-                    edge.physical_geometry[idx] += d;
-                }
             } else {
-                // is_end
-                for idx in 0..count {
-                    let w = idx as f32 / (count - 1) as f32;
-                    let w_smooth = w * w * (3.0 - 2.0 * w);
-                    let d = delta * w_smooth;
-                    edge.geometry[idx] += d;
-                    edge.physical_geometry[idx] += d;
-                }
+                node_geometry::deform_edge(edge, is_start, delta);
             }
+            (edge.base_cost, edge.physical_length) =
+                crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge);
         }
 
         // Re-add to spatial index with updated geometry.
@@ -1017,7 +903,6 @@ pub fn split_edge(
 ) {
     let old_edge = graph.edge(edge_id);
     let geometry = &old_edge.geometry;
-    let _length = old_edge.physical_length;
     let split_pos = graph.node(junction_node_id).pos;
 
     // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
@@ -1036,7 +921,7 @@ pub fn split_edge(
         return;
     }
 
-    let end_node = old_edge.end_node;
+    let old_end_node = old_edge.end_node;
 
     let mut part2_geo = vec![split_pos];
     part2_geo.extend_from_slice(&old_edge.geometry[segment_idx + 1..]);
@@ -1068,8 +953,6 @@ pub fn split_edge(
     let no_building_spawn = old_edge.no_building_spawn;
     let vehicle_frontage_access = old_edge.vehicle_frontage_access;
 
-    let old_end_node = graph.edges[edge_id].end_node;
-
     // Remove from spatial index BEFORE updating geometry so the AABB still matches
     // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
     // and the remove silently fails, leaving a stale entry.
@@ -1090,7 +973,7 @@ pub fn split_edge(
 
     let mut new_edge = Edge {
         start_node: junction_node_id,
-        end_node,
+        end_node: old_end_node,
         primary_type,
         allowed_types,
         width,
@@ -1102,7 +985,7 @@ pub fn split_edge(
         current_congestion,
         start_clip: 0.0,
         end_clip: 0.0,
-        geometry: part2_geo.clone(),
+        geometry: part2_geo,
         physical_geometry: part2_physical,
         class,
         deleted: false,
@@ -1163,6 +1046,9 @@ pub fn split_edge(
         network.bulk_dirty_edges.insert(new_edge_id);
     }
 }
+
+#[cfg(test)]
+mod node_edit_tests;
 
 #[cfg(test)]
 mod tests {

@@ -47,6 +47,7 @@ impl HouseholdSystem {
         logistics.hourly_tick(
             allocator,
             agents,
+            self,
             transit_network,
             graph,
             minute_of_day,

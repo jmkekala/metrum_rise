@@ -6,7 +6,7 @@ use super::types::DemandUse;
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::zoning::ZoneType;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DemandBuildingActionKey {
     pub(crate) parcel_id: u64,
     pub(crate) edge_idx: usize,
@@ -16,6 +16,20 @@ pub(crate) struct DemandBuildingActionKey {
     pub(crate) depth_cells: u16,
     pub(crate) level: u8,
     pub(crate) asset_id: String,
+}
+
+impl DemandBuildingActionKey {
+    /// Revalidates a selected action against the parcel's current building without cloning its key.
+    pub(crate) fn matches_building(&self, building: &Building) -> bool {
+        self.parcel_id == building.parcel_id
+            && self.edge_idx == building.edge_idx
+            && self.side == building.side
+            && self.cell_x == building.cell_x
+            && self.width_cells == building.width_cells
+            && self.depth_cells == building.depth_cells
+            && self.level == building.level
+            && self.asset_id == building.asset_id
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -6,6 +6,7 @@
 //! cells that differ from the configured default value. Dense materialization is
 //! still available for save/load and renderer upload boundaries.
 
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -361,7 +362,12 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
     }
 
     /// Replaces the sparse contents from a dense row-major buffer.
-    pub(crate) fn replace_from_dense(&mut self, dense: &[T]) -> Result<(), String> {
+    ///
+    /// Independent chunks are scanned in parallel; default-only chunks allocate no payload.
+    pub(crate) fn replace_from_dense(&mut self, dense: &[T]) -> Result<(), String>
+    where
+        T: Send + Sync,
+    {
         if dense.len() != self.width * self.height {
             return Err(format!(
                 "dense slice length mismatch: got {}, expected {}",
@@ -374,33 +380,40 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         let chunk_cols = self.width.div_ceil(self.chunk_size);
         let chunk_rows = self.height.div_ceil(self.chunk_size);
         let chunk_len = self.chunk_len();
-
-        for chunk_y in 0..chunk_rows {
-            for chunk_x in 0..chunk_cols {
-                let origin_x = chunk_x * self.chunk_size;
-                let origin_y = chunk_y * self.chunk_size;
-                let copy_w = (self.width - origin_x).min(self.chunk_size);
-                let copy_h = (self.height - origin_y).min(self.chunk_size);
-                let mut chunk = vec![self.default_value; chunk_len];
-                let mut touched = false;
-
-                for local_y in 0..copy_h {
-                    let src_start = (origin_y + local_y) * self.width + origin_x;
-                    let src_end = src_start + copy_w;
-                    let row = &dense[src_start..src_end];
-                    let dst_start = local_y * self.chunk_size;
-                    chunk[dst_start..dst_start + copy_w].copy_from_slice(row);
-                    if !touched && row.iter().any(|cell| *cell != self.default_value) {
-                        touched = true;
+        let chunk_size = self.chunk_size;
+        let (width, height) = (self.width, self.height);
+        let default_value = self.default_value;
+        self.chunks.par_extend(
+            (0..chunk_rows * chunk_cols)
+                .into_par_iter()
+                .with_min_len(16)
+                .filter_map(|chunk_index| {
+                    let chunk_x = chunk_index % chunk_cols;
+                    let chunk_y = chunk_index / chunk_cols;
+                    let origin_x = chunk_x * chunk_size;
+                    let origin_y = chunk_y * chunk_size;
+                    let copy_w = (width - origin_x).min(chunk_size);
+                    let copy_h = (height - origin_y).min(chunk_size);
+                    let touched = (0..copy_h).any(|local_y| {
+                        let start = (origin_y + local_y) * width + origin_x;
+                        dense[start..start + copy_w]
+                            .iter()
+                            .any(|cell| *cell != default_value)
+                    });
+                    if !touched {
+                        return None;
                     }
-                }
-
-                if touched {
-                    self.chunks
-                        .insert(Self::chunk_key(chunk_x, chunk_y), Arc::new(chunk));
-                }
-            }
-        }
+                    let mut chunk = vec![default_value; chunk_len];
+                    for local_y in 0..copy_h {
+                        let src_start = (origin_y + local_y) * width + origin_x;
+                        let src_end = src_start + copy_w;
+                        let row = &dense[src_start..src_end];
+                        let dst_start = local_y * chunk_size;
+                        chunk[dst_start..dst_start + copy_w].copy_from_slice(row);
+                    }
+                    Some((Self::chunk_key(chunk_x, chunk_y), Arc::new(chunk)))
+                }),
+        );
 
         Ok(())
     }
@@ -460,6 +473,76 @@ mod tests {
 
         assert_eq!(grid.clone_dense(), dense);
         assert_eq!(grid.materialized_chunk_count(), 2);
+
+        let mut grid = SparseChunkGrid::new(9, 7, 4, 3u16);
+        let mut dense = vec![3; 9 * 7];
+        dense[6 * 9 + 8] = 11;
+        dense[3 * 9 + 3] = 7;
+        grid.replace_from_dense(&dense).unwrap();
+        assert_eq!(grid.clone_dense(), dense);
+        assert_eq!(grid.materialized_chunk_count(), 2);
+        let snapshot = grid.clone();
+        assert!(grid.replace_from_dense(&dense[..dense.len() - 1]).is_err());
+        assert_eq!(grid.clone_dense(), dense);
+        grid.replace_from_dense(&[3; 9 * 7]).unwrap();
+        assert_eq!(grid.materialized_chunk_count(), 0);
+        assert_eq!(grid.clone_dense(), vec![3; 9 * 7]);
+        assert_eq!(snapshot.clone_dense(), dense);
+    }
+
+    #[test]
+    #[ignore = "unprofiled dense-to-sparse load; run alone with --release --ignored --nocapture"]
+    fn benchmark_sparse_dense_replacement() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        // Match the default 512 m storage chunks at 10 m terrain sample spacing.
+        const CHUNK_SIZE: usize = 52;
+        for size in [129usize, 1_025, 2_001] {
+            for pattern in ["blank", "sparse", "full"] {
+                let mut dense = vec![3.0f32; size * size];
+                if pattern == "full" {
+                    for (index, value) in dense.iter_mut().enumerate() {
+                        *value = (index % 1_024) as f32 / 16.0;
+                    }
+                } else if pattern == "sparse" {
+                    for y in (0..size).step_by(CHUNK_SIZE) {
+                        for x in (0..size).step_by(CHUNK_SIZE) {
+                            let chunk_index =
+                                y / CHUNK_SIZE * size.div_ceil(CHUNK_SIZE) + x / CHUNK_SIZE;
+                            if chunk_index % 64 == 0 {
+                                let last_x = (x + CHUNK_SIZE - 1).min(size - 1);
+                                let last_y = (y + CHUNK_SIZE - 1).min(size - 1);
+                                dense[last_y * size + last_x] = 7.0;
+                            }
+                        }
+                    }
+                }
+                let mut grid = SparseChunkGrid::new(size, size, CHUNK_SIZE, 3.0f32);
+                let mut samples = Vec::with_capacity(21);
+                for sample in 0..24 {
+                    let start = Instant::now();
+                    for _ in 0..8 {
+                        grid.replace_from_dense(black_box(&dense)).unwrap();
+                        black_box(&grid);
+                    }
+                    if sample >= 3 {
+                        samples.push(start.elapsed().as_secs_f64() * 1_000.0 / 8.0);
+                    }
+                }
+                let actual = grid.clone_dense();
+                assert_eq!(actual, dense);
+                let checksum = actual.iter().enumerate().fold(0u64, |sum, (index, value)| {
+                    sum.wrapping_add((index as u64 + 1).wrapping_mul(u64::from(value.to_bits())))
+                });
+                samples.sort_by(f64::total_cmp);
+                println!(
+                    "sparse_load size={size} pattern={pattern} chunks={} median_ms={:.6} checksum={checksum}",
+                    grid.materialized_chunk_count(),
+                    samples[samples.len() / 2]
+                );
+            }
+        }
     }
 
     #[test]

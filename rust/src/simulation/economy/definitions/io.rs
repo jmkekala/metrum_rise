@@ -9,13 +9,13 @@ use std::path::Path;
 pub(super) const PROFILES_FILE: &str = "profiles.toml";
 pub(super) const CONTROLLERS_FILE: &str = "controllers.toml";
 pub(super) const SCENARIOS_FILE: &str = "scenarios.toml";
-pub(super) const INDEX_FILE: &str = "economy.index.bin";
 
 pub(super) fn load_project(dir_path: &Path) -> Result<EconomyProject, String> {
     let profiles: ProfilesFile = parse_toml_file(&dir_path.join(PROFILES_FILE))?;
     let controllers: ControllersFile = parse_toml_file(&dir_path.join(CONTROLLERS_FILE))?;
     let scenarios: ScenariosFile = parse_toml_file(&dir_path.join(SCENARIOS_FILE))?;
     Ok(EconomyProject {
+        resources: profiles.resources,
         profiles: profiles.profiles,
         runtime_tuning: profiles.runtime_tuning,
         controllers: controllers.controllers,

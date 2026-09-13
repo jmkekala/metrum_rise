@@ -5,9 +5,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::{AgentSystem, VEHICLE_FREIGHT_DELIVERY};
 use crate::simulation::economy::definitions::{ResourceRuntimeId, load_runtime_economy_tuning};
+use crate::simulation::economy::households::HouseholdSystem;
 
+use super::resource::refund_input_payment;
 use super::route_cache::FreightRouteCache;
 
 /// A physical freight endpoint inside the city or at an outside-world border terminal.
@@ -143,7 +145,7 @@ pub struct Shipment {
     pub carrier_agent_id: usize,
     /// Reserved payment held by the destination until completion or failure.
     pub total_cost: f32,
-    /// Remaining operational-hour steps before the shipment arrives once dispatched.
+    /// Estimated trip duration used for capacity and timeout bounds; arrival is physical.
     pub eta_hours: u16,
     /// Operational hours spent in the current active logistics state.
     pub queued_hours: u16,
@@ -170,7 +172,8 @@ pub struct FreightRequestFailure {
 /// Runtime collection of active freight jobs.
 #[derive(Clone, Debug)]
 pub struct ShipmentSystem {
-    /// All queued or in-transit shipment jobs plus fulfilled/failed jobs awaiting cleanup.
+    /// Active and recently closed jobs in ascending stable shipment-ID order.
+    /// Append allocates increasing IDs; retention, loading and undo preserve this order.
     pub shipments: Vec<Shipment>,
     /// Next stable shipment id to assign.
     pub next_shipment_id: u64,
@@ -190,7 +193,7 @@ pub struct ShipmentSystem {
 
 /// Freight records removed when one building is bulldozed.
 pub(crate) struct ShipmentBuildingUndo {
-    pub(crate) shipments: Vec<(usize, Shipment)>,
+    pub(crate) shipments: Vec<Shipment>,
     pub(crate) request_failures: Vec<(FreightRequestKey, FreightRequestFailure)>,
     pub(crate) carrier_agent_ids: Vec<usize>,
     pub(crate) mutated_building_ids: Vec<usize>,
@@ -216,17 +219,18 @@ impl ShipmentSystem {
         let mut shipments = Vec::new();
         let mut carrier_agent_ids = Vec::new();
         let mut mutated_building_ids = Vec::new();
-        for (shipment_idx, shipment) in self.shipments.iter().enumerate() {
+        for shipment in &self.shipments {
             let touches_removed = shipment.source.touches_building(removed_building)
                 || shipment.destination.touches_building(removed_building);
             if !touches_removed {
                 continue;
             }
-            shipments.push((shipment_idx, shipment.clone()));
+            shipments.push(shipment.clone());
             if shipment.carrier_agent_id != usize::MAX {
                 carrier_agent_ids.push(shipment.carrier_agent_id);
             }
-            if shipment.source.touches_building(removed_building)
+            if shipment.status.reserves_cargo()
+                && shipment.source.touches_building(removed_building)
                 && let Some(destination_id) = shipment.destination.building_id()
                 && destination_id != removed_building
             {
@@ -261,9 +265,9 @@ impl ShipmentSystem {
 
     /// Reinserts freight state removed by building invalidation.
     pub(crate) fn restore_building_undo(&mut self, undo: ShipmentBuildingUndo) {
-        for (shipment_idx, shipment) in undo.shipments {
-            self.shipments
-                .insert(shipment_idx.min(self.shipments.len()), shipment);
+        for shipment in undo.shipments {
+            let shipment_idx = self.shipments.partition_point(|job| job.id < shipment.id);
+            self.shipments.insert(shipment_idx, shipment);
         }
         for (key, failure) in undo.request_failures {
             self.request_failures.insert(key, failure);
@@ -284,10 +288,7 @@ impl ShipmentSystem {
         self.shipments.clear();
         self.next_shipment_id = 0;
         self.request_failures.clear();
-        self.freight_route_cache.clear();
-        self.freight_route_cache_building_revision = u64::MAX;
-        self.freight_route_cache_entrance_revision = u64::MAX;
-        self.freight_route_cache_cch_generation = u32::MAX;
+        self.invalidate_route_cache();
         self.owa_export_saturation_by_resource.clear();
     }
 
@@ -343,18 +344,27 @@ impl ShipmentSystem {
             remapped_failures.insert(key, failure);
         }
         self.request_failures = remapped_failures;
-        self.freight_route_cache.clear();
-        self.freight_route_cache_building_revision = u64::MAX;
-        self.freight_route_cache_entrance_revision = u64::MAX;
-        self.freight_route_cache_cch_generation = u32::MAX;
+        self.invalidate_route_cache();
     }
 
-    /// Remaps an active physical carrier index after an agent swap-remove.
-    pub(crate) fn remap_carrier_agent_index(&mut self, old_idx: usize, new_idx: usize) {
-        for shipment in &mut self.shipments {
-            if shipment.carrier_agent_id == old_idx {
-                shipment.carrier_agent_id = new_idx;
-            }
+    /// Repairs the moved agent's shipment in O(log S), or O(1) for a non-freight agent.
+    /// The caller must first move the agent record to `new_idx`.
+    pub(crate) fn remap_carrier_agent_index(
+        &mut self,
+        old_idx: usize,
+        new_idx: usize,
+        agents: &AgentSystem,
+    ) {
+        if agents.vehicle_type[new_idx] != VEHICLE_FREIGHT_DELIVERY {
+            return;
+        }
+        let shipment_id = agents.freight_shipment_id[new_idx];
+        if let Ok(idx) = self
+            .shipments
+            .binary_search_by_key(&shipment_id, |job| job.id)
+            && self.shipments[idx].carrier_agent_id == old_idx
+        {
+            self.shipments[idx].carrier_agent_id = new_idx;
         }
     }
 
@@ -364,6 +374,8 @@ impl ShipmentSystem {
         removed_building: usize,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
+        treasury_balance: &mut f64,
     ) {
         let mut carriers_to_remove = Vec::new();
         let retry_cooldown_hours = load_runtime_economy_tuning()
@@ -378,12 +390,16 @@ impl ShipmentSystem {
                 return true;
             }
 
-            if shipment.source.touches_building(removed_building)
+            if shipment.status.reserves_cargo()
                 && let Some(destination_id) = shipment.destination.building_id()
                 && destination_id < allocator.buildings.len()
-                && destination_id != removed_building
             {
-                allocator.buildings[destination_id].operating_budget += shipment.total_cost;
+                refund_input_payment(
+                    allocator,
+                    treasury_balance,
+                    destination_id,
+                    shipment.total_cost,
+                );
                 allocator.buildings[destination_id].shipment_cooldown_hours = retry_cooldown_hours;
             }
             if shipment.destination.touches_building(removed_building)
@@ -398,23 +414,20 @@ impl ShipmentSystem {
                 allocator.buildings[source_id].shipment_cooldown_hours = retry_cooldown_hours;
             }
 
-            if shipment.carrier_agent_id != usize::MAX {
-                carriers_to_remove.push(shipment.carrier_agent_id);
+            if agents.freight_carrier_matches(shipment.carrier_agent_id, shipment.id) {
+                carriers_to_remove.push((shipment.carrier_agent_id, shipment.id));
             }
             false
         });
         carriers_to_remove.sort_unstable();
         carriers_to_remove.dedup();
-        for carrier_agent_id in carriers_to_remove.into_iter().rev() {
-            self.remove_carrier_agent(agents, carrier_agent_id);
+        for (carrier_agent_id, shipment_id) in carriers_to_remove.into_iter().rev() {
+            self.remove_carrier_agent(agents, households, carrier_agent_id, shipment_id);
         }
 
         self.request_failures
             .retain(|key, _| key.destination_building_id != removed_building);
-        self.freight_route_cache.clear();
-        self.freight_route_cache_building_revision = u64::MAX;
-        self.freight_route_cache_entrance_revision = u64::MAX;
-        self.freight_route_cache_cch_generation = u32::MAX;
+        self.invalidate_route_cache();
     }
 
     pub(super) fn request_key(

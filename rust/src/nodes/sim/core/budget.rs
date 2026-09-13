@@ -7,8 +7,10 @@ use crate::debug_log;
 use crate::simulation::economy::agents::{
     AGE_ADULT, AGE_CHILD, AGE_ELDER, TRANSIT_IN_BUILDING, age_group_can_work,
 };
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
-use crate::simulation::economy::definitions::{EconomyProfileRuntime, EconomyProfileRuntimeKind};
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, load_runtime_economy_catalog,
+    load_runtime_economy_tuning,
+};
 use crate::simulation::economy::fiscal::FiscalRevenue;
 use crate::simulation::economy::households::{
     active_worker_capacity_for_profile_with_floor_scale, commercial_activity_signal_for_city,
@@ -119,8 +121,6 @@ pub(crate) struct DailyBudgetLedgerEntry {
     pub(crate) power_coverage: f64,
     /// Coal inventory currently held by city power providers.
     pub(crate) coal_inventory: f64,
-    /// Estimated coal units bought for city power providers during the day.
-    pub(crate) coal_bought: f64,
     /// Estimated coal units consumed by city power providers during the day.
     pub(crate) coal_consumed: f64,
     /// City fuel/input cost attributable to electricity providers.
@@ -173,6 +173,15 @@ pub struct CityTreasury {
     pub pending_commercial_property_tax: f64,
     /// Industrial property tax collected since the last daily fiscal finalization.
     pub pending_industrial_property_tax: f64,
+}
+
+impl Default for CityTreasury {
+    /// Starts a new fiscal ledger with the validated authored treasury balance.
+    fn default() -> Self {
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        Self::new(tuning.startup_treasury_balance)
+    }
 }
 
 impl CityTreasury {
@@ -400,7 +409,7 @@ impl SimCore {
 
     /// Applies a live service funding policy change from the UI.
     pub(crate) fn set_service_funding(&mut self, service_id: &str, funding: f32) -> bool {
-        if !is_electricity_service(service_id) {
+        if !is_electricity_service(service_id) || !funding.is_finite() {
             return false;
         }
         let previous = self.service_policy.electricity_funding;
@@ -456,13 +465,10 @@ impl SimCore {
         service_id: &str,
         funding: f32,
     ) -> bool {
-        if !is_electricity_service(service_id) {
+        if !is_electricity_service(service_id) || !funding.is_finite() {
             return false;
         }
-        if self.allocator.dirty_index {
-            self.allocator.rebuild_zone_index();
-        }
-        let Some(building_idx) = self.nearest_building_idx_at(world_x, world_z, 30.0) else {
+        let Some(building_idx) = self.allocator.nearest_building_idx_at(world_x, world_z) else {
             return false;
         };
         if !self.building_provides_service(building_idx, "power") {
@@ -554,17 +560,6 @@ impl SimCore {
         );
     }
 
-    fn nearest_building_idx_at(&self, world_x: f32, world_z: f32, radius_m: f32) -> Option<usize> {
-        let mut candidates = Vec::with_capacity(1);
-        self.allocator
-            .fill_nearby_buildings(world_x, world_z, 1, 1, &mut candidates, |_, _| true);
-        let building_idx = candidates.into_iter().next()?;
-        let building = &self.allocator.buildings[building_idx];
-        let dx = building.center_x - world_x;
-        let dz = building.center_y - world_z;
-        (dx * dx + dz * dz < radius_m.max(0.0).powi(2)).then_some(building_idx)
-    }
-
     fn building_provides_service(&self, building_idx: usize, utility_service: &str) -> bool {
         let Some(building) = self.allocator.buildings.get(building_idx) else {
             return false;
@@ -636,7 +631,8 @@ impl SimCore {
             .iter()
             .map(|ledger| f64::from(ledger.child_support_income.max(0.0)))
             .sum::<f64>();
-        let city_wages = f64::from(self.households.last_city_service_wage_cost().max(0.0));
+        let wages = self.households.last_city_service_wages();
+        let city_wages = f64::from(wages.total);
         let power = self.households.last_power_settlement();
         let electricity_revenue = f64::from(
             power.household_local_revenue
@@ -648,20 +644,17 @@ impl SimCore {
         let construction_service_costs = construction_delta
             + self.treasury.last_daily_upkeep.max(0.0)
             + f64::from(power.city_service_utility_local_cost.max(0.0));
-        let (coal_inventory, coal_bought, coal_consumed, electricity_fuel_cost) =
-            self.electricity_provider_daily_fuel_summary();
-        let electricity_wage_cost = city_wages;
+        let (coal_inventory, coal_consumed, electricity_fuel_cost, fuel_input_purchases) =
+            self.city_service_daily_input_summary();
+        let electricity_wage_cost = f64::from(wages.power);
         let power_consumed = f64::from(power.served_units.max(0.0));
         let power_unmet = f64::from((power.demand_units - power.served_units).max(0.0));
         let power_produced = f64::from(power.supply_units.max(0.0));
         let electricity_net = electricity_revenue - electricity_fuel_cost - electricity_wage_cost;
 
         let income = tax_income + utility_service_revenue;
-        let expenses = benefits
-            + city_wages
-            + electricity_fuel_cost
-            + imports_owa
-            + construction_service_costs;
+        let expenses =
+            benefits + city_wages + fuel_input_purchases + imports_owa + construction_service_costs;
         let net = income - expenses;
 
         DailyBudgetLedgerEntry {
@@ -684,7 +677,7 @@ impl SimCore {
             pensions,
             child_support,
             city_wages,
-            fuel_input_purchases: electricity_fuel_cost,
+            fuel_input_purchases,
             imports_owa,
             construction_service_costs,
             power_produced,
@@ -692,7 +685,6 @@ impl SimCore {
             power_unmet,
             power_coverage: f64::from(power.coverage.clamp(0.0, 1.0)),
             coal_inventory,
-            coal_bought,
             coal_consumed,
             electricity_fuel_cost,
             electricity_wage_cost,
@@ -701,17 +693,20 @@ impl SimCore {
         }
     }
 
-    fn electricity_provider_daily_fuel_summary(&self) -> (f64, f64, f64, f64) {
+    fn city_service_daily_input_summary(&self) -> (f64, f64, f64, f64) {
         let Ok(catalog) = load_runtime_economy_catalog() else {
             return (0.0, 0.0, 0.0, 0.0);
         };
         let coal_runtime_id = catalog.resource_runtime_id_for_id("coal");
         let mut coal_inventory = 0.0f64;
         let mut coal_consumed = 0.0f64;
-        let mut fuel_cost = 0.0f64;
+        let mut power_input_cost = 0.0f64;
+        let mut total_input_cost = 0.0f64;
 
         // Fiscal reports keep index-order floating-point accumulation deterministic.
         for building in &self.allocator.buildings {
+            let input_cost = f64::from(building.daily_city_funded_input_cost);
+            total_input_cost += input_cost;
             let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
             else {
                 continue;
@@ -719,7 +714,7 @@ impl SimCore {
             if profile.utility_service.as_deref() != Some("power") {
                 continue;
             }
-            fuel_cost += f64::from(building.daily_city_funded_input_cost.max(0.0));
+            power_input_cost += input_cost;
             if let Some(coal_runtime_id) = coal_runtime_id {
                 coal_inventory += f64::from(building.inventory_units(coal_runtime_id).max(0.0));
             }
@@ -736,13 +731,12 @@ impl SimCore {
             }
         }
 
-        let coal_bought = coal_runtime_id
-            .and_then(|resource| catalog.unit_price_for_resource(resource))
-            .filter(|unit_price| *unit_price > f32::EPSILON)
-            .map(|unit_price| fuel_cost / f64::from(unit_price))
-            .unwrap_or(0.0);
-
-        (coal_inventory, coal_bought, coal_consumed, fuel_cost)
+        (
+            coal_inventory,
+            coal_consumed,
+            power_input_cost,
+            total_input_cost,
+        )
     }
 
     pub(super) fn print_sim_console_summary(&self, day_index: u32, minute_of_day: u16) {
@@ -1131,15 +1125,14 @@ impl SimCore {
         );
     }
 
-    fn print_daily_building_economy(&mut self, day_index: u32) {
+    /// Emits the completed day's economy diagnostics without changing settlement state.
+    pub(super) fn print_daily_building_economy(&self, day_index: u32) {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 
         if !crate::debug::category_enabled("economy") {
-            self.households.reset_daily_ledgers();
             return;
         }
         let Ok(catalog) = load_runtime_economy_catalog() else {
-            self.households.reset_daily_ledgers();
             return;
         };
         let service_funding_by_building = self.electricity_funding_by_building();
@@ -1160,7 +1153,6 @@ impl SimCore {
             let worker_cap = self
                 .allocator
                 .worker_capacity_with_catalog(idx, catalog.as_ref());
-            let _resident_cap = self.allocator.household_capacity(idx);
             let profile = catalog.profile_by_runtime_id(b.economy_profile_runtime_id);
             let profile_id = profile.map(|p| p.id.as_str()).unwrap_or("none");
             let active_worker_capacity = profile
@@ -1320,12 +1312,10 @@ impl SimCore {
         let mut households_below_3d_supplies = 0u32;
         let mut total_wages_paid = 0.0f32;
         let mut total_household_shopping_spend = 0.0f32;
-        let mut total_benefits_paid = 0.0f32;
         let mut total_unemployment_benefits_paid = 0.0f32;
         let mut total_pensions_paid = 0.0f32;
         let mut total_child_support_paid = 0.0f32;
         let mut total_property_tax_paid = 0.0f32;
-        let mut total_utility_supply_cost = 0.0f32;
         let mut total_household_supply_use_cost = 0.0f32;
         let mut total_household_utility_cost = 0.0f32;
 
@@ -1353,12 +1343,10 @@ impl SimCore {
             }
             total_wages_paid += ledger.wage_income;
             total_household_shopping_spend += ledger.shopping_spend;
-            total_benefits_paid += ledger.transfer_income();
             total_unemployment_benefits_paid += ledger.unemployment_benefit_income;
             total_pensions_paid += ledger.pension_income;
             total_child_support_paid += ledger.child_support_income;
             total_property_tax_paid += ledger.property_tax_paid;
-            total_utility_supply_cost += ledger.utility_stock_consumption_cost;
             total_household_supply_use_cost += ledger.household_supply_consumption_cost;
             let household_utility_cost = ledger.power_consumption_cost
                 + ledger.water_consumption_cost
@@ -1415,7 +1403,7 @@ impl SimCore {
                 ledger.sewage_consumption_cost,
                 household_utility_cost,
                 ledger.household_supply_consumption_cost,
-                ledger.utility_stock_consumption_cost,
+                household_utility_cost + ledger.household_supply_consumption_cost,
                 ledger.budget_after,
                 ledger.unemployed_adults,
                 ledger.shopper_trips_completed,
@@ -1431,14 +1419,14 @@ impl SimCore {
             households_below_3d_supplies,
             total_wages_paid,
             total_household_shopping_spend,
-            total_benefits_paid,
+            total_unemployment_benefits_paid + total_pensions_paid + total_child_support_paid,
             total_unemployment_benefits_paid,
             total_pensions_paid,
             total_child_support_paid,
             total_property_tax_paid,
             total_household_utility_cost,
             total_household_supply_use_cost,
-            total_utility_supply_cost,
+            total_household_utility_cost + total_household_supply_use_cost,
         );
         println!(
             "[ECON] Day {:>4} fiscal summary: income_tax={:.1} household_vat={:.1} business_profit_tax={:.1} property_tax={:.1} residential_property_tax={:.1} commercial_property_tax={:.1} industrial_property_tax={:.1} tax_total={:.1} lifetime_tax={:.1} road_upkeep={:.1} treasury={:.1}",
@@ -1458,7 +1446,6 @@ impl SimCore {
             self.treasury.last_daily_upkeep,
             self.treasury.balance,
         );
-        self.households.reset_daily_ledgers();
     }
 
     pub(super) fn collect_fiscal_revenue(&mut self, revenue: FiscalRevenue) {
@@ -1480,16 +1467,29 @@ impl SimCore {
             revenue.industrial_property_tax as f64,
         );
     }
-
-    /// Called once per in-game day by the tick loop to emit per-building economy lines.
-    pub fn print_daily_building_economy_for_day(&mut self, day_index: u32) {
-        self.print_daily_building_economy(day_index);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::nodes::sim::core::tests::fields::{add_farm_household, farm_fixture};
+
+    #[test]
+    fn daily_tick_closes_household_payments_without_a_logging_call() {
+        let (mut core, farm, polygon) = farm_fixture();
+        core.commit_field_polygon_internal(farm, polygon).unwrap();
+        let household = add_farm_household(&mut core, farm);
+        core.households
+            .restore_utility_payments(household, [3.0, 2.0, 1.0]);
+        core.simulate_tick_internal(1);
+        let ledger = &core.households.daily_ledgers()[household];
+        assert_eq!(ledger.power_consumption_cost, 0.0);
+        assert_eq!(ledger.water_consumption_cost, 0.0);
+        assert_eq!(ledger.sewage_consumption_cost, 0.0);
+        assert_eq!(
+            ledger.budget_before,
+            core.households.households[household].budget
+        );
+    }
 
     #[test]
     fn farm_diagnostics_count_filled_jobs_and_household_independently() {
@@ -1507,5 +1507,43 @@ mod tests {
         );
         assert!(diagnostics.industrial_filled_jobs > 0);
         assert_eq!(diagnostics.commercial_filled_jobs, 0);
+    }
+    #[test]
+    fn budget_counts_machinery_for_all_utilities_without_treating_it_as_coal() {
+        let (mut core, farm, _) = farm_fixture();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let coal = catalog.resource_runtime_id_for_id("coal").unwrap();
+        let template = core.allocator.buildings[farm].clone();
+        let before = core.build_budget_ledger_entry(1, 0.0);
+        for (id, cost) in [
+            ("power_plant_basic", 70.0),
+            ("water_plant_basic", 35.0),
+            ("wastewater_treatment_basic", 17.5),
+        ] {
+            let mut provider = template.clone();
+            provider.economy_profile_runtime_id = catalog.profile_for_id(id).unwrap().runtime_id;
+            provider.daily_city_funded_input_cost = cost;
+            if id == "power_plant_basic" {
+                provider.set_inventory_units(coal, 10.0);
+                provider.daily_power_service_units = 1200.0;
+            }
+            core.allocator.buildings.push(provider);
+        }
+        let ledger = core.build_budget_ledger_entry(1, 0.0);
+        assert_eq!(ledger.fuel_input_purchases, 122.5);
+        assert_eq!(ledger.electricity_fuel_cost, 70.0);
+        assert_eq!(ledger.coal_inventory, 10.0);
+        assert_eq!(ledger.coal_consumed, 96.0);
+        assert_eq!(ledger.expenses - before.expenses, 122.5);
+        assert_eq!(ledger.net - before.net, -122.5);
+        core.allocator
+            .buildings
+            .last_mut()
+            .unwrap()
+            .daily_city_funded_input_cost = -35.0;
+        let refunded = core.build_budget_ledger_entry(1, 0.0);
+        assert_eq!(refunded.fuel_input_purchases, 70.0);
+        assert_eq!(refunded.expenses - ledger.expenses, -52.5);
     }
 }

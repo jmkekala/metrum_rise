@@ -284,19 +284,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 				_add_extractor_reserve_section(stats_body, info)
 			if info.has("field_resource"):
 				_add_field_section(stats_body, info)
-			if info.has("utility_fuel_name"):
-				var fuel_units := float(info.get("utility_fuel_units", 0.0))
-				var fuel_days := float(info.get("utility_fuel_days", 0.0))
-				_add_row(
-					stats_body,
-					"Fuel Reserve",
-					"%.1f %s / %.1f d" % [
-						fuel_units,
-						str(info.get("utility_fuel_name", "fuel")),
-						fuel_days,
-					]
-				)
-			elif info.get("business_has_inventory_fill", false):
+			if info.get("business_has_inventory_fill", false):
 				_add_row(
 					stats_body,
 					"Inventory",
@@ -318,7 +306,7 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 						"%.1f units" % power_produced
 					)
 					_add_power_consumption_bar(stats_body, power_consumed, power_produced)
-				_add_row(stats_body, "City Fuel Today", _money(float(info.get("city_fuel_cost_today", 0.0))))
+				_add_row(stats_body, "City Inputs Today", _money(float(info.get("city_input_cost_today", 0.0))))
 		else:
 			var fallback_worker_text := str(info.get("worker_count", 0))
 			if str(info.get("utility_service", "")) != "power":
@@ -333,10 +321,13 @@ func _populate(entry: Dictionary, info: Dictionary) -> void:
 			_add_row(stats_body, "Utility", "Yes" if info["utility_service_available"] else "No")
 
 	var inventory: Array = info.get("inventory", [])
-	if inventory.size() > 0 and (not info.get("business_summary", false) or info.has("utility_service")):
+	if inventory.size() > 0:
 		_add_section(stats_body, "Inventory")
 		for item in inventory:
-			_add_row(stats_body, str(item.get("name", "?")), "%.1f" % float(item.get("amount", 0.0)))
+			var stock_text := "%.1f" % float(item.get("amount", 0.0))
+			if item.has("daily_input_units"):
+				stock_text += " (%.1f/day at full operation)" % float(item["daily_input_units"])
+			_add_row(stats_body, _resource_label(str(item.get("name", "?"))), stock_text)
 
 	var flags: Array[String] = []
 	if info.get("broken", false):

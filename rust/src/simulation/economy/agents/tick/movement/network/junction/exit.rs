@@ -2,8 +2,11 @@
 
 //! Connector-lane exit handling.
 
+use super::super::super::super::claims::LaneClaimContext;
 use super::super::super::super::slices::MovementSlices;
+use super::super::super::super::traffic::{claim_lane_entry, lane_entry_slot_clear};
 use super::LaneEndAction;
+use crate::simulation::economy::agents::MODE_CAR;
 use crate::simulation::network::TransitNetwork;
 use crate::traffic_log;
 
@@ -12,6 +15,8 @@ pub(super) unsafe fn exit_connector_lane(
     lane_id: usize,
     remaining_dist: f32,
     transit_network: &TransitNetwork,
+    lane_buckets: &[Vec<(f32, usize)>],
+    lane_claims: &LaneClaimContext<'_>,
     slices: &MovementSlices,
 ) -> LaneEndAction {
     unsafe {
@@ -27,6 +32,15 @@ pub(super) unsafe fn exit_connector_lane(
         if !lane.next_lanes.is_empty() {
             let tgt_road_lane = lane.next_lanes[0];
             if tgt_road_lane < transit_network.lane_system.lanes.len() {
+                // Distinct connectors can merge into the same road lane. Reserve that lane's
+                // entry just as we do for connector entry and direct road continuations.
+                if *slices.tmode.get(i) == MODE_CAR
+                    && (!lane_entry_slot_clear(tgt_road_lane, lane_buckets)
+                        || !claim_lane_entry(i, tgt_road_lane, lane_claims))
+                {
+                    *s_lane_d.get_mut(i) = lane.length;
+                    return LaneEndAction::Break;
+                }
                 let target_edge = transit_network.lane_system.lanes[tgt_road_lane].edge_id;
                 traffic_log!(
                     "[JUNCTION_EXIT] agent={} node={} conn_lane={} conn_len={:.2} to_lane={} to_edge={} speed={:.2} remaining_dist={:.2} path_idx={}/{}",

@@ -50,8 +50,8 @@ pub(crate) struct WaterPatchSnapshot {
     pub depth_nonzero_count: usize,
 }
 
-/// Debug-only baseline/visible split for one visible water render patch.
-pub(crate) struct WaterPatchLayerStats {
+/// Debug-only depth statistics for one authored water render patch.
+pub(crate) struct WaterPatchDepthStats {
     /// Number of row-major samples in the patch texture including the border ring.
     pub(crate) total_samples: usize,
     /// Number of samples whose authored baseline depth is visibly non-zero.
@@ -60,12 +60,6 @@ pub(crate) struct WaterPatchLayerStats {
     pub(crate) baseline_max: f32,
     /// Sum of authored baseline depth samples in metres.
     pub(crate) baseline_sum: f32,
-    /// Number of samples whose final visible depth is visibly non-zero.
-    pub(crate) visible_nonzero: usize,
-    /// Maximum final visible depth in metres.
-    pub(crate) visible_max: f32,
-    /// Sum of final visible depth samples in metres.
-    pub(crate) visible_sum: f32,
 }
 
 #[derive(Clone)]
@@ -144,7 +138,7 @@ impl WaterSystem {
             config.terrain_grid_width(),
             config.terrain_grid_height(),
             config.terrain_cell_m,
-            water_chunk_cells_for_config(config),
+            config.terrain_storage_chunk_cells(),
         )
         .with_render_chunk_span(config.terrain_render_chunk_span_m())
     }
@@ -304,26 +298,23 @@ impl WaterSystem {
         })
     }
 
-    /// Returns debug-only baseline/visible water stats for one visible render patch.
-    pub(crate) fn visible_patch_layer_stats(
+    /// Returns debug-only authored depth statistics for one render patch.
+    pub(crate) fn patch_depth_stats(
         &self,
         patch_x: usize,
         patch_z: usize,
-    ) -> Option<WaterPatchLayerStats> {
+    ) -> Option<WaterPatchDepthStats> {
         let (start_x, end_x, start_z, end_z) = self.render_patch_sample_bounds(patch_x, patch_z)?;
         let sample_width = end_x - start_x + 1;
         let sample_height = end_z - start_z + 1;
         let texture_width = sample_width + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
         let texture_height = sample_height + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
 
-        let mut stats = WaterPatchLayerStats {
+        let mut stats = WaterPatchDepthStats {
             total_samples: texture_width * texture_height,
             baseline_nonzero: 0,
             baseline_max: 0.0,
             baseline_sum: 0.0,
-            visible_nonzero: 0,
-            visible_max: 0.0,
-            visible_sum: 0.0,
         };
 
         for local_z in 0..texture_height {
@@ -333,20 +324,11 @@ impl WaterSystem {
                 let sample_x =
                     border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
                 let baseline_depth = self.baseline.depth.get(sample_x, sample_z);
-                let visible_depth = baseline_depth;
-
-                accumulate_patch_sample(
-                    baseline_depth,
-                    &mut stats.baseline_nonzero,
-                    &mut stats.baseline_max,
-                    &mut stats.baseline_sum,
-                );
-                accumulate_patch_sample(
-                    visible_depth,
-                    &mut stats.visible_nonzero,
-                    &mut stats.visible_max,
-                    &mut stats.visible_sum,
-                );
+                if baseline_depth > WATER_DEBUG_VISIBLE_EPSILON {
+                    stats.baseline_nonzero += 1;
+                }
+                stats.baseline_max = stats.baseline_max.max(baseline_depth);
+                stats.baseline_sum += baseline_depth;
             }
         }
 
@@ -506,10 +488,6 @@ impl WaterSystem {
     }
 }
 
-fn water_chunk_cells_for_config(config: &WorldConfig) -> usize {
-    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
-}
-
 fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
     ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
 }
@@ -528,19 +506,6 @@ fn border_clamped_index(
     } else {
         start + bordered_index - border_texels
     }
-}
-
-fn accumulate_patch_sample(
-    value: f32,
-    nonzero_count: &mut usize,
-    max_value: &mut f32,
-    sum_value: &mut f32,
-) {
-    if value > WATER_DEBUG_VISIBLE_EPSILON {
-        *nonzero_count += 1;
-    }
-    *max_value = (*max_value).max(value);
-    *sum_value += value;
 }
 
 #[cfg(test)]
@@ -576,28 +541,15 @@ mod tests {
         assert_eq!(patch.depth_data[0], 5.0);
         assert_eq!(patch.depth_data[patch.texture_width + 1], 5.0);
         assert_eq!(patch.depth_nonzero_count, 4);
-    }
-
-    #[test]
-    fn visible_patch_layer_stats_reports_baseline_depth() {
-        let mut water = WaterSystem::with_chunking(9, 9, 10.0, 4).with_render_chunk_span(30.0);
-        let mut baseline = vec![0.0; 81];
-        baseline[3 + 3 * 9] = 5.0;
-        water
-            .replace_baseline_depth_from_dense(&baseline)
-            .expect("baseline depth dimensions should match");
 
         let stats = water
-            .visible_patch_layer_stats(1, 1)
+            .patch_depth_stats(1, 1)
             .expect("patch (1,1) should exist on a 9x9 water grid");
 
         assert_eq!(stats.total_samples, 36);
         assert_eq!(stats.baseline_nonzero, 4);
         assert!((stats.baseline_max - 5.0).abs() < 0.0001);
         assert!((stats.baseline_sum - 20.0).abs() < 0.0001);
-        assert_eq!(stats.visible_nonzero, 4);
-        assert!((stats.visible_max - 5.0).abs() < 0.0001);
-        assert!((stats.visible_sum - 20.0).abs() < 0.0001);
     }
 
     #[test]

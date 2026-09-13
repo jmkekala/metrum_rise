@@ -4,9 +4,11 @@
 
 use super::data::DailyHouseholdLedger;
 use super::metrics::{
-    OPERATIONAL_HOURS_PER_DAY, building_operation_factors, economy_profile_for_building,
-    household_is_housed, refresh_commercial_activity_floor,
-    scaled_output_buffer_capacity_units_for_building,
+    OPERATIONAL_HOURS_PER_DAY, UTILITY_SERVICE_POWER, building_operation_factors,
+    consume_hourly_production_inputs, economy_profile_for_building, household_is_housed,
+    local_utility_service_costs, refresh_commercial_activity_floor, saleable_output_stock,
+    scaled_output_buffer_capacity_units_for_building, service_store_demand_rates_by_resource,
+    utility_service_index,
 };
 use super::{DailyPowerSettlementSummary, HouseholdSystem};
 use crate::debug_log;
@@ -19,17 +21,10 @@ use crate::simulation::economy::fiscal::{
     CityFiscalPolicy, FiscalRevenue, daily_property_tax, tax_amount,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
 use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
-const UTILITY_SERVICE_POWER: &str = "power";
-const UTILITY_SERVICE_WATER: &str = "water";
-const UTILITY_SERVICE_SEWAGE: &str = "sewage";
-const UTILITY_SERVICES: [&str; UTILITY_SERVICE_COUNT] = [
-    UTILITY_SERVICE_POWER,
-    UTILITY_SERVICE_WATER,
-    UTILITY_SERVICE_SEWAGE,
-];
 const UTILITY_SERVICE_POWER_INDEX: usize = 0;
 const UTILITY_SERVICE_WATER_INDEX: usize = 1;
 const UTILITY_SERVICE_SEWAGE_INDEX: usize = 2;
@@ -190,6 +185,7 @@ impl HouseholdSystem {
                 tuning.owa_import_price_multiplier,
             );
             utility_settlements[service_idx].household_owa_surcharge = household_owa_surcharge;
+            utility_settlements[service_idx].household_owa_cost += household_owa_surcharge;
             if utility_settlements[service_idx].household_local_revenue > 0.0 {
                 local_utility_revenue_by_service[service_idx] +=
                     utility_settlements[service_idx].household_local_revenue;
@@ -322,13 +318,14 @@ impl HouseholdSystem {
             }
             let building = &mut allocator.buildings[idx];
             if building.operating_budget < 0.0 {
-                forced_owa_liquidation(
+                liquidate_outputs_until_budget(
                     idx,
                     building,
                     &catalog,
                     &reserved_outbound,
                     resource_count,
                     tuning.owa_distress_liquidation_multiplier,
+                    f32::INFINITY,
                 );
                 building.budget_distress = true;
                 debug_log!(
@@ -477,7 +474,7 @@ impl HouseholdSystem {
             let Some(profile) = economy_profile_for_building(&catalog, building) else {
                 return;
             };
-            if profile.kind == EconomyProfileRuntimeKind::FieldProducer {
+            if crate::simulation::work_area::profile_kind_uses_explicit_work_area(profile.kind) {
                 return;
             }
             let factors = building_operation_factors(&catalog, building, profile);
@@ -492,14 +489,7 @@ impl HouseholdSystem {
                 }
             }
 
-            for input_port in &profile.inputs {
-                let hourly_input_units =
-                    input_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
-                if hourly_input_units > 0.0 {
-                    building
-                        .remove_inventory_units(input_port.resource_runtime_id, hourly_input_units);
-                }
-            }
+            consume_hourly_production_inputs(building, profile, throughput_factor);
             if matches!(zone, ZoneType::Commercial | ZoneType::Industrial)
                 && profile.kind != EconomyProfileRuntimeKind::ServiceStore
             {
@@ -673,7 +663,8 @@ impl HouseholdSystem {
         for household_id in 0..self.households.len().min(self.daily_ledgers.len()) {
             let base_bill =
                 household_utility_bill_for_service(&self.daily_ledgers[household_id], service_idx);
-            let surcharge = base_bill * surcharge_multiplier;
+            let surcharge = (base_bill * surcharge_multiplier)
+                .min(self.households[household_id].budget.max(0.0));
             if surcharge <= 0.0 {
                 continue;
             }
@@ -681,46 +672,10 @@ impl HouseholdSystem {
                 (self.households[household_id].budget - surcharge).max(0.0);
             let ledger = &mut self.daily_ledgers[household_id];
             add_household_utility_cost_for_service(ledger, service_idx, surcharge);
-            ledger.utility_stock_consumption_cost += surcharge;
             surcharge_total += surcharge;
         }
         surcharge_total
     }
-}
-
-fn service_store_demand_rates_by_resource(
-    catalog: &RuntimeEconomyCatalog,
-) -> Vec<(ResourceRuntimeId, f32)> {
-    let mut service_outputs = Vec::new();
-    for profile in catalog.all_profiles() {
-        if profile.kind != EconomyProfileRuntimeKind::ServiceStore {
-            continue;
-        }
-        for output in &profile.outputs {
-            add_resource_amount(&mut service_outputs, output.resource_runtime_id, 1.0);
-        }
-    }
-    if service_outputs.is_empty() {
-        return Vec::new();
-    }
-
-    let mut demand_rates = Vec::new();
-    for profile in catalog.all_profiles() {
-        if profile.kind != EconomyProfileRuntimeKind::DemandSink {
-            continue;
-        }
-        for input in &profile.inputs {
-            if resource_amount(&service_outputs, input.resource_runtime_id) <= 0.0 {
-                continue;
-            }
-            add_resource_amount(
-                &mut demand_rates,
-                input.resource_runtime_id,
-                profile.consumption_rate_per_resident.max(0.0),
-            );
-        }
-    }
-    demand_rates
 }
 
 fn service_store_hourly_capacities(
@@ -775,35 +730,7 @@ fn service_store_hourly_capacities(
     capacities
 }
 
-fn add_resource_amount(
-    amounts: &mut Vec<(ResourceRuntimeId, f32)>,
-    resource_runtime_id: ResourceRuntimeId,
-    amount: f32,
-) {
-    if amount <= 0.0 {
-        return;
-    }
-    if let Some((_, existing)) = amounts
-        .iter_mut()
-        .find(|(resource, _)| *resource == resource_runtime_id)
-    {
-        *existing += amount;
-    } else {
-        amounts.push((resource_runtime_id, amount));
-    }
-}
-
-fn resource_amount(
-    amounts: &[(ResourceRuntimeId, f32)],
-    resource_runtime_id: ResourceRuntimeId,
-) -> f32 {
-    amounts
-        .iter()
-        .find_map(|(resource, amount)| (*resource == resource_runtime_id).then_some(*amount))
-        .unwrap_or(0.0)
-}
-
-/// Sells unreserved output inventory through the emergency OWA liquidation path.
+/// Sells output through emergency OWA liquidation while retaining shipment and upkeep reserves.
 pub(super) fn liquidate_outputs_until_budget(
     building_idx: usize,
     building: &mut Building,
@@ -836,7 +763,9 @@ pub(super) fn liquidate_outputs_until_budget(
         .and_then(|slot| reserved_outbound.get(slot).copied())
         .unwrap_or(0.0);
         let available =
-            (building.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
+            (saleable_output_stock(catalog, building, profile, output_port.resource_runtime_id)
+                - reserved)
+                .max(0.0);
         if available <= 0.0 {
             continue;
         }
@@ -869,25 +798,6 @@ pub(super) fn liquidate_outputs_until_budget(
         building.revenue += revenue;
         building.remove_inventory_units(output_port.resource_runtime_id, sold_units);
     }
-}
-
-fn forced_owa_liquidation(
-    building_idx: usize,
-    building: &mut Building,
-    catalog: &RuntimeEconomyCatalog,
-    reserved_outbound: &[f32],
-    resource_count: usize,
-    export_multiplier: f32,
-) {
-    liquidate_outputs_until_budget(
-        building_idx,
-        building,
-        catalog,
-        reserved_outbound,
-        resource_count,
-        export_multiplier,
-        f32::INFINITY,
-    );
 }
 
 fn is_profit_tracked_private_business(
@@ -998,9 +908,8 @@ fn utility_service_settlement(
     let owa_multiplier = owa_import_price_multiplier.max(0.0);
     let missing_coverage = 1.0 - coverage;
     let household_local_revenue = household_base_bill.max(0.0) * coverage;
-    let household_owa_cost = household_base_bill.max(0.0) * owa_multiplier * missing_coverage;
-    let household_owa_surcharge =
-        household_base_bill.max(0.0) * household_owa_surcharge_multiplier(coverage, owa_multiplier);
+    // The base charge is already paid; add only the surcharge actually collected afterward.
+    let household_owa_cost = household_base_bill.max(0.0) * missing_coverage;
     let city_service_local_cost = city_service_demand_units * unit_price * coverage;
     let city_service_owa_cost =
         city_service_demand_units * unit_price * owa_multiplier * missing_coverage;
@@ -1011,7 +920,7 @@ fn utility_service_settlement(
         household_base_bill,
         household_local_revenue,
         household_owa_cost,
-        household_owa_surcharge,
+        household_owa_surcharge: 0.0,
         private_local_revenue: 0.0,
         private_owa_cost: 0.0,
         city_service_demand_units,
@@ -1084,23 +993,4 @@ fn add_household_utility_cost_for_service(
 fn household_owa_surcharge_multiplier(coverage: f32, owa_import_price_multiplier: f32) -> f32 {
     let missing_coverage = 1.0 - coverage.clamp(0.0, 1.0);
     (owa_import_price_multiplier.max(0.0) - 1.0).max(0.0) * missing_coverage
-}
-
-fn local_utility_service_costs(catalog: &RuntimeEconomyCatalog) -> [f32; UTILITY_SERVICE_COUNT] {
-    let mut costs = [0.0; UTILITY_SERVICE_COUNT];
-    for profile in catalog.all_profiles() {
-        if let Some(service_idx) = utility_service_index(profile.utility_service.as_deref())
-            && costs[service_idx] == 0.0
-        {
-            costs[service_idx] = profile.unit_price_currency.max(0.0);
-        }
-    }
-    costs
-}
-
-fn utility_service_index(service: Option<&str>) -> Option<usize> {
-    let service = service?;
-    UTILITY_SERVICES
-        .iter()
-        .position(|candidate| *candidate == service)
 }

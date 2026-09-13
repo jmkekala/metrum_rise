@@ -10,15 +10,15 @@ use super::metrics::{
 };
 use super::replenishment::{
     REPLENISHMENT_FULFILLED, REPLENISHMENT_SHOPPING_RETURNING, REPLENISHMENT_SHOPPING_TO_STORE,
-    REPLENISHMENT_STABLE,
+    REPLENISHMENT_STABLE, insert_shopping_candidate, shopping_route_is_feasible,
+    squared_building_distance,
 };
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
-    BuildingModeComponents, ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex,
-    ReachableBucketScanEvent, chunk_for_point,
+    BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
+    chunk_for_point,
 };
-use crate::simulation::economy::agents::tick::building_origin_trip_is_feasible;
 use crate::simulation::economy::agents::{
     ACTIVITY_HOME, ACTIVITY_SHOPPING, AgentSystem, TRANSIT_IN_BUILDING,
 };
@@ -131,15 +131,13 @@ impl ServiceVisitIndex {
         let mut foot_bucket_entries = Vec::with_capacity(entries.len());
         let mut car_bucket_entries = Vec::with_capacity(entries.len());
         for (entry_idx, entry) in entries.iter().enumerate() {
-            index_service_components(
+            entry.foot_components.append_bucket_entries(
                 &mut foot_bucket_entries,
-                entry.foot_components,
                 entry.chunk,
                 entry_idx,
             );
-            index_service_components(
+            entry.car_components.append_bucket_entries(
                 &mut car_bucket_entries,
-                entry.car_components,
                 entry.chunk,
                 entry_idx,
             );
@@ -242,7 +240,7 @@ impl ServiceVisitIndex {
                         return false;
                     }
                     seen_candidates.push(entry.building_idx);
-                    if !service_visit_route_is_feasible(
+                    if !shopping_route_is_feasible(
                         home_idx,
                         entry.building_idx,
                         has_car,
@@ -254,7 +252,7 @@ impl ServiceVisitIndex {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
-                    insert_service_candidate(
+                    insert_shopping_candidate(
                         candidates,
                         SERVICE_VISIT_SEARCH_CANDIDATES,
                         entry.building_idx,
@@ -711,89 +709,6 @@ fn service_visit_rate_per_resident(
                 .map(move |_| profile.consumption_rate_per_resident.max(0.0))
         })
         .sum()
-}
-
-fn service_visit_route_is_feasible(
-    home_idx: usize,
-    service_idx: usize,
-    has_car: bool,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    pathfind_count: &AtomicU32,
-) -> bool {
-    building_origin_trip_is_feasible(
-        home_idx,
-        service_idx,
-        ACTIVITY_SHOPPING,
-        has_car,
-        allocator,
-        transit_network,
-        graph,
-        pathfind_count,
-    ) && building_origin_trip_is_feasible(
-        service_idx,
-        home_idx,
-        ACTIVITY_HOME,
-        has_car,
-        allocator,
-        transit_network,
-        graph,
-        pathfind_count,
-    )
-}
-
-fn index_service_components(
-    target: &mut Vec<ReachableBucketEntry>,
-    components: BuildingModeComponents,
-    chunk: (i32, i32),
-    entry_idx: usize,
-) {
-    for &component in components.as_slice() {
-        target.push(ReachableBucketEntry::new(component, chunk, entry_idx));
-    }
-}
-
-fn insert_service_candidate(
-    candidates: &mut Vec<usize>,
-    candidate_limit: usize,
-    candidate: usize,
-    origin_x: f32,
-    origin_y: f32,
-    allocator: &BuildingAllocator,
-) {
-    if candidate >= allocator.buildings.len() || candidates.contains(&candidate) {
-        return;
-    }
-    let candidate_distance =
-        squared_building_distance(origin_x, origin_y, &allocator.buildings[candidate]);
-    let mut insert_at = 0usize;
-    while insert_at < candidates.len() {
-        let existing = candidates[insert_at];
-        let existing_distance =
-            squared_building_distance(origin_x, origin_y, &allocator.buildings[existing]);
-        if candidate_distance
-            .total_cmp(&existing_distance)
-            .then_with(|| candidate.cmp(&existing))
-            .is_lt()
-        {
-            break;
-        }
-        insert_at += 1;
-    }
-    if candidates.len() == candidate_limit && insert_at == candidates.len() {
-        return;
-    }
-    candidates.insert(insert_at, candidate);
-    if candidates.len() > candidate_limit {
-        candidates.pop();
-    }
-}
-
-fn squared_building_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
-    let dx = building.center_x - origin_x;
-    let dy = building.center_y - origin_y;
-    dx * dx + dy * dy
 }
 
 fn stable_service_visit_hash(household_id: u64, home_building_id: u64, absolute_hour: u64) -> u64 {

@@ -6,6 +6,92 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn nearest_building_pick_preserves_radius_ties_and_index_refresh() {
+    for boundary in [-512.0, 0.0, 512.0] {
+        let mut allocator = BuildingAllocator::new();
+        for x in [boundary + 1.0, boundary - 1.0] {
+            let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+            building.center_x = x;
+            allocator.buildings.push(building);
+        }
+        // The lower ID lies in the later-visited chunk; broken/unfinished buildings are pickable.
+        allocator.buildings[0].broken = true;
+        allocator.buildings[0].construction_remaining_hours = 1;
+        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
+        assert_eq!(
+            allocator.nearest_building_idx_at(boundary + 31.0, 0.0),
+            None
+        );
+        assert_eq!(
+            allocator.nearest_building_idx_at(boundary + 30.5, 0.0),
+            Some(0)
+        );
+
+        allocator.buildings.swap_remove(0);
+        allocator.dirty_index = true;
+        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), Some(0));
+        allocator.buildings[0].center_x = boundary + 512.0;
+        allocator.dirty_index = true;
+        assert_eq!(allocator.nearest_building_idx_at(boundary, 0.0), None);
+        assert_eq!(
+            allocator.nearest_building_idx_at(boundary + 512.0, 0.0),
+            Some(0)
+        );
+
+        allocator.dirty_index = true;
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(allocator.nearest_building_idx_at(invalid, 0.0), None);
+            assert_eq!(allocator.nearest_building_idx_at(0.0, invalid), None);
+        }
+        assert!(
+            allocator.dirty_index,
+            "invalid input must not rebuild indices"
+        );
+    }
+}
+
+#[test]
+#[ignore = "release building-pick locality benchmark"]
+fn benchmark_building_pick_locality() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for background in [0, 1_024, 65_536] {
+        let mut allocator = BuildingAllocator::new();
+        for idx in 0..32 + background {
+            let mut building = indexed_test_building(String::new(), ZoneType::Residential, idx);
+            if idx < 32 {
+                building.center_x = 508.0 + (idx % 8) as f32;
+                building.center_y = (idx / 8) as f32 * 8.0;
+            } else {
+                building.center_x = 20_000.0 + (idx % 256) as f32 * 16.0;
+                building.center_y = 20_000.0 + (idx / 256) as f32 * 16.0;
+            }
+            allocator.buildings.push(building);
+        }
+        // Measure clean local queries separately from cold index construction.
+        allocator.rebuild_zone_index();
+        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0), Some(4));
+        let mut samples = Vec::new();
+        for sample in 0..14 {
+            let start = Instant::now();
+            for _ in 0..2_000 {
+                black_box(allocator.nearest_building_idx_at(black_box(512.0), black_box(0.0)));
+            }
+            if sample >= 3 {
+                samples.push(start.elapsed().as_secs_f64() * 1e9 / 2_000.0);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        assert_eq!(allocator.nearest_building_idx_at(512.0, 0.0), Some(4));
+        eprintln!(
+            "building_pick: local=32 background={background} median_ns={:.3}",
+            samples[samples.len() / 2]
+        );
+    }
+}
+
+#[test]
 fn building_site_raycast_prepares_and_uses_the_chunk_index() {
     let mut allocator = BuildingAllocator::new();
     let mut near = indexed_test_building(String::new(), ZoneType::Residential, 0);
@@ -35,7 +121,6 @@ fn building_site_raycast_prepares_and_uses_the_chunk_index() {
 #[test]
 fn test_zone_index_consistency() {
     let mut allocator = BuildingAllocator::new();
-    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     let residential_asset = register_test_asset(
         &mut allocator,
         "test",
@@ -50,62 +135,15 @@ fn test_zone_index_consistency() {
     );
 
     for i in 0..10 {
-        allocator.buildings.push(Building {
-            center_x: i as f32,
-            center_y: 0.0,
-            support_height_m: 0.0,
-            width_cells: 3,
-            depth_cells: 3,
-            zone_profile_runtime_id: 0,
-            parcel_id: 0,
-            zone_type: if i % 2 == 0 {
-                ZoneType::Residential
-            } else {
-                ZoneType::Commercial
-            },
-            facing_dir: Vector2::new(0.0, 1.0),
-            frontage_t: 0.5,
-            side_offset: 0.0,
-            is_deserted: false,
-            budget_distress: false,
-            edge_idx: 0,
-            side: 1,
-            cell_x: i,
-            cell_y: 0,
-            occupancy: 0,
-            worker_count: 0,
-            service_funding_override: -1.0,
-            asset_id: if i % 2 == 0 {
-                residential_asset.clone()
-            } else {
-                commercial_asset.clone()
-            },
-            level: 1,
-            construction_total_hours: 0,
-            construction_remaining_hours: 0,
-            broken: false,
-            economy_profile_runtime_id: 0,
-            economy_broken: false,
-            resource_inventory: Vec::new(),
-            revenue: 0.0,
-            operating_budget: 500.0,
-            profit_tax_budget_baseline: 500.0,
-            last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
-            daily_owa_input_value: 0.0,
-            daily_local_input_value: 0.0,
-            daily_city_funded_input_cost: 0.0,
-            daily_household_sales_value: 0.0,
-            daily_power_service_units: 0.0,
-            daily_power_served_units: 0.0,
-            recent_power_service_units: 0.0,
-            recent_power_served_units: 0.0,
-            recent_household_sales_value: 0.0,
-            commercial_activity_floor_scale: 0.0,
-            work_area_scale: 1.0,
-            pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
-        });
+        let (asset, zone) = if i % 2 == 0 {
+            (&residential_asset, ZoneType::Residential)
+        } else {
+            (&commercial_asset, ZoneType::Commercial)
+        };
+        let mut building = indexed_test_building(asset.clone(), zone, i);
+        building.center_x = i as f32;
+        building.parcel_id = 0;
+        allocator.buildings.push(building);
     }
     allocator.dirty_index = true;
     allocator.rebuild_zone_index();
@@ -132,13 +170,6 @@ fn test_zone_index_consistency() {
         allocator.zone_index[zone_bucket(ZoneType::Commercial)].len(),
         5
     );
-
-    let pick = allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng);
-    assert!(pick.is_some());
-    assert_eq!(
-        allocator.buildings[pick.unwrap()].zone_type,
-        ZoneType::Commercial
-    );
 }
 
 #[test]
@@ -150,57 +181,13 @@ fn test_vacancy_index_consistency() {
         "b.res.vacancy",
         ZoneClass::Residential,
     );
-    let _rng = rand::rngs::StdRng::seed_from_u64(42);
 
     for i in 0..5 {
-        allocator.buildings.push(Building {
-            center_x: i as f32,
-            center_y: 0.0,
-            support_height_m: 0.0,
-            width_cells: 3,
-            depth_cells: 3,
-            zone_profile_runtime_id: 0,
-            parcel_id: 0,
-            zone_type: ZoneType::Residential,
-            facing_dir: Vector2::new(0.0, 1.0),
-            frontage_t: 0.5,
-            side_offset: 0.0,
-            is_deserted: false,
-            budget_distress: false,
-            edge_idx: 0,
-            side: 1,
-            cell_x: i,
-            cell_y: 0,
-            occupancy: 0,
-            worker_count: 0,
-            service_funding_override: -1.0,
-            asset_id: residential_asset.clone(),
-            level: 1,
-            construction_total_hours: 0,
-            construction_remaining_hours: 0,
-            broken: false,
-            economy_profile_runtime_id: 0,
-            economy_broken: false,
-            resource_inventory: Vec::new(),
-            revenue: 0.0,
-            operating_budget: 500.0,
-            profit_tax_budget_baseline: 500.0,
-            last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
-            daily_owa_input_value: 0.0,
-            daily_local_input_value: 0.0,
-            daily_city_funded_input_cost: 0.0,
-            daily_household_sales_value: 0.0,
-            daily_power_service_units: 0.0,
-            daily_power_served_units: 0.0,
-            recent_power_service_units: 0.0,
-            recent_power_served_units: 0.0,
-            recent_household_sales_value: 0.0,
-            commercial_activity_floor_scale: 0.0,
-            work_area_scale: 1.0,
-            pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
-        });
+        let mut building =
+            indexed_test_building(residential_asset.clone(), ZoneType::Residential, i);
+        building.center_x = i as f32;
+        building.parcel_id = 0;
+        allocator.buildings.push(building);
     }
     allocator.rebuild_zone_index();
 
@@ -209,11 +196,9 @@ fn test_vacancy_index_consistency() {
         5
     );
 
-    allocator.claim_vacancy(0);
-    allocator.claim_vacancy(0);
-    allocator.claim_vacancy(0);
-    allocator.claim_vacancy(0);
-    allocator.claim_vacancy(0);
+    for _ in 0..5 {
+        allocator.claim_vacancy(0);
+    }
     assert_eq!(
         allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         5
@@ -233,18 +218,7 @@ fn test_vacancy_index_consistency() {
     );
     assert!(allocator.vacancy_index[zone_bucket(ZoneType::Residential)].contains(&0));
 
-    let mut agents = AgentSystem::new();
-    for _ in 0..5 {
-        agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
-    }
-
-    let last_idx = allocator.buildings.len() - 1;
-    let i = 1;
-    let mut mapping = std::collections::HashMap::new();
-    mapping.insert(last_idx, i);
-    agents.remap_building_indices(&mapping);
-
-    allocator.buildings.swap_remove(i);
+    allocator.buildings.swap_remove(1);
     allocator.rebuild_zone_index();
 
     assert_eq!(allocator.buildings.len(), 4);
@@ -311,54 +285,10 @@ fn test_construction_completion_enables_capacity_and_vacancy_indexing() {
         ZoneClass::Residential,
     );
 
-    allocator.buildings.push(Building {
-        center_x: 0.0,
-        center_y: 0.0,
-        support_height_m: 0.0,
-        width_cells: 3,
-        depth_cells: 3,
-        zone_profile_runtime_id: 0,
-        parcel_id: 0,
-        zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.5,
-        side_offset: 0.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_asset,
-        level: 1,
-        construction_total_hours: 2,
-        construction_remaining_hours: 2,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 500.0,
-        profit_tax_budget_baseline: 500.0,
-        last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
+    let mut building = indexed_test_building(residential_asset, ZoneType::Residential, 0);
+    building.construction_total_hours = 2;
+    building.construction_remaining_hours = 2;
+    allocator.buildings.push(building);
     allocator.rebuild_zone_index();
 
     assert_eq!(allocator.household_capacity(0), 0);

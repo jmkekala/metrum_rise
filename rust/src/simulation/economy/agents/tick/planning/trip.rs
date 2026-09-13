@@ -282,8 +282,8 @@ pub(crate) fn building_origin_trip_is_feasible(
     .is_some()
 }
 
-/// Estimates a building-origin trip duration in whole simulation minutes.
-pub(crate) fn estimate_building_origin_trip_minutes(
+/// Estimates physical travel seconds, rounded up and saturated to the commute-cache range.
+pub(crate) fn estimate_building_origin_trip_seconds(
     current_building: usize,
     target_building: usize,
     has_car: bool,

@@ -27,6 +27,52 @@ mod tests {
     use godot::prelude::Vector2;
 
     #[test]
+    fn local_access_crosses_repeated_vertices_in_both_directions() {
+        let points = [
+            Vector2::ZERO,
+            Vector2::new(2.0, 0.0),
+            Vector2::new(2.0, 0.0),
+            Vector2::new(2.0, 3.0),
+        ];
+        for (reverse, steps) in [
+            (
+                false,
+                [
+                    (0.0, points[0]),
+                    (2.0, points[1]),
+                    (2.5, Vector2::new(2.0, 0.5)),
+                ],
+            ),
+            (
+                true,
+                [
+                    (0.0, points[3]),
+                    (3.0, points[2]),
+                    (3.5, Vector2::new(1.5, 0.0)),
+                ],
+            ),
+        ] {
+            let mut path = LocalAccessPath { points, count: 4 };
+            if reverse {
+                path.points.reverse();
+            }
+            for (step, expected) in steps {
+                assert_eq!(
+                    advance_along_local_access_path(path.points[0], &path, step),
+                    (expected, false),
+                    "reverse={reverse}, step={step}"
+                );
+            }
+            for step in [5.0, 6.0] {
+                assert_eq!(
+                    advance_along_local_access_path(path.points[0], &path, step),
+                    (path.points[3], true)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_opposite_side_car_egress_finishes_when_already_at_lane_endpoint() {
         let path = LocalAccessPath {
             points: [

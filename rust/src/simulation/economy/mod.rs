@@ -10,10 +10,8 @@
 //! freight reservations and delayed deliveries between suppliers, stores, and
 //! `OWA` border terminals.
 //!
-//! [`demand::DemandSystem`] remains temporarily in place as a lightweight
-//! pressure/telemetry layer and save-loaded runtime signal while the full
-//! authored company-formation and construction loop is built. It no longer
-//! auto-spawns private buildings from zoned land.
+//! [`demand::DemandSystem`] owns growth pressure, household admission and removal,
+//! and private building selection from eligible zoned land and authored assets.
 
 pub(crate) mod accessibility;
 pub mod agents;
@@ -22,3 +20,5 @@ pub mod demand;
 pub(crate) mod fiscal;
 pub mod households;
 pub mod logistics;
+mod reduction;
+mod resource_totals;

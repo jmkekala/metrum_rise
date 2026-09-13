@@ -2,10 +2,7 @@
 
 //! JSON bridge used by the economy editor and Godot-facing tooling.
 
-use super::index::build_index;
-use super::io::{
-    CONTROLLERS_FILE, INDEX_FILE, PROFILES_FILE, SCENARIOS_FILE, load_project, write_pretty_toml,
-};
+use super::io::{CONTROLLERS_FILE, PROFILES_FILE, SCENARIOS_FILE, load_project, write_pretty_toml};
 use super::sandbox::run_sandbox;
 use super::schema::{ControllersFile, EconomyProject, ProfilesFile, ScenariosFile};
 use super::validation::validate_project;
@@ -26,8 +23,7 @@ pub fn load_project_json(dir_path: &Path) -> Result<String, String> {
         .map_err(|err| format!("could not encode economy project JSON: {err}"))
 }
 
-/// Validates and exports an authored economy project back to canonical TOML
-/// files and regenerates the derived `economy.index.bin` cache.
+/// Validates and exports an authored economy project back to its canonical TOML files.
 pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String, String> {
     let project: EconomyProject = serde_json::from_str(project_json)
         .map_err(|err| format!("economy project JSON parse error: {err}"))?;
@@ -52,6 +48,7 @@ pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String
     write_pretty_toml(
         &dir_path.join(PROFILES_FILE),
         &ProfilesFile {
+            resources: project.resources.clone(),
             profiles: project.profiles.clone(),
             runtime_tuning: project.runtime_tuning.clone(),
         },
@@ -69,16 +66,9 @@ pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String
         },
     )?;
 
-    let compiled = build_index(&project);
-    let compiled_bytes = serde_json::to_vec(&compiled)
-        .map_err(|err| format!("could not encode economy cache: {err}"))?;
-    std::fs::write(dir_path.join(INDEX_FILE), compiled_bytes)
-        .map_err(|err| format!("could not write economy cache: {err}"))?;
-
     let payload = serde_json::json!({
         "ok": true,
         "validation": validation,
-        "cache_path": dir_path.join(INDEX_FILE),
     });
     serde_json::to_string(&payload).map_err(|err| format!("could not encode export JSON: {err}"))
 }

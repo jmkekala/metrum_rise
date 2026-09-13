@@ -27,36 +27,10 @@ fn test_frontage_node_no_uturn() {
 
 // ── Lane bucket tests ─────────────────────────────────────────────────────────
 
-/// After one tick, every ON_ROAD agent with a valid lane must appear in the
-/// bucket for that lane exactly once.
-#[test]
-fn test_lane_bucket_populated_for_on_road_agents() {
-    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
-
-    let a = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 5.0);
-    let b = place_on_lane(&mut agents, edge_idx, fwd_lane, 30.0, 5.0);
-
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
-
-    // After the tick the bucket is filled during step 5 and cleared at the
-    // start of the next step-2 pass — so inspect dirty_lanes/lane_buckets
-    // immediately. We verify via the observable outcome: both agents were
-    // ordered (overlap correction guarantees the front car stays ahead).
-    assert!(
-        agents.lane_distance[b] >= agents.lane_distance[a],
-        "front agent (b at 30 m) should remain ahead of rear agent (a at 10 m)"
-    );
-    // Both agents must still be on the same lane.
-    assert_eq!(agents.current_lane_id[a], fwd_lane);
-    assert_eq!(agents.current_lane_id[b], fwd_lane);
-}
-
 /// Agents in the same lane must be sorted by lane_distance (ascending) after
 /// each tick — the front agent must never have a smaller distance than the rear.
 #[test]
-fn test_lane_bucket_sorted_order() {
+fn test_lane_bucket_preserves_all_agents_in_sorted_order() {
     use crate::config::{CAR_LENGTH, IDM_S_MIN};
     let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
     let mut agents = AgentSystem::new();
@@ -69,32 +43,25 @@ fn test_lane_bucket_sorted_order() {
 
     // Run a few ticks so IDM and overlap correction settle.
     for _ in 0..5 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+        agents.tick(
+            &mut allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &test_clock(0, 0),
+        );
     }
 
-    // Collect positions and verify monotone order.
-    let mut dists: Vec<f32> = [_a, _b, _c]
-        .iter()
-        .map(|&i| agents.lane_distance[i])
-        .collect();
-    let sorted = {
-        let mut s = dists.clone();
-        s.sort_by(|x, y| x.partial_cmp(y).unwrap());
-        s
-    };
-    assert_eq!(
-        dists, sorted,
-        "lane distances must be monotone ascending after ticks"
-    );
+    let expected = [_a, _b, _c].map(|i| (agents.lane_distance[i], i));
+    let bucket = &agents.lane_buckets[fwd_lane];
+    assert_eq!(bucket.as_slice(), expected.as_slice());
 
-    // Each adjacent pair must respect minimum separation.
     let min_sep = CAR_LENGTH + IDM_S_MIN;
-    dists.sort_by(|x, y| x.partial_cmp(y).unwrap());
-    for pair in dists.windows(2) {
+    for pair in bucket.windows(2) {
         assert!(
-            pair[1] - pair[0] >= min_sep - 0.01,
+            pair[1].0 - pair[0].0 >= min_sep - 0.01,
             "gap {:.3} m < min_sep {:.3} m",
-            pair[1] - pair[0],
+            pair[1].0 - pair[0].0,
             min_sep,
         );
     }
@@ -109,14 +76,20 @@ fn test_lane_bucket_empty_for_idle_agents() {
 
     // Spawn idle agents (home/work = MAX → safety scrub keeps them idle).
     for _ in 0..10 {
-        agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
     }
     // Override transit to IDLE so no pathfinding fires.
     for i in 0..agents.agents.len() {
         agents.transit[i] = TRANSIT_IN_BUILDING;
     }
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     assert!(
         agents.dirty_lanes.is_empty(),
@@ -142,7 +115,13 @@ fn test_lane_bucket_multi_lane_independence() {
     let a0 = place_on_lane(&mut agents, 0, lane0, 50.0, 14.0);
     let a1 = place_on_lane(&mut agents, 0, lane1, 50.0, 14.0);
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.5, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.5,
+        &test_clock(0, 0),
+    );
 
     // Both should advance by roughly the same amount — neither should be
     // slowed down by the other since they are in separate lanes.
@@ -168,7 +147,7 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
     let mut allocator = BuildingAllocator::new();
 
     // Spawn with a valid edge but invalid lane — matches the benchmark default.
-    let i = agents.spawn_border_arrival_agent(usize::MAX, 1, 0.0, 0.0, 0, 0.0, 0.0);
+    let i = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0);
     agents.transit[i] = TRANSIT_NETWORK;
     agents.current_edge[i] = edge_idx;
     agents.current_lane_id[i] = usize::MAX;
@@ -181,7 +160,13 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
     // The tick may assign the agent to a real lane (expected behaviour),
     // so we only assert the invariant that every entry in dirty_lanes is
     // a valid lane index.
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     let lane_count = network.lane_system.lanes.len();
     for &lid in &agents.dirty_lanes {
@@ -205,7 +190,13 @@ fn test_lane_bucket_dirty_lanes_no_duplicates() {
         place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0 + k as f32 * 15.0, 5.0);
     }
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     let count = agents
         .dirty_lanes
@@ -227,8 +218,20 @@ fn test_congestion_zero_at_free_flow_speed() {
     let mut allocator = BuildingAllocator::new();
 
     place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit);
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     assert_eq!(
         graph.edge(edge_idx).current_congestion,
@@ -246,10 +249,22 @@ fn test_congestion_proportional_to_speed_deficit() {
     let mut allocator = BuildingAllocator::new();
 
     place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
     // Force speed to stay at 50 % and tick again so congestion is written.
     agents.speed[0] = speed_limit * 0.5;
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     let c = graph.edge(edge_idx).current_congestion;
     assert!(
@@ -331,7 +346,13 @@ fn test_frontage_delay_cache_decays_without_agents() {
 
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
-    agents.tick(&mut allocator, &mut network, &mut graph, 1.0, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        1.0,
+        &test_clock(0, 0),
+    );
 
     let penalty = network.lane_system.lanes[fwd_lane].frontage_delay_penalty_s;
     assert!(
@@ -364,7 +385,13 @@ fn test_overlap_correction_stable_over_many_ticks() {
         .collect();
 
     for _ in 0..30 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+        agents.tick(
+            &mut allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &test_clock(0, 0),
+        );
     }
 
     let mut dists: Vec<f32> = indices.iter().map(|&i| agents.lane_distance[i]).collect();
@@ -384,27 +411,42 @@ fn test_overlap_correction_stable_over_many_ticks() {
     );
 }
 
-/// An agent that transitions to a new edge must not appear in its old lane's
-/// bucket on the following tick.
+/// Both arrival and final-agent removal clear retained occupancy and congestion.
 #[test]
 fn test_lane_bucket_cleared_after_agent_leaves_edge() {
-    let (mut network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    use crate::simulation::economy::households::HouseholdSystem;
 
-    let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 5.0);
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    for remove_last_agent in [false, true] {
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(create_test_edge(start, end));
+        graph.rebuild_adjacency_list();
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut graph);
+        let fwd_lane = fwd_vehicle_lanes(&network, edge_idx)[0];
+        let mut agents = AgentSystem::new();
+        let mut allocator = BuildingAllocator::new();
+        let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 5.0);
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+        assert!(!agents.lane_buckets[fwd_lane].is_empty());
+        assert!(graph.edge(edge_idx).current_congestion > 0.0);
 
-    // Manually move the agent off-road (simulates arrival or edge transition).
-    agents.transit[i] = TRANSIT_IN_BUILDING;
-    agents.current_lane_id[i] = usize::MAX;
-
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
-
-    assert!(
-        agents.dirty_lanes.is_empty(),
-        "after agent leaves road, no lane should be marked dirty"
-    );
+        if remove_last_agent {
+            agents.kill_agent(i, &mut allocator, &mut HouseholdSystem::new());
+        } else {
+            // Isolate the already-completed arrival, without running a new trip plan.
+            agents.transit[i] = TRANSIT_IN_BUILDING;
+            agents.current_lane_id[i] = usize::MAX;
+        }
+        for _ in 0..2 {
+            agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+            assert!(agents.dirty_lanes.is_empty());
+            assert!(agents.lane_buckets[fwd_lane].is_empty());
+            assert_eq!(agents.lane_bucket_live_agent_count, 0);
+            assert_eq!(graph.edge(edge_idx).current_congestion, 0.0);
+        }
+    }
 }
 
 /// With >500 distinct occupied lanes (above PAR_THRESHOLD), the parallel sort
@@ -466,7 +508,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let edge = graph.edge(eid);
         let (na, nb) = (edge.start_node, edge.end_node);
         for &(dist, spd) in &[(70.0f32, 5.0f32), (30.0f32, 5.0f32)] {
-            let i = agents.spawn_border_arrival_agent(usize::MAX, nb, 0.0, 0.0, na, 0.0, 0.0);
+            let i = agents.spawn_border_arrival_agent(usize::MAX, na, 0.0, 0.0);
             agents.transit[i] = TRANSIT_NETWORK;
             agents.current_edge[i] = eid;
             agents.current_lane_id[i] = fwd_lane;
@@ -477,32 +519,29 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         }
     }
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
-    // Every agent that remains on-road must have lane_distance >= the agent
-    // behind it within the same lane. Collect per-lane distances and check.
-    let lane_count = network.lane_system.lanes.len();
-    let mut per_lane: std::collections::HashMap<usize, Vec<f32>> = std::collections::HashMap::new();
+    // Build an independent sequential reference from authoritative agent state, then compare
+    // the actual retained buckets. Sorting a copy and only checking that copy is tautological.
+    let mut expected: std::collections::HashMap<usize, Vec<(f32, usize)>> =
+        std::collections::HashMap::new();
     for i in 0..agents.agents.len() {
-        if agents.transit[i] == TRANSIT_NETWORK {
-            let lid = agents.current_lane_id[i];
-            if lid != usize::MAX && lid < lane_count {
-                per_lane
-                    .entry(lid)
-                    .or_default()
-                    .push(agents.lane_distance[i]);
-            }
-        }
+        assert_eq!(agents.transit[i], TRANSIT_NETWORK);
+        expected
+            .entry(agents.current_lane_id[i])
+            .or_default()
+            .push((agents.lane_distance[i], i));
     }
-    for (lid, mut dists) in per_lane {
-        dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        for pair in dists.windows(2) {
-            assert!(
-                pair[1] >= pair[0] - 0.01,
-                "lane {lid}: distances not monotone after parallel sort: {:.3} > {:.3}",
-                pair[0],
-                pair[1]
-            );
-        }
+    assert_eq!(expected.len(), edges.len());
+    assert_eq!(agents.dirty_lanes.len(), expected.len());
+    for (lid, mut bucket) in expected {
+        bucket.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        assert_eq!(agents.lane_buckets[lid], bucket, "lane {lid}");
     }
 }

@@ -56,11 +56,11 @@ impl SimCore {
         let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
             .map_err(|err| err.to_string())?;
         let camera = loaded.camera;
-        self.apply_loaded_simulation(loaded)?;
+        self.apply_loaded_simulation(loaded);
         Ok(camera)
     }
 
-    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) -> Result<(), String> {
+    fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) {
         self.config = loaded.config;
         self.time = loaded.time;
         self.heightmap = loaded.terrain;
@@ -95,21 +95,8 @@ impl SimCore {
         self.debug_household_admissions_since_daily = 0;
         self.time.speed_multiplier = 0.0;
         self.transit_network.flow_fields.mark_all_dirty();
-        self.undo_stack.clear();
-        self.world_lake_fills.clear();
-        self.world_open_water_fills.clear();
-        self.world_lake_fill_preview = None;
-        self.authored_water_patch_fill_debug_cache.clear();
-        self.refined_terrain_patch_cache.clear();
-        self.refined_terrain_assembly_ledgers.clear();
-        self.road_locked_terrain_patch_keys.clear();
-        self.road_locked_terrain_patch_margins.clear();
-        self.building_site_owned_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_keys.clear();
-        self.engineered_terrain_patch_margins.clear();
-        self.terrain_payload_patch_generations.clear();
+        self.clear_world_transient_state();
         self.heightmap.mark_all_render_patches_dirty();
-        self.bump_global_terrain_payload_generation();
         self.refresh_all_engineered_terrain_patch_state(
             crate::nodes::sim::core::ROAD_LOCKED_TERRAIN_RENDER_STEP_M,
         );
@@ -120,7 +107,6 @@ impl SimCore {
         // surface was rebuilt. Stamp a matching mesh generation before water and
         // refined-terrain payload workers consume the refreshed snapshot.
         self.precompute_road_mesh_data();
-        Ok(())
     }
 
     fn refresh_loaded_demand_state_and_log(&mut self) {
@@ -128,18 +114,6 @@ impl SimCore {
         let persisted_commercial = self.demand.net_commercial_pressure();
         let persisted_industrial = self.demand.net_industrial_pressure();
         let persisted_households_to_admit = self.demand.households_to_admit_today;
-        if !crate::debug::category_enabled("spawn") {
-            let service_funding_by_building = self.electricity_funding_by_building();
-            self.demand.refresh_pressure_channels_with_service_funding(
-                &self.allocator,
-                &self.households,
-                &self.region_graph,
-                self.treasury.balance,
-                &service_funding_by_building,
-                &self.fiscal_policy,
-            );
-            return;
-        }
         let service_funding_by_building = self.electricity_funding_by_building();
         self.demand.refresh_pressure_channels_with_service_funding(
             &self.allocator,
@@ -149,6 +123,9 @@ impl SimCore {
             &service_funding_by_building,
             &self.fiscal_policy,
         );
+        if !crate::debug::category_enabled("spawn") {
+            return;
+        }
         let (
             vacant_household_slots,
             open_job_slots,
@@ -159,12 +136,11 @@ impl SimCore {
             marginal_commercial_job_household_pull,
             incoming_household_need,
             move_in_acceptance,
-            construction_move_in_acceptance,
             failure_factor,
         ) = self.demand.last_admission_debug_summary();
         debug_log!(
             "spawn",
-            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} move_in_jobs={} move_in_job_equiv={:.2} regional_pull={:.2} job_pull={:.2} marginal_com_pull={:.2} incoming_need={:.2} move_in={:.2} construction_move_in={:.2} failure={:.2}",
+            "load demand refresh: persisted=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) refreshed=(R {:+.0}%, C {:+.0}%, I {:+.0}%, admit={}) service_funding=electricity:{:.2} buildings={} households={} vacant_slots={} open_jobs={} move_in_jobs={} move_in_job_equiv={:.2} regional_pull={:.2} job_pull={:.2} marginal_com_pull={:.2} incoming_need={:.2} move_in={:.2} failure={:.2}",
             persisted_residential * 100.0,
             persisted_commercial * 100.0,
             persisted_industrial * 100.0,
@@ -189,7 +165,6 @@ impl SimCore {
             marginal_commercial_job_household_pull,
             incoming_household_need,
             move_in_acceptance,
-            construction_move_in_acceptance,
             failure_factor,
         );
     }

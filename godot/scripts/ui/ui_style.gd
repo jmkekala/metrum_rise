@@ -55,7 +55,10 @@ static func ui_scale() -> float:
 	return GameSettings.get_ui_scale()
 
 static func scaled_font_size(base_size: int) -> int:
-	return maxi(8, int(roundf(float(base_size) * ui_scale())))
+	return _font_size_at_scale(base_size, ui_scale())
+
+static func _font_size_at_scale(base_size: int, scale: float) -> int:
+	return maxi(8, int(roundf(float(base_size) * scale)))
 
 static func scaled_px(base_size: float) -> float:
 	return maxf(0.0, roundf(base_size * ui_scale()))
@@ -63,8 +66,8 @@ static func scaled_px(base_size: float) -> float:
 static func scaled_vector2(base_size: Vector2) -> Vector2:
 	return Vector2(scaled_px(base_size.x), scaled_px(base_size.y))
 
-static func window_layout_scale(viewport: Viewport = null) -> float:
-	var scale := maxf(1.0, ui_scale())
+static func _window_layout_scale(viewport: Viewport, current_ui_scale: float) -> float:
+	var scale := maxf(1.0, current_ui_scale)
 	if viewport != null:
 		var viewport_size := viewport.get_visible_rect().size
 		if viewport_size.x > 1.0 and viewport_size.y > 1.0:
@@ -80,7 +83,14 @@ static func scaled_window_size(
 	viewport: Viewport = null,
 	coverage: float = WINDOW_MAX_VIEWPORT_COVERAGE
 ) -> Vector2i:
-	var scale := window_layout_scale(viewport)
+	return _window_size_at_scale(base_size, viewport, _window_layout_scale(viewport, ui_scale()), coverage)
+
+static func _window_size_at_scale(
+	base_size: Vector2i,
+	viewport: Viewport,
+	scale: float,
+	coverage: float = WINDOW_MAX_VIEWPORT_COVERAGE
+) -> Vector2i:
 	var scaled := Vector2i(
 		int(roundf(float(base_size.x) * scale)),
 		int(roundf(float(base_size.y) * scale))
@@ -101,7 +111,7 @@ static func set_window_base_size(
 		return
 	window.set_meta(WINDOW_BASE_SIZE_META, base_size)
 	window.set_meta(WINDOW_BASE_MIN_SIZE_META, base_min_size)
-	_apply_window_base_size(window, viewport, false)
+	_apply_window_base_size(window, viewport, false, ui_scale())
 
 static func set_persistent_window_layout(
 	window: Window,
@@ -144,20 +154,24 @@ static func save_persistent_window_layout(window: Window) -> Error:
 	)
 
 static func refresh_scaled_font_sizes(root: Node) -> void:
+	# One settings snapshot keeps the entire refresh coherent without caching later reads.
+	_refresh_at_scale(root, ui_scale())
+
+static func _refresh_at_scale(root: Node, scale: float) -> void:
 	if root is Window:
 		var window := root as Window
 		if window.has_meta(WINDOW_BASE_SIZE_META) and window.has_meta(WINDOW_BASE_MIN_SIZE_META):
-			_apply_window_base_size(window, _parent_viewport_for_window(window), true)
+			_apply_window_base_size(window, _parent_viewport_for_window(window), true, scale)
 	if root is Control:
 		var control: Control = root
 		if control.has_meta(FONT_SIZE_META):
 			control.add_theme_font_size_override(
 				"font_size",
-				scaled_font_size(int(control.get_meta(FONT_SIZE_META)))
+				_font_size_at_scale(int(control.get_meta(FONT_SIZE_META)), scale)
 			)
 		control.queue_redraw()
 	for child in root.get_children():
-		refresh_scaled_font_sizes(child)
+		_refresh_at_scale(child, scale)
 
 static func _restore_persistent_window_layout(window: Window, viewport: Viewport) -> void:
 	var layout := GameSettings.load_window_layout(str(window.get_meta(WINDOW_LAYOUT_ID_META)))
@@ -172,7 +186,7 @@ static func _restore_persistent_window_layout(window: Window, viewport: Viewport
 			resolved_viewport
 		)
 	elif window.has_meta(WINDOW_BASE_SIZE_META) and window.has_meta(WINDOW_BASE_MIN_SIZE_META):
-		_apply_window_base_size(window, resolved_viewport, true)
+		_apply_window_base_size(window, resolved_viewport, true, ui_scale())
 	var has_position := bool(window.get_meta(WINDOW_PERSIST_POSITION_META, true)) and bool(layout.get("has_position", false))
 	window.set_meta(WINDOW_HAS_RESTORED_POSITION_META, has_position)
 	if has_position:
@@ -193,12 +207,13 @@ static func _connect_persistent_window_saves(window: Window) -> void:
 			save_persistent_window_layout(window)
 	)
 
-static func _apply_window_base_size(window: Window, viewport: Viewport, keep_larger_size: bool) -> void:
+static func _apply_window_base_size(window: Window, viewport: Viewport, keep_larger_size: bool, current_ui_scale: float) -> void:
 	var base_size: Vector2i = window.get_meta(WINDOW_BASE_SIZE_META)
 	var base_min_size: Vector2i = window.get_meta(WINDOW_BASE_MIN_SIZE_META)
 	var resolved_viewport := viewport if viewport != null else _parent_viewport_for_window(window)
-	var scaled_min := scaled_window_size(base_min_size, resolved_viewport)
-	var scaled_default := scaled_window_size(base_size, resolved_viewport)
+	var scale := _window_layout_scale(resolved_viewport, current_ui_scale)
+	var scaled_min := _window_size_at_scale(base_min_size, resolved_viewport, scale)
+	var scaled_default := _window_size_at_scale(base_size, resolved_viewport, scale)
 	window.min_size = scaled_min
 	if keep_larger_size:
 		window.size = _clamped_window_size_for_viewport(

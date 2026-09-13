@@ -7,11 +7,10 @@ use crate::config::HIGH_NOISE_ROAD_THRESHOLD_MS;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 
 /// A grid-based system that simulates noise pollution.
 ///
-/// Noise is emitted by vehicles (based on speed) and commercial/industrial buildings,
+/// Noise is emitted at road geometry points (based on speed limit) and by commercial/industrial buildings,
 /// then diffuses and decays across the environmental grid per tick.
 pub struct NoiseSystem {
     /// The underlying 2D grid storing noise levels.
@@ -42,12 +41,10 @@ impl NoiseSystem {
 
         let w = self.grid.width;
         let h = self.grid.height;
-        let _world_size_x = config.width_m;
-        let _world_size_y = config.height_m;
 
         // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {
-            let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y, w, h);
+            let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y);
             let gx = gx_raw.round() as i32;
             let gy = gy_raw.round() as i32;
 
@@ -78,7 +75,7 @@ impl NoiseSystem {
                 1.0
             };
             for p in &edge.physical_geometry {
-                let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z, w, h);
+                let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z);
                 let gx = gx_raw.round() as i32;
                 let gz = gz_raw.round() as i32;
                 if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
@@ -89,49 +86,7 @@ impl NoiseSystem {
             }
         }
 
-        // 2. Diffusion & 3. Decay (Parallelized)
-        let old_grid_ref = &self.swap;
-
-        self.grid
-            .data
-            .par_chunks_mut(w)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for x in 0..w {
-                    let current = *old_grid_ref.get(x, y).unwrap_or(&0.0);
-
-                    let mut neighbor_sum = 0.0;
-                    let mut count = 0.0;
-
-                    if x > 0 {
-                        neighbor_sum += *old_grid_ref.get(x - 1, y).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if x < w - 1 {
-                        neighbor_sum += *old_grid_ref.get(x + 1, y).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y > 0 {
-                        neighbor_sum += *old_grid_ref.get(x, y - 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y < h - 1 {
-                        neighbor_sum += *old_grid_ref.get(x, y + 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-
-                    let avg = if count > 0.0 {
-                        neighbor_sum / count
-                    } else {
-                        0.0
-                    };
-
-                    // Noise diffuses very fast, but naturally decays over distance.
-                    let propagated = (current * 0.50 + avg * 0.50) * 0.90;
-
-                    row[x] = (row[x] + propagated).min(100.0).max(0.0);
-                }
-            });
+        diffuse_emissions!(self.grid, self.swap, 0.50, 0.50, 0.90);
     }
 }
 #[cfg(test)]
@@ -237,7 +192,6 @@ mod tests {
         let allocator = BuildingAllocator::new();
 
         let mut graph_low = RegionGraph::new();
-        let mut graph_high = RegionGraph::new();
 
         let n1_l = graph_low.add_node(Vector3::ZERO, NodeType::Junction);
         let n2_l = graph_low.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
@@ -264,30 +218,8 @@ mod tests {
                 crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
 
-        let n1_h = graph_high.add_node(Vector3::ZERO, NodeType::Junction);
-        let n2_h = graph_high.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-        graph_high.add_edge(crate::simulation::network::graph::Edge {
-            start_node: n1_h,
-            end_node: n2_h,
-            speed_limit: 100.0 * KMH_TO_MPS, // High speed
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR,
-            width: 10.0,
-            class: EdgeClass::Standard,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            base_cost: 0.0,
-            physical_length: 10.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        });
+        let mut graph_high = graph_low.clone();
+        graph_high.edge_mut(0).speed_limit = 100.0 * KMH_TO_MPS;
 
         noise_low.tick(&allocator, &graph_low, &config);
         noise_high.tick(&allocator, &graph_high, &config);

@@ -10,9 +10,8 @@ use super::super::super::access::{
 };
 use super::super::super::planning::plan_network_replan;
 use super::super::super::slices::MovementSlices;
-use super::super::replan_watchdog::{
-    delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
-};
+use super::super::network::apply_network_replan;
+use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
 use super::super::{NETWORK_REPLAN_DELAY_S, transit_mode_label};
 use super::{arrive_in_building, reset_invalid_access_plan};
 use crate::config::{AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS};
@@ -206,14 +205,7 @@ pub(in crate::simulation::economy::agents::tick::movement) unsafe fn handle_acce
                     pathfind_count,
                     Some((i, "invalid-ingress-replan")),
                 ) {
-                    *s_path.get_mut(i) = replan.current_path;
-                    *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                    *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
-                    *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
-                    *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
-                    *s_access_flags.get_mut(i) = replan.access_flags;
-                    *s_next_replan_time.get_mut(i) = 0.0;
-                    reset_network_replan_watchdog(i, slices);
+                    apply_network_replan(i, replan, slices);
                 } else {
                     delay_or_recover_after_network_replan_failure(
                         i,

@@ -37,7 +37,7 @@ impl ZoneDensity {
 }
 
 /// One validated runtime zoning profile.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ZoneProfileRuntime {
     /// Runtime profile id assigned to parcels. `0` is reserved for free/unzoned parcels.
     pub runtime_id: u16,

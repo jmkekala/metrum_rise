@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 59;
+pub const SAVE_VERSION: i64 = 61;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -271,7 +271,10 @@ CREATE TABLE households(
     stay_failure_days INTEGER NOT NULL,
     unhoused_days_elapsed INTEGER NOT NULL,
     replenishment_offset_hours INTEGER NOT NULL,
-    unemployment_days_elapsed INTEGER NOT NULL
+    unemployment_days_elapsed INTEGER NOT NULL,
+    power_consumption_cost REAL NOT NULL,
+    water_consumption_cost REAL NOT NULL,
+    sewage_consumption_cost REAL NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,
@@ -338,7 +341,6 @@ CREATE TABLE city_budget_history(
     power_unmet REAL NOT NULL,
     power_coverage REAL NOT NULL,
     coal_inventory REAL NOT NULL,
-    coal_bought REAL NOT NULL,
     coal_consumed REAL NOT NULL,
     electricity_fuel_cost REAL NOT NULL,
     electricity_wage_cost REAL NOT NULL,
@@ -401,7 +403,6 @@ CREATE TABLE agents(
     activity INTEGER NOT NULL,
     transit INTEGER NOT NULL,
     transit_mode INTEGER NOT NULL,
-    pedestrian_side INTEGER NOT NULL,
     happiness REAL NOT NULL,
     money REAL NOT NULL,
     journey_start_time REAL NOT NULL,
@@ -425,14 +426,7 @@ CREATE TABLE agent_path_nodes(
     node_id INTEGER NOT NULL,
     PRIMARY KEY(agent_id, step_index)
 );
-CREATE TABLE agent_ped_steps(
-    agent_id INTEGER NOT NULL,
-    step_index INTEGER NOT NULL,
-    edge_id INTEGER NOT NULL,
-    forward INTEGER NOT NULL,
-    side INTEGER NOT NULL,
-    PRIMARY KEY(agent_id, step_index)
-);
+
 "#;
 
 pub fn transit_type_to_i64(value: TransitType) -> i64 {

@@ -3,18 +3,18 @@
 ## Building renderer — maintains one MultiMeshInstance3D per registered building asset part.
 ##
 ## Rust methods called:
-##   load_asset_packs(dir_path: String) -> String
+##   load_asset_packs(dir_path: String, enabled_pack_ids: PackedStringArray) -> String
 ##   get_registered_asset_ids() -> PackedStringArray
 ##   get_building_mesh_part_count(asset_id: String) -> int
 ##   get_building_mesh_part_lod0_native_path(asset_id: String, part_index: int) -> String
 ##   try_get_building_render_frame(asset_ids, part_indices, zone_ids, site_revision) -> Dictionary
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
-## passes each enabled pack's native path to Rust for manifest scanning. Missing config
+## passes the mods directory and selection to Rust for manifest scanning. Missing config
 ## enables the bundled starter pack; packs not listed in saved config are ignored.
 ## Rust parses the manifests; GDScript loads the corresponding mesh files and maintains
 ## one MultiMeshInstance3D per asset_id/part.
-## Building transforms are polled every 30 frames.
+## Building transforms are polled every 30 process frames, using cached asset-part requests.
 ## A parallel deserted_multimeshes dict renders economically dead buildings in gray.
 extends Node3D
 
@@ -25,16 +25,15 @@ const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 @onready var simulation_node = $"../SimulationNode"
-@onready var zoning_overlay = $"../ZoningOverlay"
 
 ## multimeshes[asset_part_key] = MultiMeshInstance3D
 var multimeshes: Dictionary = {}
 ## deserted_multimeshes[asset_part_key] = MultiMeshInstance3D — gray material override for deserted state
 var deserted_multimeshes: Dictionary = {}
-## part_assets[asset_part_key] = qualified asset id
-var part_assets: Dictionary = {}
-## part_indices[asset_part_key] = mesh part index
-var part_indices: Dictionary = {}
+## Parallel request arrays, rebuilt with asset instances and reused by periodic refreshes.
+var _render_keys: Array[String] = []
+var _render_asset_ids := PackedStringArray()
+var _render_part_indices := PackedInt32Array()
 ## foundation_multimeshes[zone_id] = MultiMeshInstance3D
 var foundation_multimeshes: Dictionary = {}
 ## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
@@ -53,22 +52,21 @@ var building_site_debug_materials: Dictionary = {}
 
 var show_foundations := false
 
-const ZONE_IDS = [1, 2, 3, 4, 5]
+var _zone_ids := PackedInt32Array([1, 2, 3, 4, 5])
 
 func reload_asset_packs() -> void:
 	_load_enabled_packs()
-	_rebuild_multimeshes()
-	building_site_revision = -1
-	_update_building_render_frame(true)
+	# The same qualified ID can now point to changed geometry or fewer mesh parts.
+	for instances in [multimeshes, deserted_multimeshes]:
+		for instance in instances.values():
+			instance.free()
+		instances.clear()
+	update_all_buildings()
 
 func _load_enabled_packs() -> void:
 	var enabled: Array = ModPackConfig.load_enabled_pack_ids()
-	if enabled.is_empty():
-		push_warning("Buildings: no asset packs enabled.")
-		return
 	var mods_native := ProjectSettings.globalize_path("user://mods/")
-	var filter := ",".join(enabled)
-	var warnings: String = simulation_node.load_asset_packs(mods_native, filter)
+	var warnings: String = simulation_node.load_asset_packs(mods_native, PackedStringArray(enabled))
 	if warnings != "":
 		for w in warnings.split("\n"):
 			if w != "":
@@ -92,7 +90,7 @@ func _ready() -> void:
 	_load_enabled_packs()
 
 	# Build foundation multimeshes for each zone type.
-	for zone_id in ZONE_IDS:
+	for zone_id in _zone_ids:
 		_setup_foundation(zone_id)
 		_setup_construction_site(zone_id)
 		_setup_construction_foundation(zone_id)
@@ -100,29 +98,31 @@ func _ready() -> void:
 	_setup_building_site_surfaces()
 
 	# Build one MultiMeshInstance3D for each registered building asset.
-	_rebuild_multimeshes()
+	_ensure_asset_multimeshes()
 	_update_building_render_frame(true)
 
 func update_all_buildings() -> void:
-	_rebuild_multimeshes()
+	_ensure_asset_multimeshes()
 	building_site_revision = -1
 	_update_building_render_frame(true)
 
-func _rebuild_multimeshes() -> void:
+func _ensure_asset_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
 	if not asset_ids.has("broken:error"):
 		asset_ids.append("broken:error")
+	asset_ids.sort()
+	_render_keys.clear()
+	_render_asset_ids.clear()
+	_render_part_indices.clear()
 	for aid in asset_ids:
-		if aid == "broken:error":
-			var broken_key := _part_key(aid, 0)
-			if not multimeshes.has(broken_key):
-				_setup_multimesh_for_asset_part(aid, 0)
-			continue
-		var part_count: int = simulation_node.get_building_mesh_part_count(aid)
+		var part_count: int = 1 if aid == "broken:error" else simulation_node.get_building_mesh_part_count(aid)
 		for part_index in part_count:
 			var key := _part_key(aid, part_index)
 			if not multimeshes.has(key):
 				_setup_multimesh_for_asset_part(aid, part_index)
+			_render_keys.append(key)
+			_render_asset_ids.append(aid)
+			_render_part_indices.append(part_index)
 
 func _part_key(asset_id: String, part_index: int) -> String:
 	return "%s%s%d" % [asset_id, PART_KEY_SEP, part_index]
@@ -162,8 +162,6 @@ func _setup_multimesh_for_asset_part(asset_id: String, part_index: int) -> void:
 	)
 	add_child(mmi)
 	multimeshes[key] = mmi
-	part_assets[key] = asset_id
-	part_indices[key] = part_index
 	# Deserted variant: same mesh geometry, warm gray material override.
 	if not is_broken:
 		_setup_deserted_multimesh_for_asset_part(asset_id, part_index, mesh)
@@ -402,14 +400,13 @@ func _setup_building_site_surfaces() -> void:
 	add_child(building_site_surface_instance)
 
 func _process(_delta: float) -> void:
-	var rebuild_due := Engine.get_frames_drawn() % 30 == 0
+	var rebuild_due := Engine.get_process_frames() % 30 == 0
 	if not PerfDebug.is_enabled():
 		if rebuild_due:
 			_update_building_render_frame()
 		return
 
 	var frame_start_us := Time.get_ticks_usec()
-	var rebuild_elapsed_ms := 0.0
 	var update_elapsed_ms := 0.0
 	if rebuild_due:
 		var update_start_us := Time.get_ticks_usec()
@@ -419,7 +416,6 @@ func _process(_delta: float) -> void:
 		"buildings",
 		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
 		{
-			"rebuild": rebuild_elapsed_ms,
 			"update": update_elapsed_ms,
 		}
 	)
@@ -432,20 +428,11 @@ func _input(event: InputEvent) -> void:
 				mmi.visible = show_foundations
 
 func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
-	var keys: Array = multimeshes.keys()
-	keys.sort()
-	var asset_ids := PackedStringArray()
-	var requested_part_indices := PackedInt32Array()
-	for key_variant in keys:
-		var key := str(key_variant)
-		asset_ids.append(str(part_assets.get(key, "")))
-		requested_part_indices.append(int(part_indices.get(key, 0)))
-	var zone_ids := PackedInt32Array(ZONE_IDS)
 	var known_site_revision := -1 if force_site_mesh else building_site_revision
 	var frame: Dictionary = simulation_node.try_get_building_render_frame(
-		asset_ids,
-		requested_part_indices,
-		zone_ids,
+		_render_asset_ids,
+		_render_part_indices,
+		_zone_ids,
 		known_site_revision
 	)
 	if bool(frame.get("busy", true)):
@@ -453,8 +440,8 @@ func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 
 	var building_buffers: Array = frame.get("building_transforms", []) as Array
 	var deserted_buffers: Array = frame.get("deserted_transforms", []) as Array
-	for index in keys.size():
-		var key := str(keys[index])
+	for index in _render_keys.size():
+		var key := _render_keys[index]
 		if index < building_buffers.size() and multimeshes.has(key):
 			_set_multimesh_buffer(
 				multimeshes[key] as MultiMeshInstance3D,
@@ -470,8 +457,8 @@ func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array
 	var foundation_buffers: Array = frame.get("construction_foundation_transforms", []) as Array
 	var scaffold_buffers: Array = frame.get("construction_scaffold_transforms", []) as Array
-	for index in ZONE_IDS.size():
-		var zone_id: int = ZONE_IDS[index]
+	for index in _zone_ids.size():
+		var zone_id: int = _zone_ids[index]
 		if index < plot_buffers.size() and foundation_multimeshes.has(zone_id):
 			_set_multimesh_buffer(
 				foundation_multimeshes[zone_id] as MultiMeshInstance3D,

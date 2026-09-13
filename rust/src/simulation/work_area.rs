@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Shared scaling rules for explicit player-drawn production areas.
+//! Shared scaling and owner-remapping rules for explicit player-drawn production areas.
 
 use crate::simulation::buildings::allocator::Building;
 use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
-use crate::simulation::economy::definitions::RuntimeEconomyCatalog;
+use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, load_runtime_economy_tuning};
 use crate::simulation::zoning::ZoneType;
 
 /// Production-area size that receives exactly the authored output rates.
@@ -15,6 +15,36 @@ pub(crate) const EXPLICIT_WORK_AREA_STARTUP_RUNWAY_DAYS: f32 = 7.0;
 pub(crate) const EXPLICIT_WORK_AREA_STARTUP_MIN_BUDGET: f32 = 500.0;
 /// Minimum physical workforce for a committed field with an enabled staffing profile.
 pub(crate) const MIN_FIELD_WORKERS: u32 = 2;
+
+/// Removes and remaps production sites after their owning building store swap-removes an entry.
+///
+/// Sites must have unique, ascending building indices. Unrelated removals cost O(log S);
+/// affected sites retain that ordering with O(S) vector shifts and no allocation.
+pub(crate) fn remove_work_area_owner<T>(
+    sites: &mut Vec<T>,
+    removed: usize,
+    last_before_remove: usize,
+    owner: impl Fn(&T) -> usize,
+    set_owner: impl Fn(&mut T, usize),
+) -> bool {
+    let mut changed = false;
+    if let Ok(idx) = sites.binary_search_by_key(&removed, &owner) {
+        sites.remove(idx);
+        changed = true;
+    }
+    if removed != last_before_remove
+        && sites
+            .last()
+            .is_some_and(|site| owner(site) == last_before_remove)
+        && let Some(mut site) = sites.pop()
+    {
+        set_owner(&mut site, removed);
+        let idx = sites.partition_point(|site| owner(site) < removed);
+        sites.insert(idx, site);
+        changed = true;
+    }
+    changed
+}
 
 /// Returns the linear scale for one explicit production area.
 pub(crate) fn explicit_work_area_scale(area_m2: f32) -> f32 {
@@ -127,6 +157,12 @@ pub(crate) fn top_up_explicit_work_area_startup_budget(
         profile.average_daily_wage(),
         area_scale,
         minimum_work_area_workers(profile.kind),
+    ) + profile.initial_input_import_cost(
+        catalog,
+        area_scale,
+        load_runtime_economy_tuning()
+            .expect("runtime tuning loaded")
+            .owa_import_price_multiplier,
     );
     if building.operating_budget >= target {
         return;

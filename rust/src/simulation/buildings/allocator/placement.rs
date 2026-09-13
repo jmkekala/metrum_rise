@@ -230,13 +230,13 @@ impl BuildingAllocator {
                     continue;
                 }
                 let selection_key = (
-                    stable_strip_family_hash(
+                    stable_parcel_selection_hash(
                         profile_runtime_id,
                         parcel.id().raw(),
                         &candidate.family_key,
                     ),
                     candidate.family_key.as_str(),
-                    stable_site_variant_hash(
+                    stable_parcel_selection_hash(
                         profile_runtime_id,
                         parcel.id().raw(),
                         &candidate.qualified_id,
@@ -852,9 +852,11 @@ impl BuildingAllocator {
             return Err(ExplicitServicePlacementRejection::FieldOverlap);
         }
         let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
-        for building_idx in
-            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z)
-        {
+        for building_idx in self.lot_candidate_indices_for_bounds(
+            (min_x, min_z, max_x, max_z),
+            placement.zone_cell_m,
+            placement.replaced_building,
+        ) {
             let Some((site_min_x, site_min_z, site_max_x, site_max_z)) =
                 self.site_world_bounds(building_idx)
             else {
@@ -937,15 +939,24 @@ impl BuildingAllocator {
         Ok(())
     }
 
-    pub(crate) fn parcel_geometry_overlaps_explicit_site(&self, geometry: &ParcelGeometry) -> bool {
+    /// Checks reserved explicit-building lots, including land outside their flat support surfaces.
+    pub(crate) fn parcel_geometry_overlaps_explicit_site(
+        &self,
+        geometry: &ParcelGeometry,
+        zone_cell_m: f32,
+    ) -> bool {
         if self.building_sites.is_empty() {
             return false;
         }
-        let candidate_indices = self.site_candidate_indices_for_bounds(
-            geometry.aabb_min.x,
-            geometry.aabb_min.y,
-            geometry.aabb_max.x,
-            geometry.aabb_max.y,
+        let candidate_indices = self.lot_candidate_indices_for_bounds(
+            (
+                geometry.aabb_min.x,
+                geometry.aabb_min.y,
+                geometry.aabb_max.x,
+                geometry.aabb_max.y,
+            ),
+            zone_cell_m,
+            None,
         );
         for building_idx in candidate_indices {
             let Some(building) = self.buildings.get(building_idx) else {
@@ -987,8 +998,11 @@ impl BuildingAllocator {
             return false;
         }
         let (min_x, min_z, max_x, max_z) = self.placement_site_bounds(placement);
-        let candidate_indices =
-            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z);
+        let candidate_indices = self.lot_candidate_indices_for_bounds(
+            (min_x, min_z, max_x, max_z),
+            placement.zone_cell_m,
+            placement.replaced_building,
+        );
         if candidate_indices.is_empty() {
             return false;
         }
@@ -1364,8 +1378,11 @@ impl BuildingAllocator {
         }
         let footprint_world = self.placement_required_flat_support_footprint(placement);
         let (min_x, min_z, max_x, max_z) = polygon_bounds(&footprint_world);
-        let candidate_indices =
-            self.neighbor_site_candidate_indices(placement, min_x, min_z, max_x, max_z);
+        let candidate_indices = self.lot_candidate_indices_for_bounds(
+            (min_x, min_z, max_x, max_z),
+            placement.zone_cell_m,
+            placement.replaced_building,
+        );
         for building_idx in candidate_indices {
             let Some(site) = self.building_sites.get(building_idx) else {
                 continue;
@@ -1402,25 +1419,23 @@ impl BuildingAllocator {
         Ok(support_height_m)
     }
 
-    fn neighbor_site_candidate_indices(
+    fn lot_candidate_indices_for_bounds(
         &self,
-        placement: &ResolvedPlacement,
-        min_x: f32,
-        min_z: f32,
-        max_x: f32,
-        max_z: f32,
+        bounds: (f32, f32, f32, f32),
+        zone_cell_m: f32,
+        excluded_building: Option<usize>,
     ) -> Vec<usize> {
         if self.dirty_index
             || self.building_sites.len() != self.buildings.len()
             || self.building_chunks.is_empty()
         {
             return (0..self.building_sites.len())
-                .filter(|i| Some(*i) != placement.replaced_building)
+                .filter(|i| Some(*i) != excluded_building)
                 .collect();
         }
 
-        let margin_m = self.max_lot_radius_cells * placement.zone_cell_m
-            + BUILDING_SITE_NEIGHBOR_EPS_M.max(0.0);
+        let (min_x, min_z, max_x, max_z) = bounds;
+        let margin_m = self.max_lot_radius_cells * zone_cell_m + BUILDING_SITE_NEIGHBOR_EPS_M;
         let chunk_size = RegionGraph::CHUNK_SIZE;
         let min_chunk_x = ((min_x - margin_m) / chunk_size).floor() as i32;
         let max_chunk_x = ((max_x + margin_m) / chunk_size).floor() as i32;
@@ -1438,9 +1453,7 @@ impl BuildingAllocator {
         }
         candidates.sort_unstable();
         candidates.dedup();
-        candidates.retain(|&idx| {
-            idx < self.building_sites.len() && Some(idx) != placement.replaced_building
-        });
+        candidates.retain(|&idx| idx < self.building_sites.len() && Some(idx) != excluded_building);
         candidates
     }
 
@@ -1577,26 +1590,8 @@ impl BuildingAllocator {
                     // Add expected cost of the first full OWA input import so the building can
                     // absorb it without going into distress on its opening day.
                     let owa_import_multiplier = tuning.owa_import_price_multiplier;
-                    let first_import_base_cost = profile
-                        .inputs
-                        .iter()
-                        .map(|port| {
-                            let unit_price = catalog
-                                .unit_price_for_resource(port.resource_runtime_id)
-                                .unwrap_or_else(|| {
-                                    let resource_id = catalog
-                                        .resource_id_for_runtime_id(port.resource_runtime_id)
-                                        .unwrap_or("<unknown>");
-                                    panic!(
-                                        "resource '{resource_id}' used by profile '{}' has no catalog price",
-                                        profile.id
-                                    )
-                                });
-                            profile.inventory_target_units_for(port)
-                                * unit_price
-                                * owa_import_multiplier
-                        })
-                        .sum::<f32>();
+                    let first_import_base_cost =
+                        profile.initial_input_import_cost(catalog, 1.0, owa_import_multiplier);
                     (wage_runway + first_import_base_cost).max(STARTUP_MIN_BUDGET)
                 }
             }
@@ -1840,23 +1835,16 @@ fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -
     (edge.width * 0.5 + sidewalk_m).max(0.0)
 }
 
-fn stable_strip_family_hash(profile_runtime_id: u16, parcel_id: u64, family_key: &str) -> u64 {
-    let mut hasher = StableHasher::new();
-    hasher.write_u16(profile_runtime_id);
-    hasher.write_u64(parcel_id);
-    hasher.write_str(family_key);
-    hasher.finish()
-}
-
-fn stable_site_variant_hash(
+/// Hashes a parcel's profile, stable ID and family/variant key with fixed field delimiters.
+pub(super) fn stable_parcel_selection_hash(
     profile_runtime_id: u16,
     parcel_id: u64,
-    qualified_asset_id: &str,
+    key: &str,
 ) -> u64 {
     let mut hasher = StableHasher::new();
     hasher.write_u16(profile_runtime_id);
     hasher.write_u64(parcel_id);
-    hasher.write_str(qualified_asset_id);
+    hasher.write_str(key);
     hasher.finish()
 }
 
@@ -2021,6 +2009,25 @@ fn spawn_side_order(side: i8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parcel_selection_hash_preserves_field_encoding() {
+        let cases = [
+            (0, 0, "", 0xcf1a035b04a52f3c),
+            (1, 1, "family_a", 0xba7ca32da6a0c2ea),
+            (
+                0x1234,
+                0x0102030405060708,
+                "base:b.res.house",
+                0x838c2a9661567ce3,
+            ),
+            (u16::MAX, u64::MAX, "factory.machinery", 0xf76ae02402365cc0),
+            (7, 42, "métal\0", 0x69c38c8aff64da57),
+        ];
+        for (profile, parcel, key, expected) in cases {
+            assert_eq!(stable_parcel_selection_hash(profile, parcel, key), expected);
+        }
+    }
 
     fn square_footprint(min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> Vec<Vector2> {
         vec![

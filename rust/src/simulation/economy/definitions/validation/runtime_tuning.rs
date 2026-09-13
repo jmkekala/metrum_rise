@@ -2,7 +2,8 @@
 
 //! Runtime economy tuning validation.
 
-use super::common::duplicate_ids;
+use super::common::{duplicate_ids, validate_range};
+use crate::simulation::core::time::validate_day_duration;
 use crate::simulation::economy::definitions::runtime::{
     MinuteWindow, OperationalClockRuntimeTuning, RuntimeEconomyTuning,
 };
@@ -10,12 +11,11 @@ use crate::simulation::economy::definitions::runtime::{
 pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     tuning: &RuntimeEconomyTuning,
 ) -> Result<(), String> {
-    validate_range(
-        tuning.operational_clock.seconds_per_day as f32,
-        60.0,
-        f32::INFINITY,
-        "runtime_tuning.operational_clock.seconds_per_day",
-    )?;
+    if !tuning.startup_treasury_balance.is_finite() {
+        return Err("runtime_tuning.startup_treasury_balance must be finite".to_owned());
+    }
+    validate_day_duration(tuning.operational_clock.seconds_per_day)
+        .map_err(|err| format!("runtime_tuning.operational_clock.seconds_per_day: {err}"))?;
     if tuning.operational_clock.travel_estimate_refresh_minutes == 0 {
         return Err(
             "runtime_tuning.operational_clock.travel_estimate_refresh_minutes must be > 0"
@@ -85,20 +85,26 @@ pub(in crate::simulation::economy::definitions) fn validate_runtime_tuning(
     if tuning.logistics.terminal_failure_attempts == 0 {
         return Err("runtime_tuning.logistics.terminal_failure_attempts must be > 0".to_owned());
     }
-    if tuning.logistics.owa_export_saturation_loads_to_floor <= 0.0 {
-        return Err(
-            "runtime_tuning.logistics.owa_export_saturation_loads_to_floor must be > 0".to_owned(),
-        );
+    for (value, field) in [
+        (
+            tuning.logistics.owa_export_saturation_loads_to_floor,
+            "owa_export_saturation_loads_to_floor",
+        ),
+        (
+            tuning.logistics.owa_export_saturation_recovery_hours,
+            "owa_export_saturation_recovery_hours",
+        ),
+    ] {
+        let label = format!("runtime_tuning.logistics.{field}");
+        validate_range(value, 0.0, f32::MAX, &label)?;
+        if value == 0.0 {
+            return Err(format!("{label} must be > 0"));
+        }
     }
     if !(0.0..=1.0).contains(&tuning.logistics.owa_export_saturation_floor_factor) {
         return Err(
             "runtime_tuning.logistics.owa_export_saturation_floor_factor must be between 0 and 1"
                 .to_owned(),
-        );
-    }
-    if tuning.logistics.owa_export_saturation_recovery_hours <= 0.0 {
-        return Err(
-            "runtime_tuning.logistics.owa_export_saturation_recovery_hours must be > 0".to_owned(),
         );
     }
     validate_nonempty_u16_level_array(
@@ -500,15 +506,4 @@ fn validate_nonempty_u16_level_array(values: &[u16], label: &str) -> Result<(), 
         }
     }
     Ok(())
-}
-
-fn validate_range(value: f32, min_value: f32, max_value: f32, label: &str) -> Result<(), String> {
-    if !value.is_finite() || value < min_value || value > max_value {
-        Err(format!(
-            "{label} must be finite and in [{}..={}]",
-            min_value, max_value
-        ))
-    } else {
-        Ok(())
-    }
 }

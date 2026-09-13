@@ -56,7 +56,7 @@ impl SimulationNode {
         let mut dict = Self::water_patch_metadata_dict(&payload.patch);
         dict.set(
             "depth_bytes",
-            PackedByteArray::from_iter(payload.depth_bytes.iter().copied()),
+            PackedByteArray::from(payload.depth_bytes.as_slice()),
         );
         dict.set(
             "source_generation",
@@ -158,8 +158,9 @@ impl SimulationNode {
         dict
     }
 
-    pub(in crate::nodes::simulation_node) fn water_patch_layer_debug_dict(
-        stats: &crate::simulation::water::WaterPatchLayerStats,
+    /// Exports the single authored depth layer for comparison with cached render payloads.
+    pub(in crate::nodes::simulation_node) fn water_patch_debug_dict(
+        stats: &crate::simulation::water::WaterPatchDepthStats,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set(
@@ -172,12 +173,6 @@ impl SimulationNode {
         );
         dict.set("baseline_max", f64::from(stats.baseline_max));
         dict.set("baseline_sum", f64::from(stats.baseline_sum));
-        dict.set(
-            "visible_nonzero",
-            i64::try_from(stats.visible_nonzero).unwrap_or(0),
-        );
-        dict.set("visible_max", f64::from(stats.visible_max));
-        dict.set("visible_sum", f64::from(stats.visible_sum));
         dict
     }
 

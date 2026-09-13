@@ -9,18 +9,18 @@ use super::metrics::{
     household_has_independent_member, household_is_housed, household_reserve_days,
     level_tuning_value,
 };
-use super::replenishment::clear_replenishment_request;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, baseline_private_zone_slot,
+};
+use crate::simulation::economy::accessibility::{
+    chunk_for_point, min_possible_ring_distance_sq, scan_ring_chunks,
 };
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
-use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::zoning::ZoneType;
-use godot::prelude::Vector3;
 
 const NO_MEMBER: usize = usize::MAX;
 
@@ -83,7 +83,7 @@ impl VacancyPlanner {
                 building_idx,
                 level: building.level,
                 remaining_slots,
-                chunk: building_chunk(building),
+                chunk: chunk_for_point(building.center_x, building.center_y),
             });
         }
         candidates.sort_unstable_by(|left, right| {
@@ -126,8 +126,7 @@ impl VacancyPlanner {
                 .map(|building| (building.center_x, building.center_y))
         });
 
-        let levels = self.levels_desc.clone();
-        for level in levels {
+        for &level in &self.levels_desc {
             if minimum_level_exclusive.is_some_and(|minimum_level| level <= minimum_level) {
                 break;
             }
@@ -228,42 +227,36 @@ impl VacancyPlanner {
         current_home: Option<usize>,
     ) -> Option<usize> {
         let by_chunk = self.by_level_chunk.get(&level)?;
-        let origin_chunk = RegionGraph::get_chunk_coords(Vector3::new(origin_x, 0.0, origin_y));
+        let origin_chunk = chunk_for_point(origin_x, origin_y);
         let max_ring =
             max_chunk_ring_for_level(self.level_chunk_bounds.get(&level).copied()?, origin_chunk);
         let mut best: Option<(usize, f32, usize)> = None;
         for ring in 0..=max_ring {
-            for dx in -ring..=ring {
-                for dz in -ring..=ring {
-                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
+            scan_ring_chunks(origin_chunk, ring, |chunk_key| {
+                let Some(candidate_positions) = by_chunk.get(&chunk_key) else {
+                    return;
+                };
+                for &candidate_pos in candidate_positions {
+                    if !self.candidate_is_available(candidate_pos, allocator, current_home) {
                         continue;
                     }
-                    let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
-                    let Some(candidate_positions) = by_chunk.get(&chunk_key) else {
-                        continue;
-                    };
-                    for &candidate_pos in candidate_positions {
-                        if !self.candidate_is_available(candidate_pos, allocator, current_home) {
-                            continue;
-                        }
-                        let building_idx = self.candidates[candidate_pos].building_idx;
-                        let building = &allocator.buildings[building_idx];
-                        let distance = squared_distance_to_building(origin_x, origin_y, building);
-                        let challenger = (candidate_pos, distance, building_idx);
-                        if best.is_none_or(|current| {
-                            challenger.1.total_cmp(&current.1).is_lt()
-                                || (challenger.1.total_cmp(&current.1).is_eq()
-                                    && challenger.2 < current.2)
-                        }) {
-                            best = Some(challenger);
-                        }
+                    let building_idx = self.candidates[candidate_pos].building_idx;
+                    let building = &allocator.buildings[building_idx];
+                    let distance = squared_distance_to_building(origin_x, origin_y, building);
+                    let challenger = (candidate_pos, distance, building_idx);
+                    if best.is_none_or(|current| {
+                        challenger.1.total_cmp(&current.1).is_lt()
+                            || (challenger.1.total_cmp(&current.1).is_eq()
+                                && challenger.2 < current.2)
+                    }) {
+                        best = Some(challenger);
                     }
                 }
-            }
+            });
             if let Some((_, best_distance, _)) = best {
                 if ring == max_ring
                     || best_distance
-                        <= min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1)
+                        < min_possible_ring_distance_sq(origin_x, origin_y, origin_chunk, ring + 1)
                 {
                     break;
                 }
@@ -312,7 +305,7 @@ fn vacancy_candidate_for_building(
         building_idx,
         level: building.level,
         remaining_slots,
-        chunk: building_chunk(building),
+        chunk: chunk_for_point(building.center_x, building.center_y),
     })
 }
 
@@ -364,55 +357,10 @@ fn max_chunk_ring_for_level(bounds: ((i32, i32), (i32, i32)), origin_chunk: (i32
     .unwrap_or(0)
 }
 
-fn min_possible_ring_distance_sq(
-    origin_x: f32,
-    origin_y: f32,
-    origin_chunk: (i32, i32),
-    ring: i32,
-) -> f32 {
-    let mut best = f32::INFINITY;
-    for dx in -ring..=ring {
-        for dz in -ring..=ring {
-            if ring > 0 && dx.abs() != ring && dz.abs() != ring {
-                continue;
-            }
-            let chunk = (origin_chunk.0 + dx, origin_chunk.1 + dz);
-            best = best.min(squared_distance_to_chunk(origin_x, origin_y, chunk));
-        }
-    }
-    best
-}
-
-fn squared_distance_to_chunk(origin_x: f32, origin_y: f32, chunk: (i32, i32)) -> f32 {
-    let min_x = chunk.0 as f32 * RegionGraph::CHUNK_SIZE;
-    let max_x = min_x + RegionGraph::CHUNK_SIZE;
-    let min_y = chunk.1 as f32 * RegionGraph::CHUNK_SIZE;
-    let max_y = min_y + RegionGraph::CHUNK_SIZE;
-    let dx = if origin_x < min_x {
-        min_x - origin_x
-    } else if origin_x > max_x {
-        origin_x - max_x
-    } else {
-        0.0
-    };
-    let dy = if origin_y < min_y {
-        min_y - origin_y
-    } else if origin_y > max_y {
-        origin_y - max_y
-    } else {
-        0.0
-    };
-    dx * dx + dy * dy
-}
-
 fn squared_distance_to_building(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
     let dx = building.center_x - origin_x;
     let dy = building.center_y - origin_y;
     dx * dx + dy * dy
-}
-
-fn building_chunk(building: &Building) -> (i32, i32) {
-    RegionGraph::get_chunk_coords(Vector3::new(building.center_x, 0.0, building.center_y))
 }
 
 impl HouseholdSystem {
@@ -663,11 +611,11 @@ impl HouseholdSystem {
             vacancy_planner.release_home(allocator, old_home);
         }
 
+        self.cancel_household_replenishment(household_id, agents, allocator);
         let household = &mut self.households[household_id];
         household.home_building_id = usize::MAX;
         household.stay_failure_days = 0;
         household.unhoused_days_elapsed = 0;
-        clear_replenishment_request(household);
 
         let mut agent_idx = household_member_heads
             .get(household_id)
@@ -702,4 +650,35 @@ fn build_household_member_index(
         household_member_heads[household_id] = agent_idx;
     }
     (household_member_heads, household_member_next)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "manual matched release timing for housing chunk bounds"]
+    fn benchmark_housing_chunk_bounds() {
+        use std::{hint::black_box, time::Instant};
+        for ring in [8, 32, 80, 128] {
+            let mut samples = Vec::new();
+            for _ in 0..11 {
+                let start = Instant::now();
+                for _ in 0..1_000 {
+                    black_box(min_possible_ring_distance_sq(
+                        black_box(150.0),
+                        black_box(-50.0),
+                        black_box((0, -1)),
+                        black_box(ring),
+                    ));
+                }
+                samples.push(start.elapsed().as_secs_f64() * 1e6 / 1_000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "housing_chunk_bounds ring={ring} median_us={:.3}",
+                samples[5]
+            );
+        }
+    }
 }

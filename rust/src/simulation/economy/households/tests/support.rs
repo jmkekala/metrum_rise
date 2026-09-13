@@ -162,22 +162,48 @@ pub(super) fn work_graph_to(end_x: f32) -> (RegionGraph, TransitNetwork) {
     (graph, network)
 }
 
-pub(super) fn register_test_asset(
+fn test_building_data(zone: Option<ZoneClass>) -> BuildingData {
+    let (household_capacity, worker_capacity) = match zone {
+        Some(ZoneClass::Residential) => (Some(6), None),
+        Some(ZoneClass::Mixed) => (Some(4), Some(2)),
+        _ => (None, Some(4)),
+    };
+    BuildingData {
+        flat_size_m2: household_capacity.map(|_| 80.0),
+        placement_mode: if zone.is_some() {
+            PlacementMode::ZonedPrivate
+        } else {
+            PlacementMode::Explicit
+        },
+        zone_type: zone,
+        density: zone.map(|_| "low".to_owned()),
+        lot_width_cells: 2,
+        lot_depth_cells: 2,
+        frontage_forward: None,
+        min_zone_width_cells: None,
+        min_zone_depth_cells: None,
+        level: 1,
+        household_capacity,
+        worker_capacity,
+        service_class: None,
+        economy_profile: None,
+        extractor: None,
+        field: None,
+    }
+}
+
+fn register_building_fixture(
     allocator: &mut BuildingAllocator,
     pack_id: &str,
     asset_id: &str,
-    zone: ZoneClass,
+    display_name: &str,
+    building: BuildingData,
 ) -> String {
-    let (household_capacity, worker_capacity) = match zone {
-        ZoneClass::Residential => (Some(6), None),
-        ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
-        ZoneClass::Mixed => (Some(4), Some(2)),
-    };
     allocator.registry.register(
         pack_id,
         AssetManifest {
             asset_id: asset_id.to_owned(),
-            display_name: "Test".to_owned(),
+            display_name: display_name.to_owned(),
             asset_set: None,
             tags: vec![],
             thumbnail: None,
@@ -193,32 +219,7 @@ pub(super) fn register_test_asset(
                 vehicle_class: None,
             }],
             site_surfaces: vec![],
-            building: Some(BuildingData {
-                flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
-                    Some(80.0)
-                } else {
-                    None
-                },
-                placement_mode: PlacementMode::ZonedPrivate,
-                zone_type: Some(zone),
-                density: Some("low".to_owned()),
-                lot_width_cells: 2,
-                lot_depth_cells: 2,
-                frontage_forward: None,
-                min_zone_width_cells: None,
-                min_zone_depth_cells: None,
-                level: 1,
-                household_capacity,
-                worker_capacity,
-                service_class: None,
-                economy_profile: match zone {
-                    ZoneClass::Commercial => Some("grocery_basic".to_owned()),
-                    ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
-                    _ => None,
-                },
-                extractor: None,
-                field: None,
-            }),
+            building: Some(building),
             prop: None,
             vehicle: None,
             character: None,
@@ -226,6 +227,21 @@ pub(super) fn register_test_asset(
         String::new(),
     );
     format!("{pack_id}:{asset_id}")
+}
+
+pub(super) fn register_test_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+) -> String {
+    let mut building = test_building_data(Some(zone));
+    building.economy_profile = match zone {
+        ZoneClass::Commercial => Some("grocery_basic".to_owned()),
+        ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
+        _ => None,
+    };
+    register_building_fixture(allocator, pack_id, asset_id, "Test", building)
 }
 
 pub(super) fn register_test_commercial_asset_with_profile(
@@ -234,51 +250,9 @@ pub(super) fn register_test_commercial_asset_with_profile(
     asset_id: &str,
     profile_id: &str,
 ) -> String {
-    allocator.registry.register(
-        pack_id,
-        AssetManifest {
-            asset_id: asset_id.to_owned(),
-            display_name: "Test Commercial".to_owned(),
-            asset_set: None,
-            tags: vec![],
-            thumbnail: None,
-            lods: vec![],
-            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
-            anchors: vec![Anchor {
-                anchor_type: AnchorType::Entrance,
-                name: "main".to_owned(),
-                position: [0.0, 0.0, 0.5],
-                forward: [0.0, 0.0, 1.0],
-                width_m: None,
-                length_m: None,
-                vehicle_class: None,
-            }],
-            site_surfaces: vec![],
-            building: Some(BuildingData {
-                flat_size_m2: None,
-                placement_mode: PlacementMode::ZonedPrivate,
-                zone_type: Some(ZoneClass::Commercial),
-                density: Some("low".to_owned()),
-                lot_width_cells: 2,
-                lot_depth_cells: 2,
-                frontage_forward: None,
-                min_zone_width_cells: None,
-                min_zone_depth_cells: None,
-                level: 1,
-                household_capacity: None,
-                worker_capacity: Some(4),
-                service_class: None,
-                economy_profile: Some(profile_id.to_owned()),
-                extractor: None,
-                field: None,
-            }),
-            prop: None,
-            vehicle: None,
-            character: None,
-        },
-        String::new(),
-    );
-    format!("{pack_id}:{asset_id}")
+    let mut building = test_building_data(Some(ZoneClass::Commercial));
+    building.economy_profile = Some(profile_id.to_owned());
+    register_building_fixture(allocator, pack_id, asset_id, "Test Commercial", building)
 }
 
 pub(super) fn register_test_residential_asset_with_capacity(
@@ -287,51 +261,9 @@ pub(super) fn register_test_residential_asset_with_capacity(
     asset_id: &str,
     household_capacity: u32,
 ) -> String {
-    allocator.registry.register(
-        pack_id,
-        AssetManifest {
-            asset_id: asset_id.to_owned(),
-            display_name: "Test Small Home".to_owned(),
-            asset_set: None,
-            tags: vec![],
-            thumbnail: None,
-            lods: vec![],
-            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
-            anchors: vec![Anchor {
-                anchor_type: AnchorType::Entrance,
-                name: "main".to_owned(),
-                position: [0.0, 0.0, 0.5],
-                forward: [0.0, 0.0, 1.0],
-                width_m: None,
-                length_m: None,
-                vehicle_class: None,
-            }],
-            site_surfaces: vec![],
-            building: Some(BuildingData {
-                flat_size_m2: Some(80.0),
-                placement_mode: PlacementMode::ZonedPrivate,
-                zone_type: Some(ZoneClass::Residential),
-                density: Some("low".to_owned()),
-                lot_width_cells: 2,
-                lot_depth_cells: 2,
-                frontage_forward: None,
-                min_zone_width_cells: None,
-                min_zone_depth_cells: None,
-                level: 1,
-                household_capacity: Some(household_capacity),
-                worker_capacity: None,
-                service_class: None,
-                economy_profile: None,
-                extractor: None,
-                field: None,
-            }),
-            prop: None,
-            vehicle: None,
-            character: None,
-        },
-        String::new(),
-    );
-    format!("{pack_id}:{asset_id}")
+    let mut building = test_building_data(Some(ZoneClass::Residential));
+    building.household_capacity = Some(household_capacity);
+    register_building_fixture(allocator, pack_id, asset_id, "Test Small Home", building)
 }
 
 pub(super) fn register_test_utility_asset(
@@ -340,57 +272,15 @@ pub(super) fn register_test_utility_asset(
     asset_id: &str,
     profile_id: &str,
 ) -> String {
-    let service_class = match profile_id {
+    let mut building = test_building_data(None);
+    building.economy_profile = Some(profile_id.to_owned());
+    building.service_class = match profile_id {
         "power_plant_basic" => Some("power".to_owned()),
         "water_plant_basic" => Some("water".to_owned()),
         "wastewater_treatment_basic" => Some("waste".to_owned()),
         _ => None,
     };
-    allocator.registry.register(
-        pack_id,
-        AssetManifest {
-            asset_id: asset_id.to_owned(),
-            display_name: "Test Utility".to_owned(),
-            asset_set: None,
-            tags: vec![],
-            thumbnail: None,
-            lods: vec![],
-            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
-            anchors: vec![Anchor {
-                anchor_type: AnchorType::Entrance,
-                name: "main".to_owned(),
-                position: [0.0, 0.0, 0.5],
-                forward: [0.0, 0.0, 1.0],
-                width_m: None,
-                length_m: None,
-                vehicle_class: None,
-            }],
-            site_surfaces: vec![],
-            building: Some(BuildingData {
-                flat_size_m2: None,
-                placement_mode: PlacementMode::Explicit,
-                zone_type: None,
-                density: None,
-                lot_width_cells: 2,
-                lot_depth_cells: 2,
-                frontage_forward: None,
-                min_zone_width_cells: None,
-                min_zone_depth_cells: None,
-                level: 1,
-                household_capacity: None,
-                worker_capacity: Some(4),
-                service_class,
-                economy_profile: Some(profile_id.to_owned()),
-                extractor: None,
-                field: None,
-            }),
-            prop: None,
-            vehicle: None,
-            character: None,
-        },
-        String::new(),
-    );
-    format!("{pack_id}:{asset_id}")
+    register_building_fixture(allocator, pack_id, asset_id, "Test Utility", building)
 }
 
 pub(super) fn setup_replenishment_world(

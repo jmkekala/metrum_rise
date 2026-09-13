@@ -2,7 +2,9 @@
 
 //! Runtime economy tuning and compiled catalog contracts used by live simulation systems.
 
-use super::serde_helpers::{deserialize_u16_from_number, deserialize_u32_from_number};
+use super::serde_helpers::{
+    deserialize_u16_from_number, deserialize_u16_vec_from_numbers, deserialize_u32_from_number,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -113,10 +115,13 @@ pub(crate) struct LogisticsRuntimeTuning {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub(crate) struct ConstructionRuntimeTuning {
     /// Fresh residential construction hours by target level, indexed from level 1.
+    #[serde(deserialize_with = "deserialize_u16_vec_from_numbers")]
     pub residential_hours_by_level: Vec<u16>,
     /// Fresh commercial construction hours by target level, indexed from level 1.
+    #[serde(deserialize_with = "deserialize_u16_vec_from_numbers")]
     pub commercial_hours_by_level: Vec<u16>,
     /// Fresh industrial construction hours by target level, indexed from level 1.
+    #[serde(deserialize_with = "deserialize_u16_vec_from_numbers")]
     pub industrial_hours_by_level: Vec<u16>,
 }
 
@@ -337,6 +342,15 @@ impl EconomyProfileRuntime {
             .find(|port| port.resource_runtime_id == resource_runtime_id)
     }
 
+    /// Output available to customers after the recipe's same-resource upkeep.
+    pub(crate) fn net_output_units_per_day(&self, port: &RuntimeResourcePort) -> f32 {
+        (port.units_per_day
+            - self
+                .input_port(port.resource_runtime_id)
+                .map_or(0.0, |input| input.units_per_day))
+        .max(0.0)
+    }
+
     /// Returns the runtime target units for one tracked inventory port.
     pub(crate) fn inventory_target_units_for(&self, port: &RuntimeResourcePort) -> f32 {
         (port.units_per_day.max(0.0) * self.stock_target_days.max(0.0)).max(0.0)
@@ -350,6 +364,48 @@ impl EconomyProfileRuntime {
     /// Returns the runtime emergency threshold in units for one tracked inventory port.
     pub(crate) fn inventory_critical_units_for(&self, port: &RuntimeResourcePort) -> f32 {
         (port.units_per_day.max(0.0) * self.critical_threshold_days.max(0.0)).max(0.0)
+    }
+
+    /// Input buffers scale with production area and retain two ordinary shipment batches.
+    /// A zero-sized producer or disabled port never requests stock.
+    pub(crate) fn input_inventory_targets(
+        &self,
+        port: &RuntimeResourcePort,
+        scale: f32,
+    ) -> (f32, f32, f32) {
+        if scale <= 0.0 || port.units_per_day <= 0.0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let batch = self.min_shipment_units.max(0.0);
+        let target = (self.inventory_target_units_for(port) * scale).max(2.0 * batch);
+        let reorder = if self.reorder_threshold_days > 0.0 {
+            (self.inventory_reorder_units_for(port) * scale)
+                .max(batch)
+                .min(target)
+        } else {
+            0.0
+        };
+        let critical = (self.inventory_critical_units_for(port) * scale).min(target);
+        (target, reorder, critical)
+    }
+
+    /// Funds the initial input buffers at OWA prices without pre-seeding free inventory.
+    pub(crate) fn initial_input_import_cost(
+        &self,
+        catalog: &RuntimeEconomyCatalog,
+        scale: f32,
+        import_multiplier: f32,
+    ) -> f32 {
+        self.inputs
+            .iter()
+            .map(|port| {
+                self.input_inventory_targets(port, scale).0
+                    * catalog
+                        .unit_price_for_resource(port.resource_runtime_id)
+                        .expect("compiled input has a price")
+                    * import_multiplier
+            })
+            .sum()
     }
 
     /// Returns the runtime output buffer cap in units for one output resource.

@@ -67,8 +67,57 @@ impl WorldConfig {
 
     /// Overrides the terrain sample spacing while preserving the current world extent metadata.
     pub fn with_terrain_resolution(mut self, terrain_cell_m: f32) -> Self {
-        self.terrain_cell_m = terrain_cell_m.max(f32::EPSILON);
+        self.terrain_cell_m = terrain_cell_m;
         self
+    }
+
+    /// Validates authored metadata and derived grid layouts before world allocation.
+    ///
+    /// Grid axes must fit signed runtime coordinates and dense buffers must fit Rust's
+    /// allocation layout. This does not guarantee that available memory can hold the world.
+    pub fn validate(&self) -> Result<(), String> {
+        for (value, label) in [
+            (self.width_m, "width_m"),
+            (self.height_m, "height_m"),
+            (self.terrain_cell_m, "terrain_cell_m"),
+            (self.terrain_chunk_m, "terrain_chunk_m"),
+            (self.env_cell_m, "env_cell_m"),
+            (self.zone_cell_m, "zone_cell_m"),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(format!("{label} must be finite and > 0"));
+            }
+        }
+        if !self.terrain_base_elevation_m.is_finite() {
+            return Err("terrain_base_elevation_m must be finite".to_owned());
+        }
+        // Terrain and resource storage use this minimum spacing internally.
+        if self.terrain_cell_m < f32::EPSILON {
+            return Err("terrain_cell_m is below the runtime sample-spacing minimum".to_owned());
+        }
+        validate_grid_layout(
+            (self.width_m / self.terrain_cell_m).round(),
+            (self.height_m / self.terrain_cell_m).round(),
+            1,
+            "terrain grid",
+        )?;
+        validate_grid_layout(
+            (self.width_m / self.env_cell_m).round(),
+            (self.height_m / self.env_cell_m).round(),
+            0,
+            "environment grid",
+        )?;
+        let chunk_cells = (self.terrain_chunk_m / self.terrain_cell_m).ceil().max(1.0);
+        validate_grid_layout(chunk_cells, chunk_cells, 0, "terrain chunk")?;
+        for extent in [self.width_m, self.height_m] {
+            validate_grid_axis((extent / self.zone_cell_m).ceil(), 0, "zoning coordinates")?;
+            validate_grid_axis(
+                (extent / self.terrain_chunk_m).ceil(),
+                0,
+                "authored chunk coordinates",
+            )?;
+        }
+        Ok(())
     }
 
     /// Returns the fallback gameplay world used before authored-world selection exists.
@@ -89,6 +138,11 @@ impl WorldConfig {
             40.0,
             10.0,
         )
+    }
+
+    /// Returns the square storage-chunk side used by terrain, water and deposit grids.
+    pub(crate) fn terrain_storage_chunk_cells(&self) -> usize {
+        ((self.terrain_chunk_m / self.terrain_cell_m).ceil() as usize).max(1)
     }
 
     /// Returns the shared world-space span used by terrain, water, and road render chunks.
@@ -146,12 +200,35 @@ impl WorldConfig {
     }
 
     /// Maps world-space coordinates in metres to environmental-grid coordinates.
-    pub fn world_to_env_grid(&self, x: f32, z: f32, env_w: usize, env_h: usize) -> (f32, f32) {
-        let _ = (env_w, env_h);
+    pub fn world_to_env_grid(&self, x: f32, z: f32) -> (f32, f32) {
         let gx = ((x + self.width_m * 0.5) / self.env_cell_m) - 0.5;
         let gz = ((z + self.height_m * 0.5) / self.env_cell_m) - 0.5;
         (gx, gz)
     }
+}
+
+fn validate_grid_axis(samples: f32, extra: usize, label: &str) -> Result<usize, String> {
+    let dimension = f64::from(samples) + extra as f64;
+    if !dimension.is_finite() || dimension < 1.0 || dimension > f64::from(i32::MAX) {
+        return Err(format!(
+            "{label} dimensions must fit positive signed grid coordinates"
+        ));
+    }
+    Ok(dimension as usize)
+}
+
+fn validate_grid_layout(width: f32, height: f32, extra: usize, label: &str) -> Result<(), String> {
+    let width = validate_grid_axis(width, extra, label)?;
+    let height = validate_grid_axis(height, extra, label)?;
+    let bytes = width
+        .checked_mul(height)
+        .and_then(|cells| cells.checked_mul(std::mem::size_of::<f32>()));
+    if bytes.is_none_or(|bytes| bytes > isize::MAX as usize) {
+        return Err(format!(
+            "{label} storage exceeds the supported allocation layout"
+        ));
+    }
+    Ok(())
 }
 
 impl Default for WorldConfig {

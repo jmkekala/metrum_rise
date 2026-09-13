@@ -137,10 +137,6 @@ impl ZoningParcel {
         self.occupied_building = building_idx;
     }
 
-    pub(crate) fn set_edge_idx(&mut self, edge_idx: usize) {
-        self.edge_idx = edge_idx;
-    }
-
     pub(crate) fn replace_geometry(&mut self, geometry: ParcelGeometry) {
         self.edge_idx = geometry.edge_idx;
         self.side = geometry.side;

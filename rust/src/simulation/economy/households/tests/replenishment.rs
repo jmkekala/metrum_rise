@@ -1005,3 +1005,78 @@ fn low_stock_household_can_buy_affordable_partial_restock() {
     assert!((households.households[0].stock - partial_units).abs() < f32::EPSILON);
     assert!((households.households[0].stock_days - 2.5).abs() < f32::EPSILON);
 }
+
+#[test]
+fn shopping_candidates_remain_bounded_without_growing_reserved_storage() {
+    use super::super::replenishment::insert_shopping_candidate;
+    let mut allocator = BuildingAllocator::new();
+    for idx in 0..32 {
+        allocator.buildings.push(make_building(
+            (idx / 2) as f32,
+            ZoneType::Commercial,
+            "test:shopping_candidates",
+            0.0,
+        ));
+    }
+    for limit in [0, 8, 24] {
+        let mut candidates = Vec::with_capacity(limit);
+        let capacity = candidates.capacity();
+        for idx in (0..allocator.buildings.len()).rev() {
+            insert_shopping_candidate(&mut candidates, limit, idx, 0.0, 0.0, &allocator);
+            assert!(candidates.len() <= limit);
+            assert_eq!(
+                candidates.capacity(),
+                capacity,
+                "limit={limit}, candidate={idx}"
+            );
+        }
+        assert_eq!(candidates, (0..limit).collect::<Vec<_>>());
+        insert_shopping_candidate(&mut candidates, limit, 0, 0.0, 0.0, &allocator);
+        insert_shopping_candidate(&mut candidates, limit, usize::MAX, 0.0, 0.0, &allocator);
+        assert_eq!(candidates, (0..limit).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+#[ignore = "manual matched release timing of bounded shopping destination selection"]
+fn benchmark_shopping_candidate_selection() {
+    use super::super::replenishment::insert_shopping_candidate;
+    use std::{hint::black_box, time::Instant};
+    for (limit, scanned) in [(8, 128), (24, 384)] {
+        let mut allocator = BuildingAllocator::new();
+        for idx in 0..scanned {
+            allocator.buildings.push(make_building(
+                (idx / 2) as f32,
+                ZoneType::Commercial,
+                "test:shopping_candidate_benchmark",
+                0.0,
+            ));
+        }
+        let mut samples = [0.0; 11];
+        for sample in &mut samples {
+            let mut candidates = Vec::with_capacity(limit);
+            let start = Instant::now();
+            for _ in 0..1_000 {
+                candidates.clear();
+                for idx in (0..scanned).rev() {
+                    insert_shopping_candidate(
+                        &mut candidates,
+                        limit,
+                        black_box(idx),
+                        0.0,
+                        0.0,
+                        &allocator,
+                    );
+                }
+                black_box(&candidates);
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0;
+            assert_eq!(candidates, (0..limit).collect::<Vec<_>>());
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "shopping_candidates limit={limit} scanned={scanned} queries=1000 median_ms={:.3}",
+            samples[5]
+        );
+    }
+}

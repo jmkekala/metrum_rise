@@ -3,7 +3,7 @@
 //! Tests for the editor-facing economy definition JSON bridge.
 
 use super::api::{export_project_json, load_project_json, run_sandbox_json};
-use super::io::{CONTROLLERS_FILE, INDEX_FILE, PROFILES_FILE, SCENARIOS_FILE};
+use super::io::{CONTROLLERS_FILE, PROFILES_FILE, SCENARIOS_FILE};
 use std::path::{Path, PathBuf};
 
 fn project_dir(name: &str) -> PathBuf {
@@ -15,6 +15,16 @@ fn write_fixture_project(dir: &Path) {
     std::fs::write(
         dir.join(PROFILES_FILE),
         r#"
+[[resources]]
+id = "household_supplies"
+runtime_id = 1
+[[resources]]
+id = "packaged_food"
+runtime_id = 2
+[[resources]]
+id = "grain"
+runtime_id = 3
+
 [[profiles]]
 id = "grain_farm_basic"
 display_name = "Grain Farm"
@@ -220,9 +230,6 @@ duration_days = 30
 household_count = 60
 average_household_size = 2.0
 starting_household_stock_days = 3.0
-replenishment_target_days = 3.0
-replenishment_trigger_days = 1.5
-pickup_cadence_hours = 6.0
 
 [[scenarios.nodes]]
 id = "grain_farm"
@@ -291,7 +298,7 @@ fn load_project_returns_valid_json() {
 }
 
 #[test]
-fn export_project_writes_cache_file() {
+fn export_project_preserves_authored_values() {
     let dir = project_dir("metrum_economy_editor_export");
     let _ = std::fs::remove_dir_all(&dir);
     write_fixture_project(&dir);
@@ -309,7 +316,6 @@ fn export_project_writes_cache_file() {
     assert!(out_dir.join(PROFILES_FILE).exists());
     assert!(out_dir.join(CONTROLLERS_FILE).exists());
     assert!(out_dir.join(SCENARIOS_FILE).exists());
-    assert!(out_dir.join(INDEX_FILE).exists());
     let reloaded: serde_json::Value =
         serde_json::from_str(&load_project_json(&out_dir).unwrap()).unwrap();
     assert_eq!(
@@ -351,16 +357,164 @@ fn sandbox_accepts_integer_like_float_fields_from_editor_json() {
         .and_then(serde_json::Value::as_object_mut)
         .unwrap();
 
+    project["resources"][0]["runtime_id"] = serde_json::json!(1.0);
     project["profiles"][0]["worker_capacity"] = serde_json::json!(4.0);
     project["profiles"][1]["worker_capacity"] = serde_json::json!(3.0);
     project["scenarios"][0]["duration_days"] = serde_json::json!(30.0);
     project["scenarios"][0]["household_count"] = serde_json::json!(60.0);
     project["runtime_tuning"]["unemployment_max_days"] = serde_json::json!(30.0);
+    for key in [
+        "residential_hours_by_level",
+        "commercial_hours_by_level",
+        "industrial_hours_by_level",
+    ] {
+        project["runtime_tuning"]["construction"][key] = serde_json::json!([6.0, 12.0, 18.0]);
+    }
 
     let project_json = serde_json::to_string(project).unwrap();
     let result = run_sandbox_json(&project_json, "grocery_bottleneck").unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert!(parsed["ok"].as_bool().unwrap());
+
+    project["runtime_tuning"]["construction"]["residential_hours_by_level"] =
+        serde_json::json!([6.5]);
+    assert!(
+        run_sandbox_json(
+            &serde_json::to_string(project).unwrap(),
+            "grocery_bottleneck"
+        )
+        .unwrap_err()
+        .contains("whole number")
+    );
+}
+
+#[test]
+fn sandbox_uses_only_the_first_authored_household_sink() {
+    let dir = project_dir("metrum_economy_editor_multiple_sinks");
+    write_fixture_project(&dir);
+    let loaded: serde_json::Value =
+        serde_json::from_str(&load_project_json(&dir).unwrap()).unwrap();
+    let mut project = loaded["project"].clone();
+    let before: serde_json::Value = serde_json::from_str(
+        &run_sandbox_json(&project.to_string(), "grocery_bottleneck").unwrap(),
+    )
+    .unwrap();
+    let scenario = &mut project["scenarios"][0];
+    let mut second_sink = scenario["nodes"][3].clone();
+    second_sink["id"] = serde_json::json!("extra_households");
+    scenario["nodes"].as_array_mut().unwrap().push(second_sink);
+    scenario["edges"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "from": "grocery", "to": "extra_households", "resource": "household_supplies"
+        }));
+    for _ in 0..2 {
+        let after: serde_json::Value = serde_json::from_str(
+            &run_sandbox_json(&project.to_string(), "grocery_bottleneck").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after["ok"], true);
+        assert!(
+            after["validation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["code"] == "multiple_demand_sinks")
+        );
+        for metric in [
+            "final_household_stock_days",
+            "total_unmet_units",
+            "average_household_cost_per_day",
+        ] {
+            assert_eq!(
+                after["result"][metric], before["result"][metric],
+                "{metric}"
+            );
+        }
+        project["scenarios"][0]["edges"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+    }
+}
+
+#[test]
+fn editor_rejects_invalid_scenario_and_controller_scalars() {
+    use super::validation::validate_project;
+    let dir = project_dir("metrum_economy_editor_scalar_validation");
+    write_fixture_project(&dir);
+    let original = super::io::load_project(&dir).unwrap();
+    for case in 0..9 {
+        let mut project = original.clone();
+        match case {
+            0 => project.scenarios[0].duration_days = 0,
+            1 => project.scenarios[0].average_household_size = 0.0,
+            2 => project.scenarios[0].average_household_size = f32::NAN,
+            3 => project.scenarios[0].starting_household_stock_days = -1.0,
+            4 => project.scenarios[0].starting_household_stock_days = f32::INFINITY,
+            5 => project.controllers[0].default_weight = -0.1,
+            6 => project.controllers[0].default_weight = f32::NAN,
+            7 => project.controllers[0].min_multiplier = -1.0,
+            8 => project.controllers[0].max_multiplier = 0.5,
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_project(&project).iter().any(|m| m.is_error()),
+            "invalid scalar case {case} was accepted"
+        );
+    }
+}
+
+#[test]
+fn runtime_tuning_enforces_day_duration_without_narrowing() {
+    use super::validation::validate_runtime_tuning;
+    let mut tuning = (*super::load_runtime_economy_tuning().unwrap()).clone();
+    for (duration, valid) in [
+        (60.0, true),
+        (1_440.0, true),
+        (2_880.0, true),
+        (60.0 - 1.0e-9, false),
+        (0.0, false),
+        (-1.0, false),
+        (f64::NAN, false),
+        (f64::INFINITY, false),
+    ] {
+        tuning.operational_clock.seconds_per_day = duration;
+        assert_eq!(
+            validate_runtime_tuning(&tuning).is_ok(),
+            valid,
+            "day duration {duration}"
+        );
+    }
+}
+
+#[test]
+fn runtime_tuning_rejects_nonfinite_treasury_and_export_settings() {
+    use super::validation::validate_runtime_tuning;
+    let original = super::load_runtime_economy_tuning().unwrap();
+    for field in 0..2 {
+        for value in [-1.0, 0.0, f32::NAN, f32::INFINITY] {
+            let mut tuning = (*original).clone();
+            if field == 0 {
+                tuning.logistics.owa_export_saturation_loads_to_floor = value;
+            } else {
+                tuning.logistics.owa_export_saturation_recovery_hours = value;
+            }
+            assert!(
+                validate_runtime_tuning(&tuning).is_err(),
+                "field {field} accepted {value}"
+            );
+        }
+    }
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut tuning = (*original).clone();
+        tuning.startup_treasury_balance = value;
+        assert!(
+            validate_runtime_tuning(&tuning).is_err(),
+            "treasury accepted {value}"
+        );
+    }
 }
 
 #[test]
@@ -393,4 +547,37 @@ fn sandbox_field_payroll_uses_one_hectare_of_staffing_density() {
             insolvent
         );
     }
+}
+
+#[test]
+fn shipped_project_exports_resources_and_runs_food_chain_with_machinery_imports() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../economy");
+    let payload: serde_json::Value =
+        serde_json::from_str(&load_project_json(&source).unwrap()).unwrap();
+    let project = payload["project"].clone();
+    let dest = project_dir("metrum_machinery_editor_roundtrip");
+    let result: serde_json::Value =
+        serde_json::from_str(&export_project_json(&project.to_string(), &dest).unwrap()).unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    let reloaded: serde_json::Value =
+        serde_json::from_str(&load_project_json(&dest).unwrap()).unwrap();
+    assert_eq!(reloaded["project"]["resources"], project["resources"]);
+    assert_eq!(reloaded["project"]["scenarios"], project["scenarios"]);
+    let sandbox: serde_json::Value = serde_json::from_str(
+        &run_sandbox_json(&project.to_string(), "grocery_bottleneck").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sandbox["ok"], true, "{sandbox}");
+    assert!(sandbox["result"]["total_delivered_units"].as_f64().unwrap() > 0.0);
+    let mut disconnected = project.clone();
+    disconnected["scenarios"][0]["owa_import_resources"] = serde_json::json!([]);
+    let result: serde_json::Value = serde_json::from_str(
+        &run_sandbox_json(&disconnected.to_string(), "grocery_bottleneck").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        result["ok"], false,
+        "unconnected Machinery cannot silently become free supply"
+    );
+    std::fs::remove_dir_all(dest).unwrap();
 }

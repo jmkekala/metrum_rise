@@ -9,7 +9,7 @@
 
 use soa_derive::StructOfArray;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize};
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -143,6 +143,18 @@ pub struct Agent {
     pub walk_phase: f32,
 }
 
+/// Prepared movement category, retaining one byte of scratch storage per agent.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MovementClaimMode {
+    /// Ordinary parallel movement with no possible lateral decision this step.
+    Parallel = 0,
+    /// Dynamic handoffs or replans that must run in stable agent order.
+    Dynamic = 1,
+    /// A fixed lateral candidate whose target already has a deterministic reservation owner.
+    Lateral = 2,
+}
+
 /// Simulation-wide agent system.
 ///
 /// Refactored to use `soa_derive` for robust parallel array management.
@@ -175,16 +187,11 @@ pub struct AgentSystem {
     pub lane_bucket_snapshot_valid: bool,
     /// Scratch list of agents whose active lane change also occupies their source lane.
     pub lane_change_ghost_agents: Vec<usize>,
-    /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
-    /// the parallel IDM pass.
-    pub new_speed: Vec<f32>,
-    /// Scratch buffer: one-tick local-access handoff claims for car lane attach/detach.
-    /// Prevents multiple cars from claiming the same exact frontage handoff on the same lane
-    /// in a single tick when households or workplaces release or receive several agents at once.
-    pub lane_attach_claimed: Vec<AtomicBool>,
-    /// Scratch mask: agents marked `true` may touch lane-entry claims this tick and are run in
-    /// stable index order after the non-claiming parallel movement pass.
-    pub claim_serial_agents: Vec<bool>,
+    /// Per-tick reservation owner by lane ID; `usize::MAX` means unclaimed.
+    /// Fixed lateral moves choose the lowest agent index in parallel before dynamic handoffs.
+    pub lane_claim_owner: Vec<AtomicUsize>,
+    /// Prepared movement categories used to dispatch claims and skip redundant lateral decisions.
+    pub(crate) movement_claim_modes: Vec<MovementClaimMode>,
     /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
@@ -211,40 +218,6 @@ pub struct AgentSystem {
     pub(crate) traffic_debug_stationary_s: Vec<f32>,
     /// Traffic-debug scratch: next simulation time at which a stationary line may be emitted.
     pub(crate) traffic_debug_next_log_time: Vec<f32>,
-}
-
-impl Clone for AgentSystem {
-    fn clone(&self) -> Self {
-        Self {
-            agents: self.agents.clone(),
-            sim_time: self.sim_time,
-            pathfind_count: AtomicU32::new(self.pathfind_count.load(Ordering::Relaxed)),
-            lane_buckets: Vec::new(),
-            lane_is_dirty: Vec::new(),
-            dirty_lanes: Vec::new(),
-            lane_bucket_live_agent_count: 0,
-            lane_bucket_snapshot_lane_count: 0,
-            lane_bucket_snapshot_agent_count: 0,
-            lane_bucket_snapshot_valid: false,
-            lane_change_ghost_agents: Vec::new(),
-            new_speed: Vec::new(),
-            lane_attach_claimed: Vec::new(),
-            claim_serial_agents: Vec::new(),
-            edge_speed_sum: Vec::new(),
-            edge_agent_cnt: Vec::new(),
-            edge_is_dirty: Vec::new(),
-            dirty_edges: Vec::new(),
-            stale_dirty_edges: Vec::new(),
-            lane_speed_sum: Vec::new(),
-            lane_vehicle_cnt: Vec::new(),
-            next_render_id: self.next_render_id,
-            last_building_ref_scrub_revision: self.last_building_ref_scrub_revision,
-            traffic_debug_last_pos_x: Vec::new(),
-            traffic_debug_last_pos_y: Vec::new(),
-            traffic_debug_stationary_s: Vec::new(),
-            traffic_debug_next_log_time: Vec::new(),
-        }
-    }
 }
 
 impl Deref for AgentSystem {
@@ -276,9 +249,8 @@ impl AgentSystem {
             lane_bucket_snapshot_agent_count: 0,
             lane_bucket_snapshot_valid: false,
             lane_change_ghost_agents: Vec::new(),
-            new_speed: Vec::new(),
-            lane_attach_claimed: Vec::new(),
-            claim_serial_agents: Vec::new(),
+            lane_claim_owner: Vec::new(),
+            movement_claim_modes: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             edge_is_dirty: Vec::new(),

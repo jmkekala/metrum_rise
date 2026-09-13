@@ -86,8 +86,8 @@ impl ZoningSystem {
 
             let chunks = parcels::chunks_for_aabb(geometry.aabb_min, geometry.aabb_max);
             accepted_seen.clear();
-            let overlaps_accepted = chunks.iter().any(|chunk| {
-                accepted_chunks.get(chunk).is_some_and(|indices| {
+            let overlaps_accepted = chunks.clone().any(|chunk| {
+                accepted_chunks.get(&chunk).is_some_and(|indices| {
                     indices.iter().any(|&index| {
                         accepted_seen.insert(index)
                             && parcels::geometries_overlap(&accepted[index], &geometry)

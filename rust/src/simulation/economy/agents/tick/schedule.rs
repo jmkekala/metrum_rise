@@ -2,8 +2,9 @@
 
 //! Work schedule timing helpers for building-origin agent trips.
 
-use super::planning::estimate_building_origin_trip_minutes;
+use super::planning::estimate_building_origin_trip_seconds;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::definitions::{
     MinuteWindow, OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
 };
@@ -35,6 +36,22 @@ pub(super) struct ScheduleCacheMut<'a> {
 }
 
 impl ScheduleCacheMut<'_> {
+    fn record_commute_estimate(
+        &mut self,
+        travel_seconds: u16,
+        sim_time: f32,
+        time: &TimeSystem,
+        operational_clock: &OperationalClockRuntimeTuning,
+    ) {
+        let seconds_per_minute = time.seconds_per_minute();
+        *self.cached_commute_minutes = (f64::from(travel_seconds) / seconds_per_minute)
+            .ceil()
+            .clamp(1.0, f64::from(u16::MAX)) as u16;
+        *self.next_commute_refresh_time = sim_time
+            + (f64::from(operational_clock.travel_estimate_refresh_minutes) * seconds_per_minute)
+                as f32;
+    }
+
     fn clear_departure_if_cached(&mut self) {
         if *self.next_departure_day != u32::MAX
             || *self.next_departure_origin_building != usize::MAX
@@ -64,8 +81,7 @@ pub(super) fn maybe_schedule_work_trip(
     schedule_seed: u32,
     cache: &mut ScheduleCacheMut<'_>,
     sim_time: f32,
-    day_index: u32,
-    minute_of_day: u16,
+    time: &TimeSystem,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
@@ -94,7 +110,7 @@ pub(super) fn maybe_schedule_work_trip(
             economy_catalog,
         )?;
         let profile = operational_clock.work_profiles.get(profile_index)?;
-        let activity = on_site_work_activity(profile, schedule_seed, minute_of_day)?;
+        let activity = on_site_work_activity(profile, schedule_seed, time.minute_of_day)?;
         return (activity != current_activity).then_some((home_building, activity));
     }
 
@@ -108,13 +124,13 @@ pub(super) fn maybe_schedule_work_trip(
             *cache.next_departure_activity,
         )
     {
-        if day_index < *cache.next_departure_day
-            || (day_index == *cache.next_departure_day
-                && minute_of_day < *cache.next_departure_minute)
+        if time.day_index < *cache.next_departure_day
+            || (time.day_index == *cache.next_departure_day
+                && time.minute_of_day < *cache.next_departure_minute)
         {
             return None;
         }
-        if day_index == *cache.next_departure_day {
+        if time.day_index == *cache.next_departure_day {
             return Some((
                 *cache.next_departure_target_building,
                 *cache.next_departure_activity,
@@ -140,7 +156,7 @@ pub(super) fn maybe_schedule_work_trip(
     }
 
     if (*cache.cached_commute_minutes == 0 || sim_time >= *cache.next_commute_refresh_time)
-        && let Some(estimate) = estimate_building_origin_trip_minutes(
+        && let Some(estimate) = estimate_building_origin_trip_seconds(
             home_building,
             work_building,
             has_car,
@@ -150,9 +166,7 @@ pub(super) fn maybe_schedule_work_trip(
             pathfind_count,
         )
     {
-        *cache.cached_commute_minutes = estimate;
-        *cache.next_commute_refresh_time =
-            sim_time + f32::from(operational_clock.travel_estimate_refresh_minutes);
+        cache.record_commute_estimate(estimate, sim_time, time, operational_clock);
     }
     let commute_minutes = (*cache.cached_commute_minutes).max(1);
     let shift_index = (schedule_seed % work_profile.arrival_windows.len() as u32) as usize;
@@ -184,8 +198,8 @@ pub(super) fn maybe_schedule_work_trip(
             )
         };
     let departure_day = next_departure_day_for_minute(
-        day_index,
-        minute_of_day,
+        time.day_index,
+        time.minute_of_day,
         scheduled_minute,
         window_end_minute,
     );
@@ -195,7 +209,7 @@ pub(super) fn maybe_schedule_work_trip(
     *cache.next_departure_target_building = target_building;
     *cache.next_departure_activity = activity;
 
-    if departure_day == day_index && minute_of_day >= scheduled_minute {
+    if departure_day == time.day_index && time.minute_of_day >= scheduled_minute {
         return Some((target_building, activity));
     }
 
@@ -327,6 +341,147 @@ fn stable_minute_in_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::core::time::test_clock;
+
+    fn with_schedule_cache(run: impl FnOnce(&mut ScheduleCacheMut<'_>)) {
+        let mut agents = crate::simulation::economy::agents::AgentSystem::new();
+        agents.spawn_housed_agent(0, 0.0, 0.0);
+        let data = &mut agents.agents;
+        data.cached_schedule_work_building[0] = 1;
+        data.cached_work_profile_index[0] = 0;
+        let mut cache = ScheduleCacheMut {
+            cached_commute_minutes: &mut data.cached_commute_minutes[0],
+            next_commute_refresh_time: &mut data.next_commute_refresh_time[0],
+            next_departure_day: &mut data.next_departure_day[0],
+            next_departure_minute: &mut data.next_departure_minute[0],
+            next_departure_origin_building: &mut data.next_departure_origin_building[0],
+            next_departure_target_building: &mut data.next_departure_target_building[0],
+            next_departure_activity: &mut data.next_departure_activity[0],
+            cached_schedule_work_building: &mut data.cached_schedule_work_building[0],
+            cached_work_profile_index: &mut data.cached_work_profile_index[0],
+        };
+        run(&mut cache);
+    }
+
+    #[test]
+    fn work_departures_and_refresh_deadlines_follow_active_day_length() {
+        let tuning =
+            crate::simulation::economy::definitions::load_runtime_economy_tuning().unwrap();
+        let catalog =
+            crate::simulation::economy::definitions::load_runtime_economy_catalog().unwrap();
+        let allocator = BuildingAllocator::new();
+        let network = TransitNetwork::new();
+        let graph = RegionGraph::new();
+        let pathfind_count = AtomicU32::new(0);
+        let mut clock = tuning.operational_clock.clone();
+        clock.work_profiles = vec![WorkTimingProfile {
+            id: "test_shift".to_owned(),
+            arrival_windows: vec![MinuteWindow {
+                start_minute: 480,
+                end_minute: 481,
+            }],
+            departure_windows: vec![MinuteWindow {
+                start_minute: 1_020,
+                end_minute: 1_021,
+            }],
+            reliability_buffer_minutes: 10,
+        }];
+        clock.travel_estimate_refresh_minutes = 360;
+        // Seed a completed 120-second route estimate and cached profile; this fixture
+        // isolates schedule units from graph construction and route-planner cost.
+        for (seconds_per_day, expected_minutes, expected_refresh, expected_departure) in [
+            (720.0, 240, 280.0, 230),
+            (1_440.0, 120, 460.0, 350),
+            (2_880.0, 60, 820.0, 410),
+        ] {
+            let mut time = test_clock(1, 0);
+            time.seconds_per_day = seconds_per_day;
+            with_schedule_cache(|cache| {
+                cache.record_commute_estimate(120, 100.0, &time, &clock);
+                assert_eq!(*cache.cached_commute_minutes, expected_minutes);
+                assert_eq!(*cache.next_commute_refresh_time, expected_refresh);
+                assert_eq!(
+                    maybe_schedule_work_trip(
+                        0,
+                        0,
+                        0,
+                        1,
+                        false,
+                        0,
+                        cache,
+                        100.0,
+                        &time,
+                        &allocator,
+                        &network,
+                        &graph,
+                        &pathfind_count,
+                        &clock,
+                        &catalog,
+                    ),
+                    None
+                );
+                assert_eq!(*cache.next_departure_minute, expected_departure);
+                time.minute_of_day = expected_departure;
+                assert_eq!(
+                    maybe_schedule_work_trip(
+                        0,
+                        0,
+                        0,
+                        1,
+                        false,
+                        0,
+                        cache,
+                        100.0,
+                        &time,
+                        &allocator,
+                        &network,
+                        &graph,
+                        &pathfind_count,
+                        &clock,
+                        &catalog,
+                    ),
+                    Some((1, 1))
+                );
+            });
+        }
+        assert_eq!(pathfind_count.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[ignore = "manual matched release timing of commute cache unit conversion"]
+    fn benchmark_commute_cache_recording() {
+        use std::{hint::black_box, time::Instant};
+        let clock = crate::simulation::economy::definitions::load_runtime_economy_tuning()
+            .unwrap()
+            .operational_clock
+            .clone();
+        for seconds_per_day in [720.0, 1_440.0, 2_880.0] {
+            let mut time = test_clock(1, 0);
+            time.seconds_per_day = seconds_per_day;
+            with_schedule_cache(|cache| {
+                let mut samples = [0.0; 11];
+                for sample in &mut samples {
+                    let start = Instant::now();
+                    for _ in 0..1_000_000 {
+                        cache.record_commute_estimate(
+                            black_box(120),
+                            black_box(100.0),
+                            black_box(&time),
+                            black_box(&clock),
+                        );
+                        black_box(*cache.cached_commute_minutes);
+                        black_box(*cache.next_commute_refresh_time);
+                    }
+                    *sample = start.elapsed().as_secs_f64() * 1_000.0;
+                }
+                samples.sort_by(f64::total_cmp);
+                eprintln!(
+                    "commute_cache seconds_per_day={seconds_per_day} updates=1000000 median_ms={:.3}",
+                    samples[5]
+                );
+            });
+        }
+    }
 
     #[test]
     fn resident_shifts_switch_activity_at_authored_boundaries_and_across_midnight() {

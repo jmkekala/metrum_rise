@@ -2,7 +2,7 @@
 
 //! Authored scenario graph validation.
 
-use super::common::duplicate_ids;
+use super::common::{duplicate_ids, validate_range};
 use super::messages::{ValidationMessage, error, warning};
 use crate::simulation::economy::definitions::scenario_graph::{
     build_profile_scenario_graph, port_exists,
@@ -19,6 +19,33 @@ pub(super) fn validate_scenario(
     controller_map: &BTreeMap<&str, &EconomyController>,
     messages: &mut Vec<ValidationMessage>,
 ) {
+    if scenario.duration_days == 0 {
+        messages.push(error(
+            "invalid_scenario_parameter",
+            format!("scenario.{}.duration_days", scenario.id),
+            "duration_days must be greater than zero",
+        ));
+    }
+    for (field, value, minimum) in [
+        (
+            "average_household_size",
+            scenario.average_household_size,
+            1.0,
+        ),
+        (
+            "starting_household_stock_days",
+            scenario.starting_household_stock_days,
+            0.0,
+        ),
+    ] {
+        if let Err(message) = validate_range(value, minimum, f32::MAX, field) {
+            messages.push(error(
+                "invalid_scenario_parameter",
+                format!("scenario.{}.{}", scenario.id, field),
+                message,
+            ));
+        }
+    }
     if scenario.nodes.is_empty() {
         messages.push(error(
             "empty_scenario",
@@ -163,7 +190,9 @@ pub(super) fn validate_scenario(
         };
         let received = profile_graph.incoming_resources_for(node.id.as_str());
         for input in &profile.inputs {
-            if received.is_none_or(|resources| !resources.contains(input.resource.as_str())) {
+            if !scenario.owa_import_resources.contains(&input.resource)
+                && received.is_none_or(|resources| !resources.contains(input.resource.as_str()))
+            {
                 messages.push(error(
                     "disconnected_required_input",
                     format!("scenario.{}.node.{}", scenario.id, node.id),

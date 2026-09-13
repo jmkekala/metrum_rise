@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Land desirability derived from the current pollution and noise fields.
+
 use super::data_grid::DataGrid;
 use super::noise::NoiseSystem;
 use super::pollution::PollutionSystem;
-use crate::simulation::zoning::ZoningSystem;
 use rayon::prelude::*;
 
 /// A grid-based system that calculates land desirability/value.
@@ -24,12 +25,7 @@ impl DesirabilitySystem {
     }
 
     /// Recalculates the desirability grid based on current pollution and noise levels.
-    pub fn tick(
-        &mut self,
-        _zoning: &ZoningSystem,
-        pollution: &PollutionSystem,
-        noise: &NoiseSystem,
-    ) {
+    pub fn tick(&mut self, pollution: &PollutionSystem, noise: &NoiseSystem) {
         let w = self.grid.width;
         let p_grid = &pollution.grid;
         let n_grid = &noise.grid;

@@ -163,14 +163,6 @@ pub(in crate::simulation::economy::agents::tick) fn advance_along_local_access_p
     let mut remaining = step.max(0.0);
 
     loop {
-        while let Some(idx) = local_access_target_segment(pos, path) {
-            let b = path.points[idx];
-            if segment_distance(pos, b) > 0.0001 {
-                break;
-            }
-            pos = b;
-        }
-
         let Some(idx) = local_access_target_segment(pos, path) else {
             return (path.points[path.count - 1], true);
         };

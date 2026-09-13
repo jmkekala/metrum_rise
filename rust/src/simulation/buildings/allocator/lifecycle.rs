@@ -12,7 +12,6 @@ use crate::simulation::economy::agents::{AgentSystem, household_age_composition}
 use crate::simulation::economy::definitions::{RuntimeEconomyCatalog, RuntimeEconomyTuning};
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    demand_building_action_key,
 };
 use crate::simulation::economy::households::{
     HouseholdSystem, candidate_immigrant_household_size_for_vacancy,
@@ -134,13 +133,15 @@ impl DemandSpawnPlacementRejectionCounts {
 }
 
 impl BuildingAllocator {
-    /// Removes buildings if their zone category has changed or their road edge no longer exists.
+    /// Removes invalid attachments and advances incompatible-zoning grace by actual elapsed days.
     pub(super) fn cleanup_stale_buildings(
         &mut self,
+        elapsed_days: u8,
         zoning: &mut ZoningSystem,
         agents: &mut AgentSystem,
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
         graph: &RegionGraph,
         lanes: &LaneSystem,
     ) {
@@ -208,9 +209,9 @@ impl BuildingAllocator {
                         building.rezone_grace_days_remaining = REZONE_GRACE_DAYS;
                         false
                     } else {
-                        if building.rezone_grace_days_remaining > 0 {
-                            building.rezone_grace_days_remaining -= 1;
-                        }
+                        building.rezone_grace_days_remaining = building
+                            .rezone_grace_days_remaining
+                            .saturating_sub(elapsed_days);
                         building.rezone_grace_days_remaining == 0
                     }
                 }
@@ -228,7 +229,7 @@ impl BuildingAllocator {
 
                 agents.evict_building(i);
                 households.invalidate_building(i, self);
-                logistics.invalidate_building(i, self, agents);
+                logistics.invalidate_building(i, self, agents, households, treasury_balance);
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
                     if let Some(zone_idx) =
@@ -241,16 +242,13 @@ impl BuildingAllocator {
                     agents.remap_building_indices(&mapping);
                     households.remap_building_indices(&mapping);
                     logistics.remap_building_indices(&mapping);
-                    zoning.remap_parcel_occupancy(last_idx, i);
+                    zoning.remap_parcel_occupancy(self.buildings[last_idx].parcel_id, last_idx, i);
                 }
 
                 self.field_clearance.remove_and_remap(i, last_idx);
                 self.record_production_site_removal(i, last_idx);
                 self.buildings.swap_remove(i);
-                if self.building_sites.len() > i {
-                    self.building_sites.swap_remove(i);
-                    self.recompute_max_site_radius_m();
-                }
+                self.remove_building_site_client(i);
                 if let Some(bounds) = removed_site_bounds {
                     self.accumulate_pending_site_dirty_bounds(Some(bounds));
                     debug_log!(
@@ -298,10 +296,12 @@ impl BuildingAllocator {
         }
         let mut launched = 0;
         for _ in 0..households_to_spawn {
-            let Some((home_idx, household_size)) = self.claim_home_for_household(
-                next_household_id.saturating_add(launched),
-                prefer_worker_capable,
-            ) else {
+            let Some((home_idx, household_size)) = self
+                .next_household_admission_candidate_for_household(
+                    next_household_id.saturating_add(launched),
+                    prefer_worker_capable,
+                )
+            else {
                 for category in ["economy", "spawn"] {
                     debug_log!(
                         category,
@@ -393,6 +393,7 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
         graph: &RegionGraph,
         lanes: &LaneSystem,
         road_surface: &RoadSurfaceSystem,
@@ -400,18 +401,8 @@ impl BuildingAllocator {
         catalog: &RuntimeEconomyCatalog,
         tuning: &RuntimeEconomyTuning,
     ) -> DemandBuildingActionExecution {
-        let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
-            .buildings
-            .iter()
-            .enumerate()
-            .map(|(idx, building)| (demand_building_action_key(building), idx))
-            .collect();
         let mut mutated_any = false;
-        let mut execution = DemandBuildingActionExecution {
-            residential: DemandUseBuildingActionExecution::default(),
-            commercial: DemandUseBuildingActionExecution::default(),
-            industrial: DemandUseBuildingActionExecution::default(),
-        };
+        let mut execution = DemandBuildingActionExecution::default();
 
         for (zone_type, use_plan) in [
             (ZoneType::Residential, &plan.residential),
@@ -419,41 +410,42 @@ impl BuildingAllocator {
             (ZoneType::Industrial, &plan.industrial),
         ] {
             for action in &use_plan.despawns {
-                let Some(building_idx) = action_lookup.remove(action) else {
+                let Some(building_idx) = self.resolve_demand_building_action(action, zoning) else {
                     continue;
                 };
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
-                if let Some((moved_key, moved_idx)) = self.remove_building_at_index(
+                mutated_any |= self.remove_building_at_index(
                     building_idx,
                     zoning,
                     agents,
                     households,
                     logistics,
-                ) {
-                    action_lookup.insert(moved_key, moved_idx);
-                }
-                mutated_any = true;
+                    treasury_balance,
+                );
             }
 
             for action in use_plan.downgrades.iter().chain(&use_plan.upgrades) {
-                let Some(&building_idx) = action_lookup.get(&action.building) else {
+                let Some(building_idx) =
+                    self.resolve_demand_building_action(&action.building, zoning)
+                else {
                     continue;
                 };
-                if let Some(updated_key) = self.apply_level_change_action(
-                    building_idx,
-                    action,
-                    catalog,
-                    zoning.config.zone_cell_m,
-                    graph,
-                    super::BuildingSiteEnvironment {
-                        road_surface,
-                        terrain,
-                    },
-                ) {
-                    action_lookup.remove(&action.building);
-                    action_lookup.insert(updated_key, building_idx);
+                if self
+                    .apply_level_change_action(
+                        building_idx,
+                        action,
+                        catalog,
+                        zoning.config.zone_cell_m,
+                        graph,
+                        super::BuildingSiteEnvironment {
+                            road_surface,
+                            terrain,
+                        },
+                    )
+                    .is_some()
+                {
                     mutated_any = true;
                 }
             }
@@ -469,10 +461,8 @@ impl BuildingAllocator {
                     catalog,
                     tuning,
                 ) {
-                    Ok(building_idx) => {
+                    Ok(_) => {
                         execution.use_mut(zone_type).spawn_executed += 1;
-                        self.buildings[building_idx].profit_tax_budget_baseline =
-                            self.buildings[building_idx].operating_budget;
                         mutated_any = true;
                     }
                     Err(reason) => {
@@ -521,8 +511,6 @@ impl BuildingAllocator {
         ) {
             Ok(building_idx) => {
                 execution.use_mut(zone_type).spawn_executed += 1;
-                self.buildings[building_idx].profit_tax_budget_baseline =
-                    self.buildings[building_idx].operating_budget;
                 if self.dirty_index
                     && (!zone_index_was_clean || !self.index_appended_building(building_idx))
                 {
@@ -936,23 +924,24 @@ impl BuildingAllocator {
 
         (selected_home_idx != usize::MAX).then_some((selected_home_idx, selected_size))
     }
-
-    fn claim_home_for_household(
-        &mut self,
-        next_household_id: usize,
-        prefer_worker_capable: bool,
-    ) -> Option<(usize, u16)> {
-        let (fallback_idx, fallback_size) = self.next_household_admission_candidate_for_household(
-            next_household_id,
-            prefer_worker_capable,
-        )?;
-        // Note: vacancy count for residential is now household-based.
-        // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
-        Some((fallback_idx, fallback_size))
-    }
 }
 
 impl BuildingAllocator {
+    fn resolve_demand_building_action(
+        &self,
+        action: &DemandBuildingActionKey,
+        zoning: &ZoningSystem,
+    ) -> Option<usize> {
+        // Stable parcel ownership already follows swap-remove and level changes. Reuse it
+        // for expected O(1) lookup instead of cloning a city-wide action-key table.
+        let building_idx = zoning
+            .parcel_by_raw_id(action.parcel_id)?
+            .occupied_building()?;
+        action
+            .matches_building(self.buildings.get(building_idx)?)
+            .then_some(building_idx)
+    }
+
     fn can_demand_despawn(&self, building_idx: usize) -> bool {
         let Some(building) = self.buildings.get(building_idx) else {
             return false;
@@ -971,12 +960,9 @@ impl BuildingAllocator {
         zone_cell_m: f32,
         graph: &RegionGraph,
         environment: super::BuildingSiteEnvironment<'_>,
-    ) -> Option<DemandBuildingActionKey> {
+    ) -> Option<()> {
         let building = self.buildings.get(building_idx)?;
         if building.broken || building.pending_redevelopment {
-            return None;
-        }
-        if demand_building_action_key(building) != action.building {
             return None;
         }
 
@@ -1034,7 +1020,6 @@ impl BuildingAllocator {
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
         let zone_type = building.zone_type;
-        let updated_key = demand_building_action_key(building);
         self.rebuild_building_site_client(building_idx, zone_cell_m);
         self.accumulate_pending_site_dirty_bounds(old_site_bounds);
         self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
@@ -1045,7 +1030,7 @@ impl BuildingAllocator {
         if let Some(zone_idx) = baseline_private_zone_slot(zone_type) {
             self.dirty_zones[zone_idx] = true;
         }
-        Some(updated_key)
+        Some(())
     }
 
     fn remove_building_at_index(
@@ -1055,22 +1040,28 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
-    ) -> Option<(DemandBuildingActionKey, usize)> {
-        let building = self.buildings.get(building_idx)?.clone();
+        treasury_balance: &mut f64,
+    ) -> bool {
+        let Some((parcel_id, zone_type)) = self
+            .buildings
+            .get(building_idx)
+            .map(|building| (building.parcel_id, building.zone_type))
+        else {
+            return false;
+        };
         self.accumulate_pending_site_dirty_bounds(self.site_world_bounds(building_idx));
-        zoning.clear_parcel_occupancy(building.parcel_id);
+        zoning.clear_parcel_occupancy(parcel_id);
 
         agents.evict_building(building_idx);
         households.invalidate_building(building_idx, self);
-        logistics.invalidate_building(building_idx, self, agents);
-        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+        logistics.invalidate_building(building_idx, self, agents, households, treasury_balance);
+        if let Some(zone_idx) = baseline_private_zone_slot(zone_type) {
             self.dirty_zones[zone_idx] = true;
         }
 
         let last_idx = self.buildings.len().saturating_sub(1);
-        let moved_key = if building_idx < last_idx {
-            let moved_building = self.buildings[last_idx].clone();
-            let moved_key = demand_building_action_key(&moved_building);
+        if building_idx < last_idx {
+            let moved_building = &self.buildings[last_idx];
             if let Some(zone_idx) = baseline_private_zone_slot(moved_building.zone_type) {
                 self.dirty_zones[zone_idx] = true;
             }
@@ -1079,25 +1070,19 @@ impl BuildingAllocator {
             agents.remap_building_indices(&mapping);
             households.remap_building_indices(&mapping);
             logistics.remap_building_indices(&mapping);
-            zoning.remap_parcel_occupancy(last_idx, building_idx);
-            Some((moved_key, building_idx))
-        } else {
-            None
-        };
+            zoning.remap_parcel_occupancy(moved_building.parcel_id, last_idx, building_idx);
+        }
 
         self.field_clearance
             .remove_and_remap(building_idx, last_idx);
         self.record_production_site_removal(building_idx, last_idx);
         self.buildings.swap_remove(building_idx);
-        if self.building_sites.len() > building_idx {
-            self.building_sites.swap_remove(building_idx);
-            self.recompute_max_site_radius_m();
-        }
+        self.remove_building_site_client(building_idx);
         self.bump_building_ref_revision();
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
-        moved_key
+        true
     }
 
     /// Removes one building through the normal lifecycle hooks used by demand redevelopment.
@@ -1108,11 +1093,15 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
+        treasury_balance: &mut f64,
     ) -> bool {
-        if building_idx >= self.buildings.len() {
-            return false;
-        }
-        let _ = self.remove_building_at_index(building_idx, zoning, agents, households, logistics);
-        true
+        self.remove_building_at_index(
+            building_idx,
+            zoning,
+            agents,
+            households,
+            logistics,
+            treasury_balance,
+        )
     }
 }

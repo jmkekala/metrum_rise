@@ -2,6 +2,8 @@
 
 //! Demand-owned household removal and household swap-remove repair.
 
+use std::collections::HashMap;
+
 use super::HouseholdSystem;
 use super::metrics::{
     household_is_housed, household_reserve_days, household_supply_resource_runtime_id,
@@ -97,21 +99,34 @@ impl HouseholdSystem {
                 agent_indices.push(agent_idx);
             }
         }
-        agent_indices.sort_unstable_by(|a, b| b.cmp(a));
+        // The collection pass already visits agent indices in ascending order.
+        agent_indices.reverse();
         for agent_idx in agent_indices.iter().copied() {
-            if let Some((old_idx, new_idx)) = agents.kill_agent(agent_idx, allocator) {
-                logistics.remap_carrier_agent_index(old_idx, new_idx);
+            if let Some((old_idx, new_idx)) = agents.kill_agent(agent_idx, allocator, self) {
+                logistics.remap_carrier_agent_index(old_idx, new_idx, agents);
             }
         }
 
+        // Track current slot -> original household while descending removals can move the
+        // same survivor more than once. Repair surviving agents once after the whole batch.
+        let mut moved_households = HashMap::with_capacity(selected_households.len());
         for household_id in selected_households {
-            self.remove_household_record_at_index(
+            if let Some(last_household_id) = self.remove_household_record_at_index(
                 household_id,
-                agents,
                 allocator,
                 household_supply_resource,
-            );
+            ) {
+                let original_id = moved_households
+                    .remove(&last_household_id)
+                    .unwrap_or(last_household_id);
+                moved_households.insert(household_id, original_id);
+            }
         }
+        let mapping = moved_households
+            .into_iter()
+            .map(|(current, original)| (original, current))
+            .collect();
+        agents.remap_household_indices(&mapping);
         self.removal_selected_flags_scratch = selected_flags;
         self.removal_agent_indices_scratch = agent_indices;
         removed_count
@@ -120,12 +135,11 @@ impl HouseholdSystem {
     fn remove_household_record_at_index(
         &mut self,
         household_id: usize,
-        agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         household_supply_resource: u16,
-    ) {
+    ) -> Option<usize> {
         if household_id >= self.households.len() {
-            return;
+            return None;
         }
 
         let household = &self.households[household_id];
@@ -161,10 +175,6 @@ impl HouseholdSystem {
         if household_id < self.daily_ledgers.len() {
             self.daily_ledgers.swap_remove(household_id);
         }
-        if household_id < self.households.len() {
-            let mut mapping = std::collections::HashMap::with_capacity(1);
-            mapping.insert(last_household_id, household_id);
-            agents.remap_household_indices(&mapping);
-        }
+        (household_id < self.households.len()).then_some(last_household_id)
     }
 }

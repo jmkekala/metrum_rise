@@ -15,6 +15,7 @@ var active: bool = false:
 	set(value):
 		active = value
 		if not active:
+			_cancel_gesture()
 			_hide_properties_panel()
 			var building_inspector = _get_building_inspector()
 			if building_inspector:
@@ -24,12 +25,10 @@ var active: bool = false:
 			_connected_nodes.clear()
 			_clear_node_visuals()
 			selected_node = -1
-			hovered_node = -1
 
 # Edge Selection
 var selected_edges: Array[int] = []
 var _connected_nodes: Dictionary = {}
-var _dragging_edges: bool = false
 var _mouse_pressed: bool = false
 var _last_hovered: int = -1
 
@@ -37,18 +36,13 @@ var _highlight_mi: MeshInstance3D = null
 var _highlight_tween: Tween = null
 
 # Node Selection
-var hovered_node: int = -1
 var selected_node: int = -1
 
 var lane_spheres = []
 var connection_lines = []
 var crosswalk_toggles = []
 
-var dragging_lane = false
-var drag_start_lane = null
-var drag_from_edge = -1
-var drag_from_lane = 0
-var drag_is_incoming = false
+var _drag_source: Dictionary = {}
 var drag_line_mesh: MeshInstance3D
 
 func _ready():
@@ -70,17 +64,37 @@ func _ready():
 	drag_line_mesh = MeshInstance3D.new()
 	add_child(drag_line_mesh)
 
+func _input(event: InputEvent) -> void:
+	if active and _mouse_pressed and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+		_mouse_pressed = false
+		# Let an unhandled release commit first; a GUI-consumed release only cancels.
+		_cancel_released_gesture.call_deferred()
+
+func _cancel_released_gesture() -> void:
+	# A new press can arrive before the deferred callback from the previous release.
+	if not _mouse_pressed:
+		_cancel_gesture()
+
+func _cancel_gesture() -> void:
+	_mouse_pressed = false
+	_drag_source = {}
+	_last_hovered = -1
+	if drag_line_mesh:
+		drag_line_mesh.mesh = null
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not active: return
 	
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
+			_cancel_gesture()
 			_mouse_pressed = true
 			_last_click_screen_pos = event.position
+			var pos = _world_position(event.position)
 			
 			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
-				var clicked_cw = _get_hovered_cw_toggle()
+				var clicked_cw = _get_hovered_cw_toggle(pos)
 				if clicked_cw != null:
 					simulation_node.set_crosswalk_override(selected_node, clicked_cw.edge_id, not clicked_cw.has_cw)
 					_build_node_visuals(selected_node)
@@ -88,44 +102,33 @@ func _unhandled_input(event: InputEvent) -> void:
 						get_node("../RoadTool").update_main_mesh()
 					return
 						
-				var clicked_lane = _get_hovered_lane_sphere()
+				var clicked_lane = _get_hovered_lane_sphere(pos)
 				if clicked_lane != null and clicked_lane.is_incoming:
-					dragging_lane = true
-					drag_start_lane = clicked_lane.pos
-					drag_from_edge = clicked_lane.edge_id
-					drag_from_lane = clicked_lane.lane_id
-					drag_is_incoming = clicked_lane.is_incoming
+					_drag_source = clicked_lane
 					return
 			
 			# Check if we clicked near a node to select it
-			var mouse_pos = get_viewport().get_mouse_position()
-			var camera = get_viewport().get_camera_3d()
-			var pos = null
 			var edge_idx := -1
-			if camera:
-				pos = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
-				if pos != null:
-					edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
-					var building_inspector = _get_building_inspector()
-					if edge_idx == -1 and building_inspector and building_inspector.try_inspect(pos, _last_click_screen_pos):
-						selected_node = -1
-						_set_selection([])
-						_clear_node_visuals()
-						return
-					var nearest_node = simulation_node.get_closest_node(pos, 8.0)
-					if nearest_node != -1:
-						if building_inspector:
-							building_inspector.close_window()
-						selected_node = nearest_node
-						_set_selection([]) # Clear edge selection
-						_build_node_visuals(selected_node)
-						return
+			if pos != null:
+				edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
+				var building_inspector = _get_building_inspector()
+				if edge_idx == -1 and building_inspector and building_inspector.try_inspect(pos, _last_click_screen_pos):
+					selected_node = -1
+					_set_selection([])
+					_clear_node_visuals()
+					return
+				var nearest_node = simulation_node.get_closest_node(pos, 8.0)
+				if nearest_node != -1:
+					if building_inspector:
+						building_inspector.close_window()
+					selected_node = nearest_node
+					_set_selection([]) # Clear edge selection
+					_build_node_visuals(selected_node)
+					return
 			
 			# Otherwise we clicked an edge
 			_clear_node_visuals()
 			selected_node = -1
-			_dragging_edges = false
-			_last_hovered = -1
 			if edge_idx != -1:
 				var building_inspector = _get_building_inspector()
 				if building_inspector:
@@ -135,21 +138,18 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_selection([])
 				
 		else:
-			_mouse_pressed = false
-			_dragging_edges = false
-			
-			if dragging_lane:
-				dragging_lane = false
-				drag_line_mesh.mesh = null
-				var target_lane = _get_hovered_lane_sphere()
+			if not _drag_source.is_empty():
+				var target_lane = _get_hovered_lane_sphere(_world_position(event.position))
 				if target_lane != null:
-					if target_lane.edge_id == drag_from_edge and target_lane.lane_id == drag_from_lane:
-						simulation_node.clear_lane_source(selected_node, drag_from_edge, drag_from_lane)
+					if target_lane.is_incoming and target_lane.edge_id == _drag_source.edge_id and target_lane.lane_id == _drag_source.lane_id:
+						simulation_node.clear_lane_source(selected_node, _drag_source.edge_id, _drag_source.lane_id)
 					elif not target_lane.is_incoming:
-						simulation_node.set_lane_connection(selected_node, drag_from_edge, drag_from_lane, target_lane.edge_id, target_lane.lane_id)
+						simulation_node.set_lane_connection(selected_node, _drag_source.edge_id, _drag_source.lane_id, target_lane.edge_id, target_lane.lane_id)
 					_build_node_visuals(selected_node)
+			_cancel_gesture()
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+		_cancel_gesture()
 		if selected_node != -1:
 			simulation_node.clear_lane_connections(selected_node)
 			_build_node_visuals(selected_node)
@@ -157,7 +157,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(_delta):
 	if not active: return
 	
-	if dragging_lane:
+	if not _drag_source.is_empty():
 		_update_drag_line()
 	elif selected_node == -1 and _mouse_pressed:
 		var edge_idx := _hovered_edge()
@@ -282,13 +282,13 @@ func _build_node_visuals(node_id: int):
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
 
-func _get_hovered_lane_sphere():
-	var mouse_pos = get_viewport().get_mouse_position()
+func _world_position(screen_position: Vector2):
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
-	if pos_variant == null: return null
-	var pos: Vector3 = pos_variant
+	return simulation_node.intersect_world_surface(camera.project_ray_origin(screen_position), camera.project_ray_normal(screen_position))
+
+func _get_hovered_lane_sphere(pos):
+	if pos == null: return null
 	var best_dist = 1.2
 	var best_lane = null
 	for s in lane_spheres:
@@ -298,13 +298,8 @@ func _get_hovered_lane_sphere():
 			best_lane = s
 	return best_lane
 
-func _get_hovered_cw_toggle():
-	var mouse_pos = get_viewport().get_mouse_position()
-	var camera = get_viewport().get_camera_3d()
-	if not camera: return null
-	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
-	if pos_variant == null: return null
-	var pos: Vector3 = pos_variant
+func _get_hovered_cw_toggle(pos):
+	if pos == null: return null
 	var best_dist = 2.0
 	var best_cw = null
 	for c in crosswalk_toggles:
@@ -317,17 +312,16 @@ func _get_hovered_cw_toggle():
 	return best_cw
 
 func _update_drag_line():
-	var mouse_pos = get_viewport().get_mouse_position()
-	var camera = get_viewport().get_camera_3d()
-	if not camera: return
-	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
-	if pos_variant == null: return
-	var drag_end: Vector3 = pos_variant
+	var pos = _world_position(get_viewport().get_mouse_position())
+	if pos == null:
+		drag_line_mesh.mesh = null
+		return
+	var drag_end: Vector3 = pos
 	drag_end.y += 0.5
-	var target = _get_hovered_lane_sphere()
+	var target = _get_hovered_lane_sphere(pos)
 	if target != null and not target.is_incoming:
 		drag_end = target.pos
-	_draw_arch(drag_line_mesh, drag_start_lane, drag_end, Color(0.0, 1.0, 1.0))
+	_draw_arch(drag_line_mesh, _drag_source.pos, drag_end, Color(0.0, 1.0, 1.0))
 
 func _draw_arch(mesh_inst: MeshInstance3D, p1: Vector3, p2: Vector3, color: Color):
 	var arr_mesh = ArrayMesh.new()
@@ -408,10 +402,7 @@ func _is_connected(edge_idx: int) -> bool:
 	return _connected_nodes.has(nodes.x) or _connected_nodes.has(nodes.y)
 
 func _hovered_edge() -> int:
-	var mouse_pos = get_viewport().get_mouse_position()
-	var camera = get_viewport().get_camera_3d()
-	if not camera: return -1
-	var pos = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+	var pos = _world_position(get_viewport().get_mouse_position())
 	if pos == null: return -1
 	return simulation_node.get_hovered_edge(pos.x, pos.z)
 

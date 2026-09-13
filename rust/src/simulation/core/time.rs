@@ -4,8 +4,26 @@
 
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 
-const MINUTES_PER_DAY: u16 = 24 * 60;
-const DEFAULT_SECONDS_PER_DAY: f64 = 24.0 * 60.0;
+/// Operational minutes in one day, independent of the authored real-time day duration.
+pub(crate) const MINUTES_PER_DAY: u16 = 24 * 60;
+
+/// Supported UI speed steps; the final entry also bounds live and saved speed multipliers.
+pub(crate) const SIMULATION_SPEED_STEPS: [f32; 8] = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
+
+/// Validates a speed request and preserves negative-to-pause input handling.
+pub(crate) fn validated_simulation_speed(speed: f32) -> Option<f32> {
+    (speed.is_finite() && speed <= SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1])
+        .then(|| speed.max(0.0))
+}
+
+/// Enforces the authored minimum day duration at both configuration and save boundaries.
+pub(crate) fn validate_day_duration(seconds_per_day: f64) -> Result<(), &'static str> {
+    if seconds_per_day.is_finite() && seconds_per_day >= 60.0 {
+        Ok(())
+    } else {
+        Err("day duration must be finite and at least 60 seconds")
+    }
+}
 
 /// Minute-boundary advancement returned by [`TimeSystem::process_delta`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,7 +101,7 @@ impl TimeSystem {
     pub fn new() -> Self {
         let seconds_per_day = load_runtime_economy_tuning()
             .map(|tuning| tuning.operational_clock.seconds_per_day)
-            .unwrap_or(DEFAULT_SECONDS_PER_DAY);
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         Self {
             time_elapsed: 0.0,
             speed_multiplier: 0.0,
@@ -132,19 +150,25 @@ impl TimeSystem {
     }
 }
 
+/// Creates an isolated one-second-per-minute test clock without loading gameplay tuning.
+#[cfg(test)]
+pub(crate) const fn test_clock(day_index: u32, minute_of_day: u16) -> TimeSystem {
+    TimeSystem {
+        time_elapsed: 0.0,
+        speed_multiplier: 1.0,
+        day_index,
+        minute_of_day,
+        seconds_per_day: MINUTES_PER_DAY as f64,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_SECONDS_PER_DAY, MINUTES_PER_DAY, TimeSystem};
+    use super::{MINUTES_PER_DAY, test_clock};
 
     #[test]
     fn process_delta_advances_exact_minutes() {
-        let mut time = TimeSystem {
-            time_elapsed: 0.0,
-            speed_multiplier: 1.0,
-            day_index: 1,
-            minute_of_day: 0,
-            seconds_per_day: DEFAULT_SECONDS_PER_DAY,
-        };
+        let mut time = test_clock(1, 0);
 
         let advance = time.process_delta(61.0);
         assert_eq!(advance.elapsed_minutes, 61);
@@ -154,13 +178,7 @@ mod tests {
 
     #[test]
     fn process_delta_wraps_day_boundary() {
-        let mut time = TimeSystem {
-            time_elapsed: 0.0,
-            speed_multiplier: 1.0,
-            day_index: 3,
-            minute_of_day: MINUTES_PER_DAY - 1,
-            seconds_per_day: DEFAULT_SECONDS_PER_DAY,
-        };
+        let mut time = test_clock(3, MINUTES_PER_DAY - 1);
 
         let advance = time.process_delta(2.0);
         assert_eq!(advance.elapsed_minutes, 2);

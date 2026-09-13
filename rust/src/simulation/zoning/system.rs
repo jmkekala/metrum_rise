@@ -13,7 +13,7 @@ use super::profiles::{ZoningProfileRegistry, load_builtin_profile_registry};
 use super::{ParcelStore, ZoningParcel};
 use crate::simulation::core::config::WorldConfig;
 use godot::prelude::Vector3;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Road-aligned parcel zoning system.
@@ -60,13 +60,6 @@ impl ZoningSystem {
         let had_parcels = !self.parcels.parcels().is_empty();
         self.parcels.clear();
         if had_parcels {
-            self.bump_overlay_revision();
-        }
-    }
-
-    /// Remaps parcel road-edge attachments after network compaction.
-    pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
-        if self.parcels.remove_edges_not_in_mapping(mapping) {
             self.bump_overlay_revision();
         }
     }

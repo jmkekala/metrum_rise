@@ -6,6 +6,7 @@ use super::support::*;
 use super::*;
 use crate::assets::asset::BuildingFieldData;
 use crate::simulation::buildings::allocator::baseline_private_zone_slot;
+use crate::simulation::core::time::test_clock;
 use crate::simulation::economy::agents::AGE_ADULT;
 use crate::simulation::economy::fiscal::CityFiscalPolicy;
 use std::sync::atomic::Ordering;
@@ -217,7 +218,13 @@ fn farm_family_works_on_site_and_larger_fields_hire_commuters() {
 
     let routes = agents.pathfind_count.load(Ordering::Relaxed);
     for (minute, activity) in [(12 * 60, 1), (20 * 60, 0), (12 * 60, 1)] {
-        agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, minute);
+        agents.tick(
+            &allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &test_clock(0, minute),
+        );
         for id in [1, 2] {
             assert_eq!(agents.activity[id], activity);
             assert_eq!(agents.transit[id], TRANSIT_IN_BUILDING);
@@ -314,6 +321,7 @@ fn benchmark_farm_household_tick() {
     use std::hint::black_box;
     use std::time::Instant;
 
+    let clock = test_clock(0, 720);
     // Synthetic in-building agents isolate movement cost; no placement, admission, or economy setup.
     for count in [1_000, 10_000, 100_000] {
         for working in [false, true] {
@@ -329,13 +337,13 @@ fn benchmark_farm_household_tick() {
                 }
             }
             for _ in 0..3 {
-                agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 720);
+                agents.tick(&allocator, &mut network, &mut graph, 0.1, &clock);
             }
             let mut samples = [0.0; 21];
             for sample in &mut samples {
                 let start = Instant::now();
                 for _ in 0..10 {
-                    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, black_box(720));
+                    agents.tick(&allocator, &mut network, &mut graph, 0.1, black_box(&clock));
                 }
                 *sample = start.elapsed().as_secs_f64() / 10.0;
             }

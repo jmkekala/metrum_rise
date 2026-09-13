@@ -80,7 +80,6 @@ These buckets are the hot-path structure for:
 - connector entry slot checks
 - lane-change target gap checks
 - post-movement overlap correction
-- low-frequency frontage delay measurement
 
 The bucket fill is incremental over dirty lanes and reuses scratch buffers. This is required for
 the 1M-agent scale target; traffic logic must not allocate per agent in the tick hot path.
@@ -89,6 +88,30 @@ Active lane-changing cars are inserted into their target lane bucket and, before
 into their source lane bucket while the S-curve is still active. This lets cars in both lanes react
 to the crossing car during the IDM speed pass. Post-movement overlap correction clamps the current
 authoritative lane.
+
+Removing the last agent also retires dirty lane occupancy and road-edge congestion before the
+empty-agent tick returns (`AUDIT-01-A5`). Cleanup reuses the existing dirty-lane/edge lists and
+buffers. Once these are empty, later empty ticks skip the occupancy rebuild. The separate
+low-frequency frontage-delay cache continues its existing decay from live agent speeds.
+
+Claim preparation classifies each agent independently into the retained byte per agent
+(`AUDIT-01-A4`, `AUDIT-01-A12`). Large collections use contiguous 4,096-agent Rayon batches; smaller collections
+and single-worker execution use the same direct loop. Lane-change selection is shared with
+movement (`AUDIT-01-A12`): it inspects the current edge's lanes and sorted local occupancy, with
+O(D + log K) work for D local lanes and K occupants. The byte distinguishes ordinary parallel
+movement, fixed lateral candidates and dynamic handoffs, so ordinary movement skips a second
+lane-change decision. There are no per-agent allocations or additional per-agent buffers.
+
+A lateral move that cannot reach another lane end or frontage handoff this tick reserves its
+target in the existing per-lane array. Atomic minimum selects the lowest agent index independently
+of worker scheduling; these cars then move in parallel. Dynamic handoffs execute afterward in
+stable agent-index order and use the remaining unreserved lanes. Fixed lateral reservations
+therefore have priority over connector/frontage arrivals for that tick. Reusing one's own
+reservation is allowed, including entry followed by a frontage detach.
+
+Each lane stores one owner index (`usize::MAX` when free), replacing the former boolean. On a
+64-bit target this adds seven bytes per retained lane; reset remains O(L) in retained lanes.
+Connector choices retain their existing `stable_index` algorithm and seeds.
 
 ## Car Following
 
@@ -110,6 +133,11 @@ Current constants:
 After IDM proposes a target speed, `limit_speed_change()` clamps the change by acceleration and
 comfortable braking. This prevents cars from snapping instantly between stopped and free-flow
 speed.
+
+The speed pass writes each result directly to that agent's SoA slot (`AUDIT-01-A7`). This is
+independent because the shared lane snapshot contains distances and the current IDM model reads
+no other agent's speed. The duplicate speed array and its final serial copy are removed. Non-car
+and inactive agents retain their current speed while their existing traffic-timer rules run.
 
 If a car is approaching a blocked connector or a required lane change whose target gap is blocked,
 the speed pass computes a braking speed for the remaining distance. This makes the car slow before
@@ -164,6 +192,8 @@ spacing, and whitelist semantics still apply.
 Cars enter connector lanes through `TRANSIT_INTERSECTION`. Connector lanes are lane-bucketed like
 road lanes, so multiple cars may occupy the same connector when they respect separation. Connector
 entry also uses a per-tick claim to avoid two cars grabbing the same zero-distance entry slot.
+Car exits check outgoing-lane occupancy and acquire the same reservation (`AUDIT-01-A11`). A
+blocked car waits at the connector end with its route intact until the outgoing entry clears.
 
 ## Junction Speeds
 
@@ -213,6 +243,7 @@ Rules:
 - source and target lanes must be same-edge, same-direction vehicle lanes
 - movement advances one adjacent lane at a time toward the final planned detach lane
 - the target lane must have a speed-scaled safe gap at the current distance
+- the car must own the target lane's reservation before starting the maneuver
 - clear target lane means no intentional speed penalty
 - blocked target lane is traffic and may force braking before the detach point
 - planned lane changes take priority over discretionary overtaking
@@ -376,6 +407,143 @@ Current known bounded scans:
 - direct pass-through detection scans only the candidate `next_lanes` of the current lane, bounded
   by degree-two split fan-out
 - lane bucket gap checks use sorted vectors and `partition_point`
+
+### Claim Preparation Audit Measurements (2026-09-12)
+
+Five alternating unprofiled release process pairs used eight physical cores (`taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`); three pairs used CPU 0 and one worker. The isolated
+SoA fixture includes idle agents, walking/car egress, normal road travel, imminent lane endings,
+stopped cars, invalid lanes and junction travel. One lane is sufficient for these classification
+branches; placement, route planning, fixture allocation and checksum validation are outside timing.
+Each process warms up three times, then records 21 samples of eight preparations. Every output
+flag matches across versions and worker counts.
+
+| Agents | Eight-core idle before → after, ms | Eight-core mixed before → after, ms |
+| --- | --- | --- |
+| 1,024 | 0.000631 → 0.000693 | 0.001533 → 0.001574 |
+| 16,384 | 0.009895 → 0.010659 | 0.025071 → 0.024581 |
+| 131,072 | 0.080190 → 0.014952 | 0.200441 → 0.030323 |
+| 1,048,576 | 0.648757 → 0.094635 | 1.621333 → 0.225566 |
+
+| Agents | Single-core idle before → after, ms | Single-core mixed before → after, ms |
+| --- | --- | --- |
+| 1,024 | 0.000631 → 0.000694 | 0.001604 → 0.001548 |
+| 16,384 | 0.009894 → 0.010864 | 0.024039 → 0.024992 |
+| 131,072 | 0.080474 → 0.089581 | 0.199360 → 0.200038 |
+| 1,048,576 | 0.648518 → 0.687894 | 1.607550 → 1.636986 |
+
+The accepted tradeoff is a small serial cost: the largest single-worker idle case adds about
+0.039 ms and the mixed case adds 0.029 ms per preparation. Small-city differences remain below
+0.001 ms in these runs. These are classification timings, not full-frame or full-movement timings.
+The existing lane-claim order, actual movement, legal detach checks and lane-gap rules are unchanged.
+
+Run `BINARY --exact simulation::economy::agents::tick::claims::tests::benchmark_claim_preparation
+--ignored --nocapture --test-threads=1` with the affinity/worker settings above. Artifacts are
+`/tmp/metrum-full-audit/traffic-state-{before,final}-identity.json` (source/binary hashes) and
+`traffic-final-matched-bench.json` (commands, runs, timings and checksums). The earlier iterator and
+batched implementations are retained separately in `traffic-state-matched-bench.json` and
+`traffic-batched-matched-bench.json`; they are not acceptance builds. Assembly inspection in
+`traffic-state-inlining-evidence.json` identified the added per-agent helper calls. Both hot
+predicates explicitly retain their original in-loop execution in the accepted build.
+
+### Speed Update Audit Measurements (2026-09-12)
+
+The isolated speed-phase fixture uses one straight road lane and one straight connector, with
+fixed 16 m spacing and the final agent at least 1,000 m from the lane end. It exercises road cars,
+a mix of road cars/walkers/inactive agents/junction cars, and an all-inactive case. Placement,
+route planning, occupancy construction, allocation and result hashing are outside timing. Each
+process performs three warmups and 21 samples of eight updates; the same fixed sequence produces
+identical speed, blocked-time and cooldown bits across builds and worker counts.
+
+Five alternating release process pairs use eight physical cores (`taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`); three pairs use CPU 0 with one worker.
+
+| Agents | Eight-core road before → after, ms | Eight-core mixed before → after, ms |
+| --- | --- | --- |
+| 1,024 | 0.013677 → 0.012956 | 0.012443 → 0.011602 |
+| 16,384 | 0.081637 → 0.068452 | 0.055334 → 0.043820 |
+| 131,072 | 0.613947 → 0.551550 | 0.335940 → 0.280316 |
+| 1,048,576 | 5.971705 → 6.180697 | 3.360615 → 2.515615 |
+
+At 1,048,576 agents, single-core road timing is 43.944670 → 46.577261 ms and mixed timing is
+31.389801 → 24.839429 ms. The fully occupied single-lane stress case therefore has an accepted
+3.5% eight-core / 6% single-core cost; the change is not a universal timing improvement. Idle
+work retains comparable timings. All detailed rows, including smaller single-core cases, are
+in `/tmp/metrum-full-audit/speed-buffer-matched-bench.json`.
+
+The change removes one retained `f32` per speed-buffer slot (4 MiB in the largest fixture) and an
+O(A) serial copy. Existing per-agent gap lookup remains O(log K) in that lane's occupancy, with
+bounded per-edge lane queries. This fixture intentionally concentrates traffic in very long
+lanes; it measures the speed phase rather than gameplay frame time or ordinary city density.
+
+Run `BINARY --exact simulation::economy::agents::tick::speed::tests::benchmark_speed_update
+--ignored --nocapture --test-threads=1` with the settings above. Source/binary hashes are in
+`/tmp/metrum-full-audit/speed-buffer-{before,after}-identity.json`; the matched-results JSON
+contains each command and log path. The regression independently reverses agent storage and
+runs with one/eight workers, comparing every speed and timer bit after six updates.
+
+### Lane Reservation Audit Measurements (2026-09-12)
+
+`AUDIT-01-A11/A12` closes collisions at connector exits and lateral lane changes. The movement
+fixture isolates dispatch, including claim preparation, with 512, 8,192 and 65,536 independent
+lane groups. Each connector group has two 10 m connectors entering one 100 m road lane; cases
+cover an available exit, competing exits and a stationary blocker. Lateral groups have three
+100 m road lanes, competing return/overtake maneuvers into the middle lane and a stopped leader.
+Cruising groups have three cars 20 m apart with no maneuver. Cars move at 4 m/s in 0.25 s steps.
+Fixture creation, occupancy construction and resets are outside timing. Each process uses three
+warmups and 21 single-step samples; no road-end route query occurs in this minimal lane fixture.
+
+Five alternating unprofiled release pairs use eight physical cores (`taskset -c
+0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`); three pairs use CPU 0 and one worker. Source and
+binaries remain fixed, with no concurrent builds or other benchmark jobs. Median process medians:
+
+| Workload | Agents or retained lanes | Eight-core before → after, ms | Single-core before → after, ms |
+| --- | --- | --- | --- |
+| Clear connector exits | 131,072 agents | 4.176683 → 4.231970 | 7.400009 → 7.498916 |
+| Competing connector exits | 131,072 agents | 5.973477 → 5.260708 | 7.990074 → 7.279029 |
+| Blocked connector exits | 196,608 agents | 6.598414 → 6.290669 | 10.158671 → 9.745280 |
+| Competing lateral moves | 196,608 agents | 2.500647 → 3.442970 | 13.851123 → 19.403899 |
+| Cruising | 1,536 agents | 0.026580 → 0.055582 | 0.051212 → 0.066385 |
+| Cruising | 24,576 agents | 0.216818 → 0.237956 | 0.834715 → 1.090162 |
+| Cruising | 196,608 agents | 2.064773 → 2.301867 | 11.618839 → 13.034764 |
+| Idle classification | 1,048,576 agents | 0.093443 → 0.078447 | 0.633645 → 0.558090 |
+| Mixed classification | 1,048,576 agents | 0.234366 → 0.224720 | 1.670352 → 1.637971 |
+| Empty occupancy/claim reset | 1,048,576 lanes | 0.122143 → 0.188869 | 0.122626 → 0.202618 |
+
+The corrected contested cases intentionally admit fewer cars: one winner instead of two, or
+zero when blocked. Those timing differences are not equivalent-output throughput improvements.
+The runner verifies the expected transition counts separately for each build. Classification
+checksums match across builds and worker counts; that fixture has no eligible lateral moves.
+Classification/reset timings use 21 samples of eight preparations after three warmups. The
+empty-agent reset fixture warms all buffers and isolates the wider owner array; reset is serial
+under both worker settings.
+
+The accepted eight-core cost is about 0.24 ms for 196,608 cruising agents and 0.94 ms for the
+extreme lateral case, which attempts 131,072 lane changes at once. Small cruising batches show
+a 0.029 ms increase; the 24,576-agent single-core case costs 30.6% more. These are movement-phase
+measurements, not full-city frame timings. The retained classification buffer stays one byte
+per agent. On 64-bit targets, replacing a boolean claim with an owner adds seven bytes per
+retained lane (7 MiB at 1,048,576 lanes), with O(L) reset work and no per-agent allocation.
+
+The first correct implementation serialized all lane changes and increased the eight-core
+lateral case from 2.601286 to 13.154782 ms; it was rejected. The accepted version reserves fixed
+lateral targets in parallel using minimum agent ID, then executes those moves in parallel.
+Three classification modes in the existing byte avoid repeating the decision for ordinary
+movement. Dynamic handoffs retain stable serial order.
+
+Reproduce with `python3 /tmp/metrum-full-audit/match_lane_transitions_final.py modes-after
+lane-transitions-modes`. It records the exact binary commands for the ignored tests
+`tick::movement_pass::tests::benchmark_lane_transitions`,
+`tick::claims::tests::benchmark_claim_preparation`, and
+`tick::movement_pass::tests::benchmark_empty_lane_claim_reset` under
+`simulation::economy::agents`, with `METRUM_DEBUG=0` and the worker settings above. Results and
+logs are in `/tmp/metrum-full-audit/lane-transitions-modes-matched-bench.json` and
+`lane-transitions-modes-matched-summary.json`. Rust is 1.98.1 (`48a229cea`, 2026-09-01).
+Baseline identity/source is `lane-transitions-final-before-*`, binary SHA-256
+`ed8ee8df8150244d3637cbebbf74318d1e0676a887e6c2e36ab17df7f280e138`;
+accepted identity/source is `lane-transitions-modes-after-*`, binary SHA-256
+`71402a5b38110a6ce1b15ff553e012d0d9814dc52530fe9a0ba292cac6ca18fc`.
+The earlier `lane-transitions-final-after-*` files describe an intermediate implementation.
 
 ## Known Limits
 

@@ -198,7 +198,6 @@ impl DemandSystem {
         self.last_admission_diagnostics = admission_diagnostics;
         self.plan_private_building_actions(
             allocator,
-            households,
             graph,
             zoning,
             &snapshot,
@@ -384,7 +383,6 @@ impl DemandSystem {
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
-        _zoning: &ZoningSystem,
         treasury_balance: f64,
     ) {
         let fiscal_policy = CityFiscalPolicy::from_runtime_tuning(self.runtime_tuning.as_ref());
@@ -392,7 +390,6 @@ impl DemandSystem {
             allocator,
             households,
             graph,
-            _zoning,
             treasury_balance,
             &[],
             &fiscal_policy,
@@ -405,7 +402,6 @@ impl DemandSystem {
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
-        _zoning: &ZoningSystem,
         treasury_balance: f64,
         service_funding_by_building: &[f32],
         fiscal_policy: &CityFiscalPolicy,

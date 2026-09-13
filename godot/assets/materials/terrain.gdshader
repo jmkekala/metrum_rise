@@ -2,7 +2,7 @@ shader_type spatial;
 render_mode cull_disabled, ambient_light_disabled;
 
 uniform sampler2D heightmap;
-uniform sampler2D overlay_texture;
+uniform sampler2D overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D coal_pit_texture : repeat_disable, filter_linear;
 uniform sampler2D field_overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
@@ -69,7 +69,6 @@ uniform float terrain_grass_mid_strength = 0.80;
 uniform float terrain_grass_micro_strength = 0.50;
 uniform float terrain_natural_variation_strength = 0.18;
 uniform float terrain_meadow_mottle_strength = 0.08;
-uniform float terrain_baked_normal_blend = 0.0;
 uniform float terrain_baked_readability_strength = 0.12;
 uniform float terrain_grass_detail_scale = 0.34;
 uniform float terrain_grass_detail_strength = 0.58;
@@ -122,7 +121,6 @@ varying float h;
 varying vec2 var_centered_uv;
 varying vec2 var_water_uv;
 varying vec3 var_world_pos;
-varying vec3 var_mesh_normal;
 varying float var_view_distance_m;
 
 vec2 watermap_centered_uv(vec2 patch_uv) {
@@ -277,18 +275,6 @@ vec3 sample_world_normal(vec2 uv) {
 	return normalize(vec3(-gradient.x, 1.0, -gradient.y));
 }
 
-vec3 terrain_display_normal(vec2 uv) {
-	vec3 height_normal = sample_world_normal(uv);
-	if (!height_is_baked) {
-		return height_normal;
-	}
-	return normalize(mix(
-		height_normal,
-		normalize(var_mesh_normal),
-		clamp(terrain_baked_normal_blend, 0.0, 1.0)
-	));
-}
-
 vec2 stochastic_grass_offset(vec2 cell, float salt) {
 	return hash22(cell + vec2(salt, salt * 1.61803398875)) * 43.0;
 }
@@ -411,8 +397,6 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 	vec3 micro_grass = sample_grass_albedo_cross(world_pos.xz, terrain_grass_detail_scale);
 	float footprint = grass_texture_footprint(micro_uv, micro_cross_uv);
 	float fade_end = max(terrain_grass_detail_fade_end, terrain_grass_detail_fade_start + 0.001);
-	float macro_visibility = 1.0;
-	float mid_visibility = 1.0;
 	float micro_visibility = grass_micro_visibility_from_footprint(footprint);
 	float height_detail = sample_grass_height_cross(world_pos.xz, terrain_grass_detail_scale);
 	if (terrain_grass_visual_debug_mode == 1) {
@@ -428,7 +412,7 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 		return micro_grass;
 	}
 	if (terrain_grass_visual_debug_mode == 5) {
-		return vec3(macro_visibility, mid_visibility, micro_visibility) * grass_mask;
+		return vec3(1.0, 1.0, micro_visibility) * grass_mask;
 	}
 	if (terrain_grass_visual_debug_mode == 6) {
 		vec3 debug_color = base_color;
@@ -436,12 +420,12 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 		debug_color = mix(
 			debug_color,
 			grass_material_layer(debug_color, macro_grass, world_pos.xz, 0.90, 0.50),
-			master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0) * macro_visibility
+			master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0)
 		);
 		debug_color = mix(
 			debug_color,
 			grass_material_layer(debug_color, mid_grass, world_pos.xz, 1.10, 0.58),
-			master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0) * mid_visibility
+			master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0)
 		);
 		debug_color = mix(
 			debug_color,
@@ -466,12 +450,12 @@ vec3 terrain_grass_debug_color(vec3 base_color, vec3 world_pos, float grass_mask
 		vec3 macro_color = mix(
 			base_color,
 			grass_material_layer(base_color, macro_grass, world_pos.xz, 0.90, 0.50),
-			master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0) * macro_visibility
+			master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0)
 		);
 		vec3 mid_color = mix(
 			macro_color,
 			grass_material_layer(macro_color, mid_grass, world_pos.xz, 1.10, 0.58),
-			master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0) * mid_visibility
+			master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0)
 		);
 		vec3 micro_color = mix(
 			mid_color,
@@ -528,20 +512,17 @@ vec3 apply_grass_detail(vec3 color, vec3 world_pos, float grass_mask) {
 	vec3 micro_grass = sample_grass_albedo_cross(world_pos.xz, terrain_grass_detail_scale);
 	float height_detail = sample_grass_height_cross(world_pos.xz, terrain_grass_detail_scale);
 	float footprint = grass_texture_footprint(micro_uv, micro_cross_uv);
-	float micro_screen_visibility = grass_micro_visibility_from_footprint(footprint);
-	float macro_visibility = 1.0;
-	float mid_visibility = 1.0;
-	float micro_visibility = micro_screen_visibility;
+	float micro_visibility = grass_micro_visibility_from_footprint(footprint);
 	float master_strength = grass_mask * clamp(terrain_grass_albedo_strength, 0.0, 1.0);
 	color = mix(
 		color,
 		grass_material_layer(color, macro_grass, world_pos.xz, 0.90, 0.50),
-		master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0) * macro_visibility
+		master_strength * clamp(terrain_grass_macro_strength, 0.0, 1.0)
 	);
 	color = mix(
 		color,
 		grass_material_layer(color, mid_grass, world_pos.xz, 1.10, 0.58),
-		master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0) * mid_visibility
+		master_strength * clamp(terrain_grass_mid_strength, 0.0, 1.0)
 	);
 	color = mix(
 		color,
@@ -794,7 +775,6 @@ void vertex() {
 	vec3 terrain_normal = sample_world_normal(centered_uv);
 	NORMAL = terrain_normal;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	var_mesh_normal = terrain_normal;
 	var_view_distance_m = length((MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz);
 }
 
@@ -802,7 +782,7 @@ void fragment() {
 	float world_elevation = h * height_scale;
 	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);
-	vec3 normal = terrain_display_normal(var_centered_uv);
+	vec3 normal = sample_world_normal(var_centered_uv);
 	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
 	float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
 	ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
@@ -925,7 +905,7 @@ void fragment() {
 					vec3 coal_color = mix(vec3(0.16, 0.135, 0.105), vec3(0.025, 0.023, 0.021), richness);
 					color = mix(color, coal_color, richness * 0.78);
 				} else {
-					color = mix(color, heatmap_col.rgb, 0.6);
+					color = mix(color, heatmap_col.rgb, heatmap_col.a * 0.6);
 				}
 			}
 		}

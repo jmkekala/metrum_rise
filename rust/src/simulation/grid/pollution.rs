@@ -5,7 +5,6 @@
 use super::data_grid::DataGrid;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::zoning::ZoneType;
-use rayon::prelude::*;
 
 /// A grid-based system that simulates industrial pollution.
 ///
@@ -45,7 +44,7 @@ impl PollutionSystem {
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {
             if b.zone_type == ZoneType::Industrial {
-                let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y, w, h);
+                let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y);
                 let gx = gx_raw.round() as i32;
                 let gy = gy_raw.round() as i32;
 
@@ -57,125 +56,23 @@ impl PollutionSystem {
             }
         }
 
-        // 2. Diffusion & 3. Decay (Parallelized)
-        let old_grid = &self.swap;
-
-        self.grid
-            .data
-            .par_chunks_mut(w)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for x in 0..w {
-                    let current = *old_grid.get(x, y).unwrap_or(&0.0);
-
-                    let mut neighbor_sum = 0.0;
-                    let mut count = 0.0;
-
-                    // Neighborhood Sampling
-                    if x > 0 {
-                        neighbor_sum += *old_grid.get(x - 1, y).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if x < w - 1 {
-                        neighbor_sum += *old_grid.get(x + 1, y).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y > 0 {
-                        neighbor_sum += *old_grid.get(x, y - 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-                    if y < h - 1 {
-                        neighbor_sum += *old_grid.get(x, y + 1).unwrap_or(&0.0);
-                        count += 1.0;
-                    }
-
-                    let avg = if count > 0.0 {
-                        neighbor_sum / count
-                    } else {
-                        0.0
-                    };
-
-                    // Diffuse: keep 60% of own, take 40% of avg neighbor. Decay: 99.5% retention.
-                    let propagated = (current * 0.60 + avg * 0.40) * 0.995;
-
-                    // Combine emission (already in row[x]) + diffused state
-                    row[x] = (row[x] + propagated).min(100.0).max(0.0);
-                }
-            });
+        diffuse_emissions!(self.grid, self.swap, 0.60, 0.40, 0.995);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::AssetManifest;
-    use crate::assets::asset::{BuildingData, MeshPart, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::zoning::ZoneType;
     use godot::prelude::Vector2;
-
-    fn register_test_asset(
-        allocator: &mut BuildingAllocator,
-        pack_id: &str,
-        asset_id: &str,
-        zone: ZoneClass,
-    ) -> String {
-        let (household_capacity, worker_capacity) = match zone {
-            ZoneClass::Residential => (Some(6), None),
-            ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
-            ZoneClass::Mixed => (Some(4), Some(2)),
-        };
-        allocator.registry.register(
-            pack_id,
-            AssetManifest {
-                asset_id: asset_id.to_owned(),
-                display_name: "Test".to_owned(),
-                asset_set: None,
-                tags: vec![],
-                thumbnail: None,
-                lods: vec![],
-                mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
-                anchors: vec![],
-                site_surfaces: vec![],
-                building: Some(BuildingData {
-                    flat_size_m2: None,
-                    placement_mode: PlacementMode::ZonedPrivate,
-                    zone_type: Some(zone),
-                    density: Some("low".to_owned()),
-                    lot_width_cells: 3,
-                    lot_depth_cells: 3,
-                    frontage_forward: None,
-                    min_zone_width_cells: None,
-                    min_zone_depth_cells: None,
-                    level: 1,
-                    household_capacity,
-                    worker_capacity,
-                    service_class: None,
-                    economy_profile: None,
-                    extractor: None,
-                    field: None,
-                }),
-                prop: None,
-                vehicle: None,
-                character: None,
-            },
-            String::new(),
-        );
-        format!("{pack_id}:{asset_id}")
-    }
 
     #[test]
     fn test_pollution_diffusion_and_decay() {
         let config = WorldConfig::default();
         let mut system = PollutionSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
-        let industrial_asset = register_test_asset(
-            &mut allocator,
-            "test",
-            "pollution_industrial",
-            ZoneClass::Industrial,
-        );
 
         // 1. Add one industrial source at world (0,0)
         // Default gameplay WorldConfig is 20km x 20km, so (0,0) is at the center of the grid.
@@ -200,7 +97,7 @@ mod tests {
             occupancy: 0,
             worker_count: 0,
             service_funding_override: -1.0,
-            asset_id: industrial_asset,
+            asset_id: String::new(),
             level: 1,
             construction_total_hours: 0,
             construction_remaining_hours: 0,
@@ -230,8 +127,8 @@ mod tests {
         allocator.buildings.push(source_building);
 
         let (gw, gh) = config.get_env_grid_size();
-        let source_gx = (gw / 2) as usize;
-        let source_gy = (gh / 2) as usize;
+        let source_gx = gw / 2;
+        let source_gy = gh / 2;
 
         // 2. Tick 200 times to allow diffusion
         for _ in 0..200 {

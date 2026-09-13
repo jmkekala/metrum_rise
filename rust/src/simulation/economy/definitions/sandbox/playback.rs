@@ -29,6 +29,27 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
         .find(|scenario| scenario.id == scenario_id)
         .ok_or_else(|| format!("scenario '{scenario_id}' not found"))?;
 
+    let catalog = super::super::runtime_compile::compile_runtime_catalog(
+        &project.profiles,
+        &project.resources,
+        &project.runtime_tuning,
+    )?;
+    let import_prices: BTreeMap<&str, f32> = scenario
+        .owa_import_resources
+        .iter()
+        .map(|resource| {
+            let runtime_id = catalog
+                .resource_runtime_id_for_id(resource)
+                .ok_or_else(|| format!("unknown import resource '{resource}'"))?;
+            let price = catalog
+                .unit_price_for_resource(runtime_id)
+                .ok_or_else(|| format!("import resource '{resource}' has no price"))?;
+            Ok((
+                resource.as_str(),
+                price * project.runtime_tuning.owa_import_price_multiplier,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
     let profile_map: BTreeMap<&str, &EconomyProfile> = project
         .profiles
         .iter()
@@ -84,14 +105,16 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
     let mut total_delivered_units = 0.0;
     let mut total_unmet_units = 0.0;
     let mut total_household_cost = 0.0;
-    let mut total_daily_supply = 0.0f32;
-    let mut supply_day_count = 0u32;
     let mut day_stock_zeroed: Option<u32> = None;
     let mut daily = Vec::with_capacity(scenario.duration_days as usize);
     let mut inventories = Inventories::new();
     let mut node_cumulative_profits: BTreeMap<String, f32> = BTreeMap::new();
 
-    let outgoing_edges = build_outgoing_edges(scenario);
+    let outgoing_edges = build_outgoing_edges(scenario, |edge| {
+        let target = node_map[edge.to.as_str()];
+        profile_map[target.ref_id.as_str()].authored_kind() != AuthoredProfileKind::DemandSink
+            || edge.to == demand_sink_node.id
+    });
     let household_price_multiplier = household_cost_multiplier(
         scenario,
         demand_sink_node.id.as_str(),
@@ -119,6 +142,9 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
                 })?;
 
             if profile.authored_kind() == AuthoredProfileKind::DemandSink {
+                if node.id != demand_sink_node.id {
+                    continue;
+                }
                 let delivered_to_sink =
                     take_all_incoming_stock(&mut inventories, node.id.as_str(), &profile.inputs);
                 delivered_today += delivered_to_sink;
@@ -127,24 +153,41 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
                 unmet_today = household_demand_per_day - consumed;
                 household_stock_units -= consumed;
                 household_cost_today += delivered_to_sink
-                    * inferred_unit_price(
-                        scenario,
-                        node.id.as_str(),
-                        &outgoing_edges,
-                        &node_map,
-                        &profile_map,
-                    )
+                    * inferred_unit_price(scenario, node.id.as_str(), &node_map, &profile_map)
                     * household_price_multiplier;
                 continue;
             }
 
-            let throughput = compute_throughput(profile, &inventories, node.id.as_str());
+            let throughput =
+                compute_throughput(profile, &inventories, node.id.as_str(), &import_prices);
             let mut scale = 0.0;
+            let mut daily_input_cost = 0.0;
             if profile.inputs.is_empty() {
                 add_outputs_to_inventory(&mut inventories, node.id.as_str(), &profile.outputs, 1.0);
                 scale = 1.0;
             } else if throughput > 0.0 && profile.base_rate_units_per_day > 0.0 {
                 scale = throughput / profile.base_rate_units_per_day;
+                for input in &profile.inputs {
+                    let local_price = input_unit_price(
+                        node.id.as_str(),
+                        input.resource.as_str(),
+                        scenario,
+                        &node_map,
+                        &profile_map,
+                    );
+                    let required = input.units_per_day * scale;
+                    daily_input_cost += required * local_price;
+                    if let Some(import_price) = import_prices.get(input.resource.as_str()) {
+                        let stock = inventories
+                            .entry(node.id.clone())
+                            .or_default()
+                            .entry(input.resource.clone())
+                            .or_default();
+                        let imported = (required - *stock).max(0.0);
+                        *stock += imported;
+                        daily_input_cost += imported * (import_price - local_price);
+                    }
+                }
                 consume_inputs_from_inventory(
                     &mut inventories,
                     node.id.as_str(),
@@ -176,18 +219,6 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
             };
             let daily_labor_cost = worker_capacity as f32 * profile.wage_max_currency_per_day;
 
-            let mut daily_input_cost = 0.0;
-            for input in &profile.inputs {
-                let unit_price = input_unit_price(
-                    node.id.as_str(),
-                    input.resource.as_str(),
-                    scenario,
-                    &node_map,
-                    &profile_map,
-                );
-                daily_input_cost += input.units_per_day * scale * unit_price;
-            }
-
             let mut daily_revenue = 0.0;
             for output in &profile.outputs {
                 daily_revenue += output.units_per_day * scale * profile.unit_price_currency;
@@ -214,8 +245,6 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
         if stock_days == 0.0 && day_stock_zeroed.is_none() {
             day_stock_zeroed = Some(day);
         }
-        total_daily_supply += delivered_today;
-        supply_day_count += 1;
         total_delivered_units += delivered_today;
         total_unmet_units += unmet_today;
         total_household_cost += household_cost_today;
@@ -243,8 +272,7 @@ pub(in crate::simulation::economy::definitions) fn run_sandbox(
         household_demand_per_day,
         lowest_stock_days,
         day_stock_zeroed,
-        total_daily_supply,
-        supply_day_count,
+        total_delivered_units,
         total_unmet_units,
         node_cumulative_profits: &node_cumulative_profits,
     });

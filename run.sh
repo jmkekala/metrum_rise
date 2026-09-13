@@ -740,26 +740,31 @@ if [ $TEST -eq 1 ]; then
     fi
     echo "Running Godot bridge tests..."
     cd ../godot
-    if ! godot --headless --script res://tests/field_edit_tool_test.gd; then
-        exit 1
+    for bridge_test_script in \
+        economy_machinery_test field_edit_tool_test building_asset_reload_test \
+        environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
+        vehicle_ground_support_test selection_gesture_test ui_settings_test \
+        network_tool_chunk_renderer_test road_benchmark_metrics_test \
+        road_junction_preview_test road_preview_stream_test camera_save_load_test; do
+        bridge_test_command=(godot --headless --script "res://tests/${bridge_test_script}.gd")
+        # This regression probes inputs that previously stalled the simulation thread.
+        if [ "$bridge_test_script" = simulation_speed_input_test ]; then
+            bridge_test_command=(timeout --kill-after=2s 15s "${bridge_test_command[@]}")
+        fi
+        if ! "${bridge_test_command[@]}"; then
+            exit 1
+        fi
+    done
+    if command -v xvfb-run >/dev/null 2>&1; then
+        echo "Running rendered terrain shader tests..."
+        if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
+            --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
+            exit 1
+        fi
+    else
+        echo "Rendered terrain shader tests skipped: xvfb-run is unavailable."
     fi
-    if ! godot --headless --script res://tests/vehicle_ground_support_test.gd; then
-        exit 1
-    fi
-    if ! godot --headless --script res://tests/network_tool_chunk_renderer_test.gd; then
-        exit 1
-    fi
-    if ! godot --headless --script res://tests/road_benchmark_metrics_test.gd; then
-        exit 1
-    fi
-    if ! godot --headless --script res://tests/road_junction_preview_test.gd; then
-        exit 1
-    fi
-    if ! godot --headless --script res://tests/road_preview_stream_test.gd; then
-        exit 1
-    fi
-    godot --headless --script res://tests/camera_save_load_test.gd
-    exit $?
+    exit 0
 fi
 
 echo "Launching Metrum Rise..."

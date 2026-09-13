@@ -74,10 +74,16 @@ impl Dependencies {
     ) {
         let mut spans = BTreeMap::new();
         let mut nodes = BTreeMap::new();
-        let x = |v: f32| ((v - surface.chunk_origin_x_m) / surface.chunk_span_m).floor() as i32;
-        let z = |v: f32| ((v - surface.chunk_origin_z_m) / surface.chunk_span_m).floor() as i32;
-        for cx in x(bounds.0)..=x(bounds.2) {
-            for cz in z(bounds.1)..=z(bounds.3) {
+        let min = RoadSurfaceSystem::query_chunk_coords_for_world(
+            f64::from(bounds.0),
+            f64::from(bounds.1),
+        );
+        let max = RoadSurfaceSystem::query_chunk_coords_for_world(
+            f64::from(bounds.2),
+            f64::from(bounds.3),
+        );
+        for cx in min.0..=max.0 {
+            for cz in min.1..=max.1 {
                 if let Some(ids) = surface.query_chunk_spans.get(&(cx, cz)) {
                     for id in ids {
                         if let Some(piece) = surface.compiled_visual_span_pieces.get(id) {
@@ -186,7 +192,7 @@ impl BuildingAllocator {
         if self.field_clearance.overlaps_polygon(&geometry.corners) {
             return Err("field_overlap");
         }
-        if self.parcel_geometry_overlaps_explicit_site(geometry) {
+        if self.parcel_geometry_overlaps_explicit_site(geometry, zoning.config.zone_cell_m) {
             return Err("parcel overlaps a placed building site");
         }
         if profile_id == 0 {
@@ -373,5 +379,123 @@ impl BuildingAllocator {
         self.site_feasibility
             .solves
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
+
+    #[test]
+    fn road_dependencies_use_query_grid_and_invalidate_local_pieces() {
+        let allocator = BuildingAllocator::new();
+        let terrain = TerrainSystem::new(128, 128);
+        let mut graph = RegionGraph::new();
+        let centres = [-224.0, 224.0];
+        for x in centres {
+            let points = vec![
+                Vector3::new(x - 20.0, 0.0, 0.0),
+                Vector3::new(x + 20.0, 0.0, 0.0),
+            ];
+            let start = graph.add_node(points[0], NodeType::Junction);
+            let end = graph.add_node(points[1], NodeType::Junction);
+            graph.add_edge(Edge {
+                start_node: start,
+                end_node: end,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                width: 7.0,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                physical_length: 40.0,
+                geometry: points.clone(),
+                physical_geometry: points,
+                ..Edge::default()
+            });
+        }
+        for (span, origin_x, origin_z) in [(32.0, 0.0, 0.0), (512.0, -10_000.0, 5_000.0)] {
+            let mut surface = RoadSurfaceSystem::new_with_chunk_grid(span, origin_x, origin_z);
+            for edge in 0..graph.edge_count() {
+                surface.mark_edge_dirty(&graph, edge);
+            }
+            assert!(surface.compile_dirty(&graph, &terrain));
+            for (local, x) in centres.into_iter().enumerate() {
+                let bounds = (x - 24.0, -12.0, x + 24.0, 12.0);
+                let (spans, nodes) = Dependencies::roads(bounds, &surface);
+                assert_eq!(
+                    spans.keys().copied().collect::<Vec<_>>(),
+                    vec![local],
+                    "render span={span}, origin=({origin_x},{origin_z}), road={local}"
+                );
+                assert_eq!(
+                    nodes.keys().copied().collect::<Vec<_>>(),
+                    vec![(local * 2) as u32, (local * 2 + 1) as u32]
+                );
+                let mut terrain_snapshot = TerrainVisualOverlay::new(&terrain);
+                terrain_snapshot.capture_region(&terrain, bounds.0, bounds.1, bounds.2, bounds.3);
+                let dependencies = Dependencies {
+                    bounds,
+                    terrain: terrain_snapshot,
+                    spans,
+                    nodes,
+                    sites: allocator.terrain_site_snapshot_for_world_bounds(
+                        bounds.0, bounds.1, bounds.2, bounds.3,
+                    ),
+                };
+                let matches = |road_surface: &RoadSurfaceSystem| {
+                    dependencies.matches(
+                        &allocator,
+                        BuildingSiteEnvironment {
+                            road_surface,
+                            terrain: &terrain,
+                        },
+                    )
+                };
+                assert!(matches(&surface));
+
+                // Replace immutable published records without touching terrain, so road
+                // dependency tracking alone must distinguish remote and local updates.
+                let remote = 1 - local;
+                let replacement = Arc::new(
+                    surface.compiled_visual_span_pieces[&remote]
+                        .as_ref()
+                        .clone(),
+                );
+                surface
+                    .compiled_visual_span_pieces
+                    .insert(remote, replacement);
+                assert!(
+                    matches(&surface),
+                    "remote road replacement must preserve local feasibility"
+                );
+                let replacement =
+                    Arc::new(surface.compiled_visual_span_pieces[&local].as_ref().clone());
+                let original = surface
+                    .compiled_visual_span_pieces
+                    .insert(local, replacement)
+                    .unwrap();
+                assert!(
+                    !matches(&surface),
+                    "local road replacement must invalidate feasibility"
+                );
+                surface.compiled_visual_span_pieces.insert(local, original);
+                assert!(matches(&surface));
+
+                let node = (local * 2) as u32;
+                let replacement =
+                    Arc::new(surface.compiled_visual_node_pieces[&node].as_ref().clone());
+                let original = surface
+                    .compiled_visual_node_pieces
+                    .insert(node, replacement)
+                    .unwrap();
+                assert!(
+                    !matches(&surface),
+                    "local node replacement must invalidate feasibility"
+                );
+                surface.compiled_visual_node_pieces.insert(node, original);
+            }
+        }
     }
 }

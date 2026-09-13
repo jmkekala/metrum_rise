@@ -6,6 +6,131 @@ use super::support::*;
 use super::*;
 
 #[test]
+#[ignore = "manual matched release timing of daily building compatibility maintenance"]
+fn benchmark_rezone_maintenance() {
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
+    use crate::simulation::zoning::parcels::geometry_from_attachment;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for count in [1, 1_024, 65_536, 262_144] {
+        let mut allocator = BuildingAllocator::new();
+        let asset = register_test_asset(&mut allocator, "test", "house", ZoneClass::Residential);
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut agents = AgentSystem::new();
+        let mut households = HouseholdSystem::new();
+        let mut logistics = ShipmentSystem::new();
+        let mut treasury = 0.0;
+        let network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let length = count as f32 * 20.0;
+        let points = vec![Vector3::ZERO, Vector3::new(length, 0.0, 0.0)];
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(points[1], NodeType::Junction);
+        let edge = graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            width: 7.0,
+            physical_length: length,
+            geometry: points.clone(),
+            physical_geometry: points,
+            ..Edge::default()
+        });
+        for idx in 0..count {
+            let pending = idx % 2 == 0;
+            let zone = if pending {
+                ZoneType::Commercial
+            } else {
+                ZoneType::Residential
+            };
+            let profile = zoning
+                .profiles
+                .default_runtime_id_for_zone_type(zone)
+                .unwrap();
+            let geometry = geometry_from_attachment(
+                &graph,
+                edge,
+                1,
+                (idx as f32 + 0.5) * 20.0 / length,
+                20.0,
+                20.0,
+            );
+            let mut building =
+                indexed_test_building(asset.clone(), ZoneType::Residential, idx as i32);
+            building.center_x = geometry.center.x;
+            building.center_y = geometry.center.y;
+            building.width_cells = 1;
+            building.depth_cells = 1;
+            building.parcel_id = zoning.parcels.insert_new(geometry, profile).raw();
+            building.pending_redevelopment = pending;
+            // Keep the countdown alive for all 87 measured/warmup updates; setup and expiry
+            // side effects are outside this compatibility/countdown benchmark's scope.
+            building.rezone_grace_days_remaining = if pending { u8::MAX } else { 0 };
+            assert!(zoning.occupy_parcel(building.parcel_id, idx));
+            allocator.buildings.push(building);
+        }
+        let revision = allocator.building_ref_revision();
+        let occupancy_revision = zoning.overlay_occupancy_revision();
+        let mut execute = || {
+            allocator.cleanup_stale_buildings(
+                1,
+                black_box(&mut zoning),
+                &mut agents,
+                &mut households,
+                &mut logistics,
+                &mut treasury,
+                &graph,
+                &network.lane_system,
+            )
+        };
+        for _ in 0..3 {
+            execute();
+        }
+        let mut samples = [0.0; 21];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..4 {
+                execute();
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
+        }
+        samples.sort_by(f64::total_cmp);
+        assert_eq!(allocator.buildings.len(), count);
+        assert_eq!(allocator.building_ref_revision(), revision);
+        assert_eq!(zoning.overlay_occupancy_revision(), occupancy_revision);
+        let mut hash = DefaultHasher::new();
+        for (idx, building) in allocator.buildings.iter().enumerate() {
+            assert_eq!(building.pending_redevelopment, idx % 2 == 0);
+            assert_eq!(
+                building.rezone_grace_days_remaining,
+                if idx % 2 == 0 { 168 } else { 0 }
+            );
+            assert_eq!(
+                zoning
+                    .parcel_by_raw_id(building.parcel_id)
+                    .unwrap()
+                    .occupied_building(),
+                Some(idx)
+            );
+            (
+                building.parcel_id,
+                building.rezone_grace_days_remaining,
+                building.center_x.to_bits(),
+                building.center_y.to_bits(),
+            )
+                .hash(&mut hash);
+        }
+        eprintln!(
+            "rezone_maintenance buildings={count} median_ms={:.9} checksum={}",
+            samples[10],
+            hash.finish()
+        );
+    }
+}
+
+#[test]
 fn explicit_transform_rebuild_uses_saved_frontage_on_graded_bend() {
     use crate::simulation::network::graph::Edge;
     use crate::simulation::network::types::NodeType;
@@ -59,147 +184,167 @@ fn explicit_transform_rebuild_uses_saved_frontage_on_graded_bend() {
     }
 }
 
-#[test]
-fn test_building_removal_clears_zoning_occupancy() {
-    use crate::simulation::network::TransitNetwork;
-    use crate::simulation::zoning::ZoningSystem;
-    use godot::prelude::Vector3;
+fn rezoning_fixture() -> (BuildingAllocator, ZoningSystem, RegionGraph) {
+    use crate::simulation::network::graph::Edge;
+    use crate::simulation::network::types::NodeType;
 
     let mut allocator = BuildingAllocator::new();
-    let asset_id = register_test_asset(
-        &mut allocator,
-        "base",
-        "b.res.house",
-        ZoneClass::Residential,
-    );
-    let map_cfg = WorldConfig::default();
-    let mut zoning = ZoningSystem::new(&map_cfg);
+    let asset = register_test_asset(&mut allocator, "test", "house", ZoneClass::Residential);
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut graph = RegionGraph::new();
+    let points = vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)];
+    let start = graph.add_node(points[0], NodeType::Junction);
+    let end = graph.add_node(points[1], NodeType::Junction);
+    let edge = graph.add_edge(Edge {
+        start_node: start,
+        end_node: end,
+        width: 7.0,
+        physical_length: 100.0,
+        geometry: points.clone(),
+        physical_geometry: points,
+        ..Edge::default()
+    });
+    let profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .unwrap();
+    for (idx, x) in [25.0, 75.0].into_iter().enumerate() {
+        let id = zoning
+            .place_or_rezone_default_parcel_at(x, -20.0, profile, &graph)
+            .unwrap();
+        let parcel = zoning.parcel_by_raw_id(id.raw()).unwrap();
+        let center = parcel.front_center() + parcel.normal() * (zoning.config.zone_cell_m * 0.5);
+        let mut building = indexed_test_building(asset.clone(), ZoneType::Residential, 0);
+        building.center_x = center.x;
+        building.center_y = center.y;
+        building.width_cells = 1;
+        building.depth_cells = 1;
+        building.zone_profile_runtime_id = profile;
+        building.parcel_id = id.raw();
+        building.edge_idx = edge;
+        building.facing_dir = -parcel.normal();
+        building.frontage_t = parcel.frontage_center_t();
+        building.side_offset = graph.edge(edge).width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        building.side = parcel.side();
+        allocator.buildings.push(building);
+        assert!(zoning.occupy_parcel(id.raw(), idx));
+    }
+    (allocator, zoning, graph)
+}
+
+#[test]
+fn test_building_removal_clears_zoning_occupancy() {
+    let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
-    let mut graph = RegionGraph::new();
-
-    network.add_road(
-        &mut graph,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        1,
-        1,
-        crate::simulation::network::types::EdgeClass::Standard,
-        &mut zoning,
-        &mut allocator,
-    );
-
-    paint_zone_rect(
-        &mut zoning,
-        &graph,
-        -50.0,
-        -50.0,
-        150.0,
-        50.0,
-        ZoneType::Residential,
-    );
-    let parcel = zoning
-        .parcels()
-        .iter()
-        .find(|parcel| parcel.is_available())
-        .expect("residential test parcel")
-        .clone();
-    let center = parcel.front_center() + parcel.normal() * (map_cfg.zone_cell_m * 0.5);
-    allocator.buildings.push(Building {
-        center_x: center.x,
-        center_y: center.y,
-        support_height_m: 0.0,
-        width_cells: 1,
-        depth_cells: 1,
-        zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
-        parcel_id: parcel.id().raw(),
-        zone_type: ZoneType::Residential,
-        facing_dir: parcel.normal(),
-        frontage_t: parcel.frontage_center_t(),
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: parcel.side(),
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id,
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 500.0,
-        profit_tax_budget_baseline: 500.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
-    zoning.occupy_parcel(parcel.id().raw(), 0);
+    let parcel_id = allocator.buildings[0].parcel_id;
+    let surviving_parcel_id = allocator.buildings[1].parcel_id;
+    let center = zoning.parcel_by_raw_id(parcel_id).unwrap().center();
     let commercial_profile = zoning
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Commercial)
-        .expect("commercial profile");
-    zoning
-        .parcel_by_raw_id_mut(parcel.id().raw())
-        .expect("parcel")
-        .set_zone_profile_runtime_id(commercial_profile);
-
-    allocator.tick(
-        &mut zoning,
-        &mut agents,
-        &mut households,
-        &mut logistics,
-        &mut network,
-        &mut graph,
+        .unwrap();
+    assert_eq!(
+        zoning
+            .place_or_rezone_default_parcel_at(center.x, center.y, commercial_profile, &graph)
+            .unwrap()
+            .raw(),
+        parcel_id
     );
 
-    assert_eq!(allocator.buildings.len(), 1);
-    assert!(allocator.buildings[0].pending_redevelopment);
-
-    for _ in 0..3 {
-        allocator.tick(
+    // Initial detection starts three full days; only the following daily calls consume them.
+    for remaining in [3, 2, 1, 0] {
+        allocator.maintain(
+            1,
             &mut zoning,
             &mut agents,
             &mut households,
             &mut logistics,
+            &mut 0.0,
             &mut network,
             &mut graph,
         );
+        if remaining > 0 {
+            assert_eq!(allocator.buildings.len(), 2);
+            assert!(allocator.buildings[0].pending_redevelopment);
+            assert_eq!(
+                allocator.buildings[0].rezone_grace_days_remaining,
+                remaining
+            );
+        }
     }
 
     assert_eq!(
         allocator.buildings.len(),
-        0,
-        "Building should be removed after the rezoning grace expires"
+        1,
+        "Only the rezoned building should be removed"
     );
-    assert!(
+    assert_eq!(
         zoning
-            .parcel_by_raw_id(parcel.id().raw())
-            .and_then(|parcel| parcel.occupied_building())
-            .is_none(),
-        "Parcel occupancy should be cleared after building removal"
+            .parcel_by_raw_id(parcel_id)
+            .unwrap()
+            .occupied_building(),
+        None
     );
+    assert_eq!(allocator.buildings[0].parcel_id, surviving_parcel_id);
+    assert_eq!(
+        zoning
+            .parcel_by_raw_id(surviving_parcel_id)
+            .unwrap()
+            .occupied_building(),
+        Some(0),
+        "the surviving parcel must follow the allocator swap"
+    );
+}
+
+#[test]
+fn test_rezoning_recovery_clears_pending_redevelopment() {
+    let (mut allocator, mut zoning, mut graph) = rezoning_fixture();
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut network = TransitNetwork::new();
+    let mut logistics = ShipmentSystem::new();
+    let parcel_id = allocator.buildings[0].parcel_id;
+    let center = zoning.parcel_by_raw_id(parcel_id).unwrap().center();
+    for zone in [ZoneType::Commercial, ZoneType::Residential] {
+        let profile = zoning
+            .profiles
+            .default_runtime_id_for_zone_type(zone)
+            .unwrap();
+        assert_eq!(
+            zoning
+                .place_or_rezone_default_parcel_at(center.x, center.y, profile, &graph)
+                .unwrap()
+                .raw(),
+            parcel_id
+        );
+        allocator.maintain(
+            0,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut 0.0,
+            &mut network,
+            &mut graph,
+        );
+        assert_eq!(allocator.buildings.len(), 2);
+        let pending = zone == ZoneType::Commercial;
+        assert_eq!(allocator.buildings[0].pending_redevelopment, pending);
+        assert_eq!(
+            allocator.buildings[0].rezone_grace_days_remaining,
+            if pending { 3 } else { 0 }
+        );
+        assert_eq!(
+            zoning
+                .parcel_by_raw_id(parcel_id)
+                .unwrap()
+                .occupied_building(),
+            Some(0)
+        );
+    }
 }
 
 #[test]
@@ -260,63 +405,29 @@ fn test_immigration_claims_vacant_home() {
         .expect("residential test parcel")
         .clone();
     let center = parcel.front_center() + parcel.normal() * (map_cfg.zone_cell_m * 0.5);
-    allocator.buildings.push(Building {
-        center_x: center.x,
-        center_y: center.y,
-        support_height_m: 0.0,
-        width_cells: 1,
-        depth_cells: 1,
-        zone_profile_runtime_id: parcel.zone_profile_runtime_id(),
-        parcel_id: parcel.id().raw(),
-        zone_type: ZoneType::Residential,
-        facing_dir: parcel.normal(),
-        frontage_t: parcel.frontage_center_t(),
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: edge_id,
-        side: parcel.side(),
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_asset_id,
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 500.0,
-        profit_tax_budget_baseline: 500.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
+    let mut building = indexed_test_building(residential_asset_id, ZoneType::Residential, 0);
+    building.center_x = center.x;
+    building.center_y = center.y;
+    building.width_cells = 1;
+    building.depth_cells = 1;
+    building.zone_profile_runtime_id = parcel.zone_profile_runtime_id();
+    building.parcel_id = parcel.id().raw();
+    building.facing_dir = parcel.normal();
+    building.frontage_t = parcel.frontage_center_t();
+    building.side_offset = 1.0;
+    building.edge_idx = edge_id;
+    building.side = parcel.side();
+    allocator.buildings.push(building);
     zoning.occupy_parcel(parcel.id().raw(), 0);
     allocator.rebuild_zone_index();
 
-    allocator.tick(
+    allocator.maintain(
+        1,
         &mut zoning,
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &mut network,
         &mut graph,
     );
@@ -427,104 +538,31 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
         .expect("grocery starter profile")
         .runtime_id;
 
-    allocator.buildings.push(Building {
-        center_x: 10.0,
-        center_y: 10.0,
-        support_height_m: 0.0,
-        width_cells: 2,
-        depth_cells: 2,
-        zone_profile_runtime_id: 0,
-        parcel_id: 0,
-        zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.1,
-        side_offset: 1.0,
-        budget_distress: false,
-        is_deserted: false,
-        edge_idx: edge_id,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 1,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_asset.clone(),
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 500.0,
-        profit_tax_budget_baseline: 500.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
-    allocator.buildings.push(Building {
-        center_x: 40.0,
-        center_y: 10.0,
-        support_height_m: 0.0,
-        width_cells: 2,
-        depth_cells: 2,
-        zone_profile_runtime_id: 0,
-        parcel_id: 0,
-        zone_type: ZoneType::Commercial,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.4,
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: edge_id,
-        side: 1,
-        cell_x: 4,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: commercial_asset,
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: grocery_profile_runtime_id,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 500.0,
-        profit_tax_budget_baseline: 500.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
+    for (asset_id, zone_type, center_x, frontage_t, cell_x, occupancy, profile_id) in [
+        (residential_asset, ZoneType::Residential, 10.0, 0.1, 0, 1, 0),
+        (
+            commercial_asset,
+            ZoneType::Commercial,
+            40.0,
+            0.4,
+            4,
+            0,
+            grocery_profile_runtime_id,
+        ),
+    ] {
+        let mut building = indexed_test_building(asset_id, zone_type, 0);
+        building.center_x = center_x;
+        building.center_y = 10.0;
+        building.width_cells = 2;
+        building.depth_cells = 2;
+        building.frontage_t = frontage_t;
+        building.side_offset = 1.0;
+        building.edge_idx = edge_id;
+        building.cell_x = cell_x;
+        building.occupancy = occupancy;
+        building.economy_profile_runtime_id = profile_id;
+        allocator.buildings.push(building);
+    }
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
@@ -539,7 +577,6 @@ fn test_hourly_startup_admission_avoids_zero_rounding() {
     households.households[household_id].stock = 6.0;
     households.households[household_id].stock_days = 3.0;
 
-    let zoning = crate::simulation::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut demand = DemandSystem::new();
     for _ in 0..4 {
         demand.run_hourly_pass(&allocator, &households, &graph, &zoning, 1_000.0);

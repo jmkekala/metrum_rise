@@ -88,7 +88,10 @@ pub(super) unsafe fn arrive_in_building(
     }
 }
 
-unsafe fn clear_network_state(i: usize, slices: &MovementSlices) {
+/// Clears lane, path and maneuver state while retaining the access plan.
+///
+/// Safety: `i` must be unique to the current worker for every raw slice in `slices`.
+pub(super) unsafe fn clear_network_state(i: usize, slices: &MovementSlices) {
     unsafe {
         *slices.cur_n.get_mut(i) = u32::MAX;
         *slices.cur_e.get_mut(i) = usize::MAX;

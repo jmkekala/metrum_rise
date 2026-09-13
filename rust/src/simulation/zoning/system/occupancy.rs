@@ -28,9 +28,13 @@ impl ZoningSystem {
         changed
     }
 
-    /// Remaps a building index inside parcel occupancy after allocator swap-remove.
-    pub fn remap_parcel_occupancy(&mut self, old_idx: usize, new_idx: usize) {
-        if self.parcels.remap_occupied_building(old_idx, new_idx) {
+    /// Remaps the known parcel's building index after allocator swap-remove or its undo.
+    /// A missing parcel or stale old occupant leaves both state and revision unchanged.
+    pub fn remap_parcel_occupancy(&mut self, parcel_id: u64, old_idx: usize, new_idx: usize) {
+        if self
+            .parcels
+            .remap_occupied_building(ParcelId::from_raw(parcel_id), old_idx, new_idx)
+        {
             self.bump_overlay_occupancy_revision();
         }
     }

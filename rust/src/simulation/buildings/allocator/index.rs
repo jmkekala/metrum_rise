@@ -9,6 +9,46 @@ use godot::prelude::Vector3;
 use std::collections::HashMap;
 
 impl BuildingAllocator {
+    /// Finds the nearest building centre strictly within the inspector's 30 m pick radius.
+    /// Ties prefer the lowest building index. Clean queries visit at most four 512 m chunks
+    /// without allocating; a stale allocator index is rebuilt before searching.
+    pub(crate) fn nearest_building_idx_at(&mut self, world_x: f32, world_z: f32) -> Option<usize> {
+        if !world_x.is_finite() || !world_z.is_finite() {
+            return None;
+        }
+        if self.dirty_index {
+            self.rebuild_zone_index();
+        }
+        let radius = 30.0;
+        let min_chunk =
+            RegionGraph::get_chunk_coords(Vector3::new(world_x - radius, 0.0, world_z - radius));
+        let max_chunk =
+            RegionGraph::get_chunk_coords(Vector3::new(world_x + radius, 0.0, world_z + radius));
+        let mut best = None;
+        let mut best_distance_sq = radius * radius;
+        for chunk_x in min_chunk.0..=max_chunk.0 {
+            for chunk_z in min_chunk.1..=max_chunk.1 {
+                let Some(indices) = self.building_chunks.get(&(chunk_x, chunk_z)) else {
+                    continue;
+                };
+                for &idx in indices {
+                    let building = &self.buildings[idx];
+                    let dx = building.center_x - world_x;
+                    let dz = building.center_y - world_z;
+                    let distance_sq = dx * dx + dz * dz;
+                    if distance_sq < best_distance_sq
+                        || (distance_sq == best_distance_sq
+                            && best.is_some_and(|previous| idx < previous))
+                    {
+                        best = Some(idx);
+                        best_distance_sq = distance_sq;
+                    }
+                }
+            }
+        }
+        best
+    }
+
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
     pub fn rebuild_zone_index(&mut self) {
         for list in &mut self.zone_index {
@@ -212,19 +252,6 @@ impl BuildingAllocator {
                 .then(|| baseline_private_zone_slot(ZoneType::Residential))
                 .flatten()
         })
-    }
-
-    /// Pick a random building from a specific zone type. O(1).
-    pub fn get_random_building_by_zone(
-        &self,
-        zone: ZoneType,
-        rng: &mut impl rand::Rng,
-    ) -> Option<usize> {
-        let list = &self.zone_index[baseline_private_zone_slot(zone)?];
-        if list.is_empty() {
-            return None;
-        }
-        Some(list[rng.gen_range(0..list.len())])
     }
 
     /// Returns `(endpoint_node, building_index)` pairs for all buildings of `zone`

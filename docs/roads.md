@@ -144,6 +144,112 @@ lanes in the same closure near their preserved world position; the stored `lane_
 derived from the same 3D lane arc-length metric used by lane geometry. A connector must never
 survive while targeting an orphaned physical lane.
 
+Full and incremental rebuilds share physical-lane and node-connection construction. Incremental
+updates assign new IDs in sorted edge/node order and gather surviving lane references only from
+the affected nodes' existing adjacency. Only lanes arriving at a rebuilt node lose their old
+connections; the opposite direction on a preserved road retains the untouched far-end junction.
+Local discovery/map work scales with incident lanes, plus O(K log K) sorting of K affected owners
+and their existing geometry/connector work. Ordered publication preserves deterministic IDs.
+
+Reattachment chooses the smallest squared distance, then the smallest lane ID for an exact tie
+(`AUDIT-01-A14`). Approximate distance ties are not transitive and can make the selected lane
+depend on unordered edge iteration. The query remains allocation-free and scans only lanes in
+the affected closure; its cost is O(P), where P is their total polyline point count. The existing
+outer invalidation/reattachment passes still visit the agent store; this change does not add a
+new agent spatial index or claim to remove that O(A) work.
+
+### Lane Reattachment Audit Measurements (2026-09-12)
+
+Five alternating unprofiled CPU-0 release pairs measure the local query against two connected
+100 m roads with four vehicle lanes. Prebuilt positions span longitudinal coordinates 0–200 m
+and lateral coordinates −5–5 m. Fixture construction and result hashing are outside timing;
+each process performs three warmups and 21 query batches. Selected lane IDs, lane distances and
+squared-distance checksums match across builds and all runs. The separate close-distance/order
+regression intentionally changes the old incorrect result and also checks exact ties.
+
+| Queries | Before → after median, ms |
+| --- | --- |
+| 1,024 | 0.078691 → 0.076529 |
+| 16,384 | 1.256949 → 1.235671 |
+| 131,072 | 10.059423 → 9.889772 |
+
+Three further alternating pairs run the existing populated paved-site planning fixture on
+eight physical cores (`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`). Four local occupied
+paved sites and the measured T-junction remain fixed while remote buildings, parcels, agents
+and roads grow. Each build verifies identical local products across all background sizes.
+After three warmups, each size measures 100 planning/readiness/worker calls; fixture preparation
+is excluded and the one-time snapshot is reported separately.
+
+| Remote buildings / roads | Total agents | Plan before → after, ms | Worker before → after, ms | Snapshot before → after, ms |
+| --- | --- | --- | --- | --- |
+| 0 / 0 | 24 | 19.713903 → 19.978799 | 20.671695 → 20.863355 | 0.006833 → 0.006239 |
+| 1,000 / 4 | 6,024 | 19.934972 → 19.654014 | 20.728349 → 20.633692 | 0.054038 → 0.055384 |
+| 10,000 / 40 | 60,024 | 19.813491 → 20.078570 | 20.793456 → 20.633240 | 0.352461 → 0.347382 |
+| 100,000 / 391 | 600,024 | 20.382618 → 19.840608 | 20.969874 → 20.822044 | 3.471363 → 3.376629 |
+
+These are medians of process medians. Local planning remains comparable and independent of
+background size; snapshot construction still scales with the stored city. This planning fixture
+does not time applying an edit or remapping the agent store. No concurrent builds or other
+benchmark jobs ran during timing, and both source trees and executables remained fixed.
+
+Reproduce with `python3 /tmp/metrum-full-audit/match_lane_reattachment.py`. The runner records
+commands for `simulation::economy::agents::remap::tests::benchmark_lane_reattachment` and
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using
+`--exact --ignored --nocapture --test-threads=1` and `METRUM_DEBUG=0`. Query runs use one worker;
+planning runs use eight. Results are in `lane-reattach-matched-{bench,summary}.json` under that
+directory. `lane-reattach-{before,after}-identity.json` records all source hashes and Rust 1.98.1
+(`48a229cea`, 2026-09-01). Binary SHA-256 values are
+`d7490495dd5c66a0a9ddd3e86d013ac1e8e756e4ae6828096a805c0540b05bf4` before and
+`14e2f21e2685cae09f4f0aed7ba7057b4fa40515f1d099de9c60c60fb93a4651` after.
+
+### Lane Rebuild Audit Measurements (2026-09-12)
+
+`AUDIT-01-A16` reproduces two incremental-update failures: an untouched far-end junction loses
+its outgoing connections, and identical edits assign different physical/connector IDs through
+unordered sets. The corrected tests preserve remote connections and compare 32 repeated edits.
+The shared builders replace copied full/incremental code, three fixture closures reuse the existing
+road helper, and two weaker tests are removed. One checked no vehicle routes because its loop only
+encountered pedestrian table entries; the other called every connector a crosswalk. Existing tests
+retain actual vehicle turns, crosswalk markings, lane geometry and full/incremental equivalence.
+
+Three alternating CPU-0/one-worker release pairs run
+`simulation::network::lanes::tests::rebuild_benchmark::incremental_lane_rebuild_scaling`.
+The fixed frontier has two rebuilt roads and one preserved road. Each process adds isolated remote
+roads, builds the graph/lanes outside timing, warms one update, then measures 21 updates. Local
+physical and connector geometry, distances, markings and destinations are hashed after timing;
+references use lane roles so background-dependent numeric IDs do not affect the comparison.
+Products match across background sizes and repeats within each version. The corrected version
+intentionally differs from the baseline because the far-end connections now survive.
+
+| Remote roads | Local rebuild before / after, ms | One-time fixture setup before / after, ms |
+| ---: | ---: | ---: |
+| 0 | 0.013385 / 0.013207 | 0.132 / 0.128 |
+| 1,000 | 0.089305 / 0.014780 | 1.876 / 1.880 |
+| 10,000 | 0.891426 / 0.013518 | 19.597 / 19.573 |
+| 100,000 | 24.387279 / 0.011468 | 206.802 / 206.027 |
+
+The previous update populated a temporary map from every surviving road; the corrected map stays
+local. These are lane-update timings, not complete road-commit or frame timings. As a separate
+check, three matched pairs run the populated paved-site planning fixture above on eight physical
+P-cores / Rayon workers. All local planning products remain identical as remote buildings,
+parcels, agents and roads grow. The largest fixture has 100,000 remote buildings, 391 remote roads
+and 600,024 total agents.
+
+| Remote buildings | Plan before / after, ms | Worker before / after, ms | Snapshot before / after, ms |
+| ---: | ---: | ---: | ---: |
+| 0 | 20.071 / 19.939 | 20.934 / 20.803 | 0.007431 / 0.006799 |
+| 1,000 | 19.969 / 19.683 | 20.608 / 20.749 | 0.052251 / 0.055508 |
+| 10,000 | 20.176 / 19.932 | 20.872 / 20.815 | 0.349490 / 0.354304 |
+| 100,000 | 20.150 / 20.396 | 20.857 / 20.878 | 3.349324 / 3.282118 |
+
+Planning remains comparable; this does not claim removal of its one-time world snapshot or the
+existing agent invalidation pass. Both workloads use Rust 1.98.1, offline release lib-test builds,
+`METRUM_DEBUG=0` and no concurrent builds/tests. Exact commands, source identities, the three-file
+diff and matched results are `/tmp/metrum-full-audit/lane-rebuild-*`; replay with
+`python3 /tmp/metrum-full-audit/match_lane_rebuild.py`. Before/after executable SHA-256 values are
+`e37149dd31660156f5cddd4976b2c2cc324536cc888a92c3a71184583f6c3ea1` and
+`991bd166a3c5da6d8620fef8bce48fada818cba4107980a7a141ebe1364a8a5d`.
+
 ## Visual Pieces
 
 ### Span
@@ -403,6 +509,48 @@ connections, but roads do not own lot grading, flat-site height selection, or au
 regions.
 
 ## Preview, Query, And Editing
+
+Node movement and merging update graph ownership, spatial entries and edge routing metrics in the
+same mutation (`AUDIT-01-A17`). Merges resolve both canonical parents before selecting the lower
+ID, remove old R-tree entries before changing geometry, and retire the removed node from the
+lookup grid. Reindexing skips aliases. Local adjacency supplies the moved/merged edges; sorting
+covers only the participating nodes' incidence. Self-loops retain two endpoint incidences but
+receive one geometry update.
+
+Endpoint deformation uses horizontal distance along the road. Independently sampled control and
+physical profiles first share the union of their support positions, interpolating each profile's
+own heights at added positions. Both receive the same smooth displacement, preserving their
+common XZ alignment and distinct vertical profiles. Already aligned profiles allocate nothing;
+merging unequal support sets takes O(C + P) time and temporary output storage. Edge length and
+slope-aware routing cost refresh through the existing cost calculator. Clip, lane, terrain and
+agent-plan publication remain the caller's coordinated edit work.
+
+Editor node selection and border-connection lookup share the simulation's nearest-node search
+(`AUDIT-01-A18`). Both use the existing 16 m node grid and require a live canonical node. Editor
+hits use XZ distance; border lookup retains 3D distance. The radius is exclusive and equal-distance
+nodes choose the lowest ID, including fresh cursor snaps and endpoint acquisition from a retained
+edge. The bridge only converts an absent result to its existing `-1` UI value.
+
+Node rectangles share one allocation-free visitor. It probes covered lookup cells, or scans the
+hash table when its allocated capacity is smaller than the rectangle's covered-cell count
+(`AUDIT-01-A20`). Counting populated cells alone missed table capacity retained after clear/rebuild.
+Exact coordinate checks retain inclusive rectangle bounds. Cost is O(min(covered cells, table
+capacity) + nodes in visited cells), plus incident-edge checks for candidates. Global rectangles
+therefore follow stored index capacity rather than empty world space. Sorted collecting queries
+retain their ordering and deduplication. No new index or per-query candidate buffer is introduced. Retired 3D network-point snapping, the unused
+whole-network edge query, its segment projector and the unused projection-data API are removed.
+
+Road-inspector hover selection uses the existing edge R-tree and physical-profile XZ geometry
+(`AUDIT-01-A19`). Deleted road slots cannot win selection. The existing zoning-depth-derived
+selection radius remains inclusive, repeated profile points remain valid, and exact distance ties
+choose the lowest live edge ID regardless of tree update history. The search visits overlapping
+bounds and their profile segments without allocating candidate lists; the bridge supplies the
+configured radius and converts the result to its existing UI ID.
+
+Thirteen unused geometry-query methods are removed with their complete caller chains: the old
+obstacle-polygon export, polygon ray depth, road-boundary projection, curved frontage, 2D geometry
+export, averaged network direction and unused connection-coordinate utility. The current 3D road
+geometry API and active node/edge inspectors remain the rendering and selection paths.
 
 Editor preview must use the same road-surface solve rules as committed placement. Preview and
 commit may differ in cache lifetime or display detail, but not in geometry ownership.
@@ -765,9 +913,234 @@ Straight road edits should commit endpoint-only plan input. Curved edits may use
 world-space sampling, but must preserve authored endpoints exactly. Oversampled straight Godot
 `Curve3D` streams are not allowed to become semantic road input.
 
+### Node Edit Audit Measurements (2026-09-12)
+
+All four initial regressions fail on the baseline: duplicate road bounds after a merge, an
+unchanged physical endpoint after movement, a double-translated self-loop and the wrong canonical
+parent after merging through an alias. Additional assertions cover retired-node lookup, retained
+independent height samples and refreshed grade-dependent routing cost. The unused
+`remove_node_and_merge_edges` API and its sole rejection test are removed, together with a second
+caller-side length pass, discarded split length, duplicate end-node binding and unnecessary
+geometry clone.
+
+Three alternating unprofiled CPU-0 / one-worker release pairs hold one incident road fixed while
+adding disconnected background roads. Each process takes nine samples after one warmup; fresh
+whole-graph clones, graph setup, result destruction and verification are outside mutation timing.
+The merge benchmark uses coincident endpoints so both builds have valid matching geometry/index
+products; the noncoincident correctness regression independently catches the stale-entry bug.
+Exact local geometry fingerprints and live-edge query counts match across versions/backgrounds.
+
+| Background roads | Merge before / after (µs) | Move before / after (µs) |
+| --- | --- | --- |
+| 0 | 0.124 / 0.167 | 0.150 / 0.162 |
+| 1,000 | 1.488 / 0.543 | 0.453 / 0.509 |
+| 10,000 | 19.341 / 1.852 | 1.326 / 1.957 |
+| 100,000 | 420.238 / 4.956 | 4.940 / 5.044 |
+
+The global O(E) merge scan is removed. Remaining index cost is logarithmic in city size; ordering
+is O(K log K) in the two local incident sets, and profile/cost work follows their point counts.
+The additional local correctness work is visible in the tiny cases, including a 0.631 µs move
+increase at 10,000 background roads. These figures exclude graph cloning and the later coordinated
+edit publication; no whole-frame speedup is inferred.
+
+The same final processes separately measure the corrected unequal-profile path. These are
+**after-only** measurements, because the baseline does not support those inputs correctly. Each
+case uses 21 samples after one warmup, with edge cloning, result destruction and height/position
+checks outside timing. Source profiles alternate even/odd horizontal support positions; every
+original height sample remains represented.
+
+| Control / physical supports | Shared supports | Alignment + deformation (µs) |
+| --- | --- | --- |
+| 16 / 17 | 31 | 0.435 |
+| 256 / 257 | 511 | 5.556 |
+| 4,096 / 4,097 | 8,191 | 83.470 |
+
+Three separate eight-worker pairs run the populated paved-road locality fixture. Four local
+occupied sites remain fixed while buildings, parcels, agents and roads grow. Each version retains
+identical local products across all background sizes; fixture setup is excluded and the one-time
+planning snapshot remains separately reported.
+
+| Remote buildings | Plan before / after (ms) | Worker before / after (ms) | Snapshot before / after (ms) |
+| --- | --- | --- | --- |
+| 0 | 19.930 / 19.806 | 21.021 / 20.658 | 0.006 / 0.007 |
+| 1,000 | 20.189 / 19.838 | 20.809 / 20.750 | 0.059 / 0.060 |
+| 10,000 | 20.172 / 19.711 | 20.936 / 20.694 | 0.357 / 0.349 |
+| 100,000 | 20.198 / 19.766 | 21.024 / 20.608 | 3.431 / 3.372 |
+
+The largest planning fixture contains 391 background roads and 600,024 total agents. Planning
+cost remains comparable and local; one-time snapshots still scale with the stored city. This is
+not acceptance of the remaining global agent invalidation or full pathing-rebuild costs.
+
+Reproduce with `python3 /tmp/metrum-full-audit/match_node_edits.py`. The exact ignored entries are
+`simulation::network::topology::node_edit_tests::benchmark_node_edit_locality` and
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling`, using
+`--exact --ignored --nocapture --test-threads=1`, `METRUM_DEBUG=0`, and offline release builds.
+Mutations/profiles use `taskset -c 0`, `RAYON_NUM_THREADS=1`; planning uses
+`taskset -c 0,2,4,6,8,10,12,14`, `RAYON_NUM_THREADS=8`. Results, setup/clone timings, source snapshots
+and the seven-file diff are under `/tmp/metrum-full-audit/node-edits-*`. Rust is 1.98.1; executable
+SHA-256 values are `cc95a605c79771c82391601ef4a7b33db3bc0bf3853cb4d4cd6b8e15c3e49130` before and
+`b4746664fd713fea768dc93d62097c04e8f002df08fc63938d9097850ffb58fc` after. The initial capture hit
+quota; its incomplete executable/empty archive were removed, old artifacts were losslessly
+archived and verified, and capture was retried atomically. No measurements ran from that failed
+capture or concurrently with archival, compilation, tests or source changes.
+
+### Node Query Audit Measurements (2026-09-12)
+
+`AUDIT-01-A18` replaces the editor's complete node scan with the shared indexed search and removes
+unused query/projection code. The baseline selects node 1 instead of equally close node 0 in the
+spatial query (`node-query-before-regression.log`). Regressions retain exclusive radii, XZ versus
+3D distance, live/alias filtering, lowest-ID ties across cells and reversed retained edges, and
+rectangle results against an independent point filter, including global bounds.
+
+Five alternating matched unprofiled release process pairs use CPU 0 and one Rayon worker. A fixed
+24 m local road is surrounded by 0/1,000/10,000/100,000 disconnected remote roads (2 through
+200,002 total nodes). Each operation runs one warmup and nine samples of 64 queries, cycling three
+local hits and an empty location at radius 5 m. Setup is timed separately; result checking is
+outside the query timer. All outputs match the expected `[0, 1, 0, -1]` targets at every size.
+These are warm isolated query measurements, excluding bridge locks, rendering and a whole frame.
+
+| Background roads | Editor query µs, before → after | 3D query µs, before → after | Cursor acquisition µs, before → after |
+| ---: | ---: | ---: | ---: |
+| 0 | 0.006750 → 0.017953 | 0.035969 → 0.018266 | 0.045250 → 0.020484 |
+| 1,000 | 4.846547 → 0.042734 | 0.035109 → 0.042687 | 0.044422 → 0.060313 |
+| 10,000 | 99.944250 → 0.043125 | 0.034250 → 0.042875 | 0.043578 → 0.060750 |
+| 100,000 | 2318.796000 → 0.043391 | 0.034625 → 0.043281 | 0.043672 → 0.061203 |
+
+The editor no longer scales with unrelated nodes. With only two nodes its fixed index overhead is
+about 11 ns; on larger fixtures the already-local 3D and cursor searches add about 9 and 18 ns.
+The latter include exact bounds checks and stable node ties; no universal speedup is claimed.
+Node candidates allocate nothing. The existing edge-candidate buffer in cursor acquisition is
+outside this cleanup and remains an open audit item.
+
+Three separate populated-road planning pairs use eight physical P-cores and eight Rayon workers.
+They hold four local building sites fixed while increasing background buildings, roads and agents;
+the largest case contains 391 remote roads and 600,024 agents. Every run preserves its local
+products. Snapshot creation remains separate from repeated planning:
+
+| Background buildings | Compile ms, before → after | Worker ms, before → after | Snapshot ms, before → after |
+| ---: | ---: | ---: | ---: |
+| 0 | 19.821 → 20.108 | 20.989 → 21.034 | 0.007 → 0.007 |
+| 1,000 | 19.835 → 20.051 | 20.616 → 20.749 | 0.058 → 0.058 |
+| 10,000 | 19.913 → 19.851 | 20.789 → 20.805 | 0.339 → 0.350 |
+| 100,000 | 20.255 → 20.055 | 20.972 → 21.012 | 3.358 → 3.369 |
+
+Commands and identities:
+
+- Query: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact nodes::sim::query::tests::benchmark_editor_node_query_locality --ignored --nocapture --test-threads=1`.
+- Planning: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
+- Before release test executable SHA-256: `14f7b87aaf06f9e046843fb731164e6c3d3ac63d610d7ba6cf88d537ce250c96`.
+- After: `b4cc03a9f9290b26156280c1157a66705c6c6038110994184dcb5230c2688f9a`.
+- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
+- Artifacts: `/tmp/metrum-full-audit/node-query-{before,after}-identity.json`, `node-query-bench.json`, `node-query-summary.json`, `node-query-planning-bench.json`, `node-query-planning-summary.json`, raw per-pair logs and `node-query.diff`.
+
+Final source/test compilation is warning-free. All 1,763 release tests pass (58 ignored),
+`node-query-final-tests.log`. No builds, tests or source changes overlapped the accepted benchmark
+runs. Initial test compilation caught a missed UI-sentinel assertion during the Option-return
+conversion; it was corrected before the final suite and measurements.
+
+### Edge Hover Audit Measurements (2026-09-12)
+
+The baseline regression for `AUDIT-01-A19` selects deleted edge 0 instead of live edge 1
+(`edge-query-before-tests.log`). The second test preserves inclusive radius, lowest-ID ties,
+height-independent selection, repeated profile points, endpoint projection and empty-space results.
+Both pass with the corrected query, including reversed R-tree insertion history and deletion of
+every local road. All 1,765 release tests pass (59 ignored), `edge-query-after-tests.log`.
+
+To test the query without constructing a whole `SimCore`, the baseline moves its original full
+scan and projection arithmetic into the simulation interaction module. Both measured versions
+use that same isolated interface, with unchanged graph fixtures and the bridge's radius policy.
+Five alternating unprofiled release process pairs use CPU 0 and one Rayon worker. One fixed 28 m
+local road and 0/1,000/10,000/100,000 remote roads each contain eight profile points. One warmup
+and nine samples of 64 queries cycle three local hits and empty space at radius 5 m. Setup is
+reported separately and assertions run after each timed sample. Every output matches
+`[0, 0, 0, -1]` at every size.
+
+| Background roads | Query µs, before → after |
+| ---: | ---: |
+| 0 | 0.019000 → 0.019484 |
+| 1,000 | 18.299766 → 0.028547 |
+| 10,000 | 191.978563 → 0.034500 |
+| 100,000 | 3459.187406 → 0.038906 |
+
+These warm kernel measurements establish removal of the unrelated-road scan, not a whole-frame
+speedup. Bridge locks, input/rendering, graph construction and retired API registration are not
+part of the query timer. Cost follows visited R-tree entries plus candidate profile segments;
+dense overlapping bounds still require examining those candidates. No new spatial index or
+per-query heap storage is introduced. This batch changes selection and removes unused APIs;
+it does not change local road-edit planning, whose separate A18 measurements remain historical
+for their recorded executable.
+
+Command: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact simulation::network::interaction::tests::benchmark_editor_edge_query_locality --ignored --nocapture --test-threads=1`.
+
+- Before release test executable SHA-256: `a8d62cd8c19c3d6af01de5c71b327c80a08ef8ddbac92baf0ce02d749142a489`.
+- After: `d02c0c5fbe9354eb7a8e7d86ee40822d808aa83e89e607fdcf0667f261351b52`.
+- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
+- Artifacts: `/tmp/metrum-full-audit/edge-query-{before,after}-identity.json`, `edge-query-bench.json`, `edge-query-summary.json`, raw per-pair logs and `edge-query.diff`. Identities include the corrected GDScript API header alongside Rust sources.
+
+No builds, tests or source changes overlapped the accepted measurements. Test/benchmark compilation
+is warning-free, `edge-query-after-check.log`.
+
+### Retained Node-Grid Capacity Measurements (2026-09-12)
+
+`AUDIT-01-A20` corrects the visitor's choice between local grid probes and table traversal.
+`HashMap` traversal follows allocated capacity, which clear/rebuild retains, rather than the
+number of populated cells. Comparing capacity preserves results and bounds local work after undo
+or index rebuilding without shrinking storage or adding an index/buffer.
+
+Five alternating matched unprofiled release process pairs use CPU 0 and one Rayon worker. One
+20 m road has two populated node cells. The fixture reserves increasing capacity, invokes the real
+`rebuild_all_indices()`, and verifies that capacity is retained. One warmup and nine samples of 64
+queries cycle three hits and empty space at radius 5 m. Setup and output assertions are outside the
+query timer; every sample returns `[0, 1, 0, -1]`. Median process medians, in microseconds:
+
+| Retained table capacity | Editor, before → after | Cursor acquisition, before → after |
+| ---: | ---: | ---: |
+| 3 | 0.015234 → 0.015547 | 0.017547 → 0.017656 |
+| 1,792 | 0.059141 → 0.051281 | 0.043922 → 0.058469 |
+| 114,688 | 1.127375 → 0.050484 | 1.175156 → 0.058625 |
+| 1,835,008 | 22.150859 → 0.050688 | 22.372094 → 0.058484 |
+
+Local queries stop scaling with historical storage. The 1,792-capacity cursor case adds about
+15 ns; this is not a universal speedup. Fresh processes retain standard randomized hash placement,
+so baseline scan timing varies even with matched capacity and queries. These warm kernel timings
+exclude bridge locks, rendering and setup, and do not establish whole-frame speedups.
+
+Three separate matched planning pairs use eight physical P-cores and eight Rayon workers. The
+fixed local neighborhood produces identical products through 100,000 background buildings and
+600,024 agents. Compile medians remain 19.6–19.9 ms and worker medians 20.6–20.8 ms across sizes;
+at the largest size compile is 19.827 → 19.747 ms and worker is 20.778 → 20.755 ms. One-time
+snapshot creation is measured separately (3.329 → 3.413 ms at the largest size).
+
+- Query: `RAYON_NUM_THREADS=1 METRUM_DEBUG=0 taskset -c 0 BINARY --exact simulation::network::interaction::tests::benchmark_node_grid_retained_capacity --ignored --nocapture --test-threads=1`.
+- Planning: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
+- Before release test executable SHA-256: `3fbda58cf0889ebe799363b0bab112efb91ee8607abee492c0bed982220c75b0`.
+- After: `088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`.
+- Rust: `rustc 1.98.1 (48a229cea 2026-09-01) (Arch Linux rust 1:1.98.1-1)`.
+- Artifacts: `/tmp/metrum-full-audit/node-grid-capacity-{before,after}-identity.json`, query and planning `*-bench.json`/`*-summary.json`, raw matched-pair logs and `node-grid-capacity.diff`.
+
+All 1,765 release tests pass (60 ignored), `node-grid-capacity-after-tests.log`. Test/benchmark
+compilation is warning-free. No builds, tests or source changes overlapped accepted measurements.
+
 ## Performance Contract
 
 Correctness without acceptable performance is not done.
+
+`AUDIT-01-G1` corrects the common integer-key rounding helper: ties round away from zero,
+but representable values immediately below a half must remain below the boundary. Large
+already-integral values and saturating conversions retain Rust's standard semantics.
+The former offset-plus-cast shortcut violated that contract. On the audited build, three
+alternating unprofiled release process pairs of
+`nodes::sim::core::tests::road_plan_scaling::populated_road_plan_scaling --exact --ignored --nocapture`
+used 24 Rayon workers, three warmups and 100 observations per background size. With
+0/1,000/10,000/100,000 remote buildings, worker p50 medians were
+`20.920/20.908/20.756/20.892 → 21.453/21.600/21.712/21.676 ms`.
+At 100,000 buildings (600,024 agents, 391 remote roads), direct planning was
+`20.355 → 20.692 ms`; readiness stayed below 0.020 ms, and the separately measured
+one-time snapshot was `3.317 → 3.371 ms`. Every run retained identical local terrain products.
+The small bounded cost of correct rounding is accepted; repeated planning still follows
+the fixed neighborhood. Exact binaries, source hashes and raw process logs are under
+`/tmp/metrum-full-audit/quantization-*`, with merged results in `quantization-locality-matched.json`.
+The separate scalar experiment is diagnostic evidence, not a whole-city timing claim.
 
 Required bounds:
 
@@ -1137,8 +1510,33 @@ Required bounds:
 - hot-path loops must avoid avoidable allocation
 - road materials are prewarmed when the resident road tool enters the main scene, before the first
   committed road mesh needs them
+- shared road/site materials load only shader inputs that contribute to their output. Displacement
+  textures are not bound by these shaders. Road concrete uses geometric normals; the concrete
+  normal texture is loaded when a concrete site material actually needs it.
 - road debug output must split terrain, water, zoning, and total patch-debug timings
 - road debug output must use cached zoning statistics instead of scanning parcel payloads
+
+`AUDIT-01-G10` removes the unused displacement loads, the road-concrete shader's discarded normal
+sample and the texture loader's forwarding wrapper. Material/texture sharing and the texture assets
+remain intact. Before/after rendering produces byte-identical images for six material variants,
+three shapes (two marked road planes and a box) and two camera angles: 36 references total.
+
+Five alternating fresh-process comparisons use Godot 4.7.2, OpenGL Compatibility and Mesa 26.2.2
+llvmpipe under Xvfb, with `RAYON_NUM_THREADS=8`, `LP_NUM_THREADS=8` and CPU affinity
+`0,2,4,6,8,10,12,14`. Median road prewarm calls fall from 1.739 to 1.178 seconds. Concrete-site
+creation now loads its required normal map, so the combined road/site call time is the meaningful
+total: 1.739 to 1.439 seconds (17.3% lower). RenderingServer texture-memory deltas are constant
+within each version: 425,022,797 to 285,212,666 bytes after road prewarming, and 425,022,797 to
+374,691,150 after all six materials. That removes about 133.3 MiB at road prewarm and 48 MiB after
+the site materials are present. These are texture accounting and material-factory call timings,
+not RSS, peak memory, first-draw shader compilation or gameplay frame-rate measurements. Each
+process starts with empty factory caches; OS file caches are not flushed.
+
+Artifacts are `/tmp/metrum-full-audit/material-inputs-*`: source hashes/snapshots, the actual render
+harness and images, image comparison, all process commands/logs and matched measurement summaries.
+`python3 /tmp/metrum-full-audit/match_material_inputs.py` replays the five pairs and restores the
+accepted five source files between exited engine processes. The unchanged release extension is
+`2dcc2885453d135cef74f03272df8b50e437f168bd28f298f01c5a489d35ef20`.
 
 `ROAD-05` is the active refined-terrain performance contract:
 

@@ -26,6 +26,20 @@ where
     deserialize_unsigned_from_number(deserializer, "u16")
 }
 
+/// Applies the editor's whole-number conversion to each construction-level duration.
+pub(super) fn deserialize_u16_vec_from_numbers<'de, D>(
+    deserializer: D,
+) -> Result<Vec<u16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct WholeNumber(#[serde(deserialize_with = "deserialize_u16_from_number")] u16);
+
+    Vec::<WholeNumber>::deserialize(deserializer)
+        .map(|values| values.into_iter().map(|value| value.0).collect())
+}
+
 fn deserialize_unsigned_from_number<'de, D, T>(
     deserializer: D,
     type_name: &'static str,

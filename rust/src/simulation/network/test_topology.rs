@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+//! Live road topology and pathing rebuild regressions.
+
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
@@ -62,6 +64,46 @@ mod tests {
             String::new(),
         );
         format!("{pack_id}:{asset_id}")
+    }
+
+    #[test]
+    fn test_rebuild_pathing_skips_deleted_edges_without_compacting() {
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        for cost in [1.0, 7.0] {
+            graph.add_edge(Edge {
+                start_node: start,
+                end_node: end,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR,
+                width: 8.0,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                speed_limit: 20.0,
+                physical_length: 100.0,
+                base_cost: cost,
+                ..Edge::default()
+            });
+        }
+        graph.edge_mut(0).deleted = true;
+        graph.rebuild_adjacency_list();
+        network.cch_dirty_chunks.insert((0, 0));
+        network.rebuild_pathing(&mut graph);
+
+        assert_eq!(
+            graph.edge_count(),
+            2,
+            "pathing rebuild must retain deleted slots"
+        );
+        assert!(graph.edge(0).deleted);
+        let (cost, _, nodes) = network
+            .cch_graph
+            .find_path(start, end, usize::MAX, &graph, TransitFlags::CAR)
+            .expect("live edge must remain routable after rebuild");
+        assert_eq!(cost, 7.0, "CCH must ignore the deleted lower-cost edge");
+        assert_eq!(nodes, vec![start, end]);
     }
 
     #[test]
@@ -456,49 +498,5 @@ mod tests {
                 VehicleFrontageAccess::SameSideOnly
             );
         }
-    }
-
-    #[test]
-    fn test_remove_node_and_merge_edges_refuses_conflicting_vehicle_frontage_access() {
-        let mut graph = RegionGraph::new();
-        let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
-
-        let common = Edge {
-            start_node: n0,
-            end_node: n1,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 10.0,
-            physical_length: 10.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
-        };
-
-        let e0 = graph.add_edge(common.clone());
-        let e1 = graph.add_edge(Edge {
-            start_node: n1,
-            end_node: n2,
-            geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-            vehicle_frontage_access: VehicleFrontageAccess::SameSideOnly,
-            ..common
-        });
-
-        assert_eq!(graph.remove_node_and_merge_edges(n1), None);
-        assert!(!graph.edge(e0).deleted);
-        assert!(!graph.edge(e1).deleted);
     }
 }

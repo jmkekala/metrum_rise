@@ -140,10 +140,28 @@ For a moddable shipped game, custom assets do not require import into the Godot 
 
 Current repository state:
 
-- Buildings are still loaded from hardcoded `res://assets/...` paths and use Godot project-imported assets.
+- Buildings load raw model files from the enabled packs in `user://mods/`. Explicit pack reload
+  replaces both the Rust registry and normal/deserted rendering meshes, including changed files
+  under an existing asset ID and removed parts. Disabling every pack clears both owners.
+- The asset editor scans all installed packs once per browser refresh, independently of the
+  gameplay selection. Gameplay passes an explicit pack-ID array; the authoring API requests
+  all packs through the same registry loader.
 - Cars load their bundled `.glb` mesh and texture sources at runtime so fresh project-cache
   launches do not depend on `godot/.godot/imported` files; VAT pedestrians already use runtime
   VAT assets, still from project-bundled paths.
+
+Building polling (`AUDIT-01-F5`) uses one refresh per 30 process frames in both windowed and
+headless execution. Asset-instance setup owns the aligned packed requests; periodic refresh
+reuses them. The all-city Rust transform scans remain a separate audit item.
+
+Matched headless release-extension measurements use
+`godot --headless --path godot --script res://tests/building_asset_reload_test.gd -- --benchmark-building-poll`,
+CPU affinity 0, `RAYON_NUM_THREADS=24`, `METRUM_DEBUG=0`, and five alternating process pairs.
+An empty world with one generated asset containing 2 / 128 / 1,024 mesh parts measures completed
+request/bridge/upload calls, excluding busy replies, fixture import and node setup. Medians change
+from **12.05 / 272.85 / 2,498.85 µs** to **9.90 / 183.85 / 1,598.35 µs**. These are boundary costs,
+not populated-city rendering acceptance. Raw logs, matched results and exact source/extension
+identities are under `/tmp/metrum-full-audit/building-poll-*`.
 
 Shipped design:
 
@@ -1791,6 +1809,7 @@ Optional fields:
 - `mesh_parts.lods.distance_min_m` / `distance_max_m`: ordered distance switch band for that part
 - `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`. Non-`none` service classes are valid only for `placement_mode = "explicit"` in baseline `v1`.
 - `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment). Ordinary zoned commercial service assets such as barbers and pharmacies select reusable commercial profiles such as `personal_service_small` or `health_essentials_small`; they do not set `service_class` or define barber/pharmacy-specific economy fields.
+- The incoming small Machinery factory uses `placement_mode = "zoned_private"`, `zone_type = "industrial"`, `density = "low"`, `level = 1`, and `economy_profile = "machinery_factory_basic"`. Leave `service_class`, field and extractor metadata unset. Choose lot dimensions that fit the mesh; provide the usual `entrance/main` and freight-capable road access/site anchors. The profile supplies four jobs and consumes 12 Steel, 4 Metals and 2 Machinery per day to produce 42 Machinery (40 net). No factory-specific script or new asset schema is needed. Steel/Metals/Machinery imports work before upstream assets exist; see [`economy.md`](economy.md#machinery-upkeep-econ-09).
 - `[building.extractor]`: optional explicit extraction contract with `resource` and `area_mode = "player_polygon"`.
 - `[building.field]`: optional explicit agricultural field contract with `resource` and `area_mode = "player_polygon"`; the economy profile must be a `field_producer` that outputs the same resource, and its authored daily output is interpreted per 10,000 m2 of committed field area.
 - Field/extractor economy profiles use `worker_capacity_area_m2` for staffing independently of hectare-based output. It defaults to 10,000 m2; the grain farm uses one worker per 100,000 m2. The economy editor exposes this as “Area for Worker Capacity (m²)”.
@@ -1826,6 +1845,21 @@ Building families and upgrade levels:
 - A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `upgrade_family` and `level = N+1`. No pointer in the manifest is required.
 - Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
 - A building with no `upgrade_family` belongs to no family and never upgrades. This is valid for true one-off buildings and landmarks, but it is risky as an accidental omission on ordinary zoned private buildings.
+- Runtime family and zone/density queries borrow their string keys. The upgrade index uses
+  direct tier buckets (at most 256 for the `u8` tier domain); tier 255 has no successor.
+  These are the existing registry indices, not additional copies of asset identity.
+  Audit acceptance (`AUDIT-01-AS1/AS2`): five alternating unprofiled release process pairs per
+  CPU, pinned separately to CPUs 0 and 16, `RAYON_NUM_THREADS=24`. Each fixture registers
+  128 or 2,048 families with two validated tiers; setup and correctness assertions are outside
+  timing. Three warmups precede 11 samples of 64 sweeps, measuring upgrade, downgrade and
+  zone/density lookup as one triplet. Median ns/triplet for 128 / 2,048 families:
+  CPU 0 `103.339 / 148.413 → 75.215 / 123.192`; CPU 16
+  `193.128 / 263.371 → 145.682 / 213.586`. This measures registry queries only.
+  Command: `assets::registry::tests::benchmark_asset_registry_lookups --exact --ignored --nocapture`
+  on the matched release test executables. Raw rows and executable/source identities are in
+  `/tmp/metrum-full-audit/asset-registry-pinned-matched-bench.json`,
+  `asset-registry-before-identity.json` and `asset-registry-tier-index-after-identity.json`.
+
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
 - `household_capacity`, `worker_capacity`, and `flat_size_m2` are tier-specific. A level-2 building may house more households or provide larger flats than a level-1 building of the same family.
 - Cross-density change is not an ordinary family upgrade. If gameplay later wants a building to move
@@ -2102,6 +2136,12 @@ kenney_city_pack:building.residential.lowrise_corner
 ```
 
 ## Validation Rules
+
+Implemented manifest checks reject non-finite mesh-part position/rotation/pivot values, non-finite
+or negative living area, and non-finite or non-positive vehicle dimensions. Prop bounds must be
+finite and nonnegative, preserving planar props with zero-height bounds. Building mesh parts and
+declared non-building LOD lists share file/range/order validation; character source manifests may
+still omit LODs. These checks run before registration and rendering.
 
 The validator is strict. Invalid content fails before it enters a playable build.
 

@@ -64,6 +64,14 @@ impl AssetManifest {
                     self.asset_id
                 )));
             }
+            if let Some(area) = b.flat_size_m2
+                && (!area.is_finite() || area < 0.0)
+            {
+                return Err(ManifestError::Validation(format!(
+                    "asset_id '{}': flat_size_m2 must be finite and >= 0",
+                    self.asset_id
+                )));
+            }
             if let Some(frontage_forward) = b.frontage_forward {
                 validate_building_frontage_forward(&self.asset_id, frontage_forward)?;
             }
@@ -265,11 +273,27 @@ impl AssetManifest {
             )));
         }
 
+        if self.building.is_none() && !self.lods.is_empty() {
+            validate_lods(&self.asset_id, None, &self.lods)?;
+        }
         if let Some(v) = &self.vehicle
-            && (v.length_m <= 0.0 || v.width_m <= 0.0 || v.height_m <= 0.0)
+            && [v.length_m, v.width_m, v.height_m]
+                .iter()
+                .any(|dimension| !dimension.is_finite() || *dimension <= 0.0)
         {
             return Err(ManifestError::Validation(format!(
-                "asset_id '{}': vehicle dimensions must be positive",
+                "asset_id '{}': vehicle dimensions must be finite and positive",
+                self.asset_id
+            )));
+        }
+        if let Some(prop) = &self.prop
+            && prop
+                .bounding_size_m
+                .iter()
+                .any(|dimension| !dimension.is_finite() || *dimension < 0.0)
+        {
+            return Err(ManifestError::Validation(format!(
+                "asset_id '{}': prop bounds must be finite and nonnegative",
                 self.asset_id
             )));
         }
@@ -300,7 +324,13 @@ fn validate_positive_anchor_field(
 }
 
 fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), ManifestError> {
-    validate_finite_vec3(asset_id, anchor, "position", anchor.position)?;
+    validate_finite_vec3(
+        asset_id,
+        "anchor",
+        &anchor.name,
+        "position",
+        anchor.position,
+    )?;
     validate_anchor_forward(asset_id, anchor)?;
     if let Some(vehicle_class) = anchor.vehicle_class.as_deref() {
         validate_anchor_vehicle_class(asset_id, anchor, vehicle_class)?;
@@ -310,21 +340,22 @@ fn validate_anchor_common(asset_id: &str, anchor: &Anchor) -> Result<(), Manifes
 
 fn validate_finite_vec3(
     asset_id: &str,
-    anchor: &Anchor,
+    owner_kind: &str,
+    owner_name: &str,
     field_name: &str,
     value: [f32; 3],
 ) -> Result<(), ManifestError> {
     if value.iter().any(|component| !component.is_finite()) {
         return Err(ManifestError::Validation(format!(
-            "asset_id '{}': anchor '{}' has invalid {} {:?}; expected finite values",
-            asset_id, anchor.name, field_name, value
+            "asset_id '{}': {} '{}' has invalid {} {:?}; expected finite values",
+            asset_id, owner_kind, owner_name, field_name, value
         )));
     }
     Ok(())
 }
 
 fn validate_anchor_forward(asset_id: &str, anchor: &Anchor) -> Result<(), ManifestError> {
-    validate_finite_vec3(asset_id, anchor, "forward", anchor.forward)?;
+    validate_finite_vec3(asset_id, "anchor", &anchor.name, "forward", anchor.forward)?;
     let [x, y, z] = anchor.forward;
     let length = (x * x + y * y + z * z).sqrt();
     if length <= ANCHOR_FORWARD_UNIT_EPS || (length - 1.0).abs() > ANCHOR_FORWARD_UNIT_EPS {
@@ -664,6 +695,13 @@ fn validate_building_mesh_parts(
             )));
         }
         names.push(name);
+        for (field, value) in [
+            ("position", part.position),
+            ("rotation_degrees", part.rotation_degrees),
+            ("pivot_offset", part.pivot_offset.unwrap_or([0.0; 3])),
+        ] {
+            validate_finite_vec3(asset_id, "mesh part", name, field, value)?;
+        }
         if part.scale <= 0.0 || !part.scale.is_finite() {
             return Err(ManifestError::Validation(format!(
                 "asset_id '{asset_id}': mesh part '{name}' scale must be finite and > 0"

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-use super::super::graph::RegionGraph;
+//! Full and local lane reconstruction with deterministic indexed publication.
+
+use super::super::graph::{Edge, RegionGraph};
 use super::super::types::{TransitFlags, TransitType};
 use super::geometry::build_one_lane;
 use super::pedestrian_junctions::build_pedestrian_connections_at_node;
@@ -18,87 +20,104 @@ impl LaneSystem {
         // Maps (edge_id, is_fwd, lane_idx) -> lane_index in self.lanes
         let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
 
-        // 1. Build Straight Lanes for all active edges
+        // Append in graph order because lane IDs are referenced by agents and connectors.
         for (edge_idx, edge) in graph.edges().iter().enumerate() {
-            if edge.deleted || edge.physical_geometry.len() < 2 {
-                continue;
-            }
-
-            let mut edge_lane_indices = Vec::new();
-
-            // Helper to build a lane (using the one from geometry module for consistency)
-            let mut build_lane = |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32| {
-                build_one_lane(
-                    &mut self.lanes,
-                    &mut lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    is_fwd,
-                    l_idx,
-                    l_type,
-                    l_off,
-                );
-            };
-
-            let lane_w = config::LANE_WIDTH;
-            let sidewalk_w = config::SIDEWALK_WIDTH;
-            let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
-            let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-
-            // 1. Forward Lanes
-            for l in 0..edge.fwd_lanes {
-                // Lane 0 is closest to center
-                let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
-                build_lane(true, l as i8, LaneType::Vehicle, lane_offset);
-            }
-
-            // 2. Backward Lanes
-            for l in 0..edge.bkw_lanes {
-                // Lane 0 is closest to center
-                let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
-                build_lane(false, -(l as i8) - 1, LaneType::Vehicle, lane_offset);
-            }
-
-            // 3. Sidewalks
-            if (edge.allowed_types & TransitFlags::FOOT) != 0 {
-                if edge.primary_type == TransitType::Foot {
-                    // Dedicated Footpath: center lane
-                    build_lane(true, 0, LaneType::Foot, 0.0);
-                    build_lane(false, 0, LaneType::Foot, 0.0);
-                } else {
-                    // Left Sidewalk (idx 100)
-                    let left_offset = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_lane(true, 100, LaneType::Foot, left_offset);
-                    build_lane(false, 100, LaneType::Foot, left_offset);
-
-                    // Right Sidewalk (idx -100)
-                    let right_offset = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_lane(true, -100, LaneType::Foot, right_offset);
-                    build_lane(false, -100, LaneType::Foot, right_offset);
-                }
-            }
-
-            self.edge_lanes.insert(edge_idx, edge_lane_indices);
+            self.append_edge_lanes(&mut lane_map, edge_idx, edge);
         }
 
-        // 2. Build Connection Lanes (Intersections)
+        // Build node connections after all physical lanes exist.
         for node_id in 0..graph.node_count() {
-            build_vehicle_connections_at_node(
-                &mut self.lanes,
-                &lane_map,
-                graph,
-                node_id,
-                &mut self.node_lanes,
-            );
-            build_pedestrian_connections_at_node(
-                &mut self.lanes,
-                &lane_map,
-                graph,
-                node_id,
-                &mut self.node_lanes,
-            );
+            self.append_node_connections(&lane_map, graph, node_id);
         }
+    }
+
+    fn append_node_connections(
+        &mut self,
+        lane_map: &HashMap<(usize, bool, i8), usize>,
+        graph: &mut RegionGraph,
+        node_id: usize,
+    ) {
+        build_vehicle_connections_at_node(
+            &mut self.lanes,
+            lane_map,
+            graph,
+            node_id,
+            &mut self.node_lanes,
+        );
+        build_pedestrian_connections_at_node(
+            &mut self.lanes,
+            lane_map,
+            graph,
+            node_id,
+            &mut self.node_lanes,
+        );
+    }
+
+    fn append_edge_lanes(
+        &mut self,
+        lane_map: &mut HashMap<(usize, bool, i8), usize>,
+        edge_idx: usize,
+        edge: &Edge,
+    ) {
+        if edge.deleted || edge.physical_geometry.len() < 2 {
+            return;
+        }
+
+        let mut edge_lane_indices = Vec::new();
+
+        let mut build_lane = |is_fwd: bool, l_idx: i8, l_type: LaneType, l_off: f32| {
+            build_one_lane(
+                &mut self.lanes,
+                lane_map,
+                &mut edge_lane_indices,
+                edge_idx,
+                edge,
+                is_fwd,
+                l_idx,
+                l_type,
+                l_off,
+            );
+        };
+
+        let lane_w = config::LANE_WIDTH;
+        let sidewalk_w = config::SIDEWALK_WIDTH;
+        let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+        let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+
+        // 1. Forward Lanes
+        for l in 0..edge.fwd_lanes {
+            // Lane 0 is closest to center
+            let lane_offset = (l as f32 + 0.5) * lane_w * side_mul;
+            build_lane(true, l as i8, LaneType::Vehicle, lane_offset);
+        }
+
+        // 2. Backward Lanes
+        for l in 0..edge.bkw_lanes {
+            // Lane 0 is closest to center
+            let lane_offset = -(l as f32 + 0.5) * lane_w * side_mul;
+            build_lane(false, -(l as i8) - 1, LaneType::Vehicle, lane_offset);
+        }
+
+        // 3. Sidewalks
+        if (edge.allowed_types & TransitFlags::FOOT) != 0 {
+            if edge.primary_type == TransitType::Foot {
+                // Dedicated Footpath: center lane
+                build_lane(true, 0, LaneType::Foot, 0.0);
+                build_lane(false, 0, LaneType::Foot, 0.0);
+            } else {
+                // Left Sidewalk (idx 100)
+                let left_offset = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                build_lane(true, 100, LaneType::Foot, left_offset);
+                build_lane(false, 100, LaneType::Foot, left_offset);
+
+                // Right Sidewalk (idx -100)
+                let right_offset = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                build_lane(true, -100, LaneType::Foot, right_offset);
+                build_lane(false, -100, LaneType::Foot, right_offset);
+            }
+        }
+
+        self.edge_lanes.insert(edge_idx, edge_lane_indices);
     }
 
     /// Returns the physical-edge closure rebuilt by an incremental lane update.
@@ -134,6 +153,10 @@ impl LaneSystem {
     }
 
     /// Incrementally rebuilds changed physical lanes and every connection lane touching them.
+    ///
+    /// Existing adjacency bounds discovery and lane-map work to local incident lanes. Sorting
+    /// affected edges/nodes costs O(K log K); geometry and connector work remains per owner.
+    /// Publication is ordered because appended lane IDs are part of simulation state.
     pub fn rebuild_edges_incremental(
         &mut self,
         graph: &mut RegionGraph,
@@ -143,13 +166,17 @@ impl LaneSystem {
             return;
         }
 
-        // 1. Expand to every road arm whose lane mouth can move with an affected junction.
-        let rebuild_set = Self::incremental_rebuild_edge_closure(graph, affected_edges);
+        // Expand to every road arm whose lane mouth can move with an affected junction.
+        let mut rebuild_edges: Vec<_> =
+            Self::incremental_rebuild_edge_closure(graph, affected_edges)
+                .into_iter()
+                .collect();
+        rebuild_edges.sort_unstable();
 
         // Connection lanes must be rebuilt at both ends of every rebuilt edge. Restricting this
         // to the original dirty endpoints leaves the far end pointing at orphaned physical lanes.
         let mut affected_nodes: HashSet<usize> = HashSet::new();
-        for &edge_id in &rebuild_set {
+        for &edge_id in &rebuild_edges {
             if edge_id < graph.edge_count() {
                 let edge = graph.edge(edge_id);
                 affected_nodes.insert(edge.start_node as usize);
@@ -157,159 +184,47 @@ impl LaneSystem {
             }
         }
 
-        // 2. Orphan old road lanes for every edge in rebuild_set.
-        for &e_id in &rebuild_set {
+        let mut affected_nodes: Vec<_> = affected_nodes.into_iter().collect();
+        affected_nodes.sort_unstable();
+
+        // Retire old physical-lane ownership before appending replacements.
+        for &e_id in &rebuild_edges {
             self.edge_lanes.remove(&e_id);
         }
 
-        // 3. Clear next_lanes on non-orphaned lanes at affected nodes.
+        // Only incident surviving lanes are needed by the local connection builders. Clear
+        // arrivals at rebuilt nodes; the opposite direction still owns its remote connections.
+        let mut lane_map = HashMap::new();
         for &node_id in &affected_nodes {
             if node_id >= graph.node_adjacency_count() {
                 continue;
             }
-            for &e_id in graph.node_adjacency(node_id as u32) {
-                if let Some(lane_ids) = self.edge_lanes.get(&e_id) {
-                    let ids: Vec<usize> = lane_ids.clone();
-                    for lid in ids {
-                        self.lanes[lid].next_lanes.clear();
+            for &edge_idx in graph.node_adjacency(node_id as u32) {
+                let edge = graph.edge(edge_idx);
+                if let Some(lane_ids) = self.edge_lanes.get(&edge_idx) {
+                    for &lane_id in lane_ids {
+                        let lane = &mut self.lanes[lane_id];
+                        let terminal = if lane.is_fwd {
+                            edge.end_node
+                        } else {
+                            edge.start_node
+                        };
+                        if terminal as usize == node_id {
+                            lane.next_lanes.clear();
+                        }
+                        lane_map.insert((edge_idx, lane.is_fwd, lane.lane_idx), lane_id);
                     }
                 }
             }
         }
 
-        let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
-
-        // 4. Pre-populate lane_map from surviving (non-rebuilt) edges so that connection
-        //    builders at affected nodes can route through arms that weren't touched.
-        for (&edge_idx, lane_ids) in &self.edge_lanes {
-            for &lid in lane_ids {
-                let lane = &self.lanes[lid];
-                lane_map.insert((edge_idx, lane.is_fwd, lane.lane_idx), lid);
+        for &edge_idx in &rebuild_edges {
+            if let Some(edge) = graph.edges().get(edge_idx) {
+                self.append_edge_lanes(&mut lane_map, edge_idx, edge);
             }
         }
 
-        // 5. Append new straight lanes for every edge in rebuild_set.
-        for &edge_idx in &rebuild_set {
-            if edge_idx >= graph.edge_count() {
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if edge.deleted || edge.physical_geometry.len() < 2 {
-                continue;
-            }
-
-            let mut edge_lane_indices = Vec::new();
-            let lane_w = config::LANE_WIDTH;
-            let sidewalk_w = config::SIDEWALK_WIDTH;
-            let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
-            let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-
-            for l in 0..edge.fwd_lanes {
-                let off = (l as f32 + 0.5) * lane_w * side_mul;
-                build_one_lane(
-                    &mut self.lanes,
-                    &mut lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    true,
-                    l as i8,
-                    LaneType::Vehicle,
-                    off,
-                );
-            }
-            for l in 0..edge.bkw_lanes {
-                let off = -(l as f32 + 0.5) * lane_w * side_mul;
-                build_one_lane(
-                    &mut self.lanes,
-                    &mut lane_map,
-                    &mut edge_lane_indices,
-                    edge_idx,
-                    edge,
-                    false,
-                    -(l as i8) - 1,
-                    LaneType::Vehicle,
-                    off,
-                );
-            }
-
-            if (edge.allowed_types & TransitFlags::FOOT) != 0 {
-                if edge.primary_type == TransitType::Foot {
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        true,
-                        0,
-                        LaneType::Foot,
-                        0.0,
-                    );
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        false,
-                        0,
-                        LaneType::Foot,
-                        0.0,
-                    );
-                } else {
-                    let left_off = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        true,
-                        100,
-                        LaneType::Foot,
-                        left_off,
-                    );
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        false,
-                        100,
-                        LaneType::Foot,
-                        left_off,
-                    );
-                    let right_off = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        true,
-                        -100,
-                        LaneType::Foot,
-                        right_off,
-                    );
-                    build_one_lane(
-                        &mut self.lanes,
-                        &mut lane_map,
-                        &mut edge_lane_indices,
-                        edge_idx,
-                        edge,
-                        false,
-                        -100,
-                        LaneType::Foot,
-                        right_off,
-                    );
-                }
-            }
-            self.edge_lanes.insert(edge_idx, edge_lane_indices);
-        }
-
-        // 6. Rebuild connections for every affected node.
+        // Rebuild connections in stable node order.
         for &node_id in &affected_nodes {
             if node_id < graph.node_count() {
                 // Tombstone old connection lanes at this node so the renderer skips them.
@@ -323,20 +238,7 @@ impl LaneSystem {
                         }
                     }
                 }
-                build_vehicle_connections_at_node(
-                    &mut self.lanes,
-                    &lane_map,
-                    graph,
-                    node_id,
-                    &mut self.node_lanes,
-                );
-                build_pedestrian_connections_at_node(
-                    &mut self.lanes,
-                    &lane_map,
-                    graph,
-                    node_id,
-                    &mut self.node_lanes,
-                );
+                self.append_node_connections(&lane_map, graph, node_id);
             }
         }
     }

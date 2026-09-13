@@ -181,13 +181,13 @@ fn explicit_work_area_property_tax_uses_industrial_rate() {
 }
 
 #[test]
-fn ensure_agent_households_does_not_materialize_missing_household_ids() {
+fn membership_rebuild_does_not_materialize_missing_household_ids() {
     let mut households = HouseholdSystem::new();
     let mut agents = AgentSystem::new();
     let agent = agents.spawn_housed_agent(0, 0.0, 0.0);
     agents.household_id[agent] = usize::MAX;
 
-    households.ensure_agent_households(&mut agents);
+    households.rebuild_household_and_worker_counts(&agents, &mut BuildingAllocator::new());
 
     assert!(households.households.is_empty());
     assert_eq!(agents.household_id[agent], usize::MAX);
@@ -851,6 +851,14 @@ fn utility_provider_must_have_workers_before_receiving_service_revenue() {
     for idx in 1..=3 {
         allocator.buildings[idx].worker_count = 1;
     }
+    // Staffing alone is insufficient when maintenance stock is empty.
+    households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
+    assert_eq!(allocator.buildings[2].revenue, 0.0);
+    assert_eq!(allocator.buildings[3].revenue, 0.0);
+    let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
+    for idx in 1..=3 {
+        allocator.buildings[idx].set_inventory_units(machinery, 80.0);
+    }
     households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury_balance);
     assert_eq!(allocator.buildings[1].revenue, 0.0);
     assert!(allocator.buildings[2].revenue > 0.0);
@@ -1021,7 +1029,6 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
     households.daily_ledgers[0].power_consumption_cost = 3.0;
     households.daily_ledgers[0].water_consumption_cost = 2.0;
     households.daily_ledgers[0].sewage_consumption_cost = 1.5;
-    households.daily_ledgers[0].utility_stock_consumption_cost = 6.5;
 
     let logistics = ShipmentSystem::new();
     let mut treasury_balance = 0.0;
@@ -1044,15 +1051,77 @@ fn household_utility_owa_surcharge_uses_unified_multiplier() {
     assert!(
         (households.households[0].budget - (100.0 - (expected_total_bill - 6.5))).abs() < 0.001
     );
-    assert!(
-        (households.daily_ledgers()[0].utility_stock_consumption_cost - expected_total_bill).abs()
-            < 0.001
-    );
     assert_eq!(treasury_balance, 0.0);
     assert_eq!(
         households.last_power_settlement().household_local_revenue,
         0.0
     );
+}
+
+#[test]
+fn household_utility_revenue_cannot_exceed_cash_actually_paid() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let tuning = load_runtime_economy_tuning().unwrap();
+    let hourly_cost = tuning.households.utility_cost_per_member_per_day / 24.0;
+    for initial_budget in [0.0, hourly_cost / 4.0] {
+        let mut allocator = BuildingAllocator::new();
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            "test:cash_limited_home",
+            0.0,
+        ));
+        let power_asset = register_test_utility_asset(
+            &mut allocator,
+            "test",
+            "cash_limited_plant",
+            "power_plant_basic",
+        );
+        let mut plant = make_building(20.0, ZoneType::None, &power_asset, 0.0);
+        plant.economy_profile_runtime_id = catalog
+            .profile_for_id("power_plant_basic")
+            .unwrap()
+            .runtime_id;
+        // Output already produced today remains available after the workers leave.
+        plant.daily_power_service_units = 42.0;
+        allocator.buildings.push(plant);
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, 1, 0.0, 0.0);
+        household.budget = initial_budget;
+        households.households.push(household);
+        households.consume_household_stock(&mut AgentSystem::new());
+        let mut treasury = 0.0;
+        households.settle_daily_utilities(&mut allocator, &ShipmentSystem::new(), &mut treasury);
+
+        let ledger = &households.daily_ledgers()[0];
+        let paid = ledger.power_consumption_cost
+            + ledger.water_consumption_cost
+            + ledger.sewage_consumption_cost;
+        assert!(
+            (paid - initial_budget).abs() < 0.00001,
+            "paid={paid}, available={initial_budget}"
+        );
+        assert_eq!(households.households[0].budget, 0.0);
+        assert!((treasury - f64::from(initial_budget / 3.0)).abs() < 0.00001);
+        assert!((allocator.buildings[1].revenue - initial_budget / 3.0).abs() < 0.00001);
+    }
+}
+
+#[test]
+fn household_utility_surcharge_records_only_the_remaining_cash() {
+    let mut households = HouseholdSystem::new();
+    let mut household = make_household(usize::MAX, 1, 0.0, 0.0);
+    household.budget = 0.25;
+    households.households.push(household);
+    households.ensure_daily_ledger_len();
+    households.daily_ledgers[0].power_consumption_cost = 3.0;
+    households.settle_daily_utilities(
+        &mut BuildingAllocator::new(),
+        &ShipmentSystem::new(),
+        &mut 0.0,
+    );
+    assert_eq!(households.households[0].budget, 0.0);
+    assert!((households.daily_ledgers()[0].power_consumption_cost - 3.25).abs() < 0.00001);
 }
 
 #[test]
@@ -1091,7 +1160,6 @@ fn household_utility_payment_flows_to_fueled_power_provider() {
     households.households.push(make_household(0, 20, 0.0, 0.0));
     households.ensure_daily_ledger_len();
     households.daily_ledgers[0].power_consumption_cost = 60.0;
-    households.daily_ledgers[0].utility_stock_consumption_cost = 60.0;
 
     let logistics = ShipmentSystem::new();
     let mut treasury_balance = 0.0;
@@ -1151,7 +1219,6 @@ fn power_settlement_uses_recorded_output_after_coal_is_consumed() {
     households.households.push(make_household(0, 20, 0.0, 0.0));
     households.ensure_daily_ledger_len();
     households.daily_ledgers[0].power_consumption_cost = 60.0;
-    households.daily_ledgers[0].utility_stock_consumption_cost = 60.0;
 
     let logistics = ShipmentSystem::new();
     let mut treasury_balance = 0.0;
@@ -1202,8 +1269,24 @@ fn city_service_wages_debit_treasury_not_building_budget() {
     agents.current_building[agent] = 0;
     agents.assign_work_building(agent, 1, 0);
 
+    let water_asset = register_test_utility_asset(
+        &mut allocator,
+        "test",
+        "city_service_wage_water",
+        "water_plant_basic",
+    );
+    let water_profile = catalog.profile_for_id("water_plant_basic").unwrap();
+    let mut water = make_building(40.0, ZoneType::None, &water_asset, 0.0);
+    water.economy_profile_runtime_id = water_profile.runtime_id;
+    water.worker_count = 1;
+    water.operating_budget = 0.0;
+    allocator.buildings.push(water);
+    let water_worker = agents.spawn_housed_agent(0, 0.0, 0.0);
+    agents.household_id[water_worker] = 0;
+    agents.assign_work_building(water_worker, 2, 0);
+
     let mut treasury_balance = 1_000.0;
-    let wage = power_profile.average_daily_wage();
+    let wage = power_profile.average_daily_wage() + water_profile.average_daily_wage();
     let income_tax =
         households.pay_daily_wages(&mut agents, &mut allocator, 0.0, &mut treasury_balance);
 
@@ -1211,6 +1294,12 @@ fn city_service_wages_debit_treasury_not_building_budget() {
     assert!((treasury_balance - (1_000.0 - wage as f64)).abs() < 0.001);
     assert!((households.households[0].budget - wage).abs() < 0.001);
     assert_eq!(allocator.buildings[1].operating_budget, 0.0);
+    assert_eq!(allocator.buildings[2].operating_budget, 0.0);
+    assert_eq!(households.last_city_service_wages().total, wage);
+    assert_eq!(
+        households.last_city_service_wages().power,
+        power_profile.average_daily_wage()
+    );
     assert_eq!(agents.consecutive_unpaid_days[agent], 0);
 }
 
@@ -1262,4 +1351,109 @@ fn power_service_funding_sheds_workers_to_funded_capacity() {
     assert_eq!(allocator.buildings[1].worker_count, 1);
     assert_eq!(agents.work_building[a0], 1);
     assert_eq!(agents.work_building[a1], usize::MAX);
+}
+
+#[test]
+#[ignore = "manual matched release timing of funded staffing limits"]
+fn benchmark_funded_staffing() {
+    use std::{hint::black_box, time::Instant};
+    let catalog = load_runtime_economy_catalog().unwrap();
+    for power in [false, true] {
+        let profile = catalog
+            .profile_for_id(if power {
+                "power_plant_basic"
+            } else {
+                "food_processor_basic"
+            })
+            .unwrap();
+        let capacity = profile.worker_capacity as usize;
+        for count in [1_024_usize, 8_192, 65_536] {
+            let mut allocator = BuildingAllocator::new();
+            let mut template = make_building(20.0, ZoneType::Industrial, "test:funding_bench", 0.0);
+            template.economy_profile_runtime_id = profile.runtime_id;
+            allocator.buildings = vec![template; count.div_ceil(capacity)];
+            let funding = vec![0.5; allocator.buildings.len()];
+            let mut agents = AgentSystem::new();
+            for _ in 0..count {
+                agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
+            }
+            let mut households = HouseholdSystem::new();
+            let mut samples = [0.0; 11];
+            for sample in &mut samples {
+                for (idx, work) in agents.work_building.iter_mut().enumerate() {
+                    *work = idx / capacity;
+                }
+                for building in &mut allocator.buildings {
+                    building.worker_count = capacity as u32;
+                }
+                let start = Instant::now();
+                households.enforce_service_funding_staffing(
+                    black_box(&mut agents),
+                    &mut allocator,
+                    &funding,
+                    true,
+                );
+                *sample = start.elapsed().as_secs_f64() * 1_000.0;
+            }
+            let employed = agents
+                .work_building
+                .iter()
+                .filter(|&&work| work != usize::MAX)
+                .count();
+            if power {
+                assert!(employed > 0 && employed < count);
+            } else {
+                assert_eq!(employed, count);
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "funded_staffing power={power} workers={count} median_ms={:.3}",
+                samples[5]
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "manual matched release timing of hourly household charges and daily utility settlement"]
+fn benchmark_household_utility_settlement() {
+    use std::{hint::black_box, time::Instant};
+    for count in [1_024, 8_192, 65_536] {
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, 1, 0.0, 1_000.0);
+        household.budget = 10_000.0;
+        households.households = vec![household; count];
+        let mut allocator = BuildingAllocator::new();
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            "test:utility_benchmark",
+            0.0,
+        ));
+        let mut agents = AgentSystem::new();
+        let logistics = ShipmentSystem::new();
+        let mut treasury = 0.0;
+        let mut samples = [0.0; 11];
+        for sample in &mut samples {
+            households.reset_daily_ledgers();
+            let start = Instant::now();
+            for _ in 0..24 {
+                households.consume_household_stock(black_box(&mut agents));
+            }
+            households.settle_daily_utilities(&mut allocator, &logistics, &mut treasury);
+            *sample = start.elapsed().as_secs_f64() * 1_000.0;
+        }
+        assert!(
+            households
+                .households
+                .iter()
+                .all(|home| home.budget > 0.0 && home.budget < 10_000.0)
+        );
+        assert_eq!(treasury, 0.0);
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "household_utility households={count} median_ms={:.3}",
+            samples[5]
+        );
+    }
 }

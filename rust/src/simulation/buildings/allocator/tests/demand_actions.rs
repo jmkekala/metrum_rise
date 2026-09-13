@@ -6,6 +6,142 @@ use super::support::*;
 use super::*;
 
 #[test]
+#[ignore = "manual matched release locality timing of selected building action lookup"]
+fn benchmark_demand_action_lookup() {
+    use crate::simulation::economy::demand::{
+        DemandBuildingActionPlan, DemandSystem, demand_building_action_key,
+    };
+    use crate::simulation::zoning::{ZoningSystem, parcels::ParcelGeometry};
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let graph = RegionGraph::new();
+    let network = TransitNetwork::new();
+    let terrain = flat_test_terrain();
+    let demand = DemandSystem::new();
+    for count in [1, 1_024, 65_536, 262_144] {
+        let mut allocator = BuildingAllocator::new();
+        let mut zoning = ZoningSystem::new(&WorldConfig::default());
+        let mut agents = AgentSystem::new();
+        let mut households = HouseholdSystem::new();
+        let mut logistics = ShipmentSystem::new();
+        let mut treasury = 0.0;
+        for idx in 0..count {
+            // Isolated indexed records: lookup rejection does not consume routing/site geometry.
+            // Keep the selected parcel fixed and place background records in distant chunks.
+            let center = if idx == 0 {
+                Vector2::ZERO
+            } else {
+                Vector2::new(
+                    1_024.0 + (idx % 512) as f32 * 16.0,
+                    1_024.0 + (idx / 512) as f32 * 16.0,
+                )
+            };
+            let min = center - Vector2::new(2.5, 2.5);
+            let max = center + Vector2::new(2.5, 2.5);
+            let parcel = zoning.parcels.insert_new(
+                ParcelGeometry {
+                    edge_idx: 0,
+                    side: 1,
+                    frontage_center_t: 0.5,
+                    frontage_m: 5.0,
+                    depth_m: 5.0,
+                    front_center: Vector2::new(center.x, min.y),
+                    center,
+                    tangent: Vector2::new(1.0, 0.0),
+                    normal: Vector2::new(0.0, 1.0),
+                    corners: [
+                        min,
+                        Vector2::new(max.x, min.y),
+                        max,
+                        Vector2::new(min.x, max.y),
+                    ],
+                    aabb_min: min,
+                    aabb_max: max,
+                },
+                0,
+            );
+            let mut building =
+                indexed_test_building("benchmark.house".to_owned(), ZoneType::Residential, 0);
+            building.parcel_id = parcel.raw();
+            building.center_x = center.x;
+            building.center_y = center.y;
+            building.occupancy = 1;
+            assert!(zoning.occupy_parcel(parcel.raw(), idx));
+            allocator.buildings.push(building);
+        }
+        // Admission can occupy a selected empty home before immediate building actions execute.
+        // Use a nonempty plan, as the core intentionally skips empty action plans altogether.
+        let mut plan = DemandBuildingActionPlan::default();
+        plan.residential
+            .despawns
+            .push(demand_building_action_key(&allocator.buildings[0]));
+        let checksum = |allocator: &BuildingAllocator, zoning: &ZoningSystem| {
+            let mut hash = DefaultHasher::new();
+            for (idx, building) in allocator.buildings.iter().enumerate() {
+                (
+                    idx,
+                    building.parcel_id,
+                    &building.asset_id,
+                    building.level,
+                    building.occupancy,
+                    building.center_x.to_bits(),
+                    building.center_y.to_bits(),
+                    zoning
+                        .parcel_by_raw_id(building.parcel_id)
+                        .unwrap()
+                        .occupied_building(),
+                )
+                    .hash(&mut hash);
+            }
+            hash.finish()
+        };
+        let expected = checksum(&allocator, &zoning);
+        let revision = allocator.building_ref_revision();
+        let occupancy_revision = zoning.overlay_occupancy_revision();
+        let mut execute = || {
+            black_box(allocator.execute_demand_building_actions(
+                black_box(&plan),
+                &mut zoning,
+                &mut agents,
+                &mut households,
+                &mut logistics,
+                &mut treasury,
+                &graph,
+                &network.lane_system,
+                &network.road_surface,
+                &terrain,
+                demand.runtime_catalog(),
+                demand.runtime_tuning(),
+            ));
+        };
+        for _ in 0..3 {
+            execute();
+        }
+        let mut samples = [0.0; 21];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..4 {
+                execute();
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
+        }
+        samples.sort_by(f64::total_cmp);
+        assert_eq!(checksum(&allocator, &zoning), expected);
+        assert_eq!(allocator.building_ref_revision(), revision);
+        assert_eq!(zoning.overlay_occupancy_revision(), occupancy_revision);
+        assert_eq!(treasury, 0.0);
+        assert!(agents.is_empty());
+        assert!(households.households.is_empty());
+        eprintln!(
+            "demand_action_lookup buildings={count} median_ms={:.9} checksum={expected}",
+            samples[10]
+        );
+    }
+}
+
+#[test]
 fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
     use crate::simulation::economy::demand::DemandSystem;
     use godot::prelude::Vector3;
@@ -63,6 +199,7 @@ fn test_demand_building_spawn_plan_executes_from_hourly_budget() {
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &graph,
         &network.lane_system,
         &network.road_surface,
@@ -149,155 +286,25 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         [parcels[0].1, parcels[2].1, parcels[4].1]
     };
 
-    allocator.buildings.push(Building {
-        center_x: 0.0,
-        center_y: 0.0,
-        support_height_m: 0.0,
-        width_cells: 1,
-        depth_cells: 1,
-        zone_profile_runtime_id: 0,
-        parcel_id: occupied_parcels[0],
-        zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, -1.0),
-        frontage_t: 0.0,
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 6,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_level_1.clone(),
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 0.0,
-        profit_tax_budget_baseline: 0.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
-    allocator.buildings.push(Building {
-        center_x: 0.0,
-        center_y: 0.0,
-        support_height_m: 0.0,
-        width_cells: 1,
-        depth_cells: 1,
-        zone_profile_runtime_id: 0,
-        parcel_id: occupied_parcels[1],
-        zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, -1.0),
-        frontage_t: 0.0,
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_level_2.clone(),
-        level: 2,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 0.0,
-        profit_tax_budget_baseline: 0.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
-    allocator.buildings.push(Building {
-        center_x: 0.0,
-        center_y: 0.0,
-        support_height_m: 0.0,
-        width_cells: 1,
-        depth_cells: 1,
-        zone_profile_runtime_id: 0,
-        parcel_id: occupied_parcels[2],
-        zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, -1.0),
-        frontage_t: 0.0,
-        side_offset: 1.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: residential_level_1.clone(),
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 0.0,
-        profit_tax_budget_baseline: 0.0,
-        last_day_profit: 0.0,
-
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    });
-    for (building_idx, &parcel_id) in occupied_parcels.iter().enumerate() {
-        zoning.occupy_parcel(parcel_id, building_idx);
+    // Remove index 0 first so the later downgrade must follow the swapped building.
+    for (parcel_slot, asset_id, level, occupancy) in [
+        (2, &residential_level_1, 1, 0),
+        (0, &residential_level_1, 1, 6),
+        (1, &residential_level_2, 2, 0),
+    ] {
+        let mut building = indexed_test_building(asset_id.clone(), ZoneType::Residential, 0);
+        building.width_cells = 1;
+        building.depth_cells = 1;
+        building.parcel_id = occupied_parcels[parcel_slot];
+        building.facing_dir = Vector2::new(0.0, -1.0);
+        building.frontage_t = 0.0;
+        building.side_offset = 1.0;
+        building.level = level;
+        building.occupancy = occupancy;
+        building.operating_budget = 0.0;
+        building.profit_tax_budget_baseline = 0.0;
+        assert!(zoning.occupy_parcel(building.parcel_id, allocator.buildings.len()));
+        allocator.buildings.push(building);
     }
     allocator
         .recompute_derived_transforms(&graph, &zoning)
@@ -362,6 +369,11 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         asset_id: residential_level_1.clone(),
     });
 
+    // The same parcel now has a different asset: a stale action must not remove it.
+    let mut stale = plan.residential.downgrades[0].building.clone();
+    stale.asset_id = "building.replaced".to_owned();
+    plan.residential.despawns.insert(0, stale);
+
     let demand = DemandSystem::new();
     let terrain = compiled_flat_test_terrain(&mut network, &graph);
     allocator.execute_demand_building_actions(
@@ -370,6 +382,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &graph,
         &network.lane_system,
         &network.road_surface,
@@ -449,6 +462,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &graph,
         &network.lane_system,
         &network.road_surface,
@@ -529,6 +543,7 @@ fn test_commercial_demand_spawn_startup_budget_includes_first_import_cost() {
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &graph,
         &network.lane_system,
         &network.road_surface,

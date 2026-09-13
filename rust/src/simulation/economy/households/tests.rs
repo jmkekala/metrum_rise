@@ -35,6 +35,7 @@ mod commercial;
 mod employment;
 mod farms;
 mod housing;
+mod machinery;
 mod replenishment;
 mod service_visits;
 mod support;

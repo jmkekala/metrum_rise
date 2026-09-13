@@ -517,7 +517,7 @@ impl SimulationNode {
         stats
     }
 
-    /// Returns debug-only baseline/dynamic/combined water stats for one render patch.
+    /// Returns debug-only authored water-depth statistics for one render patch.
     #[func]
     pub fn get_water_patch_debug(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
         let Ok(patch_x) = usize::try_from(patch_x) else {
@@ -529,10 +529,10 @@ impl SimulationNode {
         let Some(core) = self.try_lock_core() else {
             return VarDictionary::new();
         };
-        let Some(stats) = core.watermap.visible_patch_layer_stats(patch_x, patch_z) else {
+        let Some(stats) = core.watermap.patch_depth_stats(patch_x, patch_z) else {
             return VarDictionary::new();
         };
-        Self::water_patch_layer_debug_dict(&stats)
+        Self::water_patch_debug_dict(&stats)
     }
 
     /// Returns debug-only authored baseline-water fill contributors for one render patch.

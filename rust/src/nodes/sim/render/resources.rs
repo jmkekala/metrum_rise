@@ -4,6 +4,7 @@
 
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::resources::{COAL_RESOURCE_ID, RESOURCE_RICHNESS_MAX};
+use crate::utils::point_in_polygon;
 use godot::prelude::*;
 use rayon::prelude::*;
 
@@ -497,28 +498,61 @@ fn scaled_index(index: usize, target_len: usize, source_len: usize) -> usize {
     (index.saturating_mul(source_len) / target_len).min(source_len - 1)
 }
 
-fn point_in_polygon(point: Vector2, polygon: &[Vector2]) -> bool {
-    let mut inside = false;
-    let mut prev = polygon[polygon.len() - 1];
-    for &curr in polygon {
-        let crosses = (curr.y > point.y) != (prev.y > point.y);
-        if crosses {
-            let denom = prev.y - curr.y;
-            if denom.abs() > f32::EPSILON {
-                let x_at_y = (prev.x - curr.x) * (point.y - curr.y) / denom + curr.x;
-                if point.x < x_at_y {
-                    inside = !inside;
-                }
-            }
-        }
-        prev = curr;
-    }
-    inside
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "unprofiled production-area geometry; run alone with --release --ignored --nocapture"]
+    fn benchmark_work_area_polygon_queries() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let queries: Vec<_> = (0..4_096)
+            .map(|index| {
+                Vector2::new(
+                    (index % 64) as f32 * 2.0 - 64.0,
+                    (index / 64) as f32 * 2.0 - 64.0,
+                )
+            })
+            .collect();
+        for vertices in [4, 16, 64] {
+            let polygon: Vec<_> = (0..vertices)
+                .map(|index| {
+                    let angle = index as f32 * std::f32::consts::TAU / vertices as f32;
+                    Vector2::new(angle.cos() * 40.0, angle.sin() * 40.0)
+                })
+                .collect();
+            let mut samples = Vec::with_capacity(21);
+            for sample in 0..24 {
+                let start = Instant::now();
+                for _ in 0..64 {
+                    for &point in &queries {
+                        black_box(polygon_soft_mask_alpha(
+                            black_box(point),
+                            black_box(&polygon),
+                            2.0,
+                        ));
+                    }
+                }
+                if sample >= 3 {
+                    samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+                }
+            }
+            let checksum = queries
+                .iter()
+                .enumerate()
+                .fold(0u64, |sum, (index, point)| {
+                    sum.wrapping_add((index as u64 + 1).wrapping_mul(u64::from(
+                        polygon_soft_mask_alpha(*point, &polygon, 2.0).to_bits(),
+                    )))
+                });
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "work_area_geometry vertices={vertices} queries=262144 median_ms={:.6} checksum={checksum}",
+                samples[samples.len() / 2]
+            );
+        }
+    }
 
     #[test]
     fn coal_pit_soft_mask_does_not_bleed_outside_polygon() {

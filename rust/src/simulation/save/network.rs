@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use super::schema::*;
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
-use super::{i64_to_i8, i64_to_u32, i64_to_usize, usize_to_i64};
+use super::{i64_to_i8, i64_to_u8, i64_to_u32, i64_to_usize, usize_to_i64};
 
 pub(super) fn save_network(
     tx: &Transaction,
@@ -167,14 +167,15 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
             let p = Vector3::new(row.get(2)?, row.get(3)?, row.get(4)?);
-            if row.get::<_, bool>(5)? {
-                physical_geometry
-                    .entry(eid)
-                    .or_insert_with(Vec::new)
-                    .push(p);
+            let points = if row.get::<_, bool>(5)? {
+                physical_geometry.entry(eid).or_insert_with(Vec::new)
             } else {
-                geometry.entry(eid).or_insert_with(Vec::new).push(p);
+                geometry.entry(eid).or_insert_with(Vec::new)
+            };
+            if i64_to_usize(row.get(1)?)? != points.len() {
+                return Err(SaveLoadError::custom("non-contiguous edge geometry points"));
             }
+            points.push(p);
         }
     }
 
@@ -193,15 +194,21 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let speed_limit = row.get(9)?;
             let no_building_spawn =
                 row.get::<_, i64>(15)? != 0 || speed_limit >= HIGH_SPEED_ROAD_THRESHOLD_MS;
+            let start_node = i64_to_u32(row.get(1)?)?;
+            let end_node = i64_to_u32(row.get(2)?)?;
+            if start_node as usize >= graph.node_count() || end_node as usize >= graph.node_count()
+            {
+                return Err(SaveLoadError::custom("edge references out-of-range node"));
+            }
             graph.add_edge(Edge {
-                start_node: i64_to_u32(row.get(1)?)?,
-                end_node: i64_to_u32(row.get(2)?)?,
+                start_node,
+                end_node,
                 primary_type: transit_type_from_i64(row.get(3)?)?,
-                allowed_types: (row.get::<_, i64>(4)?) as u8,
+                allowed_types: i64_to_u8(row.get(4)?)?,
                 class: edge_class_from_i64(row.get(5)?)?,
                 width: row.get(6)?,
-                fwd_lanes: (row.get::<_, i64>(7)?) as u8,
-                bkw_lanes: (row.get::<_, i64>(8)?) as u8,
+                fwd_lanes: i64_to_u8(row.get(7)?)?,
+                bkw_lanes: i64_to_u8(row.get(8)?)?,
                 speed_limit,
                 base_cost: row.get(10)?,
                 physical_length: row.get(11)?,
@@ -237,7 +244,10 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             graph.add_lane_connection(nid, fe, fl, te, tl);
         }
     }
-    graph.rebuild_all_indices();
+    if !geometry.is_empty() || !physical_geometry.is_empty() {
+        return Err(SaveLoadError::custom("orphan edge geometry"));
+    }
+    // add_node/add_edge already maintained adjacency and both spatial indices.
     Ok(graph)
 }
 

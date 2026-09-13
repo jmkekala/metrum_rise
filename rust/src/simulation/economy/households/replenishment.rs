@@ -2,9 +2,6 @@
 
 //! Household stock consumption, shopper-carried store trips, and replenishment state.
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use super::data::{DailyHouseholdLedger, Household, HouseholdSystem};
 use super::metrics::{
     OPERATIONAL_HOURS_PER_DAY, economy_profile_for_building, household_demand_profile,
@@ -13,8 +10,8 @@ use super::metrics::{
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::accessibility::{
-    BuildingModeComponents, ModeComponentIndex, ReachableBucketEntry, ReachableBucketIndex,
-    ReachableBucketScanEvent, chunk_for_point,
+    BuildingModeComponents, ModeComponentIndex, ReachableBucketIndex, ReachableBucketScanEvent,
+    chunk_for_point,
 };
 use crate::simulation::economy::agents::tick::building_origin_trip_is_feasible;
 use crate::simulation::economy::agents::{
@@ -182,15 +179,13 @@ impl StoreSupplyIndex {
         let mut foot_bucket_entries = Vec::with_capacity(entries.len());
         let mut car_bucket_entries = Vec::with_capacity(entries.len());
         for (entry_idx, entry) in entries.iter().enumerate() {
-            index_store_components(
+            entry.foot_components.append_bucket_entries(
                 &mut foot_bucket_entries,
-                entry.foot_components,
                 entry.chunk,
                 entry_idx,
             );
-            index_store_components(
+            entry.car_components.append_bucket_entries(
                 &mut car_bucket_entries,
-                entry.car_components,
                 entry.chunk,
                 entry_idx,
             );
@@ -321,7 +316,7 @@ impl StoreSupplyIndex {
                         diagnostics.rejected_unreachable += 1;
                         return true;
                     }
-                    insert_store_candidate(
+                    insert_shopping_candidate(
                         candidates,
                         GROCERY_SEARCH_CANDIDATES,
                         entry.building_idx,
@@ -341,7 +336,7 @@ impl StoreSupplyIndex {
                 let worst = candidates
                     .last()
                     .map(|&idx| {
-                        squared_store_distance(origin_x, origin_y, &allocator.buildings[idx])
+                        squared_building_distance(origin_x, origin_y, &allocator.buildings[idx])
                     })
                     .unwrap_or(f32::MAX);
                 next_min_distance_sq <= worst
@@ -384,7 +379,7 @@ impl StoreSupplyIndex {
                 diagnostics.rejected_unreachable += 1;
                 continue;
             }
-            insert_store_candidate(
+            insert_shopping_candidate(
                 candidates,
                 GROCERY_SEARCH_CANDIDATES,
                 entry.building_idx,
@@ -397,18 +392,8 @@ impl StoreSupplyIndex {
     }
 }
 
-fn index_store_components(
-    target: &mut Vec<ReachableBucketEntry>,
-    components: BuildingModeComponents,
-    chunk: (i32, i32),
-    entry_idx: usize,
-) {
-    for &component in components.as_slice() {
-        target.push(ReachableBucketEntry::new(component, chunk, entry_idx));
-    }
-}
-
-fn insert_store_candidate(
+/// Keeps the nearest unique shopping destinations, breaking distance ties by building ID.
+pub(super) fn insert_shopping_candidate(
     candidates: &mut Vec<usize>,
     candidate_limit: usize,
     candidate: usize,
@@ -423,12 +408,12 @@ fn insert_store_candidate(
         return;
     }
     let candidate_distance =
-        squared_store_distance(origin_x, origin_y, &allocator.buildings[candidate]);
+        squared_building_distance(origin_x, origin_y, &allocator.buildings[candidate]);
     let mut insert_at = 0usize;
     while insert_at < candidates.len() {
         let existing = candidates[insert_at];
         let existing_distance =
-            squared_store_distance(origin_x, origin_y, &allocator.buildings[existing]);
+            squared_building_distance(origin_x, origin_y, &allocator.buildings[existing]);
         if candidate_distance
             .total_cmp(&existing_distance)
             .then_with(|| candidate.cmp(&existing))
@@ -438,13 +423,14 @@ fn insert_store_candidate(
         }
         insert_at += 1;
     }
-    if candidates.len() == candidate_limit && insert_at == candidates.len() {
-        return;
-    }
-    candidates.insert(insert_at, candidate);
-    if candidates.len() > candidate_limit {
+    if candidates.len() == candidate_limit {
+        if insert_at == candidates.len() {
+            return;
+        }
+        // Drop the worst entry first so a full scratch buffer never needs to grow.
         candidates.pop();
     }
+    candidates.insert(insert_at, candidate);
 }
 
 impl HouseholdSystem {
@@ -534,10 +520,9 @@ impl HouseholdSystem {
         households
             .par_iter_mut()
             .zip(daily_ledgers.par_iter_mut())
-            .enumerate()
             .fold(
                 HouseholdHourProgress::default,
-                |mut progress, (_, (household, ledger))| {
+                |mut progress, (household, ledger)| {
                     if household.member_count == 0 {
                         return progress;
                     }
@@ -549,12 +534,11 @@ impl HouseholdSystem {
                     let hourly_utility_cost = household.member_count as f32
                         * utility_cost_per_member_per_day
                         / OPERATIONAL_HOURS_PER_DAY;
+                    let paid_utility_cost = hourly_utility_cost.min(household.budget.max(0.0));
                     household.budget = (household.budget - hourly_utility_cost).max(0.0);
                     let hourly_supply_cost = hourly_consumption * household_supply_unit_price;
                     ledger.household_supply_consumption_cost += hourly_supply_cost;
-                    record_household_utility_cost(ledger, hourly_utility_cost);
-                    ledger.utility_stock_consumption_cost +=
-                        hourly_utility_cost + hourly_supply_cost;
+                    record_household_utility_cost(ledger, paid_utility_cost);
                     household.stock_days = stock_days(
                         household.stock,
                         household.member_count,
@@ -571,13 +555,10 @@ impl HouseholdSystem {
                         }
                         household.replenishment_failure_count = 0;
                         household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
-                        if household.stock_days >= trigger_days {
-                            household.replenishment_failure_count = 0;
-                            household.replenishment_search_cursor = 0;
-                            household.replenishment_state = REPLENISHMENT_STABLE;
-                        }
-                    } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
+                    } else if matches!(
+                        household.replenishment_state,
+                        REPLENISHMENT_WAITING_FOR_SHOPPER | REPLENISHMENT_FAILED_TERMINAL
+                    ) {
                         if household.stock_days >= trigger_days {
                             household.replenishment_failure_count = 0;
                             household.replenishment_search_cursor = 0;
@@ -626,71 +607,13 @@ impl HouseholdSystem {
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let trigger_days = household_demand_profile(&catalog).reorder_threshold_days;
         let supply_unit_price = household_supply_unit_price(&catalog);
-        let any_zero_stock = AtomicBool::new(false);
-        self.ensure_daily_ledger_len();
-        self.households
-            .par_iter_mut()
-            .zip(self.daily_ledgers.par_iter_mut())
-            .for_each(|(household, ledger)| {
-                if household.member_count == 0 {
-                    return;
-                }
-                let hourly_consumption = household.member_count as f32 * household.consumption_rate
-                    / OPERATIONAL_HOURS_PER_DAY;
-                household.stock = (household.stock - hourly_consumption).max(0.0);
-                let hourly_utility_cost = household.member_count as f32
-                    * tuning.households.utility_cost_per_member_per_day
-                    / OPERATIONAL_HOURS_PER_DAY;
-                household.budget = (household.budget - hourly_utility_cost).max(0.0);
-                let hourly_supply_cost = hourly_consumption * supply_unit_price;
-                ledger.household_supply_consumption_cost += hourly_supply_cost;
-                record_household_utility_cost(ledger, hourly_utility_cost);
-                ledger.utility_stock_consumption_cost += hourly_utility_cost + hourly_supply_cost;
-                household.stock_days = stock_days(
-                    household.stock,
-                    household.member_count,
-                    household.consumption_rate,
-                );
-                if matches!(
-                    household.replenishment_state,
-                    REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
-                ) {
-                    return;
-                } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
-                    if household.cooldown_hours > 0 {
-                        household.cooldown_hours -= 1;
-                    }
-                    household.replenishment_failure_count = 0;
-                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                } else if household.replenishment_state == REPLENISHMENT_WAITING_FOR_SHOPPER {
-                    if household.stock_days >= trigger_days {
-                        household.replenishment_failure_count = 0;
-                        household.replenishment_search_cursor = 0;
-                        household.replenishment_state = REPLENISHMENT_STABLE;
-                    }
-                } else if household.replenishment_state == REPLENISHMENT_FAILED_TERMINAL {
-                    if household.stock_days >= trigger_days {
-                        household.replenishment_failure_count = 0;
-                        household.replenishment_search_cursor = 0;
-                        household.replenishment_state = REPLENISHMENT_STABLE;
-                    }
-                } else if household.cooldown_hours > 0 {
-                    household.cooldown_hours -= 1;
-                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                } else if household.stock_days < trigger_days {
-                    household.replenishment_state = REPLENISHMENT_NEEDS;
-                } else {
-                    household.replenishment_failure_count = 0;
-                    household.replenishment_search_cursor = 0;
-                    household.replenishment_state = REPLENISHMENT_STABLE;
-                }
-
-                if household.stock_days == 0.0 {
-                    any_zero_stock.store(true, Ordering::Relaxed);
-                }
-            });
-
-        if any_zero_stock.load(Ordering::Relaxed) {
+        let progress = self.progress_households_for_operational_hour(
+            0,
+            trigger_days,
+            tuning.households.utility_cost_per_member_per_day,
+            supply_unit_price,
+        );
+        if progress.any_zero_stock {
             apply_starvation_happiness_loss(&self.households, agents);
         }
     }
@@ -1117,6 +1040,52 @@ impl HouseholdSystem {
         }
     }
 
+    /// Cancels an evicted household's shopping task through the normal refund and ledger path.
+    pub(super) fn cancel_household_replenishment(
+        &mut self,
+        hid: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        let state = self.households[hid].replenishment_state;
+        if !matches!(
+            state,
+            REPLENISHMENT_SHOPPING_TO_STORE | REPLENISHMENT_SHOPPING_RETURNING
+        ) {
+            clear_replenishment_request(&mut self.households[hid]);
+            return;
+        }
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        self.ensure_daily_ledger_len();
+        let cooldown = tuning
+            .operational_clock
+            .household_replenishment_retry_cooldown_hours;
+        let terminal_count = tuning
+            .operational_clock
+            .household_replenishment_terminal_failure_count;
+        if state == REPLENISHMENT_SHOPPING_TO_STORE {
+            let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+                panic!("could not load built-in runtime economy catalog: {err}")
+            });
+            self.cancel_replenishment_before_pickup_with_ledger(
+                hid,
+                agents,
+                allocator,
+                household_supply_resource_runtime_id(&catalog),
+                cooldown,
+                terminal_count,
+            );
+        } else {
+            self.cancel_replenishment_after_pickup_with_ledger(
+                hid,
+                agents,
+                cooldown,
+                terminal_count,
+            );
+        }
+    }
+
     fn cancel_replenishment_before_pickup_with_ledger(
         &mut self,
         hid: usize,
@@ -1526,7 +1495,8 @@ fn valid_store_for_pickup(
     })
 }
 
-fn shopping_route_is_feasible(
+/// Checks both the outward shopping trip and the return home through the live trip planner.
+pub(super) fn shopping_route_is_feasible(
     home_idx: usize,
     store_idx: usize,
     has_car: bool,
@@ -1575,7 +1545,8 @@ fn schedule_shopper_home(household: &Household, agents: &mut AgentSystem) {
     agents.planned_activity[agent_idx] = ACTIVITY_HOME;
 }
 
-fn squared_store_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
+/// Returns squared center distance without a square root during candidate ranking.
+pub(super) fn squared_building_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
     let dx = building.center_x - origin_x;
     let dy = building.center_y - origin_y;
     dx * dx + dy * dy

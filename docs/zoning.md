@@ -39,8 +39,12 @@ pub struct ZoningSystem {
 }
 ```
 
-`profiles` is the validated zoning-profile registry. `parcels` is the stable parcel store and
-spatial lookup owner. `config` provides world bounds and zoning-cell size.
+`profiles` shares one immutable validated zoning-profile registry across systems and exports.
+Compilation rejects more than 65,535 profiles before assigning nonzero `u16` runtime ids; id `0`
+remains reserved. UI colours require six ASCII hexadecimal digits after `#` (surrounding whitespace
+is accepted); non-ASCII or otherwise malformed colours return validation errors instead of
+panicking on byte slices. `parcels` is the stable parcel store and spatial lookup owner. `config` provides world bounds
+and zoning-cell size.
 
 ### `ZoningParcel`
 
@@ -196,6 +200,9 @@ apply_zoning_parcel_rezone_drag(...)
 
 Drag rezone preview and commit skip parcels that overlap explicit service-building site
 reservations, so player zoning cannot claim land already reserved by a city service lot.
+The reservation covers the full lot even when imported structures occupy only a small part of it.
+Indexed queries use lot extents across chunk boundaries; touching edges retain the existing overlap
+tolerance. See the placement-query audit in [`building_allocator.md`](building_allocator.md).
 
 Parcel overlay:
 
@@ -321,8 +328,137 @@ Hot placement checks use existing bounded spatial structures:
 - road-corridor conflict checks query nearby road AABBs before SAT tests
 - explicit service-site blockers use the allocator building-site chunk index before SAT tests
 
-No full-world zoning scan is part of parcel placement, preview, rezone, save/load, or overlay
-generation.
+Per-candidate placement, preview and rezone conflict checks use local indices. Updating one known
+parcel's occupant uses the stable-id map in O(1) expected time. Bulk save/load reconstructs the
+stored collection. Replacing one parcel geometry updates only old/new footprint chunks, retaining
+shared memberships and storage-order picks. Stable-order parcel removal still rebuilds indices;
+that maintenance path remains under `AUDIT-01` review.
+
+### Profile loading audit (`AUDIT-01-Z1`)
+
+The cached loader previously cloned all profile strings, vectors and maps into a new `Arc` per
+request. It now stores the `Arc` in the existing `OnceLock`; successful repeated loads are O(1)
+and allocate no profile copies. Unused whole-registry/profile `Clone` and empty-registry `Default`
+implementations are removed. Compilation also moves the authored ID into its runtime record after
+validation, avoiding one redundant string copy. Cold compilation keeps its existing O(P log P)
+ordering/validation bound for P profiles.
+
+All three regressions fail before correction: a seven-byte colour containing `€` panics, 65,536
+profiles wrap the runtime-id space, and repeated loads return distinct registry instances. The
+corrected full release suite passes 1,752 tests (47 ignored), including the valid 65,535-profile
+boundary, invalid colours and shared immutable ownership.
+
+Five alternating unprofiled release pairs measured the ignored
+`simulation::zoning::profiles::registry::tests::benchmark_cached_zoning_profile_load` test on CPU 0
+with `RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, three warmups and 21 batches of 10,000 calls. Median
+milliseconds per repeated load fell from **0.000793622 to 0.000009598** (about 0.79 µs to 9.6 ns).
+Every run preserves the complete zoning style LUT. Initial TOML parsing and LUT construction are
+outside the timing; this measures cache retrieval, not world construction or placement throughput.
+
+Build command: `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, with Rust
+1.98.1 (48a229cea 2026-09-01). The runner uses `taskset -c 0`, `--exact`, `--ignored`, `--nocapture`
+and `--test-threads=1`. Before/after executable SHA-256 values are
+`698c4b37964c9cf76343d56e1402b825eda55e231612a0866582a23062769cd3` and
+`6dc89a511294abc67af9e927e17d5c70fce2c83895256bf123e93fd218bf4c10`.
+Sources/binaries remained fixed during timings, with no competing builds/tests. Exact commands,
+source identities, regression failures and matched results are in
+`/tmp/metrum-full-audit/zoning-profiles-*`; the runner is `match_zoning_profiles.py`.
+
+### Parcel occupancy audit (`AUDIT-01-Z2`)
+
+Allocator cleanup, demand/player removal and demolition undo already know the moved building's
+parcel ID. They now pass that ID to the existing parcel store instead of scanning every parcel for
+an occupant index. A missing parcel or stale expected occupant changes neither state nor revision.
+Successful updates retain the separate occupancy revision; geometry revision is untouched. Two
+unnecessary whole-building clones in direct removal are also removed. No new index is introduced.
+
+The existing revision test now covers remapping, a stale old occupant and reversal. The demolition
+undo fixture now owns real parcels and verifies the surviving parcel before undo and both claims
+afterward. The redevelopment fixture now removes one of two buildings and checks the survivor's
+moved index; it reuses the existing building fixture and normal rezone mutator instead of copying
+all building defaults and changing a parcel field directly. All 1,752 release tests pass (48 ignored).
+
+Five alternating CPU-0 unprofiled release pairs ran
+`simulation::zoning::tests::maintenance::benchmark_parcel_occupancy_remap`, with one Rayon worker,
+`METRUM_DEBUG=0`, three warmup round trips and 21 samples of 32 remaps. One local occupied parcel
+stays fixed while unrelated occupied records occupy distant chunks. Median milliseconds per remap:
+
+| Total parcels | Before | After |
+| --- | ---: | ---: |
+| 1 | 0.000001281 | 0.000008844 |
+| 1,024 | 0.000389406 | 0.000008844 |
+| 65,536 | 0.099767656 | 0.000008875 |
+| 262,144 | 0.808639344 | 0.000010813 |
+
+Every run preserves the complete `(parcel ID, occupant)` checksum and geometry revision after the
+round trips. The added hash lookup costs about 8 ns for one parcel, while larger inputs stay near
+9–11 ns instead of scaling with unrelated parcels. Setup, checksum generation and all other
+building-removal work are excluded. These are isolated parcel-store records, not a populated
+routing simulation; this benchmark does not claim whole-demolition or road-planning timings.
+
+Builds use `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
+(48a229cea 2026-09-01). `match_parcel_occupancy.py` records `taskset -c 0`, `--exact`, `--ignored`,
+`--nocapture` and `--test-threads=1` commands. Before/after executable SHA-256 values are
+`81d18be15f6374146486e583785c7892547d663aa21e37a5f16ad38accbc709f` and
+`2868aec40c81e8e2b97f117e5d2acd1a7a937c703f0ad1e69be92dce07564907`.
+Sources and binaries remained fixed with no competing builds/tests. Source identities, minimal
+diffs, raw logs and matched summaries are in `/tmp/metrum-full-audit/parcel-occupancy-*`.
+
+### Parcel geometry maintenance audit (`AUDIT-01-Z3`)
+
+Geometry replacement previously cleared and rebuilt every parcel chunk entry. It now uses the
+existing stable-ID lookup, removes memberships only from departed chunks and inserts memberships
+only in newly entered chunks. Shared chunks remain untouched. New entries use storage order rather
+than numeric parcel-ID order, preserving pick priority even for nonmonotonic loaded IDs. Occupancy
+and profile assignment remain unchanged; empty departed buckets are removed.
+
+Work is O(K + C), where K is the old/new footprint's chunk count and C is the total number of parcel
+entries examined or shifted in changed chunks. The method uses constant temporary storage and may
+allocate new index membership storage. It does not scan distant chunks. Chunk enumeration now
+streams the same X-then-Z order instead of allocating a temporary vector. Rectangle overlap shares
+the existing SAT routine; profile/geometry queries and drag previews reuse `parcel_at()`.
+
+All 1,753 release tests pass (50 ignored), including the new cross-chunk move/reversal test for
+storage order, point/stroke selection and occupancy. Existing curved drag, repair, save, demolition
+and undo regressions remain in the full suite. A shared geometry-translation fixture replaces the
+copied benchmark transform code.
+
+Five alternating CPU-0 unprofiled pairs measured
+`simulation::zoning::tests::maintenance::benchmark_parcel_geometry_replacement`, with
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, three warmup round trips and 21 samples of four replacements.
+One local parcel moves between fixed disjoint chunks; distant parcel records grow independently.
+Each move checks its point query, and full parcel-corner/occupancy checksums match after reversal.
+Median milliseconds per replacement and point lookup:
+
+| Total parcels | Before | After |
+| --- | ---: | ---: |
+| 1 | 0.000086500 | 0.000104500 |
+| 1,024 | 0.033001750 | 0.000105000 |
+| 65,536 | 1.735343000 | 0.000101750 |
+| 262,144 | 7.109629000 | 0.000125250 |
+
+The one-parcel case costs about 18 ns more; the new path remains local at city scale. Setup, checksum
+construction, road-attachment search and building repair are excluded. This is a store-maintenance
+measurement, not a complete road-edit timing.
+
+Three alternating eight-worker pairs also ran the existing
+`nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling` fixture on CPUs
+`0,2,4,6,8,10,12,14`. Each build preserves identical local products while background buildings,
+parcels, roads and agents increase. At 0 / 1,000 / 10,000 / 100,000 background buildings, worker
+medians are **20.656 / 20.731 / 20.796 / 20.753 ms before**, and
+**20.807 / 20.799 / 20.791 / 20.903 ms after**. The largest case has 600,024 agents. The separate
+one-time snapshot grows from 0.0069 to 3.3666 ms before and 0.0066 to 3.3306 ms after. It is excluded
+from repeated planning. These results preserve locality and establish no general planning speedup;
+that fixture compares local products across background sizes within each build, not exported
+cross-build payload hashes.
+
+Build command: `cargo test --offline --manifest-path rust/Cargo.toml --release --lib`, Rust 1.98.1
+(48a229cea 2026-09-01). Before/after executable SHA-256 values are
+`62f0ed5f0b40a93b9595315a41d5e2ec3e9b517be34046e0581b290c7ddb48fd` and
+`95200aa665985854acdb99d950fa382a04f9666f4a61a230b9fd19f892198fc0`.
+Source/binaries remained fixed during measurement with no competing build/test work. Commands,
+source identities and raw/summary results are `/tmp/metrum-full-audit/parcel-geometry-*`;
+`match_parcel_geometry.py` and `match_parcel_geometry_planning.py` are the replay runners.
 
 ---
 

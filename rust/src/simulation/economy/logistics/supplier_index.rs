@@ -28,7 +28,7 @@ impl SupplierCandidateIndex {
         catalog: &RuntimeEconomyCatalog,
         freight_components: &ModeComponentIndex,
     ) -> Self {
-        let mut entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> = allocator
+        let entries: Vec<(ResourceRuntimeId, ReachableBucketEntry)> = allocator
             .buildings
             .par_iter()
             .enumerate()
@@ -78,8 +78,6 @@ impl SupplierCandidateIndex {
                 })
             })
             .collect();
-        entries.sort_unstable_by_key(|(resource_runtime_id, entry)| (*resource_runtime_id, *entry));
-
         let mut grouped = BTreeMap::new();
         for (resource_runtime_id, entry) in entries {
             grouped

@@ -4,6 +4,7 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::{debug, debug_log};
@@ -19,6 +20,7 @@ impl ShipmentSystem {
         &mut self,
         allocator: &mut BuildingAllocator,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         minute_of_day: u16,
@@ -60,7 +62,14 @@ impl ShipmentSystem {
         planning.finish(self);
         let finish_planning_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
-        self.progress_shipments(allocator, agents, transit_network, graph, treasury_balance);
+        self.progress_shipments(
+            allocator,
+            agents,
+            households,
+            transit_network,
+            graph,
+            treasury_balance,
+        );
         let progress_ms = phase_start.elapsed().as_secs_f64() * 1000.0;
         phase_start = Instant::now();
         self.shipments.retain(|shipment| shipment.status.is_open());

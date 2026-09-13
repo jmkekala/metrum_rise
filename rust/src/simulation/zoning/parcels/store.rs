@@ -3,7 +3,7 @@
 //! Stable parcel storage and chunk-local parcel lookup.
 
 use super::geometry::{
-    chunks_for_aabb, geometry_for_parcel, geometry_overlaps_road_corridor_segment,
+    chunk_key, chunks_for_aabb, geometry_for_parcel, geometry_overlaps_road_corridor_segment,
     point_inside_parcel, rectangles_overlap_geometry, segment_touches_parcel,
 };
 use super::types::{ParcelGeometry, ParcelId, ZoningParcel};
@@ -89,29 +89,6 @@ impl ParcelStore {
         self.parcels.push(parcel);
         self.id_to_index.insert(id, index);
         self.index_parcel(index);
-    }
-
-    pub(crate) fn remove_edges_not_in_mapping(&mut self, mapping: &HashMap<usize, usize>) -> bool {
-        let mut changed = false;
-        for parcel in &mut self.parcels {
-            if let Some(&new_idx) = mapping.get(&parcel.edge_idx()) {
-                if parcel.edge_idx() != new_idx {
-                    parcel.set_edge_idx(new_idx);
-                    changed = true;
-                }
-            } else {
-                parcel.set_edge_idx(usize::MAX);
-                changed = true;
-            }
-        }
-        let before = self.parcels.len();
-        self.parcels
-            .retain(|parcel| parcel.edge_idx() != usize::MAX);
-        changed |= self.parcels.len() != before;
-        if changed {
-            self.rebuild_indices();
-        }
-        changed
     }
 
     pub(crate) fn capture_attached_to_edge(&self, edge_idx: usize) -> Vec<(usize, ZoningParcel)> {
@@ -404,15 +381,20 @@ impl ParcelStore {
         true
     }
 
-    pub(crate) fn remap_occupied_building(&mut self, old_idx: usize, new_idx: usize) -> bool {
-        let mut changed = false;
-        for parcel in &mut self.parcels {
-            if parcel.occupied_building() == Some(old_idx) {
-                parcel.set_occupied_building(Some(new_idx));
-                changed = true;
-            }
+    pub(crate) fn remap_occupied_building(
+        &mut self,
+        id: ParcelId,
+        old_idx: usize,
+        new_idx: usize,
+    ) -> bool {
+        let Some(parcel) = self.get_mut(id) else {
+            return false;
+        };
+        if parcel.occupied_building() != Some(old_idx) {
+            return false;
         }
-        changed
+        parcel.set_occupied_building(Some(new_idx));
+        true
     }
 
     pub(crate) fn clear_all_occupancy(&mut self) -> bool {
@@ -427,11 +409,43 @@ impl ParcelStore {
     }
 
     pub(crate) fn replace_geometry(&mut self, id: ParcelId, geometry: ParcelGeometry) -> bool {
-        let Some(parcel) = self.get_mut(id) else {
+        let Some(&index) = self.id_to_index.get(&id) else {
             return false;
         };
+        let parcel = &mut self.parcels[index];
+        let old_min = parcel.aabb_min();
+        let old_max = parcel.aabb_max();
+        let old_chunk_min = chunk_key(old_min);
+        let old_chunk_max = chunk_key(old_max);
+        let new_chunk_min = chunk_key(geometry.aabb_min);
+        let new_chunk_max = chunk_key(geometry.aabb_max);
         parcel.replace_geometry(geometry);
-        self.rebuild_chunk_index();
+
+        let contains = |key: (i32, i32), min: (i32, i32), max: (i32, i32)| {
+            key.0 >= min.0 && key.0 <= max.0 && key.1 >= min.1 && key.1 <= max.1
+        };
+        // Retain shared chunks untouched. Work follows the old/new footprint and the records
+        // in changed chunks; distant chunks and their index entries are never traversed.
+        for key in chunks_for_aabb(old_min, old_max) {
+            if contains(key, new_chunk_min, new_chunk_max) {
+                continue;
+            }
+            if let Some(ids) = self.chunk_index.get_mut(&key) {
+                ids.retain(|&existing| existing != id);
+                if ids.is_empty() {
+                    self.chunk_index.remove(&key);
+                }
+            }
+        }
+        for key in chunks_for_aabb(geometry.aabb_min, geometry.aabb_max) {
+            if contains(key, old_chunk_min, old_chunk_max) {
+                continue;
+            }
+            let ids = self.chunk_index.entry(key).or_default();
+            // Picks use storage order, which can differ from loaded parcel-ID order.
+            let position = ids.partition_point(|existing| self.id_to_index[existing] < index);
+            ids.insert(position, id);
+        }
         true
     }
 

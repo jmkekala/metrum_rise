@@ -301,27 +301,9 @@ impl CityFiscalPolicy {
 
 impl Default for CityFiscalPolicy {
     fn default() -> Self {
-        load_runtime_economy_tuning()
-            .map(|tuning| Self::from_runtime_tuning(tuning.as_ref()))
-            .unwrap_or_else(|_| Self::fallback())
-    }
-}
-
-impl CityFiscalPolicy {
-    fn fallback() -> Self {
-        Self {
-            unemployment_benefit_per_adult_per_day: 30.0,
-            unemployment_max_days: 14,
-            pension_per_elder_per_day: 30.0,
-            child_support_per_child_per_day: 10.0,
-            income_tax_rate: 0.12,
-            household_vat_rate: 0.08,
-            business_profit_tax_rate: 0.10,
-            residential_property_tax_per_home_per_day: 2.0,
-            commercial_property_tax_per_building_per_day: 25.0,
-            industrial_property_tax_per_building_per_day: 35.0,
-            property_tax_level_multiplier: 1.75,
-        }
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        Self::from_runtime_tuning(&tuning)
     }
 }
 
@@ -451,7 +433,7 @@ mod tests {
             commercial_property_tax_per_building_per_day: 25.0,
             industrial_property_tax_per_building_per_day: 35.0,
             property_tax_level_multiplier: 1.75,
-            ..CityFiscalPolicy::fallback()
+            ..CityFiscalPolicy::default()
         }
     }
 
@@ -474,7 +456,7 @@ mod tests {
 
     #[test]
     fn policy_value_setter_clamps_api_values() {
-        let mut policy = CityFiscalPolicy::fallback();
+        let mut policy = CityFiscalPolicy::default();
 
         assert!(policy.set_value(POLICY_INCOME_TAX, 10.0));
         assert!((policy.income_tax_rate - INCOME_TAX_MAX).abs() < f32::EPSILON);

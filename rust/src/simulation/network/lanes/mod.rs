@@ -118,16 +118,6 @@ impl LaneSystem {
         self.node_lanes.clear();
     }
 
-    /// Retrieve the global `lane_id` given an `edge_idx` and a local `lane_idx`.
-    pub fn get_lane_id(&self, edge_idx: usize, lane_idx: usize) -> Option<usize> {
-        self.edge_lanes.get(&edge_idx).and_then(|lanes| {
-            lanes
-                .iter()
-                .find(|&&id| self.lanes[id].lane_idx == lane_idx as i8)
-                .copied()
-        })
-    }
-
     pub(crate) fn sync_heights_to_visible_surface(
         &mut self,
         graph: &RegionGraph,

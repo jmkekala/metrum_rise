@@ -177,7 +177,7 @@ pub(super) fn place_on_lane(
     speed: f32,
 ) -> usize {
     let (n0, n1) = (0u32, 1u32);
-    let idx = agents.spawn_border_arrival_agent(usize::MAX, n1, 0.0, 0.0, n0, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, n0, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.current_edge[idx] = edge_idx;
     agents.current_lane_id[idx] = fwd_lane;
@@ -311,7 +311,7 @@ pub(super) fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGr
 }
 
 /// Build a 4-way cross junction with the given lane counts on each arm.
-/// Returns `(network, graph, [fwd_lanes_arm0..arm3])` — arm order: W, E, N, S.
+/// Returns `(network, graph, [incoming_lanes_arm0..arm3])` — arm order: W, E, N, S.
 pub(super) fn build_4way_junction(
     fwd: u8,
     bkw: u8,
@@ -346,70 +346,100 @@ pub(super) fn build_4way_junction(
             crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
-    let ee = graph.add_edge(arm(ne, nc, 100.0, 0.0, 0.0, 0.0));
+    // One-way crosses need outgoing arms as well as incoming arms.
+    let ee = graph.add_edge(if bkw == 0 {
+        arm(nc, ne, 0.0, 0.0, 100.0, 0.0)
+    } else {
+        arm(ne, nc, 100.0, 0.0, 0.0, 0.0)
+    });
     let en = graph.add_edge(arm(nn, nc, 0.0, -100.0, 0.0, 0.0));
-    let es = graph.add_edge(arm(ns, nc, 0.0, 100.0, 0.0, 0.0));
+    let es = graph.add_edge(if bkw == 0 {
+        arm(nc, ns, 0.0, 0.0, 0.0, 100.0)
+    } else {
+        arm(ns, nc, 0.0, 100.0, 0.0, 0.0)
+    });
     graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
     let mut network = TransitNetwork::new();
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let arm_lanes = [
         fwd_vehicle_lanes(&network, ew),
-        fwd_vehicle_lanes(&network, ee),
+        if bkw == 0 {
+            Vec::new()
+        } else {
+            fwd_vehicle_lanes(&network, ee)
+        },
         fwd_vehicle_lanes(&network, en),
-        fwd_vehicle_lanes(&network, es),
+        if bkw == 0 {
+            Vec::new()
+        } else {
+            fwd_vehicle_lanes(&network, es)
+        },
     ];
     (network, graph, arm_lanes)
 }
 
 // ── Scenario helpers ──────────────────────────────────────────────────────────
 
-pub(super) fn assert_connection_lane_spacing(
+/// Checks actual road/connector queues and returns the number of connector pairs compared.
+pub(super) fn assert_vehicle_lane_spacing(
     agents: &AgentSystem,
     network: &TransitNetwork,
     tick: usize,
     label: &str,
-) {
+) -> usize {
     use crate::config::{CAR_LENGTH, IDM_S_MIN};
 
     let min_sep = CAR_LENGTH + IDM_S_MIN;
+    let mut connector_pairs = 0;
     for i in 0..agents.len() {
-        if agents.transit[i] != TRANSIT_INTERSECTION {
-            continue;
-        }
-        let lane_i = agents.current_lane_id[i];
-        if lane_i == usize::MAX
-            || lane_i >= network.lane_system.lanes.len()
-            || network.lane_system.lanes[lane_i].edge_id != usize::MAX
+        if !matches!(agents.transit[i], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+            || agents.transit_mode[i] != MODE_CAR
         {
             continue;
         }
+        let lane_i = agents.current_lane_id[i];
+        if lane_i == usize::MAX || lane_i >= network.lane_system.lanes.len() {
+            continue;
+        }
         for j in (i + 1)..agents.len() {
-            if agents.transit[j] != TRANSIT_INTERSECTION || agents.current_lane_id[j] != lane_i {
+            if !matches!(agents.transit[j], TRANSIT_NETWORK | TRANSIT_INTERSECTION)
+                || agents.transit_mode[j] != MODE_CAR
+                || agents.current_lane_id[j] != lane_i
+            {
                 continue;
             }
             let gap = (agents.lane_distance[i] - agents.lane_distance[j]).abs();
             assert!(
                 gap >= min_sep - 0.01,
-                "[{label}] tick {tick}: cars {i} and {j} overlap on connection lane {lane_i}; gap {gap:.3} < {min_sep:.3}"
+                "[{label}] tick {tick}: cars {i} and {j} overlap on lane {lane_i} (edge {}); gap {gap:.3} < {min_sep:.3}; lane changes {:?}, transit {:?}",
+                network.lane_system.lanes[lane_i].edge_id,
+                [
+                    agents.lane_change_from_lane_id[i],
+                    agents.lane_change_from_lane_id[j]
+                ],
+                [agents.transit[i], agents.transit[j]],
             );
+            connector_pairs += usize::from(network.lane_system.lanes[lane_i].edge_id == usize::MAX);
         }
     }
+    connector_pairs
 }
 
-/// Assert connector-lane queues stay separated while 5 cars/lane pass through
+/// Assert lane queues stay separated while 5 cars/lane pass through
 /// the n1 junction of a two-edge road.
 pub(super) fn check_connection_spacing_two_edge(fwd: u8, bkw: u8, label: &str) {
     let (mut network, mut graph, fwd_lanes) = build_two_edge_road(fwd, bkw);
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
     let (n0, n1, n2) = (0u32, 1u32, 2u32);
 
     for (li, &lane_id) in fwd_lanes.iter().enumerate() {
         let lane_len = network.lane_system.lanes[lane_id].length;
         for k in 0..5 {
             let dist = (lane_len - 10.0 - (li * 5 + k) as f32 * 8.0).max(0.0);
-            let idx = agents.spawn_border_arrival_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
+            let idx = agents.spawn_border_arrival_agent(usize::MAX, n0, 0.0, 0.0);
             agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
@@ -423,17 +453,17 @@ pub(super) fn check_connection_spacing_two_edge(fwd: u8, bkw: u8, label: &str) {
     }
 
     for tick in 0..100 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
-        assert_connection_lane_spacing(&agents, &network, tick, label);
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+        assert_vehicle_lane_spacing(&agents, &network, tick, label);
     }
 }
 
-/// Assert connector-lane queues stay separated while one car/lane approaches
-/// the center of a 4-way junction from all four arms.
+/// Assert queues stay separated while five cars per incoming lane cross a four-way junction.
 pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
     let (mut network, mut graph, arm_lanes) = build_4way_junction(fwd, bkw);
     let mut agents = AgentSystem::new();
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
+    let mut expected_exits = Vec::new();
     let nc = 0u32;
     let arm_nodes = [1u32, 2u32, 3u32, 4u32];
     let arm_edges = [0usize, 1usize, 2usize, 3usize];
@@ -441,23 +471,43 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
     for (k, lanes) in arm_lanes.iter().enumerate() {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
-            let idx =
-                agents.spawn_border_arrival_agent(usize::MAX, nc, 0.0, 0.0, arm_nodes[k], 0.0, 0.0);
-            agents.transit[idx] = TRANSIT_NETWORK;
-            agents.transit_mode[idx] = MODE_CAR;
-            agents.current_node[idx] = arm_nodes[k];
-            agents.current_edge[idx] = arm_edges[k];
-            agents.current_lane_id[idx] = lane_id;
-            agents.lane_distance[idx] = (lane_len - 5.0).max(0.0);
-            agents.speed[idx] = 14.0;
-            agents.current_path[idx] = vec![arm_nodes[k], nc];
-            agents.current_path_index[idx] = 1;
+            for queue_idx in 0..5 {
+                let destination = arm_nodes[k ^ 1];
+                let idx = agents.spawn_border_arrival_agent(usize::MAX, arm_nodes[k], 0.0, 0.0);
+                agents.transit[idx] = TRANSIT_NETWORK;
+                agents.transit_mode[idx] = MODE_CAR;
+                agents.current_node[idx] = arm_nodes[k];
+                agents.current_edge[idx] = arm_edges[k];
+                agents.current_lane_id[idx] = lane_id;
+                agents.lane_distance[idx] = lane_len - 5.0 - queue_idx as f32 * 8.0;
+                agents.speed[idx] = 14.0;
+                agents.current_path[idx] = vec![arm_nodes[k], nc, destination];
+                agents.current_path_index[idx] = 1;
+                expected_exits.push((idx, arm_edges[k ^ 1]));
+            }
         }
     }
 
-    for tick in 0..60 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
-        assert_connection_lane_spacing(&agents, &network, tick, label);
+    let mut saw_connector = false;
+    let mut connector_pairs = 0;
+    for tick in 0..200 {
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
+        saw_connector |= agents.transit.contains(&TRANSIT_INTERSECTION);
+        connector_pairs += assert_vehicle_lane_spacing(&agents, &network, tick, label);
+    }
+    assert!(
+        saw_connector,
+        "[{label}] spacing fixture never entered a connector"
+    );
+    assert!(
+        connector_pairs > 0,
+        "[{label}] no connector queue was compared"
+    );
+    for (agent, edge) in expected_exits {
+        assert_eq!(
+            agents.current_edge[agent], edge,
+            "[{label}] agent {agent} did not reach its outgoing arm"
+        );
     }
 }
 
@@ -465,14 +515,14 @@ pub(super) fn check_connection_spacing_4way(fwd: u8, bkw: u8, label: &str) {
 pub(super) fn check_no_uturn_at_frontage(fwd: u8, bkw: u8, label: &str) {
     let (mut network, mut graph, fwd_lanes) = build_two_edge_road(fwd, bkw);
     let (n0, n1, n2) = (0u32, 1u32, 2u32);
-    let mut allocator = BuildingAllocator::new();
+    let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
 
     for (li, &lane_id) in fwd_lanes.iter().enumerate() {
         let lane_len = network.lane_system.lanes[lane_id].length;
         for k in 0..3 {
             let dist = (lane_len - 5.0 - (li * 3 + k) as f32 * 8.0).max(0.0);
-            let idx = agents.spawn_border_arrival_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
+            let idx = agents.spawn_border_arrival_agent(usize::MAX, n0, 0.0, 0.0);
             agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
@@ -486,13 +536,13 @@ pub(super) fn check_no_uturn_at_frontage(fwd: u8, bkw: u8, label: &str) {
     }
 
     for _ in 0..200 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+        agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
     }
 
     for i in 0..agents.len() {
-        assert_ne!(
-            agents.current_edge[i], 0,
-            "[{label}] car {i} still on edge 0 after 200 ticks — stuck or U-turning at degree-2 node"
+        assert_eq!(
+            agents.current_edge[i], 1,
+            "[{label}] car {i} did not reach the outgoing edge after 200 ticks"
         );
     }
 }

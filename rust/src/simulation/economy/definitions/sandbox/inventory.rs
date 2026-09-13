@@ -11,6 +11,7 @@ pub(super) fn compute_throughput(
     profile: &EconomyProfile,
     inventories: &Inventories,
     node_id: &str,
+    import_prices: &BTreeMap<&str, f32>,
 ) -> f32 {
     if profile.inputs.is_empty() {
         return profile.base_rate_units_per_day.max(0.0);
@@ -26,7 +27,7 @@ pub(super) fn compute_throughput(
             .and_then(|stock| stock.get(input.resource.as_str()))
             .copied()
             .unwrap_or(0.0);
-        if input.units_per_day <= 0.0 {
+        if input.units_per_day <= 0.0 || import_prices.contains_key(input.resource.as_str()) {
             continue;
         }
         let allowed = available / input.units_per_day * profile.base_rate_units_per_day;

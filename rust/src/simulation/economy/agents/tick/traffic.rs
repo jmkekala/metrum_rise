@@ -9,20 +9,19 @@ mod occupancy;
 
 pub(super) use idm::{braking_speed_for_distance, idm_new_speed, limit_speed_change};
 pub(super) use junction::{connector_turn_speed, junction_car_speed, junction_entry_speed};
-#[cfg(test)]
-pub(super) use lane_change::lane_change_target_toward;
 pub(super) use lane_change::{
-    LANE_CHANGE_FINISH_EPS_M, LANE_CHANGE_MIN_LENGTH_M, OVERTAKE_COOLDOWN_S,
-    OVERTAKE_DETACH_BUFFER_M, OVERTAKE_EDGE_BUFFER_M, OVERTAKE_MIN_GAP_GAIN_M,
-    OVERTAKE_MIN_SPEED_GAIN_MS, OVERTAKE_RETURN_TARGET_GAP_M, OVERTAKE_STUCK_TIME_S,
-    OVERTAKE_TARGET_AHEAD_GAP_M, cruise_lane_return_target, lane_change_length_for_speed,
-    overtake_follow_gap, overtaking_lane_target, planned_detach_distance_on_current_edge,
-    planned_lane_change_target,
+    LANE_CHANGE_FINISH_EPS_M, LANE_CHANGE_MIN_LENGTH_M, LaneChangeKind, LaneChangeParams,
+    OVERTAKE_COOLDOWN_S, OVERTAKE_MIN_SPEED_GAIN_MS, choose_lane_change, lane_change_finished,
+    overtake_follow_gap, planned_lane_change_target,
+};
+#[cfg(test)]
+pub(super) use lane_change::{
+    cruise_lane_return_target, lane_change_length_for_speed, lane_change_target_toward,
+    overtaking_lane_target,
 };
 pub(super) use occupancy::{
-    ConnectorEntry, claim_connector_entry, claim_lane_entry, deterministic_choice_index,
-    idm_gap_bucket, lane_attach_slot_clear, lane_change_gap_clear, lane_entry_slot_clear,
-    live_lane_bucket_transit,
+    ConnectorEntry, claim_connector_entry, claim_lane_entry, idm_gap_bucket,
+    lane_attach_slot_clear, lane_change_gap_clear, lane_entry_slot_clear, live_lane_bucket_transit,
 };
 
 #[cfg(test)]
@@ -35,10 +34,11 @@ mod tests {
         overtaking_lane_target,
     };
     use crate::config::{CAR_JUNCTION_SPEED_MS, IDM_B};
+    use crate::simulation::economy::agents::data::MovementClaimMode;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::lanes::{Lane, LaneType};
     use godot::prelude::Vector3;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_junction_car_speed_caps_fast_turns() {
@@ -80,25 +80,26 @@ mod tests {
     #[test]
     fn test_claim_connector_entry_reports_entry_blockers() {
         let lane_buckets = vec![Vec::new()];
-        let lane_claims = [AtomicBool::new(false)];
-        let serial_agents = [true];
-        let claim_context = LaneClaimContext::new(&lane_claims, &serial_agents);
+        let lane_claims = [AtomicUsize::new(usize::MAX)];
+        let modes = [MovementClaimMode::Dynamic; 2];
+        let claim_context = LaneClaimContext::new(&lane_claims, &modes);
         let mut candidates = vec![0];
         assert_eq!(
             claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
             ConnectorEntry::Enter(0)
         );
-        assert!(lane_claims[0].load(Ordering::Acquire));
+        assert_eq!(lane_claims[0].load(Ordering::Relaxed), 0);
+        assert!(claim_context.claim_lane(0, 0));
 
         let mut candidates = vec![0];
         assert_eq!(
-            claim_connector_entry(0, &mut candidates, true, 0, &lane_buckets, &claim_context),
+            claim_connector_entry(1, &mut candidates, true, 0, &lane_buckets, &claim_context),
             ConnectorEntry::ClaimedThisTick
         );
 
         let occupied_buckets = vec![vec![(0.0, 1)]];
-        let lane_claims = [AtomicBool::new(false)];
-        let claim_context = LaneClaimContext::new(&lane_claims, &serial_agents);
+        let lane_claims = [AtomicUsize::new(usize::MAX)];
+        let claim_context = LaneClaimContext::new(&lane_claims, &modes);
         let mut candidates = vec![0];
         assert_eq!(
             claim_connector_entry(

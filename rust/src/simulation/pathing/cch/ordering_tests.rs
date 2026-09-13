@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Exact full-recount oracle and routing regressions for incremental contraction scores.
+//! Contraction ordering, shortest-route oracles and deterministic query regressions.
 
 use super::*;
 use crate::simulation::network::graph::Edge;
-use crate::simulation::network::types::{EdgeClass, NodeType};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
 use godot::prelude::Vector3;
 use std::collections::BTreeSet;
 
@@ -114,9 +114,11 @@ fn incremental_order_matches_full_recount_after_topology_edits() {
             }
             let expected = full_recount_order(&graph);
             for _ in 0..3 {
-                let mut cch = CchGraph::new(graph.node_count());
-                cch.compute_node_order(&graph);
-                assert_eq!(cch.node_order, expected, "side={side}, edited={edited}");
+                let (order, rank) = CchGraph::compute_node_order(&graph);
+                assert_eq!(order, expected, "side={side}, edited={edited}");
+                for (position, node) in order.into_iter().enumerate() {
+                    assert_eq!(rank[node as usize], position as u32);
+                }
             }
         }
     }
@@ -158,10 +160,10 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
         let a = edge.start_node as usize;
         let b = edge.end_node as usize;
         let cost = edge.base_cost * (1.0 + edge.current_congestion);
-        if edge.fwd_lanes > 0 {
+        if mode == TransitFlags::FOOT || edge.fwd_lanes > 0 {
             costs[a][b] = costs[a][b].min(cost);
         }
-        if edge.bkw_lanes > 0 {
+        if mode == TransitFlags::FOOT || edge.bkw_lanes > 0 {
             costs[b][a] = costs[b][a].min(cost);
         }
     }
@@ -190,11 +192,14 @@ fn assert_all_pairs_costs(cch: &CchGraph, graph: &RegionGraph, mode: u8) {
                 for pair in path.windows(2) {
                     let edge = graph.edge(graph.get_edge_between_nodes(pair[0], pair[1]).unwrap());
                     assert!(!edge.deleted && edge.allowed_types & mode != 0);
-                    assert!(if edge.start_node == pair[0] {
-                        edge.fwd_lanes > 0
-                    } else {
-                        edge.bkw_lanes > 0
-                    });
+                    assert!(
+                        mode == TransitFlags::FOOT
+                            || if edge.start_node == pair[0] {
+                                edge.fwd_lanes > 0
+                            } else {
+                                edge.bkw_lanes > 0
+                            }
+                    );
                     reconstructed_cost += edge.base_cost * (1.0 + edge.current_congestion);
                 }
                 assert!(
@@ -275,14 +280,18 @@ fn cheaper_lower_triangle_survives_a_direct_arc_and_metric_changes() {
     );
 }
 
-fn turn_aware_dijkstra(graph: &RegionGraph, start: u32, end: u32) -> Option<f32> {
+fn turn_aware_dijkstra(
+    graph: &RegionGraph,
+    start: u32,
+    end: u32,
+    start_edge: usize,
+) -> Option<f32> {
     let mut heap = BinaryHeap::from([CchState {
         node: start,
-        incoming_edge: usize::MAX,
-        priority: 0.0,
+        incoming_edge: start_edge,
         cost: 0.0,
     }]);
-    let mut costs = HashMap::from([((start, usize::MAX), 0.0)]);
+    let mut costs = HashMap::from([((start, start_edge), 0.0)]);
     while let Some(state) = heap.pop() {
         if state.cost > costs[&(state.node, state.incoming_edge)] {
             continue;
@@ -314,7 +323,6 @@ fn turn_aware_dijkstra(graph: &RegionGraph, start: u32, end: u32) -> Option<f32>
                 heap.push(CchState {
                     node: next,
                     incoming_edge: id,
-                    priority: cost,
                     cost,
                 });
             }
@@ -332,16 +340,347 @@ fn merged_open_endpoint_states_preserve_restricted_turn_routes() {
     let cch = CchGraph::build(&graph);
     for start in 0..16 {
         for end in 0..16 {
-            let expected = turn_aware_dijkstra(&graph, start, end);
-            let actual = cch.find_path(start, end, usize::MAX, &graph, TransitFlags::CAR);
-            assert_eq!(
-                actual.as_ref().map(|path| path.0),
-                expected,
-                "{start}->{end}"
-            );
-            if let Some((_, _, path)) = actual {
-                assert!(CchGraph::path_has_valid_turns(&path, &graph));
+            for start_edge in graph
+                .node_adjacency(start)
+                .iter()
+                .copied()
+                .chain([usize::MAX])
+            {
+                let expected = turn_aware_dijkstra(&graph, start, end, start_edge);
+                let actual = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
+                assert_eq!(
+                    actual.as_ref().map(|path| path.0),
+                    expected,
+                    "{start}->{end}, origin edge={start_edge}"
+                );
+                if let Some((_, _, path)) = actual {
+                    assert!(CchGraph::path_has_valid_vehicle_turns(&path, &graph));
+                }
             }
         }
+    }
+}
+
+#[test]
+fn vehicle_whitelists_preserve_pedestrian_routes_and_origin_context() {
+    let mut graph = grid(4);
+    for edge in graph.edges_iter_mut() {
+        edge.allowed_types |= TransitFlags::FOOT;
+    }
+    for node in [1, 5, 6, 10] {
+        let incoming = graph.node_adjacency(node)[0];
+        let outgoing = *graph.node_adjacency(node).last().unwrap();
+        graph.add_lane_connection(node, incoming, 0, outgoing, 0);
+    }
+    let mut cch = CchGraph::build(&graph);
+    for phase in 0..2 {
+        if phase == 1 {
+            for (id, edge) in graph.edges_iter_mut().enumerate() {
+                edge.current_congestion = if id % 3 == 0 { 4.0 } else { 0.0 };
+            }
+            cch.customize(&graph);
+        }
+        assert_all_pairs_costs(&cch, &graph, TransitFlags::FOOT);
+        for start in 0..16 {
+            for end in 0..16 {
+                let expected_foot = cch
+                    .find_path(start, end, usize::MAX, &graph, TransitFlags::FOOT)
+                    .unwrap()
+                    .0;
+                for &start_edge in graph.node_adjacency(start) {
+                    let foot = cch.find_path(start, end, start_edge, &graph, TransitFlags::FOOT);
+                    assert_eq!(
+                        foot.map(|route| route.0),
+                        Some(expected_foot),
+                        "walk {start}->{end}, incoming edge={start_edge}, phase={phase}"
+                    );
+                    let car = cch.find_path(start, end, start_edge, &graph, TransitFlags::CAR);
+                    assert_eq!(
+                        car.map(|route| route.0),
+                        turn_aware_dijkstra(&graph, start, end, start_edge),
+                        "car {start}->{end}, incoming edge={start_edge}, phase={phase}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn query_heap_has_consistent_cost_and_identity_ordering() {
+    let values = [
+        (0.0, 5, usize::MAX),
+        (1.0, 1, 3),
+        (1.0, 2, 1),
+        (1.0, 2, 2),
+        (2.0, 0, 0),
+    ];
+    for reverse in [false, true] {
+        let mut states: Vec<_> = values
+            .iter()
+            .map(|&(cost, node, incoming_edge)| CchState {
+                cost,
+                node,
+                incoming_edge,
+            })
+            .collect();
+        if reverse {
+            states.reverse();
+        }
+        let mut heap = BinaryHeap::from(states);
+        let mut popped = Vec::new();
+        while let Some(state) = heap.pop() {
+            popped.push((state.cost, state.node, state.incoming_edge));
+        }
+        assert_eq!(popped, values);
+    }
+    // Equality must agree with total ordering even for signed zero and NaN bit patterns.
+    for a in [0.0, -0.0, f32::INFINITY, f32::NAN] {
+        for b in [0.0, -0.0, f32::INFINITY, f32::NAN] {
+            let left = CchState {
+                cost: a,
+                node: 0,
+                incoming_edge: usize::MAX,
+            };
+            let right = CchState { cost: b, ..left };
+            assert_eq!(left == right, left.cmp(&right) == Ordering::Equal);
+        }
+    }
+}
+
+#[test]
+fn equal_cost_query_paths_repeat_with_stable_inputs() {
+    for side in [4, 8] {
+        let graph = grid(side);
+        let cch = CchGraph::build(&graph);
+        for (start, end) in [
+            (0, side * side - 1),
+            (side - 1, side * (side - 1)),
+            (side, side * (side - 1) - 1),
+        ] {
+            let expected = cch.find_path(start, end, usize::MAX, &graph, TransitFlags::CAR);
+            assert!(expected.is_some());
+            for _ in 0..128 {
+                assert_eq!(
+                    cch.find_path(start, end, usize::MAX, &graph, TransitFlags::CAR),
+                    expected,
+                    "identical graph/query must reproduce route: side={side}, {start}->{end}"
+                );
+            }
+        }
+    }
+
+    // Both legal outgoing arms must remain distinct at a restricted meeting node.
+    // The backward search discovers both before the forward search reaches it.
+    let mut graph = RegionGraph::new();
+    for (x, z) in [
+        (0.0, 0.0),
+        (20.0, -10.0),
+        (20.0, 10.0),
+        (30.0, 0.0),
+        (10.0, 0.0),
+    ] {
+        graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+    }
+    for (start, end, cost) in [
+        (0, 4, 10.0),
+        (4, 1, 1.0),
+        (4, 2, 1.0),
+        (1, 3, 1.0),
+        (2, 3, 1.0),
+    ] {
+        let geometry = vec![graph.node(start).pos, graph.node(end).pos];
+        graph.add_edge(Edge {
+            start_node: start,
+            end_node: end,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            base_cost: cost,
+            physical_length: geometry[0].distance_to(geometry[1]),
+            physical_geometry: geometry.clone(),
+            geometry,
+            ..Edge::default()
+        });
+    }
+    graph.add_lane_connection(4, 0, 0, 1, 0);
+    graph.add_lane_connection(4, 0, 0, 2, 0);
+    let cch = CchGraph::build(&graph);
+    let expected = cch
+        .find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR)
+        .unwrap();
+    assert_eq!(expected.0, 12.0);
+    assert!(CchGraph::path_has_valid_vehicle_turns(&expected.2, &graph));
+    for _ in 0..128 {
+        assert_eq!(
+            cch.find_path(0, 3, usize::MAX, &graph, TransitFlags::CAR)
+                .unwrap(),
+            expected,
+            "equal-cost legal turns must not depend on randomized search-map iteration"
+        );
+    }
+}
+
+fn benchmark_graph(side: u32) -> (RegionGraph, String) {
+    let variant = std::env::var("METRUM_CCH_BENCH_GRAPH").unwrap_or_else(|_| "car".into());
+    assert!(matches!(
+        variant.as_str(),
+        "car" | "mixed" | "restricted" | "one_way"
+    ));
+    let mut graph = grid(side);
+    if variant != "car" {
+        for edge in graph.edges_iter_mut() {
+            edge.allowed_types |= TransitFlags::FOOT;
+        }
+    }
+    if variant == "one_way" {
+        for (id, edge) in graph.edges_iter_mut().enumerate() {
+            if id % 4 == 0 {
+                edge.bkw_lanes = 0;
+            }
+        }
+    }
+    if variant == "restricted" {
+        let node = side / 2 * side + side / 2;
+        let incoming = graph.node_adjacency(node)[0];
+        let outgoing = *graph.node_adjacency(node).last().unwrap();
+        graph.add_lane_connection(node, incoming, 0, outgoing, 0);
+    }
+    (graph, variant)
+}
+
+#[test]
+#[ignore = "matched release CCH query benchmark; excludes graph and hierarchy setup"]
+fn benchmark_cch_queries() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for side in [8, 16, 32] {
+        let (graph, variant) = benchmark_graph(side);
+        let cch = CchGraph::build(&graph);
+        let queries: Vec<_> = (0..16)
+            .map(|i| {
+                (
+                    i * 17 % (side * side),
+                    side * side - 1 - i * 31 % (side * side),
+                )
+            })
+            .collect();
+        for &(start, end) in &queries {
+            let (cost, distance, path) = cch
+                .find_path(start, end, usize::MAX, &graph, TransitFlags::CAR)
+                .unwrap();
+            let expected = turn_aware_dijkstra(&graph, start, end, usize::MAX).unwrap();
+            assert_eq!(cost, expected);
+            assert_eq!(distance, expected * 15.0);
+            assert_eq!(path.len(), (expected / 6.0) as usize + 1);
+        }
+        let mut samples = Vec::with_capacity(21);
+        let mut product = (0.0_f64, 0.0_f64, 0_usize);
+        for _ in 0..21 {
+            let begin = Instant::now();
+            for &(start, end) in &queries {
+                let (cost, distance, path) = black_box(cch.find_path(
+                    black_box(start),
+                    black_box(end),
+                    usize::MAX,
+                    &graph,
+                    TransitFlags::CAR,
+                ))
+                .unwrap();
+                product.0 += f64::from(cost);
+                product.1 += f64::from(distance);
+                product.2 += path.len();
+            }
+            samples.push(begin.elapsed().as_secs_f64() * 1e6 / queries.len() as f64);
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "CCH_QUERY_BENCH {}",
+            serde_json::json!({
+                "variant": variant, "side": side, "nodes": graph.node_count(), "edges": graph.edge_count(),
+                "shortcuts": cch.shortcuts.len(), "queries_per_sample": queries.len(),
+                "samples": samples.len(), "median_us": samples[10], "p95_us": samples[19],
+                "cost_sum": product.0, "distance_sum": product.1, "path_nodes": product.2,
+            })
+        );
+    }
+}
+
+#[test]
+#[ignore = "matched release CCH construction/storage benchmark; excludes source graph setup"]
+fn benchmark_cch_build_storage() {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::hint::black_box;
+    use std::mem::{size_of, size_of_val};
+    use std::time::Instant;
+
+    fn vec_bytes<T>(values: &Vec<T>) -> usize {
+        values.capacity() * size_of::<T>()
+    }
+    fn nested_bytes<T>(values: &Vec<Vec<T>>) -> usize {
+        vec_bytes(values) + values.iter().map(vec_bytes).sum::<usize>()
+    }
+
+    for side in [8, 16, 32] {
+        let (graph, variant) = benchmark_graph(side);
+        let warm = CchGraph::build(&graph);
+        let retained_bytes = size_of_val(&warm)
+            + vec_bytes(&warm.shortcuts)
+            + nested_bytes(&warm.fwd_up)
+            + nested_bytes(&warm.bwd_up)
+            + nested_bytes(&warm.shortcut_alternatives)
+            + vec_bytes(&warm.customization_order);
+        // Compare every query/customization product; the debug build counter is intentionally
+        // excluded. Capacity accounting includes vector payloads/headers, not allocator metadata.
+        let mut hash = DefaultHasher::new();
+        for shortcut in &warm.shortcuts {
+            (
+                shortcut.start_node,
+                shortcut.target_node,
+                shortcut.cost.to_bits(),
+                shortcut.dist.to_bits(),
+                shortcut.base_edge,
+                shortcut.mid_l,
+                shortcut.mid_r,
+                shortcut.first_edge,
+                shortcut.last_edge,
+                shortcut.allowed_types,
+            )
+                .hash(&mut hash);
+        }
+        warm.fwd_up.hash(&mut hash);
+        warm.bwd_up.hash(&mut hash);
+        warm.shortcut_alternatives.hash(&mut hash);
+        warm.customization_order.hash(&mut hash);
+        let fingerprint = hash.finish();
+        let shortcuts = warm.shortcuts.len();
+        drop(warm);
+
+        let mut build_samples = Vec::with_capacity(21);
+        let mut cycle_samples = Vec::with_capacity(21);
+        for _ in 0..21 {
+            let begin = Instant::now();
+            let cch = CchGraph::build(black_box(&graph));
+            black_box(&cch);
+            let build_us = begin.elapsed().as_secs_f64() * 1e6;
+            drop(cch);
+            let cycle_us = begin.elapsed().as_secs_f64() * 1e6;
+            build_samples.push(build_us);
+            cycle_samples.push(cycle_us);
+        }
+        build_samples.sort_by(f64::total_cmp);
+        cycle_samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "CCH_STORAGE_BENCH {}",
+            serde_json::json!({
+                "variant": variant, "side": side, "nodes": graph.node_count(), "edges": graph.edge_count(),
+                "shortcuts": shortcuts, "fingerprint": format!("{fingerprint:016x}"),
+                "retained_bytes": retained_bytes, "samples": build_samples.len(),
+                "build_median_us": build_samples[10], "cycle_median_us": cycle_samples[10],
+            })
+        );
     }
 }

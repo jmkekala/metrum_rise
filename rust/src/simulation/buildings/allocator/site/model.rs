@@ -2,7 +2,7 @@
 
 //! Building-site runtime data shared by derivation, queries, and terrain export.
 
-use super::geometry::{polygon_quad_bounds, polygon_slice_bounds};
+use super::geometry::polygon_slice_bounds;
 use crate::assets::SiteSurfaceMaterial;
 use godot::prelude::{Vector2, Vector3};
 use std::sync::OnceLock;
@@ -54,7 +54,7 @@ impl BuildingSiteClient {
     }
 
     pub(crate) fn lot_bounds(&self) -> (f32, f32, f32, f32) {
-        polygon_quad_bounds(self.lot_footprint_world)
+        polygon_slice_bounds(&self.lot_footprint_world)
     }
 
     pub(super) fn overlaps_bounds(&self, min_x: f32, min_z: f32, max_x: f32, max_z: f32) -> bool {

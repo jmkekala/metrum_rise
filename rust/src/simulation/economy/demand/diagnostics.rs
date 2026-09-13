@@ -18,12 +18,8 @@ pub(super) struct HouseholdAdmissionDiagnostics {
     pub(super) regional_growth_household_pull: f32,
     pub(super) household_affordability: f32,
     pub(super) move_in_acceptance: f32,
-    pub(super) construction_move_in_acceptance: f32,
-    pub(super) construction_move_in_search_runway_days: f32,
-    pub(super) construction_move_in_runway_factor: f32,
     pub(super) residential_construction_viability: f32,
     pub(super) move_in_search_runway_days: f32,
-    pub(super) move_in_runway_factor: f32,
     pub(super) candidate_household_size: f32,
     pub(super) candidate_child_count: u16,
     pub(super) candidate_adult_count: u16,
@@ -133,7 +129,6 @@ pub(super) struct BuildingActionDiagnostics {
     pub(super) spawn_credit_after: f32,
     pub(super) spawn_planned: usize,
     pub(super) spawn_selected: usize,
-    pub(super) spawn_rejected_labour: usize,
     pub(super) spawn_rejected_absorption: usize,
     pub(super) spawn_skipped_budget: usize,
     pub(super) upgrade_candidates: usize,
@@ -163,7 +158,7 @@ impl DemandSystem {
     /// Returns the compact admission diagnostics needed to explain load-time recomputation.
     pub(crate) fn last_admission_debug_summary(
         &self,
-    ) -> (u32, u32, u32, f32, f32, f32, f32, f32, f32, f32, f32) {
+    ) -> (u32, u32, u32, f32, f32, f32, f32, f32, f32, f32) {
         let diagnostics = self.last_admission_diagnostics;
         (
             diagnostics.vacant_household_slots,
@@ -175,7 +170,6 @@ impl DemandSystem {
             diagnostics.marginal_commercial_job_household_pull,
             diagnostics.incoming_household_need,
             diagnostics.move_in_acceptance,
-            diagnostics.construction_move_in_acceptance,
             diagnostics.failure_factor,
         )
     }
@@ -192,8 +186,8 @@ impl DemandSystem {
             "household admission diagnostics: day={} minute={} pressure={:.3} base={:.3} \
              vacancy={:.2} vacant_slots={} households={} border_nodes={} \
              incoming_need={:.2} job_pull={:.2} marginal_com_pull={:.2} regional_pull={:.2} \
-             afford={:.2} accept={:.2} runway={:.2} runway_factor={:.2} \
-             build_accept={:.2} build_runway={:.2} build_runway_factor={:.2} build_viability={:.2} \
+             afford={:.2} accept={:.2} runway={:.2} \
+             build_viability={:.2} \
              candidate_size={:.1} candidate=(children:{} adults:{} elders:{}) workers={:.1} open_jobs={} marginal_com_jobs={} marginal_com_job_equiv={:.2} move_in_jobs={} move_in_job_equiv={:.2} physical_worker_capacity={} \
              funded_worker_capacity={} open_jobs_unfunded={} existing_unemployed={} \
              expected_employed={:.1} expected_unemployed={:.1} entry_wage={:.1} wage_income={:.1} \
@@ -219,10 +213,6 @@ impl DemandSystem {
             diagnostics.household_affordability,
             diagnostics.move_in_acceptance,
             diagnostics.move_in_search_runway_days,
-            diagnostics.move_in_runway_factor,
-            diagnostics.construction_move_in_acceptance,
-            diagnostics.construction_move_in_search_runway_days,
-            diagnostics.construction_move_in_runway_factor,
             diagnostics.residential_construction_viability,
             diagnostics.candidate_household_size,
             diagnostics.candidate_child_count,
@@ -287,7 +277,7 @@ impl DemandSystem {
                 "building action diagnostics: day={} minute={} use={} pressure={:.3} \
                  spawn_candidates={} spawn_profile_missing={} spawn_norm={:.3} \
                  spawn_need={:.3} spawn_credit={:.3}->{:.3} spawn_plan={} \
-                 spawn_selected={} spawn_reject_labour={} spawn_reject_absorption={} \
+                 spawn_selected={} spawn_reject_absorption={} \
                  spawn_skip_budget={} \
                  upgrade_candidates={} upgrade_norm={:.3} upgrade_budget={:.3} \
                  upgrade_credit={:.3}->{:.3} upgrade_plan={} upgrade_selected={} \
@@ -307,7 +297,6 @@ impl DemandSystem {
                 diagnostics.spawn_credit_after,
                 diagnostics.spawn_planned,
                 diagnostics.spawn_selected,
-                diagnostics.spawn_rejected_labour,
                 diagnostics.spawn_rejected_absorption,
                 diagnostics.spawn_skipped_budget,
                 diagnostics.upgrade_candidates,

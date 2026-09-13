@@ -408,7 +408,7 @@ func _refresh_budget_tab() -> void:
 	_add_metric(_budget_categories, "Pensions", _expense_money(_sum(entries, "pensions")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "Child Support", _expense_money(_sum(entries, "child_support")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 20.0)
 	_add_metric(_budget_categories, "City Wages", _expense_money(_sum(entries, "city_wages")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
-	_add_metric(_budget_categories, "Fuel/Input Purchases", _expense_money(_sum(entries, "fuel_input_purchases")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
+	_add_metric(_budget_categories, "Service Input Purchases", _expense_money(_sum(entries, "fuel_input_purchases")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Imports/OWA", _expense_money(_sum(entries, "imports_owa")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 	_add_metric(_budget_categories, "Construction/Service Costs", _expense_money(_sum(entries, "construction_service_costs")), UIStyle.TEXT_DIM, EXPENSE_COLOR, 10.0)
 
@@ -596,9 +596,8 @@ func _refresh_service_details() -> void:
 	_add_metric(_service_details, "Unmet Demand", "%.1f units" % unmet)
 	_add_metric(_service_details, "Coverage", _percent(coverage))
 	_add_metric(_service_details, "Coal Inventory", "%.1f" % float(latest.get("coal_inventory", 0.0)))
-	_add_metric(_service_details, "Coal Bought", "%.1f" % _sum(entries, "coal_bought"))
 	_add_metric(_service_details, "Coal Consumed", "%.1f" % _sum(entries, "coal_consumed"))
-	_add_metric(_service_details, "Fuel Cost", _money(_sum(entries, "electricity_fuel_cost")))
+	_add_metric(_service_details, "Fuel and Machinery", _money(_sum(entries, "electricity_fuel_cost")))
 	_add_metric(_service_details, "Wage Cost", _money(_sum(entries, "electricity_wage_cost")))
 	_add_metric(_service_details, "Utility Revenue", _money(_sum(entries, "electricity_revenue")))
 	_add_metric(_service_details, "Net Balance", _signed_money(_sum(entries, "electricity_net")))
@@ -904,10 +903,9 @@ func _signed_money(value: float) -> String:
 	return prefix + _money(value)
 
 func _expense_money(value: float) -> String:
-	var amount := absf(value)
-	if amount < 0.5:
+	if absf(value) < 0.5:
 		return _money(0.0)
-	return "-%s" % _money(amount)
+	return _signed_money(-value)
 
 func _percent(value: float) -> String:
 	return "%.0f%%" % (clampf(value, 0.0, 1.0) * 100.0)

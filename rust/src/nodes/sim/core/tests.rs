@@ -127,6 +127,110 @@ fn test_core() -> SimCore {
 }
 
 #[test]
+fn agent_commute_estimate_uses_active_world_clock() {
+    use crate::simulation::economy::agents::tick::estimate_building_origin_trip_seconds;
+
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    for (asset, zone) in [
+        ("clock_home", ZoneType::Residential),
+        ("clock_work", ZoneType::Commercial),
+    ] {
+        let id = register_test_asset(&mut core.allocator, asset, zone);
+        add_test_complete_building(&mut core, id, zone);
+    }
+    core.allocator.buildings[0].frontage_t = 0.25;
+    core.allocator.buildings[1].frontage_t = 0.75;
+    core.allocator
+        .recompute_derived_transforms(&core.region_graph, &core.zoning)
+        .unwrap();
+    core.allocator
+        .rebuild_entrance_cache(&core.region_graph, &core.transit_network.lane_system);
+    let physical_seconds = estimate_building_origin_trip_seconds(
+        0,
+        1,
+        false,
+        &core.allocator,
+        &core.transit_network,
+        &core.region_graph,
+        &core.agents.pathfind_count,
+    )
+    .expect("the clock fixture must have a feasible walking commute");
+    assert!(physical_seconds > 1);
+    let tuning = core.demand.runtime_tuning().operational_clock.clone();
+    for duration in [tuning.seconds_per_day * 0.5, tuning.seconds_per_day * 2.0] {
+        // This is the live clock retained by save/load, independently of current tuning.
+        core.time.seconds_per_day = duration;
+        core.agents = AgentSystem::new();
+        let home = &core.allocator.buildings[0];
+        let agent = core
+            .agents
+            .spawn_housed_agent(0, home.center_x, home.center_y);
+        core.agents.has_car[agent] = false;
+        core.agents.assign_work_building(agent, 1, 0);
+        core.agents.tick(
+            &core.allocator,
+            &mut core.transit_network,
+            &mut core.region_graph,
+            0.1,
+            &core.time,
+        );
+        let expected_minutes = (f64::from(physical_seconds) / core.time.seconds_per_minute())
+            .ceil()
+            .clamp(1.0, f64::from(u16::MAX)) as u16;
+        assert_eq!(core.agents.cached_commute_minutes[agent], expected_minutes);
+        assert_eq!(
+            core.agents.next_commute_refresh_time[agent],
+            core.agents.sim_time
+                + (f64::from(tuning.travel_estimate_refresh_minutes)
+                    * core.time.seconds_per_minute()) as f32
+        );
+    }
+}
+
+#[test]
+fn service_funding_rejects_nonfinite_changes_without_mutating_policy() {
+    let mut core = test_core();
+    add_test_border_road(&mut core);
+    let id = register_test_asset(&mut core.allocator, "funding_test", ZoneType::Industrial);
+    let mut manifest = core.allocator.registry.get(&id).unwrap().manifest.clone();
+    let building = manifest.building.as_mut().unwrap();
+    building.placement_mode = PlacementMode::Explicit;
+    building.zone_type = None;
+    building.density = None;
+    building.economy_profile = Some("power_plant_basic".into());
+    manifest.validate().unwrap();
+    core.allocator
+        .registry
+        .register("test", manifest, String::new());
+    add_test_complete_building(&mut core, id, ZoneType::Industrial);
+    core.allocator.buildings[0].economy_profile_runtime_id = core
+        .demand
+        .runtime_catalog()
+        .profile_for_id("power_plant_basic")
+        .unwrap()
+        .runtime_id;
+    let building = &core.allocator.buildings[0];
+    let (x, z) = (building.center_x, building.center_y);
+    let service = super::SERVICE_POLICY_ELECTRICITY;
+    assert!(core.set_service_funding(service, 0.4));
+    assert!(core.set_building_service_funding_override_at(x, z, service, 0.6));
+    for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(!core.set_service_funding(service, invalid));
+        assert!(!core.set_building_service_funding_override_at(x, z, service, invalid));
+        assert!(!core.set_building_service_funding_override_at(invalid, z, service, 0.0));
+        assert!(!core.set_building_service_funding_override_at(x, invalid, service, 0.0));
+        assert_eq!(core.service_policy.electricity_funding, 0.4);
+        assert_eq!(core.allocator.buildings[0].service_funding_override, 0.6);
+    }
+    assert!(!core.set_service_funding("unknown", 0.0));
+    assert!(core.set_service_funding(service, 2.0));
+    assert!(core.set_building_service_funding_override_at(x, z, service, -2.0));
+    assert_eq!(core.service_policy.electricity_funding, 1.0);
+    assert_eq!(core.allocator.buildings[0].service_funding_override, 0.0);
+}
+
+#[test]
 fn fiscal_policy_api_clamps_values_and_rejects_unknown_ids() {
     let mut core = test_core();
 
@@ -1051,6 +1155,13 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
         "load_registry_residential",
         ZoneType::Residential,
     );
+    loaded.sculpt_terrain_stroke_step_internal(godot::prelude::Vector2::ZERO, 16.0, 0.5);
+    assert!(loaded.terrain_stroke_active && loaded.terrain_stroke_has_changes);
+    loaded.last_tick_duration = 123.0;
+    loaded.last_agent_tick_us = 456;
+    loaded.last_road_timing = "previous world".to_owned();
+    loaded.last_surface_debug_edges.push(0);
+    loaded.camera_aabb = (-100.0, -100.0, 100.0, 100.0);
     loaded
         .load_game_internal(save_path.to_str().expect("utf-8 temp path"))
         .expect("load test world");
@@ -1066,6 +1177,78 @@ fn load_game_rebuilds_entrances_after_registry_restore() {
     assert_eq!(loaded.budget_history.len(), 1);
     assert_eq!(loaded.budget_history[0].day_index, 7);
     assert_eq!(loaded.budget_history[0].net, 175.0);
+    assert!(
+        !loaded.end_terrain_stroke_internal(),
+        "old brush cancellation must not rebuild the loaded world"
+    );
+    assert_eq!(loaded.last_tick_duration, 0.0);
+    assert_eq!(loaded.last_agent_tick_us, 0);
+    assert!(loaded.last_road_timing.is_empty());
+    assert!(loaded.last_surface_debug_edges.is_empty());
+    assert_eq!(loaded.camera_aabb, (0.0, 0.0, 0.0, 0.0));
+}
+
+#[test]
+#[ignore = "isolated release measurement of blank-world replacement with retained assets"]
+fn benchmark_blank_world_reset_with_assets() {
+    use std::time::Instant;
+
+    for asset_count in [128, 4096] {
+        let mut core = test_core();
+        for index in 0..asset_count {
+            register_test_asset(
+                &mut core.allocator,
+                &format!("reset_asset_{index}"),
+                ZoneType::Residential,
+            );
+        }
+        let first = core
+            .allocator
+            .registry
+            .get("test:reset_asset_0")
+            .unwrap()
+            .manifest
+            .clone();
+        let revision = core.allocator.registry.revision();
+        let mut samples = Vec::with_capacity(11);
+        // The benchmark measures replacement itself. Asset registration and the initial
+        // test world are outside timing; all measured worlds have the same empty layout.
+        for sample in 0..14 {
+            let start = Instant::now();
+            for _ in 0..5 {
+                core.create_blank_world_internal(256.0, 256.0, 8.0, 128.0, 50.0)
+                    .unwrap();
+            }
+            let milliseconds = start.elapsed().as_secs_f64() * 1000.0 / 5.0;
+            if sample >= 3 {
+                samples.push(milliseconds);
+            }
+        }
+        assert_eq!(core.allocator.registry.len(), asset_count);
+        assert_eq!(core.allocator.registry.revision(), revision);
+        assert_eq!(
+            core.allocator
+                .registry
+                .get("test:reset_asset_0")
+                .unwrap()
+                .manifest
+                .asset_id,
+            first.asset_id
+        );
+        assert_eq!(
+            core.allocator
+                .registry
+                .household_capacity("test:reset_asset_0"),
+            6
+        );
+        assert_eq!(core.heightmap.sample_height_world(0.0, 0.0), 50.0);
+        assert!(core.allocator.buildings.is_empty() && core.region_graph.edges().is_empty());
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "blank_world_reset assets={asset_count} median_ms={:.6}",
+            samples[samples.len() / 2]
+        );
+    }
 }
 
 fn test_road_edge(start_node: u32, end_node: u32, geometry: Vec<Vector3>) -> Edge {

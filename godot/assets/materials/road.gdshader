@@ -4,7 +4,6 @@ render_mode cull_back, depth_draw_opaque;
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D displacement_tex : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 
 uniform float uv_scale = 0.05; // Primary detail scaling (20m per tile)
 uniform float macro_uv_scale = 0.007; // Macro variation scaling (~140m per tile)

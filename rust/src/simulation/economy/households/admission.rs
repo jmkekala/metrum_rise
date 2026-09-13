@@ -32,6 +32,8 @@ impl HouseholdSystem {
         home_building_id: usize,
         member_count: u16,
     ) -> usize {
+        // Restored household records may not have transient daily ledgers yet.
+        self.ensure_daily_ledger_len();
         let profile = household_demand_profile(catalog);
         let consumption_rate = profile.consumption_rate_per_resident;
         let target_days = profile.stock_target_days;
@@ -148,5 +150,32 @@ impl HouseholdSystem {
             i += 1;
         }
         materialized
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admission_preserves_ledger_indices_after_restoring_bare_records() {
+        let catalog = load_runtime_economy_catalog().unwrap();
+        let tuning = load_runtime_economy_tuning().unwrap();
+        let mut households = HouseholdSystem::new();
+        households.admit_immigrant_household(&catalog, &tuning, 0, 1);
+        households.admit_immigrant_household(&catalog, &tuning, 1, 4);
+        households.households[0].budget = 1_234.0;
+        households.households[1].budget = 4_321.0;
+        // Bare records from older saves need their ledger slots before another admission.
+        let mut restored = HouseholdSystem::new();
+        restored.households = households.households;
+        assert!(restored.daily_ledgers.is_empty());
+        let admitted = restored.admit_immigrant_household(&catalog, &tuning, 2, 2);
+        assert_eq!(admitted, 2);
+        assert_eq!(restored.daily_ledgers.len(), 3);
+        for (household, ledger) in restored.households.iter().zip(&restored.daily_ledgers) {
+            assert_eq!(ledger.budget_before, household.budget);
+            assert_eq!(ledger.budget_after, household.budget);
+        }
     }
 }

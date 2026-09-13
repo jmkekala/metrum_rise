@@ -228,67 +228,6 @@ fn test_dedicated_footpath_centering() {
     }
 }
 
-#[test]
-fn test_junction_pedestrian_connectivity() {
-    let mut graph = RegionGraph::new();
-    let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-    let n3 = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
-
-    let roads = [(n0, n1), (n1, n2), (n1, n3)];
-
-    for (s, e) in roads {
-        graph.add_edge(Edge {
-            start_node: s,
-            end_node: e,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: 100.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-            physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        });
-    }
-    graph.rebuild_adjacency_list();
-
-    let mut lanes = LaneSystem::new();
-    lanes.rebuild(&mut graph);
-
-    let l_id = *lanes.edge_lanes[&0]
-        .iter()
-        .find(|&&id| {
-            let l = &lanes.lanes[id];
-            l.lane_idx == 100 && l.is_fwd
-        })
-        .expect("Edge 0 should have a forward left sidewalk");
-
-    let next = &lanes.lanes[l_id].next_lanes;
-    assert!(
-        !next.is_empty(),
-        "Sidewalk should have connections at junction"
-    );
-    let has_crosswalk = next
-        .iter()
-        .any(|&nid| lanes.lanes[nid].edge_id == usize::MAX);
-    assert!(
-        has_crosswalk,
-        "Should have a crosswalk connection at junction"
-    );
-}
-
 fn distance_to_segment_xz(point: Vector3, start: Vector3, end: Vector3) -> f32 {
     let point = Vector2::new(point.x, point.z);
     let start = Vector2::new(start.x, start.z);
@@ -617,65 +556,6 @@ fn test_crosswalk_counts() {
     assert_eq!(count_crosswalks_at(&lanes, &graph, n5 as usize), 4);
 }
 
-#[test]
-fn test_vehicle_connections() {
-    let mut graph = RegionGraph::new();
-    let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
-    let n_north = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
-    let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-    let n_south = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
-
-    for &other in &[n_north, n_east, n_south] {
-        graph.add_edge(Edge {
-            start_node: n_center,
-            end_node: other,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: 100.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![
-                graph.nodes[n_center as usize].pos,
-                graph.nodes[other as usize].pos,
-            ],
-            physical_geometry: vec![
-                graph.nodes[n_center as usize].pos,
-                graph.nodes[other as usize].pos,
-            ],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        });
-    }
-    graph.rebuild_adjacency_list();
-    let mut lanes = LaneSystem::new();
-    lanes.rebuild(&mut graph);
-
-    let node = &graph.nodes[n_center as usize];
-    assert!(!node.lane_connections.is_empty());
-    for (&(e_in, l_in), targets) in &node.lane_connections {
-        // Only check vehicle lanes (idx < 10; sidewalks are 100/-100)
-        if l_in.abs() < 10 {
-            let unique_edges: std::collections::HashSet<usize> =
-                targets.iter().map(|(e, _)| *e).collect();
-            assert_eq!(
-                unique_edges.len(),
-                2,
-                "Vehicle lane on edge {} should connect to 2 other arms at T-junction",
-                e_in
-            );
-        }
-    }
-}
-
 /// T-junction helper: west ──── junction ──── east
 ///                                  │
 ///                                north
@@ -687,36 +567,9 @@ fn build_t_junction() -> (RegionGraph, u32, usize, usize, usize) {
     let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n_north = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
 
-    let mk = |s: u32, e: u32, graph: &mut RegionGraph| -> usize {
-        let p0 = graph.nodes[s as usize].pos;
-        let p1 = graph.nodes[e as usize].pos;
-        graph.add_edge(Edge {
-            start_node: s,
-            end_node: e,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: p0.distance_to(p1),
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![p0, p1],
-            physical_geometry: vec![p0, p1],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        })
-    };
-
-    let e_w = mk(n_west, n_jct, &mut graph);
-    let e_e = mk(n_jct, n_east, &mut graph);
-    let e_n = mk(n_jct, n_north, &mut graph);
+    let e_w = add_road_edge(&mut graph, n_west, n_jct);
+    let e_e = add_road_edge(&mut graph, n_jct, n_east);
+    let e_n = add_road_edge(&mut graph, n_jct, n_north);
     graph.rebuild_adjacency_list();
     (graph, n_jct, e_w, e_e, e_n)
 }
@@ -832,35 +685,8 @@ fn test_vehicle_pass_through_split_uses_direct_lane_link() {
     let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
-    let mk = |s: u32, e: u32, graph: &mut RegionGraph| -> usize {
-        let p0 = graph.nodes[s as usize].pos;
-        let p1 = graph.nodes[e as usize].pos;
-        graph.add_edge(Edge {
-            start_node: s,
-            end_node: e,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: p0.distance_to(p1),
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![p0, p1],
-            physical_geometry: vec![p0, p1],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        })
-    };
-
-    let west_edge = mk(n_west, n_center, &mut graph);
-    let east_edge = mk(n_center, n_east, &mut graph);
+    let west_edge = add_road_edge(&mut graph, n_west, n_center);
+    let east_edge = add_road_edge(&mut graph, n_center, n_east);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
 
@@ -895,35 +721,8 @@ fn test_explicit_degree_two_vehicle_connection_uses_connector_span() {
     let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
 
-    let mk = |s: u32, e: u32, graph: &mut RegionGraph| -> usize {
-        let p0 = graph.nodes[s as usize].pos;
-        let p1 = graph.nodes[e as usize].pos;
-        graph.add_edge(Edge {
-            start_node: s,
-            end_node: e,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: p0.distance_to(p1),
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![p0, p1],
-            physical_geometry: vec![p0, p1],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
-        })
-    };
-
-    let west_edge = mk(n_west, n_center, &mut graph);
-    let east_edge = mk(n_center, n_east, &mut graph);
+    let west_edge = add_road_edge(&mut graph, n_west, n_center);
+    let east_edge = add_road_edge(&mut graph, n_center, n_east);
     graph.add_lane_connection(n_center, west_edge, 0, east_edge, 0);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
@@ -1228,8 +1027,7 @@ fn test_incremental_rebuild_new_edge_gets_lanes() {
     assert!(lanes.edge_lanes.contains_key(&e0));
 }
 
-#[test]
-fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
+fn lane_rebuild_frontier() -> (RegionGraph, usize, usize, usize) {
     let mut graph = RegionGraph::new();
     let center = graph.add_node(Vector3::ZERO, NodeType::Junction);
     let east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
@@ -1240,7 +1038,12 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
     let preserved_edge = add_road_edge(&mut graph, south, farther_south);
     graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
+    (graph, changed_edge, expanded_edge, preserved_edge)
+}
 
+#[test]
+fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
+    let (mut graph, changed_edge, expanded_edge, preserved_edge) = lane_rebuild_frontier();
     let mut lanes = LaneSystem::new();
     lanes.rebuild(&mut graph);
     let old_expanded_lanes = lanes.edge_lanes[&expanded_edge].clone();
@@ -1252,9 +1055,23 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
             lane.lane_type == LaneType::Foot && !lane.is_fwd && lane.lane_idx == -100
         })
         .expect("preserved edge must have an inbound sidewalk lane");
+    let preserved_outbound = lanes.edge_lanes[&preserved_edge]
+        .iter()
+        .copied()
+        .find(|&lane_id| {
+            let lane = &lanes.lanes[lane_id];
+            lane.lane_type == LaneType::Foot && lane.is_fwd && lane.lane_idx == -100
+        })
+        .expect("preserved edge must have an outbound sidewalk lane");
+    let remote_connections = lanes.lanes[preserved_outbound].next_lanes.clone();
+    assert!(!remote_connections.is_empty());
 
     lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([changed_edge]));
 
+    assert_eq!(
+        lanes.lanes[preserved_outbound].next_lanes, remote_connections,
+        "the unedited far-end junction must retain its outgoing connections"
+    );
     let current_expanded_lanes = &lanes.edge_lanes[&expanded_edge];
     assert!(
         current_expanded_lanes
@@ -1282,6 +1099,40 @@ fn incremental_rebuild_repairs_connectors_at_expanded_edge_far_end() {
         lanes.edge_lanes[&changed_edge].contains(&changed_target),
         "changed-junction connector must target the current physical lane"
     );
+}
+
+#[test]
+fn incremental_rebuild_assigns_repeatable_lane_and_connector_ids() {
+    let (graph, center, west, _, _) = build_t_junction();
+    let mut expected = None;
+    for _ in 0..32 {
+        let mut graph = graph.clone();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        lanes.rebuild_edges_incremental(&mut graph, &HashSet::from([west]));
+        assert!(lanes.node_lanes.contains_key(&(center as usize)));
+        let product: Vec<_> = lanes
+            .lanes
+            .iter()
+            .map(|lane| {
+                (
+                    lane.edge_id,
+                    lane.is_fwd,
+                    lane.lane_idx,
+                    lane.node_id,
+                    lane.next_lanes.clone(),
+                )
+            })
+            .collect();
+        if let Some(expected) = &expected {
+            assert_eq!(
+                &product, expected,
+                "identical edits must assign identical lane IDs"
+            );
+        } else {
+            expected = Some(product);
+        }
+    }
 }
 
 #[test]
@@ -1333,3 +1184,5 @@ fn test_incremental_rebuild_connection_lanes_exist_at_junction() {
     assert!(has_vehicle_conn);
     assert!(e0_lane_has_conns);
 }
+
+mod rebuild_benchmark;

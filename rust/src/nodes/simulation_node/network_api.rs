@@ -14,35 +14,6 @@ impl SimulationNode {
         self.lock_core().get_hovered_edge_internal(world_x, world_z)
     }
 
-    /// Returns the raycast depth against the road network.
-    #[func]
-    pub fn get_max_polygon_depth(
-        &self,
-        origin_x: f32,
-        origin_z: f32,
-        dir_x: f32,
-        dir_z: f32,
-        max_search: f32,
-    ) -> f32 {
-        self.lock_core()
-            .get_max_polygon_depth_internal(origin_x, origin_z, dir_x, dir_z, max_search)
-    }
-
-    // ── Network ──
-
-    /// Returns the closest boundary point on a road edge to the given position.
-    #[func]
-    pub fn get_closest_point_on_edge(&self, edge_idx: i32, point_x: f32, point_y: f32) -> Vector2 {
-        self.lock_core()
-            .get_closest_point_on_edge_internal(edge_idx, point_x, point_y)
-    }
-
-    /// Returns the physical segment geometry for a road edge.
-    #[func]
-    pub fn get_edge_geometry(&self, edge_idx: i32) -> PackedVector2Array {
-        self.lock_core().get_edge_geometry_internal(edge_idx)
-    }
-
     /// Returns the 3D geometry for a road edge.
     #[func]
     pub fn get_edge_geometry_3d(&self, edge_idx: i32) -> PackedVector3Array {
@@ -62,18 +33,6 @@ impl SimulationNode {
             return 6.0;
         }
         core.region_graph.edge(edge_idx as usize).width
-    }
-
-    /// Returns a curved frontage between two points on an edge.
-    #[func]
-    pub fn get_curved_frontage(
-        &self,
-        edge_idx: i32,
-        start_p: Vector2,
-        end_p: Vector2,
-    ) -> PackedVector2Array {
-        self.lock_core()
-            .get_curved_frontage_internal(edge_idx, start_p, end_p)
     }
 
     /// Adds a new road segment to the network.
@@ -444,12 +403,5 @@ impl SimulationNode {
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
         self.lock_core()
             .clear_lane_source_internal(node_id, from_edge, from_lane);
-    }
-
-    /// Returns the average network direction at a given point.
-    #[func]
-    pub fn get_network_direction_at_point(&self, pos: Vector3) -> Vector3 {
-        self.lock_core()
-            .get_network_direction_at_point_internal(pos)
     }
 }

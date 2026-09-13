@@ -104,19 +104,6 @@ fn register_test_asset(
     format!("{pack_id}:{asset_id}")
 }
 
-fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
-    let _ = (x, z);
-    zoning
-        .parcels()
-        .first()
-        .map(|parcel| {
-            zoning
-                .profiles
-                .zone_type_for_runtime_id(parcel.zone_profile_runtime_id())
-        })
-        .unwrap_or(ZoneType::None)
-}
-
 #[test]
 fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     let config = WorldConfig::new(200.0, 200.0, 10.0, 10.0);
@@ -177,29 +164,7 @@ fn loaded_runtime_preserves_saved_road_grade_and_frontage() {
     assert_eq!(restored.parcels()[0].front_center(), parcel.front_center());
 }
 
-#[test]
-fn sqlite_round_trip_preserves_authoritative_state() {
-    let config = WorldConfig::new(100.0, 100.0, 10.0, 10.0);
-    let mut time = TimeSystem::new();
-    time.speed_multiplier = 2.0;
-    time.time_elapsed = 1.25;
-    time.day_index = 3;
-    time.minute_of_day = 480;
-    time.seconds_per_day = 4.0;
-    let mut terrain = TerrainSystem::from_world_config(&config);
-    terrain.set_height(0, 0, 1.0);
-    terrain.set_height(1, 0, 1.0);
-    terrain.set_height(0, 1, 1.0);
-    terrain.set_height(1, 1, 1.0);
-    let mut water = WaterSystem::from_world_config(&config);
-    let mut baseline_depth = water.clone_baseline_depth_dense();
-    baseline_depth[0] = 2.0;
-    water
-        .replace_baseline_depth_from_dense(&baseline_depth)
-        .expect("baseline water depth dimensions should match");
-    let mut resource_deposits = ResourceDepositSystem::from_world_config(&config);
-    resource_deposits.set_coal_richness_at(2, 3, 450);
-    resource_deposits.set_coal_richness_at(8, 7, 900);
+fn snapshot_test_graph() -> (RegionGraph, usize) {
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
@@ -225,36 +190,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         vehicle_frontage_access: VehicleFrontageAccess::BothSides,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
-    let mut zoning = ZoningSystem::new(&config);
-    let residential_profile = zoning
-        .profiles
-        .default_runtime_id_for_zone_type(ZoneType::Residential)
-        .expect("residential runtime id");
-    zoning
-        .restore_parcel_from_attachment(1, edge_id, 1, 0.5, 39.0, 40.0, residential_profile, &graph)
-        .expect("save test parcel");
-    let mut pollution = PollutionSystem::new(&config);
-    pollution.grid.data[0] = 3.0;
-    let mut noise = NoiseSystem::new(&config);
-    noise.grid.data[0] = 7.0;
-    let mut demand = DemandSystem::new();
-    demand.residential = 0.12;
-    demand.commercial = 0.08;
-    demand.industrial = 0.04;
-    demand.households_to_admit_today = 2;
-    demand.admission_action_credit = 1.25;
-    demand.removal_action_credit = 0.50;
-    demand.persistent_exit_action_credit = 0.75;
-    demand.recent_household_failure_pressure = 0.75;
-    demand.enable_max_demand_cheat();
-    let mut allocator = BuildingAllocator::new();
-    let residential_asset = register_test_asset(
-        &mut allocator,
-        "test",
-        "save_residential",
-        ZoneClass::Residential,
-    );
-    allocator.buildings.push(Building {
+    (graph, edge_id)
+}
+
+fn snapshot_test_building(
+    edge_id: usize,
+    residential_profile: u16,
+    residential_asset: String,
+) -> Building {
+    Building {
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,
@@ -309,7 +253,116 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         work_area_scale: 1.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
-    });
+    }
+}
+
+#[test]
+fn extractor_load_rejects_invalid_depletion_without_clamping() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(schema::SCHEMA).unwrap();
+    conn.execute(
+        "INSERT INTO resource_extractor_sites VALUES (0, 0, 'coal', 100.0, 20.0)",
+        [],
+    )
+    .unwrap();
+    for (index, (x, z)) in [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]
+        .into_iter()
+        .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO resource_extractor_site_points VALUES (0, ?1, ?2, ?3)",
+            params![index, x, z],
+        )
+        .unwrap();
+    }
+    for (total, extracted, valid) in [
+        (100.0, 20.0, true),
+        (20.0, 20.0, true),
+        (0.0, 0.0, true),
+        (-1.0, 0.0, false),
+        (100.0, -1.0, false),
+        (20.0, 21.0, false),
+        (f64::INFINITY, 0.0, false),
+        (100.0, f64::INFINITY, false),
+    ] {
+        conn.execute(
+            "UPDATE resource_extractor_sites SET total_reserve_units = ?1, extracted_units = ?2",
+            params![total, extracted],
+        )
+        .unwrap();
+        let result = world::load_resource_extraction(&conn, 1);
+        assert_eq!(
+            result.is_ok(),
+            valid,
+            "total={total}, extracted={extracted}"
+        );
+        if let Ok(extraction) = result {
+            assert_eq!(extraction.sites()[0].total_reserve_units, total as f32);
+            assert_eq!(extraction.sites()[0].extracted_units, extracted as f32);
+        }
+    }
+}
+
+#[test]
+fn sqlite_round_trip_preserves_authoritative_state() {
+    let config = WorldConfig::new(100.0, 100.0, 10.0, 10.0);
+    let mut time = TimeSystem::new();
+    time.speed_multiplier = 2.0;
+    time.time_elapsed = 0.001;
+    time.day_index = 3;
+    time.minute_of_day = 480;
+    time.seconds_per_day = 60.0;
+    let mut terrain = TerrainSystem::from_world_config(&config);
+    terrain.set_height(0, 0, 1.0);
+    terrain.set_height(1, 0, 1.0);
+    terrain.set_height(0, 1, 1.0);
+    terrain.set_height(1, 1, 1.0);
+    let mut water = WaterSystem::from_world_config(&config);
+    let mut baseline_depth = water.clone_baseline_depth_dense();
+    baseline_depth[0] = 2.0;
+    water
+        .replace_baseline_depth_from_dense(&baseline_depth)
+        .expect("baseline water depth dimensions should match");
+    let mut resource_deposits = ResourceDepositSystem::from_world_config(&config);
+    resource_deposits.set_coal_richness_at(2, 3, 450);
+    resource_deposits.set_coal_richness_at(8, 7, 900);
+    let (mut graph, edge_id) = snapshot_test_graph();
+    let n0 = graph.edge(edge_id).start_node;
+    let n1 = graph.edge(edge_id).end_node;
+    let mut zoning = ZoningSystem::new(&config);
+    let residential_profile = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Residential)
+        .expect("residential runtime id");
+    zoning
+        .restore_parcel_from_attachment(1, edge_id, 1, 0.5, 39.0, 40.0, residential_profile, &graph)
+        .expect("save test parcel");
+    let mut pollution = PollutionSystem::new(&config);
+    pollution.grid.data[0] = 3.0;
+    let mut noise = NoiseSystem::new(&config);
+    noise.grid.data[0] = 7.0;
+    let mut demand = DemandSystem::new();
+    demand.residential = 0.12;
+    demand.commercial = 0.08;
+    demand.industrial = 0.04;
+    demand.households_to_admit_today = 2;
+    demand.admission_action_credit = 1.25;
+    demand.removal_action_credit = 0.50;
+    demand.persistent_exit_action_credit = 0.75;
+    demand.recent_household_failure_pressure = 0.75;
+    demand.enable_max_demand_cheat();
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "save_residential",
+        ZoneClass::Residential,
+    );
+    allocator.buildings.push(snapshot_test_building(
+        edge_id,
+        residential_profile,
+        residential_asset,
+    ));
     allocator
         .recompute_derived_transforms(&graph, &zoning)
         .expect("transforms");
@@ -376,6 +429,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         replenishment_offset_hours: 0,
         unemployment_days_elapsed: 0,
     });
+    households.restore_utility_payments(0, [3.25, 2.5, 1.75]);
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let household_supplies = catalog
@@ -558,7 +612,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         power_unmet: 2.0,
         power_coverage: 0.95,
         coal_inventory: 300.0,
-        coal_bought: 40.0,
         coal_consumed: 35.0,
         electricity_fuel_cost: 12.0,
         electricity_wage_cost: 8.0,
@@ -585,47 +638,204 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         distance: 235.0,
         orthogonal: false,
     };
-    save_to_sqlite(
-        &path,
-        SaveGameView {
-            camera: Some(camera),
-            config: &config,
-            time: &time,
-            terrain: &terrain,
-            water: &water,
-            resource_deposits: &resource_deposits,
-            graph: &graph,
-            zoning: &zoning,
-            pollution: &pollution,
-            noise: &noise,
-            demand: &demand,
-            pending_demand_spawns: &pending_demand_spawns,
-            allocator: &allocator,
-            households: &households,
-            logistics: &logistics,
-            resource_extraction: &resource_extraction,
-            agriculture: &agriculture,
-            agents: &agents_sys,
-            network: &network_sys,
-            treasury: &treasury,
-            service_policy: &service_policy,
-            fiscal_policy: &fiscal_policy,
-            budget_history: &budget_history,
-        },
-    )
-    .expect("save");
+    let save_snapshot = |allocator: &BuildingAllocator,
+                         resource_extraction: &ResourceExtractionSystem| {
+        save_to_sqlite(
+            &path,
+            SaveGameView {
+                camera: Some(camera),
+                config: &config,
+                time: &time,
+                terrain: &terrain,
+                water: &water,
+                resource_deposits: &resource_deposits,
+                graph: &graph,
+                zoning: &zoning,
+                pollution: &pollution,
+                noise: &noise,
+                demand: &demand,
+                pending_demand_spawns: &pending_demand_spawns,
+                allocator,
+                households: &households,
+                logistics: &logistics,
+                resource_extraction,
+                agriculture: &agriculture,
+                agents: &agents_sys,
+                network: &network_sys,
+                treasury: &treasury,
+                service_policy: &service_policy,
+                fiscal_policy: &fiscal_policy,
+                budget_history: &budget_history,
+            },
+        )
+    };
+    save_snapshot(&allocator, &resource_extraction).expect("save");
+    let original_bytes = fs::read(&path).unwrap();
+    let original_edge = allocator.buildings[0].edge_idx;
+    let original_revenue = allocator.buildings[0].revenue;
+    for invalid_edge in [false, true] {
+        // Exercise both preflight reference failure and a late NOT NULL SQL failure.
+        allocator.buildings[0].edge_idx = if invalid_edge {
+            usize::MAX
+        } else {
+            original_edge
+        };
+        allocator.buildings[0].revenue = if invalid_edge {
+            original_revenue
+        } else {
+            f32::NAN
+        };
+        assert!(save_snapshot(&allocator, &resource_extraction).is_err());
+        allocator.buildings[0].edge_idx = original_edge;
+        allocator.buildings[0].revenue = original_revenue;
+        assert!(
+            fs::read(&path).unwrap() == original_bytes,
+            "failed save replaced the previous snapshot (invalid_edge={invalid_edge})"
+        );
+    }
+    let mut invalid_sites = resource_extraction.sites().to_vec();
+    invalid_sites[0].extracted_units = invalid_sites[0].total_reserve_units + 1.0;
+    let invalid_extraction = ResourceExtractionSystem::from_sites(invalid_sites);
+    assert!(save_snapshot(&allocator, &invalid_extraction).is_err());
+    assert!(
+        fs::read(&path).unwrap() == original_bytes,
+        "invalid depletion replaced the previous save"
+    );
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     assert_eq!(loaded.camera, Some(camera));
-    // Pre-camera snapshots still load and never invent a view from a different save.
+    let paid = loaded
+        .households
+        .daily_ledgers()
+        .first()
+        .expect("restored utility payments");
+    assert_eq!(paid.power_consumption_cost, 3.25);
+    assert_eq!(paid.water_consumption_cost, 2.5);
+    assert_eq!(paid.sewage_consumption_cost, 1.75);
     let conn = Connection::open(&path).unwrap();
-    conn.execute("DROP TABLE camera_state", []).unwrap();
-    for version in [57, 58] {
+    let mut accepted_corruptions = Vec::new();
+    for (column, invalid_values) in [
+        ("time_elapsed", &[-1.0, 0.05, f64::INFINITY][..]),
+        (
+            "speed_multiplier",
+            &[-1.0, 32.0001, 1.0e30, f64::INFINITY][..],
+        ),
+        ("day_index", &[0.0][..]),
+        ("minute_of_day", &[1440.0][..]),
+        (
+            "seconds_per_day",
+            &[0.0, -1.0, 60.0 - 1.0e-9, f64::INFINITY][..],
+        ),
+        ("agent_sim_time", &[-1.0, f64::INFINITY][..]),
+    ] {
+        let original: rusqlite::types::Value = conn
+            .query_row(&format!("SELECT {column} FROM time_state"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        for invalid in invalid_values {
+            conn.execute(&format!("UPDATE time_state SET {column} = ?1"), [invalid])
+                .unwrap();
+            if load_from_sqlite(&path, &allocator.registry).is_ok() {
+                accepted_corruptions.push(format!("time_state.{column}={invalid}"));
+            }
+        }
+        conn.execute(&format!("UPDATE time_state SET {column} = ?1"), [original])
+            .unwrap();
+    }
+    for (column, excess) in [
+        ("width", 65536),
+        ("depth", 65536),
+        ("cell_y", 65536),
+        ("side", 256),
+    ] {
+        conn.execute(
+            &format!("UPDATE buildings SET {column} = {column} + ?1"),
+            [excess],
+        )
+        .unwrap();
+        if load_from_sqlite(&path, &allocator.registry).is_ok() {
+            accepted_corruptions.push(format!("buildings.{column} overflow"));
+        }
+        conn.execute(
+            &format!("UPDATE buildings SET {column} = {column} - ?1"),
+            [excess],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE agent_path_nodes SET step_index = step_index + 10",
+        [],
+    )
+    .unwrap();
+    if agents::load_agents(&conn, 0.0).is_ok() {
+        accepted_corruptions.push("agent path sequence gap".to_owned());
+    }
+    conn.execute(
+        "UPDATE agent_path_nodes SET step_index = step_index - 10",
+        [],
+    )
+    .unwrap();
+    assert!(
+        accepted_corruptions.is_empty(),
+        "accepted malformed save fields: {accepted_corruptions:?}"
+    );
+    for column in ["member_count", "child_count", "adult_count", "elder_count"] {
+        conn.execute(
+            &format!("UPDATE households SET {column} = {column} + 65536"),
+            [],
+        )
+        .unwrap();
+        assert!(
+            load_from_sqlite(&path, &allocator.registry).is_err(),
+            "oversized {column}"
+        );
+        conn.execute(
+            &format!("UPDATE households SET {column} = {column} - 65536"),
+            [],
+        )
+        .unwrap();
+    }
+    let payment_fields = [
+        ("power_consumption_cost", 3.25),
+        ("water_consumption_cost", 2.5),
+        ("sewage_consumption_cost", 1.75),
+    ];
+    for (column, original) in payment_fields {
+        for invalid in [-1.0, f64::INFINITY] {
+            conn.execute(&format!("UPDATE households SET {column} = ?1"), [invalid])
+                .unwrap();
+            assert!(
+                load_from_sqlite(&path, &allocator.registry).is_err(),
+                "invalid {column}"
+            );
+        }
+        conn.execute(&format!("UPDATE households SET {column} = ?1"), [original])
+            .unwrap();
+    }
+    for (column, _) in payment_fields {
+        conn.execute(&format!("ALTER TABLE households DROP COLUMN {column}"), [])
+            .unwrap();
+    }
+    // Older files still carry retired pedestrian storage; the current reader ignores it.
+    conn.execute(
+        "ALTER TABLE agents ADD COLUMN pedestrian_side INTEGER NOT NULL DEFAULT 0",
+        [],
+    )
+    .unwrap();
+    conn.execute("CREATE TABLE agent_ped_steps(agent_id INTEGER, step_index INTEGER, edge_id INTEGER, forward INTEGER, side INTEGER)", []).unwrap();
+    // Older saves contain no unsettled-payment fields; only pre-59 saves lack a camera.
+    for version in [60, 59, 58, 57] {
+        if version == 58 {
+            conn.execute("DROP TABLE camera_state", []).unwrap();
+        }
         conn.execute("UPDATE save_meta SET version = ?1", [version])
             .unwrap();
-        assert_eq!(
-            load_from_sqlite(&path, &allocator.registry).unwrap().camera,
-            None
-        );
+        let legacy = load_from_sqlite(&path, &allocator.registry).unwrap();
+        assert_eq!(legacy.camera, (version >= 59).then_some(camera));
+        let ledger = legacy.households.daily_ledgers().first().unwrap();
+        assert_eq!(ledger.power_consumption_cost, 0.0);
+        assert_eq!(ledger.water_consumption_cost, 0.0);
+        assert_eq!(ledger.sewage_consumption_cost, 0.0);
     }
     drop(conn);
     fs::remove_file(&path).ok();
@@ -695,7 +905,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         VehicleFrontageAccess::BothSides
     );
     assert_eq!(
-        zone_at_world(&loaded.zoning, 0.0, 0.0),
+        loaded
+            .zoning
+            .profiles
+            .zone_type_for_runtime_id(loaded.zoning.parcels()[0].zone_profile_runtime_id()),
         ZoneType::Residential
     );
     assert_eq!(loaded.allocator.buildings.len(), 2);
@@ -1109,4 +1322,187 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     assert_eq!(loaded.zoning.parcels()[0].id().raw(), 2);
     assert!(loaded.allocator.buildings.is_empty());
     assert!(loaded.pending_demand_spawns.is_empty());
+}
+
+#[test]
+#[ignore = "manual matched release benchmark for save reference bookkeeping"]
+fn benchmark_snapshot_reference_bookkeeping() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let (graph, edge_id) = snapshot_test_graph();
+    let agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    let building = snapshot_test_building(edge_id, 0, String::new());
+    for count in [1_024, 8_192, 65_536] {
+        // Isolated serialization input: no placement, zoning, routing or per-agent setup.
+        allocator.buildings.resize(count, building.clone());
+        let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+        for index in [0, count / 2, count - 1] {
+            assert_eq!(optional_building_to_db(index, &maps).unwrap(), index as i64);
+        }
+        assert_eq!(
+            optional_building_to_db(usize::MAX, &maps).unwrap(),
+            NONE_REF
+        );
+        assert!(optional_building_to_db(count, &maps).is_err());
+        let mut build_samples = Vec::with_capacity(11);
+        let mut reference_samples = Vec::with_capacity(11);
+        for sample in 0..14 {
+            let start = Instant::now();
+            for _ in 0..20 {
+                black_box(
+                    build_snapshot_maps(black_box(&graph), black_box(&allocator), &agents).unwrap(),
+                );
+            }
+            let build_ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            let start = Instant::now();
+            for _ in 0..20 {
+                // Six references per building approximates household/member save references.
+                for reference in 0..count * 6 {
+                    black_box(
+                        optional_building_to_db(black_box(reference % count), black_box(&maps))
+                            .unwrap(),
+                    );
+                }
+            }
+            let references_ms = start.elapsed().as_secs_f64() * 1000.0 / 20.0;
+            if sample >= 3 {
+                build_samples.push(build_ms);
+                reference_samples.push(references_ms);
+            }
+        }
+        build_samples.sort_by(f64::total_cmp);
+        reference_samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "snapshot_references buildings={count} build_ms={:.6} references_ms={:.6}",
+            build_samples[5], reference_samples[5]
+        );
+    }
+}
+
+#[test]
+fn sqlite_graph_rejects_malformed_references_before_publication() {
+    let (graph, _) = snapshot_test_graph();
+    let allocator = BuildingAllocator::new();
+    let agents = AgentSystem::new();
+    let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    let tx = conn.transaction().unwrap();
+    network::save_network(&tx, &graph, &maps).unwrap();
+    tx.commit().unwrap();
+    let mut accepted_corruptions = Vec::new();
+    for column in ["allowed_types", "fwd_lanes", "bkw_lanes"] {
+        conn.execute(
+            &format!("UPDATE network_edges SET {column} = {column} + 256"),
+            [],
+        )
+        .unwrap();
+        if network::load_graph(&conn).is_ok() {
+            accepted_corruptions.push(format!("{column} overflow"));
+        }
+        conn.execute(
+            &format!("UPDATE network_edges SET {column} = {column} - 256"),
+            [],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE network_edge_geometry SET point_index = point_index + 10",
+        [],
+    )
+    .unwrap();
+    if network::load_graph(&conn).is_ok() {
+        accepted_corruptions.push("geometry sequence gap".to_owned());
+    }
+    conn.execute(
+        "UPDATE network_edge_geometry SET point_index = point_index - 10",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO network_edge_geometry VALUES (10, 0, 1.0, 0.0, 0.0, 0)",
+        [],
+    )
+    .unwrap();
+    if network::load_graph(&conn).is_ok() {
+        accepted_corruptions.push("orphan geometry".to_owned());
+    }
+    conn.execute("DELETE FROM network_edge_geometry WHERE edge_id = 10", [])
+        .unwrap();
+    // A bad endpoint used to panic while mutating the graph's adjacency index.
+    conn.execute("UPDATE network_edges SET end_node = 100", [])
+        .unwrap();
+    let invalid_endpoint =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| network::load_graph(&conn)));
+    assert!(
+        matches!(invalid_endpoint, Ok(Err(_))),
+        "bad endpoint must return a load error"
+    );
+    assert!(
+        accepted_corruptions.is_empty(),
+        "accepted malformed graph fields: {accepted_corruptions:?}"
+    );
+}
+
+#[test]
+#[ignore = "manual matched release benchmark for graph loading and index construction"]
+fn benchmark_sqlite_graph_loading() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let (template, _) = snapshot_test_graph();
+    for count in [1_024, 8_192] {
+        let mut graph = RegionGraph::new();
+        for index in 0..count {
+            let start = Vector3::new(
+                (index % 128) as f32 * 40.0,
+                0.0,
+                (index / 128) as f32 * 40.0,
+            );
+            let end = start + Vector3::new(20.0, 0.0, 0.0);
+            let mut edge = template.edge(0).clone();
+            edge.start_node = graph.add_node(start, NodeType::Junction);
+            edge.end_node = graph.add_node(end, NodeType::Junction);
+            edge.geometry = vec![start, end];
+            edge.physical_geometry = edge.geometry.clone();
+            edge.physical_length = 20.0;
+            edge.base_cost = 20.0 / edge.speed_limit;
+            graph.add_edge(edge);
+        }
+        let allocator = BuildingAllocator::new();
+        let agents = AgentSystem::new();
+        let maps = build_snapshot_maps(&graph, &allocator, &agents).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        let tx = conn.transaction().unwrap();
+        network::save_network(&tx, &graph, &maps).unwrap();
+        tx.commit().unwrap();
+        // Verify the load's indexed products independently of the timed repetitions.
+        let loaded = network::load_graph(&conn).unwrap();
+        assert_eq!(loaded.node_count(), count * 2);
+        assert_eq!(loaded.edge_count(), count);
+        let index = count / 2;
+        let edge = loaded.edge(index);
+        let position = loaded.node(edge.start_node).pos;
+        assert_eq!(loaded.node_adjacency(edge.start_node), &[index]);
+        assert_eq!(
+            loaded.find_node_within(position, 0.1),
+            Some(edge.start_node)
+        );
+        assert_eq!(loaded.get_edges_near_point(position, 0.1), vec![index]);
+        let mut samples = Vec::with_capacity(11);
+        for sample in 0..14 {
+            let start = Instant::now();
+            for _ in 0..3 {
+                black_box(network::load_graph(black_box(&conn)).unwrap());
+            }
+            if sample >= 3 {
+                samples.push(start.elapsed().as_secs_f64() * 1000.0 / 3.0);
+            }
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!("sqlite_graph edges={count} load_ms={:.6}", samples[5]);
+    }
 }

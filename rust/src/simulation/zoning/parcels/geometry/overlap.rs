@@ -7,12 +7,11 @@ use crate::simulation::zoning::parcels::{OVERLAP_EPSILON_M, ParcelGeometry, Zoni
 use godot::prelude::Vector2;
 
 pub(crate) fn geometries_overlap(a: &ParcelGeometry, b: &ParcelGeometry) -> bool {
-    let axes = [a.tangent, a.normal, b.tangent, b.normal];
-    axes.into_iter().all(|axis| {
-        let (a_min, a_max) = project_corners(&a.corners, axis);
-        let (b_min, b_max) = project_corners(&b.corners, axis);
-        a_max > b_min + OVERLAP_EPSILON_M && b_max > a_min + OVERLAP_EPSILON_M
-    })
+    rectangles_overlap_on_axes(
+        &a.corners,
+        &b.corners,
+        [a.tangent, a.normal, b.tangent, b.normal],
+    )
 }
 
 pub(crate) fn point_inside_parcel(point: Vector2, parcel: &ZoningParcel) -> bool {

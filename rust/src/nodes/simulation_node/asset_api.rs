@@ -6,11 +6,22 @@ use super::*;
 
 #[godot_api(secondary)]
 impl SimulationNode {
-    /// Scans a native filesystem directory for content packs and registers all valid assets.
+    /// Replaces the registry with the selected packs; an empty selection disables every pack.
     #[func]
-    pub fn load_asset_packs(&mut self, dir_path: GString, enabled_pack_ids: GString) -> GString {
+    pub fn load_asset_packs(
+        &mut self,
+        dir_path: GString,
+        enabled_pack_ids: PackedStringArray,
+    ) -> GString {
         use crate::nodes::sim::bridge::assets::load_asset_packs;
-        load_asset_packs(&mut self.lock_core(), dir_path, enabled_pack_ids)
+        load_asset_packs(&mut self.lock_core(), dir_path, Some(&enabled_pack_ids))
+    }
+
+    /// Refreshes all installed packs for authoring, independently of the gameplay selection.
+    #[func]
+    pub fn load_all_asset_packs(&mut self, dir_path: GString) -> GString {
+        use crate::nodes::sim::bridge::assets::load_asset_packs;
+        load_asset_packs(&mut self.lock_core(), dir_path, None)
     }
 
     /// Returns all qualified asset IDs (`"pack_id:asset_id"`) currently in the registry.
@@ -168,24 +179,10 @@ impl SimulationNode {
         use crate::simulation::work_area::profile_kind_uses_explicit_work_area;
         use crate::simulation::zoning::ZoneType;
 
-        let core = self.lock_core();
-
-        // Linear scan — only called on explicit user clicks, never on the hot path.
-        let pick_radius_sq = 30.0_f32 * 30.0;
-        let mut best_idx = usize::MAX;
-        let mut best_dist_sq = pick_radius_sq;
-        for (i, b) in core.allocator.buildings.iter().enumerate() {
-            let dx = b.center_x - world_x;
-            let dz = b.center_y - world_z; // center_y is world-Z in the building struct
-            let dist_sq = dx * dx + dz * dz;
-            if dist_sq < best_dist_sq {
-                best_dist_sq = dist_sq;
-                best_idx = i;
-            }
-        }
-        if best_idx == usize::MAX {
+        let mut core = self.lock_core();
+        let Some(best_idx) = core.allocator.nearest_building_idx_at(world_x, world_z) else {
             return VarDictionary::new();
-        }
+        };
 
         let b = &core.allocator.buildings[best_idx];
         let catalog = core.demand.runtime_catalog();
@@ -205,17 +202,30 @@ impl SimulationNode {
             .allocator
             .worker_capacity_with_catalog(best_idx, catalog);
 
-        // Inventory: only non-zero resource slots.
+        // Keep empty input buffers visible so shortages can be inspected.
         let mut inv_arr = VarArray::new();
         for (slot, &amount) in b.resource_inventory.iter().enumerate() {
-            if amount > 0.001 {
-                let runtime_id = (slot + 1) as u16;
+            let runtime_id = (slot + 1) as u16;
+            let input = profile.and_then(|profile| profile.input_port(runtime_id));
+            if amount > 0.001 || input.is_some() {
                 let name = catalog
                     .resource_id_for_runtime_id(runtime_id)
                     .unwrap_or("unknown");
                 let mut entry = VarDictionary::new();
                 entry.set("name", GString::from(name));
                 entry.set("amount", amount as f64);
+                if let Some(input) = input {
+                    let scale = if profile.is_some_and(|profile| {
+                        crate::simulation::work_area::profile_kind_uses_explicit_work_area(
+                            profile.kind,
+                        )
+                    }) {
+                        b.work_area_scale
+                    } else {
+                        1.0
+                    };
+                    entry.set("daily_input_units", (input.units_per_day * scale) as f64);
+                }
                 inv_arr.push(&entry.to_variant());
             }
         }
@@ -460,20 +470,6 @@ impl SimulationNode {
                             b.service_funding_override >= 0.0,
                         );
                     }
-                    if let Some(fuel_port) = profile.inputs.first() {
-                        let fuel_name = catalog
-                            .resource_id_for_runtime_id(fuel_port.resource_runtime_id)
-                            .unwrap_or("fuel");
-                        let fuel_units = b.inventory_units(fuel_port.resource_runtime_id).max(0.0);
-                        let fuel_days = if fuel_port.units_per_day > 0.0 {
-                            fuel_units / fuel_port.units_per_day
-                        } else {
-                            0.0
-                        };
-                        dict.set("utility_fuel_name", GString::from(fuel_name));
-                        dict.set("utility_fuel_units", fuel_units as f64);
-                        dict.set("utility_fuel_days", fuel_days as f64);
-                    }
                     let power_production = b.recent_power_service_units.max(0.0);
                     let power_consumed = b.recent_power_served_units.clamp(0.0, power_production);
                     let power_unused = (power_production - power_consumed).max(0.0);
@@ -490,7 +486,7 @@ impl SimulationNode {
                         power_consumption_ratio as f64,
                     );
                     dict.set(
-                        "city_fuel_cost_today",
+                        "city_input_cost_today",
                         b.daily_city_funded_input_cost as f64,
                     );
                 }

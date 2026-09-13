@@ -330,8 +330,10 @@ pub(super) fn build_exact_path_for_candidate(
         {
             if let Some(path) = ff.build_path(candidate.planned_attach_node, graph.node_count() + 1)
             {
-                let turns_valid =
-                    crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(&path, graph);
+                let turns_valid = candidate.mode != MODE_CAR
+                    || crate::simulation::pathing::cch::CchGraph::path_has_valid_vehicle_turns(
+                        &path, graph,
+                    );
                 let lanes_valid = candidate.mode == MODE_CAR
                     || pedestrian_path_has_lane_connectors(
                         &path,
@@ -973,6 +975,8 @@ mod tests {
         let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
         let edge0 = graph.add_edge(test_edge(n0, n1, 0.0, 100.0));
         let edge1 = graph.add_edge(test_edge(n1, n2, 100.0, 200.0));
+        // Only the reverse car turn is allowed; walkers can still use this junction.
+        graph.add_lane_connection(n1, edge1, 0, edge0, 0);
         graph.rebuild_adjacency_list();
 
         let mut network = TransitNetwork::new();
@@ -997,6 +1001,44 @@ mod tests {
             })
             .expect("foot lane starting at n2");
 
+        network.flow_fields.rebuild_dirty(&graph, |zone, _| {
+            if zone == ZoneType::Commercial {
+                vec![(n2, 7)]
+            } else {
+                Vec::new()
+            }
+        });
+        let mut candidate = PlannedTripCandidate {
+            total_cost_s: 0.0,
+            mode_choice_cost_s: 0.0,
+            origin_rank: 0,
+            destination_rank: 1,
+            mode: crate::simulation::economy::agents::MODE_WALK,
+            planned_attach_node: n0,
+            planned_detach_node: n2,
+            planned_attach_lane_id: attach_lane,
+            planned_detach_lane_id: detach_lane,
+            planned_attach_lane_d: 50.0,
+            planned_detach_lane_d: 50.0,
+            network_path: None,
+        };
+        let pathfind_count = AtomicU32::new(0);
+        assert_eq!(
+            build_exact_path_for_candidate(
+                &mut candidate,
+                7,
+                ZoneType::Commercial,
+                &network,
+                &graph,
+                &pathfind_count,
+            ),
+            Some((
+                vec![n0, n1, n2],
+                ACCESS_PLAN_VALID | ACCESS_PATH_FROM_FLOW_FIELD
+            ))
+        );
+        assert_eq!(pathfind_count.load(Ordering::Relaxed), 0);
+
         network.lane_system.lanes[attach_lane].next_lanes.clear();
 
         assert!(
@@ -1008,6 +1050,18 @@ mod tests {
                 &graph,
             ),
             "planner must reject a node path that movement cannot realize with sidewalk connectors"
+        );
+        assert!(
+            build_exact_path_for_candidate(
+                &mut candidate,
+                7,
+                ZoneType::Commercial,
+                &network,
+                &graph,
+                &pathfind_count,
+            )
+            .is_none(),
+            "the flow field must still reject the disconnected sidewalk"
         );
     }
 }

@@ -1,48 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Modular query sub-modules for spatial and simulation state inspection (Item R13).
+//! Spatial and simulation inspection bridges. Network selection is owned by the graph.
 
 pub mod lanes;
 pub mod network;
 pub mod terrain;
 
-use crate::simulation::network::graph::RegionGraph;
-use godot::prelude::*;
-
-/// Checks if a node is canonical (not an alias/merged node).
-pub fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
-    graph.get_valid_node(node_id) == node_id
-}
-
-/// Checks if a node is canonical and still connected to a non-deleted edge.
-pub fn is_live_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
-    is_canonical_node(graph, node_id) && graph.node_has_live_incident_edge(node_id)
-}
-
-/// Finds the closest live canonical node to a given world position within a maximum distance.
-pub fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> i32 {
-    let mut best_id = -1;
-    let mut min_d_sq = max_dist * max_dist;
-    for (i, node) in graph.nodes().iter().enumerate() {
-        let node_id = i as u32;
-        if !is_live_canonical_node(graph, node_id) {
-            continue;
-        }
-        let dx = node.pos.x - world_pos.x;
-        let dz = node.pos.z - world_pos.z;
-        let d_sq = dx * dx + dz * dz;
-        if d_sq < min_d_sq {
-            min_d_sq = d_sq;
-            best_id = node_id as i32;
-        }
-    }
-    best_id
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{get_closest_canonical_node, is_canonical_node, is_live_canonical_node};
     use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::interaction::get_closest_node_xz;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
@@ -55,12 +22,11 @@ mod tests {
         graph.add_edge(test_edge(keep, far));
         graph.unite_nodes(keep, remove);
 
-        assert!(is_canonical_node(&graph, keep));
-        assert!(is_live_canonical_node(&graph, keep));
-        assert!(!is_canonical_node(&graph, remove));
+        assert!(graph.is_live_canonical_node(keep));
+        assert!(!graph.is_live_canonical_node(remove));
         assert_eq!(
-            get_closest_canonical_node(&graph, Vector3::new(10.1, 0.0, 0.0), 2.0),
-            keep as i32
+            get_closest_node_xz(&graph, Vector3::new(10.1, 0.0, 0.0), 2.0),
+            Some(keep)
         );
     }
 
@@ -71,18 +37,18 @@ mod tests {
         let b = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
         let edge_idx = graph.add_edge(test_edge(a, b));
 
-        assert!(is_live_canonical_node(&graph, a));
+        assert!(graph.is_live_canonical_node(a));
         assert_eq!(
-            get_closest_canonical_node(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
-            a as i32
+            get_closest_node_xz(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
+            Some(a)
         );
 
         graph.edge_mut(edge_idx).deleted = true;
 
-        assert!(!is_live_canonical_node(&graph, a));
+        assert!(!graph.is_live_canonical_node(a));
         assert_eq!(
-            get_closest_canonical_node(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
-            -1
+            get_closest_node_xz(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
+            None
         );
     }
 
@@ -94,9 +60,144 @@ mod tests {
         graph.add_edge(test_edge(node, far));
 
         assert_eq!(
-            get_closest_canonical_node(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
-            node as i32
+            get_closest_node_xz(&graph, Vector3::new(0.5, 0.0, 0.0), 3.0),
+            Some(node)
         );
+        assert_eq!(
+            crate::simulation::network::interaction::get_closest_node(
+                &graph,
+                Vector3::new(0.5, 0.0, 0.0),
+                3.0
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn closest_node_preserves_radius_and_lowest_id_ties() {
+        let mut graph = RegionGraph::new();
+        let low = graph.add_node(Vector3::new(1.0, 0.0, 0.0), NodeType::Junction);
+        let high = graph.add_node(Vector3::new(-1.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(test_edge(low, high));
+        assert_eq!(get_closest_node_xz(&graph, Vector3::ZERO, 1.0), None);
+        assert_eq!(get_closest_node_xz(&graph, Vector3::ZERO, 2.0), Some(low));
+        // Moving out and back changes bucket insertion order without changing final geometry.
+        graph.move_node(low, Vector3::new(40.0, 0.0, 0.0));
+        graph.move_node(low, Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(get_closest_node_xz(&graph, Vector3::ZERO, 2.0), Some(low));
+    }
+
+    #[test]
+    fn node_grid_bounds_match_independent_point_filter() {
+        let mut graph = RegionGraph::new();
+        for x in [-32.0, -16.0, -0.5, 0.0, 16.0, 32.0] {
+            for z in [-17.0, 0.0, 17.0] {
+                graph.add_node(Vector3::new(x, x + z, z), NodeType::Junction);
+            }
+        }
+        for (low, high) in [
+            (-16.0, 16.0),
+            (-0.25, 0.25),
+            (16.0, -16.0),
+            (-f32::MAX, f32::MAX),
+            (f32::NEG_INFINITY, f32::INFINITY),
+        ] {
+            let min = Vector3::new(low, 0.0, low);
+            let max = Vector3::new(high, 0.0, high);
+            let expected: Vec<_> = graph
+                .nodes()
+                .iter()
+                .enumerate()
+                .filter_map(|(id, node)| {
+                    (node.pos.x >= low
+                        && node.pos.x <= high
+                        && node.pos.z >= low
+                        && node.pos.z <= high)
+                        .then_some(id as u32)
+                })
+                .collect();
+            assert_eq!(graph.get_nodes_near_aabb(min, max), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "matched release node-query locality measurement"]
+    fn benchmark_editor_node_query_locality() {
+        use crate::simulation::network::interaction;
+        use std::{hint::black_box, time::Instant};
+        const QUERIES: usize = 64;
+        for background in [0, 1_000, 10_000, 100_000] {
+            let setup = Instant::now();
+            let mut graph = RegionGraph::new();
+            for i in 0..=background {
+                let x = if i == 0 {
+                    0.0
+                } else {
+                    1_000.0 + (i % 512) as f32 * 64.0
+                };
+                let z = if i == 0 {
+                    0.0
+                } else {
+                    1_000.0 + (i / 512) as f32 * 64.0
+                };
+                let a = graph.add_node(Vector3::new(x, 0.0, z), NodeType::Junction);
+                let b = graph.add_node(Vector3::new(x + 24.0, 0.0, z), NodeType::Junction);
+                let mut edge = test_edge(a, b);
+                edge.geometry = vec![graph.node(a).pos, graph.node(b).pos];
+                edge.physical_geometry = edge.geometry.clone();
+                graph.add_edge(edge);
+            }
+            let setup_us = setup.elapsed().as_secs_f64() * 1e6;
+            for operation in ["editor", "spatial_3d", "snap"] {
+                let mut samples = Vec::new();
+                for sample in 0..10 {
+                    let mut outputs = [-2; QUERIES];
+                    let start = Instant::now();
+                    for (i, output) in outputs.iter_mut().enumerate() {
+                        let position = black_box(match i % 4 {
+                            0 => Vector3::new(0.25, 0.0, 0.5),
+                            1 => Vector3::new(23.5, 0.0, 0.25),
+                            2 => Vector3::new(-0.25, 0.0, -0.5),
+                            _ => Vector3::new(-50.0, 0.0, -50.0),
+                        });
+                        let graph = black_box(&graph);
+                        *output = match operation {
+                            "editor" => get_closest_node_xz(graph, position, black_box(5.0))
+                                .map_or(-1, |id| id as i32),
+                            "spatial_3d" => {
+                                interaction::get_closest_node(graph, position, black_box(5.0))
+                                    .map_or(-1, |id| id as i32)
+                            }
+                            _ => interaction::get_closest_network_snap_xz(
+                                graph,
+                                position,
+                                black_box(5.0),
+                            )
+                            .map_or(-1, |snap| match snap.target {
+                                interaction::NetworkSnapTarget::Node(id) => id as i32,
+                                interaction::NetworkSnapTarget::Edge(_) => -3,
+                            }),
+                        };
+                    }
+                    let elapsed_us = start.elapsed().as_secs_f64() * 1e6 / QUERIES as f64;
+                    for (i, output) in outputs.into_iter().enumerate() {
+                        assert_eq!(output, [0, 1, 0, -1][i % 4]);
+                    }
+                    if sample > 0 {
+                        samples.push(elapsed_us);
+                    }
+                }
+                samples.sort_by(f64::total_cmp);
+                println!(
+                    "NODE_QUERY_BENCH {}",
+                    serde_json::json!({
+                        "background":background,"nodes":graph.node_count(),"operation":operation,
+                        "median_us":samples[samples.len()/2],"setup_us":setup_us,
+                        "queries_per_sample":QUERIES,"fingerprint":[0,1,0,-1],
+                    })
+                );
+            }
+        }
     }
 
     fn test_edge(start_node: u32, end_node: u32) -> crate::simulation::network::graph::Edge {
@@ -110,17 +211,10 @@ mod tests {
             fwd_lanes: 1,
             bkw_lanes: 1,
             speed_limit: 50.0,
-            base_cost: 0.0,
             physical_length: 20.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access:
-                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            ..Default::default()
         }
     }
 }

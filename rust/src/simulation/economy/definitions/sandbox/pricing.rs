@@ -8,11 +8,16 @@ use crate::simulation::economy::definitions::schema::{
 };
 use std::collections::BTreeMap;
 
-pub(super) fn build_outgoing_edges<'a>(
-    scenario: &'a EconomyScenario,
-) -> BTreeMap<&'a str, Vec<&'a ScenarioEdge>> {
+/// Groups active edges while preserving authored allocation order within each source.
+pub(super) fn build_outgoing_edges(
+    scenario: &EconomyScenario,
+    include: impl Fn(&ScenarioEdge) -> bool,
+) -> BTreeMap<&str, Vec<&ScenarioEdge>> {
     let mut outgoing: BTreeMap<&str, Vec<&ScenarioEdge>> = BTreeMap::new();
     for edge in &scenario.edges {
+        if !include(edge) {
+            continue;
+        }
         outgoing.entry(edge.from.as_str()).or_default().push(edge);
     }
     outgoing
@@ -50,7 +55,6 @@ pub(super) fn household_cost_multiplier(
 pub(super) fn inferred_unit_price(
     scenario: &EconomyScenario,
     demand_sink_node_id: &str,
-    outgoing_edges: &BTreeMap<&str, Vec<&ScenarioEdge>>,
     node_map: &BTreeMap<&str, &ScenarioNode>,
     profile_map: &BTreeMap<&str, &EconomyProfile>,
 ) -> f32 {
@@ -66,19 +70,6 @@ pub(super) fn inferred_unit_price(
         };
         if source_profile.unit_price_currency > 0.0 {
             return source_profile.unit_price_currency;
-        }
-    }
-    for (node_id, edges) in outgoing_edges {
-        if edges.iter().any(|edge| edge.to == demand_sink_node_id) {
-            let Some(source_node) = node_map.get(node_id) else {
-                continue;
-            };
-            let Some(source_profile) = profile_map.get(source_node.ref_id.as_str()) else {
-                continue;
-            };
-            if source_profile.unit_price_currency > 0.0 {
-                return source_profile.unit_price_currency;
-            }
         }
     }
     0.0

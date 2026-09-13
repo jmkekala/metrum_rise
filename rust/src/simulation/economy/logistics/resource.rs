@@ -5,9 +5,32 @@
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, FreightTimingProfile, ResourceRuntimeId,
-    RuntimeEconomyCatalog, RuntimeEconomyTuning,
+    RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort,
 };
+use crate::simulation::economy::households::scaled_input_inventory_targets_for_building;
 use crate::simulation::zoning::ZoneType;
+
+/// Requested stock and emergency status shared by incoming orders and local export holds.
+/// No request is emitted until the reorder threshold and shipment size permit one.
+pub(super) fn input_restock_request(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    profile: &EconomyProfileRuntime,
+    input: &RuntimeResourcePort,
+    reserved_inbound: f32,
+) -> Option<(f32, bool)> {
+    let (target, reorder, critical) =
+        scaled_input_inventory_targets_for_building(catalog, building, profile, input);
+    let stock = building.inventory_units(input.resource_runtime_id) + reserved_inbound;
+    let threshold = if reorder > 0.0 { reorder } else { target };
+    if target <= 0.0 || stock >= threshold {
+        return None;
+    }
+    let amount = (target - stock).max(0.0);
+    let emergency = stock <= critical;
+    (amount > 0.0 && (amount >= profile.min_shipment_units || emergency))
+        .then_some((amount, emergency))
+}
 
 pub(super) fn required_unit_price(
     catalog: &RuntimeEconomyCatalog,
@@ -130,8 +153,7 @@ pub(super) fn refund_input_payment(
         .is_some_and(|building| allocator.is_city_service_building(building));
     if city_funded {
         if let Some(destination) = allocator.buildings.get_mut(dest_idx) {
-            destination.daily_city_funded_input_cost =
-                (destination.daily_city_funded_input_cost - total_cost).max(0.0);
+            destination.daily_city_funded_input_cost -= total_cost;
         }
         *treasury_balance += f64::from(total_cost);
     } else if let Some(destination) = allocator.buildings.get_mut(dest_idx) {

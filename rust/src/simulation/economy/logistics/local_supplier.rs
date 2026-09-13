@@ -9,6 +9,7 @@ use crate::simulation::economy::accessibility::{
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
+use crate::simulation::economy::households::saleable_output_stock;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
@@ -21,11 +22,15 @@ use super::route_cache::FreightRouteCache;
 use super::supplier_index::SupplierCandidateIndex;
 use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
 
+/// A local freight offer shared by input orders and export protection.
 #[derive(Clone, Copy)]
-struct LocalSupplierChoice {
-    supplier_idx: usize,
-    amount: f32,
-    total_cost: f32,
+pub(super) struct LocalSupplierChoice {
+    /// Supplier selected by freight travel time, cost, then stable building index.
+    pub(super) supplier_idx: usize,
+    /// Affordable, unreserved stock rounded to an allowed shipment quantity.
+    pub(super) amount: f32,
+    /// Buyer payment for this quantity, including the freight-window price adjustment.
+    pub(super) total_cost: f32,
     travel_seconds: f32,
 }
 
@@ -52,57 +57,25 @@ impl ShipmentSystem {
         max_freight_speed: f32,
         treasury_balance: &mut f64,
     ) -> bool {
-        if dest_idx >= allocator.entrances.len() {
-            return false;
-        }
-        let destination = &allocator.buildings[dest_idx];
-        let destination_budget = input_purchase_budget(allocator, dest_idx);
-        let Some(buckets) = supplier_index.buckets_for_resource(resource_runtime_id) else {
-            return false;
-        };
-        let destination_components =
-            freight_components.building_components(allocator, graph, dest_idx, TransitFlags::CAR);
-
-        let mut best_choice = None::<LocalSupplierChoice>;
-        buckets.scan_nearest(
-            destination_components,
-            destination.center_x,
-            destination.center_y,
-            |event| match event {
-                ReachableBucketScanEvent::Item {
-                    item_idx: candidate_idx,
-                } => {
-                    update_best_local_supplier_choice(
-                        &mut best_choice,
-                        candidate_idx,
-                        dest_idx,
-                        desired_amount,
-                        allow_emergency,
-                        min_shipment_units,
-                        resource_runtime_id,
-                        destination_budget,
-                        allocator,
-                        transit_network,
-                        graph,
-                        reservations,
-                        route_cache,
-                        freight_profile,
-                        minute_of_day,
-                        catalog,
-                        truck_load_units,
-                    );
-                    true
-                }
-                ReachableBucketScanEvent::RingComplete {
-                    next_min_distance_sq,
-                } => {
-                    let Some(choice) = best_choice else {
-                        return true;
-                    };
-                    lower_bound_travel_seconds(next_min_distance_sq, max_freight_speed)
-                        <= choice.travel_seconds
-                }
-            },
+        let best_choice = find_local_supplier(
+            dest_idx,
+            desired_amount,
+            allow_emergency,
+            min_shipment_units,
+            resource_runtime_id,
+            input_purchase_budget(allocator, dest_idx),
+            allocator,
+            transit_network,
+            graph,
+            reservations,
+            supplier_index,
+            freight_components,
+            route_cache,
+            freight_profile,
+            minute_of_day,
+            catalog,
+            truck_load_units,
+            max_freight_speed,
         );
 
         if let Some(choice) = best_choice {
@@ -154,6 +127,82 @@ impl ShipmentSystem {
     }
 }
 
+/// Finds an affordable reachable supplier through the existing component/spatial index.
+/// Both orders and export holds use this query and the same deterministic tie-breaking.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn find_local_supplier(
+    dest_idx: usize,
+    desired_amount: f32,
+    allow_emergency: bool,
+    min_shipment_units: f32,
+    resource_runtime_id: ResourceRuntimeId,
+    destination_budget: f32,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    reservations: &ReservationViews,
+    supplier_index: &SupplierCandidateIndex,
+    freight_components: &ModeComponentIndex,
+    route_cache: &mut FreightRouteCache,
+    freight_profile: &FreightTimingProfile,
+    minute_of_day: u16,
+    catalog: &RuntimeEconomyCatalog,
+    truck_load_units: f32,
+    max_freight_speed: f32,
+) -> Option<LocalSupplierChoice> {
+    if dest_idx >= allocator.entrances.len() {
+        return None;
+    }
+    let destination = &allocator.buildings[dest_idx];
+    let buckets = supplier_index.buckets_for_resource(resource_runtime_id)?;
+    let destination_components =
+        freight_components.building_components(allocator, graph, dest_idx, TransitFlags::CAR);
+
+    let mut best_choice = None::<LocalSupplierChoice>;
+    buckets.scan_nearest(
+        destination_components,
+        destination.center_x,
+        destination.center_y,
+        |event| match event {
+            ReachableBucketScanEvent::Item {
+                item_idx: candidate_idx,
+            } => {
+                update_best_local_supplier_choice(
+                    &mut best_choice,
+                    candidate_idx,
+                    dest_idx,
+                    desired_amount,
+                    allow_emergency,
+                    min_shipment_units,
+                    resource_runtime_id,
+                    destination_budget,
+                    allocator,
+                    transit_network,
+                    graph,
+                    reservations,
+                    route_cache,
+                    freight_profile,
+                    minute_of_day,
+                    catalog,
+                    truck_load_units,
+                );
+                true
+            }
+            ReachableBucketScanEvent::RingComplete {
+                next_min_distance_sq,
+            } => {
+                let Some(choice) = best_choice else {
+                    return true;
+                };
+                lower_bound_travel_seconds(next_min_distance_sq, max_freight_speed)
+                    <= choice.travel_seconds
+            }
+        },
+    );
+
+    best_choice
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update_best_local_supplier_choice(
     best_choice: &mut Option<LocalSupplierChoice>,
@@ -193,7 +242,13 @@ fn update_best_local_supplier_choice(
         return;
     };
     let reserved = reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
-    let available = (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
+    let available = (saleable_output_stock(
+        catalog,
+        supplier,
+        supplier_profile,
+        output_port.resource_runtime_id,
+    ) - reserved)
+        .max(0.0);
     if available <= 0.0 {
         return;
     }

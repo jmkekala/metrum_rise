@@ -439,13 +439,11 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         household_stock_stability: 1.0,
         commercial_capacity_deficit: 0.0,
         unmet_commercial_consumer_demand: 0.0,
-        committed_unmet_commercial_consumer_demand: 0.0,
         committed_unmet_commercial_consumer_demand_by_resource: Vec::new(),
         industrial_input_capacity_deficit: 0.0,
-        commercial_input_need_value: 0.0,
+        business_input_need_value: 0.0,
         local_industrial_input_capacity_value: 0.0,
         industrial_missing_input_value: 0.0,
-        committed_industrial_missing_input_value: 0.0,
         external_connection_available: 1.0,
         connected_border_count: 1,
         city_treasury_balance: 100_000.0,
@@ -471,8 +469,8 @@ fn vacant_admission_snapshot() -> DailyDemandSnapshot {
         funded_worker_capacity: 0,
         open_jobs_unfunded: 0,
         output_absorption: OutputAbsorptionContext::empty(0),
-        commercial_owa_dependency: 0.0,
-        commercial_owa_input_value: 0.0,
+        business_owa_dependency: 0.0,
+        business_owa_input_value: 0.0,
     }
 }
 
@@ -503,9 +501,8 @@ fn daily_pass_raises_commercial_and_industrial_pressure_on_shortages() {
         .push(housed_household(1, 2, 120.0, 0.25));
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
 
     assert!(demand.commercial > 0.0);
     assert!(demand.industrial > 0.0);
@@ -530,9 +527,8 @@ fn daily_pass_raises_commercial_pressure_when_residents_lack_shop_capacity() {
         .push(housed_household(0, 5, 1_000.0, 3.0));
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
 
     assert!(
         demand.commercial > 0.95,
@@ -560,9 +556,8 @@ fn daily_pass_uses_short_run_purchase_power_for_missing_shop_capacity() {
         .push(housed_household(0, 5, 140.0, 3.0));
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
 
     assert!(
         demand.commercial > 0.95,
@@ -582,19 +577,18 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
 
     let households = HouseholdSystem::new();
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let config = load_builtin_demand_config().expect("built-in demand config must load");
     let missing_snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
-    assert!(missing_snapshot.commercial_owa_dependency > 0.99);
-    assert_eq!(missing_snapshot.commercial_input_need_value, 160.0);
+    assert!(missing_snapshot.business_owa_dependency > 0.99);
+    assert_eq!(missing_snapshot.business_input_need_value, 160.0);
     assert_eq!(missing_snapshot.local_industrial_input_capacity_value, 0.0);
     assert_eq!(missing_snapshot.industrial_missing_input_value, 160.0);
     assert_eq!(missing_snapshot.industrial_input_capacity_deficit, 1.0);
 
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
     assert!(
         demand.industrial > 0.95,
         "missing industrial input capacity should drive industrial pressure"
@@ -606,8 +600,8 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
     let covered_snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
-    assert!(covered_snapshot.commercial_owa_dependency > 0.99);
-    assert_eq!(covered_snapshot.commercial_input_need_value, 160.0);
+    assert!(covered_snapshot.business_owa_dependency > 0.99);
+    assert_eq!(covered_snapshot.business_input_need_value, 160.0);
     assert_eq!(
         covered_snapshot.local_industrial_input_capacity_value,
         2_400.0
@@ -616,7 +610,7 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
     assert_eq!(covered_snapshot.industrial_input_capacity_deficit, 0.0);
 
     let mut covered_demand = DemandSystem::new();
-    covered_demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    covered_demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
     assert!(
         covered_demand.industrial > 0.95,
         "actual OWA reliance should still raise industrial pressure even when paper local capacity covers need"
@@ -627,7 +621,7 @@ fn industrial_pressure_uses_capacity_balance_and_owa_dependency() {
 fn industrial_pressure_takes_owa_dependency_as_secondary_need_signal() {
     let mut snapshot = vacant_admission_snapshot();
     snapshot.industrial_input_capacity_deficit = 0.0;
-    snapshot.commercial_owa_dependency = 0.625;
+    snapshot.business_owa_dependency = 0.625;
 
     let mut demand = DemandSystem::new();
     demand.update_pressure_channels_from_snapshot(&snapshot);
@@ -681,13 +675,6 @@ fn commercial_spawn_uses_open_jobs_as_pull_not_full_workforce_prerequisite() {
         1,
         "commercial spawn should be selected so its open jobs can pull the next households"
     );
-    assert_eq!(
-        demand
-            .last_building_action_diagnostics
-            .commercial
-            .spawn_rejected_labour,
-        0
-    );
 }
 
 #[test]
@@ -727,9 +714,8 @@ fn daily_pass_raises_residential_pressure_when_jobs_outrun_housing() {
     }
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
 
     assert!(demand.residential > 0.50);
 }
@@ -748,13 +734,21 @@ fn commercial_spawn_need_rounds_unmet_output_to_missing_buildings() {
     }];
     let mut snapshot = vacant_admission_snapshot();
 
-    snapshot.committed_unmet_commercial_consumer_demand = 1.0;
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .unwrap();
+    assert_eq!(
+        commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        0.0
+    );
+    snapshot.committed_unmet_commercial_consumer_demand_by_resource =
+        vec![(household_supplies, 1.0)];
     assert_eq!(
         commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         1.0
     );
 
-    snapshot.committed_unmet_commercial_consumer_demand = 201.0;
+    snapshot.committed_unmet_commercial_consumer_demand_by_resource[0].1 = 201.0;
     assert_eq!(
         commercial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         2.0
@@ -874,7 +868,6 @@ fn commercial_spawn_need_averages_output_only_across_matching_resource_candidate
         },
     ];
     let mut snapshot = vacant_admission_snapshot();
-    snapshot.committed_unmet_commercial_consumer_demand = 160.0;
     snapshot.committed_unmet_commercial_consumer_demand_by_resource =
         vec![(personal_services, 160.0)];
 
@@ -898,24 +891,37 @@ fn industrial_spawn_need_rounds_missing_input_capacity_to_missing_buildings() {
     }];
     let mut snapshot = vacant_admission_snapshot();
 
-    snapshot.commercial_input_need_value = 2_400.0;
+    snapshot.business_input_need_value = 2_400.0;
     snapshot.industrial_missing_input_value = 2_400.0;
-    snapshot.committed_industrial_missing_input_value = 2_400.0;
+    let food = catalog.resource_runtime_id_for_id("packaged_food").unwrap();
+    snapshot.output_absorption = OutputAbsorptionContext::from_resource_amounts(
+        catalog.resource_count(),
+        &[],
+        &[],
+        0,
+        &[(food, 160.0)],
+    );
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         1.0
     );
 
     snapshot.industrial_missing_input_value = 2_401.0;
-    snapshot.committed_industrial_missing_input_value = 2_401.0;
+    snapshot.output_absorption = OutputAbsorptionContext::from_resource_amounts(
+        catalog.resource_count(),
+        &[],
+        &[],
+        0,
+        &[(food, 160.1)],
+    );
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         2.0
     );
 
-    snapshot.commercial_owa_input_value = 13_860.0;
+    snapshot.business_owa_input_value = 13_860.0;
     snapshot.industrial_missing_input_value = 0.0;
-    snapshot.committed_industrial_missing_input_value = 0.0;
+    snapshot.output_absorption = OutputAbsorptionContext::empty(catalog.resource_count());
     assert_eq!(
         industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
         0.0
@@ -1084,7 +1090,12 @@ fn pending_commercial_construction_is_committed_but_not_live_capacity() {
     assert!(snapshot.unmet_commercial_consumer_demand > 0.0);
     let expected_uncommitted_service_demand = 5.0 * 0.03 + 5.0 * 0.05;
     assert!(
-        (snapshot.committed_unmet_commercial_consumer_demand - expected_uncommitted_service_demand)
+        (snapshot
+            .committed_unmet_commercial_consumer_demand_by_resource
+            .iter()
+            .map(|(_, units)| *units)
+            .sum::<f32>()
+            - expected_uncommitted_service_demand)
             .abs()
             < 0.001,
         "pending grocery construction should not satisfy unrelated service-store demand"
@@ -1140,7 +1151,12 @@ fn commercial_spawn_need_uses_effective_shop_capacity_after_stock_recovery_deman
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(
-        snapshot.committed_unmet_commercial_consumer_demand > 90.0,
+        crate::simulation::economy::resource_totals::resource_amount(
+            &snapshot.committed_unmet_commercial_consumer_demand_by_resource,
+            catalog
+                .resource_runtime_id_for_id("household_supplies")
+                .unwrap(),
+        ) > 90.0,
         "one 200/day grocery should not hide a 300/day pantry recovery demand"
     );
 
@@ -1178,10 +1194,15 @@ fn pending_industrial_construction_is_committed_but_not_live_capacity() {
     let snapshot =
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
-    assert_eq!(snapshot.commercial_input_need_value, 160.0);
+    assert_eq!(snapshot.business_input_need_value, 160.0);
     assert_eq!(snapshot.local_industrial_input_capacity_value, 0.0);
     assert_eq!(snapshot.industrial_missing_input_value, 160.0);
-    assert_eq!(snapshot.committed_industrial_missing_input_value, 0.0);
+    assert_eq!(
+        snapshot
+            .output_absorption
+            .unmet_units(catalog.resource_runtime_id_for_id("packaged_food").unwrap()),
+        0.0
+    );
     assert_eq!(snapshot.industrial_input_capacity_deficit, 1.0);
 
     let candidates = [DemandSpawnCandidate {
@@ -1215,10 +1236,9 @@ fn daily_pass_blocks_growth_without_external_connection() {
     let allocator = BuildingAllocator::new();
     let households = HouseholdSystem::new();
     let graph = RegionGraph::new();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, 1_000.0);
+    demand.run_daily_pass(&allocator, &households, &graph, 1_000.0);
 
     // No external connection means inflow_desire = 0.0 and removal_pressure = 0.0
     // (no households → unhoused_ratio = 0), so ResidentialGrowth is at equilibrium
@@ -1250,7 +1270,7 @@ fn max_demand_cheat_survives_daily_and_hourly_recompute() {
     assert_eq!(demand.net_commercial_pressure(), 1.0);
     assert_eq!(demand.net_industrial_pressure(), 1.0);
 
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+    demand.run_daily_pass(&allocator, &households, &graph, -100.0);
     assert_eq!(demand.residential, 1.0);
     assert_eq!(demand.commercial, 1.0);
     assert_eq!(demand.industrial, 1.0);
@@ -1309,7 +1329,7 @@ fn max_demand_cheat_plans_industrial_spawn_without_input_need() {
 }
 
 #[test]
-fn residential_construction_bootstraps_from_construction_move_in_viability() {
+fn residential_construction_bootstraps_before_vacant_homes_exist() {
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "residential", ZoneType::Residential);
 
@@ -1340,16 +1360,6 @@ fn residential_construction_bootstraps_from_construction_move_in_viability() {
         0
     );
     assert_eq!(demand.last_admission_diagnostics.planned_households, 0);
-    assert!(
-        demand
-            .last_admission_diagnostics
-            .construction_move_in_acceptance
-            > 0.25,
-        "construction-side move-in viability should use the same age-aware pull, got={:.3}",
-        demand
-            .last_admission_diagnostics
-            .construction_move_in_acceptance
-    );
 }
 
 #[test]
@@ -1380,12 +1390,7 @@ fn residential_construction_stops_when_move_in_viability_is_zero() {
         demand.residential
     );
     assert_eq!(demand.building_actions.residential.spawns.len(), 0);
-    assert_eq!(
-        demand
-            .last_admission_diagnostics
-            .construction_move_in_acceptance,
-        0.0
-    );
+    assert_eq!(demand.last_admission_diagnostics.move_in_acceptance, 0.0);
 }
 
 #[test]
@@ -1941,10 +1946,9 @@ fn household_removal_diagnostics_record_failure_signal_counts() {
     households.households.push(unhoused_household(1, 0.0, 0.0));
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+    demand.run_daily_pass(&allocator, &households, &graph, -100.0);
     let diagnostics = demand.last_removal_diagnostics;
 
     assert_eq!(diagnostics.total_household_count, 3);
@@ -1992,10 +1996,9 @@ fn persistent_exit_removes_failed_unhoused_tail_below_crisis_threshold() {
     }
 
     let graph = graph_with_connected_border();
-    let zoning = empty_zoning();
     let mut demand = DemandSystem::new();
 
-    demand.run_daily_pass(&allocator, &households, &graph, &zoning, -100.0);
+    demand.run_daily_pass(&allocator, &households, &graph, -100.0);
     let diagnostics = demand.last_removal_diagnostics;
 
     assert_eq!(diagnostics.unhoused_household_count, 8);
@@ -2647,9 +2650,9 @@ fn snapshot_computes_owa_dependency_from_input_accumulators() {
         DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 1_000.0);
 
     assert!(
-        (snapshot.commercial_owa_dependency - 0.46875).abs() < 1e-4,
+        (snapshot.business_owa_dependency - 0.46875).abs() < 1e-4,
         "owa_dependency must equal owa/max(actual,expected): got={:.6}",
-        snapshot.commercial_owa_dependency
+        snapshot.business_owa_dependency
     );
 }
 
@@ -2715,7 +2718,6 @@ fn residential_upgrade_requires_current_household_affordability_for_target_level
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let low_affordability = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2728,7 +2730,6 @@ fn residential_upgrade_requires_current_household_affordability_for_target_level
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let high_affordability = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2767,7 +2768,6 @@ fn commercial_upgrade_requires_business_viability_not_only_pressure() {
 
     let weak_viability = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2780,7 +2780,6 @@ fn commercial_upgrade_requires_business_viability_not_only_pressure() {
     allocator.buildings[0].operating_budget = 6_000.0;
     let strong_viability = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2819,7 +2818,6 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
     let demand = DemandSystem::new();
     let below_raw_threshold = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2832,7 +2830,6 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
     demand.upgrade_hysteresis_active.commercial = true;
     let inside_hysteresis_margin = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2843,7 +2840,6 @@ fn building_action_hysteresis_keeps_existing_action_inside_margin() {
 
     let outside_hysteresis_margin = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2904,7 +2900,6 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2925,7 +2920,6 @@ fn deserted_buildings_are_despawn_first_and_never_downgrade() {
     allocator.buildings.push(staffed_deserted);
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -2962,7 +2956,6 @@ fn existing_building_candidates_follow_attachment_order_before_parcel_id() {
     let residential_occupants = ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
     let candidates = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -3017,9 +3010,13 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
         allocator.buildings[0].set_inventory_units(input_port.resource_runtime_id, 320.0);
     }
 
+    allocator.buildings[0].set_inventory_units(
+        catalog.resource_runtime_id_for_id("machinery").unwrap(),
+        80.0,
+    );
+
     let starter_headroom = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -3033,7 +3030,6 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     }
     let same_profile = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -3047,7 +3043,6 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
     }
     let jammed_output = demand.collect_existing_building_candidates(
         &allocator,
-        &households,
         catalog.as_ref(),
         economy_tuning.as_ref(),
         &residential_occupants,
@@ -3055,4 +3050,308 @@ fn industrial_upgrade_uses_shipped_profile_viability_gates() {
         0.95,
     );
     assert!(jammed_output.upgrades.is_empty());
+}
+
+#[test]
+fn machinery_demand_comes_from_operating_customers_and_reserves_new_factories() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
+    let farm_profile = catalog.profile_for_id("grain_farm_basic").unwrap();
+    let factory_profile = catalog.profile_for_id("machinery_factory_basic").unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let farm_asset = register_explicit_profile_asset(&mut allocator, "farm", "grain_farm_basic");
+    let factory_asset = register_family_asset_with_economy_profile(
+        &mut allocator,
+        "machinery",
+        ZoneType::Industrial,
+        None,
+        1,
+        Some("machinery_factory_basic"),
+    );
+    let food_asset = register_test_asset(&mut allocator, "food", ZoneType::Industrial);
+    let candidates = [DemandSpawnCandidate {
+        action: DemandSpawnAction {
+            parcel_id: 1,
+            asset_id: factory_asset.clone(),
+        },
+        density: "low".to_owned(),
+    }];
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().unwrap();
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(
+        industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        0.0
+    );
+
+    let mut farm = building(ZoneType::None, 0.0, 0, 4, farm_asset);
+    farm.economy_profile_runtime_id = farm_profile.runtime_id;
+    farm.work_area_scale = 40.0;
+    farm.commercial_activity_floor_scale = 1.0;
+    farm.daily_owa_input_value = 2_800.0;
+    allocator.buildings.push(farm);
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.output_absorption.unmet_units(machinery), 40.0);
+    allocator.buildings[0].commercial_activity_floor_scale = 0.0;
+    let idle_snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(
+        idle_snapshot.output_absorption.unmet_units(machinery),
+        0.0,
+        "retained workers in a farm with no active jobs do not demand Machinery"
+    );
+    allocator.buildings[0].commercial_activity_floor_scale = 1.0;
+    assert_eq!(
+        industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        1.0
+    );
+    assert!(!nonresidential_passes_absorption_gate(
+        &allocator,
+        &catalog,
+        &snapshot.output_absorption,
+        &food_asset
+    ));
+    let mut reserved = snapshot.output_absorption.clone();
+    reserved.reserve_candidate(factory_profile);
+    assert!(!nonresidential_passes_absorption_gate(
+        &allocator,
+        &catalog,
+        &reserved,
+        &factory_asset
+    ));
+
+    let mut factory = building(ZoneType::Industrial, 0.0, 0, 0, factory_asset);
+    factory.economy_profile_runtime_id = factory_profile.runtime_id;
+    factory.construction_remaining_hours = 12;
+    allocator.buildings.push(factory);
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.output_absorption.unmet_units(machinery), 0.0);
+    assert_eq!(
+        industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        0.0
+    );
+    allocator.buildings[1].construction_remaining_hours = 0;
+    allocator.buildings[1].worker_count = 4;
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(
+        snapshot.output_absorption.unmet_units(machinery),
+        0.0,
+        "42 gross output also covers the factory's own two units"
+    );
+    assert_eq!(
+        industrial_spawn_need_buildings(&allocator, &catalog, &snapshot, &candidates),
+        0.0
+    );
+}
+
+#[test]
+fn machinery_demand_counts_utilities_but_not_unstaffed_or_full_producers() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_utility_asset(&mut allocator, "power", "power_plant_basic");
+    let profile = catalog.profile_for_id("power_plant_basic").unwrap();
+    let mut power = building(ZoneType::None, 0.0, 0, 20, asset);
+    power.economy_profile_runtime_id = profile.runtime_id;
+    allocator.buildings.push(power);
+    let households = HouseholdSystem::new();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().unwrap();
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.output_absorption.unmet_units(machinery), 4.0);
+    allocator.buildings[0].worker_count = 0;
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.output_absorption.unmet_units(machinery), 0.0);
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    allocator.buildings[0].economy_profile_runtime_id = profile.runtime_id;
+    allocator.buildings[0].worker_count = 10;
+    for output in &profile.outputs {
+        allocator.buildings[0].set_inventory_units(
+            output.resource_runtime_id,
+            profile.output_buffer_capacity_units_for(output),
+        );
+    }
+    let snapshot =
+        DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config, 100_000.0);
+    assert_eq!(snapshot.output_absorption.unmet_units(machinery), 0.0);
+}
+
+#[test]
+#[ignore = "manual matched release timing of business demand snapshots"]
+fn benchmark_business_demand_snapshot() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let profile = catalog.profile_for_id("food_processor_basic").unwrap();
+    let graph = graph_with_connected_border();
+    let config = load_builtin_demand_config().unwrap();
+    let households = HouseholdSystem::new();
+    for count in [1_024, 8_192, 65_536] {
+        let mut allocator = BuildingAllocator::new();
+        let mut factory = building(ZoneType::Industrial, 0.0, 0, 10, "test:factory".to_owned());
+        factory.operating_budget = 10_000.0;
+        for port in &profile.inputs {
+            factory.set_inventory_units(
+                port.resource_runtime_id,
+                (port.units_per_day * 4.0).max(80.0),
+            );
+        }
+        allocator.buildings = vec![factory; count];
+        let snapshot = || {
+            DailyDemandSnapshot::from_runtime(
+                black_box(&allocator),
+                &households,
+                &graph,
+                &config,
+                100_000.0,
+            )
+        };
+        for _ in 0..10 {
+            black_box(snapshot());
+        }
+        let mut samples = [0.0; 11];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..100 {
+                black_box(snapshot());
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 100.0;
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "business_demand_snapshot buildings={count} median_ms={:.3}",
+            samples[5]
+        );
+    }
+}
+
+#[test]
+fn demand_snapshot_is_bitwise_identical_across_worker_counts() {
+    let mut allocator = BuildingAllocator::new();
+    let home = register_test_asset(&mut allocator, "ordered_home", ZoneType::Residential);
+    let store = register_test_asset(&mut allocator, "ordered_store", ZoneType::Commercial);
+    allocator
+        .buildings
+        .push(building(ZoneType::Residential, 0.0, 0, 0, home));
+    for idx in 0..4_099 {
+        let mut grocery = building(ZoneType::Commercial, 0.0, 0, 0, store.clone());
+        grocery.operating_budget = 10_000.0;
+        grocery.revenue = (idx % 37) as f32 * 0.17;
+        allocator.buildings.push(grocery);
+    }
+    let mut households = HouseholdSystem::new();
+    households.households = (0..8_193)
+        .map(|idx| {
+            let mut household = housed_household(0, 2, 73.0 + (idx % 41) as f32 * 0.13, 0.0);
+            household.stock = (idx % 97) as f32 * 0.017;
+            household.stock_days = household.stock / 2.0;
+            household
+        })
+        .collect();
+    let config = load_builtin_demand_config().unwrap();
+    let graph = graph_with_connected_border();
+    let results: Vec<_> = [1, 2, 7]
+        .into_iter()
+        .map(|workers| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let snapshot = DailyDemandSnapshot::from_runtime(
+                        &allocator,
+                        &households,
+                        &graph,
+                        &config,
+                        100_000.0,
+                    );
+                    let scalar_bits = [
+                        snapshot.household_affordability,
+                        snapshot.household_stock_stability,
+                        snapshot.commercial_capacity_deficit,
+                        snapshot.marginal_commercial_job_equivalent_slots,
+                        snapshot.move_in_job_equivalent_slots,
+                        snapshot.average_move_in_job_wage_per_day,
+                        snapshot.business_input_need_value,
+                    ]
+                    .map(f32::to_bits);
+                    let resource_bits: Vec<_> = snapshot
+                        .committed_unmet_commercial_consumer_demand_by_resource
+                        .into_iter()
+                        .map(|(resource, units)| (resource, units.to_bits()))
+                        .collect();
+                    (scalar_bits, resource_bits)
+                })
+        })
+        .collect();
+    assert!(
+        results.iter().all(|result| *result == results[0]),
+        "worker-dependent snapshots: {results:?}"
+    );
+}
+
+#[test]
+#[ignore = "manual matched release timing of commercial spawn need"]
+fn benchmark_commercial_spawn_need() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut allocator = BuildingAllocator::new();
+    let asset = register_test_asset(&mut allocator, "need_timing", ZoneType::Commercial);
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let resource = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .unwrap();
+    for count in [16, 256, 4_096] {
+        let candidates: Vec<_> = (0..count)
+            .map(|idx| DemandSpawnCandidate {
+                action: DemandSpawnAction {
+                    parcel_id: idx as u64,
+                    asset_id: asset.clone(),
+                },
+                density: "low".to_owned(),
+            })
+            .collect();
+        for unmet in [false, true] {
+            let mut snapshot = vacant_admission_snapshot();
+            if unmet {
+                snapshot.committed_unmet_commercial_consumer_demand_by_resource =
+                    vec![(resource, 401.0)];
+            }
+            let query = || {
+                commercial_spawn_need_buildings(
+                    black_box(&allocator),
+                    &catalog,
+                    black_box(&snapshot),
+                    black_box(&candidates),
+                )
+            };
+            let expected = if unmet { 3.0 } else { 0.0 };
+            assert_eq!(query(), expected);
+            for _ in 0..3 {
+                black_box(query());
+            }
+            let mut samples = [0.0; 21];
+            for sample in &mut samples {
+                let start = Instant::now();
+                for _ in 0..32 {
+                    black_box(query());
+                }
+                *sample = start.elapsed().as_secs_f64() * 1_000.0 / 32.0;
+            }
+            samples.sort_by(f64::total_cmp);
+            assert_eq!(query(), expected);
+            eprintln!(
+                "commercial_spawn_need candidates={count} unmet={unmet} median_ms={:.9} result={expected}",
+                samples[10]
+            );
+        }
+    }
 }

@@ -15,12 +15,13 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
 use crate::simulation::economy::households::{
-    building_operation_factors, scaled_output_buffer_capacity_units_for_building,
+    OPERATIONAL_HOURS_PER_DAY, building_operation_factors, consume_hourly_production_inputs,
+    scaled_output_buffer_capacity_units_for_building,
 };
 use crate::simulation::extraction::{validate_player_polygon, validate_polygon_near_building};
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::simulation::work_area::{
-    explicit_work_area_scale, top_up_explicit_work_area_startup_budget,
+    explicit_work_area_scale, remove_work_area_owner, top_up_explicit_work_area_startup_budget,
 };
 use crate::simulation::zoning::ZoningSystem;
 use godot::prelude::Vector2;
@@ -28,7 +29,6 @@ use godot::prelude::Vector2;
 /// Maximum accepted gap from the farm footprint to its field polygon.
 pub(crate) const FIELD_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
 
-const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 const MIN_FIELD_POLYGON_AREA_M2: f32 = 100.0;
 
 /// One placed agricultural field and its owning farm building.
@@ -54,6 +54,7 @@ pub(crate) struct FieldSiteSummary {
 /// Runtime agricultural field state for explicit field-producing buildings.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AgricultureSystem {
+    // Unique, ascending owner indices support lookup and shared swap-remove repair.
     sites: Vec<FieldSite>,
     visual_revision: u64,
 }
@@ -107,29 +108,13 @@ impl AgricultureSystem {
         removed_building_idx: usize,
         last_building_idx_before_remove: usize,
     ) {
-        let mut changed = false;
-        if let Ok(idx) = self
-            .sites
-            .binary_search_by_key(&removed_building_idx, |site| site.building_idx)
-        {
-            self.sites.remove(idx);
-            changed = true;
-        }
-        if removed_building_idx != last_building_idx_before_remove
-            && self
-                .sites
-                .last()
-                .is_some_and(|site| site.building_idx == last_building_idx_before_remove)
-            && let Some(mut site) = self.sites.pop()
-        {
-            site.building_idx = removed_building_idx;
-            let idx = self
-                .sites
-                .partition_point(|site| site.building_idx < removed_building_idx);
-            self.sites.insert(idx, site);
-            changed = true;
-        }
-        if changed {
+        if remove_work_area_owner(
+            &mut self.sites,
+            removed_building_idx,
+            last_building_idx_before_remove,
+            |site| site.building_idx,
+            |site, owner| site.building_idx = owner,
+        ) {
             self.bump_visual_revision();
         }
     }
@@ -335,6 +320,11 @@ impl AgricultureSystem {
             if produced <= 0.0 {
                 continue;
             }
+            consume_hourly_production_inputs(
+                building,
+                profile,
+                area_factor * factors.throughput_factor * (produced / hourly_units),
+            );
             building.add_inventory_units(output_port.resource_runtime_id, produced);
         }
     }

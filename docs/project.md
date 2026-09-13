@@ -12,6 +12,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Shipped Foundations
 
+- **Machinery upkeep (`ECON-09`)**: farms use 1 and coal mines 4 Machinery per hectare/day; food processors and utilities use building-level inputs. Paid OWA imports, small-consumer stock batches, startup funding and inspector stock/rates are integrated. Business/utility customers drive matching industrial demand. The audit unified restock/supplier logic, preserved small-shop shipment buffers, corrected net production headroom and city payroll/refund reporting, removed duplicate ledger/resource helpers and production constants, and rejected duplicate recipe ports. Depleted mines now stop creating jobs and Machinery demand; distress sales protect upkeep stock, and inventory fill counts shared input/output stock once. `machinery_factory_basic` is ready for the incoming four-worker industrial asset (Steel + Metals → 40 net Machinery/day); the production model itself is still user-created content. See [`economy.md`](economy.md#machinery-upkeep-econ-09) and [`asset_editor.md`](asset_editor.md).
+
 - **Terrain reload and yard seams**: CDT cleanup now preserves distinct near-endpoint
   intersections instead of merging them by a dimensionless tolerance. This fixes the reproduced
   missing terrain patch without disabling mesh validation; terrain debugging also reports rejected
@@ -26,10 +28,93 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code. Cars and pedestrians share road/pad/graded-terrain height ownership in both access directions; source terrain no longer overrides cut or filled yards. Off-lane cars now use mesh-sized rigid footprint support, including after interpolation, so grade breaks cannot bury the sampled bottom contacts despite a correctly grounded centre. The shared Rust solver preserves horizontal heading and remains level on wholly flat pads; lane/access handoffs do not blend across height owners.
 - **Benchmark coverage**: Criterion covers live agent access and isolated road kernels; the chunk suite measures generation and fixed-payload Godot upload. Release gameplay measurements separate paired flat layouts, remote-grid scaling, pointer interaction, and pinned saved-city edits; authored Kuopio replays and Samply runs provide diagnostics. Comparisons require matched inputs, complete generation-matched output, and independent process pairs. See [`roads.md`](roads.md).
 - **Economy foundation**: household records, building-centric daily economy, physical truck freight jobs, `OWA` fallback, exact entrance-side freight routing/ETA, household transfer disbursement (unemployment, pension, and child support), two-day building bankruptcy, short private-building construction timers, baseline fiscal revenue (income tax, household VAT, business profit tax, and daily property tax), live `CityFiscalPolicy` controls/save state, first city-owned service-building placement/funding, explicit field-backed grain farms, aggregate `service_store` commercial services, and the starter `grain -> packaged_food -> household_supplies` chain are all live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs after existing unemployed adults are counted first, continuous forecast-only marginal commercial worker-equivalents from one candidate household after that same local labour pool is counted, and authored regional migration pressure; vacant homes only cap actual move-in execution. Job-driven admission prefers an adult-capable claimable household over a workerless front candidate. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households only for the remaining workforce shortfall, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents after existing unemployed adults are counted, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand is driven by commercial input coverage rather than household `goods_shortage`. See [`demand.md`](demand.md).
+- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure, except for the explicit gameplay cheat mode documented in [`demand.md`](demand.md). RCI telemetry, household admission, and private building actions refresh hourly, while household removal remains daily. Private spawning now uses deterministic missing-building need; legal parcels cap placement rather than scaling the spawn rate. Household admission is driven by incoming household pull from bootstrap entry, budget-backed open jobs after existing unemployed adults are counted first, continuous forecast-only marginal commercial worker-equivalents from one candidate household after that same local labour pool is counted, and authored regional migration pressure; vacant homes only cap actual move-in execution. Job-driven admission prefers an adult-capable claimable household over a workerless front candidate. Regional migration requires an external road connection and is damped by household affordability, stock stability, failure state, and a soft household target. Residential construction reads that same incoming pressure plus move-in viability and failure-memory damping before creating more home capacity. Non-residential spawning is not hard-blocked by pre-existing full staffing; placed workplaces create budget-backed open jobs that pull households only for the remaining workforce shortfall, while output absorption prevents ordinary oversupply. Move-in acceptance now previews the exact candidate child/adult/elder composition and estimates candidate search runway from starter savings, budget-backed current jobs plus integer or fractional forecast-only marginal commercial worker-equivalents after existing unemployed adults are counted, unemployment/pension/child-support transfer reliability, and daily essential cost. Household removal now combines a crisis-ratio outflow rule with persistent exit for households that remain unhoused and destitute long enough. Daily city-flow diagnostics now summarize net household flow, active and theoretical job openings, resident employment, household failure state, vacant homes, and treasury in one economy log line. The static R/C/I pioneer demand floor has been removed entirely — real household transfers provide early-city solvency instead. Commercial demand now anticipates missing shop capacity before household stock collapses using short-run household buying power, and industrial demand uses business and utility input coverage, including Machinery upkeep. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live. The asset editor now supports multi-part building assets, driveway/parking/loading-bay site anchors, WYSIWYG flat lot preview, and authored polygon yard surfaces for textured asphalt and concrete. Runtime building placement registers required flat support footprints at construction start, clips visual terrain through the shared terrain/CDT path, and keeps zoning terrain-neutral. Vehicle parking / freight stop behavior remain later runtime hooks.
 
 ## Current Priorities
+
+- **Codebase audit (`AUDIT-01`, paused by user)**: review the economy, buildings/save lifecycle, Rust/Godot boundary, and network/terrain for obsolete code, duplicated authority, correctness and scaling problems. Coverage and fresh validation are tracked in [`code_audit.md`](code_audit.md).
+  The current passes correct household/freight accounting and persistence, indexed agent removal,
+  deterministic demand totals, duplicated shopping helpers, commute-clock conversions and
+  save-file preservation on failed writes, shared world-size/malformed-state validation and
+  redundant graph rebuilds, allocating/overflowing asset-registry queries, and shared world-reset
+  cleanup and startup defaults, stale building meshes and empty pack-selection handling,
+  cached building-render requests and indexed building picks. Live service funding now rejects
+  non-finite input, and obsolete random-building/test-fixture code is removed.
+  Agent scheduling now uses the live world's saved day length through a shared clock reference.
+  Daily agent updates run in parallel; pollution and noise share their diffusion code while
+  preserving their separate coefficients. Redundant environmental fixture and API state is removed.
+  Environmental overlays refresh daily, sample world-space cell centres, and rasterize rows in
+  parallel. Single-row/column grids interpolate and clamp correctly; shader intensity and
+  world-edge sampling now match those pixels, with unused shader controls removed.
+  Live speed controls share Rust-owned steps, reject unsupported values, and preserve the HUD
+  when a request is rejected. Saved clocks enforce the same 32× limit and authored 60-second floor.
+  Mine area edits now preserve depletion, invalid reserves are rejected on save/load, and shared
+  polygon queries replace three copies. Sparse-grid loading avoids default-only payload allocations
+  and rebuilds chunks in parallel. Terrain/water diagnostics share their buffer reader, and refined
+  terrain exports one height buffer; water exposes one source layer. Farms and mines share ordered
+  owner remapping, with logarithmic mine lookups. Claim preparation uses measured parallel batches,
+  and final-agent removal clears retained traffic. Lane tests now compare actual occupancy.
+  Speed updates no longer keep a second agent-sized buffer; unused whole-agent clone/clear APIs
+  are removed. Movement dispatch and tests share column construction; route repairs and watchdog
+  recovery reuse the same state mutators. Access steps avoid a redundant segment lookup.
+  Movement fixtures share setup and require completed junction crossings. Connector exits and
+  lane changes now share reservations; fixed lateral moves choose deterministic owners before
+  parallel movement. Resident, arrival and freight spawning share initialization, with obsolete
+  spawn arguments and copied road-edit fixtures removed. Road-edit lane reattachment now uses
+  deterministic nearest-distance ordering. Retired in-place edge compaction and its disconnected
+  remappers/tests are removed; live save snapshots retain their existing mapping path.
+  Demand uses resource-specific shortages throughout, with the obsolete aggregate fallback and
+  retired labour rejection telemetry removed. Zoning profiles share their immutable cache and
+  reject malformed colours and overflowing runtime IDs. Building removal and undo now update
+  parcel occupancy through the existing ID index, without scanning unrelated parcels.
+  Selected building actions reuse that ownership index and validate stale keys without copying
+  every building into a temporary lookup table; repeated lifecycle defaults and fixtures are removed.
+  Parcel geometry repair updates only affected chunk memberships and preserves pick order;
+  temporary chunk lists and copied rectangle/query helpers are removed.
+  Building-site radius maintenance keeps the exact maximum locally unless that maximum decreases;
+  full reductions use Rayon, and discarded derivation/duplicate removal code are removed.
+  Immediate road edits preserve unrelated buildings' rezoning grace; daily maintenance supplies
+  elapsed days explicitly. Duplicate expiry coverage and obsolete demand/immigration fixtures are removed.
+  Zoning reserves full explicit-building lots across chunk boundaries, using the existing lot lookup
+  even when imported structures have compact support footprints.
+  Family and variant selection share one deterministic parcel hash; fixed vectors replace the copied
+  test algorithm, and repeated startup fixtures and unused helper arguments are removed.
+  Site feasibility records local road dependencies on the fixed query grid, independent of render
+  chunk size/origin; local road updates invalidate cached verdicts while remote updates retain reuse.
+  Exact routing breaks equal-cost ties deterministically, uses junction-local meeting lookups and
+  shares search-state updates and reconstruction buffers; unused A* and heuristic state are removed.
+  CCH construction scratch stays local to the build, and its unused elimination tree is removed;
+  measured retained storage falls 6.5–11.3% with approximately unchanged build/drop cost.
+  Road/site materials no longer load unused displacement textures or discarded road-concrete
+  normal input; all 36 render references match, with 48 MiB less texture storage across six materials.
+  Vehicle turn whitelists no longer reject or detour walking routes; sidewalk connector checks
+  remain authoritative. Finished routing hierarchies return spare construction capacity, with the
+  measured cost of additional pedestrian alternatives recorded alongside the memory savings.
+  Lane edits preserve untouched far-end connections and assign deterministic IDs. Full/local lane
+  builders share construction, and local updates no longer scan the surrounding city's lane maps;
+  repeated fixtures and two weaker tests are removed without losing their stronger coverage.
+  CCH and flow fields now permit walking both ways along one-way roads and zero-lane footpaths,
+  with shared direction masks and disjoint walking alternatives where needed. Five unused routing
+  APIs and repeated fixtures are removed; measured compact flow caches remain in use.
+  Node edits preserve independent profile heights, update self-loops once, and repair spatial
+  entries, canonical aliases and routing costs. Local merges use adjacency instead of scanning
+  the city; the retired edge-merging API and redundant split/length code are removed.
+  Editor and border node selection share the existing spatial index and live-node checks, with
+  deterministic ties and distinct horizontal/3D distance rules. Unused snapping/projection APIs
+  and duplicate query helpers are removed; local selection no longer scans every city node.
+  Road hovering excludes deleted roads and searches existing spatial bounds; thirteen obsolete
+  zoning/geometry query methods and their unused caller chains are removed.
+  Node queries account for hash-table capacity retained after index rebuilding, keeping small
+  local queries independent of historical node storage.
+  Selection owns the lane editor; its inactive duplicate and unused gesture fields are removed.
+  Switching tools, clearing connections and consumed releases cancel pending gestures, while
+  outgoing self-loop handles remain connectable. Control picks share one terrain hit per update.
+  UI settings reject non-finite scale, discard partial parse results on recovery, and refresh
+  fonts/windows from one settings snapshot while preserving later setting changes.
+  The latest complete release run passes 1,765 tests;
+  matched subsystem timings are recorded in the owning subsystem docs linked from the audit ledger. Remaining passes are
+  paused at a validated checkpoint; resume instructions and persistent evidence are in `audit-state/` at the project root.
 
 - Residential buildability now uses the same flat-site solver as explicit buildings. Demand selects
   among geometrically feasible assets; zoning previews reject unsupported lots visibly without
@@ -624,7 +709,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
   reserved buyer payments, restores dispatched source inventory when possible, and clears stale
   request failures after route-topology changes. The Godot renderer maps the freight vehicle type
   to `assets/models/vehicles/freight/delivery.glb`. See [`economy.md`](economy.md).
-- Industrial exports now hold affordable local commercial input demand before selling to `OWA`,
+- Industrial exports now hold affordable local business and utility input demand before selling to `OWA`,
   repeated same-resource exports saturate to a lower outside bid, and commercial store jobs/input
   targets scale from the larger of recent household sales and local household demand/stock
   recovery instead of immediately using full authored capacity.
@@ -916,7 +1001,7 @@ reopening requires a current reproduction, not an assumption that the old geomet
 - Gameplay `Save` and `Load` now open file pickers rooted at `user://saves/` instead of using one fixed `savegame.sqlite` path. See [`ui.md`](ui.md).
 - Added a compact city-status HUD panel between the clock and R/C/I meter for treasury balance and live agent count, backed by continuously refreshed snapshot values. See [`ui.md`](ui.md).
 - **Pioneer demand floor removed**: the static 0.70 floor on `ResidentialGrowth`, `CommercialGrowth`, and admission pressure has been removed from `demand.rs`. Real household transfers now provide early-city bootstrap solvency through normal household budgets and spending.
-- **Demand formula changes**: `ResidentialGrowth` no longer gates on `job_availability` (people can settle before jobs exist), and household pull now includes explicit regional migration pressure in addition to open jobs. `IndustrialGrowth` now uses the local industrial input-capacity deficit for active commercial inputs instead of `goods_shortage` or OWA import telemetry. `NonResidentialSpawnLimit` changed from `resident_presence` to `1.0` to break the commercial/industrial bootstrap deadlock.
+- **Demand formula changes**: `ResidentialGrowth` no longer gates on `job_availability` (people can settle before jobs exist), and household pull now includes explicit regional migration pressure in addition to open jobs. `IndustrialGrowth` now uses the local industrial input-capacity deficit for active business and utility inputs, with resource-specific output absorption. `NonResidentialSpawnLimit` changed from `resident_presence` to `1.0` to break the commercial/industrial bootstrap deadlock.
 - **Household transfer and starter tuning live**: `pay_household_transfers` implemented in `households.rs`; unemployment, pension, child support, household starting budget/stock, household utility cost, and OWA utility costs are authored in `economy/profiles.toml`, initialized into live fiscal policy, and validated by the runtime loader.
 - **Building bankruptcy live**: two-day `budget_distress` check implemented in `households.rs`, `budget_distress: bool` persisted in SQLite schema.
 - **Household economy cleanup**: deserted buildings are excluded from household supplier flows, forced OWA liquidation sells only unreserved inventory, utility providers must be staffed before providing local service revenue, and unemployment timers advance even when the treasury is empty.

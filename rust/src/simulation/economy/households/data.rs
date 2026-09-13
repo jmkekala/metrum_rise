@@ -15,7 +15,7 @@ use crate::simulation::economy::definitions::{
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 
-/// Daily diagnostic-only household money and shopping counters.
+/// Daily household accounting, including collected utility payments awaiting settlement.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DailyHouseholdLedger {
     /// Household budget at the start of the current debug ledger window.
@@ -42,8 +42,6 @@ pub(crate) struct DailyHouseholdLedger {
     pub(crate) water_consumption_cost: f32,
     /// Residential sewage-service charge paid from the household budget.
     pub(crate) sewage_consumption_cost: f32,
-    /// Value of consumed household stock plus direct utility charges for legacy debug summaries.
-    pub(crate) utility_stock_consumption_cost: f32,
     /// Unemployed adult count observed by the daily benefit pass.
     pub(crate) unemployed_adults: u16,
     /// Shopper tasks completed during the ledger window.
@@ -82,6 +80,15 @@ pub(crate) struct DailyPowerSettlementSummary {
     pub(crate) city_service_utility_local_cost: f32,
     /// City-service payments routed to OWA fallback across all settled services.
     pub(crate) city_service_utility_owa_cost: f32,
+}
+
+/// Actual city-funded payroll settled during the latest fiscal day.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CityServiceWages {
+    /// Wages paid by the treasury across all city services.
+    pub(crate) total: f32,
+    /// Portion paid to power-plant employees, used by the electricity ledger.
+    pub(crate) power: f32,
 }
 
 /// Explicit household runtime record anchored to a residential building.
@@ -158,7 +165,7 @@ pub struct HouseholdSystem {
     pub(super) workplace_route_cache_cch_generation: u32,
     pub(super) daily_ledgers: Vec<DailyHouseholdLedger>,
     pub(super) last_power_settlement: DailyPowerSettlementSummary,
-    pub(super) last_city_service_wage_cost: f32,
+    pub(super) last_city_service_wages: CityServiceWages,
 }
 
 /// Household records changed when one building is removed.
@@ -188,7 +195,7 @@ impl HouseholdSystem {
             workplace_route_cache_cch_generation: u32::MAX,
             daily_ledgers: Vec::new(),
             last_power_settlement: DailyPowerSettlementSummary::default(),
-            last_city_service_wage_cost: 0.0,
+            last_city_service_wages: CityServiceWages::default(),
         }
     }
 
@@ -236,6 +243,10 @@ impl HouseholdSystem {
                 *target = ledger;
             }
         }
+        self.invalidate_workplace_route_cache();
+    }
+
+    fn invalidate_workplace_route_cache(&mut self) {
         self.workplace_route_cache.clear();
         self.workplace_route_cache_building_revision = u64::MAX;
         self.workplace_route_cache_entrance_revision = u64::MAX;
@@ -255,13 +266,10 @@ impl HouseholdSystem {
         self.removal_selected_flags_scratch.clear();
         self.removal_agent_indices_scratch.clear();
         self.shopper_candidate_scratch.clear();
-        self.workplace_route_cache.clear();
-        self.workplace_route_cache_building_revision = u64::MAX;
-        self.workplace_route_cache_entrance_revision = u64::MAX;
-        self.workplace_route_cache_cch_generation = u32::MAX;
+        self.invalidate_workplace_route_cache();
         self.daily_ledgers.clear();
         self.last_power_settlement = DailyPowerSettlementSummary::default();
-        self.last_city_service_wage_cost = 0.0;
+        self.last_city_service_wages = CityServiceWages::default();
     }
 
     /// Remaps building references after a building swap-remove.
@@ -341,9 +349,19 @@ impl HouseholdSystem {
         }
     }
 
-    /// Returns daily household ledgers for debug output.
+    /// Returns daily payments and diagnostic counters for settlement, saves and reporting.
     pub(crate) fn daily_ledgers(&self) -> &[DailyHouseholdLedger] {
         &self.daily_ledgers
+    }
+
+    /// Restores validated utility payments for an already loaded household without charging it.
+    /// Payment order is power, water, sewage; all other ledger fields start a new report window.
+    pub(crate) fn restore_utility_payments(&mut self, household_id: usize, paid: [f32; 3]) {
+        self.ensure_daily_ledger_len();
+        let ledger = &mut self.daily_ledgers[household_id];
+        ledger.power_consumption_cost = paid[0];
+        ledger.water_consumption_cost = paid[1];
+        ledger.sewage_consumption_cost = paid[2];
     }
 
     /// Returns the most recently completed daily electricity settlement summary.
@@ -351,12 +369,12 @@ impl HouseholdSystem {
         self.last_power_settlement
     }
 
-    /// Returns the most recent city-funded service wage expense.
-    pub(crate) fn last_city_service_wage_cost(&self) -> f32 {
-        self.last_city_service_wage_cost
+    /// Returns actual city payroll and its electricity subtotal for the latest fiscal day.
+    pub(crate) fn last_city_service_wages(&self) -> CityServiceWages {
+        self.last_city_service_wages
     }
 
-    /// Clears per-household daily ledgers after they have been emitted.
+    /// Starts the next household accounting window after daily settlement and reporting.
     pub(crate) fn reset_daily_ledgers(&mut self) {
         self.ensure_daily_ledger_len();
         for (ledger, household) in self.daily_ledgers.iter_mut().zip(&self.households) {
@@ -441,31 +459,6 @@ impl HouseholdSystem {
             slot.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
         }
         &self.shopper_candidate_scratch
-    }
-}
-
-impl Clone for HouseholdSystem {
-    fn clone(&self) -> Self {
-        Self {
-            households: self.households.clone(),
-            member_count_scratch: Vec::new(),
-            child_count_scratch: Vec::new(),
-            adult_count_scratch: Vec::new(),
-            elder_count_scratch: Vec::new(),
-            worker_count_scratch: Vec::new(),
-            household_member_heads_scratch: Vec::new(),
-            household_member_next_scratch: Vec::new(),
-            removal_selected_flags_scratch: Vec::new(),
-            removal_agent_indices_scratch: Vec::new(),
-            shopper_candidate_scratch: Vec::new(),
-            workplace_route_cache: HashMap::new(),
-            workplace_route_cache_building_revision: u64::MAX,
-            workplace_route_cache_entrance_revision: u64::MAX,
-            workplace_route_cache_cch_generation: u32::MAX,
-            daily_ledgers: Vec::new(),
-            last_power_settlement: self.last_power_settlement,
-            last_city_service_wage_cost: self.last_city_service_wage_cost,
-        }
     }
 }
 

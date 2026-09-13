@@ -311,6 +311,7 @@ func _test_paired_terrain_preview(tool: Node3D, preview: Dictionary, points: Pac
 	var pending := {}
 	var requests := PackedInt32Array()
 	for data in preview["terrain_preview"]["patches"]:
+		_expect(data.has("height_bytes") and not data.has("height_data"), "preview terrain must export only the uploaded height buffer")
 		var key := Vector2i(data["patch_x"], data["patch_z"])
 		pending[key] = true
 		requests.append_array(PackedInt32Array([key.x, key.y, 2000]))

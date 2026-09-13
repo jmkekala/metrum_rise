@@ -10,33 +10,7 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
 };
 
-pub(super) fn add_resource_amount(
-    amounts: &mut Vec<(ResourceRuntimeId, f32)>,
-    resource_runtime_id: ResourceRuntimeId,
-    amount: f32,
-) {
-    if amount <= 0.0 {
-        return;
-    }
-    if let Some((_, existing)) = amounts
-        .iter_mut()
-        .find(|(resource, _)| *resource == resource_runtime_id)
-    {
-        *existing += amount;
-    } else {
-        amounts.push((resource_runtime_id, amount));
-    }
-}
-
-pub(super) fn resource_amount(
-    amounts: &[(ResourceRuntimeId, f32)],
-    resource_runtime_id: ResourceRuntimeId,
-) -> f32 {
-    amounts
-        .iter()
-        .find_map(|(resource, amount)| (*resource == resource_runtime_id).then_some(*amount))
-        .unwrap_or(0.0)
-}
+use crate::simulation::economy::resource_totals::{add_resource_amount, resource_amount};
 
 fn add_resource_count(
     counts: &mut Vec<(ResourceRuntimeId, u32)>,
@@ -118,35 +92,26 @@ pub(super) fn commercial_spawn_need_buildings(
     snapshot: &DailyDemandSnapshot,
     candidates: &[DemandSpawnCandidate],
 ) -> f32 {
-    if snapshot.committed_unmet_commercial_consumer_demand <= EPSILON {
-        return 0.0;
-    }
-    if !snapshot
+    if snapshot
         .committed_unmet_commercial_consumer_demand_by_resource
         .is_empty()
     {
-        let average_output_units_by_resource =
-            average_candidate_output_units_by_resource_for_household_demand(
-                allocator, catalog, candidates,
-            );
-        return snapshot
-            .committed_unmet_commercial_consumer_demand_by_resource
-            .iter()
-            .filter_map(|&(resource_runtime_id, unmet_units)| {
-                let output_units =
-                    resource_amount(&average_output_units_by_resource, resource_runtime_id);
-                (unmet_units > EPSILON && output_units > EPSILON)
-                    .then(|| (unmet_units / output_units).ceil())
-            })
-            .fold(0.0, f32::max);
+        return 0.0;
     }
-    let average_output_units =
-        average_candidate_output_units_for_household_demand(allocator, catalog, candidates);
-    if average_output_units <= EPSILON {
-        0.0
-    } else {
-        (snapshot.committed_unmet_commercial_consumer_demand / average_output_units).ceil()
-    }
+    let average_output_units_by_resource =
+        average_candidate_output_units_by_resource_for_household_demand(
+            allocator, catalog, candidates,
+        );
+    snapshot
+        .committed_unmet_commercial_consumer_demand_by_resource
+        .iter()
+        .filter_map(|&(resource_runtime_id, unmet_units)| {
+            let output_units =
+                resource_amount(&average_output_units_by_resource, resource_runtime_id);
+            (unmet_units > EPSILON && output_units > EPSILON)
+                .then(|| (unmet_units / output_units).ceil())
+        })
+        .fold(0.0, f32::max)
 }
 
 pub(super) fn industrial_spawn_need_buildings(
@@ -155,16 +120,29 @@ pub(super) fn industrial_spawn_need_buildings(
     snapshot: &DailyDemandSnapshot,
     candidates: &[DemandSpawnCandidate],
 ) -> f32 {
-    if snapshot.committed_industrial_missing_input_value <= EPSILON {
-        return 0.0;
-    }
-    let average_output_value =
-        average_candidate_output_value_for_commercial_inputs(allocator, catalog, candidates);
-    if average_output_value <= EPSILON {
-        0.0
-    } else {
-        (snapshot.committed_industrial_missing_input_value / average_output_value).ceil()
-    }
+    candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
+        })
+        .map(|profile| {
+            profile
+                .outputs
+                .iter()
+                .map(|port| {
+                    let net_output = profile.net_output_units_per_day(port);
+                    let gap = snapshot
+                        .output_absorption
+                        .unmet_units(port.resource_runtime_id);
+                    if net_output > EPSILON {
+                        (gap / net_output).ceil()
+                    } else {
+                        0.0
+                    }
+                })
+                .fold(0.0, f32::max)
+        })
+        .fold(0.0, f32::max)
 }
 
 fn average_residential_candidate_household_slots(
@@ -234,75 +212,6 @@ fn average_candidate_output_units_by_resource_for_household_demand(
     total_output_units_by_resource
 }
 
-fn average_candidate_output_units_for_household_demand(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    let mut total_output_units = 0.0_f32;
-    let mut candidate_count = 0_u32;
-    for candidate in candidates {
-        let Some(profile) =
-            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
-        else {
-            continue;
-        };
-        let output_units = profile
-            .outputs
-            .iter()
-            .filter(|port| resource_has_household_demand(catalog, port.resource_runtime_id))
-            .map(|port| port.units_per_day.max(0.0))
-            .sum::<f32>();
-        if output_units <= EPSILON {
-            continue;
-        }
-        total_output_units += output_units;
-        candidate_count = candidate_count.saturating_add(1);
-    }
-    if candidate_count == 0 {
-        0.0
-    } else {
-        total_output_units / candidate_count as f32
-    }
-}
-
-fn average_candidate_output_value_for_commercial_inputs(
-    allocator: &BuildingAllocator,
-    catalog: &RuntimeEconomyCatalog,
-    candidates: &[DemandSpawnCandidate],
-) -> f32 {
-    let mut total_output_value = 0.0_f32;
-    let mut candidate_count = 0_u32;
-    for candidate in candidates {
-        let Some(profile) =
-            candidate_economy_profile(allocator, catalog, &candidate.action.asset_id)
-        else {
-            continue;
-        };
-        let output_value = profile
-            .outputs
-            .iter()
-            .filter(|port| resource_is_commercial_input(catalog, port.resource_runtime_id))
-            .map(|port| {
-                let unit_price = catalog
-                    .unit_price_for_resource(port.resource_runtime_id)
-                    .unwrap_or(0.0);
-                port.units_per_day.max(0.0) * unit_price.max(0.0)
-            })
-            .sum::<f32>();
-        if output_value <= EPSILON {
-            continue;
-        }
-        total_output_value += output_value;
-        candidate_count = candidate_count.saturating_add(1);
-    }
-    if candidate_count == 0 {
-        0.0
-    } else {
-        total_output_value / candidate_count as f32
-    }
-}
-
 pub(super) fn candidate_economy_profile<'a>(
     allocator: &BuildingAllocator,
     catalog: &'a RuntimeEconomyCatalog,
@@ -319,16 +228,6 @@ pub(super) fn resource_has_household_demand(
     catalog.all_profiles().iter().any(|profile| {
         profile.kind == EconomyProfileRuntimeKind::DemandSink
             && profile.consumption_rate_per_resident > EPSILON
-            && profile.input_port(resource_runtime_id).is_some()
-    })
-}
-
-pub(super) fn resource_is_commercial_input(
-    catalog: &RuntimeEconomyCatalog,
-    resource_runtime_id: ResourceRuntimeId,
-) -> bool {
-    catalog.all_profiles().iter().any(|profile| {
-        profile.kind == EconomyProfileRuntimeKind::Store
             && profile.input_port(resource_runtime_id).is_some()
     })
 }
@@ -352,7 +251,7 @@ impl OutputAbsorptionContext {
         placed_output_capacity_by_resource: &[(ResourceRuntimeId, f32)],
         resident_demand_rates_by_resource: &[(ResourceRuntimeId, f32)],
         housed_resident_count: u32,
-        commercial_input_need_by_resource: &[(ResourceRuntimeId, f32)],
+        business_input_need_by_resource: &[(ResourceRuntimeId, f32)],
     ) -> Self {
         let mut context = Self::empty(resource_count);
 
@@ -367,11 +266,26 @@ impl OutputAbsorptionContext {
             );
         }
 
-        for &(resource_runtime_id, need_units) in commercial_input_need_by_resource {
+        for &(resource_runtime_id, need_units) in business_input_need_by_resource {
             context.add_demand_units(resource_runtime_id, need_units.max(0.0));
         }
 
         context
+    }
+
+    /// Daily demand remaining after existing and selected output capacity is reserved.
+    pub(super) fn unmet_units(&self, resource: ResourceRuntimeId) -> f32 {
+        (self.consumer_demand(resource) - self.placed_capacity(resource)).max(0.0)
+    }
+
+    /// Reserve selected output immediately; a new factory cannot justify its own customers.
+    pub(super) fn reserve_candidate(&mut self, profile: &EconomyProfileRuntime) {
+        for port in &profile.outputs {
+            self.add_placed_capacity(
+                port.resource_runtime_id,
+                profile.net_output_units_per_day(port),
+            );
+        }
     }
 
     fn add_demand_units(&mut self, resource_runtime_id: ResourceRuntimeId, units: f32) {
@@ -419,23 +333,8 @@ pub(super) fn nonresidential_passes_absorption_gate(
     let Some(candidate_profile) = catalog.profile_for_id(profile_id) else {
         return false;
     };
-    if candidate_profile.outputs.is_empty() {
-        return false;
-    }
-
-    let mut placed_capacity = 0.0_f32;
-    let mut consumer_demand = 0.0_f32;
-    for output in &candidate_profile.outputs {
-        if output.units_per_day <= EPSILON {
-            continue;
-        }
-        let resource_demand = absorption.consumer_demand(output.resource_runtime_id);
-        if resource_demand <= EPSILON {
-            continue;
-        }
-        consumer_demand += resource_demand;
-        placed_capacity += absorption.placed_capacity(output.resource_runtime_id);
-    }
-
-    consumer_demand > EPSILON && placed_capacity < consumer_demand
+    candidate_profile.outputs.iter().any(|port| {
+        candidate_profile.net_output_units_per_day(port) > EPSILON
+            && absorption.unmet_units(port.resource_runtime_id) > EPSILON
+    })
 }

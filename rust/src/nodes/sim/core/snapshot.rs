@@ -120,6 +120,8 @@ pub(crate) enum SimulationRuntimeSnapshot {
 
 /// Bounded inverse journal for one building deletion.
 pub(crate) struct BuildingRemovalUndo {
+    /// City-funded freight refunds posted by this deletion, reversed when it is undone.
+    pub(crate) treasury_refund: f64,
     pub(crate) building_idx: usize,
     pub(crate) original_building_count: usize,
     pub(crate) expected_post_building_ref_revision: u64,

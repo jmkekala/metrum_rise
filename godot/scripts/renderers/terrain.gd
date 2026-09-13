@@ -7,7 +7,7 @@
 ##   request_terrain_patch_payloads(), poll_ready_terrain_patch_payloads(),
 ##   get_terrain_border_loop(), get_heightmap_size(), get_terrain_world_size(),
 ##   is_terrain_dirty(), acknowledge_terrain_patches(), sculpt_terrain(), intersect_terrain(),
-##   get_pollution_image_data(), get_noise_image_data(),
+##   get_pollution_image_data(), get_noise_image_data(), get_current_day(),
 ##   get_desirability_image_data(), get_coal_pit_overlay_data(),
 ##   get_coal_pit_overlay_size(), get_coal_pit_overlay_world_bounds(),
 ##   get_coal_pit_overlay_revision(), get_agriculture_field_overlay_data(),
@@ -23,6 +23,7 @@ signal patches_will_reset
 const TERRAIN_SHADER := preload("res://assets/materials/terrain.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const WorldMaterials := preload("res://scripts/renderers/world_materials.gd")
 const TERRAIN_GRASS_ALBEDO_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_albedo.jpg"
 const TERRAIN_GRASS_HEIGHT_PATH := "res://assets/textures/general/grass/Grass002_2K_Runtime/grass002_2k_height.jpg"
@@ -47,7 +48,6 @@ const TERRAIN_GRASS_MID_STRENGTH := 0.80
 const TERRAIN_GRASS_MICRO_STRENGTH := 0.50
 const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
 const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
-const TERRAIN_BAKED_NORMAL_BLEND := 0.0
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
 const TERRAIN_GRASS_DETAIL_SCALE := 0.34
 const TERRAIN_GRASS_DETAIL_STRENGTH := 0.58
@@ -186,6 +186,7 @@ var water_texture_sync_queue: Array[Vector2i] = []
 var water_texture_sync_lookup: Dictionary = {}
 var engineered_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
+var cached_overlay_day: int = -1
 var cached_coal_pit_overlay_revision: int = -1
 var cached_field_overlay_revision: int = -1
 var coal_pit_overlay_dirty: bool = true
@@ -287,9 +288,8 @@ func rebuild_from_simulation_state() -> void:
 	_prewarm_terrain_patch_resource_pool()
 	_refresh_engineered_patch_lookup()
 	_sync_patch_residency(true)
-	var overlay_updated := _update_overlay_texture()
-	if overlay_updated:
-		_apply_overlay_mode()
+	mark_overlay_dirty()
+	_refresh_overlay_texture(int(simulation_node.get_current_day()))
 	var coal_pit_updated := _update_coal_pit_texture()
 	if coal_pit_updated:
 		_apply_coal_pit_texture()
@@ -299,7 +299,6 @@ func rebuild_from_simulation_state() -> void:
 	_rebuild_border_skirt()
 	_queue_all_water_patch_texture_syncs()
 	_process_water_patch_texture_sync_queue(PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME)
-	cached_overlay_mode = overlay_mode if overlay_updated else -1
 	cached_coal_pit_overlay_revision = (
 		int(simulation_node.get_coal_pit_overlay_revision()) if coal_pit_updated else -1
 	)
@@ -372,10 +371,7 @@ func _process(delta: float) -> void:
 	)
 	water_sync_elapsed_ms = float(Time.get_ticks_usec() - water_sync_start_us) / 1000.0
 
-	if overlay_texture == null or overlay_mode != cached_overlay_mode:
-		if _update_overlay_texture():
-			_apply_overlay_mode()
-			cached_overlay_mode = overlay_mode
+	_refresh_overlay_texture(int(simulation_node.get_current_day()))
 	var coal_pit_revision := int(simulation_node.get_coal_pit_overlay_revision())
 	if (
 		coal_pit_texture == null
@@ -1012,7 +1008,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_grass_micro_strength", TERRAIN_GRASS_MICRO_STRENGTH)
 	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
-	material.set_shader_parameter("terrain_baked_normal_blend", TERRAIN_BAKED_NORMAL_BLEND)
 	material.set_shader_parameter(
 		"terrain_baked_readability_strength",
 		TERRAIN_BAKED_READABILITY_STRENGTH
@@ -1913,7 +1908,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var water_world_origin_z := float(patch.get("water_world_origin_z", 0.0))
 		var water_world_size_x := float(patch.get("water_world_size_x", 0.0))
 		var water_world_size_z := float(patch.get("water_world_size_z", 0.0))
-		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
+		var clip_stats: Dictionary = RenderDebug.clip_stats(_road_clip_loop_groups_from_patch_data(patch_data))
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
 		var retaining_wall_baked_vertex_count: int = _road_geometry_retaining_wall_baked_vertex_count(patch_data)
 		var baked_mesh_stats: String = _road_geometry_baked_mesh_stats_label(patch_data)
@@ -1971,7 +1966,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				key.y,
 				str(resident_patch_lookup.has(key)),
 				str(engineered_patch_lookup.has(key)),
-				_road_geometry_mesh_label(mesh),
+				RenderDebug.mesh_label(mesh),
 				int(patch_data["sample_width"]),
 				int(patch_data["sample_height"]),
 				int(patch_data["texture_width"]),
@@ -1993,7 +1988,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				int(clip_stats.get("loop_count", 0)),
 				int(clip_stats.get("point_count", 0)),
 				float(clip_stats.get("area", 0.0)),
-				_road_geometry_bounds_label(clip_stats),
+				RenderDebug.bounds_label(clip_stats),
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				baked_vertex_count,
@@ -2324,20 +2319,10 @@ func _terrain_patch_payload_is_stageable(
 	var expected_height_bytes := texture_width * texture_height * 4
 	if expected_height_bytes <= 0:
 		return false
-	if patch_data.has("height_bytes"):
-		if (
-			typeof(patch_data["height_bytes"]) != TYPE_PACKED_BYTE_ARRAY
-			or (patch_data["height_bytes"] as PackedByteArray).size() != expected_height_bytes
-		):
-			return false
-	elif patch_data.has("height_data"):
-		if (
-			typeof(patch_data["height_data"]) != TYPE_PACKED_FLOAT32_ARRAY
-			or (patch_data["height_data"] as PackedFloat32Array).size()
-				!= texture_width * texture_height
-		):
-			return false
-	else:
+	if (
+		typeof(patch_data.get("height_bytes", null)) != TYPE_PACKED_BYTE_ARRAY
+		or (patch_data["height_bytes"] as PackedByteArray).size() != expected_height_bytes
+	):
 		return false
 
 	for field in [
@@ -2506,18 +2491,12 @@ func _patch_requires_engineered_refinement(key: Vector2i, patch_data: Dictionary
 	)
 
 func _terrain_patch_height_bytes(patch_data: Dictionary) -> PackedByteArray:
-	var height_bytes: PackedByteArray = (
-		patch_data.get("height_bytes", PackedByteArray())
-		as PackedByteArray
-	)
-	if not height_bytes.is_empty():
-		return height_bytes
-	return (patch_data["height_data"] as PackedFloat32Array).to_byte_array()
+	return patch_data["height_bytes"] as PackedByteArray
 
 func _terrain_patch_height_stats(patch_data: Dictionary) -> Dictionary:
-	if patch_data.has("height_data"):
-		return _road_geometry_float_stats(patch_data["height_data"] as PackedFloat32Array)
-	return _road_geometry_float_stats(PackedFloat32Array())
+	# Failed refinement payloads intentionally omit a drawable height buffer.
+	var bytes: PackedByteArray = patch_data.get("height_bytes", PackedByteArray())
+	return RenderDebug.float_stats(bytes.to_float32_array())
 
 func _patch_has_road_clip_loops(patch_data: Dictionary) -> bool:
 	if (
@@ -3255,6 +3234,23 @@ func _update_field_overlay_texture() -> bool:
 	field_overlay_dirty = false
 	return true
 
+func _refresh_overlay_texture(current_day: int) -> void:
+	# The three environmental fields change at daily settlement; resource deposits use explicit invalidation.
+	var environment_day_changed := (
+		overlay_mode >= 1 and overlay_mode <= 3 and current_day != cached_overlay_day
+	)
+	if overlay_texture != null and overlay_mode == cached_overlay_mode and not environment_day_changed:
+		return
+	var previous_texture := overlay_texture
+	if not _update_overlay_texture():
+		cached_overlay_mode = -1
+		return
+	# Updating an existing ImageTexture already updates every material that references it.
+	if overlay_mode != cached_overlay_mode or overlay_texture != previous_texture:
+		_apply_overlay_mode()
+	cached_overlay_mode = overlay_mode
+	cached_overlay_day = current_day
+
 func mark_overlay_dirty() -> void:
 	cached_overlay_mode = -1
 
@@ -3700,104 +3696,6 @@ func _add_skirt_vertex(surface_tool: SurfaceTool, position: Vector3, normal: Vec
 	surface_tool.set_normal(normal)
 	surface_tool.set_uv(uv)
 	surface_tool.add_vertex(position)
-
-func _road_geometry_float_stats(values: PackedFloat32Array) -> Dictionary:
-	if values.is_empty():
-		return {
-			"min": 0.0,
-			"max": 0.0,
-			"nonzero": 0,
-			"sum": 0.0,
-		}
-	var min_value: float = values[0]
-	var max_value: float = values[0]
-	var nonzero_count: int = 0
-	var sum_value: float = 0.0
-	for value_variant in values:
-		var value: float = float(value_variant)
-		min_value = minf(min_value, value)
-		max_value = maxf(max_value, value)
-		sum_value += value
-		if absf(value) > 0.001:
-			nonzero_count += 1
-	return {
-		"min": min_value,
-		"max": max_value,
-		"nonzero": nonzero_count,
-		"sum": sum_value,
-	}
-
-func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
-	var stats: Dictionary = {
-		"group_count": 0,
-		"loop_count": 0,
-		"point_count": 0,
-		"area": 0.0,
-		"has_bounds": false,
-		"min_x": 0.0,
-		"max_x": 0.0,
-		"min_z": 0.0,
-		"max_z": 0.0,
-		"max_bbox_x": 0.0,
-		"max_bbox_z": 0.0,
-	}
-	if not _patch_has_road_clip_loops(patch_data):
-		return stats
-	var loop_groups: Array = _road_clip_loop_groups_from_patch_data(patch_data)
-	var has_bounds: bool = false
-	var min_x: float = 0.0
-	var max_x: float = 0.0
-	var min_z: float = 0.0
-	var max_z: float = 0.0
-	var point_count: int = 0
-	var total_area: float = 0.0
-	var max_bbox_x: float = 0.0
-	var max_bbox_z: float = 0.0
-	var loop_count: int = 0
-	for group_variant in loop_groups:
-		var clip_group: Dictionary = group_variant
-		var bounds: Rect2 = clip_group["bounds"]
-		max_bbox_x = maxf(max_bbox_x, bounds.size.x)
-		max_bbox_z = maxf(max_bbox_z, bounds.size.y)
-		if not has_bounds:
-			min_x = bounds.position.x
-			max_x = bounds.position.x + bounds.size.x
-			min_z = bounds.position.y
-			max_z = bounds.position.y + bounds.size.y
-			has_bounds = true
-		else:
-			min_x = minf(min_x, bounds.position.x)
-			max_x = maxf(max_x, bounds.position.x + bounds.size.x)
-			min_z = minf(min_z, bounds.position.y)
-			max_z = maxf(max_z, bounds.position.y + bounds.size.y)
-		var group_area: float = 0.0
-		var outer_loops: Array = clip_group["outer_loops"]
-		for outer_variant in outer_loops:
-			var outer: Dictionary = outer_variant
-			var outer_points: PackedVector2Array = outer["points"]
-			point_count += outer_points.size()
-			loop_count += 1
-			group_area += absf(_road_geometry_polygon_area(outer_points))
-		var hole_loops: Array = clip_group["hole_loops"]
-		for hole_variant in hole_loops:
-			var hole: Dictionary = hole_variant
-			var hole_points: PackedVector2Array = hole["points"]
-			point_count += hole_points.size()
-			loop_count += 1
-			group_area -= absf(_road_geometry_polygon_area(hole_points))
-		total_area += maxf(0.0, group_area)
-	stats["group_count"] = loop_groups.size()
-	stats["loop_count"] = loop_count
-	stats["point_count"] = point_count
-	stats["area"] = total_area
-	stats["has_bounds"] = has_bounds
-	stats["min_x"] = min_x
-	stats["max_x"] = max_x
-	stats["min_z"] = min_z
-	stats["max_z"] = max_z
-	stats["max_bbox_x"] = max_bbox_x
-	stats["max_bbox_z"] = max_bbox_z
-	return stats
 
 func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String:
 	if not patch_data.has("terrain_cdt_road_seam_sample_centroids"):
@@ -4508,43 +4406,6 @@ func _road_geometry_baked_mesh_stats_label(patch_data: Dictionary) -> String:
 		uv_label,
 		normal_label,
 	]
-
-func _road_geometry_polygon_area(points: PackedVector2Array) -> float:
-	if points.size() < 3:
-		return 0.0
-	var area: float = 0.0
-	for index in range(points.size()):
-		var a: Vector2 = points[index]
-		var b: Vector2 = points[(index + 1) % points.size()]
-		area += a.x * b.y - b.x * a.y
-	return area * 0.5
-
-func _road_geometry_bounds_label(stats: Dictionary) -> String:
-	if not bool(stats.get("has_bounds", false)):
-		return "none"
-	return "[(%.3f,%.3f)..(%.3f,%.3f)]" % [
-		float(stats.get("min_x", 0.0)),
-		float(stats.get("min_z", 0.0)),
-		float(stats.get("max_x", 0.0)),
-		float(stats.get("max_z", 0.0)),
-	]
-
-func _road_geometry_mesh_label(mesh: Mesh) -> String:
-	if mesh == null:
-		return "null"
-	if mesh is ArrayMesh:
-		var array_mesh: ArrayMesh = mesh as ArrayMesh
-		var vertex_count: int = 0
-		for surface_index in range(array_mesh.get_surface_count()):
-			var arrays: Array = array_mesh.surface_get_arrays(surface_index)
-			if arrays.size() > Mesh.ARRAY_VERTEX:
-				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
-				vertex_count += vertices.size()
-		return "ArrayMesh surfaces=%d vertices=%d" % [
-			array_mesh.get_surface_count(),
-			vertex_count,
-		]
-	return mesh.get_class()
 
 func _terrain_debug_is_enabled() -> bool:
 	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN").strip_edges()

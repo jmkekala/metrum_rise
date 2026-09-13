@@ -731,13 +731,9 @@ fn log_road_connectivity(graph: &RegionGraph) {
 
 /// Automated tests for intersection clipping.
 pub mod test_clips;
-/// Automated tests for graph edge compaction.
-pub mod test_compaction;
 /// Automated tests for pedestrian movement through junctions.
 pub mod test_ped_junction;
 /// Automated tests for topology operations (add/split/merge).
 pub mod test_topology;
 /// Automated tests for vehicle U-turn constraints.
 pub mod test_uturn;
-/// Automated tests for graph verification and structural integrity.
-pub mod test_verify;

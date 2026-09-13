@@ -9,8 +9,6 @@ mod determinism;
 mod lifecycle;
 mod remap;
 #[cfg(test)]
-mod test_departure_side;
-#[cfg(test)]
 mod tests;
 pub mod tick;
 

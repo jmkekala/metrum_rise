@@ -8,6 +8,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 |------|------|
 | [`project.md`](project.md) | Current dashboard: shipped status, current focus, recent changes, and links to the owning docs. |
 | [`roadmap.md`](roadmap.md) | Active tracked work, stable IDs, validated bugs, and later priorities. |
+| [`code_audit.md`](code_audit.md) | Cross-system source audit coverage, confirmed findings, and verification evidence (`AUDIT-01`). |
 | [`reference.md`](reference.md) | Stable lookup tables, data formats, memory budgets, and vocabulary. |
 | [`entrance_and_exit.md`](entrance_and_exit.md) | Building entrance/exit and trip-planning spec. |
 | [`traffic.md`](traffic.md) | Lane-bound vehicle movement, car following, junction traversal, lane changes, overtaking, and traffic debug. |

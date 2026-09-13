@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::simulation::economy::definitions::ResourceRuntimeId;
 
-use super::data::{ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
+use super::data::{Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
 
 /// Flattened reservation state derived from active shipments.
 pub(super) struct ReservationViews {
@@ -154,8 +154,21 @@ impl ReservationViews {
 impl ShipmentSystem {
     /// Returns the current local-source outbound reservation slots indexed by building/resource.
     pub(crate) fn reserved_outbound_view(&self, resource_count: usize) -> Vec<f32> {
-        self.build_reservation_views(resource_count)
-            .reserved_outbound
+        let slot_count = self
+            .shipments
+            .iter()
+            .filter_map(|shipment| source_reservation_slot(shipment, resource_count))
+            .max()
+            .and_then(|slot| slot.checked_add(1))
+            .unwrap_or(0);
+        let mut reserved = vec![0.0; slot_count];
+        // Preserve shipment order for deterministic floating-point reservation totals.
+        for shipment in &self.shipments {
+            if let Some(slot) = source_reservation_slot(shipment, resource_count) {
+                reserved[slot] += shipment.amount;
+            }
+        }
+        reserved
     }
 
     /// Computes the flattened reservation slot for a building/resource pair.
@@ -201,17 +214,10 @@ impl ShipmentSystem {
                     has_open_inbound[slot] = true;
                 }
             }
-            if shipment_reserves_source_inventory(shipment) {
-                if let ShipmentEndpoint::Building(source_building_id) = shipment.source
-                    && let Some(slot) = reservation_slot(
-                        source_building_id,
-                        shipment.resource_runtime_id,
-                        resource_count,
-                    )
-                    && slot < reserved_outbound.len()
-                {
-                    reserved_outbound[slot] += shipment.amount;
-                }
+            if let Some(slot) = source_reservation_slot(shipment, resource_count)
+                && slot < reserved_outbound.len()
+            {
+                reserved_outbound[slot] += shipment.amount;
             }
             if let Some(border_node) = shipment
                 .source
@@ -241,9 +247,20 @@ impl ShipmentSystem {
     }
 }
 
-fn shipment_reserves_source_inventory(shipment: &super::data::Shipment) -> bool {
-    matches!(shipment.status, ShipmentStatus::Queued)
-        || (shipment.status == ShipmentStatus::InTransit && shipment.carrier_agent_id == usize::MAX)
+fn source_reservation_slot(shipment: &Shipment, resource_count: usize) -> Option<usize> {
+    let reserves_source = shipment.status == ShipmentStatus::Queued
+        || (shipment.status == ShipmentStatus::InTransit
+            && shipment.carrier_agent_id == usize::MAX);
+    if !reserves_source {
+        return None;
+    }
+    let ShipmentEndpoint::Building(source) = shipment.source else {
+        return None;
+    };
+    let slot = reservation_slot(source, shipment.resource_runtime_id, resource_count)?;
+    // The backing slice must also have a representable one-past-end length.
+    slot.checked_add(1)?;
+    Some(slot)
 }
 
 pub(super) fn reservation_slot(
@@ -251,10 +268,103 @@ pub(super) fn reservation_slot(
     resource_runtime_id: ResourceRuntimeId,
     resource_count: usize,
 ) -> Option<usize> {
-    if resource_runtime_id == 0 || resource_count == 0 {
+    if resource_runtime_id == 0 || usize::from(resource_runtime_id) > resource_count {
         return None;
     }
     building_idx
         .checked_mul(resource_count)
         .and_then(|base| base.checked_add(resource_runtime_id as usize - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::economy::logistics::CarrierClass;
+
+    fn reservation_shipment(
+        source: usize,
+        destination: usize,
+        resource: u16,
+        amount: f32,
+    ) -> Shipment {
+        Shipment {
+            id: 1,
+            resource_runtime_id: resource,
+            amount,
+            source: ShipmentEndpoint::Building(source),
+            destination: ShipmentEndpoint::Building(destination),
+            carrier_class: CarrierClass::Truck,
+            status: ShipmentStatus::Queued,
+            carrier_agent_id: usize::MAX,
+            total_cost: 0.0,
+            eta_hours: 1,
+            queued_hours: 0,
+        }
+    }
+
+    #[test]
+    fn unknown_resource_cannot_alias_another_buildings_reservation() {
+        let mut shipments = ShipmentSystem::new();
+        shipments.shipments = vec![
+            reservation_shipment(1, 2, 1, 2.0),
+            reservation_shipment(0, 0, 3, 100.0),
+        ];
+        let all = shipments.build_reservation_views(2);
+        assert_eq!(all.reserved_outbound_amount(1, 1), 2.0);
+        assert_eq!(all.reserved_inbound_amount(1, 1), 0.0);
+        assert!(!all.has_open_inbound(1, 1));
+        let outbound = shipments.reserved_outbound_view(2);
+        assert_eq!(outbound[2], 2.0);
+    }
+
+    #[test]
+    fn outbound_projection_matches_full_reservations_across_cargo_states() {
+        let mut shipments = ShipmentSystem::new();
+        for (idx, (status, carrier)) in [
+            (ShipmentStatus::Queued, usize::MAX),
+            (ShipmentStatus::InTransit, usize::MAX),
+            (ShipmentStatus::InTransit, 3),
+            (ShipmentStatus::Returning, 4),
+            (ShipmentStatus::Fulfilled, usize::MAX),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut shipment = reservation_shipment(idx, 100, 2, 12.0);
+            shipment.status = status;
+            shipment.carrier_agent_id = carrier;
+            shipments.shipments.push(shipment);
+        }
+        let full = shipments.build_reservation_views(2);
+        let outbound = shipments.reserved_outbound_view(2);
+        for building in 0..=100 {
+            let slot = reservation_slot(building, 2, 2).unwrap();
+            let expected = if building < 2 { 12.0 } else { 0.0 };
+            assert_eq!(full.reserved_outbound_amount(building, 2), expected);
+            assert_eq!(outbound.get(slot).copied().unwrap_or(0.0), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "manual matched release timing of source-only freight reservations"]
+    fn benchmark_outbound_reservations() {
+        use std::{hint::black_box, time::Instant};
+        let mut shipments = ShipmentSystem::new();
+        shipments.shipments = (0..4_096)
+            .map(|idx| reservation_shipment(idx % 256, 65_536 + idx, 1 + (idx % 9) as u16, 12.0))
+            .collect();
+        let mut samples = [0.0; 11];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..100 {
+                black_box(shipments.reserved_outbound_view(black_box(9)));
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 100.0;
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!(
+            "outbound_reservations orders=4096 sources=256 high_destination=69631 median_ms={:.3}",
+            samples[5]
+        );
+    }
 }

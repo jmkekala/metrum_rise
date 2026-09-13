@@ -9,6 +9,7 @@ use super::super::schedule::{ScheduleCacheMut, maybe_schedule_work_trip};
 use super::super::slices::MovementSlices;
 use super::{BUILDING_REPLAN_DELAY_S, transit_mode_label};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::age_group_can_work;
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
@@ -25,8 +26,7 @@ use std::sync::atomic::AtomicU32;
 pub(super) unsafe fn handle_in_building(
     i: usize,
     sim_time: f32,
-    day_index: u32,
-    minute_of_day: u16,
+    time: &TimeSystem,
     allocator: &BuildingAllocator,
     transit_network: &TransitNetwork,
     graph: &RegionGraph,
@@ -96,8 +96,7 @@ pub(super) unsafe fn handle_in_building(
                 *s_schedule_seed.get(i),
                 &mut schedule_cache,
                 sim_time,
-                day_index,
-                minute_of_day,
+                time,
                 allocator,
                 transit_network,
                 graph,

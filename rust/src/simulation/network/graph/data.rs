@@ -102,52 +102,20 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Returns the interpolated world-space Y (height) at a given T-coordinate [0, 1].
-    pub fn get_y_at_t(&self, t: f32) -> f32 {
-        self.get_pos_and_tangent_at_t(t).0.y
-    }
-
-    /// Returns the (position, tangent) at a given T-coordinate [0, 1] along the physical geometry.
-    pub fn get_pos_and_tangent_at_t(&self, t: f32) -> (Vector3, Vector3) {
-        if self.physical_geometry.is_empty() {
-            return (Vector3::ZERO, Vector3::RIGHT);
+    /// Returns permitted traversal modes in one direction of a live edge.
+    /// Walking is bidirectional; every other mode requires a lane in that direction.
+    #[inline]
+    pub(crate) fn traversal_flags(&self, is_fwd: bool) -> u8 {
+        let lanes = if is_fwd {
+            self.fwd_lanes
+        } else {
+            self.bkw_lanes
+        };
+        if lanes > 0 {
+            self.allowed_types
+        } else {
+            self.allowed_types & TransitFlags::FOOT
         }
-        if self.physical_geometry.len() == 1 {
-            return (self.physical_geometry[0], Vector3::RIGHT);
-        }
-
-        let t_clamped = t.clamp(0.0, 1.0);
-        let target_dist = t_clamped * self.physical_length;
-        let mut curr_dist = 0.0;
-
-        for i in 0..self.physical_geometry.len() - 1 {
-            let p1 = self.physical_geometry[i];
-            let p2 = self.physical_geometry[i + 1];
-            let d = (Vector2::new(p2.x, p2.z) - Vector2::new(p1.x, p1.z)).length();
-            if curr_dist + d >= target_dist {
-                let local_t = if d > 1e-6 {
-                    (target_dist - curr_dist) / d
-                } else {
-                    0.0
-                };
-                let pos = p1 + (p2 - p1) * local_t;
-                let tangent = (p2 - p1).normalized();
-                return (pos, tangent);
-            }
-            curr_dist += d;
-        }
-        (
-            self.physical_geometry.last().unwrap().clone(),
-            (self.physical_geometry.last().unwrap().clone()
-                - self.physical_geometry[self.physical_geometry.len() - 2])
-                .normalized(),
-        )
-    }
-
-    /// Returns the normalized 2D tangent (X, Z) at a given T-coordinate.
-    pub fn get_tangent_at_t(&self, t: f32) -> Vector2 {
-        let (_, t3) = self.get_pos_and_tangent_at_t(t);
-        Vector2::new(t3.x, t3.z).normalized()
     }
 }
 
@@ -448,6 +416,11 @@ impl RegionGraph {
             .count()
     }
 
+    /// Returns whether this ID owns a live node rather than a retired alias.
+    pub(crate) fn is_live_canonical_node(&self, node_id: u32) -> bool {
+        self.get_valid_node(node_id) == node_id && self.node_has_live_incident_edge(node_id)
+    }
+
     /// Returns true when a node still participates in at least one non-deleted edge.
     pub fn node_has_live_incident_edge(&self, node_id: u32) -> bool {
         self.live_node_connection_count(node_id) > 0
@@ -524,12 +497,6 @@ impl RegionGraph {
         }
     }
 
-    /// Pushes a node directly into the graph. For test setup only — does not update spatial indices.
-    #[cfg(test)]
-    pub fn push_node_for_test(&mut self, node: Node) {
-        self.nodes.push(node);
-    }
-
     /// Replaces the node and edge lists wholesale. For test setup only — does not update spatial
     /// indices or adjacency; call [`rebuild_adjacency_list`](Self::rebuild_adjacency_list) after.
     #[cfg(test)]
@@ -537,40 +504,4 @@ impl RegionGraph {
         self.nodes = nodes;
         self.edges = edges;
     }
-}
-
-/// Validates that the intersection mesh is mathematically sound.
-/// Returns Ok(()) if the mesh is valid, or an error describing the failure.
-pub fn verify_intersection_geometry(_center: Vector3, triangles: &[Vector3]) -> Result<(), String> {
-    // 1. Check for Triangle Completeness
-    if triangles.len() % 3 != 0 {
-        return Err("Malformed mesh: Vertex count is not a multiple of 3.".into());
-    }
-
-    for i in (0..triangles.len()).step_by(3) {
-        let p0 = triangles[i]; // Center
-        let p1 = triangles[i + 1]; // Right Corner
-        let p2 = triangles[i + 2]; // Left Corner
-
-        // 2. Calculate the Normal using the Cross Product
-        let edge1 = p1 - p0;
-        let edge2 = p2 - p0;
-        let normal = edge1.cross(edge2);
-
-        // 3. Winding Order Check
-        // If Y is negative, the triangle is upside down in Godot's coordinate system (assuming clock-wise + Y-up front-facing).
-        if normal.y < -0.1 {
-            return Err(format!(
-                "Inverted Winding: Triangle {} is facing downward. Current rule requires upward winding.",
-                i / 3
-            ));
-        }
-
-        // 4. Degenerate Triangle Check
-        if normal.length() < 0.0001 {
-            continue;
-        }
-    }
-
-    Ok(())
 }

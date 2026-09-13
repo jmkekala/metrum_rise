@@ -1439,6 +1439,206 @@ concrete boundary edges, and allocates nothing: O(base edges + shortcuts + retai
 Queries stop each search frontier independently. All-pairs grid, weighted/mode/direction,
 re-customization and turn-aware Dijkstra regressions protect exact costs and turn legality.
 
+`AUDIT-01-P1` corrects nondeterministic query meetings: a five-node junction fixture with two
+equally cheap permitted turns returned either `[0, 4, 1, 3]` or `[0, 4, 2, 3]` for identical inputs.
+Meeting checks now reuse graph adjacency and look up only incident concrete boundary-edge states,
+plus the initial origin/destination state. This costs O(degree) expected map lookups per expanded
+state, replacing a scan of the entire opposite search map. The graph and CCH must share a topology
+revision. Equal discovered meeting costs use node, incoming-edge and outgoing-edge IDs; heap ties
+use cost, node and edge IDs with consistent total ordering/equality. Strict predecessor improvement
+and independent frontier stopping remain unchanged.
+
+Both search directions share one `HashMap::entry` update and retain the already-read expansion
+distance. Both path halves reuse one shortcut stack and output buffer; per-shortcut temporary
+vectors are removed, and the final node vector reserves its exact size. Query heaps/maps and the
+returned path still allocate; this change does not claim allocation-free routing. The obsolete
+public A* state, duplicate queue priority and unused maximum-speed field/scan are removed.
+
+All 1,757 release tests pass (53 ignored), including repeatable route identity, heap-order contracts,
+and the independent turn-aware Dijkstra comparison expanded to every incident origin edge and the
+origin sentinel. The regression fails against the preceding implementation.
+
+Five alternating unprofiled release pairs run
+`simulation::pathing::cch::ordering_tests::benchmark_cch_queries`. Each connected grid has 16 fixed
+queries, one validation/warm-up pass and 21 measured batches. Graph/hierarchy construction is outside
+timing. Every query is checked against Manhattan cost/distance; all builds/runs match shortcut count,
+aggregate route cost, distance and path-node count.
+
+| Grid side | Nodes | Before median µs/query | After median µs/query |
+| ---: | ---: | ---: | ---: |
+| 8 | 64 | 5.205 | 4.969 |
+| 16 | 256 | 22.162 | 20.658 |
+| 32 | 1,024 | 171.257 | 156.323 |
+
+These are medians of process medians, using Rust 1.98.1, release lib-test executables,
+`RAYON_NUM_THREADS=1`, `METRUM_DEBUG=0`, CPU affinity `0`, with no competing compilation/tests.
+Before/after executable SHA-256 values are
+`fb8709ef79dfa43214ef50124c0c471baf8a7c7681bd76b67c297b97a7a7e296` and
+`e4afc9be6f64b21e5800dda4b5060f6df8e18d0bf1cb7a87099f057c4d6f5b9d`.
+The measurements cover these CCH queries, not hierarchy rebuilds, whole movement ticks or city-wide
+road edits. Initial meeting/stack-only revisions regressed smaller queries; separate `perf record`
+runs located repeated hashing before the shared entry update. Those preliminary timings and profiles
+are retained for traceability and are not acceptance timings. Exact commands, four-file diff, source
+identities, final results and prior revisions are under `/tmp/metrum-full-audit/cch-query-*`.
+
+`AUDIT-01-P2` keeps order/rank arrays and shortcut endpoint indices local to construction. The
+unused elimination tree and its per-shortcut maintenance are removed. Finished routers retain
+only shortcuts, upward query indices, metric alternatives/order and the debug generation. Direct
+edge directions share one creation loop, preserving forward-then-backward ID order. The existing
+full-recount oracle also checks the returned order/rank inverse. Query and customization algorithms
+are unchanged; all 1,757 release tests pass (54 ignored).
+
+Five alternating release pairs run
+`simulation::pathing::cch::ordering_tests::benchmark_cch_build_storage` with eight Rayon workers
+on CPUs `0,2,4,6,8,10,12,14`. Each case builds the source grid outside timing, performs one warm-up,
+then measures 21 builds and build/drop cycles. The latter includes destruction because construction
+scratch now drops before the router is returned. Every process fingerprints all shortcut fields,
+upward indices, metric alternatives and customization order; those products match across builds.
+
+| Grid side | Retained bytes before / after | Build median ms before / after | Build/drop median ms before / after |
+| ---: | ---: | ---: | ---: |
+| 8 | 156,920 / 139,200 | 0.17645 / 0.17201 | 0.18727 / 0.18090 |
+| 16 | 904,376 / 807,872 | 1.24830 / 1.24711 | 1.31684 / 1.30704 |
+| 32 | 7,969,016 / 7,448,768 | 11.08564 / 11.11961 | 11.60445 / 11.65710 |
+
+Retained bytes count the router header and vector capacities, including nested vector payloads;
+they exclude allocator metadata and are not RSS or peak-memory measurements. The reduction is
+6.5–11.3%; construction/cycle costs remain approximately unchanged, with a 0.45% increase in the
+largest cycle median. This is a storage cleanup, not a demonstrated construction speedup.
+
+Five separate CPU-0/single-worker query pairs reuse `benchmark_cch_queries`. Before/after medians
+are 4.857/5.004, 20.747/20.808 and 156.667/157.759 µs for sides 8/16/32, respectively; cost, distance,
+path-node count and shortcut count match. Query differences range from 0.3–3%; no query speedup is
+claimed. All runs use Rust 1.98.1, release lib-test builds, `METRUM_DEBUG=0`, and no competing
+compilation/tests. Before/after executable SHA-256 values are
+`1b0e02280c2bd55bb87434a111e0721d5c99405f9aaa386b281646376653ed33` and
+`c81df2ef71f842235e3c8d2979ee404492645f7bd8def4544a2b02924b608a4f`.
+Exact commands, source identities, two-file diff, capacity accounting and both matched workloads
+are retained under `/tmp/metrum-full-audit/cch-storage-*`.
+
+`AUDIT-01-P3` separates vehicle whitelists from pedestrian routing. Previously a vehicle rule sent
+a walking trip with shortest cost 12 onto a route costing 60. Contraction now retains pedestrian-only
+alternatives across blocked vehicle turns; those alternatives do not need vehicle boundary keys.
+Queries for the pedestrian mode bypass vehicle turn checks, including the supplied origin edge.
+Car queries retain their turn restrictions. The flow-field fast path applies
+`path_has_valid_vehicle_turns` only to cars and continues to validate actual sidewalk connectors
+for walkers. The regression compares all pedestrian pairs against independent shortest costs,
+all incoming-edge car contexts against turn-aware Dijkstra, and both modes after customization.
+The existing connector regression now also checks successful pedestrian flow-field reuse across
+a vehicle-restricted junction before rejecting the same route when its sidewalk is disconnected.
+
+Completed hierarchies return spare construction capacity because customization never grows their
+topology arrays. This adds O(nodes + shortcuts + alternatives) build finalization, with possible
+allocator moves, and no work or allocation in queries/customization. Finalization stays on the
+constructing thread: an eight-worker shrinking implementation was measured and rejected because
+it increased construction costs substantially. Independent ordering setup still uses Rayon.
+
+Three alternating release pairs reuse the construction/storage and query benchmarks above, with
+`METRUM_CCH_BENCH_GRAPH=car`, `mixed` and `restricted`. `mixed` enables both road modes; `restricted`
+also limits the central junction to one explicit vehicle turn. Construction uses eight physical
+P-cores / Rayon workers; queries use CPU 0 and one worker. Graph setup, oracle checks and product
+fingerprints remain outside timing; each process takes 21 samples. All car cost/distance/path-size
+products match. Unrestricted hierarchy fingerprints also match; restricted topology intentionally
+gains the formerly missing pedestrian alternatives.
+
+| Graph | Side | Retained bytes before / after | Build median ms before / after | Car query median µs before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Mixed, open | 8 | 139,200 / 90,448 | 0.18845 / 0.17485 | 4.952 / 5.039 |
+| Mixed, open | 16 | 807,872 / 657,344 | 1.36365 / 1.28718 | 20.531 / 20.693 |
+| Mixed, open | 32 | 7,448,768 / 5,076,720 | 12.36192 / 11.28989 | 157.870 / 157.240 |
+| Mixed, restricted | 8 | 144,512 / 107,824 | 0.20476 / 0.21238 | 5.448 / 5.495 |
+| Mixed, restricted | 16 | 797,104 / 850,352 | 1.35109 / 1.69383 | 20.479 / 21.167 |
+| Mixed, restricted | 32 | 7,454,368 / 6,810,784 | 12.04200 / 13.83924 | 157.214 / 164.527 |
+
+The car-only control has the same retained byte counts as the open mixed graph, build medians
+0.18291/0.17950, 1.36780/1.29123 and 12.36306/11.27561 ms, and query differences of +0.5–1.3%.
+The accepted tradeoff is additional mode-correct routing topology at restricted junctions:
+the 16-side fixture retains 6.7% more memory and builds 25.4% slower; the 32-side fixture retains
+8.6% less memory and builds 14.9% slower, with car queries 4.7% slower. This is not a claim of a
+universal speedup or city-scale timing acceptance. The memory accounting excludes allocator
+metadata, RSS and peak build storage. Initial fixes without capacity finalization and the slower
+parallel finalizer are preserved separately, rather than reported as the accepted build.
+
+Artifacts are `/tmp/metrum-full-audit/cch-foot-*`, including all commands, three-file source
+snapshots/diff, intermediate identities, matched products and timings. The final executable hashes
+are `be6be668c03ade4dae20adb401ba06f30ce2e25b2475c35fb2f374cbb9137417` before and
+`c0095bb8ab4f07de42d4b45587c21c2d90225db7eb2da48f2fd96194f78d264d` after. Commands use Rust 1.98.1,
+`METRUM_DEBUG=0`, offline release lib-test builds and no concurrent builds/tests.
+
+##### Pedestrian direction audit measurements
+
+`AUDIT-01-P4` shares `Edge::traversal_flags` between CCH and flow fields. Every allowed
+walking edge is bidirectional, including sidewalks on one-way roads and dedicated footpaths
+with zero vehicle lanes. Other modes require a vehicle lane in the requested direction.
+Direct CCH arcs store that direction's mask, so adding a legal reverse walking arc cannot
+accidentally admit a car. Vehicle turn restrictions and actual pedestrian connector validation
+remain part of the preceding contracts.
+
+If the direct graph contains walking-only arcs, compound states use disjoint walking/vehicle
+masks. This combines walking alternatives that previously differed only in whether their
+constituent roads also admitted cars. Fully shared bidirectional networks retain their combined
+hierarchy. The direct-mask pass is O(E), with no new persistent index; contraction and metric
+customization retain their existing per-triangle/per-alternative complexity.
+
+The existing small-grid oracle now independently allows both walking directions and checks
+all pairs through three congestion phases. The flow regression covers forward-only and
+backward-only roads, zero-lane footpaths, both modes, both destinations and deleted edges.
+Both routers fail the corresponding baseline tests. Exact source-building/endpoint ties are
+also checked in both source insertion orders. Five unused APIs are removed: three edge-sampling
+methods, `next_hop` and the unconnected `look_ahead` IDM hook. The path test now owns the
+linear-chain assertions; copied setup and the machine-dependent 5 ms unit assertion are removed.
+
+An initial attempt to walk the existing adjacency directly preserved flow products but slowed
+the 99,856-node fixture from 9.856 to 15.748 ms. The compact reverse-edge cache is therefore
+retained: its endpoint/cost records avoid random reads of the much larger `Edge` records.
+This is temporary search data, with O(V + E) storage, and is not a second authoritative graph.
+Five final alternating CPU-0 / one-worker release pairs give:
+
+| Nodes | Flow build before / after (ms) |
+| --- | --- |
+| 1,024 | 0.067 / 0.068 |
+| 10,000 | 0.807 / 0.818 |
+| 99,856 | 9.667 / 9.717 |
+
+Each sample includes the complete field build and temporary-cache destruction, with graph setup,
+field-result destruction and functional checks outside timing. All next-node/nearest-building
+fingerprints match. Each process records 21 samples; graph setup is reported separately.
+
+Three separate alternating CCH pairs use eight physical P-cores for construction and CPU 0 for
+queries, with 21 samples and independent car-cost checks outside timing. The one-way fixture
+makes every fourth edge forward-only for vehicles; all edges permit walking.
+
+| Modes / grid | Retained bytes before / after | Build before / after (ms) | Car query before / after (µs) |
+| --- | --- | --- | --- |
+| car / 8×8 | 90,448 / 90,448 | 0.174 / 0.176 | 5.124 / 5.000 |
+| car / 16×16 | 657,344 / 657,344 | 1.274 / 1.302 | 20.928 / 20.895 |
+| car / 32×32 | 5,076,720 / 5,076,720 | 11.687 / 11.623 | 158.804 / 158.416 |
+| mixed / 8×8 | 90,448 / 90,448 | 0.176 / 0.172 | 5.075 / 5.076 |
+| mixed / 16×16 | 657,344 / 657,344 | 1.286 / 1.306 | 20.955 / 20.964 |
+| mixed / 32×32 | 5,076,720 / 5,076,720 | 11.235 / 11.758 | 159.242 / 158.571 |
+| one_way / 8×8 | 71,456 / 138,320 | 0.157 / 0.261 | 4.008 / 4.234 |
+| one_way / 16×16 | 545,072 / 1,102,640 | 1.143 / 2.286 | 19.881 / 22.869 |
+| one_way / 32×32 | 4,369,760 / 9,036,112 | 10.247 / 20.961 | 130.549 / 156.627 |
+
+Bidirectional hierarchy fingerprints and retained sizes match; car query cost/distance/path-length
+products match in every variant. Correct one-way walking requires a distinct set of alternatives:
+the largest fixture retains about twice the storage and adds 10.7 ms to construction and 26.1 µs
+to a car query. Partitioning removes roughly one third of the initial corrected hierarchy's
+13,511,504 retained bytes. These are cold routing-build/query measurements, not a whole-city
+frame-time or million-population performance acceptance. No RSS or peak-memory claim is made.
+
+Commands and raw records are in `/tmp/metrum-full-audit/flow-adjacency-*`; the rejected initial
+measurements are under `flow-adjacency-initial-matched/`, with separate source/executable identities.
+The final test executable hashes are
+`9ffdce6b1549ceba631d35ba5d763b025f75aee70b959ae04a9dd3ed9eafed9c` before and
+`b89ee741845d301fb02e831bc8c3226389c049d5e1c5b8ff2f9e263338d4f519` after. Runs use Rust 1.98.1,
+`METRUM_DEBUG=0`, offline release lib-test builds, `RAYON_NUM_THREADS=1` / `taskset -c 0` for flow
+and queries, and `RAYON_NUM_THREADS=8` / `taskset -c 0,2,4,6,8,10,12,14` for CCH construction.
+The exact ignored entries are `simulation::pathing::flow_field::tests::benchmark_flow_field_build`
+and `simulation::pathing::cch::ordering_tests::{benchmark_cch_build_storage,benchmark_cch_queries}`;
+CCH variants use `METRUM_CCH_BENCH_GRAPH=car|mixed|one_way`. No builds, tests or source mutations
+run concurrently with accepted measurements.
+
 Use this exact precedence:
 
 1. Choose `target_building`, travel mode, origin endpoint, and destination endpoint first.
@@ -1453,7 +1653,8 @@ Use this exact precedence:
    - `flow_field.nearest_building[planned_attach_node] == target_building`
    - `flow_field.build_path(planned_attach_node, ...)` succeeds
    - the resulting path ends at `planned_detach_node`
-   - `CchGraph::path_has_valid_turns(path, graph)` returns true
+   - car paths pass `CchGraph::path_has_valid_vehicle_turns(path, graph)`
+   - pedestrian paths have the actual lane connectors required for their selected approaches
 3. If every check above passes, accept the flow-field path as `current_path`.
 4. Otherwise, call CCH and use the CCH result as `current_path`.
 5. During `NETWORK` replans and `ACCESS_INGRESS` recovery, skip flow fields entirely and use CCH only.
@@ -1771,6 +1972,39 @@ Artifacts: `/tmp/metrum-support-{before,after}-snapshot-2.log`, `/tmp/metrum-sup
 `/tmp/metrum-support-render.log`, and `/tmp/metrum-support-{tests,check,rustdoc,godot}.log`.
 Deployed library SHA-256:
 `7e17c3d1fe490619bd2cf86a1c36cacf42b87b80391a0c493ba0344abee16d68`.
+
+## Access Movement Audit Measurements (2026-09-12)
+
+`AUDIT-01-A8/A9` consolidate the movement column constructor, route application and recovery
+resets, and remove a redundant segment-selection loop. Selection already skips reached vertices;
+the remaining movement code keeps the same direction, distance and completion arithmetic. The
+new constructor exposes the same fifty columns without allocation and is inlined at dispatch.
+Route application moves the existing path buffer. Local access still examines at most four
+points, so its per-agent complexity remains O(1); no population-sized state is added.
+
+The existing `agent_benchmark` access fixtures run one 0.016-second tick from a fresh legal
+opposite-side car access state. Setup, graph/lane construction and allocation are outside the
+measured closure. These fixtures concentrate all agents at the same building; they measure
+movement dispatch/access work, not normal city density or whole-game frame rate. The unchanged
+Criterion settings use one second of warmup, twenty samples and five seconds of measurement.
+Three alternating release process pairs run for each worker setting, with no concurrent builds
+or other benchmarks. The table reports the median of the three process medians.
+
+| Workers | Agents | Egress before → after, ms | Ingress before → after, ms |
+| --- | --- | --- | --- |
+| 8 | 1,000 | 0.087666 → 0.078476 | 0.047699 → 0.046742 |
+| 8 | 100,000 | 5.394964 → 4.505677 | 0.974405 → 0.892640 |
+| 1 | 1,000 | 0.080095 → 0.066453 | 0.072790 → 0.062632 |
+| 1 | 100,000 | 6.035963 → 4.730587 | 5.330591 → 4.437969 |
+
+Run `BINARY --bench 'AgentSystem::tick_access/access_(egress|ingress)_car/(1000|100000)$'
+--noplot` with `RAYON_NUM_THREADS=8` and `taskset -c 0,2,4,6,8,10,12,14`, or one worker on CPU 0.
+Set `CRITERION_HOME` to a separate output directory for each process. Source/build identities,
+commands, complete Criterion output and timings are retained under `/tmp/metrum-full-audit/` as
+`access-sharing-{before,after}-identity.json`, `access-sharing-matched-bench.json`,
+`access-sharing-matched-summary.json` and the referenced process directories/logs. Correctness
+is verified separately by the 1,753-test release suite, including repeated vertices, exact
+corners, zero/multi-segment steps, reverse traversal, watchdog and border-route recovery.
 
 ## Recommended Direction
 

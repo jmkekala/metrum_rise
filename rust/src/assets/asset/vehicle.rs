@@ -4,8 +4,6 @@
 
 use serde::Deserialize;
 
-// ── Vehicle ──────────────────────────────────���────────────────────────────────
-
 /// Broad gameplay category for a vehicle asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]

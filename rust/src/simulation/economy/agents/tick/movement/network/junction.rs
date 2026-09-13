@@ -10,9 +10,8 @@ use super::super::super::super::{ACCESS_FREIGHT_BORDER_DESTINATION, ACCESS_PLAN_
 use super::super::super::claims::LaneClaimContext;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
-use super::super::replan_watchdog::{
-    delay_or_recover_after_network_replan_failure, reset_network_replan_watchdog,
-};
+use super::super::replan_watchdog::delay_or_recover_after_network_replan_failure;
+use super::apply_network_replan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -55,9 +54,6 @@ pub(super) unsafe fn handle_lane_end(
         let s_freight_target_border_node = &slices.freight_target_border_node;
         let s_path = &slices.path;
         let s_path_idx = &slices.path_idx;
-        let s_plan_detach_n = &slices.planned_detach_n;
-        let s_plan_detach_lane = &slices.planned_detach_lane;
-        let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
         let s_lane_id = &slices.lane_id;
@@ -65,7 +61,15 @@ pub(super) unsafe fn handle_lane_end(
 
         let lane = &transit_network.lane_system.lanes[lane_id];
         if lane.edge_id == usize::MAX {
-            return exit::exit_connector_lane(i, lane_id, *remaining_dist, transit_network, slices);
+            return exit::exit_connector_lane(
+                i,
+                lane_id,
+                *remaining_dist,
+                transit_network,
+                lane_buckets,
+                lane_claims,
+                slices,
+            );
         }
 
         *s_cur_n.get_mut(i) = if lane.is_fwd {
@@ -157,14 +161,7 @@ pub(super) unsafe fn handle_lane_end(
                         transit_network,
                         pathfind_count,
                     ) {
-                        *s_path.get_mut(i) = replan.current_path;
-                        *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                        *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
-                        *s_plan_detach_lane.get_mut(i) = u32::MAX;
-                        *s_plan_detach_lane_d.get_mut(i) = 0.0;
-                        *s_access_flags.get_mut(i) = replan.access_flags;
-                        *s_next_replan_time.get_mut(i) = 0.0;
-                        reset_network_replan_watchdog(i, slices);
+                        apply_network_replan(i, replan, slices);
                         traffic_log!(
                             "[FREIGHT_BORDER_REPLAN] agent={} node={} border_node={} incoming_edge={} path_idx={}/{} path={:?}",
                             i,
@@ -203,14 +200,7 @@ pub(super) unsafe fn handle_lane_end(
                     pathfind_count,
                     Some((i, "network-junction")),
                 ) {
-                    *s_path.get_mut(i) = replan.current_path;
-                    *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                    *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
-                    *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
-                    *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
-                    *s_access_flags.get_mut(i) = replan.access_flags;
-                    *s_next_replan_time.get_mut(i) = 0.0;
-                    reset_network_replan_watchdog(i, slices);
+                    apply_network_replan(i, replan, slices);
                 } else {
                     delay_or_recover_after_network_replan_failure(
                         i,

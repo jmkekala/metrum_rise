@@ -18,7 +18,7 @@ use super::model::{
 };
 use super::{BuildingSiteClient, building_site_support_tie_in_is_valid};
 use crate::assets::{Anchor, AnchorType, AssetManifest, MeshPart, SiteSurfaceMaterial};
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::buildings::allocator::{BuildingAllocator, indexed_test_building};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::{RoadSurfaceSystem, RoadSurfaceView};
 use crate::simulation::network::types::{TransitFlags, TransitType};
@@ -50,6 +50,141 @@ fn site_radius_is_measured_from_the_indexed_lot_center() {
     };
 
     assert!(site_radius_m(&site) >= 20.0);
+}
+
+#[test]
+fn site_radius_tracks_replacement_removal_and_cross_chunk_height_queries() {
+    use crate::simulation::core::config::WorldConfig;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::zoning::{ZoneType, ZoningSystem};
+
+    let mut allocator = BuildingAllocator::new();
+    for (x, width) in [(510.0, 1), (1_024.0, 4), (2_048.0, 2)] {
+        let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+        building.center_x = x;
+        building.width_cells = width;
+        building.depth_cells = width;
+        building.support_height_m = 7.0;
+        allocator.buildings.push(building);
+    }
+    allocator.prepare_building_site_query_index(10.0);
+    let assert_radius = |allocator: &BuildingAllocator| {
+        let expected = allocator
+            .building_sites
+            .iter()
+            .map(site_radius_m)
+            .fold(0.0, f32::max);
+        assert_eq!(allocator.max_site_radius_m.to_bits(), expected.to_bits());
+    };
+    assert_radius(&allocator);
+    assert_eq!(
+        allocator.sample_building_site_height(Vector2::new(513.0, 0.0)),
+        Some(7.0)
+    );
+    for (width, probe, expected) in [
+        (6, 535.0, Some(9.0)),
+        (2, 535.0, None),
+        (2, 518.0, Some(9.0)),
+    ] {
+        allocator.buildings[0].width_cells = width;
+        allocator.buildings[0].depth_cells = width;
+        allocator.buildings[0].support_height_m = 9.0;
+        allocator.rebuild_building_site_client(0, 10.0);
+        assert_radius(&allocator);
+        assert_eq!(
+            allocator.sample_building_site_height(Vector2::new(probe, 0.0)),
+            expected
+        );
+    }
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    // Remove a smaller site, then the maximum site; the final removal leaves an empty cache.
+    for idx in [0, 1, 0] {
+        assert!(allocator.remove_building_for_bulldoze(
+            idx,
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut 0.0
+        ));
+        assert_radius(&allocator);
+    }
+    assert_eq!(allocator.max_site_radius_m, 0.0);
+}
+
+#[test]
+#[ignore = "manual matched release timing of local site rebuild and exact radius reduction"]
+fn benchmark_site_radius_maintenance() {
+    use crate::simulation::zoning::ZoneType;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for count in [1, 1_024, 65_536, 262_144] {
+        let mut allocator = BuildingAllocator::new();
+        for idx in 0..count {
+            // Isolated site records avoid gameplay placement and routing setup in the measurement.
+            let mut building = indexed_test_building(String::new(), ZoneType::Residential, 0);
+            if idx > 0 {
+                building.center_x = 2_048.0 + (idx % 512) as f32 * 32.0;
+                building.center_y = 2_048.0 + (idx / 512) as f32 * 32.0;
+            }
+            building.width_cells = if idx == 0 {
+                1
+            } else if idx == 1 {
+                4
+            } else {
+                2
+            };
+            building.depth_cells = building.width_cells;
+            allocator.buildings.push(building);
+        }
+        allocator.rebuild_building_site_clients(10.0);
+        let checksum = |allocator: &BuildingAllocator| {
+            let mut hash = DefaultHasher::new();
+            allocator.max_site_radius_m.to_bits().hash(&mut hash);
+            for site in &allocator.building_sites {
+                site.support_height_m.to_bits().hash(&mut hash);
+                for point in &site.footprint_world {
+                    (point.x.to_bits(), point.y.to_bits()).hash(&mut hash);
+                }
+            }
+            hash.finish()
+        };
+        let expected = checksum(&allocator);
+        for phase in ["local_rebuild", "radius_reduce"] {
+            let mut execute = || {
+                if phase == "local_rebuild" {
+                    allocator.rebuild_building_site_client(black_box(0), black_box(10.0));
+                } else {
+                    allocator.recompute_max_site_radius_m();
+                }
+                black_box(allocator.max_site_radius_m);
+            };
+            for _ in 0..3 {
+                execute();
+            }
+            let mut samples = [0.0; 21];
+            for sample in &mut samples {
+                let start = Instant::now();
+                for _ in 0..4 {
+                    execute();
+                }
+                *sample = start.elapsed().as_secs_f64() * 1_000.0 / 4.0;
+            }
+            samples.sort_by(f64::total_cmp);
+            assert_eq!(checksum(&allocator), expected);
+            eprintln!(
+                "site_radius_maintenance sites={count} phase={phase} median_ms={:.9} checksum={expected}",
+                samples[10]
+            );
+        }
+    }
 }
 
 fn road_test_edge(
@@ -131,7 +266,7 @@ fn flat_site_from_bounds(
     ];
     BuildingSiteClient {
         foundation_mesh: Default::default(),
-        footprint_world: footprint_world.clone(),
+        footprint_world,
         lot_footprint_world: [
             Vector2::new(min_x, min_z),
             Vector2::new(min_x, max_z),
@@ -380,54 +515,17 @@ fn support_tie_in_rejects_oversteep_surroundings() {
 #[test]
 fn derived_site_client_uses_required_flat_support_footprint() {
     let allocator = BuildingAllocator::new();
-    let building = Building {
-        center_x: 0.0,
-        center_y: 0.0,
-        support_height_m: 7.0,
-        width_cells: 2,
-        depth_cells: 2,
-        zone_profile_runtime_id: 0,
-        parcel_id: 0,
-        zone_type: crate::simulation::zoning::ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0),
-        frontage_t: 0.0,
-        side_offset: 0.0,
-        is_deserted: false,
-        budget_distress: false,
-        edge_idx: 0,
-        side: 1,
-        cell_x: 0,
-        cell_y: 0,
-        occupancy: 0,
-        worker_count: 0,
-        service_funding_override: -1.0,
-        asset_id: String::new(),
-        level: 1,
-        construction_total_hours: 0,
-        construction_remaining_hours: 0,
-        broken: false,
-        economy_profile_runtime_id: 0,
-        economy_broken: false,
-        resource_inventory: Vec::new(),
-        revenue: 0.0,
-        operating_budget: 0.0,
-        profit_tax_budget_baseline: 0.0,
-        last_day_profit: 0.0,
-        shipment_cooldown_hours: 0,
-        daily_owa_input_value: 0.0,
-        daily_local_input_value: 0.0,
-        daily_city_funded_input_cost: 0.0,
-        daily_household_sales_value: 0.0,
-        daily_power_service_units: 0.0,
-        daily_power_served_units: 0.0,
-        recent_power_service_units: 0.0,
-        recent_power_served_units: 0.0,
-        recent_household_sales_value: 0.0,
-        commercial_activity_floor_scale: 0.0,
-        work_area_scale: 1.0,
-        pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
-    };
+    let mut building = indexed_test_building(
+        String::new(),
+        crate::simulation::zoning::ZoneType::Residential,
+        0,
+    );
+    building.support_height_m = 7.0;
+    building.width_cells = 2;
+    building.depth_cells = 2;
+    building.frontage_t = 0.0;
+    building.operating_budget = 0.0;
+    building.profit_tax_budget_baseline = 0.0;
 
     let site = allocator.derive_building_site_client(&building, 10.0);
 

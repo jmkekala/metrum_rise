@@ -2,9 +2,7 @@ shader_type spatial;
 render_mode cull_disabled;
 
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D displacement_tex : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 
 uniform float uv_scale = 0.1;
 
@@ -31,12 +29,10 @@ void fragment() {
 	vec3 tri_pos = world_pos * uv_scale;
 	
 	vec3 albedo = triplanar_texture(albedo_tex, blending, tri_pos);
-	vec3 normal = triplanar_texture(normal_tex, blending, tri_pos);
 	float roughness = triplanar_texture(roughness_tex, blending, tri_pos).r;
 	
 	ALBEDO = albedo * COLOR.rgb;
 	NORMAL = normalize(NORMAL);
-	// Note: triplanar normal mapping is complex, using simplified approach here
 	ROUGHNESS = roughness;
 	METALLIC = 0.0;
 	

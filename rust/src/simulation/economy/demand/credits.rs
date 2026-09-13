@@ -16,11 +16,7 @@ pub(super) fn advance_household_action_credit(
     max_actionable_households: u32,
     cadence_fraction: f32,
 ) -> u32 {
-    let normalized_action_pressure = if threshold >= 1.0 {
-        0.0
-    } else {
-        clamp01((pressure - threshold) / (1.0 - threshold))
-    };
+    let normalized_action_pressure = normalized_positive_pressure(pressure, threshold);
     if normalized_action_pressure <= EPSILON
         || max_households_per_day == 0
         || max_actionable_households == 0

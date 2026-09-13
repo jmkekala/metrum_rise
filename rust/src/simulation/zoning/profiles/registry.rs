@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// Validated built-in zoning-profile registry.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct ZoningProfileRegistry {
     pub(super) profiles: Vec<ZoneProfileRuntime>,
     pub(super) by_id: HashMap<String, u16>,
@@ -68,8 +68,7 @@ impl ZoningProfileRegistry {
 
     /// Returns the baseline default runtime id for one broad zone family.
     ///
-    /// Test-only compatibility helper kept while migration coverage still needs a broad-family to
-    /// runtime-profile mapping. It returns the low-density default for the requested family.
+    /// Test fixtures use the low-density default for the requested family.
     #[cfg(test)]
     pub fn default_runtime_id_for_zone_type(&self, zone_type: ZoneType) -> Option<u16> {
         self.runtime_id_for_zone_density(zone_type, ZoneDensity::Low)
@@ -116,18 +115,59 @@ impl ZoningProfileRegistry {
     }
 }
 
-static BUILTIN_REGISTRY: OnceLock<Result<ZoningProfileRegistry, String>> = OnceLock::new();
+static BUILTIN_REGISTRY: OnceLock<Result<Arc<ZoningProfileRegistry>, String>> = OnceLock::new();
 
-/// Loads and caches the shipped zoning-profile registry.
+/// Returns the shared immutable shipped registry, compiling it once on first use.
 pub fn load_builtin_profile_registry() -> Result<Arc<ZoningProfileRegistry>, String> {
-    match BUILTIN_REGISTRY.get_or_init(load_registry_from_disk) {
-        Ok(registry) => Ok(Arc::new(registry.clone())),
-        Err(err) => Err(err.clone()),
-    }
+    BUILTIN_REGISTRY
+        .get_or_init(|| load_registry_from_disk().map(Arc::new))
+        .clone()
 }
 
 fn load_registry_from_disk() -> Result<ZoningProfileRegistry, String> {
     let authored_profiles = load_authored_zone_profiles()?;
     let growth_profile_ids = load_builtin_growth_profile_ids()?;
     compile_registry(authored_profiles, &growth_profile_ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_zoning_registry_reuses_one_immutable_instance() {
+        let first = load_builtin_profile_registry().unwrap();
+        let second = load_builtin_profile_registry().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(!first.profiles().is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual matched release timing of cached zoning profile loads"]
+    fn benchmark_cached_zoning_profile_load() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let expected = load_builtin_profile_registry().unwrap().style_lut_rgba8();
+        for _ in 0..3 {
+            black_box(load_builtin_profile_registry().unwrap());
+        }
+        let mut samples = [0.0; 21];
+        for sample in &mut samples {
+            let start = Instant::now();
+            for _ in 0..10_000 {
+                black_box(load_builtin_profile_registry().unwrap());
+            }
+            *sample = start.elapsed().as_secs_f64() * 1_000.0 / 10_000.0;
+        }
+        samples.sort_by(f64::total_cmp);
+        assert_eq!(
+            load_builtin_profile_registry().unwrap().style_lut_rgba8(),
+            expected
+        );
+        eprintln!(
+            "cached_zoning_profile_load median_ms={:.9} lut={expected:?}",
+            samples[10]
+        );
+    }
 }

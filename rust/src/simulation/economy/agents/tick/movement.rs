@@ -14,6 +14,7 @@ use super::super::{
 use super::claims::LaneClaimContext;
 use super::slices::MovementSlices;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::data::AgentSystem;
 use crate::simulation::economy::definitions::{
     OperationalClockRuntimeTuning, RuntimeEconomyCatalog,
@@ -47,8 +48,7 @@ impl AgentSystem {
         i: usize,
         delta: f32,
         sim_time: f32,
-        day_index: u32,
-        minute_of_day: u16,
+        time: &TimeSystem,
         allocator: &BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
@@ -89,8 +89,7 @@ impl AgentSystem {
                     handle_in_building(
                         i,
                         sim_time,
-                        day_index,
-                        minute_of_day,
+                        time,
                         allocator,
                         transit_network,
                         graph,

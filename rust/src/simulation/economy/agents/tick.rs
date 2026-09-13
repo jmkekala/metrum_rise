@@ -23,6 +23,7 @@ use super::{
     TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK, transit_is_visible,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::core::time::TimeSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::traffic_log;
@@ -32,7 +33,7 @@ const TRAFFIC_DEBUG_STATIONARY_AFTER_S: f32 = 3.0;
 const TRAFFIC_DEBUG_STATIONARY_LOG_INTERVAL_S: f32 = 5.0;
 
 pub(crate) use planning::{
-    BuiltTripPlan, building_origin_trip_is_feasible, estimate_building_origin_trip_minutes,
+    BuiltTripPlan, building_origin_trip_is_feasible, estimate_building_origin_trip_seconds,
     plan_building_origin_trip, plan_building_to_border_trip, plan_immigration_trip,
 };
 
@@ -44,12 +45,18 @@ impl AgentSystem {
         transit_network: &mut TransitNetwork,
         graph: &mut RegionGraph,
         delta: f32,
-        day_index: u32,
-        minute_of_day: u16,
+        time: &TimeSystem,
     ) {
         self.sim_time += delta;
         let n = self.agents.len();
         if n == 0 {
+            if !self.dirty_lanes.is_empty() || !self.dirty_edges.is_empty() {
+                self.rebuild_lanes_and_congestion(
+                    graph,
+                    transit_network.lane_system.lanes.len(),
+                    0,
+                );
+            }
             self.update_frontage_delay_cache(transit_network, graph, delta);
             return;
         }
@@ -65,15 +72,7 @@ impl AgentSystem {
             self.prepare_lane_buckets_for_tick(transit_network, n);
         self.update_idm_speeds(delta, transit_network, graph, n, live_lane_agent_count);
 
-        self.dispatch_movement_pass(
-            allocator,
-            transit_network,
-            graph,
-            delta,
-            day_index,
-            minute_of_day,
-            n,
-        );
+        self.dispatch_movement_pass(allocator, transit_network, graph, delta, time, n);
         self.log_stationary_visible_pedestrians(delta, n);
 
         self.rebuild_lanes_and_congestion(graph, lane_count, n);

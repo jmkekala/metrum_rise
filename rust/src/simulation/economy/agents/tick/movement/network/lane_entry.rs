@@ -9,13 +9,14 @@ use super::super::super::super::{
 use super::super::super::lane_nav::lane_origin_node;
 use super::super::super::planning::{plan_border_network_replan, plan_network_replan};
 use super::super::super::slices::MovementSlices;
-use super::super::super::traffic::deterministic_choice_index;
 use super::super::NETWORK_REPLAN_DELAY_S;
 use super::super::replan_watchdog::{
     delay_or_recover_after_network_replan_failure, has_recoverable_network_trip,
     reset_network_replan_watchdog,
 };
+use super::apply_network_replan;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::determinism::stable_index;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneType;
@@ -61,7 +62,6 @@ pub(super) unsafe fn prepare_lane_entry(
         let s_path_idx = &slices.path_idx;
         let s_plan_detach_n = &slices.planned_detach_n;
         let s_plan_detach_lane = &slices.planned_detach_lane;
-        let s_plan_detach_lane_d = &slices.planned_detach_lane_d;
         let s_access_flags = &slices.access_flags;
         let s_next_replan_time = &slices.next_replan_time;
         let s_lane_id = &slices.lane_id;
@@ -115,14 +115,7 @@ pub(super) unsafe fn prepare_lane_entry(
                         transit_network,
                         pathfind_count,
                     ) {
-                        *s_path.get_mut(i) = replan.current_path;
-                        *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                        *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
-                        *s_plan_detach_lane.get_mut(i) = u32::MAX;
-                        *s_plan_detach_lane_d.get_mut(i) = 0.0;
-                        *s_access_flags.get_mut(i) = replan.access_flags;
-                        *s_next_replan_time.get_mut(i) = 0.0;
-                        reset_network_replan_watchdog(i, slices);
+                        apply_network_replan(i, replan, slices);
                         return LaneEntryAction::Continue;
                     }
                     delay_or_recover_after_network_replan_failure(
@@ -163,14 +156,7 @@ pub(super) unsafe fn prepare_lane_entry(
                     pathfind_count,
                     Some((i, "network-lane-entry")),
                 ) {
-                    *s_path.get_mut(i) = replan.current_path;
-                    *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                    *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
-                    *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
-                    *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
-                    *s_access_flags.get_mut(i) = replan.access_flags;
-                    *s_next_replan_time.get_mut(i) = 0.0;
-                    reset_network_replan_watchdog(i, slices);
+                    apply_network_replan(i, replan, slices);
                 } else {
                     delay_or_recover_after_network_replan_failure(
                         i,
@@ -243,8 +229,8 @@ pub(super) unsafe fn prepare_lane_entry(
                             if !valid_lanes.is_empty() {
                                 let choice_seed =
                                     lane_entry_choice_seed(i, *s_cur_n.get(i), next_node, best_e);
-                                let chosen = valid_lanes
-                                    [deterministic_choice_index(choice_seed, valid_lanes.len())];
+                                let chosen =
+                                    valid_lanes[stable_index(choice_seed, valid_lanes.len())];
                                 *s_lane_id.get_mut(i) = chosen;
                                 *s_lane_d.get_mut(i) = 0.0;
                                 *s_cur_e.get_mut(i) = best_e;

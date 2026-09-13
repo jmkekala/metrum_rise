@@ -12,6 +12,12 @@ pub(super) fn compile_registry(
     authored_profiles: Vec<AuthoredZoneProfile>,
     growth_profile_ids: &HashSet<String>,
 ) -> Result<ZoningProfileRegistry, String> {
+    if authored_profiles.len() > u16::MAX as usize {
+        return Err(format!(
+            "zoning profile count exceeds {} runtime IDs",
+            u16::MAX
+        ));
+    }
     let mut seen_ids = BTreeSet::new();
     let mut compiled = Vec::with_capacity(authored_profiles.len());
     let mut by_id = HashMap::new();
@@ -67,7 +73,7 @@ pub(super) fn compile_registry(
         let runtime_id = compiled.len() as u16 + 1;
         let profile = ZoneProfileRuntime {
             runtime_id,
-            id: authored.id.clone(),
+            id: authored.id,
             display_name: authored.display_name.trim().to_owned(),
             ui_order: authored.ui_order,
             zone_type,
@@ -164,7 +170,7 @@ fn baseline_zone_rank(zone_type: ZoneType) -> u8 {
 
 fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
     let value = value.trim();
-    if value.len() != 7 || !value.starts_with('#') {
+    if value.len() != 7 || !value.is_ascii() || !value.starts_with('#') {
         return None;
     }
     Some([
@@ -172,4 +178,52 @@ fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
         u8::from_str_radix(&value[3..5], 16).ok()?,
         u8::from_str_radix(&value[5..7], 16).ok()?,
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::zoning::profiles::authored::AuthoredZoneProfileUi;
+
+    fn profile(index: usize, color: &str) -> AuthoredZoneProfile {
+        AuthoredZoneProfile {
+            id: format!("profile_{index}"),
+            display_name: "Profile".to_owned(),
+            ui_order: index as u32,
+            zone_type: "residential".to_owned(),
+            density: "low".to_owned(),
+            required_asset_tags: Vec::new(),
+            growth_profile_id: "residential_low_default".to_owned(),
+            ui: AuthoredZoneProfileUi {
+                color: color.to_owned(),
+                icon: "home".to_owned(),
+                description: "A residential zone".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn zoning_profile_colors_validate_without_utf8_panics() {
+        assert_eq!(parse_hex_rgb(" #Aa09fF "), Some([170, 9, 255]));
+        let growth_ids = HashSet::from(["residential_low_default".to_owned()]);
+        for invalid in ["#a€ab", "#000é0", "#é0000", "#gg0000", "#abc", "0000000"] {
+            let error = compile_registry(vec![profile(0, invalid)], &growth_ids).unwrap_err();
+            assert!(error.contains("invalid ui.color"), "{invalid}: {error}");
+        }
+    }
+
+    #[test]
+    fn zoning_profile_runtime_ids_preserve_the_u16_boundary() {
+        let growth_ids = HashSet::from(["residential_low_default".to_owned()]);
+        let max = u16::MAX as usize;
+        let authored = |count| (0..count).map(|index| profile(index, "#112233")).collect();
+        let registry = compile_registry(authored(max), &growth_ids).unwrap();
+        assert_eq!(registry.len(), max);
+        assert_eq!(
+            registry.profile_by_runtime_id(u16::MAX).unwrap().id,
+            format!("profile_{}", max - 1)
+        );
+        assert!(registry.profile_by_runtime_id(0).is_none());
+        assert!(compile_registry(authored(max + 1), &growth_ids).is_err());
+    }
 }

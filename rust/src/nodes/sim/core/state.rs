@@ -581,11 +581,13 @@ impl SimCore {
                 .count(),
             self.agents.len(),
         );
-        self.allocator.tick(
+        self.allocator.maintain(
+            1,
             &mut self.zoning,
             &mut self.agents,
             &mut self.households,
             &mut self.logistics,
+            &mut self.treasury.balance,
             &mut self.transit_network,
             &mut self.region_graph,
         );
@@ -604,8 +606,7 @@ impl SimCore {
         self.pollution.tick(&self.allocator, &self.config);
         self.noise
             .tick(&self.allocator, &self.region_graph, &self.config);
-        self.desirability
-            .tick(&self.zoning, &self.pollution, &self.noise);
+        self.desirability.tick(&self.pollution, &self.noise);
         let service_funding_by_building = self.electricity_funding_by_building();
         let fiscal_revenue = self.households.daily_settlement_tick(
             &mut self.agents,
@@ -632,7 +633,6 @@ impl SimCore {
             &self.allocator,
             &self.households,
             &self.region_graph,
-            &self.zoning,
             self.treasury.balance,
             &service_funding_by_building,
             &self.fiscal_policy,
@@ -655,6 +655,8 @@ impl SimCore {
         self.record_daily_budget_ledger(day_index);
         self.log_daily_city_flow_diagnostics(day_index, removed_households);
         self.debug_household_admissions_since_daily = 0;
+        self.print_daily_building_economy(day_index);
+        self.households.reset_daily_ledgers();
         // Reset OWA/local input accumulators after the daily and midnight demand snapshots have
         // been taken.
         self.allocator.reset_daily_input_accumulators();
@@ -746,6 +748,7 @@ impl SimCore {
                     &mut self.agents,
                     &mut self.households,
                     &mut self.logistics,
+                    &mut self.treasury.balance,
                     &self.region_graph,
                     &self.transit_network.lane_system,
                     &self.transit_network.road_surface,

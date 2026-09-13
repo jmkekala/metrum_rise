@@ -4,7 +4,6 @@ render_mode cull_disabled, depth_draw_opaque;
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D roughness_tex : hint_roughness_r, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D displacement_tex : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 
 uniform vec2 uv_scale = vec2(0.12, 0.12);
 uniform vec2 vertical_uv_scale = vec2(0.12, 0.12);

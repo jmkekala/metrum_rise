@@ -26,14 +26,16 @@ pub use replenishment::{
 };
 
 pub(crate) use metrics::{
-    active_worker_capacity_equivalent_for_profile_with_floor_scale,
+    OPERATIONAL_HOURS_PER_DAY, active_worker_capacity_equivalent_for_profile_with_floor_scale,
     active_worker_capacity_for_profile_with_floor_scale, building_inventory_fill_ratio,
     building_operating_buffer_days, building_operation_factors,
     building_operation_factors_with_floor_scale, building_staffing_ratio,
     building_total_output_inventory, candidate_immigrant_household_size_for_vacancy,
     candidate_immigrant_household_size_from_flat_size, commercial_activity_signal_for_city,
-    household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
-    level_tuning_value, physical_worker_capacity_for_profile,
+    consume_hourly_production_inputs, household_is_housed, household_reserve_days,
+    industrial_input_coverage_factor, industrial_output_headroom_factor, level_tuning_value,
+    operating_input_demand_scale, physical_worker_capacity_for_profile, saleable_output_stock,
     scaled_input_inventory_targets_for_building, scaled_output_buffer_capacity_units_for_building,
     scaled_output_units_per_day_for_building, service_funded_worker_capacity,
+    service_store_live_output_units_by_resource,
 };

@@ -8,6 +8,7 @@
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+use crate::utils::point_in_polygon;
 use godot::prelude::Vector2;
 
 /// Resource id used by authored coal deposits and the economy catalog.
@@ -47,7 +48,7 @@ impl ResourceDepositSystem {
             config.terrain_grid_width(),
             config.terrain_grid_height(),
             config.terrain_cell_m,
-            resource_chunk_cells_for_config(config),
+            config.terrain_storage_chunk_cells(),
         )
     }
 
@@ -283,29 +284,6 @@ impl ResourceDepositSystem {
             max_grid_z.ceil().clamp(0.0, (self.height - 1) as f32) as usize,
         ))
     }
-}
-
-fn resource_chunk_cells_for_config(config: &WorldConfig) -> usize {
-    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
-}
-
-fn point_in_polygon(point: Vector2, polygon: &[Vector2]) -> bool {
-    let mut inside = false;
-    let mut prev = polygon[polygon.len() - 1];
-    for &curr in polygon {
-        let crosses = (curr.y > point.y) != (prev.y > point.y);
-        if crosses {
-            let denom = prev.y - curr.y;
-            if denom.abs() > f32::EPSILON {
-                let intersection_x = (prev.x - curr.x) * (point.y - curr.y) / denom + curr.x;
-                if point.x < intersection_x {
-                    inside = !inside;
-                }
-            }
-        }
-        prev = curr;
-    }
-    inside
 }
 
 #[cfg(test)]

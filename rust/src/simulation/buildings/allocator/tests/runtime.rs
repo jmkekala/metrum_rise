@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Runtime accumulator, attachment repair, and allocator tick tests.
+//! Runtime accumulator, attachment repair, and allocator maintenance tests.
 
 use super::support::*;
 use super::*;
@@ -109,11 +109,13 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
         ZoneType::Residential,
     );
 
-    allocator.tick(
+    allocator.maintain(
+        1,
         &mut zoning,
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &mut network,
         &mut graph,
     );
@@ -386,11 +388,13 @@ fn test_allocator_tick_does_not_place_founding_buildings() {
         ZoneType::Commercial,
     );
 
-    allocator.tick(
+    allocator.maintain(
+        1,
         &mut zoning,
         &mut agents,
         &mut households,
         &mut logistics,
+        &mut 0.0,
         &mut network,
         &mut graph,
     );
@@ -398,6 +402,6 @@ fn test_allocator_tick_does_not_place_founding_buildings() {
     assert_eq!(
         allocator.buildings.len(),
         0,
-        "allocator tick should no longer seed founding buildings on its own"
+        "allocator maintenance should no longer seed founding buildings on its own"
     );
 }

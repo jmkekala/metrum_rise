@@ -84,8 +84,11 @@ impl RegionGraph {
         self.spatial_edge_rt.remove(&entry);
     }
 
-    /// Registers a node in the chunked node lookup grid.
+    /// Registers a canonical node in the chunked node lookup grid.
     pub fn add_node_to_spatial_index(&mut self, node_id: u32) {
+        if self.get_valid_node(node_id) != node_id {
+            return;
+        }
         let pos = self.nodes[node_id as usize].pos;
         let chunk_coords = Self::get_node_chunk_coords(pos);
         let chunk = self.spatial_node_grid.entry(chunk_coords).or_default();
@@ -140,30 +143,53 @@ impl RegionGraph {
             });
     }
 
-    /// Returns node IDs in lookup chunks intersecting an XZ AABB.
-    pub(crate) fn get_nodes_near_aabb(
+    /// Visits indexed nodes inside an inclusive XZ rectangle without allocating candidates.
+    /// Cost is O(min(covered cells, hash table capacity) + nodes in visited cells).
+    pub(crate) fn visit_nodes_near_aabb(
         &self,
-        min: godot::prelude::Vector3,
-        max: godot::prelude::Vector3,
-    ) -> Vec<u32> {
+        min: Vector3,
+        max: Vector3,
+        mut visit: impl FnMut(u32),
+    ) {
         let min_chunk = Self::get_node_chunk_coords(min);
         let max_chunk = Self::get_node_chunk_coords(max);
-        let mut nodes = Vec::new();
-        for chunk_x in min_chunk.0..=max_chunk.0 {
-            for chunk_z in min_chunk.1..=max_chunk.1 {
-                let Some(chunk_nodes) = self.spatial_node_grid.get(&(chunk_x, chunk_z)) else {
-                    continue;
-                };
-                nodes.extend(chunk_nodes.iter().copied().filter(|&node_id| {
-                    self.nodes.get(node_id as usize).is_some_and(|node| {
-                        node.pos.x >= min.x
-                            && node.pos.x <= max.x
-                            && node.pos.z >= min.z
-                            && node.pos.z <= max.z
-                    })
-                }));
+        if min_chunk.0 > max_chunk.0 || min_chunk.1 > max_chunk.1 {
+            return;
+        }
+        let mut visit_chunk = |node_ids: &[u32]| {
+            for &node_id in node_ids {
+                if self.nodes.get(node_id as usize).is_some_and(|node| {
+                    node.pos.x >= min.x
+                        && node.pos.x <= max.x
+                        && node.pos.z >= min.z
+                        && node.pos.z <= max.z
+                }) {
+                    visit(node_id);
+                }
+            }
+        };
+        let width = (i64::from(max_chunk.0) - i64::from(min_chunk.0) + 1) as u64;
+        let height = (i64::from(max_chunk.1) - i64::from(min_chunk.1) + 1) as u64;
+        // HashMap iteration scans retained capacity, including empty slots after a rebuild.
+        if width.saturating_mul(height) > self.spatial_node_grid.capacity() as u64 {
+            for node_ids in self.spatial_node_grid.values() {
+                visit_chunk(node_ids);
+            }
+        } else {
+            for chunk_x in min_chunk.0..=max_chunk.0 {
+                for chunk_z in min_chunk.1..=max_chunk.1 {
+                    if let Some(node_ids) = self.spatial_node_grid.get(&(chunk_x, chunk_z)) {
+                        visit_chunk(node_ids);
+                    }
+                }
             }
         }
+    }
+
+    /// Returns sorted, unique node IDs inside an inclusive XZ rectangle.
+    pub(crate) fn get_nodes_near_aabb(&self, min: Vector3, max: Vector3) -> Vec<u32> {
+        let mut nodes = Vec::new();
+        self.visit_nodes_near_aabb(min, max, |node_id| nodes.push(node_id));
         nodes.sort_unstable();
         nodes.dedup();
         nodes

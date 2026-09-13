@@ -62,9 +62,7 @@ impl ZoningSystem {
         let start_point = Vector2::new(start_x, start_z);
         let end_point = Vector2::new(end_x, end_z);
         let existing_start = self
-            .parcels
-            .find_at_point(start_point)
-            .and_then(|id| self.parcels.get(id))
+            .parcel_at(start_point)
             .map(parcels::geometry_for_parcel);
         if let Some(existing_geometry) = existing_start.as_ref() {
             let geometries = parcels::project_parcel_run_from_existing(

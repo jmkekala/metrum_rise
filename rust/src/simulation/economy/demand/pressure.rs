@@ -8,7 +8,6 @@ use super::diagnostics::{HouseholdAdmissionDiagnostics, HouseholdRemovalDiagnost
 use super::snapshot::DailyDemandSnapshot;
 use super::system::DemandSystem;
 use super::types::{DemandUse, EPSILON};
-use crate::simulation::zoning::ZoneType;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DemandPressureInputs {
@@ -19,7 +18,7 @@ pub(super) struct DemandPressureInputs {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct MoveInAcceptance {
+struct MoveInAcceptance {
     candidate_household_size: f32,
     candidate_child_count: u16,
     candidate_adult_count: u16,
@@ -42,7 +41,6 @@ pub(super) struct MoveInAcceptance {
     daily_deficit: f32,
     search_runway_days: f32,
     runway_factor: f32,
-    acceptance: f32,
 }
 
 impl DemandSystem {
@@ -84,12 +82,11 @@ impl DemandSystem {
         let admission_failure_factor = clamp01(admission_unhoused_factor)
             * clamp01(admission_zero_budget_factor)
             * clamp01(admission_recent_failure_factor);
-        let construction_move_in = compute_construction_move_in_acceptance(&self.config, snapshot);
         let residential_construction_viability =
-            clamp01(construction_move_in.acceptance) * clamp01(admission_failure_factor);
+            clamp01(move_in.runway_factor) * clamp01(admission_failure_factor);
         let admission_pressure = clamp01(
             admission_base_pressure
-                * clamp01(move_in.acceptance)
+                * clamp01(move_in.runway_factor)
                 * clamp01(admission_failure_factor),
         );
         let removal_pressure = snapshot.unhoused_household_ratio;
@@ -106,13 +103,9 @@ impl DemandSystem {
             marginal_commercial_job_household_pull: snapshot.marginal_commercial_job_household_pull,
             regional_growth_household_pull: snapshot.regional_growth_household_pull,
             household_affordability: snapshot.household_affordability,
-            move_in_acceptance: clamp01(move_in.acceptance),
-            construction_move_in_acceptance: clamp01(construction_move_in.acceptance),
-            construction_move_in_search_runway_days: construction_move_in.search_runway_days,
-            construction_move_in_runway_factor: clamp01(construction_move_in.runway_factor),
+            move_in_acceptance: clamp01(move_in.runway_factor),
             residential_construction_viability,
             move_in_search_runway_days: move_in.search_runway_days,
-            move_in_runway_factor: clamp01(move_in.runway_factor),
             candidate_household_size: move_in.candidate_household_size,
             candidate_child_count: move_in.candidate_child_count,
             candidate_adult_count: move_in.candidate_adult_count,
@@ -180,12 +173,12 @@ impl DemandSystem {
         // capacity to keep those stocks stable. Uses short-run purchase power rather than the
         // long-run reserve target so starter cities can spawn shops before household stockout.
         self.commercial = clamp01(commercial_need * household_purchase_power * ext_conn);
-        // Industrial: paper input-capacity gaps plus actual commercial OWA reliance. Spawn volume
+        // Industrial: paper input-capacity gaps plus actual business OWA reliance. Spawn volume
         // still uses committed missing input capacity, so this pressure can flag a failing local
         // supply chain without blindly duplicating already committed factories.
         let industrial_need = snapshot
             .industrial_input_capacity_deficit
-            .max(snapshot.commercial_owa_dependency);
+            .max(snapshot.business_owa_dependency);
         self.industrial = clamp01(industrial_need * ext_conn);
 
         DemandPressureInputs {
@@ -216,11 +209,7 @@ impl DemandSystem {
             return 1.0;
         }
         let channel = self.pressure_for_use(use_kind);
-        let zone_type = match use_kind {
-            DemandUse::Residential => ZoneType::Residential,
-            DemandUse::Commercial => ZoneType::Commercial,
-            DemandUse::Industrial => ZoneType::Industrial,
-        };
+        let zone_type = use_kind.zone_type();
         let Some(profile) = self.config.profile_for_zone_density(zone_type, "low") else {
             return 0.0;
         };
@@ -262,28 +251,11 @@ impl DemandSystem {
     }
 }
 
-pub(super) fn compute_move_in_acceptance(
+fn compute_move_in_acceptance(
     config: &DemandConfig,
     snapshot: &DailyDemandSnapshot,
 ) -> MoveInAcceptance {
-    compute_move_in_acceptance_for(config, snapshot, false)
-}
-
-pub(super) fn compute_construction_move_in_acceptance(
-    config: &DemandConfig,
-    snapshot: &DailyDemandSnapshot,
-) -> MoveInAcceptance {
-    compute_move_in_acceptance_for(config, snapshot, false)
-}
-
-pub(super) fn compute_move_in_acceptance_for(
-    config: &DemandConfig,
-    snapshot: &DailyDemandSnapshot,
-    require_vacant_household_slot: bool,
-) -> MoveInAcceptance {
-    if (require_vacant_household_slot && snapshot.vacant_household_slots == 0)
-        || snapshot.candidate_household_size <= EPSILON
-    {
+    if snapshot.candidate_household_size <= EPSILON {
         return MoveInAcceptance::default();
     }
 
@@ -375,6 +347,5 @@ pub(super) fn compute_move_in_acceptance_for(
         daily_deficit,
         search_runway_days,
         runway_factor,
-        acceptance: runway_factor,
     }
 }

@@ -5,8 +5,8 @@
 //!
 //! All simulation logic runs in Rust. Godot calls into it through
 //! [`nodes::simulation_node::SimulationNode`], which exposes `#[func]` methods
-//! on the Godot side. The simulation loop is driven by Godot's `_process` callback
-//! but runs independently of the render thread via `experimental-threads`.
+//! on the Godot side. A background fixed-step loop owns simulation advancement;
+//! Godot's render thread submits commands and reads published snapshots.
 //!
 //! **Reading order for new contributors / AI models:**
 //! 1. [`config`] — global constants (map size, grid cell sizes, lane widths).
@@ -22,7 +22,7 @@ pub mod config;
 pub mod debug;
 pub mod nodes;
 pub mod simulation;
-pub mod utils;
+mod utils;
 
 struct MetrumRiseExtension;
 

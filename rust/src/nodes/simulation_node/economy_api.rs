@@ -141,8 +141,7 @@ impl SimulationNode {
         }
     }
 
-    /// Validates the authored economy JSON payload, writes the canonical TOML
-    /// files, and rebuilds the derived `economy.index.bin` cache.
+    /// Validates the authored economy JSON payload and writes the canonical TOML files.
     #[func]
     pub fn export_economy_project(&self, project_json: GString, dir_path: GString) -> GString {
         use crate::simulation::economy::definitions::export_project_json;

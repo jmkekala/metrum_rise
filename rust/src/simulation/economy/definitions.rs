@@ -4,11 +4,9 @@
 //!
 //! The runtime household/building simulation still owns live economic state, but
 //! this module defines the authoritative TOML-backed profile/controller/scenario
-//! data used to validate and tune the first-pass economy chains. The same data
-//! will later feed the asset editor and a fuller compiled runtime representation.
+//! data used by the economy editor, asset bindings, and compiled runtime catalog.
 
 mod api;
-mod index;
 mod io;
 mod runtime;
 mod runtime_compile;
@@ -28,3 +26,8 @@ pub(crate) use runtime::{
     RuntimeEconomyCatalog, RuntimeEconomyTuning, RuntimeResourcePort, WorkTimingProfile,
 };
 pub(crate) use runtime_loader::{load_runtime_economy_catalog, load_runtime_economy_tuning};
+
+/// Required demand-sink profile that owns household supply consumption and stock targets.
+pub(crate) const HOUSEHOLD_DEMAND_PROFILE_ID: &str = "basic_household_demand";
+/// Required physical resource used by household shopping and consumption.
+pub(crate) const HOUSEHOLD_SUPPLY_RESOURCE_ID: &str = "household_supplies";

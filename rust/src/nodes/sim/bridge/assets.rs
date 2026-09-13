@@ -10,27 +10,24 @@ use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
 use std::path::Path;
 
-/// Scans a native filesystem directory for content packs and registers all valid assets.
+/// Replaces the registry with selected packs, or all packs when no selection is supplied.
 pub fn load_asset_packs(
     core: &mut SimCore,
     dir_path: GString,
-    enabled_pack_ids: GString,
+    enabled_pack_ids: Option<&PackedStringArray>,
 ) -> GString {
-    use crate::assets::scan_pack_dir;
-    let filter_str = enabled_pack_ids.to_string();
-    let filter: Vec<&str> = if filter_str.is_empty() {
-        vec![]
+    use crate::assets::{scan_pack_dir, scanner::ScanResult};
+    let mut result = if enabled_pack_ids.is_some_and(PackedStringArray::is_empty) {
+        ScanResult::default()
     } else {
-        filter_str.split(',').map(str::trim).collect()
+        scan_pack_dir(Path::new(&dir_path.to_string()))
     };
-
-    let mut result = scan_pack_dir(Path::new(&dir_path.to_string()));
     let mut bounds_cache = mesh_bounds::MeshBoundsCache::new();
     // Treat every load as an authoritative registry refresh. Asset editor moves,
     // pack disables, and deleted folders must remove stale qualified IDs too.
     core.allocator.registry.clear();
     for pack in result.packs {
-        if !filter.is_empty() && !filter.contains(&pack.pack.pack_id.as_str()) {
+        if enabled_pack_ids.is_some_and(|ids| !ids.contains(pack.pack.pack_id.as_str())) {
             continue;
         }
         for (mut asset, asset_dir) in pack.assets {

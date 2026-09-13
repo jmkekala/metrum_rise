@@ -4,41 +4,25 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::economy::accessibility::{
-    ModeComponentIndex, ReachableBucketScanEvent, lower_bound_travel_seconds,
-};
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
-    RuntimeEconomyTuning, RuntimeResourcePort,
+    RuntimeResourcePort,
 };
 use crate::simulation::economy::households::{
-    building_operation_factors, scaled_input_inventory_targets_for_building,
-    scaled_output_units_per_day_for_building,
+    building_operation_factors, saleable_output_stock, scaled_output_units_per_day_for_building,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::TransitFlags;
-use crate::simulation::zoning::ZoneType;
 use rayon::prelude::*;
 
 use super::data::{CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus, ShipmentSystem};
+use super::local_supplier::find_local_supplier;
 use super::planning::FreightPlanningContext;
-use super::quantization::{quantize_export_amount, quantize_requested_amount};
-use super::reservations::ReservationViews;
+use super::quantization::quantize_export_amount;
 use super::resource::{
     building_outputs_can_export_to_owa, freight_profile_for_building, required_unit_price,
 };
-use super::route_cache::FreightRouteCache;
-use super::supplier_index::SupplierCandidateIndex;
-use super::timing::{adjusted_travel_seconds, adjusted_unit_price, eta_hours_from_travel_seconds};
-
-#[derive(Clone, Copy)]
-struct LocalInputHoldChoice {
-    supplier_idx: usize,
-    amount: f32,
-    total_cost: f32,
-    travel_seconds: f32,
-}
+use super::timing::{adjusted_travel_seconds, eta_hours_from_travel_seconds};
 
 impl ShipmentSystem {
     /// Creates outbound `OWA` export shipments for industrial buildings with surplus output.
@@ -122,8 +106,12 @@ impl ShipmentSystem {
                 let reserved = planning
                     .reservations
                     .reserved_outbound_amount(src_idx, output_port.resource_runtime_id);
-                let current_inventory =
-                    allocator.buildings[src_idx].inventory_units(output_port.resource_runtime_id);
+                let current_inventory = saleable_output_stock(
+                    &catalog,
+                    &allocator.buildings[src_idx],
+                    profile,
+                    output_port.resource_runtime_id,
+                );
                 let unreserved = (current_inventory - reserved).max(0.0);
 
                 // Keep one current day of production as a local buffer; export the rest.
@@ -250,7 +238,6 @@ impl ShipmentSystem {
                 || building.is_deserted
                 || building.is_under_construction()
                 || building.edge_idx == usize::MAX
-                || !matches!(building.zone_type, ZoneType::Commercial)
             {
                 continue;
             }
@@ -258,6 +245,11 @@ impl ShipmentSystem {
             else {
                 continue;
             };
+            let Some(freight_profile) = freight_profile_for_building(&catalog, &tuning, building)
+            else {
+                continue;
+            };
+            let mut remaining_budget = super::resource::input_purchase_budget(allocator, dest_idx);
             for input_port in &profile.inputs {
                 if planning
                     .reservations
@@ -265,41 +257,27 @@ impl ShipmentSystem {
                 {
                     continue;
                 }
-                let (target_units, reorder_units, critical_units) =
-                    scaled_input_inventory_targets_for_building(
-                        catalog.as_ref(),
+                let Some((desired_amount, allow_emergency)) =
+                    super::resource::input_restock_request(
+                        &catalog,
                         building,
                         profile,
                         input_port,
-                    );
-                if target_units <= 0.0 {
+                        planning
+                            .reservations
+                            .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id),
+                    )
+                else {
                     continue;
-                }
-                let effective_input_stock = building
-                    .inventory_units(input_port.resource_runtime_id)
-                    + planning
-                        .reservations
-                        .reserved_inbound_amount(dest_idx, input_port.resource_runtime_id);
-                if reorder_units > 0.0 && effective_input_stock >= reorder_units {
-                    continue;
-                }
-                if reorder_units <= 0.0 && effective_input_stock >= target_units {
-                    continue;
-                }
+                };
 
-                let allow_emergency = effective_input_stock <= critical_units;
-                let desired_amount = (target_units - effective_input_stock).max(0.0);
-                if desired_amount < profile.min_shipment_units && !allow_emergency {
-                    continue;
-                }
-
-                let Some(choice) = find_reachable_local_input_hold(
+                let Some(choice) = find_local_supplier(
                     dest_idx,
                     desired_amount,
                     allow_emergency,
                     profile.min_shipment_units,
                     input_port.resource_runtime_id,
-                    building.operating_budget,
+                    remaining_budget,
                     allocator,
                     transit_network,
                     graph,
@@ -307,14 +285,15 @@ impl ShipmentSystem {
                     &planning.supplier_index,
                     &planning.freight_components,
                     &mut planning.route_cache,
-                    planning.max_freight_speed,
-                    tuning.as_ref(),
-                    catalog.as_ref(),
+                    freight_profile,
                     minute_of_day,
+                    catalog.as_ref(),
                     tuning.logistics.truck_load_units,
+                    planning.max_freight_speed,
                 ) else {
                     continue;
                 };
+                remaining_budget = (remaining_budget - choice.total_cost).max(0.0);
                 planning.reservations.record_local_shipment(
                     choice.supplier_idx,
                     dest_idx,
@@ -377,175 +356,6 @@ impl ShipmentSystem {
             self.owa_export_saturation_by_resource[slot] += amount.max(0.0);
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn find_reachable_local_input_hold(
-    dest_idx: usize,
-    desired_amount: f32,
-    allow_emergency: bool,
-    min_shipment_units: f32,
-    resource_runtime_id: ResourceRuntimeId,
-    destination_budget: f32,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    reservations: &ReservationViews,
-    supplier_index: &SupplierCandidateIndex,
-    freight_components: &ModeComponentIndex,
-    route_cache: &mut FreightRouteCache,
-    max_freight_speed: f32,
-    tuning: &RuntimeEconomyTuning,
-    catalog: &RuntimeEconomyCatalog,
-    minute_of_day: u16,
-    truck_load_units: f32,
-) -> Option<LocalInputHoldChoice> {
-    if dest_idx >= allocator.entrances.len() {
-        return None;
-    }
-    let Some(freight_profile) =
-        freight_profile_for_building(catalog, tuning, &allocator.buildings[dest_idx])
-    else {
-        return None;
-    };
-    let Some(buckets) = supplier_index.buckets_for_resource(resource_runtime_id) else {
-        return None;
-    };
-    let destination_components =
-        freight_components.building_components(allocator, graph, dest_idx, TransitFlags::CAR);
-    let destination = &allocator.buildings[dest_idx];
-
-    let mut best_choice = None::<LocalInputHoldChoice>;
-    buckets.scan_nearest(
-        destination_components,
-        destination.center_x,
-        destination.center_y,
-        |event| match event {
-            ReachableBucketScanEvent::Item {
-                item_idx: candidate_idx,
-            } => {
-                update_best_local_input_hold_choice(
-                    &mut best_choice,
-                    candidate_idx,
-                    dest_idx,
-                    desired_amount,
-                    allow_emergency,
-                    min_shipment_units,
-                    resource_runtime_id,
-                    destination_budget,
-                    allocator,
-                    transit_network,
-                    graph,
-                    reservations,
-                    route_cache,
-                    freight_profile,
-                    minute_of_day,
-                    catalog,
-                    truck_load_units,
-                );
-                true
-            }
-            ReachableBucketScanEvent::RingComplete {
-                next_min_distance_sq,
-            } => {
-                let Some(choice) = best_choice else {
-                    return true;
-                };
-                lower_bound_travel_seconds(next_min_distance_sq, max_freight_speed)
-                    <= choice.travel_seconds
-            }
-        },
-    );
-    best_choice
-}
-
-#[allow(clippy::too_many_arguments)]
-fn update_best_local_input_hold_choice(
-    best_choice: &mut Option<LocalInputHoldChoice>,
-    candidate_idx: usize,
-    dest_idx: usize,
-    desired_amount: f32,
-    allow_emergency: bool,
-    min_shipment_units: f32,
-    resource_runtime_id: ResourceRuntimeId,
-    destination_budget: f32,
-    allocator: &BuildingAllocator,
-    transit_network: &TransitNetwork,
-    graph: &RegionGraph,
-    reservations: &ReservationViews,
-    route_cache: &mut FreightRouteCache,
-    freight_profile: &crate::simulation::economy::definitions::FreightTimingProfile,
-    minute_of_day: u16,
-    catalog: &RuntimeEconomyCatalog,
-    truck_load_units: f32,
-) {
-    if candidate_idx == dest_idx || candidate_idx >= allocator.buildings.len() {
-        return;
-    }
-    let supplier = &allocator.buildings[candidate_idx];
-    if supplier.broken
-        || supplier.economy_broken
-        || supplier.is_deserted
-        || supplier.is_under_construction()
-    {
-        return;
-    }
-    let Some(supplier_profile) = catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
-    else {
-        return;
-    };
-    let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
-        return;
-    };
-    let reserved = reservations.reserved_outbound_amount(candidate_idx, resource_runtime_id);
-    let available = (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
-    if available <= 0.0 {
-        return;
-    }
-
-    let effective_unit_price = adjusted_unit_price(
-        supplier_profile.unit_price_currency,
-        freight_profile,
-        minute_of_day,
-    );
-    let max_affordable = destination_budget.max(0.0) / effective_unit_price.max(f32::EPSILON);
-    let Some(amount) = quantize_requested_amount(
-        desired_amount,
-        available,
-        max_affordable,
-        min_shipment_units,
-        allow_emergency,
-        truck_load_units,
-    ) else {
-        return;
-    };
-    let Some(travel_seconds) =
-        route_cache.between_buildings(candidate_idx, dest_idx, allocator, transit_network, graph)
-    else {
-        return;
-    };
-
-    let total_cost = amount * effective_unit_price;
-    let choice = LocalInputHoldChoice {
-        supplier_idx: candidate_idx,
-        amount,
-        total_cost,
-        travel_seconds,
-    };
-    if best_choice.is_none_or(|best| local_input_hold_choice_precedes(choice, best)) {
-        *best_choice = Some(choice);
-    }
-}
-
-fn local_input_hold_choice_precedes(
-    left: LocalInputHoldChoice,
-    right: LocalInputHoldChoice,
-) -> bool {
-    left.travel_seconds
-        .total_cmp(&right.travel_seconds)
-        .then_with(|| left.total_cost.total_cmp(&right.total_cost))
-        .then_with(|| left.supplier_idx.cmp(&right.supplier_idx))
-        .is_lt()
 }
 
 fn resource_slot(resource_runtime_id: ResourceRuntimeId, resource_count: usize) -> Option<usize> {

@@ -5,14 +5,11 @@
 use super::super::*;
 
 impl SimulationNode {
+    /// Exports one native height buffer shared by preview and refined render uploads.
     pub(in crate::nodes::simulation_node) fn terrain_patch_dict(
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
     ) -> VarDictionary {
         let mut dict = Self::terrain_patch_metadata_dict(patch);
-        dict.set(
-            "height_data",
-            PackedFloat32Array::from_iter(patch.height_data.iter().copied()),
-        );
         dict.set("height_bytes", Self::packed_f32_bytes(&patch.height_data));
         dict
     }
@@ -64,7 +61,7 @@ impl SimulationNode {
 
     pub(in crate::nodes::simulation_node) fn packed_f32_bytes(values: &[f32]) -> PackedByteArray {
         let bytes = Self::f32_bytes_vec(values);
-        PackedByteArray::from_iter(bytes)
+        PackedByteArray::from(bytes.as_slice())
     }
 
     pub(in crate::nodes::simulation_node) fn refined_patch_cache_key(
@@ -138,7 +135,7 @@ impl SimulationNode {
                 let mut dict = Self::terrain_patch_metadata_dict(patch);
                 dict.set(
                     "height_bytes",
-                    PackedByteArray::from_iter(height_bytes.iter().copied()),
+                    PackedByteArray::from(height_bytes.as_slice()),
                 );
                 dict
             }

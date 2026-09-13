@@ -3,7 +3,9 @@
 //! Authored TOML and JSON schema for economy profiles, controllers, and scenarios.
 
 use super::runtime::RuntimeEconomyTuning;
-use super::serde_helpers::{default_duration_days, default_one, deserialize_u32_from_number};
+use super::serde_helpers::{
+    default_duration_days, default_one, deserialize_u16_from_number, deserialize_u32_from_number,
+};
 use crate::simulation::work_area::EXPLICIT_WORK_AREA_BASE_M2;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +55,8 @@ impl AuthoredProfileKind {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct EconomyProject {
+    /// Resource identities persisted by inventories and freight; IDs must never be reassigned.
+    pub(super) resources: Vec<EconomyResource>,
     #[serde(default)]
     pub(super) profiles: Vec<EconomyProfile>,
     pub(super) runtime_tuning: RuntimeEconomyTuning,
@@ -60,6 +64,19 @@ pub(super) struct EconomyProject {
     pub(super) controllers: Vec<EconomyController>,
     #[serde(default)]
     pub(super) scenarios: Vec<EconomyScenario>,
+}
+
+/// Authored stable resource identity and optional import-only reference price.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct EconomyResource {
+    /// Authored resource name referenced by recipe ports.
+    pub(super) id: String,
+    /// Explicit, contiguous one-based identity, independent of name or file ordering.
+    #[serde(deserialize_with = "deserialize_u16_from_number")]
+    pub(super) runtime_id: u16,
+    /// Reference price for import-only goods that have no producing profile yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) import_unit_price_currency: Option<f32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -150,6 +167,9 @@ pub(super) struct EconomyScenario {
     pub(super) display_name: String,
     #[serde(default)]
     pub(super) description: String,
+    /// Explicit OWA fallback goods in this authored sandbox scenario.
+    #[serde(default)]
+    pub(super) owa_import_resources: Vec<String>,
     #[serde(
         default = "default_duration_days",
         deserialize_with = "deserialize_u32_from_number"
@@ -161,12 +181,6 @@ pub(super) struct EconomyScenario {
     pub(super) average_household_size: f32,
     #[serde(default)]
     pub(super) starting_household_stock_days: f32,
-    #[serde(default)]
-    pub(super) replenishment_target_days: f32,
-    #[serde(default)]
-    pub(super) replenishment_trigger_days: f32,
-    #[serde(default)]
-    pub(super) pickup_cadence_hours: f32,
     #[serde(default)]
     pub(super) nodes: Vec<ScenarioNode>,
     #[serde(default)]
@@ -198,6 +212,7 @@ pub(super) struct ScenarioControllerLink {
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct ProfilesFile {
+    pub(super) resources: Vec<EconomyResource>,
     #[serde(default)]
     pub(super) profiles: Vec<EconomyProfile>,
     pub(super) runtime_tuning: RuntimeEconomyTuning,

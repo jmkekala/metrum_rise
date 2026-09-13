@@ -12,6 +12,7 @@ extends Node3D
 const WATER_SHADER := preload("res://assets/materials/water.gdshader")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
+const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
@@ -1251,13 +1252,13 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		if patch_node != null:
 			mesh = patch_node.mesh
 		var depth_stats: Dictionary = _water_patch_depth_stats(patch_data)
-		var layer_stats: Dictionary = {}
+		var baseline_stats: Dictionary = {}
 		if simulation_node.has_method("get_water_patch_debug"):
-			layer_stats = simulation_node.get_water_patch_debug(key.x, key.y) as Dictionary
+			baseline_stats = simulation_node.get_water_patch_debug(key.x, key.y) as Dictionary
 		var depth_sample_count: int = _water_patch_depth_sample_count(patch_data)
-		var layer_sample_count: int = int(layer_stats.get("total_samples", depth_sample_count))
-		var baseline_nonzero_count: int = int(layer_stats.get("baseline_nonzero", -1))
-		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
+		var baseline_sample_count: int = int(baseline_stats.get("total_samples", depth_sample_count))
+		var baseline_nonzero_count: int = int(baseline_stats.get("baseline_nonzero", -1))
+		var clip_stats: Dictionary = RenderDebug.clip_stats(_road_clip_loop_groups_from_patch_data(patch_data))
 		var road_clip_status: String = str(patch_data.get("road_clip_status", "ok"))
 		var road_clip_error: String = str(patch_data.get("road_clip_error", "none"))
 		var road_clip_source_count: int = int(patch_data.get("road_clip_source_count", 0))
@@ -1266,12 +1267,12 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 			_empty_water_mesh_stats(int(patch.get("lod_step", 1)))
 		)
 		lines.append(
-			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f visible_nonzero=%d/%d visible_max=%.3f visible_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f clip_status=%s clip_error=%s clip_sources=%d clip_groups=%d clip_loops=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) mesh_lod=%d mesh_cells=%d mesh_full=%d mesh_partial=%d mesh_conservative=%d mesh_dry=%d mesh_road_clipped=%d mesh_tris=%d"
 			% [
 				key.x,
 				key.y,
 				str(resident_patch_lookup.has(key)),
-				_road_geometry_mesh_label(mesh),
+				RenderDebug.mesh_label(mesh),
 				int(patch_data["sample_width"]),
 				int(patch_data["sample_height"]),
 				int(patch_data["texture_width"]),
@@ -1286,13 +1287,9 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(depth_stats.get("max", 0.0)),
 				float(depth_stats.get("sum", 0.0)),
 				baseline_nonzero_count,
-				layer_sample_count,
-				float(layer_stats.get("baseline_max", -1.0)),
-				float(layer_stats.get("baseline_sum", -1.0)),
-				int(layer_stats.get("visible_nonzero", -1)),
-				layer_sample_count,
-				float(layer_stats.get("visible_max", -1.0)),
-				float(layer_stats.get("visible_sum", -1.0)),
+				baseline_sample_count,
+				float(baseline_stats.get("baseline_max", -1.0)),
+				float(baseline_stats.get("baseline_sum", -1.0)),
 				road_clip_status,
 				road_clip_error,
 				road_clip_source_count,
@@ -1300,7 +1297,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				int(clip_stats.get("loop_count", 0)),
 				int(clip_stats.get("point_count", 0)),
 				float(clip_stats.get("area", 0.0)),
-				_road_geometry_bounds_label(clip_stats),
+				RenderDebug.bounds_label(clip_stats),
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				int(mesh_stats.get("lod_step", patch.get("lod_step", 1))),
@@ -1344,7 +1341,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 
 func _road_geometry_water_border_line() -> String:
 	var border_depths: PackedFloat32Array = simulation_node.get_water_border_depths()
-	var depth_stats: Dictionary = _road_geometry_float_stats(border_depths)
+	var depth_stats: Dictionary = RenderDebug.float_stats(border_depths)
 	var border_mesh: Mesh = null
 	if water_border_instance != null:
 		border_mesh = water_border_instance.mesh
@@ -1352,7 +1349,7 @@ func _road_geometry_water_border_line() -> String:
 	return (
 		"water_border mesh=\"%s\" terrain_border_revision=%d depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f"
 		% [
-			_road_geometry_mesh_label(border_mesh),
+			RenderDebug.mesh_label(border_mesh),
 			terrain_revision,
 			int(depth_stats.get("nonzero", 0)),
 			border_depths.size(),
@@ -1464,23 +1461,14 @@ func _water_patch_data_for_key(key: Vector2i, _allow_async: bool = false) -> Dic
 	return {}
 
 func _water_patch_depth_bytes(patch_data: Dictionary) -> PackedByteArray:
-	var depth_bytes: PackedByteArray = (
-		patch_data.get("depth_bytes", PackedByteArray())
-		as PackedByteArray
-	)
-	if not depth_bytes.is_empty():
-		return depth_bytes
-	return (patch_data["depth_data"] as PackedFloat32Array).to_byte_array()
+	return patch_data["depth_bytes"] as PackedByteArray
 
 func _water_patch_depth_stats(patch_data: Dictionary) -> Dictionary:
-	if patch_data.has("depth_data"):
-		return _road_geometry_float_stats(patch_data["depth_data"] as PackedFloat32Array)
-	return _road_geometry_float_stats(PackedFloat32Array())
+	# Decode the same native f32 byte payload used by the depth texture upload.
+	return RenderDebug.float_stats(_water_patch_depth_bytes(patch_data).to_float32_array())
 
 func _water_patch_depth_sample_count(patch_data: Dictionary) -> int:
-	if patch_data.has("depth_data"):
-		return (patch_data["depth_data"] as PackedFloat32Array).size()
-	return int(patch_data.get("texture_width", 0)) * int(patch_data.get("texture_height", 0))
+	return _water_patch_depth_bytes(patch_data).size() >> 2
 
 func _patch_road_clip_signature(patch_data: Dictionary) -> int:
 	return int(patch_data.get("road_clip_signature", 0))
@@ -2556,141 +2544,6 @@ func _current_terrain_border_revision() -> int:
 	if terrain_node != null and terrain_node.has_method("get_border_revision"):
 		return int(terrain_node.get_border_revision())
 	return -1
-
-func _road_geometry_float_stats(values: PackedFloat32Array) -> Dictionary:
-	if values.is_empty():
-		return {
-			"min": 0.0,
-			"max": 0.0,
-			"nonzero": 0,
-			"sum": 0.0,
-		}
-	var min_value: float = values[0]
-	var max_value: float = values[0]
-	var nonzero_count: int = 0
-	var sum_value: float = 0.0
-	for value_variant in values:
-		var value: float = float(value_variant)
-		min_value = minf(min_value, value)
-		max_value = maxf(max_value, value)
-		sum_value += value
-		if absf(value) > 0.001:
-			nonzero_count += 1
-	return {
-		"min": min_value,
-		"max": max_value,
-		"nonzero": nonzero_count,
-		"sum": sum_value,
-	}
-
-func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
-	var stats: Dictionary = {
-		"group_count": 0,
-		"loop_count": 0,
-		"point_count": 0,
-		"area": 0.0,
-		"has_bounds": false,
-		"min_x": 0.0,
-		"max_x": 0.0,
-		"min_z": 0.0,
-		"max_z": 0.0,
-		"max_bbox_x": 0.0,
-		"max_bbox_z": 0.0,
-	}
-	if not _patch_has_road_clip_loops(patch_data):
-		return stats
-	var loop_groups: Array = _road_clip_loop_groups_from_patch_data(patch_data)
-	var has_bounds: bool = false
-	var min_x: float = 0.0
-	var max_x: float = 0.0
-	var min_z: float = 0.0
-	var max_z: float = 0.0
-	var point_count: int = 0
-	var total_area: float = 0.0
-	var max_bbox_x: float = 0.0
-	var max_bbox_z: float = 0.0
-	var loop_count: int = 0
-	for group_variant in loop_groups:
-		var clip_group: Dictionary = group_variant
-		var bounds: Rect2 = clip_group["bounds"]
-		max_bbox_x = maxf(max_bbox_x, bounds.size.x)
-		max_bbox_z = maxf(max_bbox_z, bounds.size.y)
-		if not has_bounds:
-			min_x = bounds.position.x
-			max_x = bounds.position.x + bounds.size.x
-			min_z = bounds.position.y
-			max_z = bounds.position.y + bounds.size.y
-			has_bounds = true
-		else:
-			min_x = minf(min_x, bounds.position.x)
-			max_x = maxf(max_x, bounds.position.x + bounds.size.x)
-			min_z = minf(min_z, bounds.position.y)
-			max_z = maxf(max_z, bounds.position.y + bounds.size.y)
-		var group_area: float = 0.0
-		var outer_loops: Array = clip_group["outer_loops"]
-		for outer_variant in outer_loops:
-			var outer: Dictionary = outer_variant
-			var outer_points: PackedVector2Array = outer["points"]
-			point_count += outer_points.size()
-			loop_count += 1
-			group_area += absf(_road_geometry_polygon_area(outer_points))
-		var hole_loops: Array = clip_group["hole_loops"]
-		for hole_variant in hole_loops:
-			var hole: Dictionary = hole_variant
-			var hole_points: PackedVector2Array = hole["points"]
-			point_count += hole_points.size()
-			loop_count += 1
-			group_area -= absf(_road_geometry_polygon_area(hole_points))
-		total_area += maxf(0.0, group_area)
-	stats["group_count"] = loop_groups.size()
-	stats["loop_count"] = loop_count
-	stats["point_count"] = point_count
-	stats["area"] = total_area
-	stats["has_bounds"] = has_bounds
-	stats["min_x"] = min_x
-	stats["max_x"] = max_x
-	stats["min_z"] = min_z
-	stats["max_z"] = max_z
-	stats["max_bbox_x"] = max_bbox_x
-	stats["max_bbox_z"] = max_bbox_z
-	return stats
-
-func _road_geometry_polygon_area(points: PackedVector2Array) -> float:
-	if points.size() < 3:
-		return 0.0
-	var area: float = 0.0
-	for index in range(points.size()):
-		var a: Vector2 = points[index]
-		var b: Vector2 = points[(index + 1) % points.size()]
-		area += a.x * b.y - b.x * a.y
-	return area * 0.5
-
-func _road_geometry_bounds_label(stats: Dictionary) -> String:
-	if not bool(stats.get("has_bounds", false)):
-		return "none"
-	return "[(%.3f,%.3f)..(%.3f,%.3f)]" % [
-		float(stats.get("min_x", 0.0)),
-		float(stats.get("min_z", 0.0)),
-		float(stats.get("max_x", 0.0)),
-		float(stats.get("max_z", 0.0)),
-	]
-
-func _road_geometry_mesh_label(mesh: Mesh) -> String:
-	if mesh == null:
-		return "null"
-	if mesh is ArrayMesh:
-		var array_mesh: ArrayMesh = mesh as ArrayMesh
-		var vertex_count: int = 0
-		for surface_index in range(array_mesh.get_surface_count()):
-			var arrays: Array = array_mesh.surface_get_arrays(surface_index)
-			if arrays.size() > Mesh.ARRAY_VERTEX:
-				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
-				vertex_count += vertices.size()
-		return "ArrayMesh surfaces=%d vertices=%d" % [
-			array_mesh.get_surface_count(),
-			vertex_count,
-		]
-	return mesh.get_class()
 
 func _terrain_debug_is_enabled() -> bool:
 	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN").strip_edges()

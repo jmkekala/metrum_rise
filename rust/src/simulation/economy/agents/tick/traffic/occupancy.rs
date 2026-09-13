@@ -5,6 +5,7 @@
 use super::super::super::{TRANSIT_INTERSECTION, TRANSIT_NETWORK};
 use super::super::claims::LaneClaimContext;
 use crate::config::{CAR_LENGTH, IDM_S_MIN, IDM_T_HEAD};
+use crate::simulation::economy::agents::determinism::stable_index;
 
 /// Outcome of trying to reserve a connector lane entry for this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,21 +94,6 @@ pub(in crate::simulation::economy::agents::tick) fn claim_lane_entry(
     lane_claims.claim_lane(agent_idx, lane_id)
 }
 
-/// Returns a stable pseudo-random index for deterministic candidate ordering.
-#[inline(always)]
-pub(in crate::simulation::economy::agents::tick) fn deterministic_choice_index(
-    seed: u64,
-    len: usize,
-) -> usize {
-    if len <= 1 {
-        return 0;
-    }
-    let mut x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    ((x ^ (x >> 31)) as usize) % len
-}
-
 /// Filters connector candidates to clear entries and claims one without allocating.
 pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
     agent_idx: usize,
@@ -130,7 +116,7 @@ pub(in crate::simulation::economy::agents::tick) fn claim_connector_entry(
         return ConnectorEntry::Occupied;
     }
 
-    let start = deterministic_choice_index(choice_seed, candidate_connectors.len());
+    let start = stable_index(choice_seed, candidate_connectors.len());
     for offset in 0..candidate_connectors.len() {
         let candidate = candidate_connectors[(start + offset) % candidate_connectors.len()];
         if claim_lane_entry(agent_idx, candidate, lane_claims) {

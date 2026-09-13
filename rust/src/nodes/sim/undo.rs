@@ -265,6 +265,7 @@ impl SimCore {
             .collect();
 
         Some(BuildingRemovalUndo {
+            treasury_refund: 0.0,
             building_idx,
             original_building_count,
             expected_post_building_ref_revision: self
@@ -289,7 +290,7 @@ impl SimCore {
     }
 
     /// Seals the latest building-removal journal after all deletion-side maintenance completes.
-    pub(crate) fn seal_building_removal_undo(&mut self) {
+    pub(crate) fn seal_building_removal_undo(&mut self, treasury_refund: f64) {
         let Some(SimulationSnapshot {
             runtime: Some(SimulationRuntimeSnapshot::BuildingRemoval(undo)),
             ..
@@ -298,6 +299,7 @@ impl SimCore {
             return;
         };
         undo.expected_post_building_ref_revision = self.allocator.building_ref_revision;
+        undo.treasury_refund = treasury_refund;
     }
 
     fn agent_record_touches_building(
@@ -550,6 +552,7 @@ impl SimCore {
     }
 
     fn restore_building_removal_undo(&mut self, undo: BuildingRemovalUndo) {
+        self.treasury.balance -= undo.treasury_refund;
         let building_idx = undo.building_idx;
         let last_idx = undo.original_building_count - 1;
         let mut buildings = undo.buildings.into_iter().collect::<BTreeMap<_, _>>();
@@ -600,7 +603,11 @@ impl SimCore {
             self.agents.remap_building_indices(&inverse);
             self.households.remap_building_indices(&inverse);
             self.logistics.remap_building_indices(&inverse);
-            self.zoning.remap_parcel_occupancy(building_idx, last_idx);
+            self.zoning.remap_parcel_occupancy(
+                self.allocator.buildings[last_idx].parcel_id,
+                building_idx,
+                last_idx,
+            );
         }
         self.resource_extraction
             .restore_sites_after_building_removal_undo(
@@ -629,7 +636,7 @@ impl SimCore {
                 .to_owned();
             self.agents.agents.push(moved);
             self.logistics
-                .remap_carrier_agent_index(carrier_idx, current_len);
+                .remap_carrier_agent_index(carrier_idx, current_len, &self.agents);
             self.agents.agents.replace(carrier_idx, carrier);
         }
         for (agent_idx, agent) in undo.agents {

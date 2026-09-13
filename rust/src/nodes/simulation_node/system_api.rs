@@ -3,6 +3,7 @@
 //! System and environment Godot API methods.
 
 use super::*;
+use crate::simulation::core::time::{SIMULATION_SPEED_STEPS, validated_simulation_speed};
 
 #[godot_api(secondary)]
 impl SimulationNode {
@@ -40,11 +41,21 @@ impl SimulationNode {
 
     // ── Simulation ──
 
-    /// Sets the simulation speed multiplier.
+    /// Returns the ascending supported speed steps, including pause and the maximum multiplier.
     #[func]
-    pub fn set_simulation_speed(&mut self, speed: f32) {
+    pub fn get_simulation_speed_steps() -> PackedFloat32Array {
+        PackedFloat32Array::from(SIMULATION_SPEED_STEPS.as_slice())
+    }
+
+    /// Queues a supported speed, clamping negative values to pause. Returns false for invalid
+    /// input or a closed simulation command channel, so the UI can preserve its previous display.
+    #[func]
+    pub fn set_simulation_speed(&mut self, speed: f32) -> bool {
+        let Some(speed) = validated_simulation_speed(speed) else {
+            return false;
+        };
         // Use channel so we don't block waiting for the tick lock.
-        let _ = self.cmd_tx.send(SimCommand::SetSpeed(speed.max(0.0)));
+        self.cmd_tx.send(SimCommand::SetSpeed(speed)).is_ok()
     }
 
     /// Updates the camera world-space AABB used to cull agent transform uploads.

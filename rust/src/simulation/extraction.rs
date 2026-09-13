@@ -11,12 +11,14 @@ use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, RuntimeEconomyCatalog, load_runtime_economy_catalog,
 };
 use crate::simulation::economy::households::{
-    building_operation_factors, scaled_output_buffer_capacity_units_for_building,
+    OPERATIONAL_HOURS_PER_DAY, building_operation_factors, consume_hourly_production_inputs,
+    scaled_output_buffer_capacity_units_for_building,
 };
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::work_area::{
-    explicit_work_area_scale, top_up_explicit_work_area_startup_budget,
+    explicit_work_area_scale, remove_work_area_owner, top_up_explicit_work_area_startup_budget,
 };
+use crate::utils::point_in_polygon;
 use godot::prelude::Vector2;
 
 /// Maximum accepted gap from the mine footprint to its extraction polygon.
@@ -24,7 +26,6 @@ pub(crate) const EXTRACTOR_POLYGON_LINK_DISTANCE_M: f32 = 10.0;
 /// Coal units contributed by one square metre of full-richness authored deposit.
 pub(crate) const COAL_UNITS_PER_FULL_RICHNESS_M2: f32 = 6.0;
 
-const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 const MIN_EXTRACTOR_POLYGON_AREA_M2: f32 = 1.0;
 
 /// One placed extraction area and its depletion state.
@@ -38,9 +39,9 @@ pub(crate) struct ExtractorSite {
     pub(crate) polygon_world: Vec<Vector2>,
     /// Cached unsigned extraction polygon area in square metres.
     pub(crate) area_m2: f32,
-    /// Reserve snapshot captured when the polygon was committed.
+    /// Current-area reserve snapshot, floored at this mine's cumulative extracted amount.
     pub(crate) total_reserve_units: f32,
-    /// Units already extracted from this reserve snapshot.
+    /// Cumulative extraction by this mine, retained when its polygon changes.
     pub(crate) extracted_units: f32,
 }
 
@@ -49,6 +50,14 @@ impl ExtractorSite {
     pub(crate) fn remaining_reserve_units(&self) -> f32 {
         (self.total_reserve_units - self.extracted_units).max(0.0)
     }
+
+    fn productive_area_scale(&self) -> f32 {
+        if self.remaining_reserve_units() > 0.0 {
+            explicit_work_area_scale(self.area_m2)
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Result returned after creating or replacing an extractor polygon.
@@ -56,7 +65,7 @@ impl ExtractorSite {
 pub(crate) struct ExtractorSiteSummary {
     /// Accepted extraction area in square metres.
     pub(crate) area_m2: f32,
-    /// Reserve units sampled from authored deposits when the polygon was committed.
+    /// Updated total reserve, including units already extracted before an area change.
     pub(crate) total_reserve_units: f32,
     /// Reserve units remaining after any previous depletion.
     pub(crate) remaining_reserve_units: f32,
@@ -65,6 +74,7 @@ pub(crate) struct ExtractorSiteSummary {
 /// Runtime extraction state for all explicit industry extractor buildings.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ResourceExtractionSystem {
+    // Unique, ascending owner indices support lookup and shared swap-remove repair.
     sites: Vec<ExtractorSite>,
     visual_revision: u64,
 }
@@ -107,8 +117,9 @@ impl ResourceExtractionSystem {
     /// Returns the extraction site attached to one building, if present.
     pub(crate) fn site_for_building(&self, building_idx: usize) -> Option<&ExtractorSite> {
         self.sites
-            .iter()
-            .find(|site| site.building_idx == building_idx)
+            .binary_search_by_key(&building_idx, |site| site.building_idx)
+            .ok()
+            .map(|idx| &self.sites[idx])
     }
 
     /// Removes sites for a swap-removed building and remaps the moved last building.
@@ -117,23 +128,13 @@ impl ResourceExtractionSystem {
         removed_building_idx: usize,
         last_building_idx_before_remove: usize,
     ) {
-        let old_len = self.sites.len();
-        self.sites
-            .retain(|site| site.building_idx != removed_building_idx);
-        let mut changed = self.sites.len() != old_len;
-        if removed_building_idx == last_building_idx_before_remove {
-            if changed {
-                self.bump_visual_revision();
-            }
-            return;
-        }
-        for site in &mut self.sites {
-            if site.building_idx == last_building_idx_before_remove {
-                site.building_idx = removed_building_idx;
-                changed = true;
-            }
-        }
-        if changed {
+        if remove_work_area_owner(
+            &mut self.sites,
+            removed_building_idx,
+            last_building_idx_before_remove,
+            |site| site.building_idx,
+            |site, owner| site.building_idx = owner,
+        ) {
             self.bump_visual_revision();
         }
     }
@@ -183,26 +184,35 @@ impl ResourceExtractionSystem {
             EXTRACTOR_POLYGON_LINK_DISTANCE_M,
         )?;
 
-        let total_reserve_units =
+        let sampled_reserve_units =
             reserve_units_for_resource(&resource_id, deposits, &polygon_world)?;
-        let had_site = self
+        validate_extractor_reserve(sampled_reserve_units, 0.0)?;
+        let position = self
             .sites
-            .iter()
-            .any(|site| site.building_idx == building_idx);
+            .binary_search_by_key(&building_idx, |site| site.building_idx);
+        let had_site = position.is_ok();
+        let extracted_units = position
+            .ok()
+            .map_or(0.0, |idx| self.sites[idx].extracted_units);
+        // Shrinking can exhaust an area, but must not erase already produced coal or
+        // let a later expansion grant that same reserve again.
+        let total_reserve_units = sampled_reserve_units.max(extracted_units);
+        validate_extractor_reserve(total_reserve_units, extracted_units)?;
         let site = ExtractorSite {
             building_idx,
             resource_id,
             polygon_world,
             area_m2,
             total_reserve_units,
-            extracted_units: 0.0,
+            extracted_units,
         };
-        self.sites.retain(|site| site.building_idx != building_idx);
-        self.sites.push(site);
-        self.sites.sort_unstable_by_key(|site| site.building_idx);
+        let area_scale = site.productive_area_scale();
+        match position {
+            Ok(idx) => self.sites[idx] = site,
+            Err(idx) => self.sites.insert(idx, site),
+        }
         self.bump_visual_revision();
         if let Some(building) = allocator.buildings.get_mut(building_idx) {
-            let area_scale = explicit_work_area_scale(area_m2);
             building.set_work_area_scale(area_scale);
             if !had_site && let Ok(catalog) = load_runtime_economy_catalog() {
                 top_up_explicit_work_area_startup_budget(building, catalog.as_ref(), area_scale);
@@ -212,15 +222,15 @@ impl ResourceExtractionSystem {
         Ok(ExtractorSiteSummary {
             area_m2,
             total_reserve_units,
-            remaining_reserve_units: total_reserve_units,
+            remaining_reserve_units: total_reserve_units - extracted_units,
         })
     }
 
-    /// Rebuilds cached building work-area scales from committed extraction sites.
+    /// Rebuilds cached productive area from committed sites; depleted deposits have no capacity.
     pub(crate) fn apply_work_area_scales(&self, allocator: &mut BuildingAllocator) {
         for site in &self.sites {
             if let Some(building) = allocator.buildings.get_mut(site.building_idx) {
-                building.set_work_area_scale(explicit_work_area_scale(site.area_m2));
+                building.set_work_area_scale(site.productive_area_scale());
             }
         }
     }
@@ -281,13 +291,32 @@ impl ResourceExtractionSystem {
             if produced <= 0.0 {
                 continue;
             }
+            consume_hourly_production_inputs(
+                building,
+                profile,
+                area_factor * factors.throughput_factor * (produced / hourly_units),
+            );
             building.add_inventory_units(output_port.resource_runtime_id, produced);
             site.extracted_units += produced;
+            building.set_work_area_scale(site.productive_area_scale());
         }
     }
 
     fn bump_visual_revision(&mut self) {
         self.visual_revision = self.visual_revision.wrapping_add(1);
+    }
+}
+
+/// Validates authoritative reserve/depletion values before area commit, persistence or restore.
+pub(crate) fn validate_extractor_reserve(total: f32, extracted: f32) -> Result<(), String> {
+    if total.is_finite()
+        && extracted.is_finite()
+        && total >= 0.0
+        && (0.0..=total).contains(&extracted)
+    {
+        Ok(())
+    } else {
+        Err("extractor reserves must be finite and satisfy 0 <= extracted <= total".to_owned())
     }
 }
 
@@ -464,30 +493,238 @@ fn point_on_segment(point: Vector2, start: Vector2, end: Vector2) -> bool {
         && point.y <= start.y.max(end.y) + f32::EPSILON
 }
 
-fn point_in_polygon(point: Vector2, polygon: &[Vector2]) -> bool {
-    let mut inside = false;
-    let mut prev = polygon[polygon.len() - 1];
-    for &curr in polygon {
-        let crosses = (curr.y > point.y) != (prev.y > point.y);
-        if crosses {
-            let denom = prev.y - curr.y;
-            if denom.abs() > f32::EPSILON {
-                let intersection_x = (prev.x - curr.x) * (point.y - curr.y) / denom + curr.x;
-                if point.x < intersection_x {
-                    inside = !inside;
-                }
-            }
-        }
-        prev = curr;
-    }
-    inside
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::simulation::core::config::WorldConfig;
     use crate::simulation::resources::RESOURCE_RICHNESS_MAX;
+
+    fn indexed_mine(building_idx: usize) -> ExtractorSite {
+        ExtractorSite {
+            building_idx,
+            resource_id: COAL_RESOURCE_ID.to_owned(),
+            polygon_world: vec![Vector2::ZERO, Vector2::RIGHT, Vector2::ONE],
+            area_m2: 0.5,
+            total_reserve_units: 100_000.0,
+            extracted_units: building_idx as f32,
+        }
+    }
+
+    #[test]
+    fn work_area_removal_preserves_owner_state_and_restore_order() {
+        use crate::simulation::agriculture::{AgricultureSystem, FieldSite};
+
+        for mask in 0..64 {
+            let original: Vec<_> = (0..6)
+                .rev()
+                .filter(|idx| mask & (1 << idx) != 0)
+                .map(indexed_mine)
+                .collect();
+            for removed in 0..6 {
+                let mut mines = ResourceExtractionSystem::from_sites(original.clone());
+                let mut farms = AgricultureSystem::from_sites(
+                    original
+                        .iter()
+                        .map(|site| FieldSite {
+                            building_idx: site.building_idx,
+                            resource_id: "grain".to_owned(),
+                            polygon_world: site.polygon_world.clone(),
+                            area_m2: site.extracted_units,
+                        })
+                        .collect(),
+                );
+                let revision = mines.visual_revision();
+                let mut expected: Vec<_> = original
+                    .iter()
+                    .filter(|site| site.building_idx != removed)
+                    .map(|site| {
+                        let owner = if site.building_idx == 5 {
+                            removed
+                        } else {
+                            site.building_idx
+                        };
+                        (owner, site.extracted_units)
+                    })
+                    .collect();
+                expected.sort_unstable_by_key(|&(owner, _)| owner);
+                let changed = original
+                    .iter()
+                    .any(|site| site.building_idx == removed || site.building_idx == 5);
+                mines.remove_building_after_swap_remove(removed, 5);
+                farms.remove_building_after_swap_remove(removed, 5);
+                assert_eq!(mines.visual_revision(), revision + u64::from(changed));
+                assert_eq!(farms.visual_revision(), mines.visual_revision());
+                assert_eq!(
+                    mines
+                        .sites()
+                        .iter()
+                        .map(|site| (site.building_idx, site.extracted_units))
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                assert_eq!(
+                    farms
+                        .sites()
+                        .iter()
+                        .map(|site| (site.building_idx, site.area_m2))
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                for owner in 0..6 {
+                    let value = expected
+                        .iter()
+                        .find(|&&(idx, _)| idx == owner)
+                        .map(|&(_, value)| value);
+                    assert_eq!(
+                        mines
+                            .site_for_building(owner)
+                            .map(|site| site.extracted_units),
+                        value
+                    );
+                    assert_eq!(
+                        farms.site_for_building(owner).map(|site| site.area_m2),
+                        value
+                    );
+                }
+                let restored = original
+                    .iter()
+                    .filter(|site| site.building_idx == removed || site.building_idx == 5)
+                    .cloned()
+                    .collect();
+                mines.restore_sites_after_building_removal_undo(removed, 5, restored);
+                let reloaded = ResourceExtractionSystem::from_sites(original.clone());
+                assert_eq!(
+                    mines
+                        .sites()
+                        .iter()
+                        .map(|site| (site.building_idx, site.extracted_units))
+                        .collect::<Vec<_>>(),
+                    reloaded
+                        .sites()
+                        .iter()
+                        .map(|site| (site.building_idx, site.extracted_units))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual release timing: cargo test --release benchmark_extraction_site_lookup -- --ignored --nocapture"]
+    fn benchmark_extraction_site_lookup() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for count in [16, 1_024, 65_536] {
+            let mut system = ResourceExtractionSystem::from_sites(
+                (0..count).map(|idx| indexed_mine(idx * 2)).collect(),
+            );
+            let queries: Vec<_> = (0..128).map(|idx| idx * 12_289 % (2 * count)).collect();
+            let expected: usize = queries
+                .iter()
+                .filter(|&&idx| idx % 2 == 0)
+                .map(|idx| idx + 1)
+                .sum();
+            for mode in ["lookup", "unrelated_removal"] {
+                let mut samples = Vec::with_capacity(21);
+                for sample in 0..24 {
+                    let start = Instant::now();
+                    let mut checksum = 0;
+                    for &query in &queries {
+                        if mode == "lookup" {
+                            checksum += system
+                                .site_for_building(black_box(query))
+                                .map_or(0, |site| site.building_idx + 1);
+                        } else {
+                            system.remove_building_after_swap_remove(
+                                black_box(count * 2),
+                                black_box(count * 2 + 1),
+                            );
+                        }
+                    }
+                    let elapsed = start.elapsed().as_secs_f64() * 1_000.0;
+                    assert_eq!(checksum, if mode == "lookup" { expected } else { 0 });
+                    assert_eq!(system.visual_revision(), 1);
+                    black_box(&system);
+                    if sample >= 3 {
+                        samples.push(elapsed);
+                    }
+                }
+                samples.sort_by(f64::total_cmp);
+                eprintln!(
+                    "extraction_sites sites={count} mode={mode} queries=128 median_ms={:.6} checksum={expected}",
+                    samples[10]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replacing_mine_area_preserves_cumulative_extraction() {
+        use crate::simulation::buildings::allocator::indexed_test_building;
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::zoning::ZoneType;
+
+        let config = WorldConfig::new(40.0, 40.0, 10.0, 10.0);
+        let mut deposits = ResourceDepositSystem::from_world_config(&config);
+        deposits.set_coal_richness_at(2, 2, RESOURCE_RICHNESS_MAX);
+        deposits.set_coal_richness_at(3, 2, RESOURCE_RICHNESS_MAX);
+        let manifest = serde_json::from_value(serde_json::json!({
+            "asset_id": "mine", "display_name": "Mine fixture",
+            "building": {
+                "placement_mode": "explicit", "lot_width_cells": 3, "lot_depth_cells": 3,
+                "economy_profile": "coal_mine_basic",
+                "extractor": {"resource": "coal", "area_mode": "player_polygon"}
+            }
+        }))
+        .unwrap();
+        let mut allocator = BuildingAllocator::new();
+        allocator.registry.register("test", manifest, String::new());
+        let mut mine = indexed_test_building("test:mine".to_owned(), ZoneType::None, 0);
+        let catalog = load_runtime_economy_catalog().unwrap();
+        mine.economy_profile_runtime_id = catalog
+            .profile_for_id("coal_mine_basic")
+            .unwrap()
+            .runtime_id;
+        allocator.buildings.push(mine);
+        allocator.push_building_site_client(0, 10.0);
+        let polygon = |right| {
+            vec![
+                Vector2::new(-5.0, -5.0),
+                Vector2::new(right, -5.0),
+                Vector2::new(right, 5.0),
+                Vector2::new(-5.0, 5.0),
+            ]
+        };
+        let mut extraction = ResourceExtractionSystem::new();
+        let first = extraction
+            .commit_site(0, polygon(15.0), &deposits, &mut allocator)
+            .unwrap();
+        assert_eq!(first.total_reserve_units, 1_200.0);
+        extraction.sites[0].extracted_units = 900.0;
+        allocator.buildings[0].operating_budget = 1.0;
+        for (right, expected_remaining) in [(15.0, 300.0), (5.0, 0.0), (15.0, 300.0)] {
+            let summary = extraction
+                .commit_site(0, polygon(right), &deposits, &mut allocator)
+                .unwrap();
+            let site = extraction.site_for_building(0).unwrap();
+            assert_eq!(
+                site.extracted_units, 900.0,
+                "editing cannot restore extracted coal"
+            );
+            assert_eq!(site.remaining_reserve_units(), expected_remaining);
+            assert_eq!(summary.remaining_reserve_units, expected_remaining);
+            assert_eq!(summary.total_reserve_units, expected_remaining + 900.0);
+            assert_eq!(
+                allocator.buildings[0].work_area_scale > 0.0,
+                expected_remaining > 0.0
+            );
+            assert_eq!(
+                allocator.buildings[0].operating_budget, 1.0,
+                "edits cannot regrant startup funds"
+            );
+        }
+    }
 
     #[test]
     fn coal_reserve_uses_polygon_area_and_richness() {

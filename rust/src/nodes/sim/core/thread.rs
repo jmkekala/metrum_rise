@@ -591,8 +591,7 @@ pub(crate) fn run_sim_thread(
                         &mut c.transit_network,
                         &mut c.region_graph,
                         dt,
-                        c.time.day_index,
-                        c.time.minute_of_day,
+                        &c.time,
                     );
                 });
 
@@ -641,7 +640,6 @@ pub(crate) fn run_sim_thread(
                             if crate::debug::is_sim_enabled() {
                                 core.print_sim_console_summary(step_day_index, step_minute_of_day);
                             }
-                            core.print_daily_building_economy_for_day(step_day_index);
                         }
                     }
                 }

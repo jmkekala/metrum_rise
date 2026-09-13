@@ -80,6 +80,18 @@ impl BuildingModeComponents {
         (self.components, self.count as usize)
     }
 
+    /// Appends this building's reachable components to an existing candidate-index buffer.
+    pub(crate) fn append_bucket_entries(
+        self,
+        target: &mut Vec<ReachableBucketEntry>,
+        chunk: (i32, i32),
+        item_idx: usize,
+    ) {
+        for &component in self.as_slice() {
+            target.push(ReachableBucketEntry::new(component, chunk, item_idx));
+        }
+    }
+
     fn push(&mut self, component: u32) {
         if component == NO_COMPONENT || self.as_slice().contains(&component) {
             return;
@@ -319,7 +331,12 @@ fn entrance_supports_mode(
     }
 }
 
-fn scan_ring_chunks(origin_chunk: (i32, i32), ring: i32, mut visit: impl FnMut((i32, i32))) {
+/// Visits each chunk on one square ring once, in O(ring) time without allocation.
+pub(super) fn scan_ring_chunks(
+    origin_chunk: (i32, i32),
+    ring: i32,
+    mut visit: impl FnMut((i32, i32)),
+) {
     if ring == 0 {
         visit(origin_chunk);
         return;
@@ -344,7 +361,8 @@ fn scan_ring_chunks(origin_chunk: (i32, i32), ring: i32, mut visit: impl FnMut((
     }
 }
 
-fn min_possible_ring_distance_sq(
+/// Returns the squared distance to the nearest chunk bounds on the requested ring.
+pub(super) fn min_possible_ring_distance_sq(
     origin_x: f32,
     origin_y: f32,
     origin_chunk: (i32, i32),

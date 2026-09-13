@@ -38,7 +38,6 @@ pub(in crate::nodes::simulation_node) fn budget_ledger_entry_dict(
     dict.set("power_unmet", entry.power_unmet);
     dict.set("power_coverage", entry.power_coverage);
     dict.set("coal_inventory", entry.coal_inventory);
-    dict.set("coal_bought", entry.coal_bought);
     dict.set("coal_consumed", entry.coal_consumed);
     dict.set("electricity_fuel_cost", entry.electricity_fuel_cost);
     dict.set("electricity_wage_cost", entry.electricity_wage_cost);

@@ -270,11 +270,13 @@ impl SimCore {
     }
 
     fn run_building_allocator_maintenance_internal(&mut self) {
-        self.allocator.tick(
+        self.allocator.maintain(
+            0,
             &mut self.zoning,
             &mut self.agents,
             &mut self.households,
             &mut self.logistics,
+            &mut self.treasury.balance,
             &mut self.transit_network,
             &mut self.region_graph,
         );
@@ -514,12 +516,14 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        let treasury_before = self.treasury.balance;
         let removed = self.allocator.remove_building_for_bulldoze(
             building_idx,
             &mut self.zoning,
             &mut self.agents,
             &mut self.households,
             &mut self.logistics,
+            &mut self.treasury.balance,
         );
         if !removed {
             if record_undo {
@@ -533,7 +537,7 @@ impl SimCore {
         }
         self.rebuild_building_entrances_internal();
         if record_undo {
-            self.seal_building_removal_undo();
+            self.seal_building_removal_undo(self.treasury.balance - treasury_before);
         }
         self.transit_network.flow_fields.mark_all_dirty();
         self.terrain_dirty = true;
@@ -824,7 +828,6 @@ impl SimCore {
         self.mark_terrain_authoring_payload_bounds(pos, radius);
     }
 
-    /// Sets the classification of an edge.
     /// Sets or clears the no-building-spawn flag on an edge.
     pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
@@ -1585,12 +1588,6 @@ impl SimCore {
                 HashSet::from([node_id as u32]),
             );
             self.region_graph.move_node(node_id as u32, pos);
-            for &edge_idx in &affected_edges {
-                let length = self
-                    .region_graph
-                    .calculate_length(&self.region_graph.edge(edge_idx).physical_geometry);
-                self.region_graph.edge_mut(edge_idx).physical_length = length;
-            }
             self.region_graph.rebuild_intersection_clips();
             self.agents.invalidate_lane_ids_for_edges(
                 &affected_edges,
@@ -2234,54 +2231,18 @@ mod tests {
     }
 
     fn test_building(asset_id: &str, center_x: f32, support_height_m: f32) -> Building {
-        Building {
-            center_x,
-            center_y: 0.0,
-            support_height_m,
-            width_cells: 2,
-            depth_cells: 2,
-            zone_profile_runtime_id: 0,
-            parcel_id: 0,
-            zone_type: ZoneType::Residential,
-            facing_dir: Vector2::new(0.0, 1.0),
-            frontage_t: 0.5,
-            side_offset: 1.0,
-            is_deserted: false,
-            budget_distress: false,
-            edge_idx: usize::MAX,
-            side: 1,
-            cell_x: 0,
-            cell_y: 0,
-            occupancy: 0,
-            worker_count: 0,
-            service_funding_override: -1.0,
-            asset_id: asset_id.to_owned(),
-            level: 1,
-            construction_total_hours: 0,
-            construction_remaining_hours: 0,
-            broken: false,
-            economy_profile_runtime_id: 0,
-            economy_broken: false,
-            resource_inventory: Vec::new(),
-            revenue: 0.0,
-            operating_budget: 500.0,
-            profit_tax_budget_baseline: 500.0,
-            last_day_profit: 0.0,
-            shipment_cooldown_hours: 0,
-            daily_owa_input_value: 0.0,
-            daily_local_input_value: 0.0,
-            daily_city_funded_input_cost: 0.0,
-            daily_household_sales_value: 0.0,
-            daily_power_service_units: 0.0,
-            daily_power_served_units: 0.0,
-            recent_power_service_units: 0.0,
-            recent_power_served_units: 0.0,
-            recent_household_sales_value: 0.0,
-            commercial_activity_floor_scale: 0.0,
-            work_area_scale: 1.0,
-            pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
-        }
+        let mut building = crate::simulation::buildings::allocator::indexed_test_building(
+            asset_id.to_owned(),
+            ZoneType::Residential,
+            0,
+        );
+        building.center_x = center_x;
+        building.support_height_m = support_height_m;
+        building.width_cells = 2;
+        building.depth_cells = 2;
+        building.side_offset = 1.0;
+        building.edge_idx = usize::MAX;
+        building
     }
 
     #[test]
@@ -2329,48 +2290,99 @@ mod tests {
     }
 
     #[test]
-    fn set_no_building_spawn_internal_removes_attached_zoning_parcels() {
+    fn set_no_building_spawn_preserves_unrelated_rezone_grace() {
+        use crate::assets::AssetManifest;
+
         let mut core = test_core();
-        let n0 = core
-            .region_graph
-            .add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
-        let n1 = core
-            .region_graph
-            .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
-        core.region_graph.add_edge(Edge {
-            start_node: n0,
-            end_node: n1,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 120.0,
-            physical_length: 120.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
-            physical_geometry: vec![Vector3::new(-60.0, 0.0, 0.0), Vector3::new(60.0, 0.0, 0.0)],
-            deleted: false,
-            no_building_spawn: false,
-            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
-        });
-        let residential = core
-            .zoning
-            .profiles
-            .default_runtime_id_for_zone_type(ZoneType::Residential)
-            .unwrap();
-        core.zoning
-            .place_or_rezone_default_parcel_at(0.0, -20.0, residential, &core.region_graph)
-            .expect("parcel");
+        let manifest: AssetManifest = serde_json::from_value(serde_json::json!({
+            "asset_id": "house", "display_name": "House",
+            "building": {
+                "placement_mode": "zoned_private", "zone_type": "residential", "density": "low",
+                "lot_width_cells": 1, "lot_depth_cells": 1,
+                "flat_size_m2": 80.0, "household_capacity": 1
+            },
+            "mesh_parts": [{"name": "main", "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]}],
+            "anchors": [{"type": "entrance", "name": "main", "position": [0.0, 0.0, 0.5], "forward": [0.0, 0.0, 1.0]}]
+        })).unwrap();
+        manifest.validate().unwrap();
+        core.allocator
+            .registry
+            .register("test", manifest, String::new());
+        let mut parcel_ids = Vec::new();
+        for (idx, (z, zone)) in [(0.0, ZoneType::Residential), (200.0, ZoneType::Commercial)]
+            .into_iter()
+            .enumerate()
+        {
+            let start = core
+                .region_graph
+                .add_node(Vector3::new(-60.0, 0.0, z), NodeType::Junction);
+            let end = core
+                .region_graph
+                .add_node(Vector3::new(60.0, 0.0, z), NodeType::Junction);
+            let edge = add_test_road_edge(&mut core.region_graph, start, end);
+            let profile = core
+                .zoning
+                .profiles
+                .default_runtime_id_for_zone_type(zone)
+                .unwrap();
+            let id = core
+                .zoning
+                .place_or_rezone_default_parcel_at(0.0, z - 20.0, profile, &core.region_graph)
+                .unwrap();
+            let parcel = core.zoning.parcel_by_raw_id(id.raw()).unwrap();
+            let center = parcel.front_center() + parcel.normal() * (core.config.zone_cell_m * 0.5);
+            let mut building = test_building("test:house", center.x, 0.0);
+            building.center_y = center.y;
+            building.width_cells = 1;
+            building.depth_cells = 1;
+            building.edge_idx = edge;
+            building.parcel_id = id.raw();
+            building.zone_profile_runtime_id = profile;
+            building.frontage_t = parcel.frontage_center_t();
+            building.facing_dir = -parcel.normal();
+            building.side = parcel.side();
+            building.side_offset =
+                core.region_graph.edge(edge).width * 0.5 + crate::config::SIDEWALK_WIDTH;
+            core.allocator.buildings.push(building);
+            assert!(core.zoning.occupy_parcel(id.raw(), idx));
+            parcel_ids.push(id.raw());
+        }
+        core.allocator
+            .rebuild_building_site_clients(core.config.zone_cell_m);
+        core.allocator.rebuild_zone_index();
 
         core.set_no_building_spawn_internal(0, true);
 
         assert!(core.region_graph.edge(0).no_building_spawn);
-        assert!(core.zoning.parcels().is_empty());
+        assert!(core.zoning.parcel_by_raw_id(parcel_ids[0]).is_none());
+        assert_eq!(core.allocator.buildings.len(), 1);
+        assert_eq!(core.allocator.buildings[0].parcel_id, parcel_ids[1]);
+        assert_eq!(
+            core.zoning
+                .parcel_by_raw_id(parcel_ids[1])
+                .unwrap()
+                .occupied_building(),
+            Some(0)
+        );
+        for _ in 0..3 {
+            core.set_no_building_spawn_internal(0, false);
+            core.set_no_building_spawn_internal(0, true);
+            assert_eq!(core.allocator.buildings.len(), 1);
+            let building = &core.allocator.buildings[0];
+            assert!(building.pending_redevelopment);
+            assert_eq!(building.rezone_grace_days_remaining, 3);
+        }
+        core.allocator.maintain(
+            1,
+            &mut core.zoning,
+            &mut core.agents,
+            &mut core.households,
+            &mut core.logistics,
+            &mut core.treasury.balance,
+            &mut core.transit_network,
+            &mut core.region_graph,
+        );
+        assert_eq!(core.allocator.buildings[0].rezone_grace_days_remaining, 2);
     }
 
     #[test]
@@ -2529,6 +2541,28 @@ mod tests {
             test_building("building.removed", -20.0, 3.0),
             test_building("building.moved", 20.0, 7.0),
         ];
+        let start = core
+            .region_graph
+            .add_node(Vector3::new(-60.0, 0.0, 0.0), NodeType::Junction);
+        let end = core
+            .region_graph
+            .add_node(Vector3::new(60.0, 0.0, 0.0), NodeType::Junction);
+        let edge = add_test_road_edge(&mut core.region_graph, start, end);
+        let mut parcel_ids = Vec::new();
+        for (idx, x) in [-20.0, 20.0].into_iter().enumerate() {
+            let id = core
+                .zoning
+                .place_or_rezone_default_parcel_at(x, -20.0, 0, &core.region_graph)
+                .unwrap();
+            let parcel = core.zoning.parcel_by_raw_id(id.raw()).unwrap();
+            let building = &mut core.allocator.buildings[idx];
+            building.parcel_id = id.raw();
+            building.edge_idx = edge;
+            building.frontage_t = parcel.frontage_center_t();
+            building.center_y = parcel.center().y;
+            assert!(core.zoning.occupy_parcel(id.raw(), idx));
+            parcel_ids.push(id.raw());
+        }
         core.allocator
             .rebuild_building_site_clients(core.zoning.config.zone_cell_m);
         core.allocator.rebuild_zone_index();
@@ -2537,16 +2571,110 @@ mod tests {
         assert!(core.bulldoze_building(0));
         assert_eq!(core.allocator.buildings.len(), 1);
         assert_eq!(core.allocator.buildings[0].asset_id, "building.moved");
+        assert_eq!(
+            core.zoning
+                .parcel_by_raw_id(parcel_ids[0])
+                .unwrap()
+                .occupied_building(),
+            None
+        );
+        assert_eq!(
+            core.zoning
+                .parcel_by_raw_id(parcel_ids[1])
+                .unwrap()
+                .occupied_building(),
+            Some(0)
+        );
 
         assert!(core.undo_action_internal());
         assert_eq!(core.allocator.buildings.len(), 2);
         assert_eq!(core.allocator.buildings[0].asset_id, "building.removed");
         assert_eq!(core.allocator.buildings[1].asset_id, "building.moved");
+        for (idx, id) in parcel_ids.into_iter().enumerate() {
+            assert_eq!(
+                core.zoning
+                    .parcel_by_raw_id(id)
+                    .unwrap()
+                    .occupied_building(),
+                Some(idx)
+            );
+        }
         assert_eq!(core.allocator.building_sites.len(), original_sites.len());
         for (restored, original) in core.allocator.building_sites.iter().zip(&original_sites) {
             assert_eq!(restored.footprint_world, original.footprint_world);
             assert_eq!(restored.lot_footprint_world, original.lot_footprint_world);
             assert_eq!(restored.support_height_m, original.support_height_m);
+        }
+    }
+
+    #[test]
+    fn building_bulldoze_undo_reverses_only_its_city_freight_refund() {
+        use crate::assets::AssetManifest;
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::economy::logistics::{
+            CarrierClass, Shipment, ShipmentEndpoint, ShipmentStatus,
+        };
+
+        for removed in [0, 1] {
+            let mut core = test_core();
+            let manifest: AssetManifest = serde_json::from_value(serde_json::json!({
+                "asset_id": "water", "display_name": "Water plant",
+                "building": {
+                    "placement_mode": "explicit", "lot_width_cells": 2, "lot_depth_cells": 2,
+                    "service_class": "water", "economy_profile": "water_plant_basic"
+                },
+                "mesh_parts": [{"name": "main", "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]}],
+                "anchors": [{"type": "entrance", "name": "main", "position": [0.0, 0.0, 0.5], "forward": [0.0, 0.0, 1.0]}]
+            })).unwrap();
+            manifest.validate().unwrap();
+            core.allocator
+                .registry
+                .register("test", manifest, String::new());
+            let catalog = load_runtime_economy_catalog().unwrap();
+            let machinery = catalog.resource_runtime_id_for_id("machinery").unwrap();
+            let mut water = test_building("test:water", 20.0, 7.0);
+            water.zone_type = ZoneType::None;
+            water.economy_profile_runtime_id = catalog
+                .profile_for_id("water_plant_basic")
+                .unwrap()
+                .runtime_id;
+            water.daily_city_funded_input_cost = 800.0;
+            core.allocator.buildings = vec![test_building("supplier", -20.0, 3.0), water];
+            core.allocator
+                .rebuild_building_site_clients(core.config.zone_cell_m);
+            core.allocator.rebuild_zone_index();
+            core.treasury.balance = 1_200.0;
+            core.logistics.shipments.push(Shipment {
+                id: 0,
+                resource_runtime_id: machinery,
+                amount: 40.0,
+                source: ShipmentEndpoint::Building(0),
+                destination: ShipmentEndpoint::Building(1),
+                carrier_class: CarrierClass::Truck,
+                status: ShipmentStatus::InTransit,
+                carrier_agent_id: usize::MAX,
+                total_cost: 800.0,
+                eta_hours: 1,
+                queued_hours: 0,
+            });
+
+            assert!(core.bulldoze_building(removed));
+            assert_eq!(core.treasury.balance, 2_000.0);
+            assert!(core.logistics.shipments.is_empty());
+            core.treasury.balance += 9.0;
+
+            assert!(core.undo_action_internal());
+            assert_eq!(core.treasury.balance, 1_209.0);
+            assert_eq!(core.allocator.buildings[1].asset_id, "test:water");
+            assert_eq!(
+                core.allocator.buildings[1].daily_city_funded_input_cost,
+                800.0
+            );
+            assert_eq!(core.logistics.shipments.len(), 1);
+            assert_eq!(
+                core.logistics.shipments[0].destination,
+                ShipmentEndpoint::Building(1)
+            );
         }
     }
 

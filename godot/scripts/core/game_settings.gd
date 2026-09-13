@@ -93,6 +93,8 @@ static func save_ui_scale(ui_scale: float) -> Error:
 	return set_value(SECTION_ACCESSIBILITY, KEY_UI_SCALE, normalized_ui_scale(ui_scale))
 
 static func normalized_ui_scale(ui_scale: float) -> float:
+	if not is_finite(ui_scale):
+		return DEFAULT_UI_SCALE
 	var clamped := clampf(ui_scale, MIN_UI_SCALE, MAX_UI_SCALE)
 	return snappedf(clamped, UI_SCALE_STEP)
 
@@ -193,6 +195,8 @@ static func save_layout_values(layout_id: String, values: Dictionary) -> Error:
 	return save_config(cfg)
 
 static func _write_defaults(cfg: ConfigFile) -> void:
+	# A failed ConfigFile load can retain values parsed before the error.
+	cfg.clear()
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_ACTIVE_CATEGORY, DEFAULT_OPTIONS_CATEGORY)
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_WIDTH, DEFAULT_OPTIONS_WINDOW_WIDTH)
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_HEIGHT, DEFAULT_OPTIONS_WINDOW_HEIGHT)

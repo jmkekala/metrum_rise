@@ -9,9 +9,6 @@ use crate::simulation::network::lanes::LaneType;
 #[test]
 fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -22,8 +19,7 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
 
     let mut allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, north_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_CAR;
     agents.current_node[idx] = west_node;
@@ -34,7 +30,13 @@ fn test_junction_entry_uses_turn_speed_for_remaining_tick() {
     agents.current_path[idx] = vec![west_node, center_node, north_node];
     agents.current_path_index[idx] = 1;
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 10.0, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        10.0,
+        &test_clock(0, 0),
+    );
 
     let lane_id = agents.current_lane_id[idx];
     assert!(lane_id < network.lane_system.lanes.len());
@@ -74,8 +76,7 @@ fn test_vehicle_pass_through_split_continues_on_road_lane() {
 
     let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, east_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_CAR;
     agents.current_node[idx] = west_node;
@@ -86,7 +87,7 @@ fn test_vehicle_pass_through_split_continues_on_road_lane() {
     agents.current_path[idx] = vec![west_node, center_node, east_node];
     agents.current_path_index[idx] = 1;
 
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
     assert_eq!(agents.current_edge[idx], east_edge);
@@ -100,9 +101,6 @@ fn test_vehicle_pass_through_split_continues_on_road_lane() {
 #[test]
 fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -114,8 +112,7 @@ fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
 
     let mut allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, north_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_WALK;
     agents.current_node[idx] = west_node;
@@ -126,7 +123,13 @@ fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
     agents.current_path[idx] = vec![west_node, center_node, north_node];
     agents.current_path_index[idx] = 1;
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 10.0, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        10.0,
+        &test_clock(0, 0),
+    );
 
     let lane_id = agents.current_lane_id[idx];
     assert!(lane_id < network.lane_system.lanes.len());
@@ -150,9 +153,6 @@ fn test_walking_junction_entry_does_not_skip_connector_with_large_tick() {
 #[test]
 fn test_walking_straight_through_junction_uses_composed_crosswalk_connector() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -164,8 +164,7 @@ fn test_walking_straight_through_junction_uses_composed_crosswalk_connector() {
         let west_lane_len = network.lane_system.lanes[west_lane].length;
         let allocator = BuildingAllocator::new();
         let mut agents = AgentSystem::new();
-        let idx =
-            agents.spawn_border_arrival_agent(usize::MAX, east_node, 0.0, 0.0, west_node, 0.0, 0.0);
+        let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
         agents.transit[idx] = TRANSIT_NETWORK;
         agents.transit_mode[idx] = MODE_WALK;
         agents.current_node[idx] = west_node;
@@ -176,7 +175,13 @@ fn test_walking_straight_through_junction_uses_composed_crosswalk_connector() {
         agents.current_path[idx] = vec![west_node, center_node, east_node];
         agents.current_path_index[idx] = 1;
 
-        agents.tick(&allocator, &mut network, &mut graph, 10.0, 0, 0);
+        agents.tick(
+            &allocator,
+            &mut network,
+            &mut graph,
+            10.0,
+            &test_clock(0, 0),
+        );
 
         let connector_id = agents.current_lane_id[idx];
         assert_eq!(agents.transit[idx], TRANSIT_INTERSECTION);
@@ -201,9 +206,6 @@ fn test_walking_straight_through_junction_uses_composed_crosswalk_connector() {
 #[test]
 fn test_walking_final_junction_reaches_exact_destination_sidewalk() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -264,8 +266,7 @@ fn test_walking_final_junction_reaches_exact_destination_sidewalk() {
         ..BuildingEntrance::default()
     });
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_WALK;
     agents.current_node[idx] = west_node;
@@ -280,7 +281,7 @@ fn test_walking_final_junction_reaches_exact_destination_sidewalk() {
     agents.planned_detach_lane_id[idx] = detach_lane as u32;
     agents.planned_detach_lane_d[idx] = 5.0;
 
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let connector_id = agents.current_lane_id[idx];
     assert_eq!(agents.transit[idx], TRANSIT_INTERSECTION);
@@ -297,9 +298,6 @@ fn test_walking_final_junction_reaches_exact_destination_sidewalk() {
 #[test]
 fn test_walking_zero_hop_reverses_on_stationary_sidewalk_connector() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -329,8 +327,7 @@ fn test_walking_zero_hop_reverses_on_stationary_sidewalk_connector() {
         ..BuildingEntrance::default()
     });
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_WALK;
     agents.current_node[idx] = west_node;
@@ -345,7 +342,7 @@ fn test_walking_zero_hop_reverses_on_stationary_sidewalk_connector() {
     agents.planned_detach_lane_id[idx] = detach_lane as u32;
     agents.planned_detach_lane_d[idx] = 5.0;
 
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     let connector_id = agents.current_lane_id[idx];
     assert_eq!(agents.transit[idx], TRANSIT_INTERSECTION);
@@ -387,8 +384,7 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
 
     let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, east_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_WALK;
     agents.current_node[idx] = west_node;
@@ -398,7 +394,7 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
     agents.current_path[idx] = vec![west_node, center_node, east_node];
     agents.current_path_index[idx] = 1;
 
-    agents.tick(&allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(&allocator, &mut network, &mut graph, 0.1, &test_clock(0, 0));
 
     assert_eq!(agents.transit[idx], TRANSIT_NETWORK);
     assert_eq!(agents.current_lane_id[idx], west_lane);
@@ -413,9 +409,6 @@ fn test_walking_missing_crosswalk_route_waits_at_junction_mouth() {
 #[test]
 fn test_zero_hop_access_uses_junction_connector() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -469,8 +462,7 @@ fn test_zero_hop_access_uses_junction_connector() {
         ..BuildingEntrance::default()
     });
     let mut agents = AgentSystem::new();
-    let idx =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.transit_mode[idx] = MODE_CAR;
     agents.current_node[idx] = west_node;
@@ -486,7 +478,13 @@ fn test_zero_hop_access_uses_junction_connector() {
     agents.planned_detach_lane_id[idx] = detach_lane as u32;
     agents.planned_detach_lane_d[idx] = 5.0;
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     let lane_id = agents.current_lane_id[idx];
     assert!(lane_id < network.lane_system.lanes.len());
@@ -514,9 +512,6 @@ fn test_zero_hop_access_uses_junction_connector() {
 #[test]
 fn test_zero_hop_access_wait_keeps_path_index_stable() {
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -550,8 +545,7 @@ fn test_zero_hop_access_wait_keeps_path_index_stable() {
         ..BuildingEntrance::default()
     });
     let mut agents = AgentSystem::new();
-    let blocker =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let blocker = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[blocker] = TRANSIT_INTERSECTION;
     agents.transit_mode[blocker] = MODE_CAR;
     agents.current_node[blocker] = center_node;
@@ -560,8 +554,7 @@ fn test_zero_hop_access_wait_keeps_path_index_stable() {
     agents.lane_distance[blocker] = 1.0;
     agents.speed[blocker] = 0.0;
 
-    let waiter =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let waiter = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[waiter] = TRANSIT_NETWORK;
     agents.transit_mode[waiter] = MODE_CAR;
     agents.current_node[waiter] = west_node;
@@ -578,7 +571,13 @@ fn test_zero_hop_access_wait_keeps_path_index_stable() {
     agents.planned_detach_lane_d[waiter] = 5.0;
 
     for _ in 0..2 {
-        agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+        agents.tick(
+            &mut allocator,
+            &mut network,
+            &mut graph,
+            0.1,
+            &test_clock(0, 0),
+        );
         assert_eq!(agents.transit[waiter], TRANSIT_NETWORK);
         assert_eq!(agents.current_lane_id[waiter], inbound_lane);
         assert_eq!(
@@ -593,9 +592,6 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     use crate::config::{CAR_LENGTH, IDM_S_MIN};
 
     let (mut network, mut graph, _) = build_4way_junction(1, 1);
-    graph.rebuild_intersection_clips();
-    network.lane_system.rebuild(&mut graph);
-    network.cch_graph = CchGraph::build(&graph);
 
     let west_node = 1_u32;
     let center_node = 0_u32;
@@ -629,8 +625,7 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
         ..BuildingEntrance::default()
     });
     let mut agents = AgentSystem::new();
-    let blocker =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let blocker = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[blocker] = TRANSIT_INTERSECTION;
     agents.transit_mode[blocker] = MODE_CAR;
     agents.current_node[blocker] = center_node;
@@ -639,8 +634,7 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     agents.lane_distance[blocker] = CAR_LENGTH + IDM_S_MIN + 0.5;
     agents.speed[blocker] = 0.0;
 
-    let follower =
-        agents.spawn_border_arrival_agent(usize::MAX, center_node, 0.0, 0.0, west_node, 0.0, 0.0);
+    let follower = agents.spawn_border_arrival_agent(usize::MAX, west_node, 0.0, 0.0);
     agents.transit[follower] = TRANSIT_NETWORK;
     agents.transit_mode[follower] = MODE_CAR;
     agents.current_node[follower] = west_node;
@@ -656,7 +650,13 @@ fn test_zero_hop_access_enters_spaced_occupied_connector() {
     agents.planned_detach_lane_id[follower] = detach_lane as u32;
     agents.planned_detach_lane_d[follower] = 5.0;
 
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
+    agents.tick(
+        &mut allocator,
+        &mut network,
+        &mut graph,
+        0.1,
+        &test_clock(0, 0),
+    );
 
     assert_eq!(agents.transit[follower], TRANSIT_INTERSECTION);
     assert_eq!(agents.current_lane_id[follower], connector_lane);

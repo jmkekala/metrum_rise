@@ -19,12 +19,7 @@ const FAR_MARGIN_M := 1000.0
 const FOCUS_PADDING_MULT := 2.5
 const INITIAL_FOCUS_RADIUS_M := 8.0
 
-var _cam: Camera3D
-
-var pivot    := Vector3.ZERO
-var yaw      := -0.785   # -45 deg
-var pitch    := -0.785   # -45 deg
-var distance := 20.0
+var _cam: CameraNode
 
 var _orbit_active := false
 var _pan_active   := false
@@ -32,20 +27,14 @@ var _pan_active   := false
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
-	_cam = get_parent().find_child("CameraNode", true, false) as Camera3D
+	_cam = get_parent().find_child("CameraNode", true, false) as CameraNode
 	if not _cam:
 		push_error("EditorCameraInput: no CameraNode found in parent scene")
 		return
-	if _cam.has_method("set_distance_bounds"):
-		_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
-	if _cam.has_method("set_clip_policy"):
-		_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
-	if _cam.has_method("set_focus_padding"):
-		_cam.set_focus_padding(FOCUS_PADDING_MULT)
-	if _cam.has_method("focus_on"):
-		_cam.focus_on(Vector3.ZERO, INITIAL_FOCUS_RADIUS_M)
-	else:
-		_update_transform()
+	_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
+	_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
+	_cam.set_focus_padding(FOCUS_PADDING_MULT)
+	_cam.focus_on(Vector3.ZERO, INITIAL_FOCUS_RADIUS_M)
 
 func _process(delta: float) -> void:
 	if not _cam or _ui_captures_editor_keyboard_input():
@@ -64,20 +53,13 @@ func _process(delta: float) -> void:
 	if pan_axis.length_squared() == 0.0:
 		return
 
-	if _cam.has_method("pan"):
-		pan_axis = pan_axis.normalized()
-		_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
+	_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
 
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
 	if not _cam:
 		return
-	if _cam.has_method("focus_on"):
-		_cam.focus_on(center, radius)
-		return
-	pivot    = center
-	distance = max(radius * 2.5, 3.0)
-	_update_transform()
+	_cam.focus_on(center, radius)
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -101,38 +83,19 @@ func _input(event: InputEvent) -> void:
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_UP:
 				if not over_ui:
-					if _cam.has_method("zoom"):
-						_cam.zoom(1.0)
-					else:
-						distance = maxf(MIN_DISTANCE, distance / 1.2)
-						_update_transform()
+					_cam.zoom(1.0)
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if not over_ui:
-					if _cam.has_method("zoom"):
-						_cam.zoom(-1.0)
-					else:
-						distance = minf(MAX_DISTANCE, distance * 1.2)
-						_update_transform()
+					_cam.zoom(-1.0)
 					get_viewport().set_input_as_handled()
 
 	elif event is InputEventMouseMotion:
 		if _orbit_active:
-			if _cam.has_method("orbit"):
-				_cam.orbit(event.relative)
-			else:
-				yaw   -= event.relative.x * 0.005
-				pitch  = clampf(pitch - event.relative.y * 0.005, -1.5, -0.05)
-				_update_transform()
+			_cam.orbit(event.relative)
 			get_viewport().set_input_as_handled()
 		elif _pan_active:
-			if _cam.has_method("pan_screen"):
-				_cam.pan_screen(event.relative)
-			else:
-				var right: Vector3 = _cam.global_transform.basis.x
-				pivot -= right * event.relative.x * distance * 0.001
-				pivot += Vector3.UP * event.relative.y * distance * 0.001
-				_update_transform()
+			_cam.pan_screen(event.relative)
 			get_viewport().set_input_as_handled()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -166,10 +129,3 @@ func _ui_captures_editor_keyboard_input() -> bool:
 		or focus_owner is CodeEdit
 	)
 	return _ui_has_modal_popup() or editing_focus
-
-func _update_transform() -> void:
-	if not _cam:
-		return
-	var rotation := Basis(Vector3.UP, yaw) * Basis(Vector3.RIGHT, pitch)
-	_cam.global_position = pivot + rotation * Vector3(0.0, 0.0, distance)
-	_cam.look_at(pivot)

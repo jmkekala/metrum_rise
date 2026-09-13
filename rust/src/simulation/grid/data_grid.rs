@@ -11,7 +11,7 @@ pub struct DataGrid<T: Clone> {
     pub width: usize,
     /// Grid height (number of rows).
     pub height: usize,
-    /// Raw soul of the grid: a flat vector of data.
+    /// Cell values in row-major order.
     pub data: Vec<T>,
 }
 
@@ -58,12 +58,18 @@ impl<T: Clone> DataGrid<T> {
 
 impl DataGrid<f32> {
     /// Samples a value from the grid using bilinear interpolation.
-    /// `x` and `y` are in grid coordinates [0, width) and [0, height).
+    /// Coordinates use cell indices and clamp to the grid edges. A single row or column
+    /// interpolates along its non-collapsed axis; empty grids return zero.
     pub fn sample_bilinear(&self, x: f32, y: f32) -> f32 {
         if self.width < 2 || self.height < 2 {
-            return *self
-                .get(x.round() as usize, y.round() as usize)
-                .unwrap_or(&0.0);
+            if self.data.len() < 2 {
+                return self.data.first().copied().unwrap_or(0.0);
+            }
+            // A single row and a single column both store their remaining axis contiguously.
+            let coordinate = if self.width == 1 { y } else { x };
+            let lower = (coordinate as usize).min(self.data.len() - 2);
+            let fraction = (coordinate - lower as f32).clamp(0.0, 1.0);
+            return self.data[lower] * (1.0 - fraction) + self.data[lower + 1] * fraction;
         }
 
         let x0 = (x as usize).min(self.width - 2);
@@ -140,5 +146,65 @@ mod tests {
         // Clamping should return the edge value
         assert_eq!(grid.sample_bilinear(2.0, 2.0), 100.0);
         assert_eq!(grid.sample_bilinear(-1.0, -1.0), 0.0);
+    }
+
+    #[test]
+    fn bilinear_sampling_interpolates_single_axes_and_clamps_their_edges() {
+        for (width, height) in [(1, 3), (3, 1)] {
+            let mut grid = DataGrid::new(width, height, 0.0);
+            grid.data.copy_from_slice(&[10.0, 30.0, 90.0]);
+            for (coordinate, expected) in [(-10.0, 10.0), (0.5, 20.0), (1.5, 60.0), (10.0, 90.0)] {
+                for collapsed_coordinate in [-10.0, 0.0, 10.0] {
+                    let (x, y) = if width == 1 {
+                        (collapsed_coordinate, coordinate)
+                    } else {
+                        (coordinate, collapsed_coordinate)
+                    };
+                    assert_eq!(
+                        grid.sample_bilinear(x, y),
+                        expected,
+                        "{width}x{height} at ({x},{y})"
+                    );
+                }
+            }
+        }
+        let point = DataGrid::new(1, 1, 42.0);
+        assert_eq!(point.sample_bilinear(-10.0, 10.0), 42.0);
+        for (width, height) in [(0, 0), (0, 3), (3, 0)] {
+            assert_eq!(
+                DataGrid::new(width, height, 0.0).sample_bilinear(0.5, 0.5),
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "manual matched release timing of normal and single-axis grid sampling"]
+    fn benchmark_bilinear_grid_sampling() {
+        use std::{hint::black_box, time::Instant};
+        let queries: Vec<_> = (0..4_096)
+            .map(|i| ((i % 521) as f32 - 4.5, (i * 37 % 521) as f32 - 4.5))
+            .collect();
+        for (width, height) in [(1, 1), (1, 512), (512, 1), (512, 512)] {
+            let mut grid = DataGrid::new(width, height, 0.0);
+            for (i, value) in grid.data.iter_mut().enumerate() {
+                *value = (i % 101) as f32;
+            }
+            let mut samples = [0.0; 11];
+            for sample in &mut samples {
+                let start = Instant::now();
+                for _ in 0..256 {
+                    for &(x, y) in &queries {
+                        black_box(grid.sample_bilinear(black_box(x), black_box(y)));
+                    }
+                }
+                *sample = start.elapsed().as_secs_f64() * 1_000.0;
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "bilinear_grid_sampling width={width} height={height} samples=1048576 median_ms={:.6}",
+                samples[5]
+            );
+        }
     }
 }

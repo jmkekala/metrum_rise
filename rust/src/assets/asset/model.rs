@@ -166,8 +166,6 @@ pub struct SiteSurface {
     pub vertices: Vec<[f32; 2]>,
 }
 
-// ── Prop ────────────────────────────────────────────────────���─────────────────
-
 /// Placement grid behaviour for a prop asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]

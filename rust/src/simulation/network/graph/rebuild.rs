@@ -4,7 +4,6 @@
 
 mod adjacency;
 mod clips;
-mod compaction;
 mod junction_profiles;
 mod terrain_sync;
 

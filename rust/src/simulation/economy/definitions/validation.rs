@@ -8,5 +8,6 @@ mod project;
 mod runtime_tuning;
 mod scenario;
 
+pub(super) use common::validate_range;
 pub(super) use project::validate_project;
 pub(super) use runtime_tuning::validate_runtime_tuning;

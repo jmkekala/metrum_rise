@@ -2,12 +2,10 @@
 
 //! Building placement and lifecycle management.
 //!
-//! [`BuildingAllocator::tick`] runs once per simulation tick. It:
-//! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
-//! 2. Rebuilds derived indices and pathing after building mutations.
+//! [`BuildingAllocator::maintain`] validates parcel/road attachments and rebuilds derived indices
+//! and pathing after mutations. Daily maintenance advances rezoning grace; immediate edits do not.
 //!
-//! Demand-owned household admission is executed separately after the daily economy settlement and
-//! daily demand pass; allocator tick no longer recomputes immigration pressure locally.
+//! Household admission and building growth execute separately from demand-owned hourly plans.
 
 mod entrance;
 mod geometry;
@@ -18,6 +16,8 @@ mod site;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::support::indexed_test_building;
 
 pub(crate) use entrance::building_local_xz_basis;
 pub(crate) use placement::BuildingSiteEnvironment;
@@ -144,7 +144,7 @@ pub struct Building {
     pub facing_dir: Vector2,
     /// T-coordinate (0.0 to 1.0) along [`Self::edge_idx`] for this building's frontage.
     pub frontage_t: f32,
-    /// Signed side of the road: `+1.0` = left, `-1.0` = right.
+    /// Distance in metres from the road centreline to the building's frontage curb.
     pub side_offset: f32,
     /// True once this building has entered the permanent deserted state.
     ///
@@ -208,13 +208,13 @@ pub struct Building {
     /// Currency value of input shipments received from OWA during the current day.
     ///
     /// Reset once per day after the demand snapshot is taken. Read by the demand system to
-    /// compute the fraction of commercial input value sourced from OWA vs local industrial.
+    /// compute the fraction of business and utility inputs sourced from OWA.
     pub daily_owa_input_value: f32,
     /// Currency value of input shipments received from local industrial during the current day.
     ///
     /// Reset once per day after the demand snapshot is taken.
     pub daily_local_input_value: f32,
-    /// City treasury-funded input purchases committed during the current day.
+    /// Net city-funded input purchases committed during the current day, after refunds.
     ///
     /// Reset once per day after the demand snapshot is taken. This is separate from
     /// received-input counters because treasury-backed service purchases are paid at shipment
@@ -258,6 +258,7 @@ pub struct Building {
     ///
     /// `1.0` means one hectare of output and profile-defined worker density. Explicit farms and
     /// extractors start at `0.0` until their nearby field or extraction polygon is committed.
+    /// A depleted extractor returns to `0.0`; its committed polygon remains in the extraction system.
     pub work_area_scale: f32,
     /// True when the current painted zoning profile is incompatible and the building is waiting
     /// for the rezoning grace timer to expire.
@@ -587,22 +588,29 @@ impl BuildingAllocator {
         }
     }
 
-    /// Advances the building lifecycle by one simulation tick.
-    pub fn tick(
+    /// Maintains building legality and derived caches after daily updates or immediate edits.
+    ///
+    /// Pass one elapsed day for daily settlement, or zero for an edit that does not advance time.
+    /// Newly detected incompatible zoning starts its full grace period in either case.
+    pub fn maintain(
         &mut self,
+        elapsed_days: u8,
         zoning: &mut ZoningSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
         households: &mut crate::simulation::economy::households::HouseholdSystem,
         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
+        treasury_balance: &mut f64,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
     ) {
         // 1. Stale building cleanup.
         self.cleanup_stale_buildings(
+            elapsed_days,
             zoning,
             agents,
             households,
             logistics,
+            treasury_balance,
             graph,
             &network.lane_system,
         );
@@ -692,59 +700,6 @@ impl BuildingAllocator {
             }
             self.rebuild_zone_index();
         }
-    }
-
-    /// Remaps all building edge indices after a road network compaction.
-    pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
-        let old_len = self.buildings.len();
-        for b in &mut self.buildings {
-            if let Some(&new_id) = mapping.get(&b.edge_idx) {
-                b.edge_idx = new_id;
-            } else {
-                b.edge_idx = usize::MAX;
-            }
-        }
-        let mut removed_site_bounds = None;
-        if self.building_sites.len() == self.buildings.len() {
-            let mut kept_buildings = Vec::with_capacity(self.buildings.len());
-            let mut kept_sites = Vec::with_capacity(self.building_sites.len());
-            for (building, site) in self.buildings.drain(..).zip(self.building_sites.drain(..)) {
-                if building.edge_idx != usize::MAX {
-                    kept_buildings.push(building);
-                    kept_sites.push(site);
-                } else {
-                    accumulate_site_bounds(&mut removed_site_bounds, Some(site.bounds()));
-                }
-            }
-            self.buildings = kept_buildings;
-            self.building_sites = kept_sites;
-            self.recompute_max_site_radius_m();
-        } else {
-            for idx in 0..self.buildings.len() {
-                if self.buildings[idx].edge_idx == usize::MAX {
-                    accumulate_site_bounds(&mut removed_site_bounds, self.site_world_bounds(idx));
-                }
-            }
-            self.buildings.retain(|b| b.edge_idx != usize::MAX);
-            self.building_sites.clear();
-            self.max_site_radius_m = 0.0;
-        }
-        self.accumulate_pending_site_dirty_bounds(removed_site_bounds);
-        if self.buildings.len() != old_len {
-            self.dirty = true;
-            self.dirty_index = true;
-            self.bump_building_ref_revision();
-        }
-        self.entrances.clear();
-        self.entrances_dirty = true;
-        self.bump_entrance_ref_revision();
-        let mut new_occ = HashMap::new();
-        for (old_idx, occ) in self.edge_occupancy.drain() {
-            if let Some(&new_id) = mapping.get(&old_idx) {
-                new_occ.insert(new_id, occ);
-            }
-        }
-        self.edge_occupancy = new_occ;
     }
 
     /// Removes all buildings and resets the dirty flag.
@@ -975,21 +930,4 @@ fn squared_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
     let dx = building.center_x - origin_x;
     let dy = building.center_y - origin_y;
     dx * dx + dy * dy
-}
-
-fn accumulate_site_bounds(
-    target: &mut Option<(f32, f32, f32, f32)>,
-    bounds: Option<(f32, f32, f32, f32)>,
-) {
-    let Some(bounds) = bounds else {
-        return;
-    };
-    if let Some(existing) = target {
-        existing.0 = existing.0.min(bounds.0);
-        existing.1 = existing.1.min(bounds.1);
-        existing.2 = existing.2.max(bounds.2);
-        existing.3 = existing.3.max(bounds.3);
-    } else {
-        *target = Some(bounds);
-    }
 }

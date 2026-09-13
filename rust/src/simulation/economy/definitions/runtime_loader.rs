@@ -10,47 +10,44 @@ use super::validation::validate_runtime_tuning;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-static BUILTIN_RUNTIME_TUNING: OnceLock<Result<Arc<RuntimeEconomyTuning>, String>> =
-    OnceLock::new();
-static BUILTIN_RUNTIME_CATALOG: OnceLock<Result<Arc<RuntimeEconomyCatalog>, String>> =
-    OnceLock::new();
+struct RuntimeDefinitions {
+    tuning: Arc<RuntimeEconomyTuning>,
+    catalog: Arc<RuntimeEconomyCatalog>,
+}
+
+static BUILTIN_RUNTIME: OnceLock<Result<RuntimeDefinitions, String>> = OnceLock::new();
 
 /// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_tuning() -> Result<Arc<RuntimeEconomyTuning>, String> {
-    match BUILTIN_RUNTIME_TUNING
-        .get_or_init(|| load_runtime_economy_tuning_from_disk().map(Arc::new))
-    {
-        Ok(config) => Ok(Arc::clone(config)),
-        Err(err) => Err(err.clone()),
-    }
-}
-
-fn load_runtime_economy_tuning_from_disk() -> Result<RuntimeEconomyTuning, String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("economy")
-        .join(PROFILES_FILE);
-    let profiles: ProfilesFile = parse_toml_file(&path)?;
-    validate_runtime_tuning(&profiles.runtime_tuning)?;
-    Ok(profiles.runtime_tuning)
+    Ok(Arc::clone(&runtime_definitions()?.tuning))
 }
 
 /// Loads the shipped compiled runtime economy catalog from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_catalog() -> Result<Arc<RuntimeEconomyCatalog>, String> {
-    match BUILTIN_RUNTIME_CATALOG
-        .get_or_init(|| load_runtime_economy_catalog_from_disk().map(Arc::new))
-    {
-        Ok(catalog) => Ok(Arc::clone(catalog)),
+    Ok(Arc::clone(&runtime_definitions()?.catalog))
+}
+
+fn runtime_definitions() -> Result<&'static RuntimeDefinitions, String> {
+    match BUILTIN_RUNTIME.get_or_init(load_runtime_definitions_from_disk) {
+        Ok(definitions) => Ok(definitions),
         Err(err) => Err(err.clone()),
     }
 }
 
-fn load_runtime_economy_catalog_from_disk() -> Result<RuntimeEconomyCatalog, String> {
+fn load_runtime_definitions_from_disk() -> Result<RuntimeDefinitions, String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("economy")
         .join(PROFILES_FILE);
     let profiles: ProfilesFile = parse_toml_file(&path)?;
     validate_runtime_tuning(&profiles.runtime_tuning)?;
-    compile_runtime_catalog(&profiles.profiles, &profiles.runtime_tuning)
+    let catalog = compile_runtime_catalog(
+        &profiles.profiles,
+        &profiles.resources,
+        &profiles.runtime_tuning,
+    )?;
+    Ok(RuntimeDefinitions {
+        tuning: Arc::new(profiles.runtime_tuning),
+        catalog: Arc::new(catalog),
+    })
 }

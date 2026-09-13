@@ -242,7 +242,7 @@ func _export_project() -> void:
 	_validation = payload.get("validation", [])
 	_refresh_diagnostics()
 	if payload.get("ok", false):
-		_set_status("Exported economy pack and rebuilt economy.index.bin")
+		_set_status("Exported economy pack")
 		_load_project()
 	else:
 		_set_status("Export failed: %s" % str(payload.get("error", "unknown error")), true)
@@ -393,13 +393,13 @@ func _build_profile_inspector() -> void:
 	for i in range(inputs.size()):
 		var res_name = str(inputs[i].get("resource", ""))
 		var amt = float(inputs[i].get("units_per_day", 0.0))
-		_add_spin_field("Input (%s)" % res_name, amt, 0, 100000, 1, _update_port_value.bind("inputs", i))
+		_add_spin_field("Input (%s)" % res_name, amt, 0, 100000, 0.1, _update_port_value.bind("inputs", i))
 		
 	var outputs: Array = profile.get("outputs", [])
 	for i in range(outputs.size()):
 		var res_name = str(outputs[i].get("resource", ""))
 		var amt = float(outputs[i].get("units_per_day", 0.0))
-		_add_spin_field("Output (%s)" % res_name, amt, 0, 100000, 1, _update_port_value.bind("outputs", i))
+		_add_spin_field("Output (%s)" % res_name, amt, 0, 100000, 0.1, _update_port_value.bind("outputs", i))
 		
 	_add_selected_node_position_fields()
 
@@ -419,13 +419,11 @@ func _build_scenario_inspector() -> void:
 	_add_line_field("Scenario ID", _selected_id, false)
 	_add_line_field("Display Name", str(scenario.get("display_name", "")), true, _update_selected_entry.bind("display_name"))
 	_add_line_field("Description", str(scenario.get("description", "")), true, _update_selected_entry.bind("description"))
+	_add_line_field("OWA Imports (comma-separated)", ", ".join(scenario.get("owa_import_resources", [])), true, _update_scenario_imports)
 	_add_spin_field("Duration (days)", float(scenario.get("duration_days", 30)), 1, 365, 1, _update_selected_entry.bind("duration_days"))
 	_add_spin_field("Household Count", float(scenario.get("household_count", 0)), 0, 1000000, 1, _update_selected_entry.bind("household_count"))
 	_add_spin_field("Average Household Size", float(scenario.get("average_household_size", 1.0)), 1, 10, 0.1, _update_selected_entry.bind("average_household_size"))
 	_add_spin_field("Starting Supplies (days)", float(scenario.get("starting_household_stock_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("starting_household_stock_days"))
-	_add_spin_field("Target Supplies (days)", float(scenario.get("replenishment_target_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_target_days"))
-	_add_spin_field("Trigger Supplies (days)", float(scenario.get("replenishment_trigger_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("replenishment_trigger_days"))
-	_add_spin_field("Pickup Cadence (hours)", float(scenario.get("pickup_cadence_hours", 0.0)), 0, 48, 0.5, _update_selected_entry.bind("pickup_cadence_hours"))
 	_add_read_only_block("Graph", "Nodes: %d\nEdges: %d\nController links: %d" % [
 		scenario.get("nodes", []).size(),
 		scenario.get("edges", []).size(),
@@ -519,6 +517,14 @@ func _refresh_diagnostics() -> void:
 				float(daily[daily.size() - 1].get("unmet_units", 0.0)),
 			])
 	_diagnostics_label.text = "\n".join(lines)
+
+func _update_scenario_imports(value: String) -> void:
+	var resources: Array[String] = []
+	for resource in value.split(",", false):
+		var resource_id := resource.strip_edges()
+		if not resource_id.is_empty() and not resources.has(resource_id):
+			resources.append(resource_id)
+	_update_selected_entry(resources, "owa_import_resources")
 
 func _update_selected_entry(value, field: String) -> void:
 	var section := "%ss" % _selected_kind

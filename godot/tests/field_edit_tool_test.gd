@@ -162,7 +162,8 @@ func _test_farm_inspector(scene: Node) -> void:
 		"household_capacity": 1, "household_count": 1, "child_count": 2,
 		"adult_count": 2, "elder_count": 1, "worker_count": 7, "worker_capacity": 8,
 		"household_budget_total": 125.0, "household_budget_avg": 125.0,
-		"household_stock_total": 12.0, "household_replenishment_state": "Stable"}
+		"household_stock_total": 12.0, "household_replenishment_state": "Stable",
+		"inventory": [{"name": "machinery", "amount": 0.0, "daily_input_units": 1.0}]}
 	inspector._populate(entry, info)
 	var rows := {}
 	for row in body.get_children():
@@ -173,3 +174,5 @@ func _test_farm_inspector(scene: Node) -> void:
 	_expect(rows.get("Workers") == "7 / 8", "Household details preserve farm business staffing")
 	_expect(rows.get("Household Money") == "$125.0 total / $125.0 avg", "Farm inspector shows household money")
 	_expect(rows.get("Supply Units") == "12.0" and rows.get("Replenishment") == "Stable", "Farm inspector shows household supplies")
+
+	_expect(rows.get("Machinery") == "0.0 (1.0/day at full operation)", "Farm inspector shows empty Machinery stock and upkeep rate")

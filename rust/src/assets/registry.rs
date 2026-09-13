@@ -38,11 +38,11 @@ pub struct AssetRegistry {
     /// Secondary index: `by_zone[ZoneClass as usize]` = sorted list of qualified_ids for
     /// zoned-private building assets of that zone type. Sorted for deterministic placement selection.
     by_zone: [Vec<String>; 5],
-    /// Secondary index: `(zone_type, density)` → sorted list of qualified_ids.
-    by_zone_density: HashMap<(ZoneClass, String), Vec<String>>,
-    /// Upgrade index: `(asset_set, level) → qualified_id`.
-    /// Lets the runtime find the next-tier asset without forward pointers in the manifest.
-    upgrade_index: HashMap<(String, u8), String>,
+    /// Density buckets per zone, queried with borrowed density strings.
+    by_zone_density: [HashMap<String, Vec<String>>; 5],
+    /// Level → family → qualified_id. Direct tier indexing avoids a second hash lookup.
+    /// At most 256 buckets, allocated only through the highest registered tier.
+    upgrade_index: Vec<HashMap<String, String>>,
 }
 
 impl AssetRegistry {
@@ -71,56 +71,40 @@ impl AssetRegistry {
         {
             if let Some(zone) = building.zone_type {
                 self.by_zone[zone as usize].retain(|id| id != &qid);
-                let key = (zone, building.density_key().unwrap_or("low").to_owned());
-                if let Some(ids) = self.by_zone_density.get_mut(&key) {
+                let densities = &mut self.by_zone_density[zone as usize];
+                let density = building.density_key().unwrap_or("low");
+                if let Some(ids) = densities.get_mut(density) {
                     ids.retain(|id| id != &qid);
                     if ids.is_empty() {
-                        self.by_zone_density.remove(&key);
+                        densities.remove(density);
                     }
                 }
             }
-            if let Some(set) = &old.manifest.asset_set {
-                let key = (set.clone(), building.level);
-                if self.upgrade_index.get(&key) == Some(&qid) {
-                    self.upgrade_index.remove(&key);
+            if let Some(set) = &old.manifest.asset_set
+                && let Some(families) = self.upgrade_index.get_mut(usize::from(building.level))
+            {
+                if families.get(set) == Some(&qid) {
+                    families.remove(set);
+                }
+                while self.upgrade_index.last().is_some_and(HashMap::is_empty) {
+                    self.upgrade_index.pop();
                 }
             }
         }
 
-        if let Some(bd) = &manifest.building {
-            if bd.placement_mode != PlacementMode::ZonedPrivate {
-                self.entries.insert(
-                    qid,
-                    AssetEntry {
-                        manifest,
-                        pack_id: pack_id.to_owned(),
-                        asset_dir,
-                    },
-                );
-                return;
-            }
+        if let Some(bd) = &manifest.building
+            && bd.placement_mode == PlacementMode::ZonedPrivate
+            && let Some(zone_type) = bd.zone_type
+        {
             // Zone placement index.
-            let Some(zone_type) = bd.zone_type else {
-                self.entries.insert(
-                    qid,
-                    AssetEntry {
-                        manifest,
-                        pack_id: pack_id.to_owned(),
-                        asset_dir,
-                    },
-                );
-                return;
-            };
-            let zi = zone_type as usize;
-            if zi < self.by_zone.len() {
-                let list = &mut self.by_zone[zi];
-                if !list.contains(&qid) {
-                    list.push(qid.clone());
-                    list.sort_unstable();
-                }
+            let list = &mut self.by_zone[zone_type as usize];
+            if !list.contains(&qid) {
+                list.push(qid.clone());
+                list.sort_unstable();
             }
-            let density_key = (zone_type, bd.density_key().unwrap_or("low").to_owned());
-            let density_list = self.by_zone_density.entry(density_key).or_default();
+            let density_list = self.by_zone_density[zone_type as usize]
+                .entry(bd.density_key().unwrap_or("low").to_owned())
+                .or_default();
             if !density_list.contains(&qid) {
                 density_list.push(qid.clone());
                 density_list.sort_unstable();
@@ -128,8 +112,12 @@ impl AssetRegistry {
 
             // Upgrade index — only populated when the asset belongs to a named family.
             if let Some(set) = &manifest.asset_set {
-                let key = (set.clone(), bd.level);
-                if let Some(prev) = self.upgrade_index.get(&key) {
+                let level = usize::from(bd.level);
+                if self.upgrade_index.len() <= level {
+                    self.upgrade_index.resize_with(level + 1, HashMap::new);
+                }
+                let families = &mut self.upgrade_index[level];
+                if let Some(prev) = families.get(set) {
                     if prev != &qid {
                         // Two assets claim the same family slot — last registration wins.
                         eprintln!(
@@ -139,7 +127,7 @@ impl AssetRegistry {
                         );
                     }
                 }
-                self.upgrade_index.insert(key, qid.clone());
+                families.insert(set.clone(), qid.clone());
             }
         }
 
@@ -162,7 +150,8 @@ impl AssetRegistry {
         let asset_set = entry.manifest.asset_set.as_deref()?;
         let level = entry.manifest.building.as_ref()?.level;
         self.upgrade_index
-            .get(&(asset_set.to_owned(), level + 1))
+            .get(usize::from(level.checked_add(1)?))?
+            .get(asset_set)
             .map(String::as_str)
     }
 
@@ -178,7 +167,8 @@ impl AssetRegistry {
             return None;
         }
         self.upgrade_index
-            .get(&(asset_set.to_owned(), level - 1))
+            .get(usize::from(level - 1))?
+            .get(asset_set)
             .map(String::as_str)
     }
 
@@ -288,15 +278,6 @@ impl AssetRegistry {
             .unwrap_or(0.0)
     }
 
-    /// Returns the occupant capacity declared by a building asset's manifest.
-    ///
-    /// For residential assets this is `household_capacity`; for commercial/industrial/office
-    /// assets this is `worker_capacity`; for mixed assets this is the sum of both.
-    /// Returns `0` if the asset is not a building or has no declared capacity.
-    pub fn capacity(&self, qualified_id: &str) -> u32 {
-        self.household_capacity(qualified_id) + self.worker_capacity(qualified_id)
-    }
-
     /// Returns the entry for a qualified ID, or `None` if not registered.
     pub fn get(&self, qualified_id: &str) -> Option<&AssetEntry> {
         self.entries.get(qualified_id)
@@ -307,18 +288,13 @@ impl AssetRegistry {
     /// `zone_class` is the [`ZoneClass`] discriminant (0 = Residential … 4 = Mixed).
     /// Returns an empty slice if the zone has no registered building assets.
     pub fn buildings_for_zone(&self, zone_class: ZoneClass) -> &[String] {
-        let zi = zone_class as usize;
-        if zi < self.by_zone.len() {
-            &self.by_zone[zi]
-        } else {
-            &[]
-        }
+        &self.by_zone[zone_class as usize]
     }
 
     /// Returns all qualified IDs for building assets of one `(zone_type, density)` pair.
     pub fn buildings_for_zone_density(&self, zone_class: ZoneClass, density: &str) -> &[String] {
-        self.by_zone_density
-            .get(&(zone_class, density.to_owned()))
+        self.by_zone_density[zone_class as usize]
+            .get(density)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
@@ -357,7 +333,9 @@ impl AssetRegistry {
         for list in &mut self.by_zone {
             list.clear();
         }
-        self.by_zone_density.clear();
+        for densities in &mut self.by_zone_density {
+            densities.clear();
+        }
         self.upgrade_index.clear();
     }
 
@@ -371,7 +349,9 @@ impl AssetRegistry {
 mod tests {
     use super::*;
     use crate::assets::AssetManifest;
-    use crate::assets::asset::{BuildingData, LodEntry, MeshPart, PlacementMode, ZoneClass};
+    use crate::assets::asset::{
+        Anchor, AnchorType, BuildingData, MeshPart, PlacementMode, ZoneClass,
+    };
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
         let (household_capacity, worker_capacity) = match zone {
@@ -386,20 +366,16 @@ mod tests {
             tags: vec![],
             thumbnail: None,
             lods: vec![],
-            mesh_parts: vec![MeshPart {
-                imported_bounds: None,
+            mesh_parts: vec![MeshPart::single_lod0("main", "lod0.glb")],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
                 name: "main".to_owned(),
-                position: [0.0, 0.0, 0.0],
-                rotation_degrees: [0.0, 0.0, 0.0],
-                scale: 1.0,
-                pivot_offset: None,
-                lods: vec![LodEntry {
-                    file: "lod0.glb".to_owned(),
-                    distance_min_m: 0.0,
-                    distance_max_m: None,
-                }],
+                position: [0.0; 3],
+                forward: [0.0, 0.0, 1.0],
+                width_m: None,
+                length_m: None,
+                vehicle_class: None,
             }],
-            anchors: vec![],
             site_surfaces: vec![],
             building: Some(BuildingData {
                 flat_size_m2: None,
@@ -429,7 +405,7 @@ mod tests {
     fn register_and_get() {
         let mut reg = AssetRegistry::new();
         let m = make_building_manifest("building.residential.house", ZoneClass::Residential, 3, 2);
-        reg.register("base", m.clone(), String::new());
+        reg.register("base", m, String::new());
 
         let entry = reg
             .get("base:building.residential.house")
@@ -528,14 +504,19 @@ mod tests {
             reg.buildings_for_zone_density(ZoneClass::Residential, "low")
                 .is_empty()
         );
-        assert!(!reg.upgrade_index.contains_key(&("old".to_owned(), 1)));
+        assert!(
+            reg.upgrade_index
+                .iter()
+                .all(|families| !families.contains_key("old"))
+        );
         assert_eq!(
             reg.buildings_for_zone_density(ZoneClass::Commercial, "high"),
             ["base:building"]
         );
         assert_eq!(
             reg.upgrade_index
-                .get(&("new".to_owned(), 2))
+                .get(2)
+                .and_then(|families| families.get("new"))
                 .map(String::as_str),
             Some("base:building")
         );
@@ -561,6 +542,98 @@ mod tests {
         );
         assert!(!reg.is_empty());
         assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn upgrade_chain_handles_endpoints_and_replaced_family_slots() {
+        let mut reg = AssetRegistry::new();
+        for level in [1, 2, 254, 255] {
+            let mut manifest =
+                make_building_manifest(&format!("tier_{level}"), ZoneClass::Residential, 2, 2);
+            manifest.asset_set = Some("family".to_owned());
+            manifest.building.as_mut().unwrap().level = level;
+            manifest.validate().unwrap();
+            reg.register("base", manifest, String::new());
+        }
+        assert_eq!(reg.next_level("base:tier_1"), Some("base:tier_2"));
+        assert_eq!(reg.prev_level("base:tier_2"), Some("base:tier_1"));
+        assert_eq!(reg.prev_level("base:tier_1"), None);
+        assert_eq!(reg.next_level("base:tier_2"), None);
+        assert_eq!(reg.next_level("base:tier_254"), Some("base:tier_255"));
+        assert_eq!(reg.prev_level("base:tier_255"), Some("base:tier_254"));
+        assert_eq!(reg.next_level("base:tier_255"), None);
+
+        let mut alternative = reg.get("base:tier_2").unwrap().manifest.clone();
+        alternative.asset_id = "alternative".to_owned();
+        reg.register("base", alternative, String::new());
+        let mut replaced = reg.get("base:tier_2").unwrap().manifest.clone();
+        replaced.asset_set = Some("other".to_owned());
+        reg.register("base", replaced, String::new());
+        assert_eq!(reg.next_level("base:tier_1"), Some("base:alternative"));
+        assert_eq!(reg.prev_level("base:tier_2"), None);
+    }
+
+    #[test]
+    #[ignore = "isolated release benchmark for allocation-free registry lookups"]
+    fn benchmark_asset_registry_lookups() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        for family_count in [128, 2048] {
+            let mut registry = AssetRegistry::new();
+            let mut queries = Vec::with_capacity(family_count);
+            for family in 0..family_count {
+                for level in [1, 2] {
+                    let mut manifest = make_building_manifest(
+                        &format!("family_{family}_tier_{level}"),
+                        ZoneClass::Residential,
+                        2,
+                        2,
+                    );
+                    manifest.asset_set = Some(format!("family-{family}"));
+                    manifest.building.as_mut().unwrap().level = level;
+                    manifest.validate().unwrap();
+                    registry.register("base", manifest, String::new());
+                }
+                queries.push((
+                    format!("base:family_{family}_tier_1"),
+                    format!("base:family_{family}_tier_2"),
+                ));
+            }
+            for (low, high) in &queries {
+                assert_eq!(registry.next_level(low), Some(high.as_str()));
+                assert_eq!(registry.prev_level(high), Some(low.as_str()));
+            }
+            let ids = registry.buildings_for_zone_density(ZoneClass::Residential, "low");
+            assert_eq!(ids.len(), family_count * 2);
+            assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+
+            let mut samples = Vec::with_capacity(11);
+            for sample in 0..14 {
+                let start = Instant::now();
+                for _ in 0..64 {
+                    for (low, high) in &queries {
+                        black_box(registry.next_level(black_box(low)));
+                        black_box(registry.prev_level(black_box(high)));
+                        black_box(registry.buildings_for_zone_density(
+                            black_box(ZoneClass::Residential),
+                            black_box("low"),
+                        ));
+                    }
+                }
+                let ns_per_triplet =
+                    start.elapsed().as_secs_f64() * 1.0e9 / (queries.len() * 64) as f64;
+                if sample >= 3 {
+                    samples.push(ns_per_triplet);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "asset_registry_lookup families={family_count} assets={} median_ns_per_triplet={:.3}",
+                registry.len(),
+                samples[samples.len() / 2]
+            );
+        }
     }
 
     #[test]

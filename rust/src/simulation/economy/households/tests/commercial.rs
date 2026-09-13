@@ -6,6 +6,47 @@ use super::support::*;
 use super::*;
 
 #[test]
+fn commercial_activity_is_bitwise_identical_across_worker_counts() {
+    let catalog = load_runtime_economy_catalog().unwrap();
+    let mut allocator = BuildingAllocator::new();
+    let home = register_test_residential_asset_with_capacity(
+        &mut allocator,
+        "test",
+        "activity_home",
+        10_000,
+    );
+    allocator
+        .buildings
+        .push(make_building(0.0, ZoneType::Residential, &home, 0.0));
+    let households: Vec<_> = (0..8_193)
+        .map(|i| {
+            let mut household = make_household(0, 2, 20.0, 0.0);
+            household.stock = (i % 97) as f32 * 0.017;
+            household.stock_days = household.stock / 2.0;
+            household
+        })
+        .collect();
+    let totals: Vec<_> = [1, 2, 7]
+        .into_iter()
+        .map(|workers| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap()
+                .install(|| {
+                    commercial_activity_signal_for_city(&catalog, &households, &allocator)
+                        .demand_units_per_day
+                        .to_bits()
+                })
+        })
+        .collect();
+    assert!(
+        totals.iter().all(|&total| total == totals[0]),
+        "worker-dependent demand totals: {totals:?}"
+    );
+}
+
+#[test]
 fn zero_sales_commercial_active_worker_capacity_is_bootstrap_sized() {
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     let building = make_building(0.0, ZoneType::Commercial, "test:grocery", 0.0);
@@ -59,6 +100,10 @@ fn explicit_work_area_capacity_scales_without_double_staffing_penalty() {
         .expect("grain farm runtime profile");
     let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
     building.economy_profile_runtime_id = profile.runtime_id;
+    building.set_inventory_units(
+        catalog.resource_runtime_id_for_id("machinery").unwrap(),
+        80.0,
+    );
     building.work_area_scale = 0.2731;
     building.commercial_activity_floor_scale = 1.0;
     building.worker_count = 2;
@@ -107,6 +152,10 @@ fn explicit_work_area_market_scale_limits_jobs_and_output() {
         .expect("grain farm runtime profile");
     let mut building = make_building(0.0, ZoneType::None, "test:farm", 0.0);
     building.economy_profile_runtime_id = profile.runtime_id;
+    building.set_inventory_units(
+        catalog.resource_runtime_id_for_id("machinery").unwrap(),
+        80.0,
+    );
     building.work_area_scale = 160.0;
     building.commercial_activity_floor_scale = 0.25;
     building.worker_count = 4;
@@ -243,6 +292,7 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
         assert_eq!(
             farm.operating_budget,
             (workers as f32 * 90.0 * 7.0).max(500.0)
+                + profile.initial_input_import_cost(&catalog, hectares, 1.75)
         );
         assert_eq!(farm.profit_tax_budget_baseline, farm.operating_budget);
         assert!(
@@ -251,6 +301,11 @@ fn grain_farm_density_preserves_area_yield_and_startup_payroll() {
                 < 0.01
         );
 
+        // Startup capital buys inputs; yield assertions begin after the delivery.
+        allocator.buildings[0].set_inventory_units(
+            catalog.resource_runtime_id_for_id("machinery").unwrap(),
+            80.0,
+        );
         agriculture.produce_hourly(&mut allocator, &catalog);
         assert!(
             (allocator.buildings[0].inventory_units(output.resource_runtime_id)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Native save/load regression for camera framing and subsequent orbit controls.
+## Native save/load regression for camera framing, controls, and world-bound UI state.
 extends SceneTree
 
 var _failures: int = 0
@@ -84,6 +84,26 @@ func _check_camera_modes(host: Node3D, simulation: SimulationNode, path: String)
 	debug.free()
 	normal.free()
 
+func _check_world_load_controls(host: Node3D, simulation: SimulationNode, save_path: String, world_path: String) -> void:
+	var input_manager = load("res://scripts/core/input_manager.gd").new()
+	# Bind only the dependencies used by world replacement, without creating gameplay tools.
+	input_manager.simulation_node = simulation
+	var inspector = load("res://scripts/ui/building_inspector.gd").new()
+	host.add_child(inspector)
+	input_manager.building_inspector = inspector
+	for new_world: bool in [false, true]:
+		inspector._open_windows["previous_world"] = inspector._create_window_entry("previous_world")
+		input_manager.set_simulation_speed(4.0)
+		var loaded: bool = input_manager.menu_load_world_definition(world_path) if new_world else input_manager.menu_load_game_from_path(save_path)
+		_expect(loaded, "input-manager world replacement must succeed")
+		_expect(is_zero_approx(input_manager._simulation_speed), "loading a paused world must reset the displayed speed")
+		_expect(inspector._open_windows.is_empty(), "world replacement must close inspectors anchored to the previous world")
+		input_manager._toggle_pause()
+		_expect(is_equal_approx(input_manager._simulation_speed, 1.0), "the first pause toggle after load must resume simulation")
+		input_manager.set_simulation_speed(0.0)
+	input_manager.free()
+	inspector.free()
+
 func _run() -> void:
 	var host := Node3D.new()
 	root.add_child(host)
@@ -159,6 +179,7 @@ func _run() -> void:
 		camera.make_current()
 	_check_camera_modes(host, simulation, path)
 	_check_orthographic_bounds(host)
+	_check_world_load_controls(host, simulation, path, world_path)
 	DirAccess.remove_absolute(world_path)
 	host.free()
 	DirAccess.remove_absolute(path)

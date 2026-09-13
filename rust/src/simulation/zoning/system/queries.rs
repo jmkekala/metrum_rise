@@ -38,15 +38,13 @@ impl ZoningSystem {
 
     /// Returns the runtime zoning-profile id of the parcel under one world-space point.
     pub fn parcel_profile_runtime_id_at(&self, world_x: f32, world_z: f32) -> Option<u16> {
-        let id = self.parcels.find_at_point(Vector2::new(world_x, world_z))?;
-        self.parcels
-            .get(id)
+        self.parcel_at(Vector2::new(world_x, world_z))
             .map(|parcel| parcel.zone_profile_runtime_id())
     }
 
     /// Returns the authored parcel geometry under one world-space point.
     pub fn parcel_geometry_at(&self, world_x: f32, world_z: f32) -> Option<ParcelGeometry> {
-        let id = self.parcels.find_at_point(Vector2::new(world_x, world_z))?;
-        self.parcels.get(id).map(parcels::geometry_for_parcel)
+        self.parcel_at(Vector2::new(world_x, world_z))
+            .map(parcels::geometry_for_parcel)
     }
 }

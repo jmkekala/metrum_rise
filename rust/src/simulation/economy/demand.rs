@@ -16,9 +16,11 @@ mod tests;
 mod types;
 mod viability;
 
+#[cfg(test)]
+pub(crate) use actions::demand_building_action_key;
 pub(crate) use actions::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction, DemandSpawnAction,
-    DemandSpawnCandidate, DemandSpawnCandidatesByUse, demand_building_action_key,
+    DemandSpawnCandidate, DemandSpawnCandidatesByUse,
 };
 pub use system::DemandSystem;
 pub(crate) use types::{UseTuningBool, UseTuningF32};

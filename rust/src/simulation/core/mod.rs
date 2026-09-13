@@ -7,16 +7,9 @@ pub(crate) mod sparse_chunk_grid;
 pub mod time;
 
 /// Rounds a finite or non-finite `f64` with `f64::round` semantics and saturates to `i64`.
-///
-/// Quantized geometry calls this in very hot key-building loops. Expressing the operation as an
-/// offset plus Rust's saturating float-to-integer cast avoids the platform `round` library call.
 #[inline]
 pub(crate) fn round_f64_to_i64(value: f64) -> i64 {
-    if value >= 0.0 {
-        (value + 0.5) as i64
-    } else {
-        (value - 0.5) as i64
-    }
+    value.round() as i64
 }
 
 #[cfg(test)]
@@ -28,6 +21,8 @@ mod tests {
         for value in [
             f64::NEG_INFINITY,
             -9_007_199_254_740_992.0,
+            -4_503_599_627_370_497.0,
+            i64::MIN as f64,
             -2.5,
             -1.5,
             -0.500_000_000_1,
@@ -40,11 +35,21 @@ mod tests {
             0.500_000_000_1,
             1.5,
             2.5,
+            4_503_599_627_370_497.0,
             9_007_199_254_740_992.0,
+            i64::MAX as f64,
             f64::INFINITY,
             f64::NAN,
         ] {
             assert_eq!(round_f64_to_i64(value), value.round() as i64);
+        }
+        // Offset-then-cast can cross a rounding boundary before the integer conversion.
+        for midpoint in [0.5_f64, 1.5, 2.5, 1023.5, 1_125_899_906_842_624.5] {
+            for bits in midpoint.to_bits() - 1..=midpoint.to_bits() + 1 {
+                for value in [f64::from_bits(bits), -f64::from_bits(bits)] {
+                    assert_eq!(round_f64_to_i64(value), value.round() as i64, "{value:?}");
+                }
+            }
         }
     }
 }

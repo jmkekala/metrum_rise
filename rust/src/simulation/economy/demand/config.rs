@@ -49,7 +49,6 @@ pub(super) struct HouseholdActionConfig {
     pub(super) persistent_exit_daily_fraction: f32,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(super) struct ActionBudgetConfig {
     pub(super) max_households_per_day: u32,
@@ -58,7 +57,6 @@ pub(super) struct ActionBudgetConfig {
     pub(super) despawn_batch_fraction_by_use: UseTuningF32,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(super) struct DemandConfig {
     pub(super) signal_normalization: SignalNormalizationConfig,

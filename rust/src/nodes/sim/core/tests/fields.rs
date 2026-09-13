@@ -309,7 +309,8 @@ fn ordinary_building_removal_remaps_saved_field_owner_and_reservation() {
         &mut core.zoning,
         &mut core.agents,
         &mut core.households,
-        &mut core.logistics
+        &mut core.logistics,
+        &mut core.treasury.balance
     ));
     core.publish_pending_building_site_changes();
     assert_eq!(
@@ -335,7 +336,8 @@ fn ordinary_building_removal_remaps_saved_field_owner_and_reservation() {
         &mut core.zoning,
         &mut core.agents,
         &mut core.households,
-        &mut core.logistics
+        &mut core.logistics,
+        &mut core.treasury.balance
     ));
     core.publish_pending_building_site_changes();
     assert!(core.agriculture.sites().is_empty());
@@ -410,10 +412,11 @@ fn demolition_undo_restores_field_land_and_area() {
         &mut core.zoning,
         &mut core.agents,
         &mut core.households,
-        &mut core.logistics
+        &mut core.logistics,
+        &mut core.treasury.balance
     ));
     core.publish_pending_building_site_changes();
-    core.seal_building_removal_undo();
+    core.seal_building_removal_undo(0.0);
     assert!(core.agriculture.sites().is_empty());
     assert!(core.allocator.field_clearance.is_empty());
     assert!(core.undo_action_internal());
