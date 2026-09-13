@@ -12,6 +12,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Shipped Foundations
 
+- **Third-road placement (`ROAD-25`)**: node boundary export preserves distinct submillimetre
+  segments, closing the reproduced Kuopio terrain ownership gaps. Rejected exact previews retain
+  a visible red fallback and explanation. Road drawing waits for simulation acceptance; rejection
+  keeps the stroke editable. Road logging no longer enables the cyan surface overlay implicitly.
+  See [`roads.md`](roads.md#third-road-boundary-and-placement-feedback-road-25).
+
 - **Machinery upkeep (`ECON-09`)**: farms use 1 and coal mines 4 Machinery per hectare/day; food processors and utilities use building-level inputs. Paid OWA imports, small-consumer stock batches, startup funding and inspector stock/rates are integrated. Business/utility customers drive matching industrial demand. The audit unified restock/supplier logic, preserved small-shop shipment buffers, corrected net production headroom and city payroll/refund reporting, removed duplicate ledger/resource helpers and production constants, and rejected duplicate recipe ports. Depleted mines now stop creating jobs and Machinery demand; distress sales protect upkeep stock, and inventory fill counts shared input/output stock once. `machinery_factory_basic` is ready for the incoming four-worker industrial asset (Steel + Metals → 40 net Machinery/day); the production model itself is still user-created content. See [`economy.md`](economy.md#machinery-upkeep-econ-09) and [`asset_editor.md`](asset_editor.md).
 
 - **Terrain reload and yard seams**: CDT cleanup now preserves distinct near-endpoint

@@ -913,6 +913,69 @@ Straight road edits should commit endpoint-only plan input. Curved edits may use
 world-space sampling, but must preserve authored endpoints exactly. Oversampled straight Godot
 `Curve3D` streams are not allowed to become semantic road input.
 
+### Third-road boundary and placement feedback (`ROAD-25`)
+
+The 2026-09-13 `road.log` repeatedly rejected the third road at the existing sidewalk boundary
+`(2834.492, -8658.672) → (2835.014, -8662.223)`. Node earthwork splitting discarded distinct
+submillimetre segments using a metric length threshold. The resulting source loop had gaps even
+though its polygon still connected the vertices; later terrain union could not recover ownership.
+Splitting now discards only identical canonical XZ endpoints. Every distinct arrangement edge
+keeps its solved height and source; no tolerance expansion, invented owner or clipping bypass is used.
+The predicate is O(1) per existing local boundary subsegment; geometry/source work remains bounded
+by the affected node and terrain patches.
+
+An exact scene can carry an empty `surface_vertices` field because its geometry lives in chunks.
+On rejection, Godot now builds the fallback ribbon when that array is empty and preserves the error
+label if mesh upload fails. A queued click keeps its gesture until the simulation acknowledges
+acceptance or rollback. The bridge retains one bounded completion receiver; polling is O(1),
+nonblocking and does not acquire `SimCore`. Duplicate clicks wait, rejected strokes remain editable,
+and completions cannot clear another gesture. Logs distinguish `queued` from the authoritative
+`road_commit_result`; the replay importer understands both current and historical captures.
+`--debug road` enables logging; the existing `METRUM_DEBUG_SURFACE=1` separately enables the cyan
+surface overlay.
+
+Regression coverage includes the exact logged boundary location, a nearby third-junction hole,
+micrometre-to-submillimetre owned edges, empty exact-preview fallback rendering, and queued,
+accepted, rejected and superseded placement feedback. Fresh verification and release locality
+measurements on 2026-09-13:
+
+- `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 cargo test --offline --lib`: 1,767 passed, 60 ignored.
+- Headless `network_tool_chunk_renderer_test`, `road_junction_preview_test` and
+  `road_preview_stream_test`: all pass against the rebuilt release library. The gameplay benchmark
+  script passes Godot's parser check, the replay importer passes eight Python tests, and `run.sh`
+  passes `bash -n`.
+- A deterministic 144-layout sweep reconstructs the logged junction on the checked-in Kuopio
+  source world, varying native f32 trunk coordinates and branch length. All 144 three-road layouts
+  now preview and commit; the baseline rejected 17. Ten baseline failures identify the exact
+  boundary coordinates from `road.log`. This is a reconstruction, not a complete recorded mouse replay.
+- Three alternating unprofiled release process pairs use eight Rayon workers pinned to CPUs
+  `0,2,4,6,8,10,12,14`, 100 observations per size and the existing
+  `nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling` fixture. The local
+  roads/sites stay fixed while background buildings, parcels, agents and roads grow. All six runs
+  retain identical local products at every size. No other builds, tests or replays overlapped these
+  acceptance timings.
+
+| Background buildings | Worker p50 before → after (ms) |
+| --- | --- |
+| 0 | 20.894 → 20.694 |
+| 1,000 | 20.609 → 20.553 |
+| 10,000 | 20.659 → 20.630 |
+| 100,000 | 20.658 → 20.862 |
+
+Values are medians of the three process medians. The largest fixture contains 600,024 agents,
+100,004 parcels and 391 background roads. Compile p50 is 19.975 → 20.212 ms; readiness remains
+below 0.018 ms. Separately measured one-time snapshot cost is 0.006 → 0.007 ms with no background
+buildings and 3.403 → 3.439 ms at 100,000. The approximately 1% largest-case worker difference
+does not change locality; these measurements do not establish whole-city frame rate.
+
+Command: `RAYON_NUM_THREADS=8 METRUM_DEBUG=0 taskset -c 0,2,4,6,8,10,12,14 BINARY --exact nodes::sim::core::tests::road_plan_scaling::populated_paved_road_plan_scaling --ignored --nocapture --test-threads=1`.
+Release test executable SHA-256 before: `088c53a52ba53b229113388d75f8a1b5a5b83fec0e4687d58d1233bf0bd100f6`;
+after: `42f30b3027712d14291a762f6e8410bfddce53430e91efce86b61e2c037443b6`.
+Deployed library SHA-256: `bb5e27f6da196ecf4613b492da28f8281063ca4f10d65c7983217a34557e0151`.
+Artifacts: `/tmp/metrum-road-fix/` contains `locality-{before,after}-{1,2,3}.log`,
+`locality-summary.json`, correctness/build logs, `sweep-all.log` (baseline), `sweep-after.log`,
+and the original failing regression trace `rust-repro.log`.
+
 ### Node Edit Audit Measurements (2026-09-12)
 
 All four initial regressions fail on the baseline: duplicate road bounds after a merge, an

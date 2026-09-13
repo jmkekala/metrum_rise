@@ -35,7 +35,9 @@ def read_attempts(path):
                 if current is not None:
                     attempts.append(current)
                 fields = dict(re.findall(r"(\w+)=([^ ]+)", line.strip()))
-                if fields.get("points") != "2" or fields.get("committed") != "true":
+                # Older captures named dispatch "committed"; current captures distinguish the
+                # queue event from the simulation's later acknowledgment.
+                if fields.get("points") != "2" or fields.get("queued", fields.get("committed")) != "true":
                     raise ValueError(f"line {number}: only dispatched two-point strokes supported")
                 current = {"line": number, "validation": fields, "accepted": True}
             elif "ROAD_GEOMETRY_DUMP_BEGIN" in line:
@@ -52,6 +54,13 @@ def read_attempts(path):
                     raise ValueError("rejection without a placement")
                 current["accepted"] = False
                 current["rejection"] = line.strip()
+            elif line.startswith("[DEBUG:road] road_commit_result "):
+                if current is None:
+                    raise ValueError("completion without a placement")
+                fields = dict(re.findall(r"(\w+)=([^ ]+)", line.strip()))
+                current["accepted"] = fields.get("committed") == "true"
+                if not current["accepted"]:
+                    current["rejection"] = line.strip()
             elif block is not None and not line.startswith("[DEBUG:"):
                 block.append(line)
     if block is not None:

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::nodes::sim::core::{RefinedTerrainPatchBuildInput, RoadEditPlan};
+use godot::prelude::Vector2;
 use std::sync::Arc;
 
 fn stage(core: &mut SimCore, points: Vec<Vector3>) -> Arc<RoadEditPlan> {
@@ -89,7 +90,12 @@ fn commit_ready_with_lanes(
     bkw_lanes: i32,
 ) -> Arc<RoadEditPlan> {
     let plan = prepare_with_lanes(core, points.clone(), fwd_lanes, bkw_lanes);
-    assert_eq!(plan.status(core), "ready");
+    assert_eq!(
+        plan.status(core),
+        "ready",
+        "{:?}",
+        plan.terrain().and_then(|terrain| terrain.failure_reason())
+    );
     core.transit_network.begin_road_edit();
     core.transit_network.bulk_load = true;
     let mut added = core.add_road_internal_with_snap_and_validation(
@@ -123,6 +129,40 @@ fn commit_ready_with_lanes(
     assert!(plan.terrain().unwrap().entries_match(&entries));
     assert!(plan.terrain().unwrap().reused_patch_buffer_count(&entries) > 0);
     plan
+}
+
+#[test]
+fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
+    for (trunk_end_x, branch_end) in [
+        (2889.749755859375, (3020.0, -8622.830078125)),
+        (2889.74951171875, (3020.73, -8622.6728515625)),
+    ] {
+        let mut core = test_core();
+        core.load_world_definition_internal(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
+        ))
+        .unwrap();
+        // The first case reproduces road.log's exact missing outer-boundary coordinates;
+        // the second exposes the same short-edge deletion in the third road's new junction.
+        for (start, end) in [
+            ((2816.8857421875, -8504.609375), (trunk_end_x, -9000.0)),
+            ((2839.961, -8661.495), branch_end),
+            ((2940.0, -8640.0), (2960.0, -8870.0)),
+        ] {
+            let points = [start, end]
+                .map(|(x, z)| {
+                    Vector3::new(
+                        x,
+                        core.get_world_surface_height_internal(Vector2::new(x, z)),
+                        z,
+                    )
+                })
+                .to_vec();
+            commit_ready(&mut core, points);
+        }
+        assert_eq!(core.region_graph.edge_count(), 5);
+    }
 }
 
 #[test]

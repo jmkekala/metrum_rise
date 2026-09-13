@@ -57,6 +57,8 @@ pub(crate) enum SimCommand {
         edit_plan: Option<Arc<RoadEditPlan>>,
         /// Dispatch timestamp for queue latency, independent of core mutex contention.
         enqueued_at: Instant,
+        /// Single nonblocking acknowledgment after acceptance/rollback and query publication.
+        completion: std::sync::mpsc::SyncSender<(bool, String)>,
     },
     /// Undo the latest authoring operation entirely on the simulation thread.
     Undo,
@@ -233,6 +235,7 @@ pub(crate) fn run_sim_thread(
                     snap_to_existing_roads,
                     edit_plan,
                     enqueued_at,
+                    completion,
                 }) => {
                     commands_processed += 1;
                     add_road_commands += 1;
@@ -251,6 +254,7 @@ pub(crate) fn run_sim_thread(
                         snapshot_ms,
                         collect_refined_ms,
                         invalidated_refined_cache_entries,
+                        commit_result,
                     ) = {
                         let mut c = core.lock().expect("simulation core lock poisoned");
                         let road_lock_wait_ms = lock_wait_start.elapsed().as_secs_f64() * 1000.0;
@@ -452,6 +456,14 @@ pub(crate) fn run_sim_thread(
                             .last_rebuilt_terrain_chunks
                             .len();
                         c.last_road_edit_metrics = edit_metrics;
+                        let commit_result = (
+                            road_add.committed,
+                            if road_add.committed {
+                                String::new()
+                            } else {
+                                c.last_road_timing.clone()
+                            },
+                        );
                         (
                             road_snapshots,
                             road_lock_wait_ms,
@@ -462,6 +474,7 @@ pub(crate) fn run_sim_thread(
                             snapshot_ms,
                             collect_refined_ms,
                             invalidated_refined_cache_entries,
+                            commit_result,
                         )
                     };
                     if let Some((preview_context, query_snapshot)) = road_snapshots {
@@ -486,6 +499,7 @@ pub(crate) fn run_sim_thread(
                             invalidated_refined_cache_entries
                         );
                     }
+                    let _ = completion.try_send(commit_result);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;

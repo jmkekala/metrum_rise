@@ -22,7 +22,7 @@
 #   --debug <category>   Category-filtered debug logging (stdout)
 #                        Common categories: isect, economy, demand, spawn, road, border, terrain, buildings, visuals, perf
 #   --debug road         Road placement timings, committed-road geometry dumps,
-#                        terrain/water patch diagnostics, and road-surface overlay
+#                        terrain/water patch diagnostics (METRUM_DEBUG_SURFACE=1 adds overlay)
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
 #                        Shows resident patch counts, desired bounds, cull distance, patch
 #                        create/remove/upload churn, and average renderer timings while flying.
@@ -462,7 +462,6 @@ if [ $DEBUG -eq 1 ]; then
         if [ "$DEBUG_CATEGORY" = "road" ]; then
             export METRUM_DEBUG_FILTER="road"
             export METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1
-            export METRUM_DEBUG_SURFACE=1
         else
             export METRUM_DEBUG_FILTER="$DEBUG_CATEGORY"
         fi
@@ -472,7 +471,7 @@ if [ $DEBUG -eq 1 ]; then
             echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
             echo "  Includes edge geometry, node class/throat diagnostics, compiled loops, and source/visual terrain samples."
             echo "  Also prints terrain/water patch clip, mesh, baseline water diagnostics, and authored fill contributors for road-touched patches."
-            echo "  Also enables the compiled road-surface overlay in the editor for visual comparison."
+            echo "  Set METRUM_DEBUG_SURFACE=1 to add the compiled road-surface overlay."
         elif [ "$DEBUG_CATEGORY" = "terrain" ]; then
             export METRUM_DEBUG_TERRAIN=1
             echo "  Terrain flight diagnostics enabled: [DEBUG:terrain] summaries every 0.5 s"

@@ -5,6 +5,55 @@
 use super::*;
 
 #[test]
+fn submillimetre_boundary_segments_keep_exact_endpoints_and_source() {
+    for length in [0.000001, 0.000429, 0.000999] {
+        let start = RoadVec3::new(2834.492, 101.612, -8658.672);
+        let end = start + RoadVec3::new(length, 0.0, 0.0);
+        let sources = [test_source_edge_for_owner(
+            RoadSurfaceBandKind::Sidewalk,
+            5,
+            start,
+            end,
+            3,
+            30,
+            3,
+            31,
+        )];
+        let mut segments = Vec::new();
+        push_sourced_node_earthwork_boundary_segments(
+            11,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            test_boundary_point(start),
+            test_boundary_point(end),
+            &sources,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+            &mut segments,
+        )
+        .unwrap();
+        assert_eq!(segments.len(), 1, "lost {length} m boundary");
+        assert_eq!(
+            ArrangementBoundaryPointKey::from_world(segments[0].inner_start),
+            ArrangementBoundaryPointKey::from_world(start)
+        );
+        assert_eq!(
+            ArrangementBoundaryPointKey::from_world(segments[0].inner_end),
+            ArrangementBoundaryPointKey::from_world(end)
+        );
+        assert!(matches!(
+            segments[0].source,
+            RoadSurfaceEarthworkFaceSource::NodeFootprintBoundary {
+                owner_kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index: 5,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
 fn direct_boundary_segment_with_adjacent_material_endpoint_owners_uses_raised_owner() {
     let start = ArrangementBoundaryPointKey::from_world(RoadVec3::new(0.0, 0.0, 0.0));
     let end = ArrangementBoundaryPointKey::from_world(RoadVec3::new(2.0, 0.0, 0.0));

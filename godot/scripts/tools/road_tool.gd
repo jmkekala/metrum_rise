@@ -5,9 +5,8 @@
 ## Extends NetworkTool. Adds: Rust-compiled roadbed preview, angle snapping (Shift, 15° steps,
 ## no road snap), distance + angle HUD label, and SimCity-style ghost guide
 ## lines projected from existing road endpoints (toggle with G key).
-## Commits via NetworkTool.add_road() on left-click after Rust graph-aware commit validation;
-## cheap validation remains hover feedback and async road-surface previews remain visual feedback.
-## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
+## Placement stays pending until Rust acknowledges acceptance; rejection retains the editable stroke.
+## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → accepted commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
 
 enum State { IDLE, SETTING_CONTROL, SETTING_END }
@@ -52,6 +51,11 @@ var _preview_request_id: int = 0
 var _preview_drawn_request_id: int = 0
 var _preview_update_pending: bool = false
 var _preview_result_pending: bool = false
+var _commit_request_id: int = 0
+var _commit_path_id: int = 0
+var _commit_points := PackedVector3Array()
+var _commit_validation: Dictionary = {}
+var _commit_border_check: Array = []
 var _candidate_cache_points: PackedVector3Array = PackedVector3Array()
 var _candidate_cache_validation: Dictionary = {}
 var _candidate_cache_fwd_lanes: int = -1
@@ -102,6 +106,7 @@ func _ready():
 	_hud_canvas.add_child(_info_label)
 
 func _process(delta):
+	_poll_road_commit_result()
 	var previous_mouse_pos := _last_world_mouse_pos
 	var had_mouse_pos := _has_last_world_mouse_pos
 	super._process(delta)
@@ -191,7 +196,7 @@ func _unhandled_input(event):
 
 
 func _handle_click():
-	if _scripted_pointer_enabled:
+	if _scripted_pointer_enabled or _commit_request_id > 0:
 		return
 	var total_start_us := Time.get_ticks_usec()
 	var state_before: int = current_state
@@ -276,7 +281,7 @@ func _handle_click():
 	)
 
 func _update_preview():
-	if current_path == null: return
+	if current_path == null or _commit_request_id > 0: return
 	var points := _refresh_preview_curve()
 	if _preview_display_request != null and not _preview_display_request.matches_context(self):
 		_clear_preview_visual()
@@ -532,7 +537,8 @@ func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionar
 	_junction_preview.clear()
 	_update_road_preview_material(preview)
 	var ribbon: Variant = preview
-	if not preview.has("surface_vertices"):
+	var vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
+	if vertices.is_empty():
 		# Reuse Rust's prepared profile. Building display-only geometry must not snap/revalidate.
 		ribbon = simulation_node.build_road_preview_ribbon(
 			preview.get("prepared_points", PackedVector3Array()), fwd_lanes, bkw_lanes,
@@ -544,6 +550,7 @@ func _draw_coarse_preview_surface(points: PackedVector3Array, preview: Dictionar
 			return false
 	if not _upload_road_preview_mesh(ribbon):
 		_clear_preview_visual()
+		_update_preview_measurement_label(preview.get("prepared_points", points), preview)
 		return false
 	_preview_drawn_request_id = 0
 	var prepared: PackedVector3Array = preview.get("prepared_points", points)
@@ -657,6 +664,8 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Water crossing requires a bridge"
 		"surface_geometry_invalid":
 			return "Road surface compilation failed"
+		"terrain_clip_missing_outer_boundary_owner":
+			return "Road terrain boundary could not be built"
 		"parcel_overlap":
 			return "Road overlaps existing zoning parcels"
 		"same_node_connection":
@@ -665,10 +674,14 @@ func _preview_invalid_text(preview: Dictionary) -> String:
 			return "Road too short"
 		"validation_unavailable":
 			return "Road check unavailable"
+		"road_commit_rejected":
+			return "Road could not be built; adjust the road and try again"
 		_:
 			return "Road cannot be placed"
 
 func _commit_segment(end_pos: Vector3) -> bool:
+	if _commit_request_id > 0:
+		return false
 	var total_start_us := Time.get_ticks_usec()
 	_last_world_mouse_pos = end_pos
 	_has_last_world_mouse_pos = true
@@ -680,7 +693,7 @@ func _commit_segment(end_pos: Vector3) -> bool:
 	var preview_start_us := Time.get_ticks_usec()
 	var validation := _commit_validation_for_points(points)
 	var preview_ms := float(Time.get_ticks_usec() - preview_start_us) / 1000.0
-	var committed := false
+	var queued := false
 	var preview_valid := bool(validation.get("is_valid", false))
 	var invalid_reason := String(validation.get("invalid_reason", ""))
 	var max_grade := float(validation.get("max_grade", 0.0))
@@ -706,7 +719,10 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		_draw_candidate_preview(points, validation)
 	if points.size() > 1 and preview_valid:
 		var add_road_start_us := Time.get_ticks_usec()
-		simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
+		_commit_request_id = simulation_node.add_road_with_snap(points, fwd_lanes, bkw_lanes, _snap_to_roads_enabled())
+		_commit_path_id = current_path.get_instance_id()
+		_commit_points = points
+		_commit_validation = validation
 		add_road_ms = float(Time.get_ticks_usec() - add_road_start_us) / 1000.0
 		# Do NOT trigger the terrain/network visual refresh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
@@ -715,20 +731,17 @@ func _commit_segment(end_pos: Vector3) -> bool:
 		var bookkeeping_start_us := Time.get_ticks_usec()
 		# Queue border check — must run AFTER the road is in the graph (nodes exist).
 		# NetworkRenderer drains _pending_border_checks when network_dirty fires.
-		_pending_border_checks.push_back([start_pos, end_pos])
+		_commit_border_check = [start_pos, end_pos]
+		_pending_border_checks.push_back(_commit_border_check)
 		# Ghost guides must be rebuilt once the road lands in the graph.
 		_ghost_guides_dirty = true
 		bookkeeping_ms = float(Time.get_ticks_usec() - bookkeeping_start_us) / 1000.0
-		committed = true
-
-	if committed:
-		var cancel_start_us := Time.get_ticks_usec()
-		cancel_road()
-		cancel_ms = float(Time.get_ticks_usec() - cancel_start_us) / 1000.0
+		queued = true
+		_update_preview_measurement_label(validation.get("prepared_points", points), {"is_pending": true})
 
 	if _road_debug_enabled:
 		print(
-			"[DEBUG:road] commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s invalid_reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) committed=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
+			"[DEBUG:road] commit_segment_detail raw_points=%d points=%d preview_empty=%s preview_valid=%s invalid_reason=%s max_grade=%.3f allowed_grade=%.3f span=(%.3f,%.3f) run=%.3f dy=%.3f span_y=(%.3f,%.3f) span_terrain=(%.3f,%.3f) span_delta=(%.3f,%.3f) endpoint_snap=(%d,%d) endpoint_delta=(%.3f,%.3f) queued=%s preview_ms=%.3f baked_ms=%.3f add_road_ms=%.3f bookkeeping_ms=%.3f cancel_ms=%.3f total_ms=%.3f"
 			% [
 				raw_points.size(),
 				points.size(),
@@ -751,7 +764,7 @@ func _commit_segment(end_pos: Vector3) -> bool:
 				end_snap,
 				start_endpoint_delta,
 				end_endpoint_delta,
-				str(committed),
+				str(queued),
 				preview_ms,
 				baked_ms,
 				add_road_ms,
@@ -760,7 +773,36 @@ func _commit_segment(end_pos: Vector3) -> bool:
 				float(Time.get_ticks_usec() - total_start_us) / 1000.0,
 			]
 		)
-	return committed
+	return queued
+
+func _poll_road_commit_result() -> void:
+	if _commit_request_id == 0:
+		return
+	var result: Variant = simulation_node.get_road_commit_result(_commit_request_id)
+	if not result is Dictionary:
+		return
+	var committed := bool(result.get("committed", false))
+	if _road_debug_enabled:
+		print("[DEBUG:road] road_commit_result request_id=%d committed=%s detail=%s" % [_commit_request_id, committed, result.get("detail", "")])
+	_commit_request_id = 0
+	if not committed:
+		_pending_border_checks.erase(_commit_border_check)
+	# Cancellation or a new drawing gesture must not be undone by an older completion.
+	if current_path != null and current_path.get_instance_id() == _commit_path_id:
+		if committed:
+			cancel_road()
+		else:
+			var rejected := _commit_validation.duplicate(false)
+			rejected["is_valid"] = false
+			rejected["is_pending"] = false
+			rejected["invalid_reason"] = "road_commit_rejected"
+			rejected["surface_generation"] = simulation_node.get_road_tool_surface_generation()
+			_clear_preview_cache()
+			_remember_candidate_validation(_commit_points, rejected)
+			_draw_candidate_preview(_commit_points, rejected)
+	_commit_points = PackedVector3Array()
+	_commit_validation = {}
+	_commit_border_check = []
 
 func cancel_road():
 	current_state = State.IDLE

@@ -106,11 +106,9 @@ pub(in crate::simulation::network::surface::node::boundary) fn push_sourced_node
         let sub_end_split = pair[1].1;
         let sub_start = sub_start_split.point_world();
         let sub_end = sub_end_split.point_world();
-        if RoadVec2::new(sub_end.x - sub_start.x, sub_end.z - sub_start.z).length_squared()
-            <= f64::from(
-                super::super::super::SAMPLE_EPSILON_M * super::super::super::SAMPLE_EPSILON_M,
-            )
-        {
+        // Every distinct arrangement edge carries boundary ownership, including sub-millimetre
+        // material handoffs. Dropping a short edge opens the sourced loop used by terrain union.
+        if sub_start_split.point_key.xz_key() == sub_end_split.point_key.xz_key() {
             continue;
         }
         let source = node_earthwork_source_for_boundary_subsegment(

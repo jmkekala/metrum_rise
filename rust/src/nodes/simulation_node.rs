@@ -258,6 +258,10 @@ pub struct SimulationNode {
     pub(crate) cmd_tx: std::sync::mpsc::Sender<SimCommand>,
     /// Receiver held here until `ready()` transfers it to the background thread.
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
+    /// Identity of the latest placement whose single completion may be polled by the editor.
+    pub(crate) road_commit_request_id: i64,
+    /// One bounded completion receiver; replacing it abandons feedback, never the queued edit.
+    pub(crate) road_commit_result: Option<std::sync::mpsc::Receiver<(bool, String)>>,
     /// Bounded latest-input mailbox for the worker outside the simulation thread.
     pub(crate) road_preview_tx: RoadPreviewSender,
     /// Immutable context consumed by the road-preview worker.
@@ -542,6 +546,8 @@ impl INode3D for SimulationNode {
             sim_thread: None,
             cmd_tx,
             cmd_rx: Some(cmd_rx),
+            road_commit_request_id: 0,
+            road_commit_result: None,
             road_preview_tx,
             road_preview_context,
             road_preview_result,

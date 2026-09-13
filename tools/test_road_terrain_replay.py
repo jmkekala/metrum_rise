@@ -47,6 +47,17 @@ class TerrainReplayTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     read_attempts(path)
 
+    def test_queued_placement_uses_authoritative_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.log"
+            for accepted in (True, False):
+                path.write_text(
+                    "[DEBUG:road] commit_segment_detail points=2 queued=true\n"
+                    'ROAD_GEOMETRY_DUMP_BEGIN\n{"edges": []}\nROAD_GEOMETRY_DUMP_END\n'
+                    f"[DEBUG:road] road_commit_result request_id=1 committed={str(accepted).lower()} detail=done\n"
+                )
+                self.assertEqual(read_attempts(path)[0]["accepted"], accepted)
+
     def test_severe_bump_has_pitch_and_source_evidence(self):
         metrics = profile_metrics([[0, 0, 0, 0], [1, 10, 0, 0], [2, 0, 0, 0]])
         self.assertEqual(metrics["max_grade"], 10)

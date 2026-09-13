@@ -207,6 +207,15 @@ class MockRoadCandidateSimulation:
 	var preview_requests: int = 0
 	var ribbon_builds: int = 0
 	var completed_preview: Variant = null
+	var commit_requests: int = 0
+	var commit_result: Variant = null
+
+	func add_road_with_snap(_points, _fwd, _bkw, _snap) -> int:
+		commit_requests += 1
+		return commit_requests
+
+	func get_road_commit_result(_request_id: int) -> Variant:
+		return commit_result
 
 	func get_zoning_overlay_revision() -> int:
 		return zoning_revision
@@ -328,6 +337,7 @@ func _run() -> void:
 	_test_road_pointer_frame_updates()
 	await _test_native_road_cursor_contract()
 	_test_road_parcel_validation_cache()
+	_test_road_commit_acknowledgment()
 	_test_real_terrain_atomic_transaction()
 	var host := Node3D.new()
 	root.add_child(host)
@@ -1069,7 +1079,28 @@ func _test_native_road_cursor_contract() -> void:
 			_expect(result["surface_generation"] == simulation.get_road_tool_surface_generation(), "cursor target must carry its source generation")
 			previous = result
 	await _test_native_road_preview_contract(simulation)
+	var points := PackedVector3Array([Vector3(-60.0, 0.0, 32.0), Vector3(60.0, 0.0, 32.0)])
+	var request := simulation.add_road_with_snap(points, 1, 1, true)
+	var accepted: Dictionary = await _await_road_commit(simulation, request)
+	_expect(accepted.get("committed", false) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native acknowledgment must reflect an accepted road")
+	var invalid := PackedVector3Array([Vector3.ZERO])
+	var abandoned := simulation.add_road_with_snap(invalid, 1, 1, true)
+	request = simulation.add_road_with_snap(invalid, 1, 1, true)
+	var superseded: Dictionary = simulation.get_road_commit_result(abandoned)
+	_expect(not superseded["committed"] and superseded["detail"] == "road_request_replaced", "superseded requests must not wait forever")
+	var rejected: Dictionary = await _await_road_commit(simulation, request)
+	_expect(not rejected.get("committed", true) and simulation.get_road_benchmark_state()["live_edges"] == 1, "native rejection must acknowledge that no topology was added")
 	host.free()
+
+func _await_road_commit(simulation: SimulationNode, request: int) -> Dictionary:
+	var deadline := Time.get_ticks_msec() + 10000
+	while Time.get_ticks_msec() < deadline:
+		var result: Variant = simulation.get_road_commit_result(request)
+		if result is Dictionary:
+			return result
+		await process_frame
+	_expect(false, "native road completion must finish")
+	return {}
 
 func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	var tool := RoadToolScript.new()
@@ -1083,6 +1114,8 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 	tool.add_child(tool.blueprint_mesh)
 	tool._road_preview_material = WorldMaterialsScript.road_preview_material()
 	tool.blueprint_mesh.material_override = tool._road_preview_material
+	tool._info_label = Label.new()
+	tool.add_child(tool._info_label)
 	var points := PackedVector3Array([Vector3(-40.0, 0.0, -8.0), Vector3(0.0, 0.0, 8.0), Vector3(40.0, 0.0, -8.0)])
 	for lanes in [Vector2i(1, 1), Vector2i(3, 1), Vector2i(1, 0), Vector2i(0, 0)]:
 		tool.fwd_lanes = lanes.x
@@ -1121,6 +1154,14 @@ func _test_native_road_preview_contract(simulation: SimulationNode) -> void:
 			tool._update_road_preview_material(state)
 			var expected := 1 if state.has("is_pending") else (0 if state["is_valid"] else 2)
 			_expect(tool._road_preview_material.get_shader_parameter("placement_state") == expected, "road material must distinguish valid, checking, and rejected placement")
+		var rejected: Dictionary = completed.duplicate(false)
+		rejected["is_valid"] = false
+		rejected["invalid_reason"] = "terrain_clip_missing_outer_boundary_owner"
+		_expect(rejected["surface_vertices"].is_empty(), "exact scene fixture must exercise the empty legacy mesh field")
+		tool._draw_candidate_preview(points, rejected)
+		_expect(tool.blueprint_mesh.mesh != null and tool._junction_preview.generation == -1, "rejected exact scenes must restore roads and build a visible fallback")
+		_expect(tool._info_label.visible and tool._info_label.text.contains("terrain boundary"), "terrain rejection must retain an explanatory label")
+		_expect(tool._road_preview_material.get_shader_parameter("placement_state") == 2, "rejected fallback must be red")
 		if not OS.get_environment("METRUM_ROAD_PREVIEW_CAPTURE").is_empty():
 			# This diagnostic owns the moving-ribbon material; exact chunks have their own tests.
 			var moving: Dictionary = simulation.validate_road_candidate_with_snap(points, tool.fwd_lanes, tool.bkw_lanes, false)
@@ -1292,6 +1333,39 @@ func _test_road_parcel_validation_cache() -> void:
 	_expect(tool._candidate_cache_validation.is_empty(), "a busy parcel check must remain retryable")
 	simulation.validation = {"is_valid": true, "zoning_revision": 3}
 	_expect(tool._candidate_validation_for_points(points)["is_valid"], "the next parcel check must recover after lock contention")
+	tool.free()
+	simulation.free()
+
+func _test_road_commit_acknowledgment() -> void:
+	var simulation := MockRoadCandidateSimulation.new()
+	simulation.generation = 1
+	simulation.validation = {"is_valid": true, "surface_generation": 1}
+	var tool := RoadToolScript.new()
+	tool.simulation_node = simulation
+	tool.blueprint_mesh = MeshInstance3D.new()
+	tool.add_child(tool.blueprint_mesh)
+	tool._info_label = Label.new()
+	tool.add_child(tool._info_label)
+	tool.current_state = RoadToolScript.State.SETTING_END
+	tool.current_path = Path3D.new()
+	tool.current_path.curve = Curve3D.new()
+	tool.add_child(tool.current_path)
+	var path := tool.current_path
+	var endpoint := Vector3(40.0, 0.0, 0.0)
+	_expect(tool._commit_segment(endpoint), "valid click must queue a placement")
+	tool._poll_road_commit_result()
+	_expect(tool.current_path == path and tool._commit_request_id > 0, "pending placement must retain its stroke")
+	_expect(not tool._commit_segment(endpoint) and simulation.commit_requests == 1, "pending placement must block duplicate dispatch")
+	simulation.commit_result = {"committed": false, "detail": "rejected=road_plan_invalid"}
+	tool._poll_road_commit_result()
+	_expect(tool.current_path == path and tool._commit_request_id == 0, "rejection must keep the stroke editable")
+	_expect(tool._info_label.visible and tool._info_label.text.contains("could not be built"), "rejection must explain that no road was built")
+	_expect(tool._pending_border_checks.is_empty(), "rejection must retire its border check")
+	simulation.commit_result = null
+	_expect(tool._commit_segment(endpoint), "rejected stroke must permit another attempt")
+	simulation.commit_result = {"committed": true}
+	tool._poll_road_commit_result()
+	_expect(tool.current_path == null and tool.current_state == RoadToolScript.State.IDLE, "only acceptance may finish the drawing gesture")
 	tool.free()
 	simulation.free()
 

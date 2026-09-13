@@ -984,9 +984,9 @@ func _run_segment(
 	var commit_phase := _phase_begin("road_commit", identity)
 	var commit_start_us := Time.get_ticks_usec()
 	var dispatch_start_us := Time.get_ticks_usec()
-	var committed: bool = road_tool._commit_segment(end_pos)
+	var queued: bool = road_tool._commit_segment(end_pos)
 	var dispatch_ms := _elapsed_ms(dispatch_start_us)
-	if not committed:
+	if not queued:
 		var rejected := {
 			"ok": false,
 			"error": "RoadTool rejected the commit",
@@ -1233,6 +1233,7 @@ func _is_idle() -> bool:
 		not simulation_node.is_network_dirty()
 		and not simulation_node.is_terrain_dirty()
 		and not road_tool.needs_main_mesh_hydration()
+		and road_tool._commit_request_id == 0
 		and road_tool._pending_border_checks.is_empty()
 		and not road_tool._ghost_rebuild_queued
 		and _ghosts_are_current()

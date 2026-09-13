@@ -41,7 +41,8 @@ impl SimulationNode {
         self.add_road_with_snap(points, fwd_lanes, bkw_lanes, true);
     }
 
-    /// Adds a new road segment to the network with optional existing-road snapping.
+    /// Queues a road and returns its completion identity; this does not report acceptance.
+    /// Only the latest request retains feedback, polled once with `get_road_commit_result`.
     #[func]
     pub fn add_road_with_snap(
         &mut self,
@@ -49,7 +50,7 @@ impl SimulationNode {
         fwd_lanes: i32,
         bkw_lanes: i32,
         snap_to_existing_roads: bool,
-    ) {
+    ) -> i64 {
         // Send to the background thread so the Godot main thread is never blocked
         // by lane rebuilding and zoning work. The command wakes the existing simulation thread
         // without waiting for, or advancing, its next movement tick.
@@ -68,6 +69,9 @@ impl SimulationNode {
             .as_ref()
             .and_then(RoadPreviewSnapshot::edit_plan);
         let send_start = road_debug.then(Instant::now);
+        let (completion, result) = std::sync::mpsc::sync_channel(1);
+        self.road_commit_request_id = self.road_commit_request_id.wrapping_add(1).max(1);
+        self.road_commit_result = Some(result);
         let send_ok = self
             .cmd_tx
             .send(crate::nodes::sim::core::SimCommand::AddRoad {
@@ -77,6 +81,7 @@ impl SimulationNode {
                 snap_to_existing_roads,
                 edit_plan,
                 enqueued_at: Instant::now(),
+                completion,
             })
             .is_ok();
         let send_ms = send_start
@@ -97,6 +102,28 @@ impl SimulationNode {
                     .unwrap_or(0.0)
             );
         }
+        self.road_commit_request_id
+    }
+
+    /// Consumes the latest placement's acceptance or rejection without locking the simulation.
+    /// Nil means pending/already consumed; a superseded id or disconnected worker is rejected.
+    #[func]
+    pub fn get_road_commit_result(&mut self, request_id: i64) -> Variant {
+        if request_id != self.road_commit_request_id {
+            return vdict! { "committed": false, "detail": "road_request_replaced" }.to_variant();
+        }
+        let Some(receiver) = self.road_commit_result.as_ref() else {
+            return Variant::nil();
+        };
+        let result = match receiver.try_recv() {
+            Ok((committed, detail)) => vdict! { "committed": committed, "detail": detail },
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Variant::nil(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                vdict! { "committed": false, "detail": "road_command_unavailable" }
+            }
+        };
+        self.road_commit_result = None;
+        result.to_variant()
     }
 
     /// Returns the node ID of the nearest graph node near the border, or -1.
