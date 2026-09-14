@@ -139,9 +139,10 @@ The stable controls are:
   `METRUM_GAMEPLAY_BENCHMARK_PROFILE_PATH`, `METRUM_GAMEPLAY_BENCHMARK_METRICS_PATH`, and
   `METRUM_GAMEPLAY_BENCHMARK_LOG_PATH` overrides
 
-Linux requires `kernel.perf_event_paranoid <= 1`; the wrapper checks this before recording. Release
-builds retain line/debug symbols, and Samply's presymbolication sidecar keeps the capture readable
-away from the build machine.
+Linux requires `kernel.perf_event_paranoid <= 1`; the wrapper checks this before recording. macOS
+uses Samply's native sampler and does not perform that Linux kernel check. Release builds retain
+line/debug symbols, and Samply's presymbolication sidecar keeps the capture readable away from the
+build machine.
 
 Benchmark-history rule:
 
@@ -174,7 +175,8 @@ Godot is a rendering, input, and editor bridge. Authoritative simulation state a
 ## Debug Launch Reference
 
 `run.sh` is the canonical launch wrapper for local debug sessions. These flags set environment
-variables before building Rust, deploying `libmetrum_rise.so`, and launching Godot.
+variables before building Rust, deploying `libmetrum_rise.so` on Linux or
+`libmetrum_rise.dylib` on macOS, and launching Godot.
 
 ### Primary Debug Flags
 

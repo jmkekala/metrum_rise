@@ -80,6 +80,20 @@
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GODOT_DIR="$PROJECT_ROOT/godot"
+case "$(uname -s)" in
+    Linux)
+        METRUM_PLATFORM="linux"
+        METRUM_LIBRARY_SUFFIX="so"
+        ;;
+    Darwin)
+        METRUM_PLATFORM="darwin"
+        METRUM_LIBRARY_SUFFIX="dylib"
+        ;;
+    *)
+        echo "Error: unsupported platform '$(uname -s)'; Metrum Rise supports Linux and macOS." >&2
+        exit 2
+        ;;
+esac
 RELEASE=0
 TEST=0
 ROAD_CHUNK_BENCHMARK=0
@@ -102,6 +116,166 @@ DEBUG_CATEGORY=""
 GODOT_ENGINE_ARGS=()
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
+
+require_command() {
+    local command_name="$1"
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Error: required command '$command_name' is not on PATH." >&2
+        return 1
+    fi
+}
+
+hash_stdin() {
+    local hash_output
+    local digest
+    if [ "$METRUM_PLATFORM" = "linux" ]; then
+        if ! require_command sha256sum; then
+            return 1
+        fi
+        if ! hash_output="$(sha256sum)"; then
+            echo "Error: sha256sum failed." >&2
+            return 1
+        fi
+    else
+        if ! require_command shasum; then
+            return 1
+        fi
+        if ! hash_output="$(shasum -a 256)"; then
+            echo "Error: shasum -a 256 failed." >&2
+            return 1
+        fi
+    fi
+    digest="${hash_output%%[[:space:]]*}"
+    case "$digest" in
+        ""|*[!0-9a-f]*)
+            echo "Error: SHA-256 command produced an invalid digest." >&2
+            return 1
+            ;;
+    esac
+    if [ "${#digest}" -ne 64 ]; then
+        echo "Error: SHA-256 command produced an invalid digest." >&2
+        return 1
+    fi
+    printf '%s\n' "$digest"
+}
+
+asset_modification_state() {
+    if [ "$METRUM_PLATFORM" = "linux" ]; then
+        stat -c '%Y:%s' "$1"
+    else
+        stat -f '%m:%z' "$1"
+    fi
+}
+
+godot_import_signature_records() {
+    while IFS= read -r -d '' source_file; do
+        local relative_path="${source_file#"$GODOT_DIR"/}"
+        local modification_state
+        if ! modification_state="$(asset_modification_state "$source_file")"; then
+            echo "Error: could not read modification state for $relative_path." >&2
+            return 1
+        fi
+        # %q keeps each record single-line even for unusual source paths.
+        printf '%q\t%s\n' "$relative_path" "$modification_state"
+    done < <(
+        find "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap" -type f \
+            \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
+            -o -iname '*.exr' -o -iname '*.hdr' \
+            -o -iname '*.glb' -o -iname '*.gltf' \) \
+            -print0
+    )
+}
+
+deploy_native_library() {
+    local source_library="$1"
+    local destination_library="$2"
+    local temporary_library
+    if [ ! -f "$source_library" ]; then
+        echo "Error: Rust build succeeded but did not produce $source_library." >&2
+        return 1
+    fi
+    if ! mkdir -p "$(dirname "$destination_library")"; then
+        echo "Error: could not create $(dirname "$destination_library")." >&2
+        return 1
+    fi
+    temporary_library="$(mktemp "${destination_library}.tmp.XXXXXX")" || {
+        echo "Error: could not create a temporary GDExtension library." >&2
+        return 1
+    }
+    if ! cp "$source_library" "$temporary_library"; then
+        rm -f "$temporary_library"
+        echo "Error: could not copy the GDExtension library." >&2
+        return 1
+    fi
+    # Rename within godot/bin so a running Godot process retains its old inode.
+    if ! mv -f "$temporary_library" "$destination_library"; then
+        rm -f "$temporary_library"
+        echo "Error: could not deploy the GDExtension library." >&2
+        return 1
+    fi
+}
+
+run_with_test_timeout() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=2s 15s "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout --kill-after=2s 15s "$@"
+        return $?
+    fi
+    if ! require_command python3; then
+        echo "Error: simulation_speed_input_test needs GNU timeout, gtimeout, or Python 3 for its timeout guard." >&2
+        return 127
+    fi
+    python3 - "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+command = sys.argv[1:]
+try:
+    child = subprocess.Popen(command, start_new_session=True)
+except OSError as error:
+    print("Error: could not start timeout-guarded command: {}".format(error), file=sys.stderr)
+    sys.exit(127)
+
+interrupted = []
+
+def forward_signal(signum, _frame):
+    if not interrupted:
+        interrupted.append(signum)
+        try:
+            os.killpg(child.pid, signum)
+        except ProcessLookupError:
+            pass
+
+signal.signal(signal.SIGINT, forward_signal)
+signal.signal(signal.SIGTERM, forward_signal)
+
+try:
+    status = child.wait(timeout=15)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        child.wait()
+    sys.exit(124)
+
+if interrupted:
+    sys.exit(128 + interrupted[0])
+sys.exit(status)
+PY
+}
 
 godot_import_metadata_has_missing_outputs() {
     local import_file="$1"
@@ -148,11 +322,10 @@ godot_import_cache_needs_repair() {
 }
 
 godot_import_repair_signature() {
-    find "$GODOT_DIR/assets" "$GODOT_DIR/bootstrap" -type f \
-        \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \
-        -o -iname '*.exr' -o -iname '*.hdr' \
-        -o -iname '*.glb' -o -iname '*.gltf' \) \
-        -printf '%P %T@\n' 2>/dev/null | sha256sum | awk '{print $1}'
+    (
+        set -o pipefail
+        godot_import_signature_records | LC_ALL=C sort | hash_stdin
+    )
 }
 
 repair_godot_import_cache_if_needed() {
@@ -162,7 +335,10 @@ repair_godot_import_cache_if_needed() {
     fi
     if godot_import_cache_needs_repair; then
         local signature
-        signature="$(godot_import_repair_signature)"
+        if ! signature="$(godot_import_repair_signature)"; then
+            echo "Error: could not create the Godot import repair signature." >&2
+            return 1
+        fi
         local stamp_file="$GODOT_DIR/.godot/import_repair_attempt.sha256"
         if [ "${METRUM_FORCE_GODOT_IMPORT_REPAIR:-0}" != "1" ] && [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$signature" ]; then
             echo "Godot import cache still incomplete after previous repair attempt; continuing."
@@ -573,37 +749,49 @@ fi
 
 echo "Building Rust library..."
 cd "$PROJECT_ROOT/rust"
+if ! require_command cargo; then
+    exit 2
+fi
 if [ $RELEASE -eq 1 ]; then
     if ! cargo build --release; then
         echo "Rust build failed!"
         exit 1
     fi
-    LIB=target/release/libmetrum_rise.so
+    LIB="target/release/libmetrum_rise.$METRUM_LIBRARY_SUFFIX"
 else
     if ! cargo build; then
         echo "Rust build failed!"
         exit 1
     fi
-    LIB=target/debug/libmetrum_rise.so
+    LIB="target/debug/libmetrum_rise.$METRUM_LIBRARY_SUFFIX"
 fi
 
 echo "Deploying library..."
-mkdir -p ../godot/bin
-# Replace the inode: an older Godot process may still have the previous library mapped.
-cp --remove-destination "$LIB" ../godot/bin/libmetrum_rise.so
+if ! deploy_native_library "$LIB" "$GODOT_DIR/bin/libmetrum_rise.$METRUM_LIBRARY_SUFFIX"; then
+    exit 1
+fi
 
 echo "Registering GDExtension..."
-mkdir -p ../godot/.godot
-printf 'res://bin/metrum_rise.gdextension\n' > ../godot/.godot/extension_list.cfg
+if ! mkdir -p "$GODOT_DIR/.godot" || \
+   ! printf 'res://bin/metrum_rise.gdextension\n' > "$GODOT_DIR/.godot/extension_list.cfg"; then
+    echo "Error: could not register the GDExtension with Godot." >&2
+    exit 1
+fi
+if ! require_command godot; then
+    exit 2
+fi
 
-repair_godot_import_cache_if_needed
+if ! repair_godot_import_cache_if_needed; then
+    exit 1
+fi
 
 if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && ! command -v samply >/dev/null 2>&1; then
         echo "Error: samply is not installed or not on PATH." >&2
         exit 2
     fi
-    if [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && [ -r /proc/sys/kernel/perf_event_paranoid ]; then
+    # perf_event_paranoid is a Linux perf permission gate; macOS Samply does not use it.
+    if [ "$METRUM_PLATFORM" = "linux" ] && [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && [ -r /proc/sys/kernel/perf_event_paranoid ]; then
         PERF_EVENT_PARANOID="$(< /proc/sys/kernel/perf_event_paranoid)"
         if [ "$PERF_EVENT_PARANOID" -gt 1 ]; then
             echo "Error: kernel.perf_event_paranoid=$PERF_EVENT_PARANOID; Samply needs 1 or lower." >&2
@@ -639,7 +827,11 @@ if [ -n "$GAMEPLAY_ROAD_PROFILE_MODE" ]; then
     export METRUM_GAMEPLAY_BENCHMARK_GPU_PROFILED="$GAMEPLAY_ROAD_GPU_PROFILE"
     export METRUM_GAMEPLAY_BENCHMARK_GIT_REVISION="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
     export METRUM_GAMEPLAY_BENCHMARK_GIT_DIRTY="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=no | wc -l)"
-    export METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256="$(git -C "$PROJECT_ROOT" diff --binary HEAD | sha256sum | cut -d ' ' -f 1)"
+    if ! GAMEPLAY_DIFF_SHA256="$(set -o pipefail; git -C "$PROJECT_ROOT" diff --binary HEAD | hash_stdin)"; then
+        echo "Error: could not hash the benchmark working-tree diff." >&2
+        exit 1
+    fi
+    export METRUM_GAMEPLAY_BENCHMARK_DIFF_SHA256="$GAMEPLAY_DIFF_SHA256"
     # Never let an old success document authorize this run, or overwrite a saved capture.
     if [ -e "$GAMEPLAY_METRICS_PATH" ] || [ -e "$GAMEPLAY_LOG_PATH" ] || \
        { [ "$GAMEPLAY_ROAD_USE_PROFILER" -eq 1 ] && [ -e "$GAMEPLAY_PROFILE_PATH" ]; }; then
@@ -750,20 +942,25 @@ if [ $TEST -eq 1 ]; then
         bridge_test_command=(godot --headless --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then
-            bridge_test_command=(timeout --kill-after=2s 15s "${bridge_test_command[@]}")
+            if ! run_with_test_timeout "${bridge_test_command[@]}"; then
+                exit 1
+            fi
+            continue
         fi
         if ! "${bridge_test_command[@]}"; then
             exit 1
         fi
     done
-    if command -v xvfb-run >/dev/null 2>&1; then
+    if [ "$METRUM_PLATFORM" = "linux" ] && command -v xvfb-run >/dev/null 2>&1; then
         echo "Running rendered terrain shader tests..."
         if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \
             --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
             exit 1
         fi
-    else
+    elif [ "$METRUM_PLATFORM" = "linux" ]; then
         echo "Rendered terrain shader tests skipped: xvfb-run is unavailable."
+    else
+        echo "Rendered terrain shader tests skipped on macOS: the Xvfb/X11 path is Linux-only and a direct macOS renderer path is not yet validated."
     fi
     exit 0
 fi
