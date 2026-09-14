@@ -4,7 +4,13 @@ render_mode cull_disabled, ambient_light_disabled;
 uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 
-uniform vec3 scene_sun_direction = vec3(-0.46, 0.74, -0.49);
+// See the terrain shader: this pass also runs with ambient_light_disabled, so the baked
+// ambient floor is the only ambient it has and the day cycle has to scale it here.
+global uniform vec4 scene_ambient_light : source_color;
+// Colour vision washes out at night. Dimming alone leaves a saturated green ground reading as
+// daylight with the brightness turned down, because the albedo's green channel still dominates
+// whatever the ambient tint is multiplied by.
+global uniform float scene_ambient_desaturation;
 uniform float ground_shadow_ambient = 0.64;
 uniform float ground_shadow_sun_strength = 0.36;
 uniform float ground_shadow_min_visibility = 0.10;
@@ -256,17 +262,17 @@ vec3 apply_grass_detail(vec3 color, vec3 pos, float grass_mask) {
 }
 
 float hillshade_mask(vec3 normal) {
-	vec3 light_dir = scene_sun_direction;
-	if (length(light_dir) <= 0.001) {
-		float azimuth = radians(hillshade_azimuth_deg);
-		float altitude = radians(hillshade_altitude_deg);
-		light_dir = vec3(
-			sin(azimuth) * cos(altitude),
-			sin(altitude),
-			-cos(azimuth) * cos(altitude)
-		);
-	}
-	light_dir = normalize(light_dir);
+	// Held at the authored cartographic angle rather than following the live sun. This mask is
+	// a readability device baked into albedo, so swinging it with the day cycle would double
+	// the directional light's own shading, and it would snap 180 degrees at the moment the key
+	// light swaps from the sun to the moon. The moving light does the time-of-day work.
+	float azimuth = radians(hillshade_azimuth_deg);
+	float altitude = radians(hillshade_altitude_deg);
+	vec3 light_dir = normalize(vec3(
+		sin(azimuth) * cos(altitude),
+		sin(altitude),
+		-cos(azimuth) * cos(altitude)
+	));
 
 	float diffuse = clamp(dot(normal, light_dir), 0.0, 1.0);
 	float shaped = pow(diffuse, hillshade_contrast);
@@ -288,8 +294,11 @@ void fragment() {
 	vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, shade);
 	color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
 
+	// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
+	// with the ambient floor rather than staying vivid against a grey ground.
+	color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
 	ALBEDO = color;
-	EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0);
+	EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
 	ROUGHNESS = 0.92;
 	SPECULAR = 0.06;
 }

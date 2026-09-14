@@ -16,6 +16,7 @@ const RoadPropertiesWindow = preload("res://scripts/ui/road_properties_window.gd
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
 const InputManager = preload("res://scripts/core/input_manager.gd")
+const VegetationTool = preload("res://scripts/tools/vegetation_tool.gd")
 
 @onready var input_manager = $"../InputManager"
 @onready var road_tool = $"../RoadTool"
@@ -284,6 +285,7 @@ func _build_ui():
 	sculpt_btn.focus_mode = Control.FOCUS_NONE
 	terrain_sub_menu.add_child(sculpt_btn)
 	sculpt_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.SCULPT))
+	_build_vegetation_controls()
 	
 	var terrain_sub_margin = MarginContainer.new()
 	terrain_sub_margin.add_theme_constant_override("margin_bottom", 5)
@@ -666,6 +668,51 @@ func _apply_hud_toolbar_text_style(button: Button) -> void:
 	button.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
 	button.add_theme_color_override("font_focus_color", UIStyle.TEXT_PRIMARY)
 	button.add_theme_color_override("font_disabled_color", UIStyle.TEXT_DIM)
+
+## Vegetation controls share the existing Terrain submenu and forward settings to its tool.
+##
+## Two controls: choosing a species is the plant action, and `Remove` is its opposite. The tool
+## owns the radius, which the player turns with ctrl and the mouse wheel and reads off the ground
+## ring, so neither the point/brush choice nor the footprint needs a control here.
+func _build_vegetation_controls() -> void:
+	terrain_sub_menu.add_child(VSeparator.new())
+
+	var species := OptionButton.new()
+	species.focus_mode = Control.FOCUS_NONE
+	for label in ["Conifer", "Broadleaf", "Bush", "Rock"]:
+		species.add_item("+ " + label)
+	terrain_sub_menu.add_child(species)
+
+	var remove_button := Button.new()
+	remove_button.text = "Remove"
+	remove_button.toggle_mode = true
+	remove_button.focus_mode = Control.FOCUS_NONE
+	terrain_sub_menu.add_child(remove_button)
+
+	# Opening the dropdown already leaves remove mode: `item_selected` does not fire when the
+	# wanted species is the current one, which would otherwise trap the player in removal.
+	var plant := func():
+		_activate_vegetation(VegetationTool.Mode.PLANT)
+		remove_button.set_pressed_no_signal(false)
+	species.pressed.connect(plant)
+	species.item_selected.connect(func(index: int):
+		input_manager.vegetation_tool.species = index
+		plant.call()
+	)
+	remove_button.pressed.connect(func():
+		_activate_vegetation(VegetationTool.Mode.REMOVE)
+		remove_button.set_pressed_no_signal(true)
+	)
+	# One reset covers every path that closes the submenu, including the tool cancel it triggers.
+	terrain_sub_menu.visibility_changed.connect(func():
+		if not terrain_sub_menu.visible:
+			remove_button.set_pressed_no_signal(false)
+	)
+
+func _activate_vegetation(mode: int) -> void:
+	if input_manager.current_tool != InputManager.Tool.VEGETATION:
+		input_manager._toggle_tool(InputManager.Tool.VEGETATION)
+	input_manager.vegetation_tool.mode = mode
 
 func _connect_signals():
 	road_main_btn.pressed.connect(_on_road_main_pressed)

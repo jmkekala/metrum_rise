@@ -10,6 +10,14 @@ pub(crate) const MINUTES_PER_DAY: u16 = 24 * 60;
 /// Supported UI speed steps; the final entry also bounds live and saved speed multipliers.
 pub(crate) const SIMULATION_SPEED_STEPS: [f32; 8] = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0];
 
+const DEFAULT_SECONDS_PER_DAY: f64 = 24.0 * 60.0;
+
+// A fresh city opens mid-morning rather than at midnight. The clock drives the rendered
+// day/night cycle, so starting at minute zero would open every new game in the dark, and it
+// would spend the first seven operational hours before anyone commutes. Loaded saves restore
+// their own clock and are unaffected.
+const START_MINUTE_OF_DAY: u16 = 7 * 60 + 30;
+
 /// Validates a speed request and preserves negative-to-pause input handling.
 pub(crate) fn validated_simulation_speed(speed: f32) -> Option<f32> {
     (speed.is_finite() && speed <= SIMULATION_SPEED_STEPS[SIMULATION_SPEED_STEPS.len() - 1])
@@ -97,7 +105,7 @@ pub struct TimeSystem {
 }
 
 impl TimeSystem {
-    /// Creates a new time system, starting at day `1`, `00:00`, and initially paused.
+    /// Creates a new time system, starting at day `1`, `07:30`, and initially paused.
     pub fn new() -> Self {
         let seconds_per_day = load_runtime_economy_tuning()
             .map(|tuning| tuning.operational_clock.seconds_per_day)
@@ -106,7 +114,7 @@ impl TimeSystem {
             time_elapsed: 0.0,
             speed_multiplier: 0.0,
             day_index: 1,
-            minute_of_day: 0,
+            minute_of_day: START_MINUTE_OF_DAY,
             seconds_per_day,
         }
     }
@@ -114,6 +122,24 @@ impl TimeSystem {
     /// Returns the authored seconds per minute on the operational clock.
     pub fn seconds_per_minute(&self) -> f64 {
         self.seconds_per_day / f64::from(MINUTES_PER_DAY)
+    }
+
+    /// Returns the position inside the current operational day as a fraction in `0.0..1.0`.
+    ///
+    /// `0.0` is midnight and `0.5` is midday. Unlike [`Self::minute_of_day`] this includes the
+    /// partial minute in progress, so a renderer driving a day/night cycle from it moves
+    /// continuously instead of stepping once per authored minute.
+    pub fn day_fraction(&self) -> f32 {
+        let seconds_per_day = if self.seconds_per_day > 0.0 {
+            self.seconds_per_day
+        } else {
+            DEFAULT_SECONDS_PER_DAY
+        };
+        let elapsed = f64::from(self.minute_of_day) * self.seconds_per_minute() + self.time_elapsed;
+        // The accumulator is drained every whole minute, so this only exceeds a day if a caller
+        // hand-built a TimeSystem with an out-of-range minute. Wrap rather than clamp to 1.0,
+        // which would read as midnight-tomorrow instead of midnight.
+        (elapsed / seconds_per_day).rem_euclid(1.0) as f32
     }
 
     /// Returns the absolute authored operational seconds elapsed since day `1 00:00`.
@@ -164,7 +190,7 @@ pub(crate) const fn test_clock(day_index: u32, minute_of_day: u16) -> TimeSystem
 
 #[cfg(test)]
 mod tests {
-    use super::{MINUTES_PER_DAY, test_clock};
+    use super::{DEFAULT_SECONDS_PER_DAY, MINUTES_PER_DAY, TimeSystem, test_clock};
 
     #[test]
     fn process_delta_advances_exact_minutes() {
@@ -174,6 +200,34 @@ mod tests {
         assert_eq!(advance.elapsed_minutes, 61);
         assert_eq!(time.day_index, 1);
         assert_eq!(time.minute_of_day, 61);
+    }
+
+    #[test]
+    fn day_fraction_is_continuous_inside_the_minute_and_wraps_at_midnight() {
+        let mut time = TimeSystem {
+            time_elapsed: 0.0,
+            speed_multiplier: 1.0,
+            day_index: 1,
+            minute_of_day: 0,
+            seconds_per_day: DEFAULT_SECONDS_PER_DAY,
+        };
+        assert_eq!(time.day_fraction(), 0.0);
+
+        // Midday is exactly half the authored day.
+        time.minute_of_day = MINUTES_PER_DAY / 2;
+        assert!((time.day_fraction() - 0.5).abs() < 1e-6);
+
+        // The partial minute advances the fraction, which is the whole point of the accessor.
+        let before = time.day_fraction();
+        time.time_elapsed = time.seconds_per_minute() * 0.5;
+        assert!(time.day_fraction() > before);
+
+        // A day boundary returns to midnight rather than saturating at 1.0.
+        time.minute_of_day = MINUTES_PER_DAY - 1;
+        time.time_elapsed = 0.0;
+        time.process_delta(time.seconds_per_minute());
+        assert_eq!(time.minute_of_day, 0);
+        assert_eq!(time.day_fraction(), 0.0);
     }
 
     #[test]

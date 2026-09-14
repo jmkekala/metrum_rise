@@ -2155,6 +2155,11 @@ mod tests {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
+            vegetation_edits: Default::default(),
+            vegetation: crate::simulation::vegetation::VegetationGenerator::resolve(
+                crate::simulation::vegetation::VegetationConfig::default(),
+                &config,
+            ),
             treasury: CityTreasury::new(0.0),
             service_policy: Default::default(),
             fiscal_policy: Default::default(),

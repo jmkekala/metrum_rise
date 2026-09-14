@@ -25,6 +25,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::vegetation::{VegetationConfig, edits::VegetationEdits};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::ZoningSystem;
 use chrono::Utc;
@@ -40,6 +41,7 @@ pub mod schema;
 pub(crate) mod sqlite;
 #[cfg(test)]
 pub mod tests;
+mod vegetation;
 pub mod world;
 
 pub(crate) use camera::SavedCameraState;
@@ -50,6 +52,9 @@ pub(crate) struct SaveGameView<'a> {
     /// Active orbit camera, absent for simulation-only snapshots.
     pub camera: Option<SavedCameraState>,
     pub config: &'a WorldConfig,
+    pub vegetation: &'a VegetationConfig,
+    /// Player placements and generated-cell tombstones.
+    pub vegetation_edits: &'a VegetationEdits,
     pub time: &'a TimeSystem,
     pub terrain: &'a TerrainSystem,
     pub water: &'a WaterSystem,
@@ -78,6 +83,10 @@ pub(crate) struct LoadedSimulation {
     /// Saved presentation state, absent from older or simulation-only snapshots.
     pub camera: Option<SavedCameraState>,
     pub config: WorldConfig,
+    /// Authored vegetation parameters, defaulted for saves written before version 60.
+    pub vegetation: VegetationConfig,
+    /// Sparse player delta, empty for saves before version 61.
+    pub vegetation_edits: VegetationEdits,
     pub time: TimeSystem,
     pub terrain: TerrainSystem,
     pub water: WaterSystem,
@@ -383,6 +392,16 @@ fn write_snapshot(
             view.config.zone_cell_m
         ],
     )?;
+    tx.execute(
+        "INSERT INTO vegetation_config(enabled, seed, coverage, canopy_stems_per_ha) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            i64::from(view.vegetation.enabled),
+            i64::from(view.vegetation.seed),
+            view.vegetation.coverage,
+            view.vegetation.canopy_stems_per_ha
+        ],
+    )?;
+    vegetation::save(&tx, view.vegetation_edits)?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
         "INSERT INTO city_treasury(balance, lifetime_build_cost, lifetime_tax_revenue, last_daily_upkeep, last_daily_income_tax, last_daily_household_vat, last_daily_business_profit_tax, last_daily_property_tax, last_daily_residential_property_tax, last_daily_commercial_property_tax, last_daily_industrial_property_tax, pending_income_tax, pending_household_vat, pending_business_profit_tax, pending_property_tax, pending_residential_property_tax, pending_commercial_property_tax, pending_industrial_property_tax) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
@@ -481,6 +500,28 @@ pub(crate) fn load_from_sqlite(
         },
     )?;
     config.validate()?;
+    // Saves older than the parameterised generator carry the values it shipped with, so an
+    // existing city keeps the forest it was built in rather than regenerating a different one.
+    let vegetation = if version >= VEGETATION_SAVE_VERSION {
+        let row: (i64, i64, f32, f32) = conn.query_row(
+            "SELECT enabled, seed, coverage, canopy_stems_per_ha FROM vegetation_config LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        VegetationConfig {
+            enabled: row.0 != 0,
+            seed: i64_to_u32(row.1)?,
+            coverage: row.2,
+            canopy_stems_per_ha: row.3,
+        }
+    } else {
+        VegetationConfig::default()
+    };
+    let vegetation_edits = if version >= VEGETATION_SAVE_VERSION {
+        vegetation::load(&conn)?
+    } else {
+        VegetationEdits::default()
+    };
     let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {
         time_elapsed: time_r.0,
@@ -666,6 +707,8 @@ pub(crate) fn load_from_sqlite(
     let budget_history = load_budget_history(&conn)?;
 
     Ok(LoadedSimulation {
+        vegetation,
+        vegetation_edits,
         camera,
         config,
         time,

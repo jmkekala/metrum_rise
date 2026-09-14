@@ -23,10 +23,14 @@ uniform float water_refraction_mix = 0.13;
 uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
 uniform int water_visual_debug_mode = 0;
-uniform vec3 scene_sun_direction = vec3(-0.46, 0.74, -0.49);
-uniform vec3 scene_sun_color : source_color = vec3(1.00, 0.92, 0.80);
-uniform vec3 scene_sky_color : source_color = vec3(0.58, 0.73, 0.86);
-uniform float scene_ambient_strength = 0.44;
+global uniform vec3 scene_sun_direction;
+global uniform vec4 scene_sun_color : source_color;
+global uniform vec4 scene_sky_color : source_color;
+global uniform float scene_ambient_strength;
+// Water is lit normally, so it darkens with the environment on its own. This is used only to
+// scale the sun glitter, whose strength is otherwise a fixed constant: without it the moon lays
+// down a noon-bright specular path across the lake.
+global uniform vec4 scene_ambient_light : source_color;
 uniform float scene_shadow_max_distance_m = 1800.0;
 uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform vec2 water_debug_patch_key = vec2(0.0);
@@ -299,13 +303,13 @@ vec3 water_lighting_debug_color(
 	} else if (camera_distance_m < scene_shadow_split_distances_m.z) {
 		cascade_color = vec3(1.00, 0.78, 0.16);
 	}
-	vec3 color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color, sun_facing);
+	vec3 color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color.rgb, sun_facing);
 	if (column < 1.0) {
-		color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color, sun_facing);
+		color = mix(vec3(0.02, 0.04, 0.08), scene_sun_color.rgb, sun_facing);
 	} else if (column < 2.0) {
 		color = mix(vec3(0.02, 0.03, 0.05), vec3(1.0, 0.94, 0.72), specular_value);
 	} else if (column < 3.0) {
-		color = mix(vec3(0.03, 0.07, 0.12), scene_sky_color, fresnel_value);
+		color = mix(vec3(0.03, 0.07, 0.12), scene_sky_color.rgb, fresnel_value);
 	} else if (column < 4.0) {
 		color = cascade_color;
 	} else {
@@ -363,7 +367,7 @@ void fragment() {
 	float sun_specular = water_sun_glitter(NORMAL, wave)
 		* shore_mask
 		* (0.40 + depth_factor * 0.60);
-	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color, 0.65);
+	vec3 sky_reflection = mix(sky_reflection_color.rgb, scene_sky_color.rgb, 0.65);
 
 	if (water_visual_debug_mode > 0) {
 		if (water_visual_debug_mode == 9) {
@@ -404,7 +408,10 @@ void fragment() {
 			clamp(shallow_refraction * water_refraction_mix, 0.0, 0.35)
 		);
 		final_color = mix(final_color, sky_reflection, fresnel_mix);
-		final_color += scene_sun_color * sun_specular * water_sun_glitter_strength;
+		final_color += scene_sun_color.rgb
+			* scene_ambient_light.rgb
+			* sun_specular
+			* water_sun_glitter_strength;
 		float topdown_ripple = smoothstep(0.48, 0.86, wave)
 			* normal_debug_strength
 			* (1.0 - fresnel_mix * 0.35)

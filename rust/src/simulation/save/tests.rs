@@ -37,6 +37,7 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::vegetation::VegetationConfig;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
@@ -631,6 +632,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
 
     let path = temp_path("round_trip");
+    // Not the defaults: the generator parameters are the vegetation population, so a save that
+    // silently reverted them would regenerate a different forest under an existing city.
+    let vegetation = VegetationConfig {
+        enabled: true,
+        seed: 0xfeed_1234,
+        coverage: 0.37,
+        canopy_stems_per_ha: 61.5,
+    };
     let camera = SavedCameraState {
         pivot: [45.25, 32.5, -61.75],
         yaw: 2.4,
@@ -645,6 +654,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             SaveGameView {
                 camera: Some(camera),
                 config: &config,
+                vegetation_edits: &Default::default(),
+                vegetation: &vegetation,
                 time: &time,
                 terrain: &terrain,
                 water: &water,
@@ -703,6 +714,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     assert_eq!(loaded.camera, Some(camera));
+    assert_eq!(loaded.vegetation, vegetation);
     let paid = loaded
         .households
         .daily_ledgers()
@@ -837,6 +849,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         assert_eq!(ledger.water_consumption_cost, 0.0);
         assert_eq!(ledger.sewage_consumption_cost, 0.0);
     }
+    // A save written before the generator was parameterised carries no table, so it keeps the
+    // forest it was built in rather than regenerating a different one under an existing city.
+    conn.execute("DROP TABLE vegetation_config", []).unwrap();
+    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load without vegetation");
+    assert_eq!(legacy.vegetation, VegetationConfig::default());
     drop(conn);
     fs::remove_file(&path).ok();
 
@@ -1238,6 +1255,8 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
         SaveGameView {
             camera: None,
             config: &config,
+            vegetation_edits: &Default::default(),
+            vegetation: &crate::simulation::vegetation::VegetationConfig::default(),
             time: &time,
             terrain: &terrain,
             water: &water,

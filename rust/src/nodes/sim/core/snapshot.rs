@@ -237,6 +237,10 @@ pub struct RenderSnapshot {
     pub current_day: u32,
     /// Current minute since operational midnight.
     pub current_minute_of_day: u16,
+    /// Position inside the current operational day in `0.0..1.0`, midnight to midnight.
+    ///
+    /// Carries the partial minute in progress so the renderer's day/night cycle is continuous.
+    pub current_day_fraction: f32,
     /// Duration of the last daily tick in milliseconds.
     pub last_tick_ms: f64,
     /// Duration of the last agent tick in microseconds.
@@ -301,6 +305,7 @@ impl Default for RenderSnapshot {
             engineered_terrain_patch_keys: Arc::new(Vec::new()),
             current_day: 1,
             current_minute_of_day: 0,
+            current_day_fraction: 0.0,
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
@@ -532,6 +537,7 @@ impl SimCore {
         snapshot.node_positions = node_positions;
         snapshot.current_day = self.time.day_index;
         snapshot.current_minute_of_day = self.time.minute_of_day;
+        snapshot.current_day_fraction = self.time.day_fraction();
         snapshot.last_tick_ms = self.last_tick_duration;
         snapshot.last_agent_tick_us = self.last_agent_tick_us;
         snapshot.pathfind_count = self

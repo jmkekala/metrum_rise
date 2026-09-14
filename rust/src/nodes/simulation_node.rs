@@ -13,6 +13,7 @@
 //! | | `load_game` | `input_manager.gd`, `main.gd` |
 //! | | `save_world_definition` | future world-editor UI |
 //! | | `load_world_definition` | future world-editor UI |
+//! | | `start_new_game` | `input_manager.gd` |
 //! | | `get_perf_stats` | `debug_panel.gd` |
 //! | | `get_economy_overview` | `economy_overview.gd` |
 //! | | `set_economy_service_funding` | `economy_overview.gd` |
@@ -156,6 +157,7 @@ use crate::simulation::terrain::cdt::{
     build_road_touched_terrain_patch,
 };
 use crate::simulation::terrain::{TerrainPatchSnapshot, TerrainSystem};
+use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use crate::simulation::water::{WaterPatchSnapshot, WaterSystem};
 use crate::simulation::zoning::ZoningSystem;
 
@@ -175,6 +177,7 @@ mod terrain_api;
 #[cfg(test)]
 mod tests;
 mod variant_export;
+mod vegetation_api;
 mod water_api;
 mod world_api;
 mod zoning_api;
@@ -462,6 +465,8 @@ impl INode3D for SimulationNode {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
+            vegetation_edits: Default::default(),
+            vegetation: VegetationGenerator::resolve(VegetationConfig::default(), &config),
             treasury: CityTreasury::default(),
             service_policy: Default::default(),
             fiscal_policy: Default::default(),

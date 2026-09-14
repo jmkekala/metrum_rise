@@ -6,7 +6,14 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 61;
+pub const SAVE_VERSION: i64 = 62;
+
+/// First version whose schema carries the vegetation generator parameters and authored edits.
+///
+/// The fork and upstream both reached 61 with unrelated schemas, so the vegetation tables sit
+/// above that collision rather than at the number they were first written under. A save below
+/// this version has no vegetation tables and restores the shipped generator defaults.
+pub const VEGETATION_SAVE_VERSION: i64 = 62;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -45,6 +52,15 @@ CREATE TABLE world_config(
     env_cell_m REAL NOT NULL,
     zone_cell_m REAL NOT NULL
 );
+CREATE TABLE vegetation_config(
+    enabled INTEGER NOT NULL,
+    seed INTEGER NOT NULL,
+    coverage REAL NOT NULL,
+    canopy_stems_per_ha REAL NOT NULL
+);
+CREATE TABLE vegetation_removals(layer INTEGER, cell_x INTEGER, cell_z INTEGER);
+CREATE TABLE vegetation_additions(layer INTEGER, cell_x INTEGER, cell_z INTEGER,
+                                  x REAL, z REAL, yaw REAL, scale REAL, species INTEGER);
 CREATE TABLE time_state(
     time_elapsed REAL NOT NULL,
     speed_multiplier REAL NOT NULL,

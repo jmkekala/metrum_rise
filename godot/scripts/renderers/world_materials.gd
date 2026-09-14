@@ -210,7 +210,8 @@ static func _apply_sidewalk_asphalt_tone(material: ShaderMaterial) -> void:
 static func _apply_site_ground_grass_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))
 	material.set_shader_parameter("terrain_grass_height", load_texture(GRASS_HEIGHT))
-	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())
+	# No sun direction here. `scene_sun_direction` is a global uniform that the day/night cycle
+	# republishes every frame, so a per-material write would be both ignored and a frozen value.
 	material.set_shader_parameter("hillshade_azimuth_deg", 315.0)
 	material.set_shader_parameter("hillshade_altitude_deg", 38.0)
 	material.set_shader_parameter("hillshade_strength", 0.18)

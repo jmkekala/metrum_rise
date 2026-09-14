@@ -744,7 +744,9 @@ if [ $TEST -eq 1 ]; then
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
         vehicle_ground_support_test selection_gesture_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test \
-        road_junction_preview_test road_preview_stream_test camera_save_load_test zoning_road_tool_test; do
+        road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
+        vegetation_edit_test new_game_dialog_test day_cycle_test camera_save_load_test \
+        zoning_road_tool_test; do
         bridge_test_command=(godot --headless --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then

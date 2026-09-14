@@ -38,6 +38,7 @@ use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::surface::{RoadSurfaceCompileReason, SurfaceChunkKey};
 use crate::simulation::resources::ResourceDepositSystem;
 use crate::simulation::terrain::{TerrainSystem, terrain_cdt_local_sample_margin_m};
+use crate::simulation::vegetation::VegetationGenerator;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredOpenWaterFill};
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
@@ -123,6 +124,10 @@ pub struct SimCore {
     pub logistics: ShipmentSystem,
     /// World configuration (extent, chunk metadata, cell sizes).
     pub config: WorldConfig,
+    /// Vegetation generation parameters resolved against this world.
+    pub vegetation: VegetationGenerator,
+    /// Sparse authoritative player edits and render-patch revisions.
+    pub vegetation_edits: crate::simulation::vegetation::edits::VegetationEdits,
     /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
     pub treasury: CityTreasury,
     /// Player-controlled live service funding policies.

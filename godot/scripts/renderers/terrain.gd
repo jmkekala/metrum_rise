@@ -46,6 +46,10 @@ const TERRAIN_GRASS_MID_SCALE := 0.065
 const TERRAIN_GRASS_MACRO_STRENGTH := 0.58
 const TERRAIN_GRASS_MID_STRENGTH := 0.80
 const TERRAIN_GRASS_MICRO_STRENGTH := 0.50
+# Chroma gain on the grass photo. The shader used a fixed 3.00, which drove the texture's
+# measured saturation of 0.53 to 1.00 and gave open ground its fluorescent cast. Near 1
+# keeps the photo's fibre and breakup without letting it set the hue.
+const TERRAIN_GRASS_CHROMA_GAIN := 1.15
 const TERRAIN_NATURAL_VARIATION_STRENGTH := 0.18
 const TERRAIN_MEADOW_MOTTLE_STRENGTH := 0.08
 const TERRAIN_BAKED_READABILITY_STRENGTH := 0.12
@@ -364,6 +368,9 @@ func _process(delta: float) -> void:
 	if not simulation_node.is_terrain_dirty():
 		_prune_patch_payload_cache()
 
+	if not network_refresh_pending and not simulation_node.is_terrain_dirty():
+		_sync_land_cover()
+
 	var water_sync_start_us := Time.get_ticks_usec()
 	water_sync_perf_stats = _process_water_patch_texture_sync_queue(
 		PATCH_WATER_TEXTURE_SYNC_BUDGET_PER_FRAME,
@@ -544,6 +551,17 @@ func get_visibility_cull_far_m(camera: Camera3D) -> float:
 
 func get_render_patch_span_m() -> float:
 	return patch_span_m
+
+func get_patch_surface_generation(key: Vector2i) -> int:
+	# The generation stamped on the payload this patch last committed. It advances only
+	# when a road/terrain edit dirties this patch, so consumers can detect a stale
+	# derived product per patch instead of rebuilding every patch on any edit.
+	if not patches.has(key):
+		return -1
+	var last_patch_data: Variant = patches[key].get("last_patch_data", null)
+	if not (last_patch_data is Dictionary):
+		return -1
+	return int((last_patch_data as Dictionary).get("surface_generation", -1))
 
 func get_patch_height_texture(key: Vector2i) -> Texture2D:
 	if not patches.has(key):
@@ -972,10 +990,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_debug_patch_key", Vector2(key.x, key.y))
 	material.set_shader_parameter("terrain_debug_lod_step", float(initial_lod_step))
 	material.set_shader_parameter("terrain_grass_visual_debug_mode", _terrain_grass_visual_debug_mode)
-	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())
-	material.set_shader_parameter("scene_sun_color", SceneLightingConfig.sun_color())
-	material.set_shader_parameter("scene_sky_color", SceneLightingConfig.sky_color())
-	material.set_shader_parameter("scene_ambient_strength", SceneLightingConfig.ambient_strength())
 	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
 	material.set_shader_parameter(
 		"scene_shadow_split_distances_m",
@@ -1006,6 +1020,7 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("terrain_grass_macro_strength", TERRAIN_GRASS_MACRO_STRENGTH)
 	material.set_shader_parameter("terrain_grass_mid_strength", TERRAIN_GRASS_MID_STRENGTH)
 	material.set_shader_parameter("terrain_grass_micro_strength", TERRAIN_GRASS_MICRO_STRENGTH)
+	material.set_shader_parameter("terrain_grass_chroma_gain", TERRAIN_GRASS_CHROMA_GAIN)
 	material.set_shader_parameter("terrain_natural_variation_strength", TERRAIN_NATURAL_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_meadow_mottle_strength", TERRAIN_MEADOW_MOTTLE_STRENGTH)
 	material.set_shader_parameter(
@@ -1101,6 +1116,10 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 		"engineered_bad_cdt_blocked": false,
 		"last_patch_data": patch_data,
 	}
+
+	patches[key]["land_cover"] = patch_resources.get("land_cover", {})
+	patches[key]["spare_land_cover"] = patch_resources.get("spare_land_cover", {})
+	_commit_patch_land_cover(patches[key], _stage_patch_land_cover(key, patches[key], true))
 
 func _upload_patch(key: Vector2i, allow_async: bool = false) -> bool:
 	if not patches.has(key):
@@ -1250,6 +1269,7 @@ func _stage_terrain_patch_update(
 		"valid": true,
 		"patch_node_id": (patch["node"] as MeshInstance3D).get_instance_id(),
 		"patch_data": patch_data,
+		"land_cover": _stage_patch_land_cover(key, patch),
 		"height_image": height_image,
 		"height_texture": height_texture,
 		"terrain_mesh": terrain_mesh,
@@ -1293,6 +1313,7 @@ func _commit_staged_patch_data(
 	patch["spare_height_texture_width"] = old_texture_width
 	patch["spare_height_texture_height"] = old_texture_height
 	patch["last_patch_data"] = patch_data
+	_commit_patch_land_cover(patch, stage["land_cover"])
 	patch["engineered_bad_cdt_blocked"] = false
 	_clear_bad_cdt_generation_handled(key)
 
@@ -1597,6 +1618,8 @@ func _release_terrain_patch_resources(patch: Dictionary) -> void:
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
+		"land_cover": patch.get("land_cover", {}),
+		"spare_land_cover": patch.get("spare_land_cover", {}),
 		"height_texture_width": int(patch.get("texture_width", 0)),
 		"height_texture_height": int(patch.get("texture_height", 0)),
 		"spare_height_image": spare_height_image,
@@ -1655,6 +1678,47 @@ func _new_terrain_patch_resources() -> Dictionary:
 func _terrain_default_patch_texture_size() -> Vector2i:
 	var sample_count: int = max(2, patch_interval_cells + 1)
 	return Vector2i(sample_count + 2, sample_count + 2)
+
+# A coverage upload uses the same active/spare ownership as the height texture. Building a
+# terrain stage cannot mutate the currently displayed texture; commit swaps both products.
+func _stage_patch_land_cover(key: Vector2i, patch: Dictionary, force: bool = false) -> Dictionary:
+	var current: Dictionary = patch.get("land_cover", {})
+	if not force and not current.is_empty() and simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
+		return current
+	var data: Dictionary = simulation_node.get_vegetation_land_cover(key)
+	var spare: Dictionary = patch.get("spare_land_cover", {})
+	var image: Image = spare.get("image", null) as Image
+	if image == null:
+		image = Image.new()
+	image.set_data(int(data["width"]), int(data["height"]), false, Image.FORMAT_R8, data["bytes"])
+	var texture: ImageTexture = spare.get("texture", null) as ImageTexture
+	if texture != null and texture.get_width() == image.get_width() and texture.get_height() == image.get_height():
+		texture.update(image)
+	else:
+		texture = ImageTexture.create_from_image(image)
+	spare = {"image": image, "texture": texture,
+		"world_bounds": data["world_bounds"], "generations": data["generations"]}
+	patch["spare_land_cover"] = spare
+	return spare
+
+func _commit_patch_land_cover(patch: Dictionary, stage: Dictionary) -> void:
+	if stage == patch.get("land_cover", {}):
+		return
+	patch["spare_land_cover"] = patch.get("land_cover", {})
+	patch["land_cover"] = stage
+	var material: ShaderMaterial = patch["material"] as ShaderMaterial
+	material.set_shader_parameter("land_cover_texture", stage["texture"])
+	material.set_shader_parameter("land_cover_world_bounds", stage["world_bounds"])
+
+func _sync_land_cover() -> void:
+	# O(resident patches), nine pairs of existing revisions per patch. No candidate queries
+	# until either stream moves; budget the independent plant-edit path to one upload/frame.
+	for key: Vector2i in patches:
+		var patch: Dictionary = patches[key]
+		var current: Dictionary = patch["land_cover"]
+		if not simulation_node.is_vegetation_land_cover_current(key, current["generations"]):
+			_commit_patch_land_cover(patch, _stage_patch_land_cover(key, patch))
+			return
 
 func _upload_terrain_patch_height_texture(
 	resources: Dictionary,
@@ -2251,6 +2315,8 @@ func _terrain_patch_stage_matches_target(key: Vector2i, stage: Dictionary) -> bo
 		and typeof(stage.get("patch_data", null)) == TYPE_DICTIONARY
 		and stage.get("height_image", null) is Image
 		and stage.get("height_texture", null) is ImageTexture
+		and typeof(stage.get("land_cover", null)) == TYPE_DICTIONARY
+		and simulation_node.is_vegetation_land_cover_current(key, stage["land_cover"]["generations"])
 		and stage.get("terrain_mesh", null) is Mesh
 		and stage.get("retaining_mesh", null) is Mesh
 	)

@@ -462,7 +462,8 @@ impl WaterSystem {
         self.baseline.depth.get(grid_x, grid_z)
     }
 
-    fn visible_depth_world(&self, world_x: f32, world_z: f32) -> f32 {
+    /// Bilinearly samples authored visible depth; returns zero outside the world.
+    pub(crate) fn visible_depth_world(&self, world_x: f32, world_z: f32) -> f32 {
         let (world_w, world_h) = self.world_size();
         let grid_x = (world_x + world_w * 0.5) / self.cell_size;
         let grid_z = (world_z + world_h * 0.5) / self.cell_size;

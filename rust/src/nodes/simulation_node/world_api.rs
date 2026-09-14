@@ -101,11 +101,47 @@ impl SimulationNode {
     }
 
     /// Loads a reusable world-definition asset and replaces the live runtime with a blank city.
+    ///
+    /// The world starts with the shipped vegetation parameters. This is the entry point for the
+    /// world editor and for benchmarks and probes, where the forest is not the subject and has
+    /// to stay fixed for results to stay comparable; [`SimulationNode::start_new_game`] is what
+    /// gameplay uses.
     #[func]
     pub fn load_world_definition(&mut self, path: GString) -> bool {
+        self.load_world_definition_with_vegetation(path, VegetationConfig::default())
+    }
+
+    /// Starts a game on a world definition with player-chosen vegetation parameters.
+    ///
+    /// `vegetation_seed` is taken as a 64-bit integer because that is what GDScript has, and
+    /// wrapped into the generator's 32-bit seed. The remaining values are sanitised in Rust, so
+    /// a menu cannot start a world the generator is unable to reproduce from its save.
+    #[func]
+    pub fn start_new_game(
+        &mut self,
+        path: GString,
+        vegetation_enabled: bool,
+        vegetation_seed: i64,
+        vegetation_coverage: f32,
+        vegetation_canopy_stems_per_ha: f32,
+    ) -> bool {
+        let vegetation = VegetationConfig {
+            enabled: vegetation_enabled,
+            seed: vegetation_seed as u32,
+            coverage: vegetation_coverage,
+            canopy_stems_per_ha: vegetation_canopy_stems_per_ha,
+        };
+        self.load_world_definition_with_vegetation(path, vegetation)
+    }
+
+    fn load_world_definition_with_vegetation(
+        &mut self,
+        path: GString,
+        vegetation: VegetationConfig,
+    ) -> bool {
         let result = {
             let mut core = self.lock_core();
-            core.load_world_definition_internal(&path.to_string())
+            core.load_world_definition_internal(&path.to_string(), vegetation)
         };
         match result {
             Ok(()) => {

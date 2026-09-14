@@ -1,43 +1,53 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Deterministic scene lighting setup shared by gameplay and editor scenes.
+## Deterministic scene lighting shared by gameplay and editor scenes.
 ##
-## The node configures the existing WorldEnvironment and DirectionalLight3D
-## once at scene startup, then exposes the same constants to terrain/water
-## materials through static accessors.
+## The node configures the existing WorldEnvironment and DirectionalLight3D at scene startup,
+## then drives the day/night cycle every frame from the simulation clock. The palette itself
+## lives in [code]day_cycle.gd[/code]; this node owns only the wiring, the shadow policy and
+## the distance-fade ramp.
+##
+## Terrain, water and site ground read the sun through shader globals rather than through
+## per-material parameters, so one write per frame relights every patch in the world instead
+## of one write per patch per frame.
 extends Node
 class_name SceneLighting
 
+const DayCycleConfig := preload("res://scripts/core/day_cycle.gd")
 const SKY_CLOUD_SHADER := preload("res://scripts/shaders/sky_cloud_cover.gdshader")
 const SKY_CLOUD_PANORAMA_PATH := (
 	"res://assets/textures/general/sky/DaySkyHDRI059B_2K_TONEMAPPED.jpg"
 )
 
-const SUN_DIRECTION := Vector3(-0.52, 0.58, -0.63)
-const SUN_COLOR := Color(1.00, 0.92, 0.80, 1.0)
-const SKY_COLOR := Color(0.58, 0.73, 0.86, 1.0)
-const SKY_ZENITH_COLOR := Color(0.30, 0.52, 0.76, 1.0)
-const SKY_NADIR_COLOR := Color(0.43, 0.56, 0.68, 1.0)
 const SKY_HEMISPHERE_CURVE := 0.20
-const SKY_CLOUD_SOURCE_SUN_U := 0.50
+# The panorama is a daylight capture used only as a cloud shape source; the day cycle supplies
+# its colour through the shadow/light tints. The rotation is therefore fixed at the value the
+# authored sun used to produce. Turning it with the sun would spin the entire cloud field
+# around the sky once per day.
+const SKY_CLOUD_PANORAMA_ROTATION := 0.3903
 const SKY_CLOUD_STRENGTH := 0.48
 const SKY_CLOUD_HORIZON_FADE_START := 0.04
 const SKY_CLOUD_HORIZON_FADE_END := 0.16
-const SKY_CLOUD_SHADOW_COLOR := Color(0.52, 0.58, 0.64, 1.0)
-const SKY_CLOUD_LIGHT_COLOR := Color(0.88, 0.91, 0.94, 1.0)
-const SKY_SUN_ANGLE_MAX_DEG := 7.5
 const SKY_SUN_CURVE := 0.12
-const SKY_SUN_HORIZON_FADE_START := 0.015
-const SKY_SUN_HORIZON_FADE_END := 0.09
-const AMBIENT_COLOR := Color(0.54, 0.64, 0.70, 1.0)
-const FAR_FADE_START_RATIO := 0.80
+# Writing a sky material parameter marks the sky dirty, and a dirty sky regenerates its radiance
+# cubemap. Rewriting it with identical values every frame therefore pays for a regeneration that
+# changes nothing, and a paused game pays it forever. The gate is a thirtieth of the sun disk's
+# own diameter, so the disk cannot be seen to step.
+const SKY_UPDATE_MIN_DEG := 0.02
 const FAR_FADE_END_GUARD_PATCHES := 0.50
-const FAR_FADE_MIN_WIDTH_M := 1500.0
-const FAR_FADE_CURVE := 1.35
-const SUN_ENERGY := 1.65
-const SUN_INDIRECT_ENERGY := 0.35
-const SUN_ANGULAR_DISTANCE_DEG := 1.15
-const AMBIENT_STRENGTH := 0.44
+# Aerial perspective and the far cull curtain are one depth ramp. The haze starts a few
+# hundred metres out and reaches full sky colour exactly at the cull boundary, so distance
+# reads as distance instead of the whole world sharing one saturation.
+# The ramp is proportional to the far plane because CameraNode derives that from zoom.
+# A fixed metric start would haze most of the view when zoomed in, where the far plane is
+# only about 1.3 km. The curve keeps the near two thirds of the ramp faint, so it reads as
+# atmosphere, and still closes to full sky colour at the cull boundary.
+const AERIAL_HAZE_BEGIN_RATIO := 0.32
+const FAR_FADE_CURVE := 2.60
+# The sun subtends about 0.53 degrees. 1.15 doubled the penumbra, which read as noise on
+# small casters such as tree crowns rather than as softness. The full moon subtends the same
+# angle, so the cycle never has a reason to change this and the GPU probe keeps it as a lever.
+const SUN_ANGULAR_DISTANCE_DEG := 0.55
 const SHADOW_MAX_DISTANCE_M := 420.0
 const SHADOW_SPLIT_1 := 0.10
 const SHADOW_SPLIT_2 := 0.28
@@ -66,21 +76,14 @@ var _distance_fade_environment: Environment
 var _distance_fade_terrain: Node
 var _distance_fade_begin_m := -1.0
 var _distance_fade_end_m := -1.0
-
-static func sun_direction() -> Vector3:
-	return SUN_DIRECTION.normalized()
-
-static func sun_color() -> Color:
-	return SUN_COLOR
-
-static func sky_color() -> Color:
-	return SKY_COLOR
-
-static func ambient_color() -> Color:
-	return AMBIENT_COLOR
-
-static func ambient_strength() -> float:
-	return AMBIENT_STRENGTH
+var _sun: DirectionalLight3D
+var _sky_material: Material
+var _simulation: Node
+# Written in place every frame, so the per-frame lighting path allocates nothing.
+var _day_sample := DayCycleConfig.create_sample()
+var _pinned_day_fraction := -1.0
+var _sky_applied_elevation_deg := INF
+var _sky_applied_azimuth_deg := INF
 
 static func shadow_split_distances() -> Vector3:
 	return Vector3(
@@ -173,14 +176,133 @@ func _ready() -> void:
 	var scene_root := get_parent()
 	if scene_root == null:
 		return
+	_pinned_day_fraction = DayCycleConfig.pinned_day_fraction()
+	_simulation = scene_root.get_node_or_null("SimulationNode")
 	_configure_sun(scene_root)
 	_configure_environment(scene_root)
 	_distance_fade_terrain = scene_root.get_node_or_null("Terrain")
+	# Before the first frame is drawn, so nothing renders against the project-default palette.
+	_apply_day_cycle()
 	_update_distance_fade()
 	call_deferred("_print_debug_if_requested", scene_root)
 
 func _process(_delta: float) -> void:
+	_apply_day_cycle()
 	_update_distance_fade()
+
+# Every write here is a single RenderingServer call that covers the whole world, so the cost
+# is a constant handful of calls per frame regardless of how many patches are resident.
+func _apply_day_cycle() -> void:
+	DayCycleConfig.sample_into(_current_day_fraction(), _day_sample)
+	_apply_key_light(_day_sample)
+	_apply_environment_palette(_day_sample)
+	_apply_shader_globals(_day_sample)
+	_apply_sky_palette(_day_sample)
+
+## Pins the rendered clock to an hour of day, or releases it back to the simulation clock
+## when given a negative hour.
+##
+## This is the same override `METRUM_TIME_OF_DAY` sets at startup, exposed so local capture
+## tooling can hold one lighting state without reloading the world for every hour.
+func pin_hour_of_day(hour: float) -> void:
+	_pinned_day_fraction = -1.0 if hour < 0.0 else fposmod(hour / 24.0, 1.0)
+	_apply_day_cycle()
+
+## Returns the lighting state the last applied frame resolved to. Read-only: the node rewrites
+## it every frame.
+func current_sample() -> DayCycleConfig.Sample:
+	return _day_sample
+
+# A paused simulation holds the fraction still, which parks the sun rather than freezing it
+# mid-slew. Scenes with no simulation, such as the asset editor, get a fixed authored hour.
+func _current_day_fraction() -> float:
+	if _pinned_day_fraction >= 0.0:
+		return _pinned_day_fraction
+	if _simulation != null and _simulation.has_method("get_day_fraction"):
+		return float(_simulation.get_day_fraction())
+	return DayCycleConfig.FALLBACK_HOUR / 24.0
+
+func _apply_key_light(sample: DayCycleConfig.Sample) -> void:
+	if _sun == null:
+		return
+	# Hidden through the dead band between sunset and moonrise. The energy is already zero
+	# there, so this only skips the shadow map the engine would otherwise still render.
+	var lit: bool = sample.key_energy > 0.0
+	_sun.visible = lit
+	if not lit:
+		return
+	_sun.light_color = sample.key_color
+	_sun.light_energy = sample.key_energy
+	_sun.light_indirect_energy = sample.key_indirect_energy
+	# looking_at needs an up vector that is not parallel to the target. The authored latitude
+	# keeps the key light well away from the zenith, but the guard costs nothing and stops a
+	# retuned latitude from producing a broken basis instead of a warning.
+	var direction: Vector3 = sample.key_direction
+	var up := Vector3.UP if absf(direction.y) < 0.999 else Vector3.FORWARD
+	_sun.global_transform = Transform3D(
+		Basis.looking_at(-direction, up),
+		_sun.global_position
+	)
+
+func _apply_environment_palette(sample: DayCycleConfig.Sample) -> void:
+	if _distance_fade_environment == null:
+		return
+	_distance_fade_environment.background_color = sample.sky_horizon
+	_distance_fade_environment.ambient_light_color = sample.ambient_color
+	_distance_fade_environment.ambient_light_energy = sample.ambient_energy
+	# Aerial perspective and the far cull curtain share one ramp, so the haze colour is also
+	# what the horizon dissolves into. Tracking the sky keeps distance reading as distance at
+	# every hour instead of leaving a daytime blue curtain standing at midnight.
+	_distance_fade_environment.fog_light_color = sample.fog_color
+	_distance_fade_environment.fog_sun_scatter = sample.fog_sun_scatter
+
+func _apply_shader_globals(sample: DayCycleConfig.Sample) -> void:
+	RenderingServer.global_shader_parameter_set("scene_sun_direction", sample.key_direction)
+	RenderingServer.global_shader_parameter_set("scene_sun_color", sample.key_color)
+	RenderingServer.global_shader_parameter_set("scene_sky_color", sample.sky_horizon)
+	RenderingServer.global_shader_parameter_set("scene_ambient_strength", sample.ambient_energy)
+	RenderingServer.global_shader_parameter_set(
+		"scene_ambient_light", sample.ambient_light_scale
+	)
+	RenderingServer.global_shader_parameter_set(
+		"scene_ambient_desaturation", sample.ambient_desaturation
+	)
+
+func _apply_sky_palette(sample: DayCycleConfig.Sample) -> void:
+	if (
+		absf(sample.sun_elevation_deg - _sky_applied_elevation_deg) < SKY_UPDATE_MIN_DEG
+		and absf(
+			angle_difference(
+				deg_to_rad(sample.sun_azimuth_deg), deg_to_rad(_sky_applied_azimuth_deg)
+			)
+		) < deg_to_rad(SKY_UPDATE_MIN_DEG)
+	):
+		return
+	_sky_applied_elevation_deg = sample.sun_elevation_deg
+	_sky_applied_azimuth_deg = sample.sun_azimuth_deg
+	if _sky_material is ShaderMaterial:
+		var shader_sky := _sky_material as ShaderMaterial
+		shader_sky.set_shader_parameter("sky_zenith_color", sample.sky_zenith)
+		shader_sky.set_shader_parameter("sky_horizon_color", sample.sky_horizon)
+		shader_sky.set_shader_parameter("sky_nadir_color", sample.sky_nadir)
+		shader_sky.set_shader_parameter("cloud_shadow_color", sample.cloud_shadow)
+		shader_sky.set_shader_parameter("cloud_light_color", sample.cloud_light)
+		shader_sky.set_shader_parameter("sun_disk_direction", sample.sun_disk_direction)
+		shader_sky.set_shader_parameter("sun_disk_color", sample.sun_disk_color)
+		shader_sky.set_shader_parameter("sun_disk_intensity", sample.sun_disk_intensity)
+		shader_sky.set_shader_parameter("sun_disk_deg", sample.sun_disk_deg)
+		shader_sky.set_shader_parameter("sun_halo_deg", sample.sun_halo_deg)
+		shader_sky.set_shader_parameter("sun_halo_strength", sample.sun_halo_strength)
+		shader_sky.set_shader_parameter("moon_disk_direction", sample.moon_disk_direction)
+		shader_sky.set_shader_parameter("moon_disk_intensity", sample.moon_disk_intensity)
+	elif _sky_material is ProceduralSkyMaterial:
+		# Fallback path when the cloud panorama is missing. It has no cloud layer and no disk
+		# controls, so it carries the gradient only.
+		var procedural_sky := _sky_material as ProceduralSkyMaterial
+		procedural_sky.sky_top_color = sample.sky_zenith
+		procedural_sky.sky_horizon_color = sample.sky_horizon
+		procedural_sky.ground_horizon_color = sample.sky_horizon
+		procedural_sky.ground_bottom_color = sample.sky_nadir
 
 func _configure_environment(scene_root: Node) -> void:
 	var world_environment := scene_root.get_node_or_null("WorldEnvironment") as WorldEnvironment
@@ -193,21 +315,16 @@ func _configure_environment(scene_root: Node) -> void:
 		environment = environment.duplicate()
 	world_environment.environment = environment
 	environment.background_mode = Environment.BG_SKY
-	environment.background_color = SKY_COLOR
 	environment.sky = _create_hemisphere_sky()
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	environment.ambient_light_color = AMBIENT_COLOR
-	environment.ambient_light_energy = AMBIENT_STRENGTH
 	environment.fog_enabled = false
 	environment.fog_mode = Environment.FOG_MODE_DEPTH
 	environment.fog_density = 1.0
 	environment.fog_depth_curve = FAR_FADE_CURVE
 	environment.fog_height_density = 0.0
-	environment.fog_light_color = SKY_COLOR
 	environment.fog_light_energy = 1.0
 	environment.fog_aerial_perspective = 0.0
 	environment.fog_sky_affect = 0.0
-	environment.fog_sun_scatter = 0.0
 	_distance_fade_environment = environment
 
 func _update_distance_fade() -> void:
@@ -239,11 +356,7 @@ func _update_distance_fade() -> void:
 		cull_far_m - patch_span_m * FAR_FADE_END_GUARD_PATCHES,
 		1.0
 	)
-	var fade_width_m := maxf(
-		fade_end_m * (1.0 - FAR_FADE_START_RATIO),
-		FAR_FADE_MIN_WIDTH_M
-	)
-	var fade_begin_m := maxf(fade_end_m - fade_width_m, 0.0)
+	var fade_begin_m := fade_end_m * AERIAL_HAZE_BEGIN_RATIO
 	if (
 		is_equal_approx(fade_begin_m, _distance_fade_begin_m)
 		and is_equal_approx(fade_end_m, _distance_fade_end_m)
@@ -266,29 +379,23 @@ func _create_hemisphere_sky() -> Sky:
 	var material := ShaderMaterial.new()
 	material.shader = SKY_CLOUD_SHADER
 	material.set_shader_parameter("cloud_panorama", cloud_panorama)
-	material.set_shader_parameter("sky_zenith_color", SKY_ZENITH_COLOR)
-	material.set_shader_parameter("sky_horizon_color", SKY_COLOR)
-	material.set_shader_parameter("sky_nadir_color", SKY_NADIR_COLOR)
 	material.set_shader_parameter("hemisphere_curve", SKY_HEMISPHERE_CURVE)
-	material.set_shader_parameter("panorama_rotation", _cloud_panorama_rotation())
+	material.set_shader_parameter("panorama_rotation", SKY_CLOUD_PANORAMA_ROTATION)
 	material.set_shader_parameter("cloud_strength", SKY_CLOUD_STRENGTH)
 	material.set_shader_parameter(
 		"cloud_horizon_fade_start",
 		SKY_CLOUD_HORIZON_FADE_START
 	)
 	material.set_shader_parameter("cloud_horizon_fade_end", SKY_CLOUD_HORIZON_FADE_END)
-	material.set_shader_parameter("cloud_shadow_color", SKY_CLOUD_SHADOW_COLOR)
-	material.set_shader_parameter("cloud_light_color", SKY_CLOUD_LIGHT_COLOR)
-	material.set_shader_parameter("sun_angle_max", SKY_SUN_ANGLE_MAX_DEG)
 	material.set_shader_parameter("sun_curve", SKY_SUN_CURVE)
-	material.set_shader_parameter("sun_horizon_fade_start", SKY_SUN_HORIZON_FADE_START)
-	material.set_shader_parameter("sun_horizon_fade_end", SKY_SUN_HORIZON_FADE_END)
-
-	var sky := Sky.new()
-	sky.process_mode = Sky.PROCESS_MODE_QUALITY
-	sky.radiance_size = Sky.RADIANCE_SIZE_128
-	sky.sky_material = material
-	return sky
+	# The moon's appearance is fixed, so it is set here rather than rewritten every frame. Only
+	# its direction and brightness change with the cycle.
+	material.set_shader_parameter("moon_disk_color", DayCycleConfig.MOON_DISK_COLOR)
+	material.set_shader_parameter("moon_disk_deg", DayCycleConfig.MOON_DISK_DEG)
+	material.set_shader_parameter("moon_halo_deg", DayCycleConfig.MOON_HALO_DEG)
+	material.set_shader_parameter("moon_halo_strength", DayCycleConfig.MOON_HALO_STRENGTH)
+	_sky_material = material
+	return _build_sky(material)
 
 func _load_cloud_panorama() -> Texture2D:
 	if _cloud_panorama_cache != null:
@@ -314,36 +421,32 @@ func _load_cloud_panorama() -> Texture2D:
 
 func _create_procedural_hemisphere_sky() -> Sky:
 	var material := ProceduralSkyMaterial.new()
-	material.sky_top_color = SKY_ZENITH_COLOR
-	material.sky_horizon_color = SKY_COLOR
 	material.sky_curve = SKY_HEMISPHERE_CURVE
-	material.ground_horizon_color = SKY_COLOR
-	material.ground_bottom_color = SKY_NADIR_COLOR
 	material.ground_curve = SKY_HEMISPHERE_CURVE
-	material.sun_angle_max = SKY_SUN_ANGLE_MAX_DEG
 	material.sun_curve = SKY_SUN_CURVE
 	material.use_debanding = true
+	_sky_material = material
+	return _build_sky(material)
 
+func _build_sky(material: Material) -> Sky:
 	var sky := Sky.new()
-	sky.process_mode = Sky.PROCESS_MODE_QUALITY
+	# The sky palette changes every frame now. INCREMENTAL spreads the radiance cubemap
+	# refresh across frames, which is the mode Godot provides for exactly this case; QUALITY
+	# would pay the full regeneration cost on every one of those changes.
+	sky.process_mode = Sky.PROCESS_MODE_INCREMENTAL
 	sky.radiance_size = Sky.RADIANCE_SIZE_128
 	sky.sky_material = material
 	return sky
-
-func _cloud_panorama_rotation() -> float:
-	var direction := sun_direction()
-	var sun_u := atan2(direction.x, direction.z) / TAU + 0.5
-	return fposmod(SKY_CLOUD_SOURCE_SUN_U - sun_u, 1.0)
 
 func _configure_sun(scene_root: Node) -> void:
 	var sun := scene_root.get_node_or_null("DirectionalLight3D") as DirectionalLight3D
 	if sun == null:
 		return
-	sun.light_color = SUN_COLOR
-	sun.light_energy = SUN_ENERGY
-	sun.light_indirect_energy = SUN_INDIRECT_ENERGY
+	_sun = sun
 	sun.light_angular_distance = SUN_ANGULAR_DISTANCE_DEG
-	sun.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_AND_SKY
+	# The sky shader places its own sun and moon disks so their brightness can differ from the
+	# key light's energy. Letting the engine draw a third disk from this light would double it.
+	sun.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY
 	sun.shadow_enabled = true
 	sun.shadow_bias = SHADOW_BIAS
 	sun.shadow_normal_bias = SHADOW_NORMAL_BIAS
@@ -355,10 +458,6 @@ func _configure_sun(scene_root: Node) -> void:
 	sun.set("directional_shadow_split_3", SHADOW_SPLIT_3)
 	sun.set("directional_shadow_blend_splits", true)
 	sun.set("directional_shadow_fade_start", SHADOW_FADE_START)
-	sun.global_transform = Transform3D(
-		Basis.looking_at(-sun_direction(), Vector3.UP),
-		sun.global_position
-	)
 
 func _print_debug_if_requested(scene_root: Node) -> void:
 	if not is_lighting_debug_enabled():
@@ -368,13 +467,21 @@ func _print_debug_if_requested(scene_root: Node) -> void:
 		return
 	_update_distance_fade()
 	var splits := shadow_split_distances()
+	var hour := _day_sample.day_fraction * 24.0
 	print(
-		"[DEBUG:lighting] sun_direction=%s sun_color=%s sky_color=%s ambient=%.3f shadow_max=%.1f splits=(%.1f,%.1f,%.1f) far_fade=(%.1f,%.1f) ground_shadow=(ambient=%.2f sun=%.2f min=%.2f)"
+		"[DEBUG:lighting] time=%02d:%02d sun_elevation=%.2f sun_azimuth=%.2f moonlit=%s key_color=%s key_energy=%.3f sky=%s fog=%s ambient=%.3f ambient_scale=%s shadow_max=%.1f splits=(%.1f,%.1f,%.1f) far_fade=(%.1f,%.1f) ground_shadow=(ambient=%.2f sun=%.2f min=%.2f)"
 		% [
-			str(sun_direction()),
-			str(SUN_COLOR),
-			str(SKY_COLOR),
-			AMBIENT_STRENGTH,
+			int(hour),
+			int(fposmod(hour, 1.0) * 60.0),
+			_day_sample.sun_elevation_deg,
+			_day_sample.sun_azimuth_deg,
+			str(_day_sample.is_moonlit),
+			str(_day_sample.key_color),
+			_day_sample.key_energy,
+			str(_day_sample.sky_horizon),
+			str(_day_sample.fog_color),
+			_day_sample.ambient_energy,
+			str(_day_sample.ambient_light_scale),
 			SHADOW_MAX_DISTANCE_M,
 			splits.x,
 			splits.y,

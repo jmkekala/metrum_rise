@@ -21,6 +21,7 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::resources::{RESOURCE_RICHNESS_MAX, ResourceDepositSystem};
 use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
     AuthoredLakeFill, AuthoredOpenWaterFill, LoadedWorldDefinition, WorldDefinitionView,
@@ -68,7 +69,8 @@ impl SimCore {
             base_elevation_m
         );
         let terrain = TerrainSystem::from_world_config(&config);
-        self.reset_to_blank_world_runtime(config, terrain);
+        // The world editor authors land, not a game, so it takes the shipped forest.
+        self.reset_to_blank_world_runtime(config, terrain, VegetationConfig::default());
         self.precompute_road_mesh_data();
         Ok(())
     }
@@ -475,15 +477,28 @@ impl SimCore {
     }
 
     /// Loads one reusable world-definition asset and resets runtime state to a fresh blank city.
-    pub(crate) fn load_world_definition_internal(&mut self, path: &str) -> Result<(), String> {
+    ///
+    /// The vegetation parameters are supplied by the caller rather than read from the asset: a
+    /// world definition owns the land, while the forest standing on it at the first tick is a
+    /// property of the game being started, so one authored world serves an empty start and a
+    /// dense one.
+    pub(crate) fn load_world_definition_internal(
+        &mut self,
+        path: &str,
+        vegetation: VegetationConfig,
+    ) -> Result<(), String> {
         debug_log!("world-editor", "load_world_definition path={}", path);
         let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))
             .map_err(|err| err.to_string())?;
-        self.apply_loaded_world_definition(loaded);
+        self.apply_loaded_world_definition(loaded, vegetation);
         Ok(())
     }
 
-    fn apply_loaded_world_definition(&mut self, loaded: LoadedWorldDefinition) {
+    fn apply_loaded_world_definition(
+        &mut self,
+        loaded: LoadedWorldDefinition,
+        vegetation: VegetationConfig,
+    ) {
         let LoadedWorldDefinition {
             name: _name,
             config,
@@ -492,7 +507,7 @@ impl SimCore {
             open_water_fills,
             resource_deposits,
         } = loaded;
-        self.reset_to_blank_world_runtime(config, terrain);
+        self.reset_to_blank_world_runtime(config, terrain, vegetation);
         self.world_lake_fills = lake_fills;
         self.world_open_water_fills = open_water_fills;
         self.resource_deposits = resource_deposits;
@@ -502,7 +517,12 @@ impl SimCore {
         self.precompute_road_mesh_data();
     }
 
-    fn reset_to_blank_world_runtime(&mut self, config: WorldConfig, terrain: TerrainSystem) {
+    fn reset_to_blank_world_runtime(
+        &mut self,
+        config: WorldConfig,
+        terrain: TerrainSystem,
+        vegetation: VegetationConfig,
+    ) {
         debug_log!(
             "world-editor",
             "reset_blank_world_runtime width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
@@ -516,6 +536,11 @@ impl SimCore {
         self.time = TimeSystem::new();
         self.config = config;
         self.heightmap = terrain;
+        // Resolved against the new extent rather than carried over: coverage is an area
+        // fraction of this world, and stand size is compressed on a world too small to hold
+        // one, so a generator resolved for a different extent is wrong for this one.
+        self.vegetation = VegetationGenerator::resolve(vegetation.sanitized(), &self.config);
+        self.vegetation_edits = Default::default();
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
         self.transit_network = TransitNetwork::new_for_world(&self.config);
@@ -1040,6 +1065,11 @@ mod tests {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
+            vegetation_edits: Default::default(),
+            vegetation: crate::simulation::vegetation::VegetationGenerator::resolve(
+                crate::simulation::vegetation::VegetationConfig::default(),
+                &config,
+            ),
             treasury: CityTreasury::new(0.0),
             service_policy: Default::default(),
             fiscal_policy: Default::default(),
@@ -1121,7 +1151,10 @@ mod tests {
             resource_deposits: ResourceDepositSystem::from_world_config(&core.config),
         };
 
-        core.apply_loaded_world_definition(loaded);
+        core.apply_loaded_world_definition(
+            loaded,
+            crate::simulation::vegetation::VegetationConfig::default(),
+        );
 
         assert!(
             core.watermap
@@ -1142,6 +1175,51 @@ mod tests {
             core.cached_road_mesh_generation, core.road_tool_surface_generation,
             "the snapshot token must identify the final post-water world generation"
         );
+    }
+
+    #[test]
+    fn new_game_vegetation_parameters_survive_world_definition_instantiation() {
+        use crate::simulation::vegetation::{VegetationConfig, VegetationGenerator};
+
+        let mut core = test_core_with_small_world();
+        let authored = VegetationConfig {
+            enabled: true,
+            seed: 0x0bad_cafe,
+            coverage: 0.24,
+            canopy_stems_per_ha: 60.0,
+        };
+        let loaded = LoadedWorldDefinition {
+            name: "vegetation-test".to_owned(),
+            config: core.config.clone(),
+            terrain: core.heightmap.clone(),
+            lake_fills: Vec::new(),
+            open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&core.config),
+        };
+
+        core.apply_loaded_world_definition(loaded, authored);
+
+        // The asset carries no vegetation, so what the player chose is what the world gets.
+        assert_eq!(core.vegetation.config, authored);
+        assert!(core.vegetation.canopy_cell_m < VegetationGenerator::default().canopy_cell_m);
+
+        // An out-of-range request is corrected on the way in rather than stored as authored.
+        let loaded = LoadedWorldDefinition {
+            name: "vegetation-test".to_owned(),
+            config: core.config.clone(),
+            terrain: core.heightmap.clone(),
+            lake_fills: Vec::new(),
+            open_water_fills: Vec::new(),
+            resource_deposits: ResourceDepositSystem::from_world_config(&core.config),
+        };
+        core.apply_loaded_world_definition(
+            loaded,
+            VegetationConfig {
+                coverage: 9.0,
+                ..authored
+            },
+        );
+        assert_eq!(core.vegetation.config.coverage, 1.0);
     }
 
     #[test]

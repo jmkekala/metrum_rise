@@ -7,6 +7,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::simulation::save::{
     LoadedSimulation, SaveGameView, SavedCameraState, load_from_sqlite, save_to_sqlite,
 };
+use crate::simulation::vegetation::VegetationGenerator;
 use std::path::PathBuf;
 
 impl SimCore {
@@ -22,6 +23,8 @@ impl SimCore {
             SaveGameView {
                 camera,
                 config: &self.config,
+                vegetation: &self.vegetation.config,
+                vegetation_edits: &self.vegetation_edits,
                 time: &self.time,
                 terrain: &self.heightmap,
                 water: &self.watermap,
@@ -62,6 +65,8 @@ impl SimCore {
 
     fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) {
         self.config = loaded.config;
+        self.vegetation = VegetationGenerator::resolve(loaded.vegetation, &self.config);
+        self.vegetation_edits = loaded.vegetation_edits;
         self.time = loaded.time;
         self.heightmap = loaded.terrain;
         self.watermap = loaded.water;

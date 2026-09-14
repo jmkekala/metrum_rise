@@ -3,8 +3,10 @@
 [ext_resource type="Script" path="res://scripts/core/main_scene.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/renderers/terrain.gd" id="1_terrain"]
 [ext_resource type="Script" path="res://scripts/renderers/water.gd" id="2_water"]
+[ext_resource type="Script" path="res://scripts/renderers/vegetation.gd" id="15_vegetation"]
 [ext_resource type="Script" path="res://scripts/tools/road_tool.gd" id="3_road"]
 [ext_resource type="Script" path="res://scripts/tools/zoning_tool.gd" id="4_zoning"]
+[ext_resource type="Script" path="res://scripts/tools/vegetation_tool.gd" id="16_vegetation_tool"]
 [ext_resource type="Script" path="res://scripts/renderers/buildings.gd" id="5_buildings"]
 [ext_resource type="Script" path="res://scripts/renderers/zoning_overlay.gd" id="12_zoneoverlay"]
 [ext_resource type="Script" path="res://scripts/renderers/agents.gd" id="6_agents"]
@@ -32,11 +34,17 @@ script = ExtResource("14_lighting")
 
 [node name="SimulationNode" type="SimulationNode" parent="."]
 
+[node name="VegetationTool" type="Node3D" parent="."]
+script = ExtResource("16_vegetation_tool")
+
 [node name="Terrain" type="Node3D" parent="."]
 script = ExtResource("1_terrain")
 
 [node name="Water" type="Node3D" parent="."]
 script = ExtResource("2_water")
+
+[node name="Vegetation" type="Node3D" parent="."]
+script = ExtResource("15_vegetation")
 
 [node name="RoadTool" type="Node3D" parent="."]
 script = ExtResource("3_road")

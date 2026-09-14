@@ -11,3 +11,4 @@
 pub mod camera_node;
 pub mod sim;
 pub mod simulation_node;
+pub mod vegetation_options;

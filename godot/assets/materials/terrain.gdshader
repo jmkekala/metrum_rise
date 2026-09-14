@@ -6,6 +6,8 @@ uniform sampler2D overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D coal_pit_texture : repeat_disable, filter_linear;
 uniform sampler2D field_overlay_texture : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
+uniform sampler2D land_cover_texture : hint_default_black, repeat_disable, filter_linear;
+uniform vec4 land_cover_world_bounds = vec4(0.0);
 uniform sampler2D terrain_grass_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_grass_height : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D terrain_coal_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -34,10 +36,17 @@ uniform int terrain_visual_debug_mode = 0;
 uniform vec2 terrain_debug_patch_key = vec2(0.0);
 uniform float terrain_debug_lod_step = 1.0;
 uniform int terrain_grass_visual_debug_mode = 0;
-uniform vec3 scene_sun_direction = vec3(-0.46, 0.74, -0.49);
-uniform vec3 scene_sun_color : source_color = vec3(1.00, 0.92, 0.80);
-uniform vec3 scene_sky_color : source_color = vec3(0.58, 0.73, 0.86);
-uniform float scene_ambient_strength = 0.44;
+global uniform vec3 scene_sun_direction;
+global uniform vec4 scene_sun_color : source_color;
+global uniform float scene_ambient_strength;
+// Multiplier for the baked ambient floor below. The environment's own ambient light does not
+// reach this shader (see ambient_light_disabled), so without this the ground keeps full
+// daytime brightness at midnight.
+global uniform vec4 scene_ambient_light : source_color;
+// Colour vision washes out at night. Dimming alone leaves a saturated green ground reading as
+// daylight with the brightness turned down, because the albedo's green channel still dominates
+// whatever the ambient tint is multiplied by.
+global uniform float scene_ambient_desaturation;
 uniform float scene_shadow_max_distance_m = 1800.0;
 uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform float ground_shadow_ambient = 0.64;
@@ -67,6 +76,13 @@ uniform float terrain_grass_mid_scale = 0.065;
 uniform float terrain_grass_macro_strength = 0.58;
 uniform float terrain_grass_mid_strength = 0.80;
 uniform float terrain_grass_micro_strength = 0.50;
+// Chroma gain on the grass photo before it is blended over the authored palette. The
+// photo is a muted yellow-green (mean RGB 0.220/0.294/0.137, saturation 0.53). A gain of
+// 3.0 drove that to saturation 1.00 with the blue channel clamped to zero, which is where
+// the open ground got its fluorescent cast: the authored greens in grass_meadow_variation
+// and terrain_surface_color are all far less saturated than what the texture layer put on
+// top of them. Keep this near 1 so the photo contributes fibre and breakup, not hue.
+uniform float terrain_grass_chroma_gain = 1.15;
 uniform float terrain_natural_variation_strength = 0.18;
 uniform float terrain_meadow_mottle_strength = 0.08;
 uniform float terrain_baked_readability_strength = 0.12;
@@ -113,6 +129,8 @@ uniform vec3 contour_major_color : source_color = vec3(0.10, 0.16, 0.14);
 uniform float contour_minor_strength = 0.14;
 uniform float contour_major_strength = 0.34;
 uniform float contour_relief_minor_boost_strength = 0.10;
+// Contour lines belong to the map views. Clear this to draw them in the plain world view.
+uniform bool contour_map_view_only = true;
 uniform float contour_zero_elevation_fade_m = 0.75;
 uniform float contour_flat_relief_start_m = 0.10;
 uniform float contour_flat_relief_end_m = 1.25;
@@ -223,10 +241,13 @@ vec3 apply_natural_land_variation(
 }
 
 vec3 terrain_surface_color(float world_elevation, float macro_mask, float ruggedness) {
-	vec3 dry_lowland = mix(vec3(0.36, 0.49, 0.29), vec3(0.28, 0.41, 0.24), macro_mask);
-	vec3 inland_base = mix(vec3(0.23, 0.38, 0.18), vec3(0.18, 0.32, 0.15), macro_mask);
+	// Rotated into the hue band measured from the reference photographs, luminance and
+	// saturation preserved; see grass_meadow_variation for the measurement. dry_open was
+	// already at hue 60 and is unchanged.
+	vec3 dry_lowland = mix(vec3(0.442, 0.467, 0.276), vec3(0.365, 0.386, 0.226), macro_mask);
+	vec3 inland_base = mix(vec3(0.318, 0.355, 0.168), vec3(0.265, 0.296, 0.139), macro_mask);
 	vec3 dry_open = mix(vec3(0.38, 0.38, 0.25), vec3(0.32, 0.34, 0.22), macro_mask);
-	vec3 conifer_dark = mix(vec3(0.11, 0.21, 0.10), vec3(0.15, 0.27, 0.13), macro_mask);
+	vec3 conifer_dark = mix(vec3(0.164, 0.195, 0.093), vec3(0.213, 0.252, 0.121), macro_mask);
 	vec3 upland = mix(vec3(0.30, 0.31, 0.23), vec3(0.36, 0.34, 0.25), macro_mask);
 	vec3 snow = vec3(0.93, 0.94, 0.96);
 
@@ -324,8 +345,15 @@ vec3 grass_meadow_variation(vec2 world_xz) {
 	float broad = warped_noise(world_xz, 0.006, vec2(83.0, 17.0));
 	float mid = warped_noise(world_xz, 0.026, vec2(11.0, 131.0));
 	float fine = noise2d(world_xz * 0.085 + vec2(47.0, 5.0));
-	vec3 damp_green = vec3(0.15, 0.27, 0.10);
-	vec3 lush_green = vec3(0.30, 0.47, 0.20);
+	// Hue matters more than value here. Sunlit vegetation in the Kuopio reference photographs
+	// measures hue 59-79 degrees - yellow-green and olive - at luminance 0.36-0.43, and the
+	// game's open ground already sat inside that luminance range. The authored greens sat at
+	// hue 98-115, which is blue-green, and at that luminance blue-green reads as fluorescent
+	// rather than bright. The 30-degree hue error, not the value, is what made open ground
+	// look like a sports pitch. Each colour below keeps its original luminance and saturation
+	// and is rotated into the measured band; dry_grass was already at 71 and is unchanged.
+	vec3 damp_green = vec3(0.219, 0.250, 0.093);
+	vec3 lush_green = vec3(0.399, 0.442, 0.188);
 	vec3 dry_grass = vec3(0.39, 0.43, 0.22);
 	vec3 meadow = mix(damp_green, lush_green, smoothstep(0.20, 0.86, broad));
 	meadow = mix(meadow, dry_grass, smoothstep(0.64, 0.94, mid) * 0.35);
@@ -358,7 +386,7 @@ vec3 grass_material_layer(vec3 base_color, vec3 grass_color, vec2 world_xz, floa
 	float grass_luma = max(color_luminance(grass_color), 0.001);
 	float detail = clamp((grass_luma - 0.28) * contrast, -0.32, 0.30);
 	vec3 grass_contrast = clamp(
-		(grass_color - vec3(grass_luma)) * 3.00 + vec3(grass_luma),
+		(grass_color - vec3(grass_luma)) * max(terrain_grass_chroma_gain, 0.0) + vec3(grass_luma),
 		vec3(0.0),
 		vec3(1.0)
 	);
@@ -655,7 +683,7 @@ vec3 terrain_visual_debug_color(
 		} else {
 			cascade_color = vec3(1.00, 0.20, 0.14);
 		}
-		vec3 facing_color = mix(vec3(0.04, 0.05, 0.08), scene_sun_color, sun_facing);
+		vec3 facing_color = mix(vec3(0.04, 0.05, 0.08), scene_sun_color.rgb, sun_facing);
 		debug_color = mix(facing_color, cascade_color, 0.38);
 		debug_color *= mix(0.68, 1.12, clamp(scene_ambient_strength, 0.0, 1.0));
 	} else {
@@ -666,17 +694,17 @@ vec3 terrain_visual_debug_color(
 }
 
 float hillshade_mask(vec3 normal) {
-	vec3 light_dir = scene_sun_direction;
-	if (length(light_dir) <= 0.001) {
-		float azimuth = radians(hillshade_azimuth_deg);
-		float altitude = radians(hillshade_altitude_deg);
-		light_dir = vec3(
-			sin(azimuth) * cos(altitude),
-			sin(altitude),
-			-cos(azimuth) * cos(altitude)
-		);
-	}
-	light_dir = normalize(light_dir);
+	// Held at the authored cartographic angle rather than following the live sun. This mask is
+	// a readability device baked into albedo, so swinging it with the day cycle would double
+	// the directional light's own shading, and it would snap 180 degrees at the moment the key
+	// light swaps from the sun to the moon. The moving light does the time-of-day work.
+	float azimuth = radians(hillshade_azimuth_deg);
+	float altitude = radians(hillshade_altitude_deg);
+	vec3 light_dir = normalize(vec3(
+		sin(azimuth) * cos(altitude),
+		sin(altitude),
+		-cos(azimuth) * cos(altitude)
+	));
 
 	float diffuse = clamp(dot(normal, light_dir), 0.0, 1.0);
 	float shaped = pow(diffuse, hillshade_contrast);
@@ -779,6 +807,10 @@ void vertex() {
 }
 
 void fragment() {
+	// Rust publishes accepted crown coverage. One bilinear fetch; no stand-field mirror.
+	vec2 cover_uv = (var_world_pos.xz - land_cover_world_bounds.xy)
+		/ max(land_cover_world_bounds.zw, vec2(0.001));
+	float land_cover = texture(land_cover_texture, cover_uv).r;
 	float world_elevation = h * height_scale;
 	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);
@@ -841,6 +873,12 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 		color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
+		// Litter, moss and duff replace grass hue at the same albedo luminance. Only actual
+		// tree shadows occlude light; coverage never changes the lighting or adds darkness.
+		vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
+		vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
+		forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
+		color = mix(color, forest_floor, land_cover);
 		vec2 world_uv = clamp(
 			vec2(
 				var_world_pos.x / max(world_size.x, 0.001),
@@ -932,6 +970,15 @@ void fragment() {
 		);
 		float flat_zero_contour_visibility = mix(1.0, flat_relief_mask, zero_elevation_mask);
 		float contour_visibility = (1.0 - (cliff_face * cliff_contour_fade)) * flat_zero_contour_visibility;
+		// Contours are a map affordance for reading slope while planning, not a property of
+		// ground. Drawn in the plain world view they put survey lines across every hillside,
+		// which is the single strongest "this is a topographic map" cue in an aerial shot.
+		// The analysis overlays are read as a map and keep them. Anything else that wants
+		// them - terrain sculpting, say - clears contour_map_view_only rather than editing
+		// this; every interval and colour uniform is unchanged.
+		if (contour_map_view_only && overlay_mode <= 0) {
+			contour_visibility = 0.0;
+		}
 		float contour_relief_boost = max(
 			smoothstep(0.30, 2.80, local_relief),
 			smoothstep(0.010, 0.075, slope) * 0.70
@@ -956,8 +1003,11 @@ void fragment() {
 				color = mix(color, max(color, site_concrete_albedo_floor), site_concrete_floor_influence);
 			}
 		}
+		// Desaturated before it is either shown or lit, so the moonlit diffuse washes out
+		// with the ambient floor rather than staying vivid against a grey ground.
+		color = mix(color, vec3(dot(color, vec3(0.2126, 0.7152, 0.0722))), scene_ambient_desaturation);
 		ALBEDO = color;
-		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0);
+		EMISSION = color * clamp(ground_shadow_ambient, 0.0, 1.0) * scene_ambient_light.rgb;
 		ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 		SPECULAR = 0.08;
 	}

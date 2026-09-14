@@ -17,6 +17,7 @@ pub mod pathing;
 pub(crate) mod resources;
 pub(crate) mod save;
 pub mod terrain;
+pub mod vegetation;
 pub mod water;
 pub(crate) mod work_area;
 pub(crate) mod world_definition;

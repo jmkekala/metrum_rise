@@ -101,6 +101,16 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_minute_of_day
     }
 
+    /// Returns the position inside the current operational day in `0.0..1.0`.
+    ///
+    /// `0.0` is midnight and `0.5` is midday. This is the clock the scene lighting samples for
+    /// the day/night cycle, so it carries the partial minute that `get_current_minute_of_day`
+    /// truncates. A paused simulation holds the value still, which parks the sun.
+    #[func]
+    pub fn get_day_fraction(&self) -> f32 {
+        self.snapshot.read().unwrap().current_day_fraction
+    }
+
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
     pub fn get_agent_transforms(&self) -> VarDictionary {

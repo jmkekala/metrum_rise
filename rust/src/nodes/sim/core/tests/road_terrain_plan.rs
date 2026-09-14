@@ -138,10 +138,13 @@ fn kuopio_third_road_preserves_existing_junction_boundary_owners() {
         (2889.74951171875, (3020.73, -8622.6728515625)),
     ] {
         let mut core = test_core();
-        core.load_world_definition_internal(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
-        ))
+        core.load_world_definition_internal(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
+            ),
+            crate::simulation::vegetation::VegetationConfig::default(),
+        )
         .unwrap();
         // The first case reproduces road.log's exact missing outer-boundary coordinates;
         // the second exposes the same short-edge deletion in the third road's new junction.
@@ -518,10 +521,13 @@ fn kuopio_recorded_profiles_and_terrain_preserve_quality_limits() {
     for case in manifest["cases"].as_array().unwrap() {
         let case_id = case["case_id"].as_str().unwrap();
         let mut core = test_core();
-        core.load_world_definition_internal(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
-        ))
+        core.load_world_definition_internal(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../godot/bootstrap/worlds/kuopio_324km2_10m.sqlite"
+            ),
+            crate::simulation::vegetation::VegetationConfig::default(),
+        )
         .unwrap();
         for stroke in case["segments"].as_array().unwrap() {
             let points = ["start_xz", "end_xz"]

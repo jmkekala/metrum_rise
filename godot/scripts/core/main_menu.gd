@@ -5,6 +5,7 @@
 ## save before gameplay scene loading begins.
 extends Control
 
+const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
 const OptionsWindow = preload("res://scripts/ui/options_window.gd")
 const UIStyle = preload("res://scripts/ui/ui_style.gd")
 
@@ -12,6 +13,7 @@ const WORLDS_DIR := "user://worlds"
 const SAVES_DIR := "user://saves"
 
 var _options_window = null
+var _new_game_dialog: Window = null
 
 func _ready() -> void:
 	_build_ui()
@@ -128,15 +130,23 @@ func _on_quit_pressed() -> void:
 func _on_new_game_selected(path: String, dialog: FileDialog) -> void:
 	dialog.hide()
 	dialog.call_deferred("queue_free")
-	call_deferred("_finish_new_game_selection", path)
+	# Deferred so the file dialog is gone before the options dialog takes exclusive focus.
+	call_deferred("_open_new_game_options", path)
+
+func _open_new_game_options(path: String) -> void:
+	if _new_game_dialog == null:
+		_new_game_dialog = NewGameDialog.new()
+		_new_game_dialog.start_requested.connect(_finish_new_game_selection)
+		add_child(_new_game_dialog)
+	_new_game_dialog.popup_for_world(path)
 
 func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
 	dialog.hide()
 	dialog.call_deferred("queue_free")
 	call_deferred("_finish_load_game_selection", path)
 
-func _finish_new_game_selection(path: String) -> void:
-	LaunchState.queue_new_game(path)
+func _finish_new_game_selection(path: String, vegetation: Dictionary) -> void:
+	LaunchState.queue_new_game(path, vegetation)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 func _finish_load_game_selection(path: String) -> void:

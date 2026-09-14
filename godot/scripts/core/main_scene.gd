@@ -7,8 +7,11 @@
 extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
+const NewGameDialog = preload("res://scripts/ui/new_game_dialog.gd")
 const GameplayRoadBenchmark = preload("res://scripts/benchmarks/gameplay_road_benchmark.gd")
 const WORLDS_DIR := "user://worlds"
+
+var _new_game_dialog: Window = null
 
 @onready var input_manager = $InputManager
 
@@ -76,11 +79,19 @@ func _spawn_project_instance(arguments: PackedStringArray) -> void:
 func _on_new_game_world_selected(path: String, dialog: FileDialog) -> void:
 	dialog.hide()
 	dialog.call_deferred("queue_free")
-	call_deferred("_finish_new_game_world_selection", path)
+	# Deferred so the file dialog is gone before the options dialog takes exclusive focus.
+	call_deferred("_open_new_game_options", path)
 
-func _finish_new_game_world_selection(path: String) -> void:
+func _open_new_game_options(path: String) -> void:
+	if _new_game_dialog == null:
+		_new_game_dialog = NewGameDialog.new()
+		_new_game_dialog.start_requested.connect(_finish_new_game_world_selection)
+		add_child(_new_game_dialog)
+	_new_game_dialog.popup_for_world(path)
+
+func _finish_new_game_world_selection(path: String, vegetation: Dictionary) -> void:
 	if input_manager:
-		input_manager.menu_load_world_definition(path)
+		input_manager.menu_start_new_game(path, vegetation)
 
 func _ensure_worlds_dir() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(WORLDS_DIR))
@@ -110,7 +121,8 @@ func _apply_launch_request(request: Dictionary) -> void:
 	var world_path := str(request.get("world_definition_path", ""))
 	if not world_path.is_empty():
 		if input_manager:
-			if not input_manager.menu_load_world_definition(world_path):
+			var vegetation: Dictionary = request.get("vegetation", {})
+			if not input_manager.menu_start_new_game(world_path, vegetation):
 				get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")
 		else:
 			get_tree().change_scene_to_file("res://scenes/MainMenu.tscn")

@@ -16,12 +16,14 @@ const RenderDebug := preload("res://scripts/renderers/render_debug.gd")
 const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.26
 const SHORE_FOAM_BAND_M := 0.18
-const SHALLOW_WATER_COLOR := Color(0.10, 0.28, 0.40, 0.62)
-const DEEP_WATER_COLOR := Color(0.018, 0.09, 0.18, 0.90)
+const SHALLOW_WATER_COLOR := Color(0.07, 0.19, 0.24, 0.80)
+# Boreal lakes are humic and near-black. A pale lake reads as a pool and shrinks the
+# sense of distance across it; the dark surface also lets the shoreline read as an edge.
+const DEEP_WATER_COLOR := Color(0.012, 0.052, 0.075, 0.97)
 const FOAM_COLOR := Color(0.76, 0.91, 0.96, 0.82)
-const SKY_REFLECTION_COLOR := Color(0.38, 0.56, 0.72, 1.0)
-const WATER_DEEP_COLOR_DEPTH_M := 3.5
-const WATER_FRESNEL_STRENGTH := 0.46
+const SKY_REFLECTION_COLOR := Color(0.22, 0.33, 0.44, 1.0)
+const WATER_DEEP_COLOR_DEPTH_M := 1.8
+const WATER_FRESNEL_STRENGTH := 0.30
 const WATER_FRESNEL_POWER := 2.8
 const WATER_WAVE_COLOR_STRENGTH := 0.052
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.024
@@ -614,10 +616,6 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("water_sun_glitter_strength", WATER_SUN_GLITTER_STRENGTH)
 	material.set_shader_parameter("water_refraction_strength", WATER_REFRACTION_STRENGTH)
 	material.set_shader_parameter("water_refraction_mix", WATER_REFRACTION_MIX)
-	material.set_shader_parameter("scene_sun_direction", SceneLightingConfig.sun_direction())
-	material.set_shader_parameter("scene_sun_color", SceneLightingConfig.sun_color())
-	material.set_shader_parameter("scene_sky_color", SceneLightingConfig.sky_color())
-	material.set_shader_parameter("scene_ambient_strength", SceneLightingConfig.ambient_strength())
 	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
 	material.set_shader_parameter(
 		"scene_shadow_split_distances_m",

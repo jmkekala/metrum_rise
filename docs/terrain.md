@@ -1,5 +1,1540 @@
 # Terrain / World Terrain Spec
 
+## Local vegetation experiment (V01)
+
+Vegetation adds cosmetic trees to loaded worlds.
+This is a local proof of concept, not persistent vegetation or a simulation resource.
+Rust generates deterministic 16 m candidate cells and rejects water, steep ground,
+and sampled road/building footprints. The renderer reuses terrain residency and uploads
+at most one patch per frame. Two opaque tree species each have three geometry levels.
+Trees have no collisions. Near trees and bushes sway in a vertex-shader wind; nothing
+else moves. The initial visibility limit is 4500 m.
+Shadow casting is off by default and available for the near geometry only.
+
+Placement is derived from the terrain surface. The terrain renderer stamps each committed
+patch payload with the surface generation it was built from, and that generation advances
+only for the patches an edit dirtied. Each tree patch records the generation it was built
+against and regenerates when the terrain renderer commits a newer one, so a road, building,
+or terrain edit clears the trees it covered without a world reload. The check is
+`O(resident patches)` dictionary lookups per frame with no distance work. The replacement
+patch enters the scene tree before the previous patch is freed.
+
+Geometry levels switch at a hard distance boundary with no crossfade. A visibility fade
+applies to a whole `MultiMeshInstance3D`, and one instance carries a whole terrain patch, so
+a fade band made every plant in a `510 m` patch translucent together and moved the patch into
+the transparent pass. Two invariants follow from the same fact and set the bands below: a band
+must exceed the patch diagonal (`721 m`), and a range must exceed the patch half-diagonal
+(`361 m`). Trees more than about 2 km away are narrower than three pixels at 720p and still
+alias.
+
+Distant crowns, bushes and rocks are each one surface of revolution built from a radius
+profile, with a per-ring and per-segment radius perturbation, flat shading, end caps, and a
+root flare on each trunk. The near conifer and broadleaf levels instead carry a two-level
+branch skeleton: a tapering leader, sixteen or twelve four-sided primary limbs placed on a spiral,
+two smaller children on each limb, and an opaque foliage tuft at every child tip. Branch count
+and recursion depth are fixed, so catalogue construction stays linear in emitted vertices.
+Triangles are emitted clockwise from the front, which is what Godot treats as the front face;
+the lathe walks rings in increasing angle, so `_tri` reverses the order. Emitted the other way
+every surface is inside out and back-face culling makes a small dome render as a hollow ring.
+Per-face vertex colours carry the crown shading. A MultiMesh instance colour multiplies
+that vertex colour rather than replacing it, so a per-placement tint costs no shader and
+keeps the face shade: the near band applies one, derived from disjoint bits of the
+appearance seed, spanning `0.94` to `1.06` in value with opposing red/blue shifts of
+`±3.5%`. The mid and far levels carry no instance colours, because a tree there is a few
+pixels wide and the tint averages to one across a patch.
+
+The mesh catalogue is indexed by species, then variant, then near-to-far level. Conifer and
+broadleaf have 12 variants, bush and rock 6. Variants differ in crown proportions,
+widest-point height, taper, trunk dimensions and raggedness, all derived from the variant
+index, and stay within their species: no variant is more than `1.3x` the height of the
+smallest in its species. The 84 mesh levels share four materials: near tree and bush
+bark/foliage geometry uses one wind `ShaderMaterial`, near tree and bush cards use one
+scissor wind `ShaderMaterial`, distant crowns share one scissor/backlight `ShaderMaterial`,
+and rocks keep the original `StandardMaterial3D`. Distant crowns remain static. Only the near
+level selects a variant; the mid and far levels use variant zero and the whole species
+population, so distance does not multiply draw calls. Those two levels also share one
+instance per species: they draw the same transforms with a different mesh, so crossing the
+mid boundary swaps a mesh on the buffer already uploaded instead of rebuilding the patch.
+`TREE_MID_M` therefore selects a mesh per patch and is not a visibility band, which leaves
+`TREE_NEAR_M` as the only boundary the band-width invariant applies to. A near patch has 38
+MultiMesh nodes, 36 of them in the near band; a patch beyond the near band has two.
+
+Patch upload is the cost that governs this, because a patch uploads in a single frame and a
+frame at 60 fps is `16.7 ms`. What a patch costs depends on how far it is. Past the near band
+it builds one distant instance per canopy species over the whole species population, with no
+variant split, no tints and no understory; inside the band it builds all 38 nodes. The near
+test is conservative by the patch half-diagonal, because the patch is one instance.
+
+On a fixed headless fixture (near: 4096 placements as 512 conifer, 512 broadleaf, 2048 bush,
+1024 rock; far: the 1024 canopy placements the same patch is sent without an understory;
+median of eight after warmup) a near patch measures `18.0 ms` and a far patch `2.9 ms`,
+against `20.5 ms` and `6.1 ms` when every patch built every level. Residency reaches 4500 m,
+so most resident patches are far ones. A near patch is still over one frame and is not an
+accepted cost.
+
+Three implementation facts set those numbers, all measured rather than assumed. Node count
+is close to free on the upload side: collapsing the 40 nodes back to 8 changed nothing, and
+4 variants per species measured the same as 12. It is the placement work behind the nodes
+that costs, which is why the fix skips levels rather than merging them. Interpreted
+per-placement work is expensive: routing every placement through a nested untyped `Array`
+rather than appending to a local typed one cost `3.8 ms` per patch. And a GDScript call in
+that path costs more than what it usually wraps -- writing the four `_jitter` calls out
+inline saved `2.6 ms` per patch, where replacing the four `hash()` calls inside them with
+bit extraction saved only `0.8 ms` more. That is why the variant index and the tint read
+bits of the existing seed, and why the jitters sit inline in `_instance_transform`.
+
+The remaining near-patch cost is the placement loop. Every species rescans the whole payload
+to filter by species, so a four-species patch walks its placements four times, and
+`_instance_transform` builds three `Basis` values for each one. Grouping the payload by
+species on the Rust side would make that scan a single pass.
+
+Bushes and rocks come from a denser 8 m grid that Rust generates only when the renderer asks,
+which it does for patches within 800 m, because that layer draws over a much shorter range
+than the canopy.
+
+The GPU budget now has a fresh capture, on the same GTX 1060 3GB the superseded 4% and 22%
+figures came from. `E13` sweeps an eye-level 300 m horizon view through four compass yaws,
+each with the scatter off and on. Four matched runs are recorded, one per near-crown design:
+the lathe domes, the branch skeletons that replaced them, the skeletons with alpha-scissor
+cards, and the current wind shader. Every scatter-off trial agrees across all four to within
+`0.15 ms`, with identical draw calls and primitives, so the scatter columns are comparable.
+The last two runs are on a newer GPU driver than the first two, and that control is what shows
+the driver did not move the baseline.
+
+| yaw | off | lathe | scatter | branched | scatter | cards | scatter | wind | scatter |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 000 | `4.2 ms` | `7.18 ms` | `+2.97` (41%) | `8.55 ms` | `+4.22` (49%) | `8.96 ms` | `+4.77` (53%) | `8.66 ms` | `+4.35` (50%) |
+| 090 | `4.7 ms` | `6.70 ms` | `+2.04` (30%) | `8.00 ms` | `+3.35` (42%) | `8.51 ms` | `+3.85` (45%) | `8.24 ms` | `+3.57` (43%) |
+| 180 | `5.0 ms` | `7.70 ms` | `+2.75` (36%) | `9.94 ms` | `+4.99` (50%) | `10.57 ms` | `+5.62` (53%) | `10.08 ms` | `+5.13` (51%) |
+| 270 | `4.8 ms` | `7.77 ms` | `+2.99` (38%) | `9.84 ms` | `+5.04` (51%) | `10.48 ms` | `+5.72` (55%) | `9.88 ms` | `+5.12` (52%) |
+| 180 at 1.5x | `8.3 ms` | `10.22 ms` | `+1.93` (19%) | `12.73 ms` | `+4.52` (36%) | `13.51 ms` | `+5.22` (39%) | `13.05 ms` | `+4.77` (37%) |
+
+Three things follow. The scatter now costs about half the frame from a ground-level view,
+which is more than the retired 22% figure claimed. It is not fill-bound: at 1.5x render scale
+everything else nearly doubles while the scatter's own cost barely moves in any run, so it is
+priced in vertices and draw calls. Geometry added to the near meshes is therefore paid for at
+every resolution, and rendering smaller will not buy it back.
+
+The two near-crown changes price differently, and the difference is the point. Branching moved
+primitives from `4.34 M` to `7.01 M` at yaw 180 with draw calls unchanged, and the cost rose by
+about the same ratio: paid in vertices. Adding cards moved primitives only to `7.30 M`, a 4%
+rise, but added `407` draw calls, because a second surface is a second draw per near instance
+and there are up to 24 canopy near instances per patch. It bought a visibly fuller crown for
+`+0.6 ms`, against `+2.2 ms` for the branch skeleton underneath it. Cut-outs are the cheaper
+way to add apparent foliage, which is the whole reason they exist.
+
+Near-level triangle counts went `211` to `565` to `645` for a conifer, and `184` to `525` to
+`525` for a broadleaf, the last of which is flat because shrinking the opaque tufts paid for
+its cards exactly. Wind changes no count: vertex positions, normals, UVs, indices, colour RGB
+and mesh bounds are all byte-identical to the cards build, and only vertex colour alpha moved.
+Catalogue construction went from `31 ms` to `51 ms` to `68 ms` including one-time texture
+generation, all once at startup; a matched pair across the wind change measures `64.4 ms`
+against `63.4 ms`, so authoring the weights costs nothing.
+
+The cards are three crossed quads per branch tip on a second surface of the same `ArrayMesh`,
+so they share the instance transforms already uploaded and add no instances. They use a shared
+`512x512` baked 2x2 atlas (256 pixels per cell), with generic broadleaf at top left,
+birch at top right, and two conifer sprays on the bottom. Broadleaf cards select their
+appearance's cell; conifers select the bottom column from `seed & 1`, in O(1) work per
+cluster. The shader keeps alpha scissor
+at `0.4`, which keeps them in the opaque pass with depth write intact. Blending
+here would repeat the crossfade mistake that cost 17-28% of frame time. Their normals point
+away from the crown centre rather than along the quad, because a quad lit by its own facing
+reads as a flat plate rather than as foliage.
+
+The atlas is authored by `tools/bake_foliage_atlas.py` using an orthographic Blender
+CPU render. Bake with `blender --background --python tools/bake_foliage_atlas.py --
+godot/assets/textures/vegetation/foliage_atlas.png`. The PNG is the reviewable base
+image and has a generated `.png.import`; the material loads the accompanying RGBA8
+DDS, with its generated `.dds.uid`, because PNG cannot carry authored mipmaps. The DDS
+costs 1,398,100 bytes of pixel data including mips, shared by the catalogue. No shader,
+surface, placement, LOD range, or sway-weight change accompanies the atlas. The birch
+and crown geometry changes below have their own measured vertex budget.
+RGB is white at every texel, the exact flood extension of the white opaque mask;
+vertex RGB continues to supply the foliage palette.
+
+Mip alpha is rescaled offline independently per cell against its level-0 coverage.
+The closest achievable coverage is selected after 8-bit quantization; correction uses
+the uncorrected box-filter pyramid, avoiding compounded rescaling. At one pixel per
+cell, none of the four target coverages can be represented: the closest result is zero.
+The two terminal levels therefore disappear; this is an explicit subpixel limitation,
+not a claim of exact preservation at every size. At those levels atlas cells also
+cannot remain isolated under bilinear filtering. GPU appearance at these transitions
+remains unverified. Measured coverage above `0.4`, in percent:
+
+| Atlas mip size | Uncorrected | Corrected |
+|---|---:|---:|
+| 512x512 | 19.1074 | 19.1074 |
+| 256x256 | 19.5267 | 19.1238 |
+| 128x128 | 20.5994 | 19.0918 |
+| 64x64 | 20.9961 | 19.1162 |
+| 32x32 | 21.3867 | 19.0430 |
+| 16x16 | 21.4844 | 19.1406 |
+| 8x8 | 20.3125 | 20.3125 |
+| 4x4 | 0.0000 | 25.0000 |
+| 2x2 | 0.0000 | 0.0000 |
+| 1x1 | 0.0000 | 0.0000 |
+
+The committed `foliage_atlas.coverage.json` includes the measurements for each cell.
+
+The atlas costs fill, and the cause is not the texture. Measured against the palette build
+on one binary, the scatter's own cost rose `0.12`, `0.17`, `0.43` and `0.11 ms` across the
+four yaws and `0.72 ms` at `1.5x` render scale, with draw calls and primitives byte-identical
+in every trial. Halving the atlas to `512` cut its pixel data from `5.33 MB` to `1.33 MB` and
+`4 MB` of measured video memory with it, and changed the frame cost by less than the
+scatter-off control's own drift between runs. Texture bandwidth is therefore not what this
+costs, and the atlas is `512` for video memory and repository size rather than for speed.
+
+What it costs is occlusion. The retired procedural mask passed `34.30%` of its texels above
+the `0.4` threshold; the baked cells pass `15.85%` to `21.66%`, between `0.46x` and `0.63x`
+as many fragments. Honest leaf and needle silhouettes are mostly holes, so the cards hide
+less of what stands behind them and that geometry is drawn instead. That is a fill cost, which
+is why it grows with render scale while the rest of the scatter's price does not. It is the
+standing price of the silhouette, not a defect to tune away: filling the cells back in would
+return the blob the atlas replaced.
+The appearance regression checks that Godot retains every authored DDS byte and all
+a mip chain complete to 1x1, and checks both rows and seed parities without weakening shader or sway
+assertions. A separate before/after snapshot of every surface's arrays, excluding UVs,
+is byte-identical, including indices, positions, normals and vertex colour alpha.
+
+Fresh CPU validation on 2026-09-12 used base `0ff8230d` and this atlas change, Godot
+4.7.1 headless with the same existing GDExtension library and default worker settings.
+No GPU benchmark or windowed game was run. Five sequential fresh processes per build
+timed `Species.build_meshes()` with `Time.get_ticks_usec()`, including first-use texture
+and material creation but excluding script parsing. Before: 61.753, 67.198, 62.101,
+68.695, 65.026 ms; after: 56.773, 56.928, 56.153, 56.124, 56.281 ms. Medians are
+65.026 and 56.281 ms (13.45% lower). The appearance test's `FIXTURE` actually reports
+patch upload, not catalogue construction: its maximum is 19.358 ms before and
+18.565 ms after. Those single upload maxima are not a GPU or performance acceptance.
+
+Commands were `godot --path godot --headless --log-file <writable-log> --script
+res://tests/vegetation_appearance_test.gd` and the corresponding
+`vegetation_invalidation_test.gd`, plus `godot --path godot --headless --log-file
+<writable-log> --import`. Full output, the temporary catalogue/snapshot harnesses,
+and all samples are in `/tmp/foliage-atlas-validation/`. Final appearance output:
+`PASS vegetation appearance, shared material, LOD buckets, positions and empty density`;
+`grep -c "SCRIPT ERROR"` is 0. Invalidation exits 0 with 0 `SCRIPT ERROR` lines; that
+harness contains no PASS print. The initial default-log run crashed on a sandbox-denied
+user-log write; matched runs use writable logs. Import generated the companions despite
+sandbox-denied editor settings and debug socket operations.
+
+Two Blender 5.2.1 LTS bakes (fixed seed, 32 Cycles samples, one CPU thread) produce
+PNG SHA-256 `612472fef60b135ae51678b110538b12f5d4b884425773fb365142d6440a7dca`
+on both runs; the DDS files also match, SHA-256
+`cd8c63752bbfbf5bcef3ea74294edc0e16c600f15ef363a32bd9e709871e315e`.
+Blender wrote all artifacts but its PulseAudio shutdown stalled inside the sandbox;
+artifact reproducibility is verified independently of that shutdown.
+
+Wind is a vertex displacement and nothing else. Both wind shaders declare
+`world_vertex_coords` and add a world-space offset directly, which avoids an inverse model
+matrix per vertex; they share one `.gdshaderinc` so the bark surface and the card surface of
+the same tree can never be displaced by different functions and tear apart. The per-plant
+phase comes from `MODEL_MATRIX[3].xz`, the instance origin, so no per-instance data is added:
+the placement loop already documents that one instance colour array costs an upload call and
+four floats per instance, and a second such array for a cosmetic effect is not worth that.
+Projecting that origin onto the wind direction also makes a gust travel across the landscape
+instead of every tree moving in lockstep. How much a vertex moves is authored into vertex
+colour alpha at mesh build time: `0` at the root flare, `0.16` up the trunk, `0.70` at primary
+limb tips, `1` at the child tips, the foliage cores and the cards, and `0` to `0.8` up a bush.
+The fragment stage reads alpha as a sway weight and never as opacity; the card shader takes
+its alpha from the mask alone. Neither shader disables ambient or goes unshaded, so the day
+cycle still reaches vegetation through the scene's key light exactly as it did through
+`StandardMaterial3D`.
+
+The foliage palette is calibrated against the ground rather than authored by eye. The mean
+linear albedo of `grass002_2k_albedo.jpg`, after the terrain shader's `0.90` strength, is
+`(0.037, 0.065, 0.016)`: hue `94.4` degrees, saturation `0.756`. Foliage sat at hue `104` to
+`130` degrees and saturation `0.54` to `0.58`, which is why it read blue-green against a
+yellow-green ground. Conifer moved to `112` degrees, broadleaf and bush to `100`, all three
+to saturation `0.66` to `0.68`, each preserving its original luminance exactly. Foliage was
+never darker than the ground; at `2.0x` to `2.7x` its luminance it is brighter, and the
+blackness in low sun was a shading result rather than an albedo one.
+
+That shading is what `BACKLIGHT` fixes: foliage transmits light instead of blocking it, so a
+backlit crown no longer goes black at the hour the scatter dominates the frame. Bark must not
+transmit, and one material carries both, so the term is gated on the palette's green bias,
+`smoothstep(0.0, 0.05, albedo.g - albedo.r)`. That is `0` for every bark and rock colour and
+`1` for every foliage colour, and it costs no vertex attribute, which matters on a scatter
+priced in vertices. The gate depends on the palette keeping green above red on foliage only.
+
+The bush was the last near plant without cards, and a closed seven-sided lathe dome reads as a
+boulder rather than undergrowth. It now builds like a tree: a coarser core, five segments by
+four rings instead of seven by five, under four card clusters climbing the dome. Card sway
+weights are `0.2`, `0.4`, `0.6` and `0.8`, each matching the core weight directly beneath it so
+the two cannot tear apart, and every one of those values lands exactly on an 8-bit vertex
+colour boundary, which is what makes them assertable at all.
+
+Palette, backlight and bush cards were measured as one matched pair on the merged tree, with
+an identical binary and world on both sides; the four-column table above predates that merge
+and is not comparable to it. Isolating the scatter as full minus off, its cost moved `+0.06`,
+`+0.01`, `+0.02` and `-0.01 ms` across the four yaws and `-0.23 ms` at `1.5x` render scale,
+against a scatter-off control that itself drifted up to `0.29 ms` between the two runs. Draw
+calls rose by `42` to `60`, the bush card surface, while primitives fell by `58,566` to
+`83,910`: the coarser core more than paid for the clusters on top of it. Better silhouette,
+fewer triangles, cost unchanged within the noise floor.
+
+Distant crowns and rocks stay rigid on purpose. They are the overwhelming majority of
+instances, a tree at `800 m` is a few pixels wide, and its sway would be below a pixel, so
+displacing them would be the largest cost in the change and would buy nothing visible.
+
+The wind run is the first change in this experiment that made the frame faster. Draw calls and
+primitives are identical to the cards run in every trial, and GPU time falls by `0.27` to
+`0.60 ms`, because the two lean shaders replace `StandardMaterial3D`'s general-purpose one on
+every near plant. The vertex cost of three sine terms is smaller than what the uber-shader
+charged for features these meshes never used. Motion is verified the same way the cost is: two
+captures of the same camera at different wall-clock times are pixel-identical with the scatter
+off, and differ over 6% of the frame with it on.
+
+Anti-aliasing was measured rather than assumed, and the obvious lever lost. The project had
+none of the three modes enabled. `4x` MSAA costs `1.87` to `3.14 ms` across the four yaws and
+`4.88 ms` at `1.5x` render scale; `2x` costs `0.95` to `1.71 ms` and `2.60 ms`. FXAA costs
+between `-0.14` and `+0.23 ms`, inside the scatter-off control's own drift. On a crop of the
+mid-distance tree line, mean pixel-to-pixel difference falls from `31.01` with no filter to
+`26.13` under `4x` MSAA and `20.30` under FXAA: FXAA removes more than twice the speckle for
+roughly a tenth of the cost, so it is the mode the project enables.
+
+The reason MSAA loses is that it answers the wrong question. It antialiases geometry
+silhouette edges and shades once per pixel, while this noise is alpha-scissor card cut-outs,
+which it cannot touch without `alpha_to_coverage`, and foliage finer than one pixel, which it
+never touches. Note also that MSAA costs the scatter-off control `2.0` to `2.9 ms` on its own:
+the vegetation is vertex-bound but the frame is not, and multisampling is a whole-frame price.
+FXAA is a partial mitigation, not a fix. Detail below a pixel can only be resolved by
+averaging it down, which geometry cannot do and a mipmapped texture can, so impostors for the
+mid and far levels remain the actual answer to distance noise.
+
+Three pop-in symptoms share one cause and are tracked as `RENDER-02`: every range is
+evaluated once per patch, so half a square kilometre of vegetation switches as a unit, near
+trees and all vegetation shadows arrive together at `TREE_NEAR_M`, and branched crowns are
+drawn to `800 m` where their detail aliases. `TREE_NEAR_M` cannot be shortened while the LOD
+unit is the patch, because a band narrower than the patch diagonal would draw distant crowns
+for plants at the camera's feet. Per-plant alpha hashing, which stays in the opaque pass
+unlike the removed `VISIBILITY_RANGE_FADE_SELF`, is the fix that also unpins the band.
+
+The September birch/crown revision below addresses the exposed conifer trunk and the
+monochrome palette. Its visual result and remaining patch-switch brightness need a later
+GPU inspection; the historical GPU sweeps above do not validate this revision.
+
+The same sweep run against the build before the distance gating gives draw calls identical to
+the digit and GPU times inside noise. Skipping the near band on a distant patch is an upload
+and memory win only: Godot was already culling those instances by their visibility range, and
+a culled `MultiMeshInstance3D` issues no draw call. The gain is that the patch never builds
+them, not that the GPU stops drawing them.
+Canopy density is still roughly one tree per 330 m2 against about one per 10 m2 in a real
+stand, and closing that gap needs a canopy representation for mid and far distance rather
+than more instances.
+
+### The crowns lost half their ground cover at the LOD switch (2026-09-13)
+
+The player reported that distant forest reads lighter than near forest, and that a stand gains
+weight with each click the camera moves in. Top-down, one zoom click changed a closed canopy
+into scattered trees on bright grass.
+
+Darkening the ground is not the answer and was already rejected with measurements; see "The
+forest floor was shade baked into albedo, and it had to go". The crowns had to do the work,
+and they were not there to do it.
+
+**The distant crown was built at half the near crown's width.** `_branched_tree` treats its
+`width` as a base: a branch reaches `width * _crown_reach(t) * [0.90, 1.08]`, and foliage cards
+hang past each branch tip. `_conifer` and `_broadleaf` took the same `lerpf` expression and used
+it as the lathe radius directly, so the distant crown was built at the branch base while the
+near crown ended roughly twice as far out.
+
+| | near crown | mid | far |
+|---|---:|---:|---:|
+| conifer crown width | `9.68 m` | `4.70 m` | `4.68 m` |
+| broadleaf crown width | `9.18 m` | `5.78 m` | `7.29 m` |
+
+**The instrument could not see it.** `coverage` is covered pixels over the crown's own bounding
+box, and `raster()` scales every level to one apparent height. Both of a crown's size terms are
+divided out, so two levels can agree on coverage while one hides half the ground the other does.
+The four transitions recorded at `47b51f64` as `+0.76`, `-4.76`, `+1.58` and `-1.85` percentage
+points were all measured through that blind spot. They were correct and they were not evidence
+of what the player was looking at.
+
+`footprint` is now recorded beside `coverage`: the metre box a crown fills, at true relative
+scale, so it is comparable across levels. `coverage` says how solid a crown is, `footprint` how
+much sky it takes. Both are in `summary.csv` and `sweep.csv`, and `transitions.csv` reports
+footprint against the NEAR crown rather than against the previous level, because two small steps
+that agree with each other still open the ground up if both sit below it.
+
+| footprint, against the near crown | before | after |
+|---|---:|---:|
+| conifer near to mid | `52.8%` | `101.7%` |
+| conifer mid to far | `47.1%` | `93.0%` |
+| broadleaf near to mid | `47.2%` | `103.9%` |
+| broadleaf mid to far | `57.6%` | `88.4%` |
+
+**The distant crown is now measured from the near one.** `_crown_envelope` returns the mean
+foliage extent of a near mesh as radius, top and base, averaged over all twelve variants, and
+the distant lathe is built to it. This is the same method the distant crown colour already uses,
+and it keeps the two in step when the near crown changes. Four things followed:
+
+- The extent is axis-aligned, not radial. A lathe ring puts vertices on both axes, so its radius
+  becomes the half width of its box; a radial reach is up to `sqrt(2)` larger and oversized the
+  hull by 10 to 16 percent when it was used.
+- The base matters as much as the top. An authored `crown_base` hung the distant conifer 3.5 m
+  below where a pine carries its foliage, which measured `130%` of the near footprint once the
+  width was right.
+- The per-variant radius and height spread is gone. The scatter draws variant zero's distant
+  mesh for the whole species, so a spread produced no variety and only moved that one crown off
+  the envelope, by up to 8 percent in each direction.
+- The birch narrowing on the mid level is gone. The envelope already contains it, because eight
+  of the twelve near variants are birch. Narrowing again also split the two distant levels,
+  which stand for the same mixed stand: mid measured `91%` of the near crown and far `111%`.
+
+Two smaller corrections finished the broadleaf. Its `widest` ring is snapped to a ring the
+profile actually samples: the far level has three rings at `t = 0, 1/3, 2/3, 1`, an authored
+`0.38-0.49` fell between two of them, and the widest point of the crown was never built. And
+`DISTANT_COVERAGE` for broadleaf moved from `0.70` to `0.82`, because a near broadleaf carries
+cards that stand out of the crown in depth as well as across it and a surface of revolution has
+no depth to spare: its projected extent is already its width.
+
+**Cost.** No triangle was added anywhere, at any level, for either species: the per-variant
+counts are identical before and after, and the appearance test still pins them exactly at 28 and
+32. Distant vertex counts moved only where two end caps stopped sharing vertices, and the
+per-species maximum is unchanged at 77 and 92. The per-variant vertex array in the appearance
+test was replaced by a per-species ceiling, which is tighter than what it replaced: it held 81
+for conifer against a measured 77. That array pinned which variants happened to share vertices
+between their caps, which is not what a distant mesh costs. No instance, draw call, material,
+LOD range or atlas changed.
+
+`vegetation_appearance_test`, `vegetation_edit_test`, `vegetation_invalidation_test` and
+`vegetation_land_cover_test` each exit `0` with no `SCRIPT ERROR` and no `push_error`.
+`tools/test_vegetation_lod_measure.py` runs 3 tests OK.
+
+**Measured on the GPU, and it is free.** Two `E13` captures of `local_gpu_probe.gd` on a
+GTX 1060 3GB at `1280x720`, Kuopio `kuopio_324km2_10m`, one binary (`af04b1ed`) and one world
+for both, differing only in `tree_species.gd`. `E13` pairs vegetation off against full at four
+yaws inside one process, so the scatter's own cost is the difference between a pair and thermal
+drift cannot be read as a result. Resident patch counts and prewarm queues matched exactly,
+trial for trial, across the two runs.
+
+| scatter GPU cost, `full` minus `off`, p50 | before | after | change |
+|---|---:|---:|---:|
+| yaw 000 | `6.840 ms` | `6.927 ms` | `+0.087` |
+| yaw 090 | `5.759 ms` | `5.983 ms` | `+0.224` |
+| yaw 180 | `6.017 ms` | `5.969 ms` | `-0.048` |
+| yaw 270 | `5.785 ms` | `5.753 ms` | `-0.032` |
+| yaw 180 at 1.5x render scale | `5.923 ms` | `5.825 ms` | `-0.098` |
+
+Three of the five decreased, the mean change is `+0.027 ms` against a `5.8-6.9 ms` scatter, and
+the spread between `p50` and `p95` inside a single trial is about `0.25 ms`. The change is below
+the noise floor. The `1.5x` render scale trial is the one that matters most, because wider crowns
+add shaded pixels and that trial is the fill-bound case; it went down.
+
+Two views gained `0.131%` and `0.015%` primitives and exactly one draw call each; the other three
+gained neither. That is one more patch surviving frustum culling, because a wider crown gives its
+`MultiMeshInstance3D` a larger bounding box. Video memory is identical to `0.1 MB` in every trial.
+
+**Measured on screen.** In the same captures, against the `off` trial as a control, whose pixels
+are identical between the two builds:
+
+| distant ridge, yaw 000 | bare ground | with forest | darkening |
+|---|---:|---:|---:|
+| before | `151.45` | `134.59` | `16.87` |
+| after | `151.45` | `127.56` | `23.90` |
+
+The distant canopy darkens the ground it stands on by `42%` more than it did, which is the
+symptom the player reported. The same comparison at yaw 090 moves `18.65` to `20.00`.
+
+Still open: `land_cover.rs` sizes the forest-floor disc from `CROWN_RADII_M = [3.0, 3.5]`, which
+was matched to the narrow distant crown rather than to the near one it is supposed to shade.
+
+### Dense deliberate planting — VEG-05 (2026-09-13)
+
+The brush now fills a world-aligned **4 m lattice (625 points/ha)** with deterministic
+jitter of at most **0.2 m per axis**, independent of the saved canopy spacing and stand
+acceptance. The generator's candidate remains an additional point for the existing
+restore contract. At the shipped 16 m canopy spacing this adds up to 39 points/ha,
+so unobstructed planting approaches 664 plants/ha including those extra positions.
+Existing generated plants stay in place. Water, steep ground and built surfaces still
+reject every authored point through `placement_clear`; the generator and its constants
+are unchanged.
+
+Fine lattice indices never enter the edit store: each world position is mapped through
+`cell_at` using the canopy spacing. Only the generator-candidate pass can lift a tombstone,
+and only for the generated species. Repainting an individual cleared generated tree as
+its original species still prunes the edit; a dense disc also authors the extra lattice
+plants, so it intentionally retains those additions. Painting another species leaves
+the tombstone in place. Exact-position checks make overlapping stamps idempotent.
+
+Plant stamps reject radii above **256 m** before planning. The tool clamps the planting
+radius and preview to that limit, including when switching from removal; removal retains
+its 1024 m limit. A stamp plans at most **129² + 65² = 20,866 slots** at the supported
+8 m minimum canopy spacing (17,730 at the shipped 16 m spacing), before disc and footprint
+rejection. This bounds both work and transient plan storage without cutting holes in a
+large requested disc. Larger areas require multiple deliberate stamps.
+
+The two streams use indexed Rayon planning and a serialized commit, with no allocation
+inside a candidate body and no new spatial index. For K candidate slots, A authored plants
+in the owning cell and H local surface hits, planning costs O(K × (A + log N + H));
+commit costs expected O(K). Remote vegetation edits are never scanned. Persistent vectors
+allocate only when committing additions, as before.
+
+Fresh verification on this change:
+
+- `cd rust && cargo test --lib vegetation`: 27 passed, 0 failed, 2 ignored, exit 0.
+- `cd rust && cargo test`: 1688 passed, 0 failed, 12 ignored; doc-tests 0 passed,
+  0 failed; exit 0. The known intermittent road failure did not occur in this run.
+- `cd rust && cargo doc --no-deps 2>&1 | grep "warning\[missing_docs\]" | wc -l`:
+  output `0`; cargo doc itself exited 0 (grep exits 1 because there are no matches).
+- `cd rust && cargo build`: exit 0. The resulting debug library was copied to
+  `godot/bin/libmetrum_rise.so` after replacing the shared-checkout symlink with a real file.
+- An additional release-profile vegetation run: 27 passed, 0 failed, 2 ignored.
+
+All four bridge commands ran from this worktree's `godot/` directory as
+`godot --headless --script res://tests/<name>.gd`, using Godot 4.7.1:
+
+| Script | Exit | SCRIPT ERROR lines | push_error lines | PASS lines |
+|---|---:|---:|---:|---:|
+| `vegetation_edit_test` | 0 | 0 | 0 | 1 |
+| `vegetation_appearance_test` | 0 | 0 | 0 | 1 |
+| `vegetation_invalidation_test` | 0 | 0 | 0 | 0 (by design) |
+| `vegetation_land_cover_test` | 0 | 0 | 0 | 1 |
+
+The tests cover fine-grid density inside existing forest, canopy-cell storage and removal,
+1/4-worker determinism, independent spacing, the stamp limit, flooded footprints, save/load,
+and both unchanged species-aware tombstone regressions. Headless checks do not establish
+on-screen appearance or GPU cost.
+
+Matched unprofiled release stroke measurements use the existing flat vegetation fixture,
+default generator and seed, a 64 m radius at the origin, species 0, and four Rayon workers.
+Setup and disc removal occur outside the measured interval; each measured call includes
+planning and serialized commit. Criterion uses 20 samples, 1 s warmup and 3 s measurement.
+Hardware: Intel i5-3350P, four cores; Rust 1.93.1. Baseline is `9415b2e8` plus only the
+benchmark harness; changed API SHA-256 is
+`49bbadf6f6964d888a375e32de3d1c258a589bff0a5c28cba4e008927f0b09d8`.
+
+| Build | Plants added per stamp | Wall time estimate | Criterion interval |
+|---|---:|---:|---:|
+| Before | 50 | 112.24 us | 99.797–131.98 us |
+| VEG-05, idle rerun | 862 | 709.83 us | 654.14–797.39 us |
+
+The stroke adds 17.24 times as many plants at 6.32 times the wall time. A preliminary
+changed-build run overlapped compilation and measured 1.9277 ms; it is not the acceptance
+measurement. Neither accepted timing overlapped this task's compilation or Godot runs.
+These CPU timings do not establish the cost of rendering dense vegetation across a world.
+
+From the worktree root, the matched benchmark command is:
+
+```bash
+CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_INCREMENTAL=0 RAYON_NUM_THREADS=4 cargo test --manifest-path rust/Cargo.toml --release vegetation_brush_benchmark -- --ignored --nocapture
+```
+
+The standard Rust verification set used `CARGO_PROFILE_TEST_DEBUG=0`,
+`CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=2` and
+`RAYON_NUM_THREADS=4`, retaining the test profile's optimization and assertions. Temporary
+files and Godot data/cache/config paths were directed into the worktree's `validation/`.
+Those runs happened in a delegated worktree that has since been removed, so their raw logs
+and Criterion artifacts are not retained; the figures above are what the run reported. The
+merge was verified again on `dev`, and those results are recorded below.
+
+### The paint brush regrew the forest it was painting over (2026-09-13)
+
+Clearing an area and then brushing `+ Rock` over the same ground put the trees back. The bush
+brush did the same. Painting the untouched ground next to it worked.
+
+`paint_at` addressed a cleared cell by its removal tombstone, and treated clearing that
+tombstone as the whole edit:
+
+```rust
+if restore { core.vegetation_edits.set_removed(cell, false); }
+else       { core.vegetation_edits.add(cell, plant); }
+```
+
+The `restore` branch never reads `plant`, so the species the player selected was discarded on
+every cell the player had previously cleared. Clearing a tombstone does not plant anything: it
+lets the generator's own candidate grow back, and the generator only ever places conifer or
+broadleaf on the canopy grid. The brush therefore regrew the exact stand the player had just
+removed, and only over the ground they had removed it from, which is why brushing clean ground
+behaved correctly.
+
+The brush now plants the species it was given. The tombstone is cleared only when the
+generated species and the painted species already agree; the restored plant is then byte
+identical to an authored one, so this stays a storage saving with no observable difference.
+For every other species the tombstone stays and the painted species is authored over it. A
+cell whose generated candidate a later surface edit has hidden takes that same path, so the
+brush fills it instead of counting a restore that puts nothing on the ground.
+
+The test that covered this asserted the defect. `vegetation_repaint_restores_generated_tree_and_prunes_tombstone`
+painted species `3`, a rock, and required the generated tree to come back and the edit store to
+empty. It passed because the helper it drew its species from returned a hardcoded `0` rather
+than the species the generator picked, so the assertion could not see which species had grown.
+`first_candidate` now reports the generated species, and a second test paints a rock over a
+cleared tree and checks that one rock stands there and no tree does.
+
+`cargo test` is 1685 pass, 0 fail. The four Godot vegetation scripts exit `0` with no
+`SCRIPT ERROR`. `road_preview_stream_test` fails here, before and independently of this change,
+with a varying number of `junction must update repeatedly before the pointer stops` errors
+across runs; it touches no vegetation and is left alone.
+
+Brush density is a separate defect and is not addressed here; see `VEG-05`.
+
+### Vegetation LOD reference measurements — RENDER-02 (2026-09-13)
+
+**Partly superseded:** every coverage and transition figure below is measured with both of a
+crown's size terms divided out, and the crowns differed in size by a factor of two. See "The
+crowns lost half their ground cover at the LOD switch" above. Kept for the colour and silhouette
+measurements, which stand, and for the atlas work.
+
+This is a partial material correction, with GPU acceptance still outstanding. The accepted
+near path and all range constants are unchanged. The discontinuity at `TREE_NEAR_M` exchanges
+alpha-scissored coverage, foliage backlight, wind and branch geometry together. It is not
+solely a silhouette-authoring defect. Mid and far also collapse all variants to variant zero:
+the pine/spruce and birch/aspen mixtures survive only in the near band.
+
+**Original instrument and limitations (16 px).** `godot/tests/vegetation_lod_measure.gd` exports actual indexed
+vertices, normals, vertex colours, UVs and material bindings from the live catalogue, without
+constructing a gameplay scene. `tools/vegetation_lod_measure.py` uses the existing tooling
+dependency NumPy to rasterize those arrays on the CPU. It reads every authored DDS alpha mip,
+uses repeating bilinear/trilinear filtering, a `0.4` scissor, back-face culling on solid
+surfaces, two-sided cards, and a z buffer. Crown bounds are the projected bounds of green
+foliage vertices before scissoring; wood inside that rectangle participates in the pixels.
+Bounds do not shrink to whichever pixels survive the mask. Each level is independently
+scaled to exactly **16 projected crown pixels high** in a 64-square frame. This samples an
+800 m transition-sized crown, not close-up meshes at identical world distance. It is one
+apparent-size sample, not a calibrated recreation of the reference screenshot's camera.
+Four headings (`0/90/180/270` degrees), elevation `45` degrees and pixel offsets `(0,0)` and
+`(.5,.5)` give 96 samples across the 12 near variants, and 8 for each runtime distant mesh.
+Statistics average those sample fractions and covered-pixel RGB means with equal weight.
+
+Lighting is an explicitly isolated model: linear vertex albedo, a fixed white key in
+normalized direction `(0.3,0.5,-0.8)` with radiance `pi`, ambient irradiance `.2`, roughness
+`1` Burley diffuse, and the shared palette-gated backlight with its sRGB uniform converted
+to linear. The diffuse/backlight relation follows
+[Godot's lighting implementation](https://github.com/godotengine/godot/blob/4.5/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl).
+There is no specular, sky, shadow, AO, fog, exposure, tone map or AA. Baseline wind is frozen
+at time zero and instance origin zero. Controls make the near cards opaque, remove only
+backlight, or advance the existing wind equation to two seconds. The CPU model mirrors
+the current supported material equations; changes to those equations require updating the
+instrument. It does **not** execute Godot shaders, prove their compilation/pass routing, or
+measure GPU time. Godot `4.7.1.stable.official.a13da4feb` exposes only the dummy renderer
+under `--headless` here; X11 and Wayland initialization both failed. The supplied aerial
+reference was inspected, but no new in-engine capture was possible.
+
+**Phase 1, before any runtime edits**, baseline `6ff3e638`:
+
+| Species | Level | Coverage | Mean lit linear RGB | Indexed vertices | Triangles |
+|---|---|---:|---|---:|---:|
+| Conifer | Near | 14.1665% | .099427, .074731, .028881 | 2507–3485 | 895–1245 |
+| Conifer | Mid | 66.3490% | .051704, .059977, .020682 | 290 | 102 |
+| Conifer | Far | 56.3988% | .049625, .057565, .019850 | 77 | 28 |
+| Broadleaf | Near | 15.2677% | .155700, .173385, .090827 | 2441–2741 | 865–965 |
+| Broadleaf | Mid | 67.3260% | .114438, .136031, .041025 | 274 | 96 |
+| Broadleaf | Far | 64.9725% | .110504, .131353, .039615 | 84 | 32 |
+
+Coverage dominates this experiment. Making near cards opaque raises conifer coverage by
+**41.1627 percentage points** and broadleaf by **50.3282 points**. Their opaque-card RGB
+means become `(.048567,.059386,.019568)` and `(.117267,.144938,.037752)`: which surfaces
+remain visible affects covered-pixel colour as well as occupied area. Removing backlight
+changes near RGB by only `(-.000147,-.000537,-.000028)` and
+`(-.000643,-.002152,-.000085)`, with no coverage change. The proposed second-place ranking
+for backlight is therefore not supported under this light. At two seconds, mean coverage
+changes by `+.04265 / -.04027` points, but `12.0429% / 10.7756%` of bbox pixels change
+occupancy. Corresponding RGB means are `(.098285,.074493,.028641)` and
+`(.158520,.176261,.093240)`. Mean absolute image RGB differences per bbox pixel, for
+opaque cards / no backlight / two-second wind, are respectively
+`.020577 / .000034 / .009556` (conifer) and `.063066 / .000146 / .019931` (broadleaf).
+
+Geometry is not proved sub-pixel: at equal height the mean projected conifer width changes
+from **14.9824 to 6.1648 to 6.0908 px**, and broadleaf from **12.5671 to 10.8315 to
+13.6240 px**. The opaque-card control still differs from mid coverage by `11.0198 / 1.7302`
+points. These are geometric diagnostics, not an additive causal decomposition: the change
+in bounding box, normal distribution, variant mixture and internal occlusion interacts
+with scissoring. Coverage, geometry and wind matter here; the exact ordering in a shadowed,
+tonemapped gameplay frame remains unverified.
+
+**Phase 2 (historical, `1bee14a7`).** Both distant levels used `vegetation_distant.gdshader`, one cached material
+for both species. It keeps wood opaque, uses the existing backlight gate and scissoring,
+and retains foliage fragments with a deterministic unsigned hash of quarter-metre
+object-space cells. The shared retention `.22` comes from the phase-1 near/solid-mid
+coverage ratios `.214 / .227`. No screen coordinates or time enter the cutout. This is a
+spatial coverage mask, not a distance fade or a population decision. It costs `O(1)` integer
+arithmetic per fragment, one interpolated local position, no textures, no CPU tick work and
+no additional geometry. It can still alias at small sizes; it is not a filtered impostor.
+
+| Species | Level | Coverage before → after | Lit RGB before → after |
+|---|---|---|---|
+| Conifer | Mid | 66.3490% → 18.6860% | (.051704,.059977,.020682) → (.054312,.062099,.021999) |
+| Conifer | Far | 56.3988% → 13.3966% | (.049625,.057565,.019850) → (.050750,.059095,.020274) |
+| Broadleaf | Mid | 67.3260% → 14.2128% | (.114438,.136031,.041025) → (.118060,.139771,.048084) |
+| Broadleaf | Far | 64.9725% → 15.8465% | (.110504,.131353,.039615) → (.113840,.137092,.040634) |
+
+The freshly rerun near rows match phase 1 exactly. All exported mesh arrays, including
+near material bindings and the distant vertex colours, compare equal to baseline.
+
+| Transition | Coverage delta before → after (percentage points) | Lit RGB delta before → after |
+|---|---|---|
+| Conifer near→mid | +52.1825 → +4.5195 | (-.047723,-.014754,-.008200) → (-.045115,-.012632,-.006883) |
+| Conifer mid→far | -9.9501 → -5.2894 | (-.002079,-.002412,-.000832) → (-.003562,-.003004,-.001724) |
+| Broadleaf near→mid | +52.0583 → -1.0548 | (-.041262,-.037355,-.049802) → (-.037640,-.033614,-.042743) |
+| Broadleaf mid→far | -2.3535 → +1.6337 | (-.003935,-.004677,-.001411) → (-.004220,-.002679,-.007450) |
+
+Absolute near→mid coverage error falls **91.3% / 98.0%**, and all near→mid RGB errors
+shrink. Regressions: conifer's mid→far RGB step grows in every channel; broadleaf's grows
+in red and blue, especially blue (`.001411` to `.007450`). Its coverage step reverses sign,
+although its magnitude shrinks. Distant wind, pine geometry and variant collapse are not
+fixed. The colour mismatch is not solved by matching geometric-area albedo or adding the
+small backlight term. Do not mark `RENDER-02` complete or this result visually accepted.
+
+**Primitive and draw budget.** All counts in the phase-1 table remain exact. A fixture
+patch with 512 trees of each canopy species keeps **101376 mid triangles / 30720 far
+triangles**, each with **two colour surface submissions**: deltas **0 / 0 triangles and
+0 draws**. A populated near canopy still has 24 variant buckets × 2 surfaces = 48 canopy
+submissions; its delta is also zero. Understory and shadow policy are untouched. These are
+mesh/surface counts, not newly measured GPU pipeline counters. Keeping far saves 69.7%
+of this patch's mid primitives. The measurements justify testing the material correction
+before adding any intermediate geometry; they do not establish an optimal number of
+levels or resolve the per-patch range problem. `RENDER-04` remains blocked on distance cost.
+
+**Historical phase-2 verification and artifacts.** These runs preceded `1bee14a7`, over `6ff3e638`. Commands:
+
+```sh
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase1
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase2
+OPENBLAS_NUM_THREADS=1 python3 tools/vegetation_lod_measure.py /tmp/render02/phase2-final
+python3 -m unittest discover -s tools -p test_vegetation_lod_measure.py
+godot --headless --path godot --log-file /tmp/render02/final-tests/vegetation_appearance_test-engine.log --script res://tests/vegetation_appearance_test.gd
+# Same direct invocation for vegetation_edit_test, vegetation_invalidation_test,
+# and vegetation_land_cover_test. Inspect SCRIPT ERROR independently of exit/PASS.
+```
+
+Phase 1 ran before the material edit and phase 2 after it; each has 896 raw raster samples
+(224 view/variant/level samples × 4 controls) in `measurements.json`, `summary.csv`, its
+mesh export and source hashes. The later reporter also emits `transitions.csv`, reads the
+distant coverage default from its shader, and hashes the atlas. It does not alter the
+recorded raster equations or values. Both exports exit 0 with **0 SCRIPT ERROR**; the
+initial standalone export also exits 0 with **0 SCRIPT ERROR**. The two analytic instrument
+tests pass (run three times), checking full coverage, depth/alpha rejection and mip filtering.
+The standalone/phase-1/phase-2 export catalogue times are `97.127 / 109.296 / 97.304 ms`;
+these single setup samples are recorded separately from the matched benchmark below.
+The final reporter run in `/tmp/render02/phase2-final` freshly exports the current tree,
+exits 0 with **0 SCRIPT ERROR**, and reproduces all **896** phase-2 samples and summary
+values exactly. Its catalogue setup is `106.546 ms`. It includes the transition CSV and
+atlas hash. `/tmp/render02/final-source-sha256.txt` also identifies the exact changed
+sources and deployed native library used for this handoff.
+
+| Direct vegetation test | Baseline exit / SCRIPT ERROR | Final exit / SCRIPT ERROR | Final output |
+|---|---|---|---|
+| appearance | 0 / 0 | 0 / 0 | PASS vegetation appearance, shared material, LOD buckets, positions and empty density |
+| edit | 0 / 0 | 0 / 0 | vegetation_edit_test: PASS |
+| invalidation | 0 / 0 | 0 / 0 | No PASS line by design |
+| land cover | 0 / 0 | 0 / 0 | PASS vegetation land cover publication, boundary edits and texture reuse |
+
+The baseline correctness run's catalogue/upload-maximum times were `102.178 / 19.367 ms`
+while the CPU raster was active; the final correctness run's were `106.175 / 19.675 ms`.
+These are **not matched performance evidence**. Matched,
+unprofiled runs use the existing appearance fixture (4096 placements per patch, four
+warmup uploads, maximum of the following 24 uploads) sequentially after raster work ends.
+The baseline scripts are exact `git show 6ff3e638:<path>` copies under
+`/tmp/render02/benchmark/`, with only preload paths redirected to the copied baseline
+species/renderer; the after runs use live scripts. Same official Godot executable and
+deployed native library, default worker settings, no Rust rebuild, profiler or GPU renderer.
+
+| Run order | Build | Catalogue ms | Upload maximum ms | Exit / SCRIPT ERROR |
+|---:|---|---:|---:|---|
+| 1 | Before | 97.469 | 18.231 | 0 / 0 |
+| 2 | After | 100.310 | 28.055 | 0 / 0 |
+| 3 | After | 112.892 | 19.010 | 0 / 0 |
+| 4 | Before | 106.679 | 24.958 | 0 / 0 |
+| 5 | After | 107.675 | 20.273 | 0 / 0 |
+| 6 | Before | 97.390 | 19.401 | 0 / 0 |
+| 7 | Before | 103.671 | 27.436 | 0 / 0 |
+| 8 | After | 107.345 | 19.301 | 0 / 0 |
+
+Median catalogue time regresses **100.570 → 107.510 ms (+6.940 ms, +6.9%)**; median upload
+maximum is **22.1795 → 19.787 ms**. Wide ranges prevent claiming a reliable upload speedup.
+The extra startup material remains a measured cost, not a performance acceptance. Full
+logs/results are in `/tmp/render02/baseline-tests`, `final-tests` and `benchmark`; graphical
+probe failures are `/tmp/render02-probe.log` and `/tmp/render02-x11.log` (0 SCRIPT ERROR,
+but X11/Wayland initialization errors). Neither the unrelated failing full `run.sh --test`
+chain nor Rust tests were run for this rendering-only change. GPU compilation, matched
+unprofiled release frame times, other apparent sizes and an in-engine appearance check
+remain required before accepting this candidate.
+
+**Follow-up: filtered distant crowns and shadowed wood (`render02-tune`).**
+The quarter-metre point mask is replaced by two deterministic object-space hashes at
+adjacent power-of-two cell sizes. The maximum length of the local-position screen
+derivatives selects the octave: `max(log2(footprint * 4), 0)`. Cells span approximately
+half to two pixels. Their samples interpolate continuously, then use the CDF of a weighted
+sum of uniform samples to avoid the retention dip of an uncorrected hash interpolation.
+This is a procedural footprint filter, not a texture mip chain or temporal antialiasing.
+The base crown retention was **.18** at this step, measured down from .22 because the
+changed sampling increases the 16 px fill fraction. The recalibration below supersedes
+that single figure with one retention per species. Between **4 and 8 metres per pixel**, a smoothstep
+raises crown retention to one. This retention schedule never decreases with footprint;
+finite pixel counts and sampled lighting can still fluctuate. Wood uses the same sample
+with only **.04** retention and linear albedo **(.025,.030,.010)**, so it cannot remain as
+an opaque bright stick. A fixed **1.08** foliage albedo multiplier was added at this step
+to improve the RGB-vector match to near after removing bright wood. It is removed below,
+because the near crown itself changed and the means now agree without it. Backlight still
+uses the original palette gate, so recoloured wood does not acquire foliage backlight.
+
+The fragment path remains **O(1)** with no textures, allocations, CPU simulation work or
+new interpolants. It now evaluates two hashes, derivatives and octave/CDF arithmetic;
+unchanged draw counts do **not** establish unchanged GPU cost. `tree_species.gd`, mesh
+arrays, surface/material/instance counts and all ranges are unchanged. The complete live
+before/after mesh exports compare equal. The shader token ban remains intact.
+
+Fresh 16 px baseline (`1bee14a7`) → follow-up transitions, with linear covered-pixel RGB:
+
+| Species / transition | Coverage step, pp before → after | RGB delta before → after |
+|---|---:|---|
+| Conifer 0->1 | +4.5195 → +3.6527 | (-0.045115,-0.012632,-0.006883) → (-0.030686,+0.005211,-0.001407) |
+| Conifer 1->2 | -5.2894 → -3.1652 | (-0.003562,-0.003004,-0.001724) → (-0.009823,-0.011367,-0.003933) |
+| Broadleaf 0->1 | -1.0548 → +1.7292 | (-0.037640,-0.033614,-0.042743) → (-0.032666,-0.025223,-0.046911) |
+| Broadleaf 1->2 | +1.6337 → -1.0494 | (-0.004220,-0.002679,-0.007450) → (-0.009794,-0.011514,-0.003524) |
+
+All four default-height coverage steps are inside ±5 pp; the fresh baseline conifer
+mid→far value was actually **−5.2894 pp**, slightly outside that band. Near→mid RGB-vector
+error (Euclidean norm) decreases for both species. This is not an all-channel improvement:
+broadleaf near→mid blue regresses, conifer mid→far regresses in all channels, and broadleaf
+mid→far red/green regress while blue improves. Forest appearance is not established by
+these isolated means.
+
+`--height` still defaults to 16 and retains `measurements.json`, `summary.csv` and
+`transitions.csv`. The additional `--height-sweep` defaults to
+`64,48,32,24,16,12,8,6,4,3,2`; values outside 2–64 are rejected before export (64 is the
+frame height). `sweep.csv` averages the same headings, offsets, variants and four control
+modes for each species/level/height. Pixel counts are sample means, coverage is the mean
+of sample fractions, and RGB is the mean of covered-pixel means; an empty tiny mask has
+zero coverage and RGB `(0,0,0)`. Up to four spawned standard-library workers measure
+independent heights, preserving requested CSV order and reusing the single-height rows.
+The work bound is O(number of heights × original raster cost), outside the game runtime.
+
+The Python branch mirrors the shader's hash constants, octave/CDF equations, analytic
+triangle derivatives, smoothstep and wood retention/albedo. A separate
+scalar translation checked 49,152 hash/filter samples with **zero** discrepancy and
+continuity around the .5/1/2/4/8 m octave boundaries. This validates the equations, not GPU
+floating-point equivalence: the CPU raster uses NumPy doubles and analytic derivatives,
+whereas GPU derivatives operate on fragment quads. The small new unit check compares
+4 px and 64 px coverage over an isolated canopy plane's headings and pixel phases.
+
+**The near crown was the defect all along: the foliage mask (`15fefe4a`).**
+Every measurement above compares distant crowns against a near crown that was itself
+wrong. At 16 px the near crown covered **.1417** of its own silhouette for a conifer and
+**.1527** for a broadleaf. The `opaque_cards` control puts the same meshes at **.5533**
+and **.6560**, so the geometry was never the shortfall: the baked alpha mask removed about
+three quarters of it. The conifer's mean near colour came out at `(.0994,.0747,.0289)`,
+redder than it was green, because most surviving pixels were bark rather than needles.
+
+Three independent defects in `tools/bake_foliage_atlas.py` produced that:
+
+- Each drawn cluster occupied only **.42 to .63** of its atlas cell, measured as the
+  bounding box of alpha above the .4 threshold. A card quad maps the whole cell, so up to
+  58% of every card was guaranteed empty. `fit_cell` now scales each cluster about its own
+  centre until it fills the cell. Scaling about the centre, rather than recentring, keeps
+  the cluster aligned with the branch tip its card hangs from.
+- The clusters were sparse inside that extent, at **.29 to .55** covered. Counts and widths
+  rise: 78 blades instead of 52 for the generic broadleaf, 7 twigs instead of 5 and 26
+  needle pairs instead of 23 for the conifer sprays. Measured cell coverage rises from
+  **.158-.231** to **.434-.502**.
+- `correct()` chose the representable coverage closest to the target. Once a mip holds one
+  texel per cell the closest choice to .44 is zero, so a card vanished outright. A 512 px
+  atlas with 2x2 cells reaches that mip at roughly 800 m, the far edge of the near band. It
+  now takes the smallest representable coverage that **reaches** the target, so an
+  unresolvable cluster fills instead of disappearing. This is the same principle the
+  distant hash uses above. On the larger mips the representable ratios are dense and the
+  choice does not move; the corrected chain now reads .467, .467, .467, .467, .469, .477,
+  .500, .562, 1.000 from level 0.
+
+No geometry changed. Vertex and triangle counts, surfaces, instances, draw counts, LOD
+ranges and the 512 px atlas size are all identical. More fragments survive the scissor.
+E13 measured this scatter as vertex- and draw-bound rather than fill-bound, so this is the
+cheap direction, but **the GPU cost is not measured**.
+
+Near silhouette fill then required the distant retention to be recalibrated upward, and the
+two species need different values: a solid spruce cone fills far more of its own bounding
+box than a broadleaf dome fills its own, so one shared figure cannot match both. There are
+now two materials sharing one shader, at **.50** for conifer and **.70** for broadleaf.
+Placement already draws the species separately, so the second material adds no draw call.
+The `1.08` foliage gain is removed with it.
+
+Silhouette fill against apparent size, `baseline` mode, before and after:
+
+| Species / level | 64 px | 48 px | 32 px | 24 px | 16 px | 12 px | 8 px | 6 px | 4 px |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Conifer near, before | .202 | | .171 | | .142 | | | | |
+| Conifer near, after | .362 | .347 | .345 | .355 | .416 | .475 | .551 | .575 | .604 |
+| Conifer mid, after | .355 | .364 | .366 | .401 | .424 | .421 | .442 | .469 | .552 |
+| Conifer far, after | .336 | .340 | .350 | .357 | .376 | .363 | .246 | .383 | .677 |
+| Broadleaf near, before | .334 | | .274 | | .153 | | | | |
+| Broadleaf near, after | .473 | .474 | .479 | .485 | .500 | .507 | .540 | .610 | .785 |
+| Broadleaf mid, after | .455 | .457 | .490 | .504 | .516 | .521 | .545 | .590 | .705 |
+| Broadleaf far, after | .428 | .428 | .445 | .460 | .498 | .467 | .539 | .494 | .578 |
+
+The before rows fall as a tree shrinks. That fall is the measured form of a forest that
+gains weight with every step the camera takes toward it. The after rows never fall outside
+sampling noise, which is the invariant this section now holds the catalogue to. The rise
+below about 8 px is deliberate on both paths: a cluster whose cell no longer resolves
+fills, and a real forest at that range is a solid dark mass. Values at and below 8 px are
+heavily quantized, and the conifer far dip at 8 px is that quantization on a three-ring
+lathe, not a retention change.
+
+Default-height (16 px) transitions, against the `1bee14a7` measurement:
+
+| Transition | Coverage step, pp at `1bee14a7` | pp now |
+|---|---:|---:|
+| Conifer near->mid | +4.5195 | +0.7574 |
+| Conifer mid->far | -5.2894 | -4.7604 |
+| Broadleaf near->mid | -1.0548 | +1.5754 |
+| Broadleaf mid->far | +1.6337 | -1.8487 |
+
+Every near->mid and mid->far RGB delta is now within `.0096` on each channel, against
+`.0427` for the worst channel at `1bee14a7`. The conifer near mean turns from
+`(.0994,.0747,.0289)` to `(.0535,.0614,.0207)`: green now exceeds red, so the near spruce
+reads as needles rather than as bark.
+
+One measurement bug was fixed alongside this. `raster()` framed the silhouette with a box
+of exactly the projected size, which at the smallest sweep steps can contain no pixel
+centre at all and left the coverage ratio with an empty denominator. That is why the first
+`sweep.csv` was empty. The frame is now held at a minimum of one pixel either side of the
+centre.
+
+Still unverified: GPU shader compilation, frame cost and on-screen appearance. Patch
+granularity, distant wind, and the collapse of every variant to zero at mid and far range
+all remain open.
+
+### Accepted canopy land cover — RENDER-05 (2026-09-12)
+
+Before this change the ground mask had been completely removed: `stand_field()` only
+selected candidate stands in Rust, and the terrain shader had no land-cover input. The
+previous roadmap statement about a shipped water/slope-gated shader mirror was stale.
+The following contract supersedes the historical ground-mask experiments below.
+
+`get_vegetation_land_cover` publishes derived R8 bytes and world bounds for each terrain
+patch. The world-aligned texel size is **8 m**, independent of saved `canopy_cell_m`.
+A full 510 m patch carries 66–67 texels per axis including a one-texel filter border
+(4356–4489 bytes). Neighboring patches publish identical samples where their borders overlap,
+so the shader's single bilinear texture fetch is continuous across patch edges.
+
+Generated stems pass the same `evaluate_cell` as the scatter; tombstones suppress them,
+and authored canopy additions pass the same `placement_clear` on every rebuild. Building
+site queries are prepared before the parallel walk. Authored bushes and rocks use the canopy
+address grid but contribute no crown coverage. Each tree contributes a disc with a species
+substrate radius of 3 m (conifer) or 3.5 m (broadleaf), multiplied by its accepted instance
+scale. These footprints are independent of cosmetic mesh variants, LOD and wind. An 8×8
+fixed sample grid per texel forms the crown-disc union at 1 m spacing, converted to an R8
+area fraction. Atomic bitwise OR preserves overlap and produces identical bytes regardless
+of Rayon scheduling; no candidate body allocates. The build allocates one temporary patch
+bitmask buffer (~35 KB); conversion allocates the packed bridge output once. The final
+~4 KB contiguous R8 packing pass is deliberately serial; indexed candidate work uses Rayon.
+
+Cost is O((K + A) × indexed footprint-query cost + T): K candidate cells and A authored
+additions in the patch plus crown/filter border, and T fixed-size output texels. A crown
+touches at most nine texels with 64 samples each. The existing index preparation may pay
+for a dirty building-site index rebuild once; no world population scan or new spatial index
+is introduced. Coverage is built on residency/invalidation, never per tick or fragment.
+
+Textures follow terrain's active/spare image and `ImageTexture` ownership, including resource
+pool reuse and terrain stage/commit. Unchanged coverage is reused during unrelated terrain
+mesh staging. Plant-only and neighboring surface changes refresh at most one resident
+coverage patch per frame after terrain/network publication. Validity compares the **two
+existing** revision streams in the 3×3 patch neighborhood, including nonresident neighbors;
+there is no coverage generation, no new edit ownership, and no save-format change. Capturing
+revisions and candidates under the same core lock prevents stamping old coverage as current.
+Staged terrain rejects a coverage revision mismatch before publication.
+
+The material blends needle litter/duff and moss hues, matching the incoming grass albedo's
+luminance before blending. Coverage changes no lighting, shadow visibility, grass palette,
+chroma gain or hillshade tint. Tree shadows remain responsible for canopy light occlusion.
+
+Fresh headless validation uses the release GDExtension from `cargo build --release`, copied
+to `godot/bin/libmetrum_rise.so`. Direct commands are
+`godot --headless --path godot --log-file /tmp/render05/<test>-engine.log --script res://tests/<test>.gd`.
+`vegetation_edit_test`, `vegetation_appearance_test`, `vegetation_invalidation_test`,
+`vegetation_land_cover_test` and `network_tool_chunk_renderer_test` each exit **0**, with
+**0 `SCRIPT ERROR` entries**. The new native test covers R8 publication, a boundary plant,
+clear-cut/removal, both revision streams, stage isolation and `ImageTexture` reuse. The Rust
+oracle compares every texel with accepted canopy products, allowing only the <0.1 mm
+roundoff from reconstructing packed local f32 positions; overlapping border bytes must
+match exactly. Logs are under `/tmp/render05/`.
+
+Fresh Rust verification (`cargo ... --manifest-path rust/Cargo.toml`):
+`fmt --check` exits 0; `test --release` exits 0 with
+`test result: ok. 1684 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 74.99s`
+(and an empty passing doc-test target). `doc --no-deps` exits 0 with **0** matches for
+`warning: missing documentation`. `clippy --release` exits **101**, with 494 warnings and
+the pre-existing `clippy::mut_from_ref` error at
+`rust/src/simulation/economy/agents/tick/slices.rs:37` (`get_mut(&self) -> &mut T`). That
+file is identical to parent `9ccc236b`; this task does not change its unsafe storage contract.
+Full output is in `/tmp/render05/{fmt,rust-test,clippy,doc}.log`.
+
+Fresh, unprofiled release timing on the Intel i5-3350P (four cores), rustc 1.93.1,
+`RAYON_NUM_THREADS=4 cargo test --release vegetation_edit_benchmark -- --ignored --nocapture`
+from `rust/`, exits 0. The existing Criterion fixture uses a 510 m patch at `(-255, -255)`,
+default generator settings, 50 samples, 2 s warmup and 6 s measurement per arm. The painted
+case is the existing 255 m brush-disc fixture; index preparation and background edit setup
+are outside timing. These are matched controls in one run, after compilation and other tests
+finished. Build identity: parent `9ccc236b` plus the RENDER-05 sources listed in
+`/tmp/render05/source-sha256.txt` (coverage source SHA-256
+`18141bafb5990b4876742793265756ba43701e99699334c895ee4446d7c0681d`).
+
+| Background edits | Canopy scatter | Added coverage build | Painted scatter | Added painted coverage build |
+|---:|---:|---:|---:|---:|
+| 0 | 212.60 µs | 277.36 µs | 617.83 µs | 548.69 µs |
+| 100,000 | 212.28 µs | 236.67 µs | 658.32 µs | 646.90 µs |
+
+These coverage costs are **additional per patch**, for candidate acceptance and crown-disc
+rasterization; they exclude R8 bridge conversion and Godot/GPU texture upload. The untouched
+coverage confidence intervals are 256.55–296.58 µs and 234.06–239.88 µs; painted intervals are
+544.38–553.55 µs and 621.78–680.91 µs. The painted background case is about **18% slower**,
+so this run does not establish that background edits cost nothing. Inspection bounds the
+candidate walk to the same local cells; authored edit lookups use the existing sparse store.
+The brief's 242/632 µs scatter figures are historical, not current-build validation.
+Raw output: `/tmp/render05/benchmark.log`; Criterion samples/reports:
+`rust/target/criterion/VegetationEdits/`.
+No game launch or GPU capture is part of this task; **on-screen appearance is unverified**.
+
+### The generator became the saved population (2026-09-12)
+
+The scatter's stand layout, density and arrangement were four constants in
+`vegetation_api.rs`. They are now `VegetationConfig` in `rust/src/simulation/vegetation.rs`,
+chosen per world and persisted in the save at format version 60. That is the whole vegetation
+population: a Finnish stand density over the default world is around `10^10` stems, so storing
+the trees is not an option, while storing the parameters that generate them costs sixteen bytes.
+Player edits now ride on top as a sparse authored delta (`VEG-01`, save format 61).
+`VegetationEdits` keys tombstones and authored additions by `(layer, cell_x, cell_z)`;
+`evaluate_cell` is the single generated-candidate decision used by queries, removal and paint.
+Queries retain O(K) bounded candidates, one expected O(1) edit lookup per cell, and O(A)
+work for authored plants in those cells. Storage is O(edits), with no additional spatial index.
+Parallel candidate evaluation allocates nothing per cell; actual edit commits own the sparse
+store's persistent allocations. Point placement validates the footprint immediately; brush
+stamps restore tombstones or fill rejected canopy candidates with the original jitter, yaw and
+scale. The player addresses the canopy grid (including authored bush/rock species); the generated
+understory remains a near-only layer. Authored placements remain visible when generation is disabled.
+
+Vegetation patch revisions use the terrain renderer's layout but do not change terrain surface
+revisions. Only patches containing changed plants advance. Save rows sort by layer, cell_z and
+cell_x, preserving addition order within a cell; versions 58–60 load with no edits. Save/load
+reproduces the packed placements. Existing save timestamps still vary with wall-clock save time.
+A road, building site or terraform placed later clears an authored plant exactly as it clears a
+generated candidate: `scatter_layer` re-runs `placement_clear` over the authored plants it is
+about to return, as one parallel pass allocating once for the patch and skipped entirely for a
+patch that holds none. The verdict is re-derived per fetch rather than stored, so removing the
+surface restores the plant bit for bit, which is already how a generated candidate behaves. The
+existing terrain payload revision drives the rebuild, because every road, site and terraform edit
+funnels through `bump_terrain_payload_patch_generations`, which `_is_patch_stale` already reads.
+Clearing a radius still finds and counts an authored plant hidden under a surface, which prunes
+it from the store.
+
+The player reaches all of this through `vegetation_tool.gd`, a Terrain-submenu tool with two
+modes - plant one species, or clear plants - drawn as a ground ring at the cursor's surface hit.
+The radius is the only size control, and it also selects the dispatch: at `MIN_RADIUS_M` a plant
+lands exactly under the cursor through `add_vegetation_at`, and above it the disc fills the
+4 m planting lattice plus generator candidates through `paint_vegetation`. That removes the point/brush mode and the
+radius control from the panel, which leaves a species choice and a clear. Ctrl and the mouse wheel
+step the radius geometrically, because no fixed step serves both a one-tree cursor and a 1 km
+clear-cut, and stepping down clamps on the minimum so the point dispatch stays reachable. The
+camera must not zoom on that combination, so `_handle_zoom_wheel` refuses a ctrl-held wheel. The
+ring reports both the footprint and the mode, by size and by colour, since the panel shows
+neither. A stroke continues on held-button motion whenever it is a brush or a clear, and restamps
+after half a radius of travel, so it overlaps without issuing a native call per pixel. `vegetation.gd` ORs the independent vegetation revision into `_is_patch_stale` and stamps
+it alongside `surface_generation` at upload, reading both before the placement fetch so an edit
+landing mid-fetch is not stamped as already rendered.
+
+They are saved state and not a video setting. Once a tree can be planted and cleared it is
+gameplay state, so two machines loading one save have to generate the same forest; a dense world
+on a weak machine runs slower rather than thinning itself out. Saves written before version 60
+load the shipped values, so an existing city keeps the forest it was built in.
+
+**Coverage and density are separate axes with different costs.** Coverage is the fraction of the
+world inside a stand. It only moves a threshold, so it is free: instance count follows the area
+it selects. Density is canopy stems per hectare, and it is delivered by sizing the grid cell
+rather than by changing the acceptance rate, so the accepted fraction of candidates stays put and
+only the spacing moves. Halving the cell quadruples canopy instances and sixteens the understory,
+which is why density is clamped at `121.875` stems/ha (an `8 m` cell, four times the shipped
+grid). That ceiling is a renderer limit and not a generator one: a real Finnish stand is
+`500-1500` stems/ha, which needs a `2.6-4.5 m` cell and `13-38x` the instances. `RENDER-04`
+raises it. The default `30.46875` stems/ha is the shipped `16 m` grid at `0.78` acceptance kept
+exact, so the default world generates the population every measurement in this file was taken
+against. Cell size is quantised to the millimetre, because the spacing decides how many candidate
+cells a patch covers and a float ulp either side of a round number could change that count at a
+patch boundary.
+
+**The two-sine field had to go, and not because of its shape.** `woodland()` was
+`sin(x * 0.0031) * cos(z * 0.0043) + sin((x + z) * 0.008) * 0.3`, with wavelengths fixed in world
+metres at `2027 m` and `785 m`. Across the `500 m` sandbox world in `user://worlds` the field
+never completes a period: evaluating its corners puts the entire map inside one stand bar a
+single corner sample that clips the threshold by `0.006`. A small map therefore had no stand
+structure at all and a coverage dial would have done nothing on it. The replacement is three
+octaves of smoothed value noise at `500 m`, `225 m` and `90 m`.
+
+Coverage means an area fraction on any world, and it is measured rather than mapped. The field is
+a sum of octaves with no closed-form distribution, so `resolve` sweeps it on a `192x192` grid over
+the world, sorts, and takes the matching quantile as the threshold. That is `37k` samples and one
+sort, once per world load, and never on a per-patch path. The default coverage of `0.565` is the
+measured stand fraction of the two-sine field over the `18 km` world, so the default world keeps
+the amount of forest it had while the stands themselves move.
+
+**Global coverage being right says nothing about what one player sees, and the first attempt got
+that wrong.** Scaling the stand feature size to an eighth of the world gave the `18 km` world
+`2250 m` features, which is eight noise lattice cells per axis. Global coverage measured a correct
+`0.565` while the `2 km` window around spawn measured `0.002`: the first E13 probe of that build
+returned `43,162` resident trees against `80,815`, `2.26 M` primitives against `9.52 M`, because
+the near patches had become open ground. Sampled across 225 spawn windows the local coverage ran
+`0.000` to `1.000` at a standard deviation of `0.316`. The old two-sine field's own standard
+deviation was `0.007`, which is the real reason it looked stable everywhere: it was not a stand
+pattern at all but a regular `2 km` ripple, and every window of it held the same 56% forest.
+
+The stand size is therefore a metric constant, `500 m`, and only a world too small to hold one
+compresses it to an eighth of its shorter side. Across the same 225 windows that gives mean
+`0.551`, standard deviation `0.123`, range `0.199` to `0.816` - landscape variation instead of a
+coin flip - and the `2 km` window at spawn measures `0.566` against the old field's `0.564`,
+which falls out of the scale rather than being fitted to it. A test pins the local range, because
+nothing else would catch a retuned feature size putting the player back in a meadow.
+
+One consequence is honest to record: peak cost now depends on where you stand. The densest `2 km`
+window carries `0.816` coverage against `0.566` at the probe viewpoint, and that window is the
+near understory ring, so the worst spot on the map should sit around `1.4x` the near geometry
+measured below - roughly back at the `9.52 M` primitives and `12.26 ms` that the previous build
+paid everywhere. That is an estimate scaled from the coverage ratio, not a measurement; the E13
+pivot is fixed and does not visit that window.
+
+The seed mixes into both layers' candidate salts as well as the stand field, so two worlds on the
+same terrain differ in where the stands are and in how the plants sit inside them. It is cheap
+because the scatter already hashed integer cell coordinates. Rocks do not scale with density:
+they are geology rather than forest.
+
+`scatter_layer` is now a free function rather than a method, because it never used `self` and a
+test needs to drive one layer without an engine.
+
+The parameters reach the simulation through `start_new_game`, which is a separate entry point
+from `load_world_definition` rather than an extra argument on it. The two do different things:
+`load_world_definition` opens the land with the shipped forest and is what the world editor,
+the benchmarks and the GPU probes use, where the forest is not the subject and has to stay
+fixed for results to stay comparable; `start_new_game` is the gameplay path that carries the
+player's choice. Both resolve the config against the loaded extent inside
+`reset_to_blank_world_runtime`, and both sanitise it there, so no menu can start a world the
+generator cannot reproduce from its save.
+
+The choosing happens in `new_game_dialog.gd`, which opens after a world is picked. Its defaults,
+its density range and the grid spacing it reads back all come from `VegetationOptions`, a
+`RefCounted` class that exists because the main menu holds no `SimulationNode` and therefore has
+nothing to ask. The alternative was four literals in GDScript, which would have outlived the
+renderer limit that sets the ceiling: when `RENDER-04` lifts it, the slider follows without a
+second edit. Density is shown as stems per hectare next to the cell it produces, because that
+cell is what the generator actually varies and it is quantised - a dialog computing it locally
+would eventually disagree with the world it started.
+
+### The woodland ground mask is gone (2026-09-12)
+
+Three versions of a forest-floor ground mask shipped in one day and all three were wrong for
+the same reason, which is not a colour reason. The shader decided where forest floor was drawn
+by evaluating `woodland_field`, a hand-maintained GLSL copy of `woodland()` in
+`rust/src/nodes/simulation_node/vegetation_api.rs`. Nothing linked the two at runtime, so the
+ground was not being coloured by trees. It was being coloured by a sine wave that the scatter
+happens to consult as well.
+
+The consequence is easy to state and was the thing that finally settled it: disabling the
+vegetation renderer leaves the mask completely intact. Ground reads as forest with no tree
+standing on it, and no per-fragment mirror of a procedural field can ever do otherwise. The
+earlier repairs - gating on watermap depth and slope, dropping the authored luminance from
+`0.078` to `0.100` to `0.245`, capping the blend at `0.62` - each removed a symptom. The mask
+still coloured ground the player never planted and could not clear.
+
+Two things were conflated and both were derived from the same sine wave:
+
+- **Land cover** - moss, needle litter, dwarf shrub. A real substrate difference that persists
+  in full sun. This is map data and belongs in a terrain layer beside heightmap and watermap,
+  sourced from the accepted population.
+- **Canopy occlusion** - shade. This is lighting. It moves with the sun, and the vegetation
+  renderer already casts it.
+
+Painting albedo for the second is faking an occlusion term the renderer computes correctly.
+The reason the floor does not go dark under our trees is density, not colour: canopy scatter is
+about `30 trees/ha` against `500-1500/ha` in a real stand, so there are not enough crowns to
+cast the shade. Both reference sources agree. Cities: Skylines 1 paints no forest floor at all
+and its ground under a dense tree cluster measures `0.469` against `0.512` for its open ground,
+a `92%` cast-shadow difference; its stands still read as stands. An autumn photograph from the
+same viewpoint as the in-game captures shows park ground running uniform right up to and under
+the trees, with the far hillside dark because it is a wall of crowns.
+
+Removed: the uniforms `terrain_woodland_strength`, `terrain_woodland_floor`,
+`terrain_woodland_floor_blend`, `terrain_woodland_litter_scale`,
+`terrain_woodland_litter_strength`, `terrain_woodland_edge_break_scale` and
+`terrain_woodland_edge_break_strength`; the `woodland_field` mirror; the mask's water and slope
+gates; the `woodland_mask` parameter of `apply_natural_land_variation` and the `* 0.55` damping
+of its three tints; and the `* 0.35` damping of the grass detail layers. Open-ground colour is
+now what the whole land surface gets. `woodland()` stays in Rust, where it governs placement
+and nothing else, and its Rust-side pin test went with the mirror it existed to protect.
+
+This is not a deferral of the forest-floor idea. Land cover may come back, but only sourced
+from the vegetation that is actually there, which cannot happen while vegetation is a pure
+function of position with no identity, no persistence and no way for the player to add or
+remove a single tree. That is `VEG-01`, and it is a must-decide before any upstream PR. Until
+it lands, no ground shading is derived from `woodland()` in either language.
+
+### Forest floor, understory density and where scatter cost actually lives (2026-09-12)
+
+The ground under a forest used to keep the open-meadow colour, so a stand read as trees
+standing on a lawn. The cause was that the terrain never knew where the forest was:
+`terrain_surface_color` selected its biome from elevation, macro noise and ruggedness, and
+its existing `conifer_dark` entry was reached through `ruggedness * 0.34`, so flat woodland
+got none of it while a bare rocky slope got all of it. The scatter, meanwhile, decides where
+trees go from `woodland()` in `vegetation_api.rs`, which shares nothing with that selection.
+
+`woodland_field()` in `terrain.gdshader` now mirrors `woodland()`, and the ground blends to
+`terrain_woodland_floor` across `smoothstep(-0.25, 0.30, ...)`, straddling the `> -0.1`
+placement threshold so the substrate change reads as a boundary between stand and open
+ground rather than a painted line. The meadow, scrub and dry-open tints are damped by the
+same mask; all three brighten, and layering them at full strength over a forest floor undid
+it. (This section originally described the tint as canopy shade and suppressed those three
+outright. Both were wrong - see "The forest floor was shade baked into albedo" above.) Rock,
+shore and cliff still win, so stone and
+waterline are unaffected. The field covers about `57%` of the world.
+
+Nothing in the build links the GLSL mirror to its Rust original, so
+`woodland_field_matches_the_terrain_shader_mirror` pins four samples, two accepted and two
+rejected, and a change to the formula now breaks that test rather than silently darkening
+ground where no forest grows.
+
+**The same density multiplier costs wildly different amounts on different layers, because
+cost follows the area each layer draws across.** Density is not free - both experiments below
+change density and both change cost. What the range term explains is why the *same* `4x`
+costs `19.8 ms` on one layer and `1.89 ms` on the other. Candidate work is the sampled area
+over the cell area; render work is the accepted population times mesh cost times pass count,
+plus pixel overdraw. Matched `E13` sweeps on one release binary each, same world, unprofiled,
+`yaw180` scatter isolated as `full - off`:
+
+| Change | scatter | prims | note |
+|---|---:|---:|---|
+| baseline | `+5.59 ms` | `7.2 M` | `CANOPY_CELL_M 16`, `UNDERSTORY_CELL_M 8` |
+| `4x` canopy density | `+25.4 ms` | `34.2 M` | `CANOPY_CELL_M 8`; unaffordable |
+| `4x` understory density | `+8.73 ms` | `12.5 M` | `UNDERSTORY_CELL_M 4` |
+| `4x` understory, no bush shadows | `+7.48 ms` | `9.7 M` | shipped |
+
+Draw calls moved by six across the canopy experiment, so this is entirely primitive cost.
+Canopy reaches `TREE_FAR_M = 4500 m` and understory only `BUSH_RANGE_M = 420 m`, a ratio of
+`115x` in area, which is why quadrupling the understory costs a fifth of what quadrupling the
+canopy costs and buys most of the same closed-forest read.
+
+This also corrects an earlier expectation recorded in this file. Shortening `TREE_NEAR_M`
+through finer LOD granularity would make the *near* band affordable, but the near band is not
+what blocks canopy density: at `30 trees/ha` the band from `2000 m` to `4500 m` covers
+`51 km2` against the near band's `2.0 km2`, so distant cones dominate the primitive count even
+at `24` triangles each. Canopy density needs the far band to get cheaper — impostors, or a
+distance-graded population — and finer near-band granularity is a separate, additional fix.
+
+Understory now casts no shadow. The key light runs four PSSM cascades with blended splits, so
+each bush was submitted up to five times, and bushes are the densest species; its own shadow
+sits under a canopy shadow that already darkens the same ground. Measured at `1.26 ms` and
+`2.8 M` primitives on `yaw180`.
+
+Remaining, unfixed: open ground keeps a vivid saturated green that comes from the grass albedo
+photo mixed at `terrain_grass_albedo_strength = 0.90`, not from the authored palette, and the
+conifer patch-switch brightness step is not albedo. The area-weighted near-mesh mean derived
+below moved the conifer distant crown only from `(0.049, 0.115, 0.039)` to
+`(0.056, 0.122, 0.042)`, so the step is that the far cone is a solid volume where the near tree
+is mostly holes. Albedo cannot express that; impostors can.
+
+### The forest floor was shade baked into albedo, and it had to go (2026-09-12)
+
+**Superseded:** the woodland ground mask this section tunes was removed the same day; see
+"The woodland ground mask is gone" above. Kept for the measurements and for why the
+intermediate fixes did not work.
+
+
+Gating the woodland mask on water and slope stopped it appearing under lakes, but it did
+not answer the prior question: what is a darkened ground *modelling*? The honest answer is
+nothing. It was standing in for canopy occlusion that the scatter does not produce, and a
+stand-in painted into the albedo cannot behave like shade - it stays dark in full sun, at
+every hour of the day cycle, and through transparent water, which is exactly where it was
+first noticed.
+
+The reference photographs settle it. In `imgs/reference/topdown-1.png`, a closed boreal
+canopy from directly overhead, **the ground is not visible anywhere**. Every dark value in
+the frame is shadowed crown: the darkest decile measures luminance `0.060` at hue `163` and
+saturation `0.88`, which is deep saturated green, not the desaturated near-black the floor
+uniform held. The whole-frame medians across the three aerials are `0.261`, `0.296` and
+`0.278`. Forest darkness is a high-frequency crown-to-crown structure. The mask was a
+low-frequency field several hundred metres across.
+
+Cities: Skylines 1 makes the same point from the other side (`imgs/games-external/cs-1.png`).
+Its ground under a dense tree cluster measures luminance `0.469` against `0.512` for its open
+ground - **92%**, a cast-shadow difference and nothing more. It paints no forest floor at all,
+and its stands still read as stands, because the trees do that work.
+
+So the floor is now a substrate change rather than a shade:
+
+| | authored luminance | hue | vs open ground |
+|---|---:|---:|---:|
+| first version | `0.078` | `86` | `23%` |
+| second version | `0.100` | `86` | `30%` |
+| **now** | **`0.245`** | **`62`** | **`73%`** |
+| open ground (`inland_base`) | `0.334` | `72` | - |
+
+Moss, needle litter and dwarf shrub are genuinely browner and less saturated than meadow
+grass, and genuinely close to it in value. That is all the ground can honestly say. Three
+further changes stop the mask behaving like paint:
+
+- `terrain_woodland_floor_blend = 0.62` caps the blend, so meadow always shows through and
+  the macro variation and elevation ramp survive inside the stand. Full replacement is what
+  made it one flat region with a hard edge. Effective woodland ground lands at `83%` of open
+  ground.
+- `apply_natural_land_variation` is damped by `woodland_mask * 0.55` instead of suppressed
+  outright. A stand with no macro variation reads as a painted region.
+- `apply_grass_detail` is damped by `woodland_mask * 0.35` instead of `0.90`. A forest floor
+  has more small-scale fibre than a meadow, not less; removing it was the other half of why
+  the mask read as paint.
+
+Measured in the `E13` `yaw180` frame, foreground ground moved from luminance `0.134` at hue
+`96` to `0.323` at hue `80`, which is inside the photographic band. Matched, one release
+binary, unprofiled, scatter isolated as `full - off`: `+7.14 ms` and `9.52 M` primitives
+against `+7.26 ms` and `9.52 M`. Identical primitive count - this is one `mix()` factor and
+two attenuations on paths that already ran.
+
+None of this closes the real gap, and it is not meant to. If ground is visible across a
+stand at all then the canopy is not closed, and no ground colour substitutes for crowns that
+are not there. That is `RENDER-04`.
+
+### The land palette was 30 degrees off, and the woodland mask was ungated (2026-09-12)
+
+**Superseded:** the woodland ground mask this section tunes was removed the same day; see
+"The woodland ground mask is gone" above. Kept for the measurements and for why the
+intermediate fixes did not work.
+
+
+Reference photographs of the Kuopio region are in `imgs/reference`, with matched game
+viewpoints in `imgs/reference/game`. `imgs/` is excluded through `.git/info/exclude`, so
+nothing in it is tracked; `RENDER-03` still owns the question of where a durable set lives.
+Crops were measured, not eyeballed.
+
+**Hue, not value, made open ground look like a sports pitch.** Sunlit vegetation in the
+photographs measures hue `59-79` degrees - yellow-green and olive - at luminance
+`0.36-0.43`. The game's open ground measured luminance `0.434`, already inside that range,
+but hue `109`. Every authored land green sat at hue `98-115`, which is blue-green, and at
+that luminance blue-green reads as fluorescent. Two separate causes:
+
+- `grass_material_layer` multiplied the grass photo's chroma by a fixed `3.00`. The photo
+  is a muted yellow-green, mean RGB `(0.220, 0.294, 0.137)` at saturation `0.53`; the gain
+  drove it to saturation `1.00` with the blue channel clamped to zero, three times over for
+  the macro, mid and micro layers. It is now `terrain_grass_chroma_gain`, bound from
+  `TERRAIN_GRASS_CHROMA_GAIN = 1.15`, so the photo contributes fibre and breakup, not hue.
+- The authored entries in `terrain_surface_color` and `grass_meadow_variation` were rotated
+  into the measured band, each keeping its original luminance and saturation. `dry_open`
+  (hue `60`) and `dry_grass` (hue `71`) were already correct and are unchanged - the two
+  colours that read as "dry" were the two that matched Finland.
+
+Measured on matched `E13` `yaw000` crops of open foreground ground:
+
+| Build | hue | sat | luminance |
+|---|---:|---:|---:|
+| shipped at `47ee891d` | `109` | `0.64` | `0.434` |
+| chroma gain only | `95` | `0.55` | `0.415` |
+| chroma gain and first rotation | `84` | `0.55` | `0.416` |
+| shipped | `80` | `0.56` | `0.417` |
+| reference photographs | `59-79` | `0.22-0.60` | `0.24-0.43` |
+
+Luminance barely moves across the whole sequence, which is the point: the value was never
+the error.
+
+The foliage carried the same error and is corrected with it. `_leaf_color` and the
+understory palette in `tree_species.gd` sat at hue `90-112` against `76-79` for sunlit
+canopy in the photographs, so once the ground moved the trees read bluer than the ground
+they stood on. Same treatment: rotate, keep luminance and saturation.
+
+Forest floor under canopy now measures luminance `0.172` against `0.181` for shaded forest
+mass in the Kuopio photograph, so the floor is not too dark despite looking it in a
+screenshot. Its *hue* is still `105` against `73`, and that residue is not the palette:
+`hillshade_shadow_tint` is `(0.82, 0.88, 0.90)`, a cool blue, so shaded green ground lands
+blue-green. Changing it touches every shaded surface and the whole day cycle, so it is
+left alone here.
+
+**Contours were drawn in the plain world view.** `contour_minor_strength 0.14` and
+`contour_major_strength 0.34` composited survey lines onto ordinary terrain colour at
+`2.5 m` and `10 m` intervals. In an aerial view that is the strongest single cue that the
+landscape is a topographic map, and no reference photograph has anything like it. They are
+now gated on `overlay_mode > 0`, so the analysis overlays - which are read as a map - keep
+them and the world view does not. Every interval and colour uniform is unchanged.
+
+**The woodland mask darkened ground the scatter would never plant.** `woodland_field()` is a
+pure function of world XZ, but `scatter_layer` also rejects a candidate for standing water,
+for a road or building surface, and for relief across `clear_footprint`. The visible
+consequence was lake beds: the terrain tint showed through the water, which clamps alpha at
+`0.92` and samples scene colour for shallow refraction, so a darkened bed read as mud. The
+mask is now multiplied down by watermap depth and by slope, both already available in the
+fragment. Roads and buildings occlude the ground they own, so they need no gate here.
+
+This is a narrow fix, not a complete one: it does not reproduce footprint clearance, density
+or site exclusion, and a default or not-yet-resident water texture is not proof of dry
+ground. The complete form is for Rust to publish a derived coverage tile per patch from the
+accepted population, which is filed as `RENDER-05`. The Rust pin test now says explicitly
+that only the *field* is mirrored and the gates must not be "restored" away.
+
+Two further leaks the first version missed. `apply_natural_land_variation` was suppressed
+under woodland, but `apply_grass_detail` runs after it and its `grass_detail_mask` excluded
+only rock, cliff and shore - so `grass_material_layer` anchored the forest floor back toward
+`grass_meadow_variation` and undid the darkening. It is now attenuated by the woodland mask
+as well. And the floor colour itself sat at luminance `0.078`, dark enough to read as a
+painted stain from the air rather than as shaded ground; it went to `0.100` with stronger
+litter breakup here, which was still far too dark and is superseded by the section above.
+The mask edge is broken up by noise at stand scale so a `2 km` sinusoid's boundary does not
+read as an ellipse.
+
+Scatter cost is unaffected: `yaw180` scatter isolated as `full - off` measured `+7.27 ms`
+and `9.68 M` primitives against `+7.48 ms` and `9.7 M` for the shipped build, which is
+inside run-to-run variation. All of the above is fragment arithmetic on paths that already
+ran, and the contour gate removes work.
+
+Still wrong, and now more visible because the ground moved: the foliage colours carry the
+same hue error the ground did. `tree_species.gd` holds conifer needle at hue `112`,
+broadleaf and bush core at `100`, birch leaf at `90`, against `76-79` for sunlit canopy in
+the photographs. The trees now read bluer than the ground they stand on.
+
+### The understory stopped being tents (2026-09-12)
+
+`_bush()` built a plant `2.8-3.4 m` tall and `2.15-2.65 m` wide on a **five-segment
+lathe**, so its silhouette was a pentagonal pyramid with facets big enough to read
+individually - the "tent" - and it stood taller than a person while being called
+undergrowth. Its core was `Color(0.072, 0.132, 0.042)`, luminance `0.11`, identical across
+all six variants, with four foliage cards stuck around the outside of a solid cone.
+
+The six variants are now a catalogue of boreal ground layer rather than six of one shrub:
+
+| Variant | Form | Height | Triangles |
+|---|---|---:|---:|
+| 0, 1 | blueberry and lingonberry mats, cards only, no trunk or apex | `0.06-0.09 m` | `36`, `42` |
+| 2 | grass tuft, eight bent tapered blades, two-sided | `0.34-0.65 m` | `48` |
+| 3 | fern, three arching fronds with six leaflet pairs each | `0.45-0.60 m` | `48` |
+| 4 | prostrate juniper, irregular outward sprays | `0.15-0.36 m` | `56` |
+| 5 | spruce sapling, separated whorls on a `24 mm` stem | `1.6 m` | `64` |
+
+Against a flat `64` triangles before, so the budget went down, not up, and the grass tuft
+is the cheapest honest answer to there being no grass: a dedicated grass layer cannot use
+this node layout at all, because visibility lives on one `MultiMeshInstance3D` per `510 m`
+patch, so **any** range must exceed the `361 m` half-diagonal or plants vanish at the
+camera's feet (`RENDER-02`).
+
+Only the two woody forms carry both a stem surface and a card surface; a mat is cards alone
+and a grass tuft is blades alone. Ground plants bend from their own base, so sway weight is
+now proportional to height above ground rather than following a shared ring schedule.
+
+`vegetation_appearance_test.gd` had encoded three assumptions this breaks, and each was
+rewritten to state the new contract rather than relaxed: a bush had to have exactly two
+surfaces, bush card sway had to span exactly `0.2-0.8`, and `max_height / min_height` had
+to stay under `1.3` for every species. The last one is the interesting one - a `0.06 m`
+blueberry mat and a `1.6 m` sapling are both ground layer, and forcing one height across
+the variants is precisely what produced a field of identical `3 m` cones. Trees and rocks
+still hold the proportion invariant, and every surface must still use one of the three
+shared materials, because a new material is another draw call on the densest species in
+the world.
+
+Matched `E13`, one release binary, unprofiled, `yaw180` scatter isolated as `full - off`:
+`+7.26 ms` and `9.52 M` primitives against `+7.48 ms` and `9.7 M` shipped. Slightly
+cheaper, from the lower average triangle count.
+
+### Birch, crown density and distant albedo (2026-09-12)
+
+Broadleaf variants with `variant % 3 != 2` are birch: `0, 1, 3, 4, 6, 7, 9, 10`.
+The other four retain generic broadleaf foliage. Species and variant counts remain
+`4` and `[12, 12, 6, 6]`. Birch uses near-white bark `(0.78, 0.76, 0.70)`, a dark root
+flare, and eight narrow horizontal lenticels, each interrupted deterministically around
+the trunk. Nineteen near trunk rings replace five; per-band vertex colours supply the
+markings in the existing opaque surface, with no bark texture or extra material.
+The mid trunk retains four rings and represents a basal scar/band and pale shaft.
+
+Birch has a narrower, upright crown, fine brown outer twigs that turn downward, and
+yellow-green leaves `(0.165, 0.265, 0.065)`. Its atlas cell contains small toothed ovate
+leaves on seven hanging twigs, with transparent cell borders. Generic broadleaf and spruce
+retain their palettes. Spruce primary roots now begin at 12% of tree height. Primary
+counts increase from 10 to 16 for spruce and 8 to 12 for broadleaf; each still has two
+children. Children attach at seeded positions in the outer 60–89% of their parent, taper
+to 24% of parent radius for birch and 32% otherwise, and carry their clusters at the tips.
+This gives 32/24 clusters instead of 20/16 without adding recursion. Cores and tree cards
+retain sway weight `1`; bush weights and all shader contracts are unchanged.
+
+Exact indexed lod-0 counts, summed over both surfaces **per tree**, against `a5a81e44`:
+
+| Species / variants | Vertices before → after (delta) | Triangles before → after (delta) |
+|---|---:|---:|
+| Conifer 0, 1, 3, 5, 6, 7, 9, 10, 11 | 1805 → 2813 (+1008) | 645 → 1005 (+360) |
+| Conifer 2 | 1805 → 2811 (+1006) | 645 → 1005 (+360) |
+| Conifer 4, 8 | 1803 → 2813 (+1010) | 645 → 1005 (+360) |
+| Broadleaf birch 0, 1, 3, 4, 6, 7, 9, 10 | 1469 → 2561 (+1092) | 525 → 905 (+380) |
+| Broadleaf generic 2 | 1469 → 2139 (+670) | 525 → 765 (+240) |
+| Broadleaf generic 5, 8, 11 | 1469 → 2141 (+672) | 525 → 765 (+240) |
+| Bush, all variants | 160 → 160 (0) | 64 → 64 (0) |
+| Rock, all variants | 132 → 132 (0) | 48 → 48 (0) |
+
+Every near variant remains below 2× its original vertices. Conifer mid vertices fall
+296 → 290 and far vertices fall 81 → 77 (73 → 69 for variants 3, 5, 7); triangles remain
+102/28. Broadleaf mid/far counts remain exactly 274 and 84/92 vertices, 96/32 triangles.
+The far broadleaf profile retains its original geometry to preserve indexed vertex reuse;
+the mid birch profile narrows. Mesh surface counts, materials and MultiMesh counts do not grow.
+
+`build_meshes()` constructs all near variants first, then measures their actual stored
+8-bit vertex RGB across both surfaces, including wood and foliage cores and cards.
+For triangle `i`, `A_i = length((b-a) cross (c-a))/2` and
+`C_i = (C_a + C_b + C_c)/3`; distant colour is `sum(A_i*C_i)/sum(A_i)` across all 12
+variants of that species. Both distant levels use this mean without applying the old
+additional face brightening. This represents the species mix because the distant scatter
+uses variant zero for the entire population. Alpha remains sway weight and is excluded
+from RGB arithmetic. The measured sums and means are:
+
+| Species | Sum of area (m²) | Sum of area × RGB | Derived distant RGB |
+|---|---:|---|---|
+| Conifer | 7345.923828 | (408.690094, 895.270569, 308.559570) | (0.05563495, 0.12187311, 0.04200419) |
+| Broadleaf mix | 11976.332031 | (1972.277100, 3151.504883, 933.372253) | (0.16468123, 0.26314440, 0.07793473) |
+
+This is an emitted-area albedo match, not a prediction of screen luminance: it does not
+model alpha-mask coverage, overlap, background, normals or backlighting. Actual patch-switch
+brightness is unverified. The per-instance tint boundary is outside this change.
+The new work is O(emitted triangles) once per catalogue, with bounded branch depth and
+O(1) atlas selection per cluster; there is no new per-frame work.
+
+Fresh CPU validation used Godot `4.7.1.stable.official.a13da4feb`, headless dummy rendering,
+default worker settings and no affinity overrides. Baseline is `a5a81e44` with only the
+same FIXTURE timing/count instrumentation added; after is this revision. The fixture times
+`host.add_child(vegetation)`, whose `_ready()` builds the catalogue, excluding later checks
+and patch uploads. Three separate process runs measured before **54.586, 56.501, 54.858 ms**
+and after **90.944, 99.424, 94.523 ms**: medians **54.858 → 94.523 ms**, a **39.665 ms / 72.3%**
+startup increase. These are unprofiled CPU measurements on the shared machine, not GPU
+acceptance results. Additional geometry and the area integration increase startup cost.
+
+Commands (full stdout/stderr under `/tmp/birch-validation/`):
+
+```bash
+godot --path godot --headless --log-file /tmp/birch-validation/after-engine-1.log --script res://tests/vegetation_appearance_test.gd > /tmp/birch-validation/after-appearance-1.log 2>&1
+godot --path godot --headless --log-file /tmp/birch-validation/invalidation-engine.log --script res://tests/vegetation_invalidation_test.gd > /tmp/birch-validation/invalidation.log 2>&1
+grep -c 'SCRIPT ERROR' /tmp/birch-validation/after-appearance-1.log /tmp/birch-validation/invalidation.log
+XDG_CONFIG_HOME=/tmp/birch-validation/config godot --path godot --headless --log-file /tmp/birch-validation/import-engine.log --import > /tmp/birch-validation/import.log 2>&1
+```
+
+Appearance prints `PASS vegetation appearance, shared material, LOD buckets, positions and
+empty density`, with **0 SCRIPT ERROR** lines on all three before and after runs.
+Invalidation exits **0**, with **0 SCRIPT ERROR** and **0 ERROR** lines; that harness has
+no PASS print, so no PASS line is claimed for it. New targeted checks cover every geometry
+budget, birch split/bark/cell/palette, analytic unequal-area integration and all distant
+crown colours within one 8-bit quantization step. Existing shader, sway, placement and
+population assertions remain. Position and appearance digests are unchanged.
+
+Both final atlas bakes used Blender `5.2.1 LTS`, Cycles CPU, one render thread, seed 137,
+32 samples, with existing mip coverage correction. To avoid a sandbox PulseAudio shutdown
+hang after files were written, the validation invocation exits after the bake script returns:
+
+```bash
+blender --background -noaudio --python tools/bake_foliage_atlas.py --python-expr 'import sys, os; sys.stdout.flush(); sys.stderr.flush(); os._exit(0)' -- /tmp/birch-validation/bake-1/foliage_atlas.png
+# Repeat with bake-2, then compare:
+sha256sum /tmp/birch-validation/bake-{1,2}/foliage_atlas.png
+```
+
+Both PNGs hash to `15e7fa5d263076c0258e8abbee37f0b0b3a1a40391f0092b27eca5905202d990`;
+DDS and coverage JSON are also byte-identical across the two bakes. The headless import
+completed and retained unchanged `.png.import`/`.dds.uid` companions. Its editor socket
+cannot listen inside the sandbox; this did not prevent texture import. An explicit log
+path was needed because Godot crashes when its default user log cannot be written here.
+No game window, GPU benchmark or shader change was part of this validation.
+
+Run `godot --path godot --script res://tests/local_vegetation_demo.gd` from the repository
+root for an interactive Kuopio preview. F9 toggles trees. The GPU probe's `E07` experiment
+compares densities at fixed views. `E08` compares horizon-facing lateral pans. `E09` measures
+the shadow lever. `E10` measures the tree budget inside the laptop playable preset. `E12`
+attributes the cost of an eye-level horizon view, and `E13` sweeps that view through four
+compass yaws at two render scales. `godot --headless --script res://tests/vegetation_invalidation_test.gd` covers the
+per-patch invalidation contract.
+Local results and continuation notes belong in `benchmark-results/VEGETATION-DIARY.txt`.
+
 ## Purpose
 
 This document owns world extent, terrain storage, water storage, and the deterministic
@@ -710,14 +2245,52 @@ Current deterministic rules:
 - scene lighting is centralized through `scene_lighting.gd` so terrain, water, roads, yards,
   buildings, cars, and debug/editor helpers use one deterministic sun/sky/shadow policy
 - the visible background uses one continuous procedural hemisphere gradient; its upper and lower
-  halves meet at the same color without literal horizon geometry, and the shared directional light
-  supplies the visible sun
+  halves meet at the same color without literal horizon geometry
+- the day/night cycle is a pure function of the operational clock. `day_cycle.gd` maps the day
+  fraction to a solar position and a palette; `scene_lighting.gd` applies it. The same clock
+  reading always resolves to the same lighting, a paused simulation parks the sun, and no lighting
+  state is stored anywhere. `METRUM_TIME_OF_DAY` pins the rendered hour for captures and probe
+  trials without touching the simulation
+- the sun follows a real solar-position solve for a fixed latitude and declination, so the arc,
+  the day length and the length of golden hour follow from two constants instead of hand-placed
+  keyframes. Palette stops are keyed to solar elevation, not to the clock, which makes sunrise and
+  sunset symmetric and keeps the palette correct if the latitude is retuned
+- the key light is one `DirectionalLight3D` that carries the sun by day and an antisolar full moon
+  at night. It may only swap bodies inside the window where both contribute nothing, and it must
+  never have energy above the horizon crossing, so no light ever shines up through the ground
+- terrain and site ground run with `ambient_light_disabled` and bake their own ambient floor into
+  `EMISSION`. The cycle therefore scales and desaturates that floor through shader globals;
+  dimming alone leaves a saturated ground reading as daylight with the brightness turned down.
+  Night bottoms out near a fifth of daylight because the city has no street lighting yet
+- the low-sun key energy is deliberately not physical. With no auto-exposure an honestly
+  attenuated sun makes golden hour dark instead of golden; the ambient drops at the same stops so
+  the result reads as contrast rather than as a brightness change
+- palette stop spacing is a continuity budget. The sun crosses the horizon at up to `0.107`
+  degrees per authored minute, so a stop gap of `G` degrees carries at most about `0.19 * G` of
+  colour change before the transition reads as a wipe. `godot/tests/day_cycle_test.gd` sweeps the
+  whole day at one sample per authored minute and enforces this
+- `scene_sun_direction`, `scene_sun_color`, `scene_sky_color`, `scene_ambient_strength`,
+  `scene_ambient_light` and `scene_ambient_desaturation` are shader globals declared in
+  `project.godot`, not per-material parameters. One write per frame relights every resident patch;
+  a per-material write would be `O(patches)` per frame and could not follow a moving sun anyway
+- the cartographic hillshade baked into terrain and site-ground albedo stays pinned to its authored
+  azimuth and altitude. It is a readability device: swinging it with the cycle would double the
+  directional light's own shading and would snap 180 degrees at the sun-to-moon swap
+- the sky shader places its own sun and moon disks from explicit uniforms rather than from
+  `LIGHT0`, so disk brightness and key-light energy can disagree. A sun on the horizon has to stay
+  visible after it has stopped being a useful key light, and the moon is not a Godot light
+- the cloud panorama is a daylight capture used only as a shape source. Its rotation is fixed and
+  its colour comes from the cycle's shadow/light tints; rotating it with the sun would spin the
+  whole cloud field around the sky once per day
+- the sky uses `PROCESS_MODE_INCREMENTAL` because its palette now changes every frame
 - static equirectangular cloud imagery is sampled only as a restrained half-resolution upper-sky
   cover; baked panorama sky color, lower hemisphere, and lighting do not replace the shared
   procedural gradient or directional-light contract
 - one shared depth-fog pass fades all ordinary world geometry into the horizon sky color; terrain,
   water, roads, buildings, vehicles, and agents must not implement competing per-material horizon
-  cutoffs
+  cutoffs. Aerial perspective and the far cull curtain are that one ramp, so its colour tracks the
+  day cycle and its sun scatter rises at low sun; a uniform haze reads as a flat wall at the
+  horizon rather than as light in the air
 - shadow policy must be applied through the shared helper rather than per-renderer ad hoc flags
 - terrain and site ground receive real shadows; final buildings and cars cast shadows; construction
   pads, debug overlays, and temporary authoring helpers should not cast shadows unless a specific

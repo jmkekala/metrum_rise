@@ -3,7 +3,8 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
-## MoveTool, SelectTool, CulDeSacTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## MoveTool, SelectTool, CulDeSacTool, ServiceBuildingTool, IndustryBuildingTool, BulldozeTool,
+## VegetationTool, FieldEditTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
 ## The Building Inspector helper is always present in the scene and can be
@@ -22,13 +23,14 @@ var service_building_tool: Node3D
 var industry_building_tool: Node3D
 var field_edit_tool: Node3D
 var bulldoze_tool: Node3D
+@onready var vegetation_tool = $"../VegetationTool"
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 var building_inspector: Node
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, FIELD_EDIT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, SERVICES, INDUSTRY, MOVE, AGENT, SCULPT, CUL_DE_SAC, SELECT, BULLDOZE, VEGETATION, FIELD_EDIT }
 var current_tool: Tool = Tool.NONE
 const DEPOSITS_OVERLAY_MODE := 4
 const SAVES_DIR := "user://saves"
@@ -204,6 +206,9 @@ func _unhandled_input(event):
 func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 	if not event.pressed:
 		return
+	# Ctrl and the wheel size the active tool, so the camera must not also zoom on it.
+	if event.ctrl_pressed:
+		return
 
 	var zoom_delta := 0.0
 	if event.button_index == MOUSE_BUTTON_WHEEL_UP:
@@ -330,6 +335,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 				_selected_industry_resource_id = ""
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
+		Tool.VEGETATION:
+			if vegetation_tool: vegetation_tool.active = enabled
 		Tool.BULLDOZE:
 			if bulldoze_tool: bulldoze_tool.active = enabled
 		Tool.FIELD_EDIT:
@@ -379,6 +386,9 @@ func _refresh_after_world_load():
 		terrain_node.rebuild_from_simulation_state()
 	if water_node:
 		water_node.rebuild_from_simulation_state()
+	var vegetation := get_node_or_null("../Vegetation")
+	if vegetation:
+		vegetation.rebuild_from_simulation_state()
 	if buildings_node:
 		buildings_node.reload_asset_packs()
 	if zoning_overlay: zoning_overlay.full_refresh()
@@ -602,6 +612,27 @@ func menu_load_world_definition(path: String) -> bool:
 		print("Loaded world definition: ", path)
 		return true
 	push_error("Load world definition failed: " + path)
+	return false
+
+## Starts a game on a world definition with the vegetation parameters the dialog chose.
+## Missing keys fall back to the Rust defaults, and Rust sanitises the values it receives.
+func menu_start_new_game(path: String, vegetation: Dictionary) -> bool:
+	if path.is_empty():
+		return false
+	var defaults: Dictionary = VegetationOptions.new().get_default_config()
+	var started: bool = simulation_node.start_new_game(
+		path,
+		bool(vegetation.get("enabled", defaults["enabled"])),
+		int(vegetation.get("seed", defaults["seed"])),
+		float(vegetation.get("coverage", defaults["coverage"])),
+		float(vegetation.get("canopy_stems_per_ha", defaults["canopy_stems_per_ha"]))
+	)
+	if started:
+		_refresh_after_world_load()
+		set_simulation_speed(0.0)
+		print("Started new game on world: ", path)
+		return true
+	push_error("Start new game failed: " + path)
 	return false
 
 func menu_set_overlay_mode(mode: int) -> void:
