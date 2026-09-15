@@ -8,7 +8,7 @@ License: [GNU General Public License, version 2 only (GPL-2.0-only)](LICENSE.md)
 - Godot
 - Rust
 - Samply for profiling
-- Linux. Probably works with WSL2.
+- Linux, MacOS, WSL2
 
 ## How-to
 
@@ -49,12 +49,14 @@ Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Su
 ## Screenshots
 
 ### Main gameplay
-![Main view](/screenshots/town_01.png)
+![Main view](/screenshots/overview.png)
+### Nightview
+![Main view](/screenshots/moon.png)
 ### Asset editor
 ![Asset Editor](/screenshots/asset_editor_01.png)
 ### My First attempt to do t-junction
 ![First attempt to make a t-junction](/screenshots/t-junction.png)
 
 
-## Latest gameplay video (08/2026)
-[![Metrum Rise - Gameplay - 08/2026](https://img.youtube.com/vi/ms_MAdVKa-8/0.jpg)](https://www.youtube.com/watch?v=ms_MAdVKa-8)
+## State of the Game (09/2026)
+[![Metrum Rise - State of the Game - 09/2026](https://img.youtube.com/vi/2zcum8CIC68/0.jpg)](https://youtu.be/2zcum8CIC68)
