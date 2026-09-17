@@ -7,10 +7,22 @@ License: [GNU General Public License, version 2 only (GPL-2.0-only)](LICENSE.md)
 ## Requirements
 - Godot
 - Rust
+- Git LFS
 - Samply for profiling
 - Linux, MacOS, WSL2
 
 ## How-to
+
+Before cloning for the first time, make sure Git LFS is set up on your
+machine (once per machine, not per clone):
+```
+git lfs install
+```
+
+Then clone the repository:
+```
+git clone https://github.com/jmkekala/metrum_rise.git
+```
 
 To start the game, run the following command in terminal:
 ```
