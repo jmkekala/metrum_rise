@@ -4,7 +4,6 @@
 ## Editor controllers stay detached so this test never changes user configuration.
 extends SceneTree
 
-const AssetEditor = preload("res://scripts/editors/asset_editor.gd")
 const EconomyEditor = preload("res://scripts/editors/economy_editor.gd")
 const EconomyOverview = preload("res://scripts/ui/economy_overview.gd")
 
@@ -39,21 +38,12 @@ func _run() -> void:
 	_expect(playback.get("ok", false), "Food scenario runs with paid Machinery imports: %s" % playback)
 	_expect(float(playback.get("result", {}).get("total_delivered_units", 0.0)) > 0.0, "Maintenance imports keep the food chain operating")
 
-	var asset_editor := AssetEditor.new()
-	asset_editor.sim = simulation
-	asset_editor._economy_profile_btn = OptionButton.new()
-	asset_editor._zone_type_btn = OptionButton.new()
-	asset_editor._zone_type_btn.add_item("Industrial")
-	asset_editor._zone_types.assign(["industrial"])
-	asset_editor._workers_spin = SpinBox.new()
-	asset_editor._load_economy_profiles()
-	asset_editor._set_economy_profile_selection("machinery_factory_basic")
-	_expect(asset_editor._selected_economy_profile_id() == "machinery_factory_basic", "Asset editor offers the new processor profile")
-	_expect(asset_editor._workers_spin.value == 4 and not asset_editor._workers_spin.editable, "Machinery profile owns its four jobs")
-	asset_editor._economy_profile_btn.free()
-	asset_editor._zone_type_btn.free()
-	asset_editor._workers_spin.free()
-	asset_editor.free()
+	var authoring := AssetAuthoringPolicy.new()
+	_expect(authoring.reload_catalog().is_empty(), "Authoring catalog loads")
+	var metadata := {"asset_class": "building", "placement_mode": "zoned_private", "zone_type": "industrial", "economy_profile": "machinery_factory_basic"}
+	var descriptor: Dictionary = JSON.parse_string(authoring.inspect_json(JSON.stringify(metadata)))["descriptor"]
+	_expect(descriptor["profiles"].any(func(profile): return profile["id"] == "machinery_factory_basic"), "Asset editor offers the new processor profile")
+	_expect(descriptor["selected_profile"]["profile"]["worker_capacity"] == 4 and not descriptor["fields"].has("worker_capacity"), "Machinery profile owns four read-only jobs")
 
 	var economy_editor := EconomyEditor.new()
 	economy_editor._project = project

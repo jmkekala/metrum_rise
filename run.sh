@@ -951,6 +951,34 @@ if [ $TEST -eq 1 ]; then
             exit 1
         fi
     done
+    asset_test_profile=$(mktemp -d -t metrum-asset-tests.XXXXXX) || exit 1
+    asset_test_project="$asset_test_profile/project"
+    mkdir "$asset_test_project" || exit 1
+    # A unique project identity also isolates user:// on macOS, which ignores XDG.
+    # Reuse imported resources without copying assets or changing the real project.
+    for asset_test_entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
+        case "${asset_test_entry##*/}" in project.godot|override.cfg) continue ;; esac
+        [ -e "$asset_test_entry" ] || continue
+        ln -s "$asset_test_entry" "$asset_test_project/" || exit 1
+    done
+    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || exit 1
+    printf '[application]\nconfig/name="MetrumAssetTests-%s"\nconfig/use_custom_user_dir=false\n' \
+        "${asset_test_profile##*/}" > "$asset_test_project/override.cfg" || exit 1
+    echo "Asset regression fixtures and logs: $asset_test_profile"
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/MetrumAssetTests-${asset_test_profile##*/}"
+    fi
+    for asset_test_script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test; do
+        if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \
+            godot --headless --path "$asset_test_project" --script "res://tests/${asset_test_script}.gd" \
+            --log-file "$asset_test_profile/${asset_test_script}.log" -- --asset-editor; then
+            exit 1
+        fi
+        if grep -Eq '^(ERROR:|SCRIPT ERROR:)' "$asset_test_profile/${asset_test_script}.log"; then
+            echo "Asset regression reported an engine/script error: $asset_test_script"
+            exit 1
+        fi
+    done
     if [ "$METRUM_PLATFORM" = "linux" ] && command -v xvfb-run >/dev/null 2>&1; then
         echo "Running rendered terrain shader tests..."
         if ! xvfb-run -a godot --display-driver x11 --rendering-method gl_compatibility \

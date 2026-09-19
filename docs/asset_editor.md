@@ -454,7 +454,7 @@ stores and edits that entrance in the same anchor list as the optional site-layo
   whole authored footprint/rectangle must remain inside the lot; the anchor handle alone being
   inside is not enough. Driveway footprint length is derived by the editor from `width_m` in v1.
   All anchor `forward` vectors must be finite non-zero unit vectors.
-- `entrance/main` cannot be deleted. Dragging any anchor moves it; right-click dragging or the
+- `entrance/main` may be removed from an incomplete draft; runtime export requires it. Dragging an eligible anchor moves it; right-click dragging or the
   shared yaw field rotates its `forward`, except for driveway anchors whose direction follows the
   frontage edge.
 
@@ -850,7 +850,8 @@ Rules:
 
 - Every asset has explicit render bounds.
 - The editor auto-generates initial render bounds and the exported asset stores explicit bounds data.
-- Selection and culling bounds may differ from the visual mesh and do not depend on exact triangle detail.
+- Runtime selection and culling bounds may differ from the visual mesh and do not depend on exact triangle detail.
+  Editor point-picking instead intersects the visible imported LOD's triangles; box selection uses projected bounds.
 - Shadow proxies are separate from visual bounds.
 - Anchor metadata uses one canonical `[[anchors]]` array-of-tables shape rather than a mix of one-off fields like `entrance_anchor`, `parking_slot_1`, etc.
 - Single-anchor assets still use `[[anchors]]` with exactly one entry.
@@ -1059,27 +1060,18 @@ Default LOD tiers:
 
 ### Buildings
 
-- Ordinary zoned building:
-  - `LOD0`: `1,500-4,000` triangles
-  - `LOD1`: `400-1,200` triangles
-  - `LOD2`: `80-250` triangles
-- Large skyline or landmark building:
-  - `LOD0`: up to `6,000-8,000` triangles by exception
-  - `LOD1`: `1,000-2,000` triangles
-  - `LOD2`: `150-400` triangles
-- Switch logic:
-  - V1 uses distance bands in meters.
-  - Derive default switch distances from asset bounds and height class.
-- Default distance bands for ordinary zoned buildings:
-  - `LOD0`: `0-150 m`
-  - `LOD1`: `150-600 m`
-  - `LOD2`: `600-2,000 m`
-  - optional farther tier beyond `2,000 m`: skyline impostor, billboard, or coarse massing mesh
-- Default distance bands for large skyline or landmark buildings:
-  - `LOD0`: `0-300 m`
-  - `LOD1`: `300-1,200 m`
-  - `LOD2`: `1,200-4,000 m`
-  - optional farther tier beyond `4,000 m`: skyline impostor or skyline-only massing mesh
+- New building authoring targets four tiers. Provisional ordinary bands:
+  `LOD0` 8,000–12,000; `LOD1` 2,500–4,000; `LOD2` 800–1,500;
+  `LOD3` 200–500 triangles. Landmark ceilings: 20,000 / 6,000 / 2,500 / 700.
+  Ceilings are limits, not targets; simple buildings should not add geometry to meet a floor.
+- The editor preserves variable-length authored chains, including valid single-tier parts.
+  Automatic inspection uses the shared engine screen-size policy (`TOOLS-05`, below).
+  Existing manifest metre bands remain serialized unchanged; appended tiers still receive the
+  schema's provisional 35 / 70 / 120 m bands. Those fields are not editable preview controls
+  and do not influence automatic selection. Schema migration follows threshold calibration.
+- Review thresholds with actual asset bounds, camera projection/FOV, resolution and viewing angles.
+  Runtime culling, farther skyline representations and shadow budgets require separate measurements.
+  Current gameplay still renders building LOD0; editor support does not implement runtime switching.
 - Authoring rules:
   - model the silhouette, roofline, and major recesses
   - bake windows, facade repetition, and small trim into textures instead of geometry
@@ -1393,9 +1385,9 @@ Road authoring remains outside the first importer milestone.
 
 Start flow:
 
-1. Choose `New Pack`, `Open Pack`, or `Open Existing Asset`
-2. Choose asset class template
-3. Open the relevant sandbox scene
+1. Choose `New asset…`, `Open draft…`, or open a published asset from the collapsible library.
+2. New asset asks for building type, service subtype when applicable, name, destination pack and optional model.
+3. Work freely between Overview, Model, Site, Gameplay, and Validate & export. Save incomplete drafts separately from runtime export.
 
 The editor does not use a one-asset-only wizard. One pack may contain and edit multiple assets in one session.
 
@@ -1403,36 +1395,51 @@ V1 editor shell:
 
 - one shared editor shell scene
 - one center viewport with shared camera controls
-- one mode-specific inspector panel driven by the currently selected asset class
-- one scene-template switcher that swaps reference environments inside that shell rather than launching a different application
+- one building inspector; additional asset classes remain later work
+- working preview controls, not selectable placeholders for unimplemented scenes
 
 Editor layout:
 
-- Center: 3D viewport
-- Left: asset browser and scene template switcher
-- Right: inspector for metadata, materials, validation, and pack assignment
-- Bottom: import log, warnings, and build output
+- Center: dominant 3D preview with Lighting & quality controls in a popup; framing respects the visible pane.
+- Left: collapsible asset library, hidden initially.
+- Right: one task at a time. Model separates Placement, Source materials and LOD inspection; Site separates Footprint & frontage, Access points and Surfaces.
+- Bottom: collapsible diagnostics, hidden initially. Addressed validation is in Validate & export, not buried in the log.
 
-V1 preview templates:
+Current preview (`TOOLS-04`):
 
-- zoned roadside lot
-- empty ground grid
-- lane + sidewalk scale reference
-- traffic comparison scene with placeholder car/character
-- night lighting scene
+- Ground grid/lot, a selectable 1.8 m scale reference and explicit asset comparison ghost.
+  Enable Scale reference, then click its figure or 10-logical-pixel circular handle and left-drag.
+  Movement is free on the ground XZ plane, including across yards/anchors/meshes and outside the lot;
+  it preserves the grab offset, does not snap to geometry, and never changes the asset or undo history.
+  The reference turns cyan when selected. Its handle stays visible and pickable over other objects;
+  the figure itself uses triangle picking and normal depth testing. Empty-space clicks only deselect.
+  Escape, focus loss, a modal or hiding the reference cancels a drag. Hiding/showing, lot/frontage/theme
+  changes and asset undo preserve placement; preview rebuilds do not regenerate its geometry/pick cache.
+- Day/dusk/night presets and an editable hour use the shared gameplay day-cycle lighting.
+  Changing the UI theme does not change the selected lighting.
+- Emission inspection: authored default, force off, force on, and reference intensity.
+  Overrides affect preview-owned materials only; textures/factors in exported files stay unchanged.
+  The reference tint is linear RGB `[1.0, 0.55, 0.23]`. Only materials with an emission texture
+  participate. Surface emission does not promise light spill onto nearby geometry.
+- Automatic screen-size LOD inspection for every part, per-part forced tiers, global preview
+  quality presets, add/remove-last-tier controls and explicit camera framing. Readouts report
+  the active mesh, its triangle count, projected LOD0 bounds and engine-owned pixel boundaries.
+  Switching tiers preserves transforms, origins, camera and LOD0 placement bounds.
+  This uses the shared selection policy; gameplay building switching is not integrated yet.
+- Roadside, lane/sidewalk and traffic comparison scenes are deferred and are not exposed as controls.
 
-Minimum quality-of-life features:
+Planned quality-of-life features (not shipped):
 
 - autosave of editor state
 - recovery of unsaved drafts after crash or forced close
-- one-click revalidate / rebuild for the current asset or whole pack
+- whole-pack revalidation/rebuild (current-asset revalidation is available)
 
 Thumbnail generation rules:
 
-- Use locked per-asset-class thumbnail rigs with fixed focal length, lighting, background, and framing rules.
-- The editor allows thumbnail regeneration.
-- Thumbnail generation does not expose arbitrary camera, time-of-day, or scene-composition authoring.
-- If asset classes need different framing, use a fixed preset set such as building, vehicle, prop, and character rigs.
+- Overview captures the visible preview pane, excluding editor chrome. This is an explicit authoring command with undo/redo.
+- Captures live beside editor drafts, are packaged as `thumbnail.png` on runtime export, and survive draft and published-asset reopening.
+- Capture requires a rendered window; headless validation/export still works with existing thumbnail files.
+- Standardized per-class catalog-thumbnail rigs remain later work; current captures use the author's preview camera and lighting.
 
 V1 inspector and viewport contract:
 
@@ -1455,31 +1462,51 @@ V1 inspector and viewport contract:
   preview loader uses the same import path as the final building preview so the picker cannot show
   a materially different model from the exported asset.
 - Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `frontage_forward`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`, extractor resource metadata, field resource metadata), mesh part files/transforms, optional material paths, the required `entrance/main` anchor, and optional `driveway`/`parking`/`loading_bay` site anchors.
+- Normal viewport selection is **All objects**, independent of the current inspector section.
+  Click a visible mesh, anchor or yard directly; no toolbar/task change is required first.
+  A plain click opens Model, Site / Access points or Site / Surfaces respectively, expanding a
+  collapsed inspector. Optional explicit Meshes-only / Anchors-only / Yards-only filters remain;
+  inspector navigation never changes the filter. All includes the scale reference and comparison ghost;
+  these preview-only helpers select exclusively and never join authored transform groups. Authored
+  objects support mixed selection; a deliberately filtered-out object cannot
+  intercept a click. Anchor handles use a 12-logical-pixel radius, selected-yard vertices 8 pixels,
+  independent of zoom and UI scale. Parking/loading/driveway rectangles and the visible billboard
+  labels for anchors/yards are also pickable; text uses its rendered bounds, not its ground projection.
+- Point-picking uses actual 3D mesh triangles, authored yard/anchor heights and camera clipping.
+  The scale-reference handle, selected-yard vertex handles, visible site labels and anchor guides take priority over physical
+  geometry, matching the guides' depth-test-free rendering. Remaining hits within a layer are
+  nearest-first with deterministic ties. Hover outlines and a target name show what will be picked.
+  **Alt+click** cycles through overlapping eligible objects, including occluded ones; moving the
+  pointer more than 3 logical pixels or changing the camera/filter resets the cycle.
+- Click selects without moving. A transform starts only after 6 logical pixels of movement;
+  Escape, focus loss or a modal dialog cancels it. A completed authored-object drag is one undo command; a cancelled
+  drag restores preview geometry and does not undo a preceding inspector edit. Only the selected
+  yard exposes vertex and edge editing, with an 8-pixel edge target for its context menu.
 - Building mesh parts can be moved on the X/Z plane by left-dragging the part in the preview
   viewport and rotated freely around Y by right-dragging it horizontally, with a light snap when the
   rotation is close to a 90-degree cardinal angle; the clicked part becomes the selected part and
   the inspector transform fields mirror the live manipulation. Selected mesh parts use corner
-  handles rather than full bounding-box cages. The editor clamps the transformed X/Z footprint of
-  every mesh part to the authored lot rectangle during import, move, rotate, scale, and lot-size
-  edits, and export must reject a mesh part that still cannot fit inside the lot.
-- Dragging an empty area in the building preview draws a selection rectangle over the viewport and
-  selects all mesh parts, the required main entrance, and site anchors whose projected bounds
-  intersect it. Holding `Shift` while left-dragging forces rectangle selection even when the drag
+  handles; the current hover target additionally has a bounding-box outline. The editor clamps the transformed X/Z footprint of
+  every mesh part to the authored lot rectangle during explicit import/move/rotate/scale actions.
+  Opening a document and changing its lot dimensions never silently repair geometry; validation
+  reports overflow, and export rejects parts that cannot fit inside the lot.
+- Dragging an empty area in the building preview draws a selection rectangle and selects eligible
+  mesh parts/anchors plus at most one yard whose projected bounds intersect it, respecting the
+  active filter. Holding `Shift` while left-dragging forces rectangle selection even when the drag
   begins over a mesh part or anchor. Holding `Ctrl` while clicking toggles individual mesh parts,
-  the main entrance, or site anchors into the current selection. Dragging any selected part,
-  entrance, or site anchor moves the whole selected mesh/anchor group together on the X/Z plane. The
-  main entrance can be moved but cannot be removed.
-- The Asset tab provides `Remove Mesh Part`, and the keyboard `Delete` key performs the same action
+  the main entrance, site anchors, or one yard into the current selection. Dragging a selected object
+  moves the whole selected mesh/anchor/yard group on the X/Z plane; right-drag rotates only the clicked mesh/anchor. The
+  main entrance can be moved or removed in a draft; runtime export requires a valid `entrance/main`.
+- Model provides `Remove part`, and the keyboard `Delete` key performs the same action
   when mesh parts are selected and text input is not active. Removal deletes all selected mesh parts
   from the active asset draft and preview scene.
-- The Anchors tab provides `Driveway`, `Parking`, and `Loading Bay` add actions plus a remove action
+- Site / Access points provides `Entrance`, `Driveway`, `Parking`, and `Loading Bay` add actions plus a remove action
   for the selected site anchor. Site anchors are selectable in the list or viewport, movable on the
   X/Z plane with left-drag, and rotatable around Y with right-drag using the same light 90-degree
   snap as mesh-part rotation. `Delete` removes the selected site anchor when text input is not active.
-- The building inspector groups long forms into focused equal-width sub-tabs, with persistent
-  top-level actions such as mesh import and export kept outside the tab scroll pages. Switching tabs
-  must not resize the inspector sidebar.
-- The Pack tab uses a single `Set Pack...` command plus a compact selected-pack summary instead of
+- The task selector stays above independently scrolling task pages. Model and Site disclose one
+  relevant sub-section at a time. Changing tasks does not resize the inspector sidebar.
+- Overview uses a single `Choose / manage pack…` command plus a compact selected-pack summary instead of
   separate free-form pack fields. The command opens a pack menu listing installed
   `user://mods/*/pack.toml` packs and a `Create New Pack...` action. Creating a pack writes a
   minimal `pack.toml` immediately; asset files are still added on export.
@@ -1490,19 +1517,25 @@ V1 inspector and viewport contract:
   export must never delete the original.
 - If `placement_mode = "zoned_private"`, the zoning-choice controls in building mode should load their available categories and density-band combinations from the shipped zoning-profile registry rather than from hardcoded editor-only lists.
 - If `placement_mode = "explicit"`, the zoning-choice controls are hidden and the building is authored outside the painted-zoning path.
-- Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference,
+- Building mode viewport shows the lot rectangle, frontage arrows,
   entrance anchor gizmo, site-anchor previews, orientation validation, and footprint overflow
-  warnings. Frontage, entrance, and site anchors use theme-aware high-contrast colors plus short
-  viewport labels, dashed guide borders, and contrast halos so they remain legible in both dark and
-  light editor themes.
+  warnings. Frontage and access points share filled, tapered arrows with a split-tone head and soft
+  dark keyline. The frontage edge is a continuous violet accent with cell ticks and at most three
+  compact arrows; the lot uses a neutral fine outline with corner brackets. Anchor type colors,
+  low-opacity fills and dashed unselected borders remain distinct; selected yards/anchors use a
+  warm highlight. Labels retain their text size with lighter outlining, and screen handles have
+  softer strokes without shrinking hit targets. All guides remain unshaded/depth-independent and
+  readable in both themes during day/night preview. These are preview-only visuals; authored
+  frontage, footprints, materials, picking priority, dragging and Alt+click are unchanged.
 - The comparison ghost is explicit, not automatic. Right-clicking an asset browser row opens an
   asset context menu with `Use as Ghost`; that asset remains as the viewport ghost until it is
   replaced or cleared.
 - The comparison ghost uses the selected asset's first mesh part and authored part scale.
   Loading another asset into the inspector must not replace the ghost. Assets from packs with
   different source-unit conventions must compare in exported/game-space meters.
-- The comparison ghost can be repositioned in the viewport by dragging it with the left mouse
+- In the All selection filter, the comparison ghost can be repositioned by dragging it with the left mouse
   button.
+- The following prop/vehicle/character modes are future contracts, not selectable placeholders in the current building editor.
 - Prop mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), prop fields (`category`, `bounding_size_m`, `snap_mode`, `terrain_behavior`), and optional material paths.
 - Prop mode viewport shows ground contact, snap target, pivot, authored bounds, and orientation validation.
 - Vehicle mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), vehicle fields (`vehicle_class`, `vehicle_family`, `length_m`, `width_m`, `height_m`, `color_variants`), optional material paths, optional `wheel`/`light` anchors, and `[[lods]]`.
@@ -1806,7 +1839,8 @@ Optional fields:
 - `mesh_parts.scale`: uniform part scale, default `1.0`
 - `mesh_parts.pivot_offset`: optional `[f32, f32, f32]` mesh pivot correction
 - `mesh_parts.lods.file`: relative path to the part mesh file
-- `mesh_parts.lods.distance_min_m` / `distance_max_m`: ordered distance switch band for that part
+- `mesh_parts.lods.distance_min_m` / `distance_max_m`: existing schema's ordered metre bands,
+  retained on save but ignored by the screen-size preview; pending calibrated-policy migration
 - `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`. Non-`none` service classes are valid only for `placement_mode = "explicit"` in baseline `v1`.
 - `economy_profile`: reference to an authored economy profile. Utility service assets require a resolved utility profile; the starter mappings are `power -> power_plant_basic`, `water -> water_plant_basic`, and `waste -> wastewater_treatment_basic` (`waste` is the asset-side service class for sewage treatment). Ordinary zoned commercial service assets such as barbers and pharmacies select reusable commercial profiles such as `personal_service_small` or `health_essentials_small`; they do not set `service_class` or define barber/pharmacy-specific economy fields.
 - The incoming small Machinery factory uses `placement_mode = "zoned_private"`, `zone_type = "industrial"`, `density = "low"`, `level = 1`, and `economy_profile = "machinery_factory_basic"`. Leave `service_class`, field and extractor metadata unset. Choose lot dimensions that fit the mesh; provide the usual `entrance/main` and freight-capable road access/site anchors. The profile supplies four jobs and consumes 12 Steel, 4 Metals and 2 Machinery per day to produce 42 Machinery (40 net). No factory-specific script or new asset schema is needed. Steel/Metals/Machinery imports work before upstream assets exist; see [`economy.md`](economy.md#machinery-upkeep-econ-09).
@@ -1817,7 +1851,7 @@ Optional fields:
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
 - `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential. Explicit field-producing farms always provide exactly one slot; the editor displays this as a fixed value.
 - `worker_capacity`: integer, `>= 0`. Defines the total staffing capacity. Required for commercial/industrial. Note: if an `economy_profile` is selected, this value is read authoritatively from the profile and cannot be overridden at the asset level.
-- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members. Farmhouses preserve this value through export/re-import, defaulting to 120 m2 when unspecified. Rust owns that default and exports the effective farm housing values to the editor.
+- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to derive compatible starter household size from a baseline area, adult-weighted members, and lighter child-weighted extra members. Farmhouses preserve this value through export/re-import, defaulting to 120 m2 at runtime when unspecified. Authoring loads retain raw optional values rather than replacing them with effective runtime defaults. Profile-derived staffing and the fixed one-family farm contract do not erase dormant authored capacity metadata.
 
 Placement-mode interpretation:
 
@@ -2217,6 +2251,406 @@ Warnings:
 - Define road assets as lane/topology/material templates, not as ordinary imported meshes.
 
 ## Implementation Summary
+
+### Task-oriented building authoring — TOOLS-06
+
+Implemented. This replaces the all-fields importer workflow while retaining the existing mesh loader,
+screen-size LOD policy and staged package publisher. The shipped contract is:
+
+- With no document open, a welcome screen offers New asset, Open draft and Browse asset library.
+  There is no dummy building, visible lot, inspector, validation count or automatic modal;
+  document-only menu actions are disabled. Cancelling creation/open leaves the welcome state intact.
+- New asset asks for Residential, Commercial, Industrial, Resource extractor, Farm,
+  Service/utility (with subtype), or Other explicitly placed building, then name, destination
+  pack and optional model. These are presets of existing Rust contracts, not runtime categories.
+  Unsupported asset classes and unimplemented simulation options are not offered.
+- Freely navigable **Overview / Model / Site / Gameplay / Validate & export** tasks.
+  Overview owns identity, type, pack, thumbnail and completion. Model owns parts, transforms,
+  materials and LOD inspection. Site owns footprint, frontage, entrances, access and surfaces.
+  Gameplay displays only applicable fields; Advanced contains uncommon but relevant fields only.
+- New/opened assets start in Model; Overview is an explicitly selected metadata task. Empty Model
+  invites import rather than showing an empty parts list. Selection-only removal/framing actions
+  and Clear comparison are hidden until applicable. Pack management uses a dialog.
+- Direct all-object selection opens the corresponding settings; optional filters are never tied
+  to inspector tasks. Cached triangle-accurate mesh picking, clickable site labels, screen-sized
+  handles, hover feedback, Alt+click cycling and cancellable thresholded gestures replace ground
+  footprint picking. Visible anchor guides win over underlying yards; yard previews honor authored height.
+- The viewport takes remaining space around a resizable, collapsible inspector: 420 logical UI
+  pixels by default, bounded to 340–600 and available viewport space (normally at most 45% of
+  the right split). Library and diagnostics open on demand. The window minimum is 960×640 logical
+  pixels; UI scaling also scales that minimum. Existing text padding and font sizes are retained.
+- `workspace_layout.gd` owns event-driven pane sizing, separate from document/session logic.
+  It waits for container sorting and normalizes visually clamped divider offsets before resizing.
+  Saved widths are bounded; transient startup/hidden-pane measurements never overwrite preferences.
+  Intentional inspector width/collapse survive reopening and temporary window constraints.
+  **View → Reset layout** restores defaults, expands the inspector and closes library/diagnostics.
+- Residential never exposes mining/farm/service/employment controls. Rust filters profiles by
+  executable behavior, resource and utility compatibility. Profile staffing is derived/read-only,
+  including explicit-work-area staffing density; authors cannot edit a competing worker value.
+- Widget-independent documents, saveable incomplete drafts, open/save/save-as, bounded grouped
+  undo/redo (including geometry and type changes), and unsaved-change guards for document replacement,
+  leaving the editor and closing the window. Runtime export is separate from draft save.
+- Inline validation has field/task destinations, including a missing main entrance. Export uses
+  the same Rust validation as preflight and remains staged/rollback-safe.
+- Type conversion previews every changed field and requires confirmation. Loading or hiding fields
+  never clears authored data. Unsupported/unresolved metadata remains in drafts and must be surfaced
+  for explicit resolution rather than silently normalized on export. Preview-only state stays out
+  of asset documents. Existing thumbnails, complete LOD chains and precise transforms survive.
+
+`assets/authoring.rs` and `AssetAuthoringPolicy` supply a single cached inspection for
+capabilities and addressed diagnostics, plus explicit conversion previews. Rust
+`assets/authoring/document.rs` owns savepoints and 100-command history through
+`AssetAuthoringDocument`; immutable revisions are shared, with typed deep copies only at the
+Godot boundary. Undo/redo and transaction setup are O(1). `assets/authoring/files.rs` and
+`AssetAuthoringFiles` own versioned, object-disabled drafts, pack creation, dependency discovery,
+staging, publication and source-asset removal. Snapshot work is O(document size) per authoring command, not per frame; capability
+queries are O(P log P + P log R + ports) for P profiles and R resources, independent of city size.
+`authoring_session.gd` coordinates dialogs and Rust commands; `document_adapter.gd` projects geometry without
+repairing it, and `task_panels.gd` builds the task-specific views. Metadata-only edits do not reload
+models or rebuild preview geometry. Pointer motion updates preview state; release records one
+command. The idle camera/LOD check is O(1); changed camera/geometry LOD work is O(document parts).
+Missing LOD0 sources reserve their part index and can be explicitly relinked without changing
+placement. Invalid hidden profile/capacity/classification bindings have review-and-confirm
+corrections; unknown fields remain in drafts and block unsupported runtime export.
+
+Precommit audit (2026-09-20): mesh/access lists use the actual multi-selection signal; plain
+clicks clear unrelated selections and Ctrl+click preserves/toggles the selected group. Added real
+list-click regressions. LOD edits retain unknown per-tier metadata and omitted fields; relinking
+initializes absent source lists reversibly. Incomplete yards and malformed numeric/vector draft
+values render safe display defaults without changing the document. Publication preserves dormant
+anchor dimensions and rejects unknown placement modes, orphaned area metadata and profiles
+inapplicable to the asset type. The unused direct-write SimulationNode exporter is removed:
+runtime publication has one staged file-service implementation.
+
+Fresh audit verification: `cargo test` passes **1,833 tests (63 ignored)**; `cargo check --benches`,
+`cargo doc --no-deps`, release build, formatting and shell/diff checks pass without warnings.
+All six asset-editor headless suites pass using the isolated project created by `run.sh --test`.
+Adjacent machinery, camera-save/load, selection-gesture, UI-settings, day-cycle and building-asset
+reload suites pass. Four X11 / Forward+ rendered suites (selection, layout, workspace and preview)
+exit successfully; inspected captures cover task spacing and direct access-point selection.
+Logs/captures: `/tmp/metrum-precommit.Dl9Msd/`; headless asset logs:
+`/tmp/metrum-asset-tests.7xPBx4/`. Deployed release library SHA-256:
+`5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`.
+
+Two sequential unprofiled release-extension runs use Godot 4.7.2, four Rayon workers and separate
+XDG profiles. Commands: `godot --headless --path <isolated-project> --script
+res://tests/asset_{document,selection,workspace}_test.gd -- --asset-editor
+--benchmark-asset-{document,selection,workspace}` (one matching script/flag pair per process).
+The existing two-part/one-anchor/one-yard fixture measures 0.743 / 0.731 µs idle,
+22.883 / 23.764 µs per query; with reference enabled, queries take 28.546 / 29.010 µs and
+locked drag motion 8.784 / 8.816 µs. Idle queries and motion BVH rebuilds remain zero.
+Document undo averages 0.870 / 0.860 µs with 100 entries and 0.900 / 0.890 µs with 1,000 entries;
+workspace metadata edits take 298.280 / 293.530 µs without model imports. Workload iteration
+counts are logged in `bench-{document,selection,workspace}-{1,2}.log` in the audit directory.
+These are current-build editor CPU measurements, not a matched before/after or city/GPU comparison.
+`RAYON_NUM_THREADS=4 cargo bench --bench asset_lod_benchmark` measures 37.610 ns for projection
+plus selection and 4.066 ns for selection alone (`lod-benchmark.log`); prior Criterion percentage
+comparisons are not treated as matched baselines. Editor/fixture source SHA-256:
+`4e76b81dbee6d11cfa130c9b542ea4d724ee42c61f8a7e5a75e5f4c89bcd8cf7`
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd godot/tests/asset_*test.gd | sha256sum`).
+
+Initial authoring verification (2026-09-19): seven `assets::authoring` and nineteen `asset_export::tests` Rust tests;
+headless `asset_document_test.gd`, `asset_authoring_test.gd`, `asset_workspace_test.gd`, and
+`asset_editor_preview_test.gd`. The real workspace test covers all seven presets' publication/reopen,
+all ten service subtypes' applicability, compatible profiles, conversion cancel/confirm/undo/redo,
+incomplete draft reopen, geometry and vertex history, save/discard/cancel/failure guards, WM-close
+protection, exact metadata preservation, source relinking and issue navigation. The four-tier
+preview/package regression remains in the suite. `run.sh --test` gives asset regressions a unique
+project identity plus temporary XDG data/config paths, and fails on engine/script errors as well
+as nonzero exit status. The unique identity also separates macOS fixtures from actual user data;
+the runner prints their location. The runner was verified on Linux; macOS execution remains untested.
+The adjacent camera save/load and machinery bridge checks also pass. One concurrent debug machinery
+run printed PASS then crashed on shutdown; an isolated debug rerun and three sequential release
+reruns exited cleanly. Its cause is unconfirmed; the final asset regressions run sequentially.
+
+Native Wayland / Forward+ rendered checks on Radeon RX 7900 XTX cover dark/light task layouts,
+Model sub-sections, bounded creation/pack/preview dialogs, thumbnail capture/undo/draft/publication/reopen, unclipped chrome and pane-centered
+framing at 1280×900 and 960×640. Artifacts: `/tmp/metrum-authoring.DVzbwb/captures/` and sibling logs.
+
+Two matched unprofiled release measurements used the generated one-part box fixture, Godot 4.7.2,
+`RAYON_NUM_THREADS=4`, 100 metadata commands and 10,000 idle camera/LOD updates. Command:
+`godot --headless --path godot --script res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`
+with isolated `XDG_DATA_HOME` / `XDG_CONFIG_HOME`. Metadata commands averaged 261.220 / 259.010 µs;
+idle updates 1.560 / 1.556 µs, with zero model imports and zero idle per-part policy evaluations.
+Field edits style only the changed validation subtree, not every editor dialog.
+Release library SHA-256: `b50cba91e17a35d7d0257d77bd263e934593421d1b3a89ba5f88442507ab726b`.
+Editor/fixture source digest: `6bca33a1f49e61e9699d2123354bc92069b3b0fc549d1953a0a52468e07f9055`
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/tests/asset_workspace_test.gd | sha256sum`).
+Logs: `/tmp/metrum-authoring.DVzbwb/workspace-final-release-{1,2}.log`. These measure editor command/idle
+cost only, not city-scale rendering or GPU performance. Roadside/traffic scenes, autosave/recovery,
+standardized thumbnail rigs and gameplay LOD integration remain separate work.
+
+Startup/layout follow-up verification (2026-09-19): all five targeted headless asset regressions
+pass, including the new `asset_layout_test.gd` in `run.sh --test`. It covers a fresh welcome,
+cancelled dialogs, import-ready Model, selection/comparison actions, library activation into a
+real published fixture, 1,699-pixel stale preferences, drag limits, collapsed/resized restoration,
+Reset layout, idle preference stability, and 960×640 / 1440×900 / 3063×1751 layouts at 100/150/200%.
+The same regression passes rendered on native Wayland / Forward+ in both themes; settled captures
+are at `/tmp/metrum-layout.zFcGpF/verified-captures/`, with sibling test logs. Fixtures are generated
+in isolated user profiles. Layout work is O(1) per coalesced UI layout event and adds no idle loop.
+Two sequential, unprofiled release runs of the existing workspace benchmark command above used
+separate isolated profiles and `RAYON_NUM_THREADS=4`, with the same release library hash above.
+Metadata edits averaged 276.770 / 275.820 µs; idle updates 1.590 / 1.564 µs; imports and idle
+per-part policy evaluations remained zero. Logs: `/tmp/metrum-layout.zFcGpF/acceptance-{1,2}.log`.
+Follow-up source digest: `beab756bd646191b6e97cefde14c6b52bb8e821d4b2d5697436c9ffcba8b3148`
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/ui/top_menu.gd godot/tests/asset_workspace_test.gd godot/tests/asset_layout_test.gd | sha256sum`).
+The earlier Rust checks and timing/capture artifacts describe the original authoring build;
+this follow-up changes only editor UI/workflow and its regressions, not simulation or asset contracts.
+
+Initial selection follow-up verification (2026-09-19, before the direct-click correction below): all six headless asset regressions pass, including
+`asset_selection_test.gd`, now included in `run.sh --test`. Generated fixtures cover oblique roof
+hits, empty space inside bounds, nested transforms, visible LODs, elevated yards/anchors, missing
+and relinked sources, task/explicit filters, overlap cycling, filtered box and mixed selection,
+zoom/UI-scaled handles, click jitter, drag/rotation/vertex undo, cancellation, inspector focus,
+modal blocking, comparison meshes and cache invalidation. Native Wayland / Forward+ checks pass
+with dark/light hover captures in `/tmp/metrum-selection.KzJu4V/final-captures/`; sibling logs hold
+the six headless results and `native-final.log`. This follow-up does not change Rust or run the full
+repository test suite; earlier Rust results remain historical evidence for the unchanged library.
+
+`asset_selection.gd` owns gestures/hover state, `asset_picker.gd` collects deterministic hits, and
+`picking_overlay.gd` draws screen-space feedback. `mesh_pick_geometry.gd` reuses Godot's native
+`TriangleMesh` BVH inside the existing per-part/per-LOD preview cache, with no physics bodies or
+new city index. Import builds O(T) cached triangle/BVH storage; transforms and warmed LOD swaps
+reuse it. Idle hover checks are O(1), with no geometry queries or document copies. A changed query
+visits this asset's mesh instances M, anchors A and yard vertices V, plus intersected BVH nodes;
+ordering H hits costs O(H log H). BVH traversal is typically sublinear in triangles but O(T) in
+the worst case. None of this iterates over city buildings or agents.
+
+Two sequential, unprofiled release acceptance runs use Godot 4.7.2, `RAYON_NUM_THREADS=4`, isolated
+`XDG_DATA_HOME` / `XDG_CONFIG_HOME`, and the release library SHA-256 recorded above. Command:
+`godot --headless --path godot --script res://tests/asset_selection_test.gd -- --asset-editor --benchmark-asset-selection`.
+The overlapping two-mesh/one-anchor/one-yard fixture averaged **0.776 / 0.755 µs** per idle check
+(10,000 iterations, zero geometry queries), and **15.329 / 14.997 µs** per All-filter query
+(1,000 iterations, zero cache rebuilds). Dense native-BVH measurements separate setup from querying:
+
+| Triangles per mesh | Instances | Cache build µs, runs 1 / 2 | Query mean µs, runs 1 / 2 |
+|---:|---:|---:|---:|
+| 4,224 | 1 | 1,257 / 1,243 | 3.680 / 3.642 |
+| 4,224 | 16 | 1,215 / 1,229 | 7.134 / 7.216 |
+| 66,048 | 1 | 21,373 / 21,532 | 5.677 / 5.698 |
+| 66,048 | 16 | 21,090 / 21,603 | 9.187 / 9.264 |
+
+These generated sphere instances share one mesh resource; one lies under the ray and the others
+exercise AABB rejection. Each row has 1,000 queries. These are editor CPU acceptance measurements,
+not before/after or GPU/city-scale comparisons. Logs: `/tmp/metrum-selection.KzJu4V/acceptance-{1,2}.log`.
+Source digest: `38092abd8599810d5bb1c6003e79756ac6f941f1916316f37d3e97d15141be18`
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd godot/tests/asset_selection_test.gd | sha256sum`).
+
+Direct-click correction (2026-09-19): task-linked filtering was removed from the default workflow.
+Normal clicks select every object kind and open its settings, including reopening a collapsed
+inspector. Guide/text priority matches their visible overlay layer; billboard text bounds are
+queried from current Label3D nodes, excluding stale labels awaiting deletion. A deferred bounds-ready
+invalidation updates stationary hover after glyph layout; idle frames still do no geometry queries.
+Layout persistence moved from PREDELETE to tree exit, and detached callbacks reject unavailable windows.
+All six headless asset regressions and the native Wayland / Forward+ selection regression pass.
+The added fixture routes actual viewport mouse events through three parking rectangles, loading,
+driveway and their labels over a yard, from Model/Overview/Site, at 100/200% UI scaling. It verifies
+automatic settings navigation and collapsed-inspector expansion. Layout checks now detach/free the
+editor both after settling and with a pending layout callback. Logs and dark/light click captures:
+`/tmp/metrum-anchor-fix.8hM65b/` (`native-selection.log`, `captures/*-access-click.png`).
+Two sequential unprofiled release runs of the same selection benchmark command above, same Godot,
+four Rayon workers and unchanged release library, used separate isolated profiles. Idle checks:
+0.733 / 0.741 µs; All-object queries: 20.221 / 20.610 µs, with zero idle queries/cache rebuilds.
+The 66,048-triangle, 16-instance BVH case measured 9.550 / 9.322 µs per query; builds remained separate
+from query timing. Logs: `acceptance-{1,2}.log` in that directory. Bounds remain O(1) idle and
+O(asset instances + anchors + yard vertices + visited BVH nodes + hit sorting) on changed queries.
+Source digest: `6d71e4800f38f5524abab529bf9b15c322435faf6d33086e8e9065fd79d164b0`
+(`sha256sum godot/scripts/editors/asset_editor/*.gd godot/scripts/editors/asset_editor.gd godot/scripts/core/editor_camera_input.gd godot/scripts/renderers/building_preview.gd godot/tests/asset_selection_test.gd godot/tests/asset_layout_test.gd | sha256sum`).
+No Rust changes or fresh full-repository test run in this correction.
+
+Scale-reference follow-up (2026-09-19): removed the shell's empty-click relocation path and
+duplicated human-toggle state. The shared picker/gesture controller now handles the reference
+and comparison helper without document transactions. The capsule is actually 1.8 m tall (the old
+configuration used 1.4 m); its cached geometry is created once, not during overlay rebuilds.
+All six headless asset regressions pass. The selection regression adds actual mouse events for
+figure/handle selection, top-down and oblique dragging, 100/200% UI scale, overlap priority, movement
+outside the lot, cancellation, empty-click deselection, rebuild persistence and undo/redo isolation.
+Native Wayland / Forward+ checks also pass; dark/light captures were inspected. Artifacts:
+`/tmp/metrum-scale-reference.03ZOi3/` (`final-asset_*test.log`, `render-verified.log`,
+`captures-verified/*-scale-reference.png`, `verified-acceptance-{1,2}.log`).
+
+Two sequential, unprofiled release-library acceptance runs used Godot 4.7.2, four Rayon workers,
+separate isolated XDG profiles, and `godot --headless --path godot --script
+res://tests/asset_selection_test.gd -- --asset-editor --benchmark-asset-selection`.
+With two parts, one anchor, one yard and the reference enabled: 10,000 idle checks averaged
+0.730 / 0.788 µs; 1,000 All-object queries averaged 26.976 / 26.751 µs; 1,000 locked-target drag
+updates averaged 8.237 / 8.524 µs. Idle checks and drag motion perform no pick queries; motion/queries
+perform no BVH rebuilds. The reference adds fixed-size geometry/handle work to the existing query
+bound; reference translation is O(1), with O(anchor count) existing handle redraw work on motion,
+and no authored-geometry capture. Idle remains O(1). These are editor CPU measurements, not city/GPU
+benchmarks. The unchanged release library SHA-256 is
+`b50cba91e17a35d7d0257d77bd263e934593421d1b3a89ba5f88442507ab726b`; the same combined source-digest
+command above yields `f5110cb6e1a848b95e438688e5bc7edae48f89143ae5fd5ead5995a720ca5a7a`.
+No Rust changes or full-repository test run in this follow-up.
+
+### Working building previews and safe packaging — TOOLS-04
+
+The building editor separates panel/control ownership (`asset_editor/editor_view.gd`),
+preview controls (`preview_panel.gd`), editable mesh-part/LOD projections (`mesh_part.gd`), and
+non-destructive emission overrides (`preview_materials.gd`). Rust owns the document, history,
+drafts and package I/O; the superseded GDScript document, draft, dependency and package backends
+are removed. The shell coordinates placement, anchors, yards and the pack browser, while Rust
+owns applicability, LOD-chain validation and shared lot/polygon constraints.
+
+Authoring backend consolidation (2026-09-19): pack creation and export use one TOML writer;
+dependency planning checks every tier, URI-decoded texture/buffer paths, content collisions,
+reserved filenames and directory links. Publication stages on the destination filesystem,
+preserves unmanaged regular files, protects the prior asset before replacement, and retains its
+backup if restoration fails. File work is O(files + bytes), with O(F log F) ordered planning.
+The editor and manifest validator share allocation-free O(V²) polygon checks; the bridge reuses
+its O(V) scratch buffer. Yard fill/highlight use Godot's native triangulation with no invalid
+concave fan fallback. Mesh bounds use native AABB transforms instead of script-side corner
+arrays; lot translation is O(1) in Rust. Numeric/vector preview projection, widget ownership and
+active-LOD material ownership are consolidated. Legacy single-mesh loading, global preview
+scaling, write-only state and unused editing entry points are removed. UI widgets, camera/input,
+native mesh picking and rendering remain GDScript presentation code.
+
+Fresh consolidation verification: `cd rust && cargo test` passes 1,832 tests (63 ignored);
+`cargo check --benches` and the release build pass without warnings. All six headless asset-editor
+suites and `economy_machinery_test.gd` pass against the deployed release library. Artifacts:
+`/tmp/metrum-editor-cleanup.boDR12/` (`rust-full.log`, `bench-check.log`, `release-build.log`,
+`final-asset_*test.log`, `economy-machinery.log`). Library SHA-256:
+`4e9010ddbfca01be311cc31aaeea1a80bc5eeeb1869c13ece4264015ba487b68`.
+
+Sequential unprofiled Godot 4.7.2 release-extension measurements used four Rayon workers and
+isolated XDG data/config directories. Command: `godot --headless --path godot --script
+res://tests/asset_selection_test.gd -- --asset-editor --benchmark-asset-selection`.
+The unchanged two-part/one-anchor/one-yard fixture has 10,000 idle checks, 1,000 queries and
+1,000 reference drag updates. Before / two after runs (`before.log`, `after-{1,2}.log`): idle
+0.747 / 0.756 / 0.733 µs; query 21.771 / 20.304 / 20.182 µs; reference query
+26.972 / 25.567 / 25.591 µs; drag 8.253 / 8.352 / 8.406 µs. BVH rebuilds remain zero.
+Frontage submissions (500, ten cells) average 35.380 / 35.484 / 35.352 µs; anchor submissions
+(100, one anchor) average 24.410 / 32.090 / 24.640 µs; the first after anchor run was higher.
+These measure editor CPU work, not city/GPU performance. The existing document regression's
+`--benchmark-asset-document` mode measures 100 edits and undos with 100 / 1,000 metadata entries:
+edits 51.040 / 565.120 µs, undo 0.780 / 0.820 µs (`document-benchmark.log`). Boundary copying
+scales with document size; Rust history navigation does not copy revisions. UI redraw is excluded.
+Source digest (the earlier combined command, plus `asset_document_test.gd` and
+`asset_editor_preview_test.gd`): `64e7d071fe092276892ef190696b36b75f94179b3cb1642c9b62112193e9db8e`.
+Native Wayland / Forward+ preview assertions pass; inspected `captures/day.png` and `night.png`
+show the framed mesh and emission correctly. The capture fixture now waits for deferred container
+layout and asserts a visible projected size before framing/capture. These native checks cover
+rendering assertions and captures only (`rendered-preview.log`).
+
+Guide visual refresh (2026-09-19): frontage/access arrows share an eight-triangle filled glyph;
+the lot outline is constant-size geometry and frontage retains O(frontage cells) tick generation
+with at most three arrows. Existing anchor/yard edge generation and picking bounds are unchanged;
+no new per-frame mesh builds, textures, scene nodes or draw calls were introduced. All six headless
+asset suites pass, including cardinal frontage/lot-size and guide-height checks. Native Wayland /
+Forward+ selection assertions and inspected close-up day/night captures pass in both themes;
+test camera input is disabled so physical scrolling cannot disturb the fixed capture rig.
+These native checks cover selection assertions and captures only.
+Artifacts: `/tmp/metrum-guide-polish.nFhf7n/accepted-asset_*test.log`, `verified-render.log`, and
+`verified-captures/*-guide-{detail,night}.png` in that directory.
+
+Matched, sequential, unprofiled before/after runs used Godot 4.7.2, four Rayon workers, the same
+release library SHA-256 recorded above, separate isolated XDG profiles, and the existing
+`--benchmark-asset-selection` command. A 10-cell frontage (500 rebuild submissions) averaged
+154.710 / 154.874 µs before and 34.990 / 36.012 µs after; one entrance anchor (100 rebuild
+submissions) averaged 31.810 / 30.770 µs before and 23.540 / 24.380 µs after. Deferred label cleanup
+is outside the measured loop. Idle still performs no geometry queries; final idle checks averaged
+0.735 / 0.749 µs. Logs: `before-{1,2}.log`, `final-after-{1,2}.log` in the same artifact directory.
+Renderer SHA-256 before: `64aaa923d5b39be8fdff9b3b25026f20b3245c6161f1b31155e481daaa8bcfb3`;
+after: `2a8d5747908fc64f30f0f923109b5738db919972170ec8a0ada00d0b609e71fb`. The combined source-digest
+command above yields `f9afce214d288df7d5b039a8dafb37b280ca654c2fab3e8bb92ce2aca3a28f6c`.
+These are editor CPU submission timings, not GPU measurements. No Rust changes/full-repository run.
+
+`editor_spacing.gd` owns asset-editor-wide spacing: 12 px content insets, 8 px control gaps,
+roomier input/button text and multiline labels. Inspector/preview tabs and the browser/log
+share it in both themes; action rows wrap when narrow. Shared gameplay/other-editor styles
+are not modified.
+
+Every part retains its complete `mesh_parts.lods` chain on load/save. Copy planning includes
+all tiers' external images and glTF buffers, including different dependencies beside meshes
+in the same source directory. Missing files, escaping paths and conflicting destination names
+block publication. Export stages a complete candidate, validates it through Rust, then replaces
+the asset directory with rollback on a reported rename failure. Unmanaged files are retained;
+unreferenced tiers are not automatically deleted. Existing pack metadata is not overwritten.
+This is not a crash-recovery journal: an interrupted directory replacement may leave the prior
+asset in the pack's `.stage-*/previous` directory for recovery. Copy/Move remains an explicit user choice.
+
+Verification uses generated four-tier box meshes and default-off external emission textures;
+no separate content repository is required. `godot --headless --path godot --script
+res://tests/asset_editor_preview_test.gd -- --asset-editor` covers the real editor/Rust
+save-load-save path, placement preservation, emission isolation, dependency collisions,
+failed validation and existing yard/anchor tools. The regression is included in `./run.sh --test`.
+Fresh headless, Xvfb/Compatibility software-rendered, and native Wayland/Forward+ (RX 7900 XTX)
+runs passed on Godot 4.7.2. The economy-profile selector and day-cycle regressions also passed,
+along with all 15 Rust `asset_export::tests` cases. Optional
+`--capture-preview=<temporary-directory>` captures the generated day/night fixture in a rendered run.
+Optional `--benchmark-asset-preview` now measures warmed switches rather than imports (see
+`TOOLS-05`). Loading scales with mesh/dependency size, emission updates with preview material
+surfaces, and export with the asset's copied bytes. No simulation tick or world-wide rendering
+loop is added.
+
+### Shared LOD policy and automatic inspection — TOOLS-05
+
+`rust/src/assets/lod_policy.rs` owns the allocation-free projection and selection functions;
+`AssetLodPolicy` is a stateless Godot bridge. `asset_editor/preview_lod.gd` coordinates editor
+nodes, not game state. Future spatial building rendering must call the same Rust policy.
+
+- Project all eight corners of each part's **LOD0** bounds through its placed transform and
+  the camera matrix. The metric is the larger projected width/height in render pixels,
+  including viewport resolution and 3D render scale. Perspective, orthographic, aspect/FOV
+  and camera offsets come from the real projection matrix. Do not use plot bounds, current
+  simplified-mesh bounds or clipped-to-viewport dimensions. Near-plane intersections or
+  invalid projection inputs retain LOD0; visibility/culling is a separate responsibility.
+- Provisional Balanced boundaries are 512 / 256 / 128 px for four tiers; each additional
+  tier halves the boundary. Equality keeps the finer tier. Performance multiplies effective
+  pixels by 0.5, Quality by 2.0. These are global preview presets, not asset-authored overrides
+  or shipped player graphics settings. Screen extent measures size, **not mesh approximation
+  error**; representative art still needs silhouette/material/emission transition review.
+- Hysteresis uses a 10% margin: coarsen below 90% of a boundary, refine above 110% (equality
+  refines). Large camera changes can skip directly to the appropriate tier. Explicit quality
+  changes and entering Automatic reset history. Single-tier assets keep LOD0; short chains
+  retain their last available tier. Selection never culls an asset or changes its shadows.
+- Parts start in Automatic. A forced tier affects only that part, survives selection changes
+  and does not enter the manifest. Camera/quality/emission controls do not modify source assets.
+  Failed tier imports retain the visible mesh with an inspector error; camera movement does
+  not continually retry failed imports. Removing a tier/part clears its corresponding cache.
+- Import and count geometry only on document/chain changes. All tiers are retained under the
+  preview root, with only the active scene visible; material overrides are preallocated and
+  source materials untouched. This editor-only cache trades memory for smooth inspection and
+  is not a proposed city residency scheme. Idle checks are O(1); camera/placement changes cost
+  O(P) for this document's P parts. Projection/selection are O(1) per part, allocation-free in
+  Rust. No all-city scan or simulation work is introduced.
+
+Schema scope: this step preserves the existing metre-band fields and does not silently reinterpret
+them as pixels. Retire them in a coordinated manifest/editor/validator migration after art
+calibration. Gameplay spatial batching/LOD groups, scene-scale GPU acceptance, culling and
+shadow policy integration remain separate work. Existing meshes need not be remade for this step.
+
+Verification commands:
+
+```bash
+cd rust
+cargo test --lib assets:: -- --test-threads=1
+cargo bench --bench asset_lod_benchmark
+cd ..
+# After deploying the rebuilt GDExtension:
+godot --headless --path godot --script res://tests/asset_editor_preview_test.gd -- --asset-editor --benchmark-asset-preview
+```
+
+The generated regression exercises real editor controls, automatic/forced selection, independent
+part state, hysteresis, quality/FOV/render-scale/placement changes, cached imports, failed tiers,
+chain edits and unchanged export metadata. Optional `--capture-preview=<temporary-directory>`
+captures day, night and the automatic LOD inspector. Fixtures require no external content.
+
+Fresh verification (2026-09-19): 65 asset/policy Rust tests passed (one unrelated, opt-in
+registry benchmark ignored), all 15 export tests passed, and `cargo doc --no-deps` completed
+without warnings. Headless and native Wayland/Forward+ preview regressions passed on Godot
+4.7.2; economy-profile and day-cycle regressions passed too. The rendered inspector was checked
+on RX 7900 XTX. This validates the preview, not finished-art thresholds or gameplay GPU cost.
+
+Isolated unprofiled release measurement: i9-12900K, single benchmark thread (no Rayon/world),
+base `35f15a5b` plus this working tree; policy SHA-256 prefix `b63d5f2368675356`, benchmark prefix
+`2895c0ca0a343a17`. Criterion uses a 20 m box at 100 m, 60° perspective, 1920×1080, four tiers,
+Balanced quality and previous LOD1; 1 s warmup, 2 s measurement, 30 samples. Projection plus
+selection: **37.54–37.73 ns**; selection alone: **3.94–3.99 ns** (95% intervals). Artifacts:
+`rust/target/criterion/AssetLod/`. These exclude Godot calls, loading, uploads and rendering.
+The headless generated-mesh diagnostic separately measured 40 warmed switches at **0.003 ms
+mean, zero imports**. Neither result establishes city-scale performance or a before/after
+gameplay improvement.
 
 Implement the editor as a shared Godot-based tool mode with TOML manifests and `.glb` as the canonical asset format. Start implementation from the v1 contract in this document: canonical pack layout, scanner rules, `pack_id` / `asset_id` grammar, per-class `asset.toml` schemas, and the minimum preview-scene interactions required to author each asset class. Export manifest files directly into the pack output folder next to the asset files.
 

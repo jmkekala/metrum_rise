@@ -8,8 +8,9 @@
 
 mod building;
 mod character;
+pub(crate) mod geometry;
 mod model;
-mod validation;
+pub(crate) mod validation;
 mod vehicle;
 
 pub use building::{

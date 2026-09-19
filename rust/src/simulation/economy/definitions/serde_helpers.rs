@@ -40,7 +40,8 @@ where
         .map(|values| values.into_iter().map(|value| value.0).collect())
 }
 
-fn deserialize_unsigned_from_number<'de, D, T>(
+/// Decode integral JSON numbers emitted by Godot while rejecting fractions and overflow.
+pub(crate) fn deserialize_unsigned_from_number<'de, D, T>(
     deserializer: D,
     type_name: &'static str,
 ) -> Result<T, D::Error>

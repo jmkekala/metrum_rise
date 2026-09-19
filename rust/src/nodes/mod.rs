@@ -8,7 +8,11 @@
 //! **Do not add simulation logic here.** All game-state decisions belong in `simulation/`.
 //! This module is thin glue: marshal data in, call into Rust, marshal results out.
 
+pub mod asset_authoring;
+pub mod asset_document;
+pub mod asset_files;
 pub mod camera_node;
+pub mod lod_policy;
 pub mod sim;
 pub mod simulation_node;
 pub mod vegetation_options;

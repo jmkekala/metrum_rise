@@ -37,6 +37,7 @@ func _ready() -> void:
 	_cam.focus_on(Vector3.ZERO, INITIAL_FOCUS_RADIUS_M)
 
 func _process(delta: float) -> void:
+	_update_preview_offset()
 	if not _cam or _ui_captures_editor_keyboard_input():
 		return
 
@@ -60,6 +61,26 @@ func focus_on(center: Vector3, radius: float) -> void:
 	if not _cam:
 		return
 	_cam.focus_on(center, radius)
+	_update_preview_offset()
+
+## O(1) presentation adjustment: orbit around the asset, centered in the visible pane.
+## Camera offsets are preview-only; picking and projected LOD bounds use the same camera transform.
+func _update_preview_offset() -> void:
+	if _cam == null or not is_instance_valid(viewport_rect_control):
+		return
+	var size := get_viewport().get_visible_rect().size
+	if size.x <= 0 or size.y <= 0:
+		return
+	var center := viewport_rect_control.get_global_rect().get_center()
+	var ndc := Vector2(2.0 * center.x / size.x - 1.0, 1.0 - 2.0 * center.y / size.y)
+	var projection := _cam.get_camera_projection()
+	var depth := 1.0 if _cam.projection == Camera3D.PROJECTION_ORTHOGONAL else -(_cam.global_transform.affine_inverse() * _cam.get_focus_position()).z
+	var horizontal := -ndc.x * depth / projection.x.x
+	var vertical := -ndc.y * depth / projection.y.y
+	if not is_equal_approx(_cam.h_offset, horizontal):
+		_cam.h_offset = horizontal
+	if not is_equal_approx(_cam.v_offset, vertical):
+		_cam.v_offset = vertical
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -111,13 +132,9 @@ func _is_mouse_in_3d_area() -> bool:
 			mouse_pos.y < vp_size.y - panel_bot_h)
 
 func _ui_has_modal_popup() -> bool:
-	var viewport := get_viewport()
-	var window := viewport as Window
-	return (
-		window != null
-		and window.has_method("has_visible_popup")
-		and window.has_visible_popup()
-	)
+	# Dialogs and popup menus own their own viewport, including embedded windows.
+	var focused := Window.get_focused_window()
+	return focused != null and focused != get_window()
 
 func _ui_captures_editor_keyboard_input() -> bool:
 	var viewport := get_viewport()

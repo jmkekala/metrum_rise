@@ -16,6 +16,8 @@ Current stack summary. For exact versions, check `rust/Cargo.toml` and the Godot
 - Criterion for benchmarks
 - Blender for modeling
 
+Use unmodified upstream Godot. Do not maintain a project-specific engine fork or engine patches.
+
 ## Project Structure
 
 - `rust/src/simulation/` contains the core simulation systems: network, pathing, buildings, economy, grids, and save/load.

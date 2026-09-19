@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Asset export helpers: validate form data and write `pack.toml` / `asset.toml` to disk.
+//! Shared authoring preflight and manifest serialization for staged asset publication.
 //!
-//! GDScript sends a JSON string describing the form state. Rust validates it, generates
-//! well-formed TOML, round-trips it through [`AssetManifest`] parsing for final
-//! validation, and writes the output files. Pack TOML is only written when the file does
-//! not already exist, so re-exporting individual assets never overwrites pack metadata.
+//! JSON metadata is validated and round-tripped through [`AssetManifest`]. Filesystem
+//! publication belongs exclusively to `assets::authoring::files`; this module only reads packs.
 
 use crate::assets::asset::{AnchorType, PlacementMode, SiteSurfaceMaterial};
-use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
+use crate::assets::pack::toml_string;
+use crate::assets::{AssetManifest, PackManifest};
 use crate::debug_log;
 use crate::simulation::economy::definitions::{
     EconomyProfileRuntimeKind, load_runtime_economy_catalog,
 };
 use crate::simulation::zoning::load_builtin_profile_registry;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::path::Path;
 
 // ── Input structs (JSON from GDScript) ───────────────────────────────────────
@@ -118,6 +117,9 @@ pub struct ExportParams {
     pub asset_id: String,
     /// Human-readable name shown in the asset browser.
     pub display_name: String,
+    /// Existing or generated thumbnail relative to the asset directory.
+    #[serde(default)]
+    pub thumbnail: Option<String>,
     /// Optional grouping set within the pack (e.g. `"suburban"`).
     #[serde(default)]
     pub asset_set: Option<String>,
@@ -135,28 +137,28 @@ pub struct ExportParams {
     #[serde(default = "default_placement_mode")]
     pub placement_mode: String,
     /// Footprint width in 10 m zone cells along the road frontage.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_number")]
     pub lot_width_cells: u16,
     /// Footprint depth in 10 m zone cells away from the road.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "whole_number")]
     pub lot_depth_cells: u16,
     /// Asset-local direction of the road-facing frontage.
     #[serde(default = "default_frontage_forward")]
     pub frontage_forward: [f32; 3],
     /// Minimum accepted zoned width for this building.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_whole_number")]
     pub min_zone_width_cells: Option<u16>,
     /// Minimum accepted zoned depth for this building.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_whole_number")]
     pub min_zone_depth_cells: Option<u16>,
     /// Development level (1 = lowest density / newest; higher = denser / upgraded).
-    #[serde(default = "default_level")]
+    #[serde(default = "default_level", deserialize_with = "whole_number")]
     pub level: u8,
     /// Maximum number of households this building can house.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_whole_number")]
     pub household_capacity: Option<u32>,
     /// Direct worker capacity used only when no economy profile is selected.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_whole_number")]
     pub worker_capacity: Option<u32>,
     /// Target floor area per household in square meters.
     #[serde(default)]
@@ -191,6 +193,27 @@ pub struct ExportParams {
     pub site_surfaces: Vec<SiteSurfaceParams>,
 }
 
+fn whole_number<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64> + TryFrom<i64>,
+{
+    crate::simulation::economy::definitions::deserialize_unsigned_from_number(
+        deserializer,
+        std::any::type_name::<T>(),
+    )
+}
+
+fn optional_whole_number<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64> + TryFrom<i64>,
+{
+    Option::<serde_json::Value>::deserialize(deserializer)?
+        .map(|value| whole_number(value).map_err(serde::de::Error::custom))
+        .transpose()
+}
+
 fn default_version() -> String {
     "0.1.0".to_owned()
 }
@@ -215,50 +238,26 @@ fn default_placement_mode() -> String {
 
 // ── TOML generation ───────────────────────────────────────────────────────────
 
-fn toml_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\u{08}' => out.push_str("\\b"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\r' => out.push_str("\\r"),
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            ch if ch.is_control() => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "\\u{:04X}", ch as u32);
-            }
-            ch => out.push(ch),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn build_pack_toml(p: &ExportParams) -> String {
-    format!(
-        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\ndescription = \"\"\n",
-        toml_string(&p.pack_id),
-        CURRENT_SCHEMA_VERSION,
-        toml_string(&p.pack_name),
-        toml_string(&p.pack_version),
-        toml_string(&p.pack_author),
-        toml_string(&p.pack_license)
+    crate::assets::pack::manifest_toml(
+        &p.pack_id,
+        &p.pack_name,
+        &p.pack_version,
+        &p.pack_author,
+        &p.pack_license,
     )
 }
 
 fn build_asset_toml(p: &ExportParams) -> String {
     let mut out = String::new();
-    let has_economy_profile = non_empty_optional_string(&p.economy_profile).is_some();
-
     out.push_str(&format!("asset_id = {}\n", toml_string(&p.asset_id)));
     out.push_str(&format!(
         "display_name = {}\n",
         toml_string(&p.display_name)
     ));
+    if let Some(thumbnail) = &p.thumbnail {
+        out.push_str(&format!("thumbnail = {}\n", toml_string(thumbnail)));
+    }
 
     if let Some(set) = &p.asset_set {
         if !set.is_empty() {
@@ -281,11 +280,8 @@ fn build_asset_toml(p: &ExportParams) -> String {
     match p.asset_class.as_str() {
         "building" => {
             out.push_str("[building]\n");
-            let placement_mode = normalized_placement_mode_key(&p.placement_mode);
+            let placement_mode = p.placement_mode.trim();
             let zone = p.zone_type.as_deref().unwrap_or("residential");
-            let is_zoned_residential = placement_mode == "zoned_private" && zone == "residential";
-            let is_farm = placement_mode == "explicit"
-                && non_empty_optional_string(&p.field_resource).is_some();
             out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
             if placement_mode == "zoned_private" {
                 out.push_str(&format!("zone_type = {}\n", toml_string(zone)));
@@ -297,38 +293,22 @@ fn build_asset_toml(p: &ExportParams) -> String {
             let [fx, fy, fz] = p.frontage_forward;
             out.push_str(&format!("frontage_forward = [{fx}, {fy}, {fz}]\n"));
             if let Some(min_width) = p.min_zone_width_cells {
-                if min_width > 0 && min_width != p.lot_width_cells {
-                    out.push_str(&format!("min_zone_width_cells = {min_width}\n"));
-                }
+                out.push_str(&format!("min_zone_width_cells = {min_width}\n"));
             }
             if let Some(min_depth) = p.min_zone_depth_cells {
-                if min_depth > 0 && min_depth != p.lot_depth_cells {
-                    out.push_str(&format!("min_zone_depth_cells = {min_depth}\n"));
-                }
+                out.push_str(&format!("min_zone_depth_cells = {min_depth}\n"));
             }
             out.push_str(&format!("level = {}\n", p.level));
-            if is_farm {
-                out.push_str("household_capacity = 1\n");
-            } else if is_zoned_residential {
-                if let Some(h) = p.household_capacity {
-                    if h > 0 {
-                        out.push_str(&format!("household_capacity = {h}\n"));
-                    }
-                }
+            // Export authored values, not effective runtime defaults. Hidden/dormant
+            // fields may only be cleared by an explicit, confirmed editor command.
+            if let Some(h) = p.household_capacity {
+                out.push_str(&format!("household_capacity = {h}\n"));
             }
-            if !is_zoned_residential && !has_economy_profile {
-                if let Some(w) = p.worker_capacity {
-                    if w > 0 {
-                        out.push_str(&format!("worker_capacity = {w}\n"));
-                    }
-                }
+            if let Some(w) = p.worker_capacity {
+                out.push_str(&format!("worker_capacity = {w}\n"));
             }
-            if is_zoned_residential || is_farm {
-                if let Some(f) = p.flat_size_m2 {
-                    if f > 0.0 {
-                        out.push_str(&format!("flat_size_m2 = {f:.1}\n"));
-                    }
-                }
+            if let Some(f) = p.flat_size_m2 {
+                out.push_str(&format!("flat_size_m2 = {f}\n"));
             }
             if let Some(sc) = &p.service_class {
                 if !sc.is_empty() && sc != "none" {
@@ -370,9 +350,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
         out.push_str(&format!("rotation_degrees = [{rx}, {ry}, {rz}]\n"));
         out.push_str(&format!("scale = {}\n", part.scale));
         if let Some([px, py, pz]) = part.pivot_offset {
-            if px.abs() > 1e-4 || py.abs() > 1e-4 || pz.abs() > 1e-4 {
-                out.push_str(&format!("pivot_offset = [{px}, {py}, {pz}]\n"));
-            }
+            out.push_str(&format!("pivot_offset = [{px}, {py}, {pz}]\n"));
         }
         for lod in &part.lods {
             out.push_str("\n[[mesh_parts.lods]]\n");
@@ -395,14 +373,10 @@ fn build_asset_toml(p: &ExportParams) -> String {
         let [fx, fy, fz] = anchor.forward;
         out.push_str(&format!("forward = [{fx}, {fy}, {fz}]\n"));
         if let Some(width) = anchor.width_m {
-            if width > 0.0 {
-                out.push_str(&format!("width_m = {width}\n"));
-            }
+            out.push_str(&format!("width_m = {width}\n"));
         }
         if let Some(length) = anchor.length_m {
-            if length > 0.0 {
-                out.push_str(&format!("length_m = {length}\n"));
-            }
+            out.push_str(&format!("length_m = {length}\n"));
         }
         if let Some(vehicle_class) = &anchor.vehicle_class {
             if !vehicle_class.is_empty() {
@@ -447,13 +421,6 @@ fn validate_against_builtin_zoning(params: &ExportParams) -> Result<(), String> 
     Ok(())
 }
 
-fn normalized_placement_mode_key(value: &str) -> &'static str {
-    match value.trim() {
-        "explicit" => "explicit",
-        _ => "zoned_private",
-    }
-}
-
 fn anchor_type_key(anchor_type: AnchorType) -> &'static str {
     match anchor_type {
         AnchorType::Entrance => "entrance",
@@ -473,7 +440,7 @@ fn site_surface_material_key(material: SiteSurfaceMaterial) -> &'static str {
 }
 
 fn parse_placement_mode(value: &str) -> Result<PlacementMode, String> {
-    match normalized_placement_mode_key(value) {
+    match value.trim() {
         "zoned_private" => Ok(PlacementMode::ZonedPrivate),
         "explicit" => Ok(PlacementMode::Explicit),
         _ => Err(format!("unsupported placement_mode '{}'", value.trim())),
@@ -651,6 +618,14 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
     let field_resource = non_empty_optional_string(&params.field_resource);
     let field_area_mode =
         non_empty_optional_string(&params.field_area_mode).unwrap_or("player_polygon");
+    for (resource, mode, name) in [
+        (extractor_resource, &params.extractor_area_mode, "extractor"),
+        (field_resource, &params.field_area_mode, "field"),
+    ] {
+        if resource.is_none() && non_empty_optional_string(mode).is_some() {
+            return Err(format!("{name}_area_mode requires {name}_resource"));
+        }
+    }
     if let Some(service_class) = service_class {
         validate_service_class(service_class)?;
     }
@@ -696,6 +671,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
             validate_against_builtin_zoning(params)?;
             match zone_type {
                 "residential" => {
+                    if economy_profile.is_some() {
+                        return Err("residential buildings must not export economy_profile".into());
+                    }
                     if params.household_capacity.unwrap_or(0) == 0 {
                         return Err(
                             "residential zoned_private buildings require household_capacity"
@@ -716,6 +694,19 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                                 .to_owned(),
                         );
                     }
+                    if let Some(id) = economy_profile {
+                        let catalog = load_runtime_economy_catalog()?;
+                        let data = serde_json::json!({
+                            "asset_class": "building", "placement_mode": "zoned_private", "zone_type": zone_type,
+                        });
+                        if !catalog.profile_for_id(id).is_some_and(|profile| {
+                            crate::assets::authoring::profile_matches(&data, profile, &catalog)
+                        }) {
+                            return Err(format!(
+                                "economy_profile '{id}' is not an executable {zone_type} profile"
+                            ));
+                        }
+                    }
                 }
                 other => {
                     return Err(format!(
@@ -730,6 +721,16 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
                 || non_empty_optional_string(&params.density).is_some()
             {
                 return Err("explicit buildings must not export zone_type or density".to_owned());
+            }
+            if economy_profile.is_some()
+                && extractor_resource.is_none()
+                && field_resource.is_none()
+                && !service_class.is_some_and(is_utility_service_class)
+            {
+                return Err(
+                    "economy_profile requires an extractor, farm or utility building contract"
+                        .into(),
+                );
             }
             if let Some(service_class) = service_class {
                 if is_utility_service_class(service_class) {
@@ -773,94 +774,32 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
 
 // ── Public helpers called from SimulationNode ─────────────────────────────────
 
-/// Validates the JSON export params, writes `pack.toml` (if absent) and
-/// `assets/<asset_id>/asset.toml`, and returns an error string or `""` on success.
-pub fn validate_and_export_asset_internal(params_json: &str, output_dir: &str) -> String {
+/// Validate a draft's runtime metadata without writing files or requiring a live city.
+/// Mesh dependency existence is checked separately by the editor's packaging service.
+pub(crate) fn validate_asset_params_internal(params_json: &str) -> String {
     let params: ExportParams = match serde_json::from_str(params_json) {
-        Ok(p) => p,
-        Err(e) => {
-            let msg = format!("JSON parse error: {e}");
-            debug_log!("asset-editor", "{msg}");
-            return msg;
-        }
+        Ok(params) => params,
+        Err(error) => return format!("JSON parse error: {error}"),
     };
+    validated_tomls(&params).err().unwrap_or_default()
+}
 
-    debug_log!(
-        "asset-editor",
-        "export requested: class={} asset_id={} pack={}",
-        params.asset_class,
-        params.asset_id,
-        params.pack_id
-    );
-
+pub(crate) fn validated_tomls(params: &ExportParams) -> Result<(String, String), String> {
     if params.asset_class != "building" {
-        let msg = format!(
-            "unsupported asset_class '{}' (Step 5 handles buildings only)",
+        return Err(format!(
+            "unsupported asset_class '{}' (building authoring only)",
             params.asset_class
-        );
-        debug_log!("asset-editor", "{msg}");
-        return msg;
+        ));
     }
-
-    if let Err(err) = validate_building_export_contract(&params) {
-        debug_log!("asset-editor", "{err}");
-        return err;
-    }
-
-    // Build and round-trip validate the asset TOML.
-    let asset_toml = build_asset_toml(&params);
-    debug_log!("asset-editor", "generated asset.toml:\n{asset_toml}");
-    if let Err(e) = asset_toml.parse::<AssetManifest>() {
-        let msg = format!("validation error: {e}\n\nGenerated TOML:\n{asset_toml}");
-        debug_log!("asset-editor", "validation failed: {e}");
-        return msg;
-    }
-
-    // Build and validate the pack TOML.
-    let pack_toml = build_pack_toml(&params);
-    if let Err(e) = PackManifest::from_str(&pack_toml) {
-        let msg = format!("pack validation error: {e}");
-        debug_log!("asset-editor", "{msg}");
-        return msg;
-    }
-
-    // Write files.
-    let out = Path::new(output_dir);
-    if let Err(e) = std::fs::create_dir_all(out) {
-        let msg = format!("could not create output dir: {e}");
-        debug_log!("asset-editor", "{msg}");
-        return msg;
-    }
-
-    // pack.toml — only written when absent (re-export must not clobber pack metadata).
-    let pack_path = out.join("pack.toml");
-    if !pack_path.exists() {
-        if let Err(e) = std::fs::write(&pack_path, &pack_toml) {
-            let msg = format!("could not write pack.toml: {e}");
-            debug_log!("asset-editor", "{msg}");
-            return msg;
-        }
-        debug_log!("asset-editor", "wrote pack.toml → {}", pack_path.display());
-    } else {
-        debug_log!("asset-editor", "pack.toml already exists — skipping");
-    }
-
-    // assets/<asset_id>/asset.toml
-    let asset_dir = out.join("assets").join(&params.asset_id);
-    if let Err(e) = std::fs::create_dir_all(&asset_dir) {
-        let msg = format!("could not create asset dir: {e}");
-        debug_log!("asset-editor", "{msg}");
-        return msg;
-    }
-    let asset_toml_path = asset_dir.join("asset.toml");
-    if let Err(e) = std::fs::write(&asset_toml_path, &asset_toml) {
-        let msg = format!("could not write asset.toml: {e}");
-        debug_log!("asset-editor", "{msg}");
-        return msg;
-    }
-
-    debug_log!("asset-editor", "export OK → {}", asset_toml_path.display());
-    String::new() // success
+    validate_building_export_contract(params)?;
+    let asset_toml = build_asset_toml(params);
+    asset_toml
+        .parse::<AssetManifest>()
+        .map_err(|error| format!("validation error: {error}"))?;
+    let pack_toml = build_pack_toml(params);
+    PackManifest::from_str(&pack_toml)
+        .map_err(|error| format!("pack validation error: {error}"))?;
+    Ok((asset_toml, pack_toml))
 }
 
 /// Returns a JSON object describing the manifest for an already-registered asset,
@@ -888,6 +827,7 @@ pub fn get_asset_manifest_json_internal(
         "pack_id": entry.pack_id,
         "asset_id": m.asset_id,
         "display_name": m.display_name,
+        "thumbnail": m.thumbnail,
         "asset_set": m.asset_set,
         "tags": m.tags,
         "asset_class": m.class().map(|c| format!("{c:?}").to_lowercase()).unwrap_or_default(),
@@ -939,16 +879,8 @@ pub fn get_asset_manifest_json_internal(
         obj["min_zone_width_cells"] = serde_json::json!(b.min_zone_width_cells);
         obj["min_zone_depth_cells"] = serde_json::json!(b.min_zone_depth_cells);
         obj["level"] = serde_json::json!(b.level);
-        obj["household_capacity"] = serde_json::json!(if b.is_field_producer() {
-            Some(b.effective_household_capacity())
-        } else {
-            b.household_capacity
-        });
-        obj["flat_size_m2"] = serde_json::json!(if b.is_field_producer() {
-            Some(b.effective_flat_size_m2())
-        } else {
-            b.flat_size_m2
-        });
+        obj["household_capacity"] = serde_json::json!(b.household_capacity);
+        obj["flat_size_m2"] = serde_json::json!(b.flat_size_m2);
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
@@ -1046,29 +978,136 @@ mod tests {
     }
 
     #[test]
-    fn export_writes_files_to_temp_dir() {
-        let dir = std::env::temp_dir().join("metrum_export_test");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn godot_whole_number_json_is_lossless_but_fractions_and_overflow_fail() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.numeric")).unwrap();
+        for key in [
+            "lot_width_cells",
+            "lot_depth_cells",
+            "level",
+            "household_capacity",
+        ] {
+            data[key] = serde_json::json!(data[key].as_f64().unwrap());
+        }
+        assert!(validate_asset_params_internal(&data.to_string()).is_empty());
+        data["household_capacity"] = serde_json::json!(1.5);
+        assert!(validate_asset_params_internal(&data.to_string()).contains("whole number"));
+        data["household_capacity"] = serde_json::json!(4294967296.0);
+        assert!(validate_asset_params_internal(&data.to_string()).contains("range"));
+        data["household_capacity"] = serde_json::Value::Null;
+        let params: ExportParams = serde_json::from_value(data).unwrap();
+        assert_eq!(params.household_capacity, None);
+    }
 
-        let result = validate_and_export_asset_internal(
-            &minimal_building_json("building.residential.house"),
-            dir.to_str().unwrap(),
+    #[test]
+    fn round_trip_preserves_thumbnail_small_pivot_and_precise_area() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.precise")).unwrap();
+        data["thumbnail"] = serde_json::json!("preview.png");
+        data["flat_size_m2"] = serde_json::json!(60.125);
+        data["min_zone_width_cells"] = serde_json::json!(2);
+        data["mesh_parts"][0]["pivot_offset"] = serde_json::json!([0.00001, 0.0, 0.0]);
+        let params: ExportParams = serde_json::from_value(data).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert_eq!(manifest.thumbnail.as_deref(), Some("preview.png"));
+        assert_eq!(
+            manifest.building.as_ref().unwrap().flat_size_m2,
+            Some(60.125)
         );
-        assert!(result.is_empty(), "expected success, got: {result}");
+        assert_eq!(
+            manifest.building.as_ref().unwrap().min_zone_width_cells,
+            Some(2)
+        );
+        assert_eq!(
+            manifest.mesh_parts[0].pivot_offset,
+            Some([0.00001, 0.0, 0.0])
+        );
+        let mut registry = crate::assets::registry::AssetRegistry::new();
+        registry.register("test-pack", manifest, String::new());
+        let loaded: serde_json::Value = serde_json::from_str(&get_asset_manifest_json_internal(
+            &registry,
+            "test-pack:building.residential.precise",
+        ))
+        .unwrap();
+        assert_eq!(loaded["thumbnail"], "preview.png");
+        assert_eq!(loaded["flat_size_m2"], 60.125);
+    }
 
-        assert!(dir.join("pack.toml").exists());
+    #[test]
+    fn preflight_uses_export_validation_without_writing() {
+        let source = minimal_building_json("building.residential.preflight");
+        assert!(validate_asset_params_internal(&source).is_empty());
+        let mut invalid: serde_json::Value = serde_json::from_str(&source).unwrap();
+        invalid["anchors"] = serde_json::json!([]);
+        assert!(validate_asset_params_internal(&invalid.to_string()).contains("entrance"));
+    }
+
+    #[test]
+    fn export_rejects_unknown_placement_and_orphaned_area_metadata() {
+        let source: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.strict")).unwrap();
+        for mode in ["", "future_placement", "zoned_prvate"] {
+            let mut data = source.clone();
+            data["placement_mode"] = serde_json::json!(mode);
+            assert!(validate_asset_params_internal(&data.to_string()).contains("placement_mode"));
+        }
+        for kind in ["extractor", "field"] {
+            let mut data = source.clone();
+            data[format!("{kind}_area_mode")] = serde_json::json!("player_polygon");
+            assert!(
+                validate_asset_params_internal(&data.to_string())
+                    .contains(&format!("{kind}_area_mode requires {kind}_resource"))
+            );
+        }
+    }
+
+    #[test]
+    fn export_preserves_dormant_anchor_dimensions() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.dimensions"))
+                .unwrap();
+        data["anchors"][0]["width_m"] = serde_json::json!(0.0);
+        data["anchors"][0]["length_m"] = serde_json::json!(-1.0);
+        let params: ExportParams = serde_json::from_value(data).unwrap();
+        let (toml, _) = validated_tomls(&params).unwrap();
+        let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert_eq!(manifest.anchors[0].width_m, Some(0.0));
+        assert_eq!(manifest.anchors[0].length_m, Some(-1.0));
+    }
+
+    #[test]
+    fn publication_rejects_profiles_hidden_by_authoring_type() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.residential.profile")).unwrap();
+        data["economy_profile"] = serde_json::json!("grocery_basic");
+        assert!(validate_asset_params_internal(&data.to_string()).contains("economy_profile"));
+        data["placement_mode"] = serde_json::json!("explicit");
+        data["zone_type"] = serde_json::Value::Null;
+        data["density"] = serde_json::Value::Null;
+        for service in [None, Some("police")] {
+            data["service_class"] = serde_json::json!(service);
+            assert!(validate_asset_params_internal(&data.to_string()).contains("economy_profile"));
+        }
+    }
+
+    #[test]
+    fn commercial_export_rejects_extraction_profiles() {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&minimal_building_json("building.commercial.shop")).unwrap();
+        data["zone_type"] = serde_json::json!("commercial");
+        data["household_capacity"] = serde_json::Value::Null;
+        data["economy_profile"] = serde_json::json!("coal_mine_basic");
         assert!(
-            dir.join("assets")
-                .join("building.residential.house")
-                .join("asset.toml")
-                .exists()
+            validate_asset_params_internal(&data.to_string())
+                .contains("not an executable commercial profile")
         );
+        data["economy_profile"] = serde_json::json!("grocery_basic");
+        assert!(validate_asset_params_internal(&data.to_string()).is_empty());
     }
 
     #[test]
     fn export_writes_frontage_forward_separately_from_entrance_forward() {
-        let dir = std::env::temp_dir().join("metrum_export_frontage_forward");
-        let _ = std::fs::remove_dir_all(&dir);
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1094,23 +1133,18 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(result.is_empty(), "expected success, got: {result}");
 
-        let asset_toml = std::fs::read_to_string(
-            dir.join("assets")
-                .join("building.residential.frontage_split")
-                .join("asset.toml"),
-        )
-        .unwrap();
+        let asset_toml = validated_tomls(&serde_json::from_str(&json).unwrap())
+            .unwrap()
+            .0;
         assert!(asset_toml.contains("frontage_forward = [1, 0, 0]"));
         assert!(asset_toml.contains("forward = [0, 0, -1]"));
     }
 
     #[test]
     fn export_escapes_toml_strings() {
-        let dir = std::env::temp_dir().join("metrum_export_string_escape");
-        let _ = std::fs::remove_dir_all(&dir);
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test \"Pack\"",
@@ -1147,15 +1181,12 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(result.is_empty(), "expected success, got: {result}");
 
-        let asset_toml = std::fs::read_to_string(
-            dir.join("assets")
-                .join("building.residential.escaped_house")
-                .join("asset.toml"),
-        )
-        .unwrap();
+        let asset_toml = validated_tomls(&serde_json::from_str(&json).unwrap())
+            .unwrap()
+            .0;
         assert!(asset_toml.contains("name = \"bay \\\"north\\\"\\n\""));
         assert!(asset_toml.contains("vehicle_class = \"car\""));
         asset_toml
@@ -1164,33 +1195,14 @@ mod tests {
     }
 
     #[test]
-    fn export_does_not_overwrite_existing_pack_toml() {
-        let dir = std::env::temp_dir().join("metrum_export_no_overwrite");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("pack.toml"), "# sentinel\n").unwrap();
-
-        let result = validate_and_export_asset_internal(
-            &minimal_building_json("building.residential.house2"),
-            dir.to_str().unwrap(),
-        );
-        assert!(result.is_empty(), "expected success, got: {result}");
-
-        let content = std::fs::read_to_string(dir.join("pack.toml")).unwrap();
-        assert_eq!(content, "# sentinel\n", "pack.toml must not be overwritten");
-    }
-
-    #[test]
     fn export_rejects_unknown_json_fields() {
-        let dir = std::env::temp_dir().join("metrum_export_unknown_fields");
-        let _ = std::fs::remove_dir_all(&dir);
         let mut json: serde_json::Value = serde_json::from_str(&minimal_building_json(
             "building.residential.unknown_fields",
         ))
         .unwrap();
         json["legacy_field"] = serde_json::json!(true);
 
-        let result = validate_and_export_asset_internal(&json.to_string(), dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json.to_string());
         assert!(
             result.contains("unknown field"),
             "expected unknown-field parse error, got: {result}"
@@ -1199,7 +1211,6 @@ mod tests {
 
     #[test]
     fn export_rejects_invalid_asset_id() {
-        let dir = std::env::temp_dir().join("metrum_export_invalid");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1216,13 +1227,12 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(!result.is_empty(), "expected validation error");
     }
 
     #[test]
     fn export_rejects_zero_lot_cells() {
-        let dir = std::env::temp_dir().join("metrum_export_zero_lot");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1239,7 +1249,7 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(
             !result.is_empty(),
             "expected validation error for zero lot cells"
@@ -1248,9 +1258,6 @@ mod tests {
 
     #[test]
     fn export_writes_economy_profile_when_selected() {
-        let dir = std::env::temp_dir().join("metrum_export_economy_profile");
-        let _ = std::fs::remove_dir_all(&dir);
-
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1277,23 +1284,20 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(result.is_empty(), "expected success, got: {result}");
 
-        let asset_toml = std::fs::read_to_string(
-            dir.join("assets")
-                .join("building.commercial.grocery_test")
-                .join("asset.toml"),
-        )
-        .unwrap();
+        let asset_toml = validated_tomls(&serde_json::from_str(&json).unwrap())
+            .unwrap()
+            .0;
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
-        assert!(!asset_toml.contains("worker_capacity"));
-        assert!(!asset_toml.contains("household_capacity"));
-        assert!(!asset_toml.contains("flat_size_m2"));
+        assert!(asset_toml.contains("worker_capacity = 8"));
+        assert!(asset_toml.contains("household_capacity = 3"));
+        assert!(asset_toml.contains("flat_size_m2 = 60"));
     }
 
     #[test]
-    fn farm_export_preserves_living_area_and_reloads_one_household() {
+    fn farm_export_preserves_authored_fields_while_runtime_houses_one_family() {
         for area in [None, Some(180.0)] {
             let mut json: serde_json::Value =
                 serde_json::from_str(&minimal_building_json("building.farm")).unwrap();
@@ -1308,7 +1312,7 @@ mod tests {
             validate_building_export_contract(&params).unwrap();
             let manifest = AssetManifest::from_str(&build_asset_toml(&params)).unwrap();
             let building = manifest.building.as_ref().unwrap();
-            assert_eq!(building.household_capacity, Some(1));
+            assert_eq!(building.household_capacity, Some(9));
             assert_eq!(building.flat_size_m2, area);
             let mut registry = crate::assets::registry::AssetRegistry::new();
             registry.register("test-pack", manifest, String::new());
@@ -1319,16 +1323,13 @@ mod tests {
             assert_eq!(registry.flat_size_m2(id), resolved_area);
             let imported: serde_json::Value =
                 serde_json::from_str(&get_asset_manifest_json_internal(&registry, id)).unwrap();
-            assert_eq!(imported["household_capacity"], 1);
-            assert_eq!(imported["flat_size_m2"], serde_json::json!(resolved_area));
+            assert_eq!(imported["household_capacity"], 9);
+            assert_eq!(imported["flat_size_m2"], serde_json::json!(area));
         }
     }
 
     #[test]
     fn export_accepts_profile_bound_zoned_employment_without_worker_capacity() {
-        let dir = std::env::temp_dir().join("metrum_export_profile_bound_employment");
-        let _ = std::fs::remove_dir_all(&dir);
-
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1352,22 +1353,18 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(result.is_empty(), "expected success, got: {result}");
 
-        let asset_toml = std::fs::read_to_string(
-            dir.join("assets")
-                .join("building.industrial.profile_capacity")
-                .join("asset.toml"),
-        )
-        .unwrap();
+        let asset_toml = validated_tomls(&serde_json::from_str(&json).unwrap())
+            .unwrap()
+            .0;
         assert!(asset_toml.contains("economy_profile = \"food_processor_basic\""));
         assert!(!asset_toml.contains("worker_capacity"));
     }
 
     #[test]
     fn export_rejects_zoned_service_class() {
-        let dir = std::env::temp_dir().join("metrum_export_zoned_service_class");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1392,7 +1389,7 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(
             result.contains("zoned_private buildings must not export service_class"),
             "expected service-class validation error, got: {result}"
@@ -1401,7 +1398,6 @@ mod tests {
 
     #[test]
     fn export_rejects_utility_without_economy_profile() {
-        let dir = std::env::temp_dir().join("metrum_export_utility_without_profile");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1424,7 +1420,7 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(
             result.contains("explicit utility service buildings require economy_profile"),
             "expected utility profile validation error, got: {result}"
@@ -1433,7 +1429,6 @@ mod tests {
 
     #[test]
     fn export_rejects_invalid_service_class() {
-        let dir = std::env::temp_dir().join("metrum_export_invalid_service_class");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1457,7 +1452,7 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(
             result.contains("unsupported service_class 'sewage'"),
             "expected service-class enum validation error, got: {result}"
@@ -1466,7 +1461,6 @@ mod tests {
 
     #[test]
     fn export_rejects_utility_profile_for_wrong_service() {
-        let dir = std::env::temp_dir().join("metrum_export_wrong_utility_profile");
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1490,7 +1484,7 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(
             result.contains("does not provide the 'power' service"),
             "expected utility service mismatch error, got: {result}"
@@ -1499,8 +1493,6 @@ mod tests {
 
     #[test]
     fn export_writes_explicit_utility_profile() {
-        let dir = std::env::temp_dir().join("metrum_export_explicit_utility");
-        let _ = std::fs::remove_dir_all(&dir);
         let json = serde_json::json!({
             "pack_id": "test-pack",
             "pack_name": "Test Pack",
@@ -1524,15 +1516,12 @@ mod tests {
         })
         .to_string();
 
-        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        let result = validate_asset_params_internal(&json);
         assert!(result.is_empty(), "expected success, got: {result}");
 
-        let asset_toml = std::fs::read_to_string(
-            dir.join("assets")
-                .join("building.power.plant_test")
-                .join("asset.toml"),
-        )
-        .unwrap();
+        let asset_toml = validated_tomls(&serde_json::from_str(&json).unwrap())
+            .unwrap()
+            .0;
         assert!(asset_toml.contains("placement_mode = \"explicit\""));
         assert!(asset_toml.contains("service_class = \"power\""));
         assert!(asset_toml.contains("economy_profile = \"power_plant_basic\""));

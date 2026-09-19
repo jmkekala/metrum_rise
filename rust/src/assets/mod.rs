@@ -13,6 +13,8 @@
 //! are relative to the asset's folder within the pack.
 
 pub mod asset;
+pub(crate) mod authoring;
+pub mod lod_policy;
 pub mod pack;
 pub mod registry;
 pub mod scanner;

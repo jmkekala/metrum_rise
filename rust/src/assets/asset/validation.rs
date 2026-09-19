@@ -593,14 +593,14 @@ fn validate_building_site_surface(
         }
     }
 
-    if site_surface_polygon_signed_area(&surface.vertices).abs() <= 0.001 {
+    if super::geometry::signed_area(&surface.vertices).abs() <= 0.001 {
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': site surface '{}' has zero or near-zero polygon area",
             asset_id, surface.name
         )));
     }
 
-    if site_surface_polygon_self_intersects(&surface.vertices) {
+    if super::geometry::self_intersects(&surface.vertices) {
         return Err(ManifestError::Validation(format!(
             "asset_id '{}': site surface '{}' polygon self-intersects",
             asset_id, surface.name
@@ -609,68 +609,6 @@ fn validate_building_site_surface(
 
     Ok(())
 }
-
-fn site_surface_polygon_signed_area(vertices: &[[f32; 2]]) -> f32 {
-    let mut twice_area = 0.0;
-    for i in 0..vertices.len() {
-        let [ax, az] = vertices[i];
-        let [bx, bz] = vertices[(i + 1) % vertices.len()];
-        twice_area += ax * bz - bx * az;
-    }
-    twice_area * 0.5
-}
-
-fn site_surface_polygon_self_intersects(vertices: &[[f32; 2]]) -> bool {
-    for a in 0..vertices.len() {
-        let b = (a + 1) % vertices.len();
-        for c in (a + 1)..vertices.len() {
-            let d = (c + 1) % vertices.len();
-            if a == c || a == d || b == c || b == d {
-                continue;
-            }
-            if site_surface_segments_intersect(vertices[a], vertices[b], vertices[c], vertices[d]) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn site_surface_segments_intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
-    const EPS: f32 = 0.0001;
-    let ab_c = site_surface_orientation(a, b, c);
-    let ab_d = site_surface_orientation(a, b, d);
-    let cd_a = site_surface_orientation(c, d, a);
-    let cd_b = site_surface_orientation(c, d, b);
-
-    if ab_c.abs() <= EPS && site_surface_point_on_segment(a, b, c) {
-        return true;
-    }
-    if ab_d.abs() <= EPS && site_surface_point_on_segment(a, b, d) {
-        return true;
-    }
-    if cd_a.abs() <= EPS && site_surface_point_on_segment(c, d, a) {
-        return true;
-    }
-    if cd_b.abs() <= EPS && site_surface_point_on_segment(c, d, b) {
-        return true;
-    }
-
-    (ab_c > EPS) != (ab_d > EPS) && (cd_a > EPS) != (cd_b > EPS)
-}
-
-fn site_surface_orientation(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
-    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-}
-
-fn site_surface_point_on_segment(a: [f32; 2], b: [f32; 2], p: [f32; 2]) -> bool {
-    const EPS: f32 = 0.0001;
-    p[0] >= a[0].min(b[0]) - EPS
-        && p[0] <= a[0].max(b[0]) + EPS
-        && p[1] >= a[1].min(b[1]) - EPS
-        && p[1] <= a[1].max(b[1]) + EPS
-}
-
 fn validate_building_mesh_parts(
     asset_id: &str,
     mesh_parts: &[MeshPart],
@@ -718,7 +656,7 @@ fn validate_building_mesh_parts(
     Ok(())
 }
 
-fn validate_lods(
+pub(crate) fn validate_lods(
     asset_id: &str,
     part_name: Option<&str>,
     lods: &[LodEntry],

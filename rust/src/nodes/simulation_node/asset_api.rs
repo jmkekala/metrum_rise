@@ -503,20 +503,6 @@ impl SimulationNode {
         dict
     }
 
-    /// Validates the JSON export params, writes `pack.toml` (if absent) and
-    /// `assets/<asset_id>/asset.toml` under `output_dir`, and returns an error
-    /// string or `""` on success.
-    ///
-    /// `output_dir` must be an absolute native path (resolve `user://mods/<pack_id>/`
-    /// with `ProjectSettings.globalize_path` before passing it in).
-    #[func]
-    pub fn validate_and_export_asset(&self, params_json: GString, output_dir: GString) -> GString {
-        use crate::nodes::sim::asset_export::validate_and_export_asset_internal;
-        let result =
-            validate_and_export_asset_internal(&params_json.to_string(), &output_dir.to_string());
-        GString::from(result.as_str())
-    }
-
     /// Returns the simulation's default interior area for a newly authored farmhouse.
     #[func]
     pub fn get_default_farmhouse_area_m2(&self) -> f32 {

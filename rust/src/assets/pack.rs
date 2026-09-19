@@ -69,6 +69,49 @@ impl PackManifest {
     }
 }
 
+/// Shared TOML writer for pack creation and asset publication.
+pub(crate) fn manifest_toml(
+    id: &str,
+    name: &str,
+    version: &str,
+    author: &str,
+    license: &str,
+) -> String {
+    format!(
+        "pack_id = {}\nschema_version = {}\ndisplay_name = {}\nversion = {}\nauthor = {}\nlicense = {}\ndescription = \"\"\n",
+        toml_string(id),
+        CURRENT_SCHEMA_VERSION,
+        toml_string(name),
+        toml_string(version),
+        toml_string(author),
+        toml_string(license)
+    )
+}
+
+/// Escape all TOML basic-string control characters without changing authored text.
+pub(crate) fn toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            ch if ch.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04X}", ch as u32);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,6 +153,21 @@ license = "MIT"
         let m = PackManifest::from_str(toml).expect("parse failed");
         assert!(m.tags.is_empty());
         assert!(m.description.is_none());
+    }
+
+    #[test]
+    fn authoring_and_export_share_lossless_pack_escaping() {
+        let name = "Quoted \"pack\"\nwith\ttabs";
+        let author = "Backslash \\ and carriage\rreturn";
+        let parsed =
+            PackManifest::from_str(&manifest_toml("test-pack", name, "0.1.0", author, "CC0"))
+                .unwrap();
+        assert_eq!(parsed.display_name, name);
+        assert_eq!(parsed.author, author);
+        assert!(
+            PackManifest::from_str(&manifest_toml("../escape", name, "0.1.0", author, "CC0"))
+                .is_err()
+        );
     }
 
     #[test]

@@ -154,6 +154,12 @@ impl CameraNode {
         self.apply_camera_transform(self.camera_offset());
     }
 
+    /// Return the orbit pivot so editor chrome can center its unobscured preview without changing navigation.
+    #[func]
+    pub fn get_focus_position(&self) -> Vector3 {
+        self.pivot
+    }
+
     /// Pans the camera on the XZ plane relative to the current view.
     #[func]
     pub fn pan(&mut self, direction: Vector3, speed_mult: f32, delta: f32) {

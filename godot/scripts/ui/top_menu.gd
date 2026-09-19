@@ -45,6 +45,7 @@ enum ActionId {
 	HELP_ABOUT = 41,
 	ASSET_RELOAD_PACKS = 50,
 	ASSET_IMPORT_MESH = 51,
+	ASSET_RESET_LAYOUT = 52,
 	ECONOMY_RELOAD = 60,
 	ECONOMY_RUN_SANDBOX = 61,
 }
@@ -196,7 +197,8 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
 	file_popup.add_item("New Asset", ActionId.FILE_NEW_ASSET)
-	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
+	file_popup.add_item("Open Draft [Ctrl+L]", ActionId.FILE_LOAD)
+	file_popup.add_item("Save Draft [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
 	file_popup.id_pressed.connect(_on_file_menu_pressed)
@@ -205,6 +207,22 @@ func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 	asset_popup.add_item("Reload Packs", ActionId.ASSET_RELOAD_PACKS)
 	asset_popup.add_item("Import Mesh...", ActionId.ASSET_IMPORT_MESH)
 	asset_popup.id_pressed.connect(_on_asset_menu_pressed)
+	var view_popup := _add_menu_popup(menu_bar, "View")
+	view_popup.add_item("Reset layout", ActionId.ASSET_RESET_LAYOUT)
+	view_popup.id_pressed.connect(func(id):
+		if id == ActionId.ASSET_RESET_LAYOUT:
+			_scene_root.menu_reset_layout()
+	)
+
+func set_asset_document_open(active: bool) -> void:
+	if scene_kind != SCENE_ASSET_EDITOR:
+		return
+	for popup in _menu_bar.get_children():
+		if popup is PopupMenu:
+			for id in [ActionId.FILE_SAVE, ActionId.ASSET_IMPORT_MESH]:
+				var index: int = popup.get_item_index(id)
+				if index >= 0:
+					popup.set_item_disabled(index, not active)
 
 func _build_economy_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
@@ -278,7 +296,10 @@ func _on_file_menu_pressed(id: int) -> void:
 		ActionId.FILE_OPTIONS:
 			_open_options_window()
 		ActionId.FILE_QUIT:
-			get_tree().quit()
+			if _scene_root and _scene_root.has_method("menu_quit"):
+				_scene_root.menu_quit()
+			else:
+				get_tree().quit()
 
 func _on_view_menu_pressed(id: int) -> void:
 	match id:
