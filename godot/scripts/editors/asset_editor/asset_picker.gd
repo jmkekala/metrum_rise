@@ -8,9 +8,34 @@ const ANCHOR_RADIUS := 12.0
 const VERTEX_RADIUS := 8.0
 const EDGE_RADIUS := 8.0
 const REFERENCE_RADIUS := 10.0
+const DEPTH_EPSILON_M := 0.01
 
 var editor: Node
 var queries := 0
+var visibility_queries := 0
+var _point_visibility: Dictionary = {}
+var _visibility_revision := -1
+var _visibility_transform := Transform3D.IDENTITY
+var _visibility_projection := Projection()
+
+## Cache fixed handle visibility until camera/projection or preview geometry changes.
+func point_visible(camera: Camera3D, point: Vector3) -> bool:
+	if not in_depth_range(camera, point):
+		return false
+	var transform := camera.get_camera_transform()
+	var projection := camera.get_camera_projection()
+	var revision: int = editor._preview.visibility_revision
+	if revision != _visibility_revision or transform != _visibility_transform or projection != _visibility_projection:
+		_point_visibility.clear()
+		_visibility_revision = revision
+		_visibility_transform = transform
+		_visibility_projection = projection
+	if not _point_visibility.has(point):
+		visibility_queries += 1
+		var begin := camera.project_position(camera.unproject_position(point), camera.near)
+		var end := point - begin.direction_to(point) * DEPTH_EPSILON_M
+		_point_visibility[point] = editor._preview.pick_mesh_parts(begin, end).is_empty()
+	return _point_visibility[point]
 
 func _init(owner: Node) -> void:
 	editor = owner
@@ -19,9 +44,14 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 	queries += 1
 	var begin := camera.project_position(mouse, camera.near)
 	var end := camera.project_position(mouse, camera.far)
+	# Mesh depth is needed even when a selection filter excludes meshes.
+	var mesh_hits: Array[Dictionary] = editor._preview.pick_mesh_parts(begin, end)
+	var mesh_distance := INF
+	for hit in mesh_hits:
+		mesh_distance = minf(mesh_distance, hit["distance"])
 	var hits: Array[Dictionary] = []
 	if filter in ["mesh", "all"]:
-		hits = editor._preview.pick_mesh_parts(begin, end)
+		hits = mesh_hits
 	if filter in ["anchor", "all"]:
 		for index in editor._site_anchors_data.size():
 			var anchor: Dictionary = editor._site_anchors_data[index]
@@ -43,14 +73,20 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 				inside = length > 0 and absf(rel.dot(side)) <= width * 0.5 and rel.dot(forward) >= 0 and rel.dot(forward) <= length
 			var label_hit := _label_contains("anchor", index, mouse, camera)
 			if inside or label_hit or mouse.distance_to(camera.unproject_position(position)) <= ANCHOR_RADIUS:
-				var hit_pos: Vector3 = point if inside else position
+				var hit_pos: Vector3 = point if inside else _billboard_point(mouse, camera, position)
+				if label_hit:
+					hit_pos = _billboard_point(mouse, camera, editor._preview.site_label("anchor", index).global_position)
 				var hit := _hit("anchor", index, hit_pos, begin)
 				hit["label"] = label_hit
+				if not inside and not label_hit:
+					hit["occluded"] = not point_visible(camera, position)
 				hits.append(hit)
 	if filter in ["surface", "all"]:
 		for index in editor._site_surfaces_data.size():
 			var point = plane_hit(begin, end, surface_height(index))
 			var label_hit := _label_contains("surface", index, mouse, camera)
+			if label_hit:
+				point = _billboard_point(mouse, camera, editor._preview.site_label("surface", index).global_position)
 			if point != null and (label_hit or editor._site_surface_contains_world_xz(index, point)):
 				var hit := _hit("surface", index, point, begin)
 				hit["label"] = label_hit
@@ -62,6 +98,7 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 				var point := points[vertex]
 				if in_depth_range(camera, point) and mouse.distance_to(camera.unproject_position(point)) <= VERTEX_RADIUS:
 					var hit := _hit("vertex", selected, point, begin)
+					hit["occluded"] = not point_visible(camera, point)
 					hit["vertex"] = vertex
 					hit["screen_distance"] = mouse.distance_squared_to(camera.unproject_position(point))
 					hits.append(hit)
@@ -80,6 +117,10 @@ func collect(mouse: Vector2, camera: Camera3D, filter: String) -> Array[Dictiona
 		if not ghost.is_empty():
 			ghost.merge({"kind": "ghost", "index": 0})
 			hits.append(ghost)
+	for hit in hits:
+		# The reference's deliberate manipulation handle is the only x-ray exception.
+		if not hit.get("handle", false):
+			hit["occluded"] = hit.get("occluded", false) or hit["distance"] > mesh_distance + DEPTH_EPSILON_M
 	hits.sort_custom(_before)
 	return hits
 
@@ -87,7 +128,9 @@ func _hit(kind: String, index: int, position: Vector3, begin: Vector3) -> Dictio
 	return {"kind": kind, "index": index, "position": position, "distance": begin.distance_to(position)}
 
 func _before(a: Dictionary, b: Dictionary) -> bool:
-	# Site guides/labels render without depth testing. Pick their visible layer before geometry.
+	# Hidden targets remain available to Alt+click but never outrank visible geometry.
+	if a.get("occluded", false) != b.get("occluded", false):
+		return not a.get("occluded", false)
 	var a_layer := _pick_layer(a)
 	var b_layer := _pick_layer(b)
 	if a_layer != b_layer:
@@ -124,6 +167,9 @@ func _label_contains(kind: String, index: int, mouse: Vector2, camera: Camera3D)
 	var b := camera.unproject_position(label.global_position + basis.x * bounds.end.x + basis.y * bounds.end.y)
 	return Rect2(a, b - a).abs().grow(2.0).has_point(mouse)
 
+func _billboard_point(mouse: Vector2, camera: Camera3D, position: Vector3) -> Vector3:
+	return camera.project_position(mouse, -(camera.get_camera_transform().affine_inverse() * position).z)
+
 func surface_height(index: int) -> float:
 	return editor._anchor_number(editor._site_surfaces_data[index], "y_m", 0.01) + editor._preview.SITE_SURFACE_FILL_Y
 
@@ -155,6 +201,9 @@ func surface_edge(mouse: Vector2, camera: Camera3D) -> Dictionary:
 		if screen_distance <= distance:
 			var point = plane_hit(camera.project_position(screen_point, camera.near), camera.project_position(screen_point, camera.far), points[index].y)
 			if point == null:
+				continue
+			var begin := camera.project_position(screen_point, camera.near)
+			if not editor._preview.pick_mesh_parts(begin, point - begin.direction_to(point) * DEPTH_EPSILON_M).is_empty():
 				continue
 			distance = screen_distance
 			closest = {"surface": selected, "edge": index, "point": Vector2(point.x, point.z)}

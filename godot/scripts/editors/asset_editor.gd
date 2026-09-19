@@ -285,6 +285,14 @@ func menu_load() -> void:
 func menu_new_asset() -> void:
 	_session.new_asset_dialog()
 
+func menu_export_asset() -> void:
+	if not _session.has_document:
+		return
+	_session.validate()
+	_view.show_task("validate")
+	if not _view.inspector.visible:
+		_view.toggle_inspector()
+
 func menu_quit() -> void:
 	_session.guard(func(): get_tree().quit())
 
@@ -661,7 +669,7 @@ func _frame_selected_part() -> void:
 func _on_preview_lod_selected(index: int) -> void:
 	if not _has_selected_mesh_part():
 		return
-	_lod_preview.set_mode(index)
+	_lod_preview.set_mode(index, $CameraNode)
 	_lod_preview.update($CameraNode)
 
 func _on_add_part_lod_requested() -> void:
@@ -679,10 +687,10 @@ func _on_add_part_lod_requested() -> void:
 		_last_glb_dir = path.get_base_dir()
 		_save_config()
 		if _has_selected_mesh_part() and _parts[_selected_part_index] == part:
-			_view._preview_panel.set_part(part, part.lods.size() - 1)
 			_on_preview_lod_selected(part.lods.size() - 1)
 	)
 	add_child(dialog)
+	dialog.title = "Add LOD%d" % part.lods.size()
 	dialog.open(_last_glb_dir)
 
 func _on_asset_tree_activated() -> void:

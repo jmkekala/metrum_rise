@@ -30,7 +30,7 @@ var _revision := -1
 var _selected_surface := -2
 var _effective := ""
 var _cycle_keys: Array[String] = []
-var _cycle_index := 0
+var _cycle_index := -1
 var _cycle_mouse := Vector2.INF
 var _enabled := false
 
@@ -77,6 +77,7 @@ func update() -> void:
 		if _enabled:
 			hovered = {}
 			view.picking_overlay.clear()
+			editor._preview.set_hover_outline(PackedVector3Array())
 			view.hover_label.text = ""
 		_enabled = false
 		return
@@ -111,11 +112,11 @@ func refresh(mouse: Vector2, force: bool = false) -> void:
 		if hit["kind"] != "vertex":
 			keys.append(_key(hit))
 	if keys != _cycle_keys or mouse.distance_to(_cycle_mouse) > 3.0 or context_changed_flag:
-		_cycle_index = 0
+		_cycle_index = -1
 		_cycle_mouse = mouse
 	_cycle_keys = keys
-	hovered = hits[0] if not hits.is_empty() else {}
-	if _cycle_index > 0 and not keys.is_empty():
+	hovered = hits[0] if not hits.is_empty() and not hits[0].get("occluded", false) else {}
+	if _cycle_index >= 0 and not keys.is_empty():
 		for hit in hits:
 			if _key(hit) == keys[_cycle_index]:
 				hovered = hit
@@ -130,7 +131,10 @@ func cycle(mouse: Vector2) -> void:
 	refresh(mouse, true)
 	if _cycle_keys.is_empty():
 		return
-	_cycle_index = (_cycle_index + 1) % _cycle_keys.size()
+	if _cycle_index < 0:
+		_cycle_index = (0 if hovered.is_empty() else 1) % _cycle_keys.size()
+	else:
+		_cycle_index = (_cycle_index + 1) % _cycle_keys.size()
 	for hit in hits:
 		if _key(hit) == _cycle_keys[_cycle_index]:
 			hovered = hit
@@ -358,6 +362,8 @@ func _draw_hover(camera: Camera3D) -> void:
 	var view = editor._view
 	var overlay = view.picking_overlay
 	overlay.clear()
+	var outline := PackedVector3Array()
+	editor._preview.set_hover_outline(outline)
 	if _effective == "all" and editor._preview.has_scale_reference():
 		var centre: Vector3 = editor._preview.scale_reference_world_position()
 		if Picker.in_depth_range(camera, centre):
@@ -366,11 +372,11 @@ func _draw_hover(camera: Camera3D) -> void:
 	if _effective in ["anchor", "all"]:
 		for index in editor._site_anchors_data.size():
 			var point: Vector3 = picker.anchor_position(index)
-			if Picker.in_depth_range(camera, point):
+			if picker.point_visible(camera, point):
 				overlay.anchors.append(camera.unproject_position(point))
 	if _effective in ["surface", "all"] and editor._selected_site_surface_index >= 0:
 		for point in picker.surface_points(editor._selected_site_surface_index):
-			if Picker.in_depth_range(camera, point):
+			if picker.point_visible(camera, point):
 				overlay.vertices.append(camera.unproject_position(point))
 	view.hover_label.text = "%s · Click selects · Alt+click cycles overlaps" % _filter_label(_effective).capitalize()
 	if editor._preview.scale_reference_selected:
@@ -387,21 +393,19 @@ func _draw_hover(camera: Camera3D) -> void:
 			points = editor._preview.mesh_part_world_corners(index)
 			for edge in [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]]:
 				if points.size() == 8:
-					_line(camera, points[edge[0]], points[edge[1]])
+					outline.append(points[edge[0]])
+					outline.append(points[edge[1]])
 		"surface", "vertex":
 			title = "Yard: " + editor._site_surface_display_label(index)
 			points.assign(picker.surface_points(index))
 			for edge in points.size():
-				_line(camera, points[edge], points[(edge + 1) % points.size()])
+				outline.append(points[edge] + Vector3(0, 0.01, 0))
+				outline.append(points[(edge + 1) % points.size()] + Vector3(0, 0.01, 0))
 			if hovered["kind"] == "vertex":
 				title += " · vertex %d" % (hovered["vertex"] + 1)
 		"anchor": title = "Anchor: " + editor._site_anchor_display_label(index)
-	if hovered["kind"] != "reference":
+	if hovered["kind"] != "reference" and not hovered.get("occluded", false):
 		overlay.marker = camera.unproject_position(hovered["position"])
 		overlay.marker_radius = Picker.ANCHOR_RADIUS if hovered["kind"] == "anchor" else Picker.VERTEX_RADIUS
 	view.hover_label.text = title + (" · %d overlaps · Alt+click: next" % _cycle_keys.size() if _cycle_keys.size() > 1 else "")
-
-func _line(camera: Camera3D, a: Vector3, b: Vector3) -> void:
-	if Picker.in_depth_range(camera, a) and Picker.in_depth_range(camera, b):
-		editor._view.picking_overlay.lines.append(camera.unproject_position(a))
-		editor._view.picking_overlay.lines.append(camera.unproject_position(b))
+	editor._preview.set_hover_outline(outline)

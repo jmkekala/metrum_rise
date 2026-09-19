@@ -30,6 +30,7 @@ enum ActionId {
 	FILE_SAVE_AS = 8,
 	FILE_NEW_ASSET = 9,
 	FILE_OPTIONS = 70,
+	FILE_EXPORT_ASSET = 71,
 	VIEW_TOGGLE_ZONING = 10,
 	VIEW_OVERLAY_NONE = 11,
 	VIEW_OVERLAY_POLLUTION = 12,
@@ -197,6 +198,8 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
 	file_popup.add_item("New Asset", ActionId.FILE_NEW_ASSET)
+	file_popup.add_item("Export Asset…", ActionId.FILE_EXPORT_ASSET)
+	file_popup.add_separator()
 	file_popup.add_item("Open Draft [Ctrl+L]", ActionId.FILE_LOAD)
 	file_popup.add_item("Save Draft [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
@@ -219,7 +222,7 @@ func set_asset_document_open(active: bool) -> void:
 		return
 	for popup in _menu_bar.get_children():
 		if popup is PopupMenu:
-			for id in [ActionId.FILE_SAVE, ActionId.ASSET_IMPORT_MESH]:
+			for id in [ActionId.FILE_SAVE, ActionId.FILE_EXPORT_ASSET, ActionId.ASSET_IMPORT_MESH]:
 				var index: int = popup.get_item_index(id)
 				if index >= 0:
 					popup.set_item_disabled(index, not active)
@@ -281,6 +284,9 @@ func _on_file_menu_pressed(id: int) -> void:
 		ActionId.FILE_NEW_ASSET:
 			if _scene_root and _scene_root.has_method("menu_new_asset"):
 				_scene_root.menu_new_asset()
+		ActionId.FILE_EXPORT_ASSET:
+			if _scene_root and _scene_root.has_method("menu_export_asset"):
+				_scene_root.menu_export_asset()
 		ActionId.FILE_SAVE:
 			if _scene_root and _scene_root.has_method("menu_save"):
 				_scene_root.menu_save()

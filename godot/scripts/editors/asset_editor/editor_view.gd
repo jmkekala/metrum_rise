@@ -85,8 +85,6 @@ var derived_workers: Label
 var issues_box: VBoxContainer
 var thumbnail: TextureRect
 var part_properties: Control
-var model_picker: OptionButton
-var model_sections: Array[Control] = []
 var anchor_properties: Control
 var surface_properties: Control
 var site_picker: OptionButton
@@ -94,7 +92,6 @@ var site_sections: Array[Control] = []
 var advanced_groups: Dictionary = {}
 var undo_button: Button
 var redo_button: Button
-var materials_label: Label
 var catalog_refresh: Button
 var export_summary: Label
 var inspector: PanelContainer
@@ -130,8 +127,7 @@ func _build_ui() -> void:
 	_theme_root.add_child(toolbar)
 	button(toolbar, "Library", toggle_library)
 	button(toolbar, "New asset…", _editor.menu_new_asset)
-	button(toolbar, "Open draft…", _editor._session.open_draft_dialog)
-	button(toolbar, "Save draft", _editor.menu_save)
+	button(toolbar, "Export asset…", _editor.menu_export_asset).tooltip_text = "Review the destination and validation issues, then export the asset to its game content pack."
 	undo_button = button(toolbar, "Undo", _editor._session.undo)
 	redo_button = button(toolbar, "Redo", _editor._session.redo)
 	button(toolbar, "Diagnostics", toggle_diagnostics)
@@ -153,6 +149,7 @@ func _build_ui() -> void:
 	button(preview_bar, "Lighting & quality…", open_preview_popup)
 	frame_button = button(preview_bar, "Frame selection", _editor._frame_selected_part)
 	scale_reference_button = CheckButton.new()
+	scale_reference_button.flat = false
 	scale_reference_button.text = "Scale reference"
 	scale_reference_button.tooltip_text = "Show a 1.8 m scale reference. Click its figure or circular handle to select; left-drag moves it freely across the ground. Escape cancels. Preview only; never exported."
 	scale_reference_button.toggled.connect(_editor._selection.set_scale_reference_visible)
@@ -236,7 +233,6 @@ func _build_welcome(parent: Control) -> void:
 	title.add_theme_font_size_override("font_size", 24)
 	box.add_child(title)
 	button(box, "New asset…", _editor.menu_new_asset)
-	button(box, "Open draft…", _editor._session.open_draft_dialog)
 	button(box, "Browse asset library", toggle_library)
 
 func set_document_open(active: bool) -> void:
@@ -325,7 +321,7 @@ func _build_preview_popup(parent: Node) -> void:
 	_preview_panel.quality_changed.connect(_editor._on_preview_quality_changed)
 	_preview_panel.part_changed.connect(func(): _editor._sync_preview_lods(); _editor._session.capture_geometry("Edit LOD chain"))
 	_preview_panel.add_lod_requested.connect(_editor._on_add_part_lod_requested)
-	_preview_panel.frame_requested.connect(_editor._frame_selected_part)
+	_preview_panel.replace_lod_requested.connect(_editor._session.relink_selected_part)
 	scroll.add_child(_preview_panel)
 
 func open_preview_popup() -> void:
@@ -359,11 +355,6 @@ func show_site(index: int) -> void:
 	for i in site_sections.size():
 		site_sections[i].visible = i == index
 	_editor._selection.context_changed()
-
-func show_model(index: int) -> void:
-	model_picker.select(index)
-	for i in model_sections.size():
-		model_sections[i].visible = i == index
 
 func reveal_field(section: String, field: String) -> void:
 	show_task(section)
@@ -471,6 +462,11 @@ func _apply_editor_theme(root: Node) -> void:
 		hover_label.add_theme_color_override("font_color", Color.WHITE)
 	if root != _theme_root:
 		return
+	# Unlike inspector switches, this toggle sits over the sky. Reuse the adjacent button's
+	# opaque palette and padding for every state, including checked + hovered.
+	for state in ["normal", "hover", "pressed", "hover_pressed", "focus", "disabled"]:
+		scale_reference_button.add_theme_stylebox_override(state, frame_button.get_theme_stylebox("pressed" if state == "hover_pressed" else state))
+	scale_reference_button.add_theme_color_override("font_hover_pressed_color", EditorTheme.color(_theme_mode, "text"))
 	for extra in [_asset_context_menu, _site_surface_context_menu, _pack_select_menu, _pack_create_window, _retarget_export_window, preview_popup]:
 		if is_instance_valid(extra):
 			if extra is AcceptDialog:

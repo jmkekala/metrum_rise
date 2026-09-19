@@ -8,7 +8,6 @@ const REFERENCE_COLOR := Color(1.0, 0.55, 0.23)
 enum Mode { AUTHORED, OFF, ON }
 
 var _surfaces: Array[Dictionary] = []
-var _source_catalog: Array[Dictionary] = []
 var _mode := -1
 var _strength := -1.0
 
@@ -17,12 +16,7 @@ func capture(root: Node) -> void:
 		var instance := root as MeshInstance3D
 		if instance.mesh:
 			for surface in instance.mesh.get_surface_count():
-				var source := instance.get_active_material(surface)
-				var material := source as BaseMaterial3D
-				_source_catalog.append({"name": source.resource_name if source != null and not source.resource_name.is_empty() else "%s / surface %d" % [instance.name, surface],
-					"type": source.get_class() if source != null else "Default material",
-					"albedo_texture": material != null and material.albedo_texture != null,
-					"emission_texture": material != null and material.emission_texture != null})
+				var material := instance.get_active_material(surface) as BaseMaterial3D
 				if material == null or material.emission_texture == null:
 					continue
 				_surfaces.append({"instance": instance, "surface": surface,
@@ -54,6 +48,3 @@ func apply(mode: int, strength: float) -> void:
 
 func surface_count() -> int:
 	return _surfaces.size()
-
-func source_catalog() -> Array[Dictionary]:
-	return _source_catalog.duplicate(true)

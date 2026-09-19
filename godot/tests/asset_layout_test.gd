@@ -48,15 +48,16 @@ func _welcome(editor: Node) -> void:
 	_expect(editor._session._issues.is_empty() and view.issues_box.get_child_count() == 0, "welcome has no validation issues")
 	_expect(not view.library.visible and not view.diagnostics.visible, "startup never opens auxiliary panes")
 	var buttons: Array = view.welcome.find_children("*", "Button", true, false)
-	_expect(buttons.size() == 3, "welcome offers exactly create, open and library actions")
+	_expect(buttons.size() == 2, "welcome prioritizes create and library; drafts remain in File")
 	for window in editor.find_children("*", "Window", true, false):
 		_expect(not window.visible, "startup never opens a modal")
 	editor.menu_save()
 	editor.menu_import_mesh()
+	editor.menu_export_asset()
 	_expect(not editor._session.document.is_dirty(), "disabled authoring actions cannot create a phantom document")
 	for popup in editor._top_menu._menu_bar.get_children():
 		if popup is PopupMenu:
-			for id in [editor._top_menu.ActionId.FILE_SAVE, editor._top_menu.ActionId.ASSET_IMPORT_MESH]:
+			for id in [editor._top_menu.ActionId.FILE_SAVE, editor._top_menu.ActionId.FILE_EXPORT_ASSET, editor._top_menu.ActionId.ASSET_IMPORT_MESH]:
 				var index: int = popup.get_item_index(id)
 				if index >= 0:
 					_expect(popup.is_item_disabled(index), "document-only menu actions are disabled")
@@ -74,6 +75,8 @@ func _bounds(editor: Node, label: String) -> void:
 	_expect(editor._top_menu._shell.size.x >= logical.x - 1, label + ": menu shell spans the window (%s / %s)" % [editor._top_menu._shell.size.x, logical.x])
 	_expect(editor._top_menu._menu_bar.size.x >= 180, label + ": menu labels have room (%s)" % editor._top_menu._menu_bar.size)
 	_expect(not view._preview_view_rect.get_global_rect().intersects(view.inspector.get_global_rect()), label + ": inspector and preview do not overlap")
+	if view.task_picker.selected == view.TASKS.find("model") and view.part_properties.visible:
+		_expect(view._preview_panel._add.is_visible_in_tree() and pane.encloses(view._preview_panel._add.get_global_rect()), label + ": Add LOD is immediately reachable without scrolling or changing a subsection")
 
 func _capture(name: String) -> void:
 	if _capture_dir.is_empty():
@@ -109,9 +112,10 @@ func _run() -> void:
 	_expect(editor._session._creation.visible, "New asset opens type-first creation only on request")
 	editor._session._creation.hide()
 	_welcome(editor)
-	editor.menu_load()
+	var file_menu: PopupMenu = editor._top_menu._menu_bar.get_node("File")
+	file_menu.id_pressed.emit(editor._top_menu.ActionId.FILE_LOAD)
 	var picker: FileDialog = editor.get_child(editor.get_child_count() - 1)
-	_expect(picker.visible, "Open draft is reachable from welcome")
+	_expect(picker.visible, "File > Open Draft remains reachable from welcome")
 	picker.hide()
 	_create(editor)
 	await _settle(editor)
@@ -122,6 +126,7 @@ func _run() -> void:
 	_expect(editor._view.model_hint.visible and not editor._view._mesh_part_list.visible, "empty Model task invites import without an empty list")
 	_bounds(editor, "fresh editing")
 	await _capture("editing-empty-model")
+	await _test_export_navigation(editor)
 	await _test_model(editor)
 	for scale in [1.0, 1.5, 2.0]:
 		root.content_scale_factor = scale
@@ -161,6 +166,9 @@ func _run() -> void:
 	editor._session._save_to("user://layout-test.metrum-draft")
 	editor._add_site_anchor("entrance")
 	editor._session.capture_geometry("Add entrance")
+	await _test_export_navigation(editor)
+	editor._view.toggle_inspector()
+	await _settle(editor)
 	editor._session.publish()
 	_expect(editor._session._issues.is_empty(), "library fixture publishes")
 	editor.free()
@@ -232,6 +240,48 @@ func _run() -> void:
 	if _failures == 0:
 		print("PASS asset_layout_test")
 	quit(0 if _failures == 0 else 1)
+
+func _test_export_navigation(editor: Node) -> void:
+	var view = editor._view
+	var export_button: Button
+	for control in view.toolbar.get_children():
+		if control is Button:
+			_expect(not control.text.to_lower().contains("draft"), "draft actions do not occupy the main toolbar")
+			if control.text == "Export asset…":
+				export_button = control
+	_expect(export_button != null, "main toolbar exposes Export asset")
+	if export_button == null:
+		return
+	var before: Dictionary = editor._session.document.snapshot()
+	var dirty: bool = editor._session.document.is_dirty()
+	var output: String = ProjectSettings.globalize_path("user://mods/layout-test/assets/" + str(before["params"]["asset_id"]))
+	_expect(not DirAccess.dir_exists_absolute(output), "navigation fixture has not been published")
+	var file_menu: PopupMenu = editor._top_menu._menu_bar.get_node("File")
+	var export_id: int = editor._top_menu.ActionId.FILE_EXPORT_ASSET
+	var export_index := file_menu.get_item_index(export_id)
+	_expect(export_index >= 0 and not file_menu.is_item_disabled(export_index), "File > Export Asset is enabled for an open document")
+	for action: Callable in [func(): export_button.pressed.emit(), func(): file_menu.id_pressed.emit(export_id)]:
+		view.show_task("model")
+		if view.inspector.visible:
+			view.toggle_inspector()
+		await _settle(editor)
+		action.call()
+		await _settle(editor)
+		_expect(view.inspector.is_visible_in_tree() and view.task_picker.selected == view.TASKS.find("validate"), "export entry points reveal validation even with the inspector collapsed")
+		_expect(view.tasks["validate"].is_visible_in_tree() and view.export_summary.text.contains("user://mods/layout-test/assets/"), "export review displays its destination")
+		_expect(not editor._layout.inspector_collapsed, "export navigation synchronizes the inspector collapse preference")
+		_expect(editor._session.document.snapshot() == before and editor._session.document.is_dirty() == dirty, "export review does not change the document or draft save state")
+		_expect(not DirAccess.dir_exists_absolute(output), "opening export review never publishes, even when valid")
+		_bounds(editor, "export review")
+	var save_index := file_menu.get_item_index(editor._top_menu.ActionId.FILE_SAVE)
+	_expect(save_index >= 0 and not file_menu.is_item_disabled(save_index), "File > Save Draft remains enabled")
+	if editor._session.document.draft_path().is_empty():
+		file_menu.id_pressed.emit(editor._top_menu.ActionId.FILE_SAVE)
+		var picker: FileDialog = editor.get_child(editor.get_child_count() - 1)
+		_expect(picker.visible and picker.file_mode == FileDialog.FILE_MODE_SAVE_FILE, "File > Save Draft opens the draft save dialog")
+		picker.hide()
+	await _capture("export-review")
+	view.show_task("model")
 
 func _test_model(editor: Node) -> void:
 	var fixture := Node3D.new()

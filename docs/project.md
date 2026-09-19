@@ -16,24 +16,38 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   suites, six adjacent bridge suites and four rendered editor suites pass.
   Startup now shows a welcome screen; assets open in Model with a bounded, collapsible 420-pixel
   inspector, contextual actions, and View → Reset layout. Library/log open on demand; missing meshes
-  can be relinked and thumbnails survive publication. Direct viewport clicks select any object and
-  open its settings; visible anchor guides/labels take priority over the yard beneath them. Triangle
+  can be relinked and thumbnails survive publication. Toolbar/File **Export asset…** now opens the
+  validation/destination review even with the inspector collapsed; draft open/save are secondary File actions.
+  Model exposes the LOD chain and Add/Replace controls directly; clicking a tier previews it live,
+  while Placement expands below. The read-only Source materials summary and its unused catalog
+  are removed; preview emission and source materials are unchanged. Any tier can be relinked with undo/redo.
+  Automatic highlights and targets the actually rendered LOD on mesh selection and zoom, without
+  forcing it. Add/Replace and list clicks preview a tier temporarily; camera movement resumes
+  Automatic so close-ups cannot stay stuck on an imported coarse tier.
+  Projected-size diagnostics are tucked into collapsed LOD details; active LOD/triangles stay visible.
+  Direct viewport clicks select any object and
+  open its settings; visible anchor guides/labels take priority over the yard beneath them. Depth
+  testing now hides frontage/site guides and hover outlines behind meshes; hidden anchors no longer
+  intercept ordinary clicks, while Alt+click retains deliberate access to hidden targets. Triangle
   picking, hover feedback, Alt+click overlap cycling and thresholded drags remain; inspector tasks
   no longer restrict selection. Layout saves before tree exit, avoiding the detached-window error.
   The 1.8 m scale reference is directly selectable and freely draggable across the ground, including
   over yards/outside the lot; it preserves placement through preview rebuilds without touching asset history.
+  Its toolbar switch has an opaque themed background so the label remains readable over the night sky.
   Generated authoring/startup/selection and rendered
   multi-size/100–200% UI-scale regressions pass. See
   [the contract and verification](asset_editor.md#task-oriented-building-authoring--tools-06).
 
 - **Asset previews (`TOOLS-04`)**: placeholder scene templates are replaced by working day/night,
-  emission and authored-LOD inspection. Mesh-part state, editor views and package I/O have separate
+  emission and authored-LOD inspection. Window emission now follows preview time by default:
+  Night lights supported windows automatically; manual material overrides remain preview-only.
+  Mesh-part state, editor views and package I/O have separate
   owners; staged saves preserve complete LOD chains and external dependencies. Frontage/access guides
   share compact filled arrows, softer colors, fine outlines and lighter labels/handles. Roadside/traffic
   scenes and gameplay building LOD switching remain deferred. See [the editor contract and checks](asset_editor.md#working-building-previews-and-safe-packaging--tools-04).
 
 - **Automatic asset LOD inspection (`TOOLS-05`)**: a shared Rust screen-size policy now drives
-  cached automatic preview tiers, quality presets and per-part forced inspection. Pixel/triangle
+  cached automatic preview tiers, quality presets and temporary per-part inspection. Pixel/triangle
   readouts expose the decision; saved metre bands are preserved but do not drive the preview.
   Art calibration, schema migration and spatial gameplay integration remain separate work.
   See [the policy and verification scope](asset_editor.md#shared-lod-policy-and-automatic-inspection--tools-05).

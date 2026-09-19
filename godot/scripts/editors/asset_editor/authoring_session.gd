@@ -173,33 +173,41 @@ func capture_geometry(label: String = "Edit geometry") -> void:
 	document.apply(_adapter.capture(document.snapshot()), label)
 	_capturing = false
 
-func relink_selected_part() -> void:
+func relink_selected_part(lod_index: int = 0) -> void:
 	var index: int = _editor._selected_part_index
 	if index < 0:
 		return
+	var part = _editor._parts[index]
 	var dialog := MeshImportDialog.new()
 	dialog.theme_mode = _editor._view._theme_mode
-	dialog.mesh_selected.connect(func(path): replace_part_source(index, path))
+	dialog.mesh_selected.connect(func(path):
+		var current_index: int = _editor._parts.find(part)
+		if current_index < 0:
+			return
+		replace_part_source(current_index, path, lod_index)
+		_editor._select_mesh_part(current_index)
+		_editor._on_preview_lod_selected(lod_index)
+	)
 	_editor.add_child(dialog)
+	dialog.title = "Replace LOD%d" % lod_index
 	dialog.open(_editor._last_glb_dir)
 
-func replace_part_source(index: int, path: String) -> void:
+func replace_part_source(index: int, path: String, lod_index: int = 0) -> void:
 	var next := document.snapshot()
 	var entry: Dictionary = next["params"]["mesh_parts"][index]
 	if entry.get("lods", []).is_empty():
 		entry["lods"] = [{"file": path.get_file(), "distance_min_m": 0.0}]
 	else:
-		entry["lods"][0]["file"] = path.get_file()
+		entry["lods"][lod_index]["file"] = path.get_file()
 	if not next.has("sources"):
 		next["sources"] = []
 	while next["sources"].size() <= index:
 		next["sources"].append([])
-	if next["sources"][index].is_empty():
-		next["sources"][index].append(path)
-	else:
-		next["sources"][index][0] = path
+	while next["sources"][index].size() <= lod_index:
+		next["sources"][index].append("")
+	next["sources"][index][lod_index] = path
 	_adapter.forget_sources()
-	document.apply(next, "Replace LOD0 source")
+	document.apply(next, "Replace LOD%d source" % lod_index)
 
 func selection_changed() -> void:
 	var view = _editor._view
@@ -211,14 +219,6 @@ func selection_changed() -> void:
 	view.surface_properties.visible = _editor._selected_site_surface_index >= 0
 	if view.part_properties.visible or view.anchor_properties.visible or view.surface_properties.visible:
 		_editor._preview.set_scale_reference_selected(false)
-	if view.part_properties.visible:
-		var index: int = _editor._selected_part_index
-		var part = _editor._parts[index]
-		var material_lines: Array[String] = ["LOD0 materials · source-owned"]
-		for material: Dictionary in _editor._preview.mesh_part_source_materials(index, part.source_path()):
-			material_lines.append("%s — %s%s" % [material["name"], "albedo texture" if material["albedo_texture"] else material["type"], ", emission texture" if material["emission_texture"] else ""])
-		material_lines.append("Edit source materials in your model file; lighting overrides are preview-only.")
-		view.materials_label.text = "\n".join(material_lines)
 	var anchor: Dictionary = _editor._site_anchors_data[_editor._selected_site_anchor_index] if view.anchor_properties.visible else {}
 	var kind := str(anchor.get("anchor_type", ""))
 	for key in ["_anchor_vehicle", "_anchor_width"]:

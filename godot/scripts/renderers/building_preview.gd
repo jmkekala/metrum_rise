@@ -49,6 +49,7 @@ const SCALE_REFERENCE_COLOR := Color(1.0, 0.85, 0.1)
 var _mesh_instance: Node3D
 var _authoring_policy := AssetAuthoringPolicy.new()
 var _selection_overlay: MeshInstance3D
+var _hover_outline: MeshInstance3D
 var _lot_plane: MeshInstance3D
 var _site_surface_fill: MeshInstance3D
 var _site_surface_overlay: MeshInstance3D
@@ -72,6 +73,8 @@ var _active_lod_paths: Array[String] = []
 var lod_revision := 0
 ## Invalidates editor hover queries on geometry, active LOD or guide changes.
 var pick_revision := 0
+## Occluders and fixed site handles changed; moving preview helpers does not invalidate this.
+var visibility_revision := 0
 ## Diagnostic BVH-cache build count, independent of pointer motion and transforms.
 var pick_build_count := 0
 ## Diagnostic import count; warmed LOD switches must not increment this.
@@ -120,6 +123,9 @@ func _ready() -> void:
 
 	_selection_overlay = MeshInstance3D.new()
 	add_child(_selection_overlay)
+	_hover_outline = MeshInstance3D.new()
+	_hover_outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_hover_outline)
 
 	_site_surface_fill = MeshInstance3D.new()
 	_site_surface_fill.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -177,6 +183,7 @@ func _append_part(scene: Node3D, native_path: String) -> AABB:
 	_active_lod_paths.append(native_path)
 	lod_revision += 1
 	pick_revision += 1
+	visibility_revision += 1
 	var aabb := _compute_aabb(scene as Node3D) if scene is Node3D else AABB()
 	_mesh_part_aabbs.append(aabb)
 	_rebuild_overlays()
@@ -200,6 +207,7 @@ func set_mesh_part_lod(part_index: int, native_path: String) -> bool:
 	materials.apply(_emission_mode, _emission_strength)
 	_active_lod_paths[part_index] = native_path
 	pick_revision += 1
+	visibility_revision += 1
 	return true
 
 ## Preload on document/chain changes, never from the automatic camera-update path.
@@ -216,6 +224,7 @@ func prepare_mesh_part_lods(part_index: int, paths: Array[String]) -> Array[Stri
 			cache.erase(path)
 	lod_revision += 1
 	pick_revision += 1
+	visibility_revision += 1
 	return failed
 
 func _cache_lod(part_index: int, path: String) -> bool:
@@ -255,6 +264,20 @@ func pick_mesh_parts(begin: Vector3, end: Vector3) -> Array[Dictionary]:
 func pick_ghost(begin: Vector3, end: Vector3) -> Dictionary:
 	return _ghost_pick.intersect(begin, end) if _ghost_has_mesh and _ghost_pick != null else {}
 
+## Draw world-space hover segments so the depth buffer clips them behind imported geometry.
+func set_hover_outline(points: PackedVector3Array) -> void:
+	if points.is_empty():
+		_hover_outline.mesh = null
+		return
+	var mesh := ImmediateMesh.new()
+	mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	mesh.surface_set_color(Color(0.2, 0.95, 1.0))
+	for point in points:
+		mesh.surface_add_vertex(to_local(point))
+	mesh.surface_end()
+	mesh.surface_set_material(0, _new_overlay_material())
+	_hover_outline.mesh = mesh
+
 ## Current visible site label, without stale nodes awaiting queue_free after a guide rebuild.
 func site_label(kind: String, index: int) -> Label3D:
 	var labels := _site_anchor_labels if kind == "anchor" else _site_surface_labels
@@ -273,12 +296,6 @@ func mesh_part_materials(index: int) -> PreviewMaterials:
 func mesh_part_triangles(index: int) -> int:
 	var cache := _part_lod_cache[index]
 	return int(cache[_active_lod_paths[index]]["triangles"]) if cache.has(_active_lod_paths[index]) else 0
-
-## Authored source-material metadata, unaffected by preview emission overrides.
-func mesh_part_source_materials(index: int, source_path: String) -> Array[Dictionary]:
-	if index < 0 or index >= _part_lod_cache.size() or not _part_lod_cache[index].has(source_path):
-		return []
-	return _part_lod_cache[index][source_path]["materials"].source_catalog()
 
 func mesh_part_transform(index: int) -> Transform3D:
 	return _mesh_parts[index].global_transform
@@ -350,6 +367,7 @@ func set_mesh_part_transform(
 	root.position = position + pivot
 	lod_revision += 1
 	pick_revision += 1
+	visibility_revision += 1
 	_build_selection_overlay()
 
 ## Mark the selected mesh parts with corner handles in the preview.
@@ -366,6 +384,7 @@ func set_selected_mesh_parts(indices: Array, active_index: int = -1) -> void:
 ## Replace the editor-only site anchor preview list.
 func set_site_anchors(anchors: Array, selected_indices: Array = [], active_index: int = -1) -> void:
 	pick_revision += 1
+	visibility_revision += 1
 	_site_anchors.clear()
 	for anchor in anchors:
 		if anchor is Dictionary:
@@ -386,6 +405,7 @@ func set_site_anchors(anchors: Array, selected_indices: Array = [], active_index
 ## Replace the editor-only authored site surface preview list.
 func set_site_surfaces(surfaces: Array, active_index: int = -1) -> void:
 	pick_revision += 1
+	visibility_revision += 1
 	_site_surfaces.clear()
 	for surface in surfaces:
 		if surface is Dictionary:
@@ -418,6 +438,7 @@ func mesh_part_world_corners(part_index: int) -> Array[Vector3]:
 ## Remove mesh parts by index. Indices may be unsorted; invalid entries are ignored.
 func remove_mesh_parts(indices: Array) -> void:
 	pick_revision += 1
+	visibility_revision += 1
 	var resolved: Array[int] = []
 	for raw_index in indices:
 		var index := int(raw_index)
@@ -491,6 +512,8 @@ func clear() -> void:
 ## Clear only active mesh parts. The explicit comparison ghost remains loaded.
 func clear_mesh_parts() -> void:
 	pick_revision += 1
+	visibility_revision += 1
+	_hover_outline.mesh = null
 	for child in _mesh_instance.get_children():
 		child.queue_free()
 	_mesh_parts.clear()
@@ -506,6 +529,7 @@ func clear_mesh_parts() -> void:
 ## Clear only editor-only authored site surfaces and their overlay.
 func clear_site_surfaces() -> void:
 	pick_revision += 1
+	visibility_revision += 1
 	_site_surfaces.clear()
 	_selected_site_surface_index = -1
 	if _site_surface_fill:
@@ -517,6 +541,7 @@ func clear_site_surfaces() -> void:
 ## Clear only editor-only site anchors and their overlay.
 func clear_site_anchors() -> void:
 	pick_revision += 1
+	visibility_revision += 1
 	_site_anchors.clear()
 	_selected_site_anchor_indices.clear()
 	_selected_site_anchor_index = -1
@@ -730,7 +755,6 @@ func _new_overlay_label(text: String) -> Label3D:
 	label.pixel_size = LABEL_PIXEL_SIZE
 	label.outline_size = 3
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.no_depth_test = true
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.visible = false
@@ -742,7 +766,6 @@ func _new_overlay_material(alpha: bool = true) -> StandardMaterial3D:
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
-	mat.no_depth_test = true
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return mat
 

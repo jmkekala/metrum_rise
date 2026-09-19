@@ -309,8 +309,13 @@ func _test_model_and_publication(editor: Node) -> void:
 	_expect(session.document.snapshot() == missing, "undo relink restores omitted source metadata exactly")
 	session.redo()
 	editor._view.show_task("model")
-	editor._view.show_model(2)
-	_expect(editor._view._preview_panel._lod_list.is_visible_in_tree(), "LOD controls remain visible after moving out of preview tabs")
+	_expect(editor._view._preview_panel._lod_list.is_visible_in_tree(), "LOD chain is visible directly in Model")
+	_expect(not editor._view.advanced_groups.has("materials"), "Model does not expose the removed source-material summary")
+	var placement: Dictionary = editor._view.advanced_groups["placement"]
+	placement["toggle"].button_pressed = true
+	_expect(placement["body"].is_visible_in_tree(), "Model expands Placement")
+	_expect(editor._view._preview_panel._add.is_visible_in_tree(), "expanding properties never hides Add LOD")
+	placement["toggle"].button_pressed = false
 
 func _capture_layouts(editor: Node) -> void:
 	for argument in OS.get_cmdline_user_args():
@@ -333,12 +338,12 @@ func _capture_layouts(editor: Node) -> void:
 				await RenderingServer.frame_post_draw
 				_expect(root.get_texture().get_image().save_png(directory.path_join(mode + "-" + task + ".png")) == OK, "capture task layout")
 				_expect(editor._view._theme_root.position.y >= editor._top_menu._shell.size.y, "toolbar never overlaps the menu")
-			for section in 3:
-				editor._view.show_task("model")
-				editor._view.show_model(section)
-				await process_frame
-				await RenderingServer.frame_post_draw
-				_expect(root.get_texture().get_image().save_png(directory.path_join("%s-model-%d.png" % [mode, section])) == OK, "capture contextual model properties")
+			editor._view.show_task("model")
+			editor._view.advanced_groups["placement"]["toggle"].button_pressed = true
+			await process_frame
+			await RenderingServer.frame_post_draw
+			_expect(root.get_texture().get_image().save_png(directory.path_join(mode + "-model-placement.png")) == OK, "capture contextual model properties")
+			editor._view.advanced_groups["placement"]["toggle"].button_pressed = false
 		editor._view.open_preview_popup()
 		await process_frame
 		await RenderingServer.frame_post_draw

@@ -53,7 +53,7 @@ func _model() -> void:
 	v.remove_part_button = v.geometry_button(actions, "Remove part", e._remove_selected_mesh_parts)
 	v.model_hint = _label(box, "Import a model to begin. Add its LOD meshes after selecting a part.")
 	v._mesh_part_list = ItemList.new()
-	v._mesh_part_list.custom_minimum_size.y = 125
+	v._mesh_part_list.custom_minimum_size.y = 72
 	v._mesh_part_list.select_mode = ItemList.SELECT_MULTI
 	v._mesh_part_list.multi_selected.connect(e._on_mesh_part_multi_selected)
 	box.add_child(v._mesh_part_list)
@@ -61,26 +61,14 @@ func _model() -> void:
 	box.add_child(v.part_properties)
 	var part: Control = v.part_properties
 	v._dim_label = _label(part, "Select a mesh part.")
-	v.model_picker = OptionButton.new()
-	for title in ["Placement", "Source materials", "LOD inspection"]:
-		v.model_picker.add_item(title)
-	part.add_child(v.model_picker)
-	v.model_picker.item_selected.connect(v.show_model)
-	for index in 3:
-		var body := VBoxContainer.new()
-		part.add_child(body)
-		v.model_sections.append(body)
-	part = v.model_sections[0]
-	v.button(part, "Replace / relink LOD0…", e._session.relink_selected_part)
+	v._preview_panel.move_lod_controls(part)
+	part = v.advanced(v.part_properties, "placement", "Placement")
 	v._preview_scale_spin = _geometry_number(part, "_part_scale", "Scale · authored", 0.001, 1000, 0.01, e._on_part_transform_changed.bind("scale"))
 	v._part_x_spin = _geometry_number(part, "_part_x", "Position X (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("x"))
 	v._part_y_spin = _geometry_number(part, "_part_y", "Position Y (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("y"))
 	v._part_z_spin = _geometry_number(part, "_part_z", "Position Z (m)", -500, 500, 0.1, e._on_part_transform_changed.bind("z"))
 	v._part_rotation_y_spin = _geometry_number(part, "_part_yaw", "Rotation Y (°)", -180, 180, 1, e._on_part_transform_changed.bind("yaw"))
 	v.geometry_button(part, "Fit selected part to lot", e._on_autofit_pressed)
-	v.materials_label = _label(v.model_sections[1], "Materials come from the imported model. Emission overrides are preview-only.")
-	v._preview_panel.move_lod_controls(v.model_sections[2])
-	v.show_model(0)
 	v.part_properties.visible = false
 
 func _site() -> void:

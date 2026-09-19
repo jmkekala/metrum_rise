@@ -56,18 +56,20 @@ func sync(parts: Array[MeshPart], selected: int) -> void:
 		retained[part] = state
 	states = retained
 	if selected >= 0 and selected < parts.size():
-		_panel.set_part(parts[selected], states[parts[selected]].forced)
+		_panel.set_part(parts[selected], states[parts[selected]].forced, states[parts[selected]].active)
 	else:
 		_panel.set_part(null)
 	_dirty = true
 
-func set_mode(index: int) -> void:
+func set_mode(index: int, camera: Camera3D) -> void:
 	if _selected < 0 or _selected >= _parts.size():
 		return
+	# Consume pending camera movement before starting an inspection at this view.
+	update(camera)
 	var state: PartState = states[_parts[_selected]]
 	state.forced = clampi(index, -1, state.paths.size() - 1)
 	state.previous = -1
-	_panel.set_part(_parts[_selected], state.forced)
+	_panel.set_part(_parts[_selected], state.forced, state.active)
 	_dirty = true
 
 func set_quality(index: int) -> void:
@@ -83,7 +85,8 @@ func update(camera: Camera3D) -> void:
 	var projection := camera.get_camera_projection()
 	var viewport := camera.get_viewport()
 	var render_size := Vector2(viewport.get_texture().get_size()) * viewport.scaling_3d_scale
-	if not _dirty and transform == _camera_transform and projection == _projection and render_size == _render_size and _revision == _preview.lod_revision and _preview_transform == _preview.global_transform:
+	var camera_changed := transform != _camera_transform or projection != _projection
+	if not _dirty and not camera_changed and render_size == _render_size and _revision == _preview.lod_revision and _preview_transform == _preview.global_transform:
 		return
 	_dirty = false
 	_camera_transform = transform
@@ -95,6 +98,10 @@ func update(camera: Camera3D) -> void:
 	for index in _parts.size():
 		var part := _parts[index]
 		var state: PartState = states[part]
+		if camera_changed and state.forced >= 0:
+			# Row clicks/imports inspect a tier at this view, never lock subsequent navigation.
+			state.forced = -1
+			state.previous = -1
 		var model: Transform3D = _preview.mesh_part_transform(index)
 		state.pixels = policy.projected_size_pixels(part.aabb, projection * Projection(view * model), render_size)
 		evaluations += 1
@@ -112,4 +119,4 @@ func update(camera: Camera3D) -> void:
 		if index == _selected:
 			if error.is_empty() and not state.failed.is_empty():
 				error = "%d tier(s) failed to load; this chain cannot be fully previewed." % state.failed.size()
-			_panel.show_lod_state(state.active, state.pixels, state.triangles, error)
+			_panel.show_lod_state(state.active, state.pixels, state.triangles, state.forced, error)

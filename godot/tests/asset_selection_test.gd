@@ -95,9 +95,11 @@ func _run() -> void:
 	_reset()
 	_test_guide_geometry()
 	_test_filters_and_overlap()
+	_test_guide_occlusion()
 	await _test_list_selection()
 	await _test_access_point_input()
 	_test_geometry()
+	await _test_visible_lod_selection()
 	await _test_handles()
 	_test_gestures()
 	_test_mixed_and_ghost_gestures()
@@ -174,7 +176,8 @@ func _test_guide_geometry() -> void:
 			var edge: float = cells * preview.CELL_M * 0.5
 			expect(inward >= edge - 0.2 and outward > edge + 2.4 and outward < edge + 3.3, "compact frontage glyphs face outward on every lot edge and size")
 			expect(preview._frontage_label.position.dot(forward) > outward, "frontage label stays beyond the glyph tips")
-			expect(preview._frontage_arrow.mesh.surface_get_material(0).no_depth_test, "polished frontage remains an unoccluded guide")
+			expect(not preview._frontage_arrow.mesh.surface_get_material(0).no_depth_test, "frontage respects mesh depth")
+			expect(not preview._frontage_label.no_depth_test, "frontage text respects mesh depth")
 	for forward in [Vector3.FORWARD, Vector3.BACK, Vector3.LEFT, Vector3.RIGHT]:
 		var mesh := ImmediateMesh.new()
 		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -192,21 +195,23 @@ func _test_guide_geometry() -> void:
 func _test_filters_and_overlap() -> void:
 	expect(selection.effective_filter() == "all", "all visible object kinds are selectable by default, including in Model")
 	var hits := _pick(Vector3.ZERO, "all")
-	expect(hits.size() == 4 and hits[0]["kind"] == "anchor", "visible overlay anchor takes priority over underlying geometry")
+	expect(hits.size() == 4 and hits[0]["kind"] == "mesh" and hits[0]["index"] == 0, "opaque mesh takes priority over the hidden anchor and yard")
 	selection.set_filter(1)
 	selection.refresh(_screen(Vector3.ZERO), true)
 	expect(selection.hovered.get("kind") == "mesh", "Model hover cannot be stolen by the yard")
-	expect(editor._view.hover_label.text.contains("Mesh:") and not editor._view.picking_overlay.lines.is_empty(), "hover identifies and outlines target")
+	expect(editor._view.hover_label.text.contains("Mesh:") and editor._preview._hover_outline.mesh != null, "hover identifies and outlines target")
 	editor._view.show_task("site")
 	editor._view.show_site(1)
 	expect(selection.effective_filter() == "mesh", "changing inspector sections does not change an explicit filter")
 	selection.set_filter(2)
 	selection.refresh(_screen(Vector3.ZERO), true)
-	expect(selection.hovered.get("kind") == "anchor", "explicit anchor task reaches an anchor beneath a mesh")
+	expect(selection.hovered.is_empty(), "an anchor filter does not make hidden anchors clickable")
+	selection.cycle(_screen(Vector3.ZERO))
+	expect(selection.hovered.get("kind") == "anchor", "Alt+click deliberately reaches the hidden filtered anchor")
 	editor._view.show_site(2)
 	selection.set_filter(3)
 	selection.refresh(_screen(Vector3.ZERO), true)
-	expect(selection.hovered.get("kind") == "surface", "yard task reaches the yard")
+	expect(selection.hovered.is_empty(), "a yard filter does not make a hidden yard clickable")
 	selection.set_filter(0)
 	editor._view.show_task("model")
 	expect(selection.effective_filter() == "all", "All persists across inspector changes")
@@ -218,7 +223,7 @@ func _test_filters_and_overlap() -> void:
 		visited[selection._key(selection.hovered)] = true
 	expect(visited.size() == 4, "Alt+click reaches every overlapping object, including occluded ones")
 	selection.refresh(mouse, true)
-	expect(selection.hovered["kind"] == "anchor" and selection.hovered["index"] == 0, "cycle wraps deterministically even when the inspector follows the selection")
+	expect(selection.hovered["kind"] == "mesh" and selection.hovered["index"] == 0, "cycle wraps deterministically even when the inspector follows the selection")
 	selection.select_hit({"kind": "mesh", "index": 0}, false)
 	selection.select_hit({"kind": "anchor", "index": 0}, true)
 	selection.select_hit({"kind": "surface", "index": 0}, true)
@@ -228,6 +233,36 @@ func _test_filters_and_overlap() -> void:
 	editor._begin_box_selection(_screen(Vector3(-10, 0, -10)), false)
 	editor._finish_mesh_part_box_selection(_screen(Vector3(10, 0, 10)))
 	expect(not editor._selected_part_indices.is_empty() and editor._selected_site_anchor_indices.is_empty() and editor._selected_site_surface_index == -1, "box selection respects the explicit filter")
+
+func _test_guide_occlusion() -> void:
+	_reset()
+	var preview = editor._preview
+	var point: Vector3 = selection.picker.anchor_position(0)
+	selection.refresh(_screen(point), true)
+	expect(editor._view.picking_overlay.anchors.is_empty(), "hidden anchor rings do not draw through the building")
+	expect(not selection.picker.point_visible(camera, point), "solid imported geometry hides handle centres")
+	var queries: int = selection.picker.visibility_queries
+	selection.refresh(_screen(point) + Vector2(2, 0), true)
+	expect(selection.picker.visibility_queries == queries, "pointer-only changes reuse handle visibility")
+	preview.set_scale_reference_world_position(Vector3(30, 0.9, 30))
+	selection.refresh(_screen(point) + Vector2(3, 0), true)
+	expect(selection.picker.visibility_queries == queries, "moving preview helpers does not recast fixed handle visibility")
+	for node in [preview._lot_overlay, preview._site_anchor_overlay, preview._site_surface_overlay, preview._hover_outline]:
+		expect(not node.mesh.surface_get_material(0).no_depth_test, "lot, site and hover geometry use depth testing")
+	for label in [preview.site_label("anchor", 0), preview.site_label("surface", 0)]:
+		expect(not label.no_depth_test, "site text uses depth testing")
+	preview.set_mesh_part_transform(0, Vector3(20, 0, 0), 0.0, 1.0)
+	preview.set_mesh_part_transform(1, Vector3(20, -5, 0), 0.0, 1.0)
+	selection.refresh(_screen(point), true)
+	expect(selection.picker.point_visible(camera, point) and editor._view.picking_overlay.anchors.size() == 1, "moving occluders reveals the handle without stale visibility")
+	expect(selection.hovered.get("kind") == "anchor", "visible anchor remains directly selectable above its yard")
+	# Occlusion uses triangles, not a model's enclosing box: the gap must remain visible.
+	preview.set_mesh_part_transform(0, Vector3.ZERO, 0.0, 1.0)
+	expect(preview.set_mesh_part_lod(0, gap_path), "load the split-mesh visibility fixture")
+	expect(selection.picker.point_visible(camera, point), "a real opening in a mesh does not hide an anchor")
+	expect(preview.set_mesh_part_lod(0, box_path), "restore the solid visibility fixture")
+	expect(not selection.picker.point_visible(camera, point), "LOD swaps invalidate occlusion without rebuilding triangles")
+	_reset()
 
 func _test_access_point_input() -> void:
 	var data: Dictionary = fixture.duplicate(true)
@@ -349,6 +384,63 @@ func _mouse_motion(mouse: Vector2) -> void:
 	event.global_position = mouse
 	event.button_mask = MOUSE_BUTTON_MASK_LEFT
 	root.push_input(event, true)
+
+func _test_visible_lod_selection() -> void:
+	_reset()
+	var saved_projection := camera.projection
+	var saved_size := camera.size
+	var saved_transform := camera.transform
+	var data: Dictionary = fixture.duplicate(true)
+	data["params"]["mesh_parts"][0]["lods"][0]["distance_max_m"] = 35.0
+	data["params"]["mesh_parts"][0]["lods"].append({"file": narrow_path.get_file(), "distance_min_m": 35.0, "distance_max_m": null})
+	data["sources"][0].append(narrow_path)
+	editor._session.document.reset(data)
+	var part = editor._parts[0]
+	camera.set_orthogonal(200.0, camera.near, camera.far)
+	editor._lod_preview.update(camera)
+	var state = editor._lod_preview.states[part]
+	var panel = editor._view._preview_panel
+	expect(state.active == 1 and state.forced == -1, "distant fixture renders LOD1 automatically before selection")
+	var before: Dictionary = editor._session.document.snapshot()
+	var mouse := _screen(Vector3(0, 20, 0))
+	selection.press(mouse, MOUSE_BUTTON_LEFT)
+	selection.release(mouse)
+	expect(editor._selected_part_index == 0 and panel._lod_list.is_selected(2), "viewport click highlights the visible LOD1, not LOD0 or Automatic")
+	expect(panel._replace.text == "Replace LOD1…" and state.forced == -1, "clicking the mesh targets the visible source without freezing automatic LODs")
+	camera.size = 4.0
+	editor._lod_preview.update(camera)
+	expect(state.active == 0 and panel._lod_list.is_selected(1) and state.forced == -1, "zooming back in keeps Automatic and highlights LOD0")
+	# A real click on the already highlighted row must still allow explicit forcing.
+	for frame in 8:
+		await process_frame
+	_click(panel._lod_list.global_position + panel._lod_list.get_item_rect(1).get_center())
+	expect(state.forced == 0, "clicking the automatically highlighted row explicitly forces that tier")
+	camera.size = 200.0
+	editor._lod_preview.update(camera)
+	expect(state.forced == -1 and state.active == 1 and panel._lod_list.is_selected(2), "zooming out ends explicit inspection and highlights the rendered distant tier")
+	selection.select_hit({"kind": "mesh", "index": 1}, false)
+	expect(panel._lod_list.is_selected(1) and panel._replace.text == "Replace LOD0…", "switching parts cannot reuse the previous part's visible tier")
+	selection.select_hit({"kind": "mesh", "index": 0}, false)
+	expect(panel._lod_list.is_selected(2) and state.forced == -1, "reselecting the distant part restores its actual visible LOD")
+	# Reproduce the reported close-up with a perspective camera and a previously chosen coarse tier.
+	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+	_top_camera(500.0)
+	panel._lod_list.item_selected.emit(2)
+	expect(state.active == 1 and state.forced == 1, "choosing a tier after a camera change starts inspection at that current view")
+	selection.select_hit({"kind": "mesh", "index": 1}, false)
+	_top_camera(25.0)
+	editor._lod_preview.update(camera)
+	expect(state.forced == -1, "navigation also releases inspection on unselected parts")
+	mouse = _screen(Vector3(0, 20, 0))
+	selection.press(mouse, MOUSE_BUTTON_LEFT)
+	selection.release(mouse)
+	expect(editor._selected_part_index == 0 and state.active == 0 and state.forced == -1 and panel._lod_list.is_selected(1), "close perspective mesh click selects LOD0 after coarse-tier inspection, without clicking Automatic")
+	expect(editor._preview.mesh_part_lod_path(0) == box_path and panel._replace.text == "Replace LOD0…", "visible fine mesh, picked part and replacement target agree")
+	expect(editor._session.document.snapshot() == before and not editor._session.document.is_dirty(), "LOD inspection never edits or saves the asset")
+	camera.projection = saved_projection
+	camera.size = saved_size
+	camera.transform = saved_transform
+	_reset()
 
 func _test_geometry() -> void:
 	_reset()
@@ -703,6 +795,8 @@ func _captures() -> void:
 		var directory := argument.trim_prefix("--capture-selection=")
 		DirAccess.make_dir_recursive_absolute(directory)
 		_reset()
+		await _capture_occlusion(directory)
+		_reset()
 		for mode in ["dark", "light"]:
 			editor.set_ui_theme_mode(mode)
 			for kind in ["mesh", "anchor", "surface"]:
@@ -714,11 +808,53 @@ func _captures() -> void:
 					await process_frame
 				editor.set_process(false)
 				selection.refresh(_screen(Vector3.ZERO), true)
+				if selection.hovered.is_empty():
+					selection.cycle(_screen(Vector3.ZERO))
 				expect(not selection.hovered.is_empty() and selection.hovered["kind"] == kind, "rendered hover matches selection filter")
 				expect(editor._view.hover_label.get_theme_color("font_color") == Color.WHITE, "hover text remains legible in either theme")
 				await RenderingServer.frame_post_draw
 				expect(root.get_texture().get_image().save_png(directory.path_join(mode + "-" + kind + ".png")) == OK, "selection screenshot")
 				editor.set_process(true)
+
+func _capture_occlusion(directory: String) -> void:
+	var preview = editor._preview
+	preview.set_lot_size(1, 1)
+	preview.set_frontage_forward(Vector3.FORWARD)
+	editor._view.show_task("model")
+	for frame in 8:
+		await process_frame
+	camera.look_at_from_position(Vector3(0, 24, 32), Vector3(0, 8, 0))
+	editor._cam_input._update_preview_offset()
+	editor.set_process(false)
+	selection.refresh(Vector2(-100, -100), true)
+	var guides := [preview._frontage_arrow, preview._frontage_label, preview._lot_overlay,
+		preview._site_anchor_overlay, preview._site_anchor_label_root,
+		preview._site_surface_overlay, preview._site_surface_label_root]
+	var probes := [selection.picker.anchor_position(0), preview.site_label("anchor", 0).global_position,
+		preview._frontage_label.global_position, Vector3(0, 0.06, -5)]
+	for state in [["day", 10.5], ["night", 0.0]]:
+		editor._view._preview_panel.set_lighting(state[1])
+		for frame in 8:
+			await process_frame
+		await RenderingServer.frame_post_draw
+		var visible_guides := root.get_texture().get_image()
+		expect(visible_guides.save_png(directory.path_join(state[0] + "-occlusion.png")) == OK, "capture depth-tested guides")
+		for guide in guides:
+			guide.hide()
+		await process_frame
+		await RenderingServer.frame_post_draw
+		var without_guides := root.get_texture().get_image()
+		var pixel_scale := Vector2(visible_guides.get_size()) / root.get_visible_rect().size
+		for point: Vector3 in probes:
+			var mouse := _screen(point)
+			var begin := camera.project_position(mouse, camera.near)
+			expect(not preview.pick_mesh_parts(begin, point).is_empty(), "capture probe lies behind the building")
+			var region := Rect2i(Vector2i(mouse * pixel_scale) - Vector2i(8, 8), Vector2i(16, 16))
+			expect(visible_guides.get_region(region).get_data() == without_guides.get_region(region).get_data(),
+				"occluded anchor/frontage/lot pixels match guides hidden entirely in " + state[0])
+		for guide in guides:
+			guide.show()
+	editor.set_process(true)
 
 func _benchmark() -> void:
 	if not "--benchmark-asset-selection" in OS.get_cmdline_user_args():
@@ -757,12 +893,14 @@ func _benchmark() -> void:
 	selection.press(mouse, MOUSE_BUTTON_LEFT)
 	selection.motion(mouse + Vector2(10, 0))
 	queries = selection.picker.queries
+	var visibility_queries: int = selection.picker.visibility_queries
 	start = Time.get_ticks_usec()
 	for index in 1000:
 		selection.motion(mouse + Vector2(10 + index % 30, 0))
 	var motion := (Time.get_ticks_usec() - start) / 1000.0
 	selection.release(mouse + Vector2(19, 0))
 	expect(editor._preview.pick_build_count == builds and selection.picker.queries == queries and not editor._session.document.can_undo(), "reference drag locks its target without picking, rebuilding or document history work")
+	expect(selection.picker.visibility_queries == visibility_queries, "reference drag reuses site-handle occlusion without new rays")
 	print("asset_reference_measure idle_mean_us=%.3f query_mean_us=%.3f drag_motion_mean_us=%.3f idle_iterations=10000 query_iterations=1000 motion_iterations=1000 parts=2 anchors=1 yards=1 references=1 cache_builds=0" % [idle, query, motion])
 	editor._view.scale_reference_button.button_pressed = false
 	# Measure rebuild submission separately; deferred Label3D cleanup is outside this loop.

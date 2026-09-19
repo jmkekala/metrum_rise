@@ -1385,9 +1385,10 @@ Road authoring remains outside the first importer milestone.
 
 Start flow:
 
-1. Choose `New asset…`, `Open draft…`, or open a published asset from the collapsible library.
+1. Choose `New asset…` or open a published asset from the collapsible library. Resume unfinished work through `File → Open Draft`.
 2. New asset asks for building type, service subtype when applicable, name, destination pack and optional model.
 3. Work freely between Overview, Model, Site, Gameplay, and Validate & export. Save incomplete drafts separately from runtime export.
+4. Use the main toolbar's `Export asset…` (also in File) to reveal Validate & export, even with the inspector collapsed. Review the destination and resolve issues, then confirm with `Export runtime asset…`. Opening the review never writes asset files.
 
 The editor does not use a one-asset-only wizard. One pack may contain and edit multiple assets in one session.
 
@@ -1400,9 +1401,10 @@ V1 editor shell:
 
 Editor layout:
 
+- Top: Library, New asset and Export asset are the primary asset actions. Draft open/save remain in File with Ctrl+L / Ctrl+S; they do not occupy toolbar or welcome buttons.
 - Center: dominant 3D preview with Lighting & quality controls in a popup; framing respects the visible pane.
 - Left: collapsible asset library, hidden initially.
-- Right: one task at a time. Model separates Placement, Source materials and LOD inspection; Site separates Footprint & frontage, Access points and Surfaces.
+- Right: one task at a time. Model shows the selected part's LOD chain directly, above expandable Placement; there is no Model subsection dropdown or read-only source-material summary. Site separates Footprint & frontage, Access points and Surfaces.
 - Bottom: collapsible diagnostics, hidden initially. Addressed validation is in Validate & export, not buried in the log.
 
 Current preview (`TOOLS-04`):
@@ -1413,17 +1415,39 @@ Current preview (`TOOLS-04`):
   it preserves the grab offset, does not snap to geometry, and never changes the asset or undo history.
   The reference turns cyan when selected. Its handle stays visible and pickable over other objects;
   the figure itself uses triangle picking and normal depth testing. Empty-space clicks only deselect.
+  Its toolbar switch uses an opaque, padded button background in every state, independent of
+  scene lighting; light/dark theme changes preserve readable text, including checked-hovered text.
   Escape, focus loss, a modal or hiding the reference cancels a drag. Hiding/showing, lot/frontage/theme
   changes and asset undo preserve placement; preview rebuilds do not regenerate its geometry/pick cache.
 - Day/dusk/night presets and an editable hour use the shared gameplay day-cycle lighting.
   Changing the UI theme does not change the selected lighting.
-- Emission inspection: authored default, force off, force on, and reference intensity.
+- Window emission defaults to **Automatic (time of day)**: on when the shared day-cycle sun
+  is at/below the horizon, off above it. Day/dusk/night presets and manual hour changes update
+  it immediately, including meshes imported later and newly selected LODs. Authored default,
+  force off and force on remain explicit overrides that survive clock changes; reference
+  intensity is adjustable in Automatic and Force on.
   Overrides affect preview-owned materials only; textures/factors in exported files stay unchanged.
+  Materials remain authored in the source model; the editor does not expose a material inspector.
   The reference tint is linear RGB `[1.0, 0.55, 0.23]`. Only materials with an emission texture
   participate. Surface emission does not promise light spill onto nearby geometry.
-- Automatic screen-size LOD inspection for every part, per-part forced tiers, global preview
-  quality presets, add/remove-last-tier controls and explicit camera framing. Readouts report
-  the active mesh, its triangle count, projected LOD0 bounds and engine-owned pixel boundaries.
+- Automatic screen-size LOD inspection for every part, temporary per-part tier inspection, global preview
+  quality presets and explicit camera framing. The visible Model list offers Automatic and each
+  LOD file; clicking a tier previews it immediately. `Add LOD1…` (then LOD2, LOD3, etc.) appends
+  the next mesh to this part and previews it without saving/exporting. `Replace LODn…` replaces
+  or relinks the selected tier (the actually visible tier in Automatic); other tiers, placement and authored bands
+  are preserved. Removing the last tier is explicit; LOD0 cannot be removed independently.
+  All source/chain edits support undo/redo. The main readout shows the active LOD and triangle count.
+  Projected asset size and engine-owned calibration boundaries are under LOD details, collapsed
+  by default. The size tooltip explains its stable LOD0-bounds reference; the diagnostic updates
+  live even while collapsed. Framing remains in the viewport toolbar.
+  Viewport/part selection highlights the rendered tier without disabling Automatic; the highlight
+  and replacement target follow zoom/quality transitions. Clicking a LOD row previews it,
+  even if already highlighted. Row clicks and Add/Replace hold that tier only until the camera
+  moves or its projection changes (zoom, orbit, pan or frame selection); then all inspected parts,
+  including unselected ones, resume Automatic with reset transition history. The readout explains
+  this temporary state; the Automatic row also exits inspection immediately. Idle, selection and
+  lighting changes preserve inspection. Failed automatic switches keep inspection on the retained visible
+  mesh; explicitly selecting a failed tier keeps that tier selected for source repair.
   Switching tiers preserves transforms, origins, camera and LOD0 placement bounds.
   This uses the shared selection policy; gameplay building switching is not integrated yet.
 - Roadside, lane/sidewalk and traffic comparison scenes are deferred and are not exposed as controls.
@@ -1473,9 +1497,13 @@ V1 inspector and viewport contract:
   independent of zoom and UI scale. Parking/loading/driveway rectangles and the visible billboard
   labels for anchors/yards are also pickable; text uses its rendered bounds, not its ground projection.
 - Point-picking uses actual 3D mesh triangles, authored yard/anchor heights and camera clipping.
-  The scale-reference handle, selected-yard vertex handles, visible site labels and anchor guides take priority over physical
-  geometry, matching the guides' depth-test-free rendering. Remaining hits within a layer are
-  nearest-first with deterministic ties. Hover outlines and a target name show what will be picked.
+  Lot/frontage/site guides, labels, selection brackets and hover outlines use normal mesh depth
+  testing. Hidden anchor/yard handles are omitted when their centres are occluded; hidden targets
+  never take an ordinary click, including with explicit selection filters. Visible site labels,
+  vertex handles and anchor guides retain priority over the yard beneath them; remaining hits
+  within a layer are nearest-first with deterministic ties. The scale-reference manipulation
+  handle remains the deliberate always-visible exception. Hover outlines and a target name show
+  what will be picked.
   **Alt+click** cycles through overlapping eligible objects, including occluded ones; moving the
   pointer more than 3 logical pixels or changing the camera/filter resets the cycle.
 - Click selects without moving. A transform starts only after 6 logical pixels of movement;
@@ -2257,7 +2285,7 @@ Warnings:
 Implemented. This replaces the all-fields importer workflow while retaining the existing mesh loader,
 screen-size LOD policy and staged package publisher. The shipped contract is:
 
-- With no document open, a welcome screen offers New asset, Open draft and Browse asset library.
+- With no document open, a welcome screen offers New asset and Browse asset library; File retains Open Draft.
   There is no dummy building, visible lot, inspector, validation count or automatic modal;
   document-only menu actions are disabled. Cancelling creation/open leaves the welcome state intact.
 - New asset asks for Residential, Commercial, Industrial, Resource extractor, Farm,
@@ -2266,11 +2294,13 @@ screen-size LOD policy and staged package publisher. The shipped contract is:
   Unsupported asset classes and unimplemented simulation options are not offered.
 - Freely navigable **Overview / Model / Site / Gameplay / Validate & export** tasks.
   Overview owns identity, type, pack, thumbnail and completion. Model owns parts, transforms,
-  materials and LOD inspection. Site owns footprint, frontage, entrances, access and surfaces.
+  and LOD inspection. Site owns footprint, frontage, entrances, access and surfaces.
   Gameplay displays only applicable fields; Advanced contains uncommon but relevant fields only.
 - New/opened assets start in Model; Overview is an explicitly selected metadata task. Empty Model
   invites import rather than showing an empty parts list. Selection-only removal/framing actions
-  and Clear comparison are hidden until applicable. Pack management uses a dialog.
+  and Clear comparison are hidden until applicable. Selected parts expose the LOD list and next-tier
+  add/selected-tier replacement controls immediately, with Placement collapsed
+  below. Pack management uses a dialog.
 - Direct all-object selection opens the corresponding settings; optional filters are never tied
   to inspector tasks. Cached triangle-accurate mesh picking, clickable site labels, screen-sized
   handles, hover feedback, Alt+click cycling and cancellable thresholded gestures replace ground
@@ -2291,7 +2321,9 @@ screen-size LOD policy and staged package publisher. The shipped contract is:
   undo/redo (including geometry and type changes), and unsaved-change guards for document replacement,
   leaving the editor and closing the window. Runtime export is separate from draft save.
 - Inline validation has field/task destinations, including a missing main entrance. Export uses
-  the same Rust validation as preflight and remains staged/rollback-safe.
+  the same Rust validation as preflight and remains staged/rollback-safe. Toolbar/File Export asset
+  opens the destination/validation review and expands a collapsed inspector; publishing still requires
+  the review's explicit export action. Draft commands remain secondary File actions with existing shortcuts.
 - Type conversion previews every changed field and requires confirmation. Loading or hiding fields
   never clears authored data. Unsupported/unresolved metadata remains in drafts and must be surfaced
   for explicit resolution rather than silently normalized on export. Preview-only state stays out
@@ -2397,6 +2429,91 @@ Follow-up source digest: `beab756bd646191b6e97cefde14c6b52bb8e821d4b2d5697436c9f
 The earlier Rust checks and timing/capture artifacts describe the original authoring build;
 this follow-up changes only editor UI/workflow and its regressions, not simulation or asset contracts.
 
+Export discoverability verification (2026-09-20): all six headless asset suites pass with the existing
+extension. The layout suite exercises toolbar/File export for incomplete and valid assets, collapsed
+inspector recovery, non-publishing review, disabled empty-state export and retained File draft commands.
+Rendered X11 / Forward+ layout checks pass in both themes at 100/150/200% UI scale; logs and captures:
+`/tmp/metrum-export-navigation.V3RSSv/` (`*-accepted.log`, `rendered-layout.log`, `captures/`).
+This is event-driven UI navigation using existing validation; no new idle work or simulation changes.
+
+LOD workflow verification (2026-09-20): all six headless asset suites and rendered X11 / Forward+
+preview/layout suites pass. Generated fixtures exercise visible Add LOD1–3, immediate preview,
+selected-tier replacement preserving other sources/transforms/bands, undo/redo, removal and automatic
+selection. Layout assertions keep Add LOD on-screen at 960×640 through 3063×1751 and 100/150/200% UI
+scale. Short lists fit their rows; longer lists scroll after five rows. Artifacts:
+`/tmp/metrum-lod-workflow.Guc0R7/` (`*-accepted.log`, `accepted-render-*.log`, `accepted-*-captures/`).
+
+Matched sequential unprofiled measurements used the existing one-part synthetic-box workspace
+benchmark, Godot 4.7.2 and `RAYON_NUM_THREADS=4`, with separate isolated XDG profiles and no renderer
+running concurrently. Command: `godot --headless --path /tmp/metrum-reference-label.wfAwYu/project
+--script res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`.
+For 100 metadata edits / 10,000 idle updates, before means were 303.770 / 290.700 µs per edit and
+1.621 / 1.594 µs idle; after means were 290.900 / 324.760 µs per edit and 1.562 / 1.585 µs idle.
+All runs had zero reimports and zero idle per-part policy evaluations. List rebuilds remain O(LODs)
+on selection/document changes; fitting their visible height is O(1), with no new idle work.
+Logs: `before-{1,2}.log`, `accepted-after-{1,2}.log` in the artifact directory. Unchanged release
+library SHA-256: `5a5ddeb006068a5818dbf23394922352a29008e1457543693ce14918aab6a852`;
+workflow source/test digest: `c828b0e156cdb66705ef8db039995d626b4f8a0d1b90d1ded54005c928abb379`.
+These are editor-input measurements, not city-renderer performance or fresh Rust-suite validation.
+
+Visible-LOD selection follow-up (2026-09-20): all six headless asset suites and rendered X11 /
+Forward+ preview/selection suites pass. Tests cover distant-mesh clicks, automatic refinement,
+part switching, replacement of the actual rendered tier, explicit clicks on an already highlighted
+row, and failed-tier repair. Artifacts: `/tmp/metrum-visible-lod.3iHUKm/` (`*-final.log`,
+`render-{preview,selection}.log`, `{preview,selection}-captures/`). No Rust or asset-format changes.
+Highlight updates are O(1), do not rebuild the list, and leave idle policy evaluation at zero.
+Two matched sequential unprofiled runs used the unchanged release library above, four Rayon workers,
+isolated XDG profiles and `godot --headless --path /tmp/metrum-reference-label.wfAwYu/project
+--script res://tests/asset_editor_preview_test.gd -- --asset-editor --benchmark-asset-preview`.
+With one part/four LODs, 100 warm-up transitions then 2,000 alternating 32/900-pixel camera updates,
+mean CPU update cost was 7.966 / 8.362 µs before and 9.389 / 9.467 µs after; the extra live row/button
+synchronization adds about 1.3 µs per transition, with zero mesh imports and unchanged O(parts)
+camera-update complexity. Logs: `before-{1,2}.log`, `after-{1,2}.log` in that directory. These measure
+synchronous preview updates, not GPU frame time. Panel/controller/preview-test/selection-test digest:
+`b5dbe3f7050e5c7be4128e5050898c8ac7ec937139b46ef737c7d8127b154da1`.
+
+Temporary-inspection correction (2026-09-20): the previous follow-up still left Add/Replace and
+row selection permanently forced, so zooming close could remain on LOD3. A generated four-tier
+import/replacement regression reproduced this before the fix. Camera transform/projection changes
+now resume Automatic, including on unselected parts, with no list rebuild or source mutation.
+All six headless suites and rendered X11 / Forward+ preview/selection suites pass, including
+close perspective picking after coarse-tier inspection, immediate inspection at a changed view,
+and idle inspection retention. Artifacts: `/tmp/metrum-lod-resume.Gwl32p/` (`repro.log`,
+`*-final.log`, `render-{preview,selection}.log`, `{preview,selection}-captures/`).
+Two sequential unprofiled runs of the same command/workload above, unchanged release extension,
+four Rayon workers and isolated XDG profiles measured 9.349 / 9.414 µs before and 9.679 / 9.534 µs
+after per automatic transition, with zero imports; idle policy evaluations remain zero.
+Logs: `before-{1,2}.log`, `after-{1,2}.log`. Complexity stays O(1) idle and O(parts) on camera
+changes; this measures editor CPU updates, not GPU/city rendering. No Rust suite rerun.
+Source digest (`sha256sum godot/scripts/editors/asset_editor.gd
+godot/scripts/editors/asset_editor/preview_panel.gd godot/scripts/editors/asset_editor/preview_lod.gd
+godot/tests/asset_editor_preview_test.gd godot/tests/asset_selection_test.gd | sha256sum`):
+`39559648a416debfbedf9b5391632ed694e144b28631594aaa1f0194881bd2d7`.
+
+LOD-details presentation follow-up (2026-09-20): headless preview/layout and rendered X11 /
+Forward+ preview checks pass. Regression covers collapsed-by-default projected size, expansion,
+live updates in both states and clearing the asset. Artifacts: `/tmp/metrum-lod-details.Ug1k2q/`
+(`after-{1,2}.log`, `layout.log`, `render-preview.log`, `captures/`). Using the same benchmark
+command, release extension, four workers, isolated profiles and sequential workload above,
+automatic transitions measured 9.759 / 9.640 µs before and 10.027 / 10.228 µs after, with zero
+imports and zero idle policy evaluations. The label split preserves O(1) selected-panel work;
+LOD policy is unchanged. Panel/preview-test digest (`sha256sum` of those two files, then
+`sha256sum`): `52bcdca47a71e2170c05d30e5fadcbc1ef4b216e25186594cbdf592eadf765fb`.
+
+Source-material summary removal (2026-09-20): all six headless asset suites and rendered X11 /
+Forward+ workspace/preview suites pass, including all-tier night emission and source-preserving
+export. The unused UI, catalog and selection-time deep copy/formatting are removed; emission
+surface capture is unchanged. Artifacts: `/tmp/metrum-remove-materials.cCbgJQ/` (`asset*.log`,
+`render-*.log`, `*-captures/`). Two matched sequential unprofiled workspace runs used the unchanged
+release extension above, `RAYON_NUM_THREADS=4`, isolated XDG profiles and command
+`godot --headless --path /tmp/metrum-reference-label.wfAwYu/project --script
+res://tests/asset_workspace_test.gd -- --asset-editor --benchmark-asset-workspace`.
+For 100 metadata edits / 10,000 idle updates, before means were 289.410 / 286.040 µs per edit
+and 1.565 / 1.614 µs idle; after means were 275.700 / 287.700 µs and 1.590 / 1.617 µs.
+Zero imports and idle policy evaluations in every run (`before-{1,2}.log`, `after-{1,2}.log`).
+This removes O(material surfaces) summary storage/copying; existing import traversal and idle
+complexity are unchanged. No Rust or city-renderer changes; no Rust suite rerun.
+
 Initial selection follow-up verification (2026-09-19, before the direct-click correction below): all six headless asset regressions pass, including
 `asset_selection_test.gd`, now included in `run.sh --test`. Generated fixtures cover oblique roof
 hits, empty space inside bounds, nested transforms, visible LODs, elevated yards/anchors, missing
@@ -2408,13 +2525,20 @@ the six headless results and `native-final.log`. This follow-up does not change 
 repository test suite; earlier Rust results remain historical evidence for the unchanged library.
 
 `asset_selection.gd` owns gestures/hover state, `asset_picker.gd` collects deterministic hits, and
-`picking_overlay.gd` draws screen-space feedback. `mesh_pick_geometry.gd` reuses Godot's native
+`picking_overlay.gd` draws visible screen-space handles; `building_preview.gd` draws depth-tested
+world-space hover segments. `mesh_pick_geometry.gd` reuses Godot's native
 `TriangleMesh` BVH inside the existing per-part/per-LOD preview cache, with no physics bodies or
 new city index. Import builds O(T) cached triangle/BVH storage; transforms and warmed LOD swaps
 reuse it. Idle hover checks are O(1), with no geometry queries or document copies. A changed query
 visits this asset's mesh instances M, anchors A and yard vertices V, plus intersected BVH nodes;
 ordering H hits costs O(H log H). BVH traversal is typically sublinear in triangles but O(T) in
 the worst case. None of this iterates over city buildings or agents.
+
+Handle occlusion reuses those same BVHs and caches one visibility result per fixed point. Camera,
+projection, mesh/LOD and site-geometry changes invalidate it; pointer-only changes, theme changes
+and moving the scale/comparison helpers do not. Rebuilding H handle visibilities costs H bounded
+asset-local BVH queries; cached pointer redraw stays O(H), and idle remains O(1). No city index,
+physics bodies or per-idle-frame rays are added.
 
 Two sequential, unprofiled release acceptance runs use Godot 4.7.2, `RAYON_NUM_THREADS=4`, isolated
 `XDG_DATA_HOME` / `XDG_CONFIG_HOME`, and the release library SHA-256 recorded above. Command:
@@ -2482,6 +2606,29 @@ benchmarks. The unchanged release library SHA-256 is
 `b50cba91e17a35d7d0257d77bd263e934593421d1b3a89ba5f88442507ab726b`; the same combined source-digest
 command above yields `f5110cb6e1a848b95e438688e5bc7edae48f89143ae5fd5ead5995a720ca5a7a`.
 No Rust changes or full-repository test run in this follow-up.
+
+Guide-depth follow-up (2026-09-20): removed depth-test bypasses from guide materials/labels and
+replaced canvas hover lines with depth-tested 3D segments. Ordinary clicks skip mesh-occluded
+targets; Alt+click still cycles through them. All six asset headless suites pass freshly.
+X11/Forward+ on Godot 4.7.2 / RX 7900 XTX passes the selection suite and day/night pixel checks:
+four 16×16 regions behind a generated building are byte-identical with guides enabled or hidden.
+Visible parking/loading/driveway clicks, label picking, LOD openings, moving occluders and cached
+handle visibility are covered. Artifacts: `/tmp/metrum-guide-depth.IeWTwi/`, `final-*.log`,
+`rendered-accepted.log`, `captures-accepted/`.
+
+Matched unprofiled release runs (four Rayon workers, isolated XDG profile, the existing
+`asset_selection_test.gd -- --asset-editor --benchmark-asset-selection` command) use two parts,
+one anchor and one yard: 10,000 idle checks and 1,000 pointer queries/locked reference-drag steps.
+Before/after All-query means are **23.646 / 23.648 → 28.193 / 27.645 µs**; reference-enabled queries
+**28.511 / 29.123 → 34.027 / 33.500 µs**; reference drag **8.752 / 8.793 → 9.467 / 9.510 µs**.
+Final idle is **0.748 / 0.744 µs**, with zero idle queries, drag visibility rays and BVH rebuilds.
+The extra per-query depth ordering is editor-local; unchanged idle and cached reference dragging
+avoid recurring occlusion work. Logs: `before-{1,2}.log`, `accepted-after-{1,2}.log`.
+Baseline is `7339a7bdf46d1892` for the changed selection/renderer files; release library SHA256
+prefix `5a5ddeb006068a581` is unchanged. Final combined SHA256 for `asset_picker.gd`,
+`asset_selection.gd`, `picking_overlay.gd`, `building_preview.gd`, `asset_selection_test.gd`
+(in that order, `sha256sum ... | sha256sum`) is `cf894331b6392ff001f8c1e6fec597856a4d93bc839b2de7d6154ffd78a8c009`.
+No Rust, gameplay renderer or source asset changes are part of this follow-up.
 
 ### Working building previews and safe packaging — TOOLS-04
 
@@ -2572,9 +2719,10 @@ asset in the pack's `.stage-*/previous` directory for recovery. Copy/Move remain
 Verification uses generated four-tier box meshes and default-off external emission textures;
 no separate content repository is required. `godot --headless --path godot --script
 res://tests/asset_editor_preview_test.gd -- --asset-editor` covers the real editor/Rust
-save-load-save path, placement preservation, emission isolation, dependency collisions,
+save-load-save path, placement preservation, automatic emission through the actual preset buttons,
+manual-hour/midnight changes, persistent emission overrides, source isolation, dependency collisions,
 failed validation and existing yard/anchor tools. The regression is included in `./run.sh --test`.
-Fresh headless, Xvfb/Compatibility software-rendered, and native Wayland/Forward+ (RX 7900 XTX)
+Initial headless, Xvfb/Compatibility software-rendered, and native Wayland/Forward+ (RX 7900 XTX)
 runs passed on Godot 4.7.2. The economy-profile selector and day-cycle regressions also passed,
 along with all 15 Rust `asset_export::tests` cases. Optional
 `--capture-preview=<temporary-directory>` captures the generated day/night fixture in a rendered run.
@@ -2582,6 +2730,20 @@ Optional `--benchmark-asset-preview` now measures warmed switches rather than im
 `TOOLS-05`). Loading scales with mesh/dependency size, emission updates with preview material
 surfaces, and export with the asset's copied bytes. No simulation tick or world-wide rendering
 loop is added.
+
+Night-preview follow-up (2026-09-20): all six asset-editor headless suites and `day_cycle_test`
+pass freshly; X11/Forward+ (RX 7900 XTX, Godot 4.7.2) also passes, with inspected day/night
+captures now exercising Automatic via the actual preset buttons. The sandboxed Xvfb attempt
+could not open a display; the rendered check used approved desktop access instead.
+Artifacts: `/tmp/metrum-night-preview.uKcymY/`. The isolated `project/emission_measure.gd`
+extends the same fixture: 100 warmup Day/Night pairs, then 2,000 alternating preset changes,
+one part/emissive surface. Two sequential unprofiled headless runs with `RAYON_NUM_THREADS=4`
+measured **101.204 / 100.710 µs per change**, zero imports, using the existing release extension
+(SHA256 prefix `5a5ddeb006068a581`) and panel source `bf10e33785c8af18`.
+Run with `godot --headless --path <isolated-project> --script res://emission_measure.gd -- --asset-editor`
+and isolated XDG data/config paths. These are input-handler timings, not GPU/frame timings:
+the added solar lookup is O(1); applying emission remains O(parts + emissive surfaces) on input
+only, with no idle-frame work, new material copies or simulation changes.
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 
@@ -2604,8 +2766,10 @@ nodes, not game state. Future spatial building rendering must call the same Rust
   refines). Large camera changes can skip directly to the appropriate tier. Explicit quality
   changes and entering Automatic reset history. Single-tier assets keep LOD0; short chains
   retain their last available tier. Selection never culls an asset or changes its shadows.
-- Parts start in Automatic. A forced tier affects only that part, survives selection changes
-  and does not enter the manifest. Camera/quality/emission controls do not modify source assets.
+- Parts start in Automatic. Explicit tier inspection affects only that part, survives selection
+  changes and does not enter the manifest. Camera transform/projection changes end temporary
+  inspection on all parts and reset its hysteresis history; idle updates do not.
+  Camera/quality/emission controls do not modify source assets.
   Failed tier imports retain the visible mesh with an inspector error; camera movement does
   not continually retry failed imports. Removing a tier/part clears its corresponding cache.
 - Import and count geometry only on document/chain changes. All tiers are retained under the
