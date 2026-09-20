@@ -616,7 +616,9 @@ func _create_patch(key: Vector2i, allow_async: bool = true) -> void:
 	material.set_shader_parameter("water_sun_glitter_strength", WATER_SUN_GLITTER_STRENGTH)
 	material.set_shader_parameter("water_refraction_strength", WATER_REFRACTION_STRENGTH)
 	material.set_shader_parameter("water_refraction_mix", WATER_REFRACTION_MIX)
-	material.set_shader_parameter("scene_shadow_max_distance_m", SceneLightingConfig.SHADOW_MAX_DISTANCE_M)
+	material.set_shader_parameter(
+		"scene_shadow_max_distance_m", SceneLightingConfig.shadow_max_distance_m()
+	)
 	material.set_shader_parameter(
 		"scene_shadow_split_distances_m",
 		SceneLightingConfig.shadow_split_distances()

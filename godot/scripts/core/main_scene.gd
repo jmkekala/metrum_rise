@@ -61,6 +61,13 @@ func menu_toggle_zoning_overlay() -> void:
 	if input_manager:
 		input_manager.menu_toggle_zoning_overlay()
 
+## Holds the rendered daylight at one hour of day, or follows the simulation clock again when
+## `hour` is negative. The clock itself never stops: only the lighting is pinned.
+func menu_set_time_of_day(hour: float) -> void:
+	var lighting := get_node_or_null("SceneLighting")
+	if lighting:
+		lighting.pin_hour_of_day(hour)
+
 func menu_open_asset_editor() -> void:
 	_spawn_project_instance(["--asset-editor"])
 

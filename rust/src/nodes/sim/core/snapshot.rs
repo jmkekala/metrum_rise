@@ -2,7 +2,7 @@
 
 //! Undo and render snapshots produced from authoritative simulation state.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use super::state::{PendingDemandSpawnAction, SimCore};
@@ -21,6 +21,7 @@ use crate::simulation::network::render::NetworkMeshData;
 use crate::simulation::network::surface::{
     CURB_STEP_HEIGHT_M, RoadSurfaceTopologyUndo, SurfaceChunkKey,
 };
+use crate::simulation::vegetation::edits::{CellEdit, VegetationCell};
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
 use godot::prelude::{Vector2, Vector3};
 
@@ -116,6 +117,79 @@ pub(crate) enum SimulationRuntimeSnapshot {
     PendingDemandSpawns(VecDeque<PendingDemandSpawnAction>),
     /// Records changed by one building bulldoze operation.
     BuildingRemoval(BuildingRemovalUndo),
+    /// Cells changed by one vegetation brush stroke.
+    VegetationEdit(VegetationEditUndo),
+}
+
+/// Bounded inverse journal for one vegetation brush stroke.
+///
+/// Storage is O(changed cells): one entry per cell the stroke touched, holding that cell's
+/// delta as it stood before the stroke. A cell the generator still owned stores `None` and
+/// allocates nothing, which is the whole of a clear-cut over unedited forest.
+#[derive(Default)]
+pub(crate) struct VegetationEditUndo {
+    // Keyed by cell so a dragged stroke merges in expected O(1) per cell and the first
+    // recorded state of a cell wins, which is the state the stroke started from.
+    cells: HashMap<VegetationCell, Option<CellEdit>>,
+    patch_keys: HashSet<i64>,
+    // The gesture that produced this entry. A stamp may only fold into the entry of its own
+    // stroke: a stamp that changed nothing journals nothing, so "not the first stamp" is not
+    // enough to prove the entry on top of the stack belongs to the same gesture. Zero is a
+    // standalone edit and matches no stroke, including another zero.
+    stroke: i64,
+}
+
+impl VegetationEditUndo {
+    /// Opens a journal for one brush gesture, or for a standalone edit at stroke zero.
+    pub(crate) fn for_stroke(stroke: i64) -> Self {
+        Self {
+            stroke,
+            ..Self::default()
+        }
+    }
+
+    /// Whether a stamp of this stroke may fold into this journal instead of opening one.
+    pub(crate) fn accepts(&self, stroke: i64) -> bool {
+        stroke != 0 && stroke == self.stroke
+    }
+
+    /// Records one cell's pre-edit delta, keeping the earliest record of a repeated cell.
+    pub(crate) fn record_cell(&mut self, cell: VegetationCell, prior: Option<CellEdit>) {
+        self.cells.entry(cell).or_insert(prior);
+    }
+
+    /// Records a render patch whose revision must advance again when this stroke is undone.
+    pub(crate) fn record_patch(&mut self, key: i64) {
+        self.patch_keys.insert(key);
+    }
+
+    /// The gesture this journal belongs to, or zero for a standalone edit.
+    pub(crate) fn stroke(&self) -> i64 {
+        self.stroke
+    }
+
+    /// Whether the stroke changed nothing and needs no undo entry.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Folds a later stamp of the same stroke in, preserving each cell's earliest record.
+    pub(crate) fn merge(&mut self, later: Self) {
+        for (cell, prior) in later.cells {
+            self.cells.entry(cell).or_insert(prior);
+        }
+        self.patch_keys.extend(later.patch_keys);
+    }
+
+    /// Consumes the journal into its cell records and the patches to re-stale.
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        HashMap<VegetationCell, Option<CellEdit>>,
+        HashSet<i64>,
+    ) {
+        (self.cells, self.patch_keys)
+    }
 }
 
 /// Bounded inverse journal for one building deletion.

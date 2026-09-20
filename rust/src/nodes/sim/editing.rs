@@ -9,6 +9,7 @@ use crate::nodes::sim::core::{
     SERVICE_BUILD_COST_PER_LOT_CELL, SimCore,
 };
 use crate::nodes::sim::road_tool::validate_road_candidate_against_water;
+use crate::nodes::simulation_node::vegetation_api::{self, CANOPY_CLEAR_RADIUS_M};
 use crate::simulation::buildings::allocator::{
     ExplicitServicePlacementPreview, ExplicitServicePlacementRejection,
 };
@@ -19,6 +20,7 @@ use crate::simulation::network::road_edit::FinalizedRoadGeometry;
 use crate::simulation::network::surface::{
     RoadExtensionReprofile, RoadPreviewTopologyReuse, RoadSurfaceCompileReason, RoadSurfaceSystem,
 };
+use crate::simulation::vegetation::edits::pack_patch_key;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
@@ -28,6 +30,19 @@ const BULLDOZE_HIGHLIGHT_Y_OFFSET_M: f32 = 0.08;
 const BULLDOZE_ROAD_PICK_RADIUS_M: f32 = 24.0;
 const BULLDOZE_ROAD_PICK_MARGIN_M: f32 = 0.75;
 const ROAD_UNDO_TOPOLOGY_MARGIN_M: f32 = 40.0;
+
+/// Axis-aligned world bounds of one player polygon, or `None` for fewer than three points.
+pub(crate) fn polygon_world_bounds(points: &[Vector2]) -> Option<(Vector2, Vector2)> {
+    if points.len() < 3 {
+        return None;
+    }
+    Some(points.iter().fold((points[0], points[0]), |(lo, hi), p| {
+        (
+            Vector2::new(lo.x.min(p.x), lo.y.min(p.y)),
+            Vector2::new(hi.x.max(p.x), hi.y.max(p.y)),
+        )
+    }))
+}
 
 /// Result of a road placement attempt after synchronous input validation.
 #[derive(Clone, Debug)]
@@ -106,6 +121,7 @@ impl SimCore {
 enum BulldozeTargetKind {
     Building,
     Road,
+    Vegetation,
 }
 
 impl BulldozeTargetKind {
@@ -113,10 +129,12 @@ impl BulldozeTargetKind {
         match self {
             Self::Building => "building",
             Self::Road => "road",
+            Self::Vegetation => "vegetation",
         }
     }
 }
 
+/// One resolved object and its immutable hover geometry for a queued bulldoze command.
 #[derive(Clone, Debug)]
 pub(crate) struct BulldozeTarget {
     kind: BulldozeTargetKind,
@@ -290,7 +308,7 @@ impl SimCore {
         }
     }
 
-    /// Returns the deterministic building-or-road target for the bulldoze cursor.
+    /// Returns the deterministic building, road or vegetation target for the bulldoze cursor.
     pub(crate) fn get_bulldoze_target_at_internal(
         &mut self,
         world_x: f32,
@@ -335,6 +353,16 @@ impl SimCore {
         match target.kind {
             BulldozeTargetKind::Building => self.bulldoze_building(target.id),
             BulldozeTargetKind::Road => self.bulldoze_road_edge(target.id),
+            BulldozeTargetKind::Vegetation => {
+                // The exact stored position avoids clearing nearby plants. The existing
+                // brush path owns both patch invalidation and this click's undo entry.
+                vegetation_api::remove_at(
+                    self,
+                    Vector2::new(target.center.x, target.center.z),
+                    0.0,
+                    0,
+                ) > 0
+            }
         }
     }
 
@@ -347,6 +375,34 @@ impl SimCore {
         let pos = Vector2::new(world_x, world_z);
         self.resolve_bulldoze_building_target(pos)
             .or_else(|| self.resolve_bulldoze_road_target(pos))
+            .or_else(|| self.resolve_bulldoze_vegetation_target(pos))
+    }
+
+    fn resolve_bulldoze_vegetation_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
+        let (plant, radius) = vegetation_api::plant_at(self, pos)?;
+        // Pack the stored f32 position bits, never the compacted authored-vector index.
+        // The center retains those exact coordinates, so resolving there selects this
+        // zero-distance plant and reproduces its ID after unrelated authored removals.
+        let id = ((u64::from(plant.x.to_bits()) << 32) | u64::from(plant.z.to_bits())) as usize;
+        let height = |x, z| {
+            self.heightmap.sample_visual_height_world(x, z) * config::HEIGHT_SCALE
+                + BULLDOZE_HIGHLIGHT_Y_OFFSET_M
+        };
+        let points = (0..16)
+            .map(|i| {
+                let angle = std::f32::consts::TAU * i as f32 / 16.0;
+                let x = plant.x + radius * angle.cos();
+                let z = plant.z + radius * angle.sin();
+                Vector3::new(x, height(x, z), z)
+            })
+            .collect();
+        Some(BulldozeTarget {
+            kind: BulldozeTargetKind::Vegetation,
+            id,
+            center: Vector3::new(plant.x, height(plant.x, plant.z), plant.z),
+            points,
+            width_m: 0.0,
+        })
     }
 
     fn resolve_bulldoze_building_target(&self, pos: Vector2) -> Option<BulldozeTarget> {
@@ -503,6 +559,12 @@ impl SimCore {
             return false;
         }
         let dirty_bounds = self.allocator.site_world_bounds(building_idx);
+        // Read while the farm still owns its field: removing it gives the ground back, and the
+        // plants the field was hiding have to return with it.
+        let field_bounds = self
+            .agriculture
+            .site_for_building(building_idx)
+            .and_then(|site| polygon_world_bounds(&site.polygon_world));
         self.allocator
             .accumulate_pending_site_dirty_bounds(dirty_bounds);
         if record_undo && !self.push_building_removal_undo(building_idx) {
@@ -532,6 +594,9 @@ impl SimCore {
             return false;
         }
         self.publish_pending_production_site_removals();
+        if let Some(bounds) = field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
         if let Some(bounds) = dirty_bounds {
             self.mark_building_site_terrain_dirty_bounds(bounds);
         }
@@ -1531,13 +1596,45 @@ impl SimCore {
         polygon_world: Vec<Vector2>,
     ) -> Result<crate::simulation::agriculture::FieldSiteSummary, String> {
         self.prepare_field_polygon_validation()?;
-        self.agriculture.commit_site(
+        // Captured before the commit: a resize has to give back the ground the old polygon
+        // covered as well as take the ground the new one covers.
+        let previous = self
+            .agriculture
+            .site_for_building(building_idx)
+            .and_then(|site| polygon_world_bounds(&site.polygon_world));
+        let committed = polygon_world_bounds(&polygon_world);
+        let summary = self.agriculture.commit_site(
             building_idx,
             polygon_world,
             &mut self.allocator,
             &self.zoning,
             &self.transit_network.road_surface,
-        )
+        )?;
+        for bounds in [previous, committed].into_iter().flatten() {
+            self.invalidate_vegetation_over(bounds);
+        }
+        Ok(summary)
+    }
+
+    /// Restales every vegetation patch a world-space box touches, so plants a field now covers
+    /// disappear on the next patch fetch rather than on the next load.
+    ///
+    /// A field hides its plants through the same `placement_clear` predicate a road deck or a
+    /// building pad uses. Those two already restale their patches through the terrain surface
+    /// generation, because both move ground; a field only paints it, so it advances the
+    /// vegetation revision itself. One increment per covered patch, evaluating no plants.
+    pub(crate) fn invalidate_vegetation_over(&mut self, bounds: (Vector2, Vector2)) {
+        let (min, max) = bounds;
+        let keys = self.heightmap.render_patch_keys_for_world_bounds(
+            min.x - CANOPY_CLEAR_RADIUS_M,
+            min.y - CANOPY_CLEAR_RADIUS_M,
+            max.x + CANOPY_CLEAR_RADIUS_M,
+            max.y + CANOPY_CLEAR_RADIUS_M,
+        );
+        for (patch_x, patch_z) in keys {
+            self.vegetation_edits
+                .bump_patch(pack_patch_key(patch_x as i32, patch_z as i32));
+        }
     }
 
     /// Removes an unfinalized industry area placement before its polygon is committed.
@@ -2701,6 +2798,122 @@ mod tests {
         assert_eq!(Vector2::new(target.center.x, target.center.z), point);
         assert_eq!(core.bulldoze_prepared_target_internal(target), Some(false));
         assert!(core.undo_action_internal());
+    }
+
+    #[test]
+    fn bulldoze_vegetation_matches_brush_clear_and_preserves_neighbours() {
+        use crate::nodes::simulation_node::vegetation_api;
+        use crate::simulation::vegetation::edits::{
+            AuthoredPlant, VegetationCell, VegetationLayer,
+        };
+
+        let mut core = test_core();
+        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 20.0);
+        core.vegetation.config.enabled = false;
+        core.prepare_bulldoze_target_indices();
+        let cell = VegetationCell {
+            layer: VegetationLayer::Canopy,
+            x: 0,
+            z: 0,
+        };
+        for species in 0..=3 {
+            let plant = AuthoredPlant {
+                x: 1.0,
+                z: 1.0,
+                yaw: 0.0,
+                scale: 1.0,
+                species,
+                variant: 0,
+            };
+            let neighbour = AuthoredPlant { x: 1.005, ..plant };
+            // Insert the neighbour first: clearing it later compacts the target's index.
+            core.vegetation_edits.add(cell, neighbour);
+            core.vegetation_edits.add(cell, plant);
+            let target = core.resolve_bulldoze_target(plant.x, plant.z).unwrap();
+            assert_eq!(target.kind, BulldozeTargetKind::Vegetation);
+            assert_eq!(target.kind.as_str(), "vegetation");
+            assert_eq!(target.points.len(), 16);
+            assert!(
+                target
+                    .points
+                    .iter()
+                    .all(|p| p.is_finite() && p.y > 20.0 * crate::config::HEIGHT_SCALE)
+            );
+            let radius = if species == 0 {
+                3.0
+            } else if species == 1 {
+                3.5
+            } else {
+                1.0
+            };
+            assert!((target.points[0].x - target.center.x - radius).abs() < 0.001);
+            let undo_depth = core.undo_stack.len();
+            assert_eq!(core.bulldoze_prepared_target_internal(target), Some(false));
+            assert_eq!(core.undo_stack.len(), undo_depth + 1);
+            assert_eq!(core.vegetation_edits.cell(cell).1, &[neighbour]);
+            let bulldozed = core.vegetation_edits.snapshot_cell(cell);
+            assert!(core.undo_action_internal());
+            assert_eq!(
+                vegetation_api::remove_at(&mut core, Vector2::new(plant.x, plant.z), 0.0, 0),
+                1
+            );
+            assert_eq!(core.vegetation_edits.snapshot_cell(cell), bulldozed);
+            assert!(core.undo_action_internal());
+            let target = core.resolve_bulldoze_target(plant.x, plant.z).unwrap();
+            assert_eq!(
+                vegetation_api::remove_at(
+                    &mut core,
+                    Vector2::new(neighbour.x, neighbour.z),
+                    0.0,
+                    0
+                ),
+                1
+            );
+            let resolved = core
+                .resolve_bulldoze_target(target.center.x, target.center.z)
+                .unwrap();
+            assert_eq!(resolved.id, target.id);
+            assert_eq!(core.bulldoze_prepared_target_internal(target), Some(false));
+            assert!(core.vegetation_edits.cell(cell).1.is_empty());
+        }
+    }
+
+    #[test]
+    fn bulldoze_generated_vegetation_writes_the_brush_tombstone() {
+        use crate::nodes::simulation_node::vegetation_api;
+        use crate::simulation::vegetation::edits::{VegetationCell, VegetationLayer};
+
+        let mut core = test_core();
+        core.heightmap = TerrainSystem::with_chunking(257, 257, 10.0, 65, 20.0);
+        core.prepare_bulldoze_target_indices();
+        let (plant, _) = (-16..=16)
+            .find_map(|i| vegetation_api::plant_at(&core, Vector2::new(i as f32 * 4.0, 0.0)))
+            .expect("generated vegetation on flat ground");
+        let pos = Vector2::new(plant.x, plant.z);
+        let target = core.resolve_bulldoze_target(pos.x, pos.y).unwrap();
+        assert_eq!(target.kind, BulldozeTargetKind::Vegetation);
+        assert_eq!(core.bulldoze_prepared_target_internal(target), Some(false));
+        let cells = core.vegetation_edits.sorted_cells();
+        assert_eq!(cells.len(), 1);
+        let cell = cells[0];
+        let cell_m = match cell.layer {
+            VegetationLayer::Canopy => core.vegetation.canopy_cell_m,
+            VegetationLayer::Understory => core.vegetation.understory_cell_m,
+        };
+        assert_eq!(
+            cell,
+            VegetationCell {
+                layer: cell.layer,
+                x: (pos.x / cell_m).floor() as i32,
+                z: (pos.y / cell_m).floor() as i32,
+            }
+        );
+        assert!(core.vegetation_edits.cell(cell).0);
+        let bulldozed = core.vegetation_edits.snapshot_cell(cell);
+        assert!(core.undo_action_internal());
+        assert!(!core.vegetation_edits.cell(cell).0);
+        assert_eq!(vegetation_api::remove_at(&mut core, pos, 0.0, 0), 1);
+        assert_eq!(core.vegetation_edits.snapshot_cell(cell), bulldozed);
     }
 
     #[test]

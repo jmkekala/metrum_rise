@@ -671,42 +671,68 @@ func _apply_hud_toolbar_text_style(button: Button) -> void:
 
 ## Vegetation controls share the existing Terrain submenu and forward settings to its tool.
 ##
-## Two controls: choosing a species is the plant action, and `Remove` is its opposite. The tool
-## owns the radius, which the player turns with ctrl and the mouse wheel and reads off the ground
-## ring, so neither the point/brush choice nor the footprint needs a control here.
+## Two controls: choosing a brush preset is the plant action, and `Remove` is its opposite. The
+## presets are named trees, tree mixes and planting densities, and Rust owns what each one means;
+## this list only names them. The tool owns the radius, which the player turns with ctrl and the
+## mouse wheel and reads off the ground ring, so neither the point/brush choice nor the footprint
+## needs a control here.
 func _build_vegetation_controls() -> void:
 	terrain_sub_menu.add_child(VSeparator.new())
+	var tool = input_manager.vegetation_tool
 
-	var species := OptionButton.new()
-	species.focus_mode = Control.FOCUS_NONE
-	for label in ["Conifer", "Broadleaf", "Bush", "Rock"]:
-		species.add_item("+ " + label)
-	terrain_sub_menu.add_child(species)
+	var options := OptionButton.new()
+	options.focus_mode = Control.FOCUS_NONE
+	options.tooltip_text = "Shift + wheel: cycle brush; Ctrl + wheel: radius"
+	for option in VegetationTool.BRUSH_OPTIONS:
+		options.add_item("+ " + option.label)
+	options.select(tool.option_index)
+	# select() updates the readout without emitting item_selected again.
+	tool.option_changed.connect(options.select)
+	terrain_sub_menu.add_child(options)
 
 	var remove_button := Button.new()
 	remove_button.text = "Remove"
 	remove_button.toggle_mode = true
 	remove_button.focus_mode = Control.FOCUS_NONE
+	remove_button.tooltip_text = "E: toggle erase"
+	remove_button.set_pressed_no_signal(tool.mode == VegetationTool.Mode.REMOVE)
+	tool.mode_changed.connect(func(value: int):
+		remove_button.set_pressed_no_signal(value == VegetationTool.Mode.REMOVE)
+	)
 	terrain_sub_menu.add_child(remove_button)
 
 	# Opening the dropdown already leaves remove mode: `item_selected` does not fire when the
-	# wanted species is the current one, which would otherwise trap the player in removal.
+	# wanted preset is the current one, which would otherwise trap the player in removal.
 	var plant := func():
 		_activate_vegetation(VegetationTool.Mode.PLANT)
-		remove_button.set_pressed_no_signal(false)
-	species.pressed.connect(plant)
-	species.item_selected.connect(func(index: int):
-		input_manager.vegetation_tool.species = index
+	options.pressed.connect(plant)
+	options.item_selected.connect(func(index: int):
+		tool.option_index = index
 		plant.call()
 	)
-	remove_button.pressed.connect(func():
-		_activate_vegetation(VegetationTool.Mode.REMOVE)
-		remove_button.set_pressed_no_signal(true)
+	# The popup grabs input; forward both brush gestures with the same Ctrl priority as the tool.
+	options.get_popup().window_input.connect(func(event: InputEvent):
+		if not (event is InputEventMouseButton and event.pressed and (event.ctrl_pressed or event.shift_pressed)):
+			return
+		var direction := 0
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			direction = 1
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			direction = -1
+		if direction != 0:
+			if event.ctrl_pressed:
+				tool.step_radius(direction)
+			else:
+				tool.step_option(direction)
+			options.get_popup().set_input_as_handled()
+	)
+	remove_button.toggled.connect(func(pressed: bool):
+		_activate_vegetation(VegetationTool.Mode.REMOVE if pressed else VegetationTool.Mode.PLANT)
 	)
 	# One reset covers every path that closes the submenu, including the tool cancel it triggers.
 	terrain_sub_menu.visibility_changed.connect(func():
 		if not terrain_sub_menu.visible:
-			remove_button.set_pressed_no_signal(false)
+			tool.mode = VegetationTool.Mode.PLANT
 	)
 
 func _activate_vegetation(mode: int) -> void:

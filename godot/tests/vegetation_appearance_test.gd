@@ -6,6 +6,7 @@
 extends SceneTree
 const Vegetation = preload("res://scripts/renderers/vegetation.gd")
 const Species = preload("res://scripts/renderers/tree_species.gd")
+const SceneLightingConfig = preload("res://scripts/core/scene_lighting.gd")
 const SPAN = 510.0
 class Terrain extends Node:
 	func get_patch_surface_generation(_key): return 7
@@ -47,6 +48,7 @@ func run():
 	var crown_colors := _check_crown_colors(vegetation.meshes)
 	_check_birch(vegetation.meshes[Species.BROADLEAF])
 	_check_meshes(vegetation.meshes)
+	_check_crown_cohesion(vegetation.meshes)
 	_check_atlas_cells()
 	for key in [Vector2i(0,0), Vector2i(1,0), Vector2i(0,1), Vector2i(1,1)]:
 		vegetation._upload_patch(key, SPAN)
@@ -64,9 +66,10 @@ func run():
 	# The headless dummy renderer does not retain uploaded transforms/colours. Check
 	# deterministic inputs here and validate actual bucket populations on the nodes.
 	for offset in range(0, simulation.data.size(), 6):
-		var species := int(simulation.data[offset + 5])
+		var packed := int(simulation.data[offset + 5])
+		var species := packed & Vegetation.SPECIES_MASK
 		var seed: int = vegetation._appearance_seed(simulation.data, offset)
-		var variant: int = vegetation._variant_index(species, seed)
+		var variant: int = vegetation._variant_index(species, seed, packed >> Vegetation.SPECIES_BITS)
 		var tint: Color = vegetation._instance_tint(seed)
 		assert(tint.a == 1.0)
 		assert(minf(tint.r, minf(tint.g, tint.b)) >= 0.90)
@@ -84,6 +87,25 @@ func run():
 		nodes += patch.get_child_count()
 		assert(patch.get_meta("surface_generation") == 7)
 		assert(patch.get_meta("understory"))
+		# The levels of one species measure their visibility range from one bounds, or the
+		# complementary near and distant ranges stop and start at different distances and
+		# drop the trees in between. A single-level species keeps its own bounds. The dummy
+		# renderer reports empty multimesh bounds, so here every shared value is the engine
+		# default; the contract is that a species with two levels shares one box.
+		var species_bounds: Dictionary = {}
+		var species_union: Dictionary = {}
+		for instance in patch.get_children():
+			var species: int = instance.get_meta("species")
+			var box: AABB = instance.get_aabb()
+			species_union[species] = (
+				box if not species_union.has(species) else (species_union[species] as AABB).merge(box)
+			)
+			if species_bounds.has(species):
+				assert(instance.custom_aabb == species_bounds[species])
+			species_bounds[species] = instance.custom_aabb
+		for species in species_bounds:
+			var union: AABB = species_union[species]
+			assert(species_bounds[species] == (union if union.size != Vector3.ZERO else AABB()))
 		for instance in patch.get_children():
 			var mm: MultiMesh = instance.multimesh
 			# Only the near band carries instance colours; see the renderer's distant level.
@@ -91,8 +113,16 @@ func run():
 			resident += mm.instance_count
 			var species: int = instance.get_meta("species")
 			var lod: int = instance.get_meta("lod")
-			assert(instance.visibility_range_begin == vegetation.lod_range(species, lod).x)
-			assert(instance.visibility_range_end == vegetation.lod_range(species, lod).y)
+			var near_band: bool = patch.get_meta("near_band")
+			var variant: int = instance.get_meta("variant")
+			# The understory staggers its cutoff by variant and the canopy switches on a
+			# distance this patch keeps, so both arguments come from the instance, not from
+			# the constants. See CANOPY_SWITCH_JITTER_M and UNDERSTORY_STAGGER_MIN.
+			var expected := vegetation.lod_range(
+				species, lod, variant, near_band, vegetation.canopy_switch_m(key)
+			)
+			assert(instance.visibility_range_begin == expected.x)
+			assert(instance.visibility_range_end == expected.y)
 			assert(instance.visibility_range_fade_mode == GeometryInstance3D.VISIBILITY_RANGE_FADE_DISABLED)
 			assert(instance.cast_shadow == vegetation._shadow_setting(species, lod))
 			if lod > 0:
@@ -102,12 +132,8 @@ func run():
 				assert(mm.mesh == vegetation.meshes[species][0][patch.get_meta("distant_lod")])
 				assert(mm.instance_count == 512)
 			else:
-				var matched := false
-				for variant in range(Species.VARIANT_COUNTS[species]):
-					if mm.mesh == vegetation.meshes[species][variant][0]:
-						assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
-						matched = true
-				assert(matched)
+				assert(mm.mesh == vegetation.meshes[species][variant][0])
+				assert(mm.instance_count == expected_buckets[Vector2i(species, variant)])
 	positions.sort()
 	appearance.sort()
 	var appearance_digest := "\n".join(appearance).sha256_text()
@@ -144,7 +170,7 @@ func run():
 	assert(vegetation.patches[Vector2i(0, 0)].get_meta("tree_count") == 0)
 	await process_frame
 	host.free()
-	print("PASS vegetation appearance, shared material, LOD buckets, positions and empty density")
+	print("PASS vegetation appearance, shared material and bounds, LOD buckets, positions and empty density")
 	quit()
 
 func _geometry_counts(meshes: Array) -> Array:
@@ -181,6 +207,31 @@ func _check_geometry_budget(counts: Array) -> void:
 				assert(levels[1][0] <= [296, 274][species])
 				assert(levels[2][0] <= [77, 92][species])
 				assert(levels[1][1] == [102, 96][species] and levels[2][1] == [28, 32][species])
+
+func _check_crown_cohesion(meshes: Array) -> void:
+	# Both foliage surfaces must carry volume lighting, not flat normals or random
+	# bright faces. Check every near variant, including pine, spruce, birch and aspen.
+	for species in [Species.CONIFER, Species.BROADLEAF]:
+		for levels in meshes[species]:
+			var mesh: ArrayMesh = levels[0]
+			for surface in range(2):
+				var arrays := mesh.surface_get_arrays(surface)
+				var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+				var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+				var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+				var foliage_colors := {}
+				var smooth_triangles := 0
+				for i in range(colors.size()):
+					if colors[i].g > colors[i].r:
+						foliage_colors[colors[i]] = true
+						assert(normals[i].is_finite() and absf(normals[i].length() - 1.0) < 0.001)
+						assert(colors[i].a == 1.0)
+				for i in range(0, indices.size(), 3):
+					var a := indices[i]
+					var b := indices[i + 1]
+					if colors[a].g > colors[a].r and normals[a].dot(normals[b]) < 0.999:
+						smooth_triangles += 1
+				assert(foliage_colors.size() == 1 and smooth_triangles > 0)
 
 func _check_crown_integral() -> void:
 	# Two foliage triangles with areas 1 and 3, on separate surfaces, plus wood of area 5.
@@ -266,8 +317,15 @@ func _check_meshes(meshes: Array) -> void:
 		assert(material.shader == preload("res://scripts/shaders/vegetation_distant.gdshader"))
 	assert(shared_distant[0].get_shader_parameter("crown_coverage")
 		!= shared_distant[1].get_shader_parameter("crown_coverage"))
+	for material in [shared_wind, shared_cards, shared_distant[0], shared_distant[1]]:
+		assert(material.get_shader_parameter("canopy_shade_end_m")
+			== SceneLightingConfig.shadow_max_distance_m())
+		assert(material.get_shader_parameter("canopy_shade_begin_m")
+			< material.get_shader_parameter("canopy_shade_end_m"))
 	var distant_code: String = shared_distant[0].shader.code
-	assert(distant_code.contains("BACKLIGHT = vegetation_backlight(COLOR.rgb);"))
+	# No trailing semicolon: the distant crown scales this by the canopy shade term. The
+	# contract is that it still routes backlight through the shared helper on its own colour.
+	assert(distant_code.contains("BACKLIGHT = vegetation_backlight(COLOR.rgb)"))
 	assert(distant_code.contains("ALPHA_SCISSOR_THRESHOLD = 0.4;"))
 	assert(distant_code.contains("COLOR.g > COLOR.r"))
 	# Source contracts only: the dummy renderer cannot compile shaders or prove pass routing.

@@ -3,6 +3,8 @@
 ## Actual terrain shader intensity regression; requires a rendering display.
 extends SceneTree
 
+const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
+
 var _failures := 0
 
 func _initialize() -> void:
@@ -84,6 +86,51 @@ func _run() -> void:
 		var difference := _rgb(edge).distance_to(_rgb(interior))
 		print("terrain_overlay_edge pixels=%s difference=%.6f" % [pair, difference])
 		_expect(difference < 0.02, "world edges must clamp to their adjacent overlay texel")
+
+	# The forest floor darkens where the shadow cascades stop reaching it, and only under
+	# accepted crown coverage. See CANOPY_FLOOR_SHADE_FLOOR in scene_lighting.gd. The camera
+	# moves rather than the ramp, so the shipped begin and end distances are what is measured,
+	# and the term is compared against itself disabled rather than against bare ground, because
+	# the litter hue the coverage also swaps in changes the colour without changing its
+	# luminance.
+	material.set_shader_parameter("overlay_mode", 0)
+	material.set_shader_parameter("land_cover_world_bounds", Vector4(-1.0, -1.0, 2.0, 2.0))
+	var floor_shade_samples := {}
+	for cover in [0.0, 1.0]:
+		material.set_shader_parameter("land_cover_texture", _texture(Color(cover, cover, cover)))
+		for strength in [0.0, 1.0]:
+			material.set_shader_parameter("canopy_floor_shade", strength)
+			for height in [10.0, 600.0]:
+				camera.position = Vector3(0.0, height, 0.0)
+				camera.look_at(Vector3.ZERO, Vector3(0.0, 0.0, -1.0))
+				var shade_image := await _capture(viewport)
+				var shade := _rgb(shade_image.get_pixel(32, 32)).length()
+				floor_shade_samples[Vector3(cover, strength, height)] = shade
+				print(
+					"terrain_floor_shade cover=%.1f strength=%.1f height=%.0f shade=%.6f"
+					% [cover, strength, height, shade]
+				)
+	var bare_near: float = floor_shade_samples[Vector3(0.0, 1.0, 10.0)]
+	var bare_far: float = floor_shade_samples[Vector3(0.0, 1.0, 600.0)]
+	var covered_near: float = floor_shade_samples[Vector3(1.0, 1.0, 10.0)]
+	var covered_far: float = floor_shade_samples[Vector3(1.0, 1.0, 600.0)]
+	var unshaded_near: float = floor_shade_samples[Vector3(1.0, 0.0, 10.0)]
+	var unshaded_far: float = floor_shade_samples[Vector3(1.0, 0.0, 600.0)]
+	_expect(
+		absf(bare_far - bare_near) < 0.002,
+		"ground with no crown over it must not darken with distance"
+	)
+	_expect(
+		absf(covered_near - unshaded_near) < 0.002,
+		"inside shadow range the tree shadows supply the darkness, so nothing may change"
+	)
+	# The capture is tone mapped, so the measured ratio trails the linear floor slightly.
+	var expected := unshaded_far * SceneLightingConfig.CANOPY_FLOOR_SHADE_FLOOR
+	_expect(
+		absf(covered_far - expected) < 0.02,
+		"covered ground past the cascades must keep about CANOPY_FLOOR_SHADE_FLOOR of its light"
+	)
+	material.set_shader_parameter("canopy_floor_shade", 1.0)
 	viewport.queue_free()
 	await process_frame
 	print("Terrain overlay shader tests: %d failures" % _failures)

@@ -37,6 +37,31 @@ pub struct AuthoredPlant {
     pub scale: f32,
     /// Renderer ordinal: conifer, broadleaf, bush or rock (0 through 3).
     pub species: u8,
+    /// Renderer mesh variant, biased by one, or [`VARIANT_FROM_SEED`] to leave it unpinned.
+    ///
+    /// A species covers several modelled trees that the renderer normally picks between from
+    /// the position's appearance seed, which is why a conifer planted today may come up either
+    /// pine or spruce. A brush that plants one named tree pins the choice here instead. The
+    /// bias keeps the unpinned case at zero, so it costs no extra byte and reads the same as
+    /// every plant authored before the pin existed.
+    pub variant: u8,
+}
+
+/// Leaves the renderer to pick a mesh variant from the placement's appearance seed.
+pub const VARIANT_FROM_SEED: u8 = 0;
+
+/// Mesh variants the renderer models for each species ordinal.
+///
+/// This mirrors `TreeSpecies.VARIANT_COUNTS` on the Godot side, which owns the meshes
+/// themselves. The simulation needs the counts only to bound a pin, and the bridge test
+/// `vegetation_variant_test.gd` fails if the two ever drift apart.
+pub const VARIANT_COUNTS: [u8; 4] = [12, 12, 6, 6];
+
+/// Whether a biased variant pin names a mesh the renderer models for that species.
+pub fn variant_in_range(species: u8, variant: u8) -> bool {
+    VARIANT_COUNTS
+        .get(species as usize)
+        .is_some_and(|count| variant <= *count)
 }
 
 // One block covers 16x16 cells of a single layer, so a patch query tests a handful of blocks
@@ -53,8 +78,12 @@ fn cell_block(cell: VegetationCell) -> (VegetationLayer, i32, i32) {
     )
 }
 
+/// Prior contents of one edited cell, retained by an undo journal.
+///
+/// A cell that the generator still owns has no entry at all, so the journal stores an
+/// `Option` of this and a `None` costs no heap allocation.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct CellEdit {
+pub(crate) struct CellEdit {
     generated_removed: bool,
     added: Vec<AuthoredPlant>,
 }
@@ -159,6 +188,27 @@ impl VegetationEdits {
             self.cells.remove(&cell);
         }
         removed
+    }
+
+    /// Clones one cell's whole delta so an edit can be reversed, or `None` when untouched.
+    pub(crate) fn snapshot_cell(&self, cell: VegetationCell) -> Option<CellEdit> {
+        self.cells.get(&cell).cloned()
+    }
+
+    /// Puts one cell back to a snapshot taken before an edit, in expected O(1).
+    ///
+    /// The block index is a conservative superset and is never pruned, so a restore that
+    /// empties a cell leaves its block entry standing exactly as a removal does.
+    pub(crate) fn restore_cell(&mut self, cell: VegetationCell, prior: Option<CellEdit>) {
+        match prior {
+            Some(edit) => {
+                self.cells.insert(cell, edit);
+                self.blocks.insert(cell_block(cell));
+            }
+            None => {
+                self.cells.remove(&cell);
+            }
+        }
     }
 
     // Sorting is confined to save time; query and edit paths never scan the whole store.

@@ -3,12 +3,27 @@
 //! Deterministic vegetation queries and bounded player edits over the saved generator.
 
 use super::*;
+use crate::nodes::sim::core::VegetationEditUndo;
+use brush::preset;
 use crate::simulation::vegetation::edits::{
-    AuthoredPlant as Plant, VegetationCell, VegetationLayer, pack_patch_key,
+    AuthoredPlant as Plant, VARIANT_FROM_SEED, VegetationCell, VegetationLayer, pack_patch_key,
 };
 use crate::simulation::vegetation::{hash, unit};
 
+mod brush;
 mod land_cover;
+
+// Lane five of a packed placement carries both the species ordinal and the renderer mesh
+// variant pinned over it, because widening the stride would cost the whole scatter buffer a
+// seventh float for a field that is zero on every generated plant. The species occupies the
+// low two bits and the biased variant everything above them, so an unpinned plant packs to
+// the bare species ordinal exactly as it did before pinning existed. The largest value this
+// can reach is 12 * 4 + 3, which an f32 carries exactly.
+const SPECIES_BITS: u8 = 2;
+
+fn pack_species_variant(species: u8, variant: u8) -> f32 {
+    f32::from((variant << SPECIES_BITS) | species)
+}
 
 /// Species ordinals shared with the renderer's mesh table.
 const SPECIES_CONIFER: f32 = 0.0;
@@ -27,8 +42,12 @@ const UNDERSTORY_SALT: u32 = 64;
 const BRUSH_SPACING_M: f32 = 4.0;
 const MAX_PAINT_RADIUS_M: f32 = 256.0;
 
+// The 4 m lattice runs off its own salt base so its placement, its thinning and its species
+// mix are all independent of the canopy grid's decisions at the same integer coordinates.
+const BRUSH_SALT_OFFSET: u32 = 128;
+
 fn brush_candidate(x: i32, z: i32, salt: u32) -> [f32; 4] {
-    let salt = salt.wrapping_add(128);
+    let salt = salt.wrapping_add(BRUSH_SALT_OFFSET);
     let [_, _, yaw, scale] = candidate(x, z, BRUSH_SPACING_M, salt);
     [
         (x as f32 + 0.5) * BRUSH_SPACING_M + (unit(x, z, salt.wrapping_add(1)) - 0.5) * 0.4,
@@ -51,6 +70,10 @@ fn candidate(x: i32, z: i32, cell_m: f32, salt: u32) -> [f32; 4] {
         0.75 + unit(x, z, salt.wrapping_add(4)) * 0.6,
     ]
 }
+
+/// Room a canopy plant is cleared over, in metres. Also the margin a field polygon grows by
+/// before its patches are restaled, because a tree this far outside it can still be affected.
+pub(crate) const CANOPY_CLEAR_RADIUS_M: f32 = 6.0;
 
 // A missing sample means water or an engineered surface owns the position. The radius is
 // the plant's own clearance: a bush does not need a canopy tree's room.
@@ -154,16 +177,19 @@ impl SimulationNode {
     }
     /// Removes generated and authored plants in a bounded disc, returning the actual count.
     /// Visits O((radius / cell_m + 1)^2) cells per layer, plus their authored edits.
+    /// Pass the gesture's own `stroke` id on every stamp of a held drag, so the whole drag
+    /// reverses as one undo step. Zero is a standalone edit and folds into nothing.
     #[func]
-    pub fn remove_vegetation_at(&self, pos: Vector2, radius: f32) -> i64 {
-        remove_at(&mut self.lock_core(), pos, radius) as i64
+    pub fn remove_vegetation_at(&self, pos: Vector2, radius: f32, stroke: i64) -> i64 {
+        remove_at(&mut self.lock_core(), pos, radius, stroke) as i64
     }
 
-    /// Plants one renderer species (0..=3), refusing obstructed footprints immediately.
+    /// Plants one plant of a brush preset, refusing obstructed footprints immediately.
     /// Uses one expected O(1) cell lookup plus the generator's indexed footprint queries.
+    /// `option` indexes the preset table in `brush.rs`; an unknown ordinal plants nothing.
     #[func]
-    pub fn add_vegetation_at(&self, pos: Vector2, species: i64) -> bool {
-        add_at(&mut self.lock_core(), pos, species)
+    pub fn add_vegetation_at(&self, pos: Vector2, option: i64) -> bool {
+        add_at(&mut self.lock_core(), pos, option)
     }
 
     /// Fills a 4 m planting lattice plus generator candidates, returning plants added.
@@ -172,9 +198,13 @@ impl SimulationNode {
     /// Planning allocates no memory per candidate. Cost is O(K * (A + log N + H)) for
     /// K bounded slots, A authored plants in the owning cell, and H local surface hits;
     /// serialized commits cost expected O(K), independent of remote vegetation edits.
+    /// Pass the gesture's own `stroke` id on every stamp of a held drag, so the whole drag
+    /// reverses as one undo step. Zero is a standalone edit and folds into nothing.
+    /// `option` indexes the preset table in `brush.rs`, which decides the species mix, the
+    /// fraction of the lattice kept and the scale band; an unknown ordinal plants nothing.
     #[func]
-    pub fn paint_vegetation(&self, pos: Vector2, radius: f32, species: i64) -> i64 {
-        paint_at(&mut self.lock_core(), pos, radius, species) as i64
+    pub fn paint_vegetation(&self, pos: Vector2, radius: f32, option: i64, stroke: i64) -> i64 {
+        paint_at(&mut self.lock_core(), pos, radius, option, stroke) as i64
     }
 
     /// Returns a vegetation-only patch revision; terrain payload generations are unaffected.
@@ -267,13 +297,90 @@ fn disc_cells(
     })
 }
 
-fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32) -> usize {
+/// Finds the nearest visible plant and its hover radius within a fixed 4 m cursor disc.
+/// Visits O(K + A) local candidates/additions with indexed footprint queries, where K is
+/// bounded by the two grid spacings and A counts additions in those cells, not the world.
+/// Allocates nothing per candidate; ties use layer, row-major cell, then authored order.
+/// Coincident plants are refused because the existing clear mutator would remove them all.
+/// The caller must prepare the building-site query index before this immutable lookup.
+pub(crate) fn plant_at(core: &SimCore, pos: Vector2) -> Option<(Plant, f32)> {
+    const PICK_RADIUS_M: f32 = 4.0;
+    if !valid_disc(core, pos, PICK_RADIUS_M) {
+        return None;
+    }
+    let mut best = None;
+    for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
+        let (cell_m, salt) = grid(core, layer);
+        let nearest = disc_cells(pos, PICK_RADIUS_M, cell_m, layer)
+            .enumerate()
+            .filter_map(|(cell_order, cell)| {
+                let (removed, added) = core.vegetation_edits.cell(cell);
+                let generated = if removed {
+                    None
+                } else {
+                    evaluate_cell(core, cell, cell_m, salt)
+                };
+                generated
+                    .iter()
+                    .map(|p| (0, p))
+                    .chain(added.iter().enumerate().map(|(i, p)| (i + 1, p)))
+                    .filter(|(order, p)| {
+                        in_disc(p, pos, PICK_RADIUS_M)
+                            && (*order == 0 || placement_clear(core, p.x, p.z, layer))
+                    })
+                    .map(|(order, p)| {
+                        let distance = (p.x - pos.x).powi(2) + (p.z - pos.y).powi(2);
+                        (distance, cell_order, order, *p)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)))
+            })
+            .min_by(|a, b| {
+                a.0.total_cmp(&b.0)
+                    .then(a.1.cmp(&b.1))
+                    .then(a.2.cmp(&b.2))
+            });
+        if let Some((distance, _, _, plant)) = nearest {
+            // Strict replacement retains canopy first on a cross-layer distance tie.
+            if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+                best = Some((distance, plant));
+            }
+        }
+    }
+    let (_, plant) = best?;
+    let center = Vector2::new(plant.x, plant.z);
+    let mut coincident = 0;
+    for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
+        let (cell_m, salt) = grid(core, layer);
+        let cell = cell_at(center, layer, cell_m);
+        let (removed, added) = core.vegetation_edits.cell(cell);
+        coincident += added.iter().filter(|p| in_disc(p, center, 0.0)).count();
+        if !removed
+            && evaluate_cell(core, cell, cell_m, salt).is_some_and(|p| in_disc(&p, center, 0.0))
+        {
+            coincident += 1;
+        }
+    }
+    if coincident != 1 {
+        return None;
+    }
+    // Bushes and rocks have no entry in the canopy coverage table.
+    let radius = land_cover::CROWN_RADII_M
+        .get(plant.species as usize)
+        .copied()
+        .unwrap_or(1.0)
+        * plant.scale;
+    Some((plant, radius))
+}
+
+/// Clears O(K + A) local candidates/additions through the brush's edit and undo journal.
+pub(crate) fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32, stroke: i64) -> usize {
     if !valid_disc(core, pos, radius) {
         return 0;
     }
     prepare_sites(core);
     let layout = PatchLayout::new(core);
     let mut removed = 0;
+    let mut undo = VegetationEditUndo::for_stroke(stroke);
     for layer in [VegetationLayer::Canopy, VegetationLayer::Understory] {
         let (cell_m, salt) = grid(core, layer);
         // Read-only parallel planning never allocates inside a candidate body. Serialized
@@ -297,22 +404,34 @@ fn remove_at(core: &mut SimCore, pos: Vector2, radius: f32) -> usize {
         core.vegetation_edits
             .reserve(changed_cells, layout.reserve_count(radius));
         for (cell, generated) in plans.into_iter().flatten() {
+            // Recorded before the cell is touched, so the journal holds the state this
+            // stroke found rather than the one it leaves behind.
+            undo.record_cell(cell, core.vegetation_edits.snapshot_cell(cell));
             if let Some(plant) = generated {
                 core.vegetation_edits.set_removed(cell, true);
-                core.vegetation_edits
-                    .bump_patch(layout.key(plant.x, plant.z));
+                let key = layout.key(plant.x, plant.z);
+                core.vegetation_edits.bump_patch(key);
+                undo.record_patch(key);
                 removed += 1;
             }
             removed += core.vegetation_edits.remove_added(cell, |plant| {
-                in_disc(plant, pos, radius).then(|| layout.key(plant.x, plant.z))
+                in_disc(plant, pos, radius).then(|| {
+                    let key = layout.key(plant.x, plant.z);
+                    undo.record_patch(key);
+                    key
+                })
             });
         }
     }
+    core.push_vegetation_undo(undo);
     removed
 }
 
-fn add_at(core: &mut SimCore, pos: Vector2, species: i64) -> bool {
-    if !(0..=3).contains(&species) || !pos.is_finite() {
+fn add_at(core: &mut SimCore, pos: Vector2, option: i64) -> bool {
+    let Some(preset) = preset(option) else {
+        return false;
+    };
+    if !pos.is_finite() {
         return false;
     }
     prepare_sites(core);
@@ -325,45 +444,65 @@ fn add_at(core: &mut SimCore, pos: Vector2, species: i64) -> bool {
     let (cell_m, salt) = grid(core, layer);
     let cell = cell_at(pos, layer, cell_m);
     let [_, _, yaw, scale] = candidate(cell.x, cell.z, cell_m, salt);
+    // One click always plants, so the preset's thinning is not consulted; its mix and its
+    // scale band still are, because a click on a mix should not always give the same tree.
+    let (species, variant) = preset.plant(cell.x, cell.z, salt);
     let key = PatchLayout::new(core).key(pos.x, pos.y);
+    // One click is one action, so a point placement opens no stroke and folds into nothing.
+    let mut undo = VegetationEditUndo::for_stroke(0);
+    undo.record_cell(cell, core.vegetation_edits.snapshot_cell(cell));
+    undo.record_patch(key);
     core.vegetation_edits.add(
         cell,
         Plant {
             x: pos.x,
             z: pos.y,
             yaw,
-            scale,
-            species: species as u8,
+            scale: preset.size(scale),
+            species,
+            variant,
         },
     );
     core.vegetation_edits.bump_patch(key);
+    core.push_vegetation_undo(undo);
     true
 }
 
-fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, species: i64) -> usize {
-    if !(0..=3).contains(&species) || !valid_disc(core, pos, radius) || radius > MAX_PAINT_RADIUS_M
-    {
+fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, option: i64, stroke: i64) -> usize {
+    let Some(preset) = preset(option) else {
+        return 0;
+    };
+    if !valid_disc(core, pos, radius) || radius > MAX_PAINT_RADIUS_M {
         return 0;
     }
     prepare_sites(core);
     let layer = VegetationLayer::Canopy;
     let (cell_m, salt) = grid(core, layer);
+    let brush_salt = salt.wrapping_add(BRUSH_SALT_OFFSET);
     // Both streams have stable indexed order. Fine-grid indices are temporary coordinates,
     // never edit-store identities: every position is mapped back to its owning canopy cell.
+    // Each carries the cell it came from, because the preset thins and mixes on that cell's
+    // own grid rather than on the canopy cell the position ends up in.
     let generated_points = disc_cells(pos, radius, cell_m, layer)
-        .map(|cell| (candidate(cell.x, cell.z, cell_m, salt), true));
+        .map(|cell| (candidate(cell.x, cell.z, cell_m, salt), true, cell.x, cell.z));
     let brush_points = disc_cells(pos, radius, BRUSH_SPACING_M, layer)
-        .map(|cell| (brush_candidate(cell.x, cell.z, salt), false));
+        .map(|cell| (brush_candidate(cell.x, cell.z, salt), false, cell.x, cell.z));
     let plans: Vec<_> = generated_points
         .chain(brush_points)
-        .map(|([x, z, yaw, scale], generator_point)| {
+        .map(|([x, z, yaw, scale], generator_point, sx, sz)| {
+            let stream_salt = if generator_point { salt } else { brush_salt };
+            if !preset.keeps(sx, sz, stream_salt) {
+                return None;
+            }
             let cell = cell_at(Vector2::new(x, z), layer, cell_m);
+            let (species, variant) = preset.plant(sx, sz, stream_salt);
             let plant = Plant {
                 x,
                 z,
                 yaw,
-                scale,
-                species: species as u8,
+                scale: preset.size(scale),
+                species,
+                variant,
             };
             if !in_disc(&plant, pos, radius) {
                 return None;
@@ -387,7 +526,14 @@ fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, species: i64) -> usiz
                 // as it was. Otherwise the tombstone stays and the chosen species is authored
                 // over it, which is also what a cell hidden by a later surface edit needs.
                 match generated {
-                    Some(p) if p.species == plant.species => Some((cell, plant, true, true)),
+                    // Only an unpinned plant can be the same edit as the regrown one. A
+                    // player who named the tree gets that tree authored over the tombstone,
+                    // not whichever mesh the generator's own seed had chosen.
+                    Some(p)
+                        if p.species == plant.species && plant.variant == VARIANT_FROM_SEED =>
+                    {
+                        Some((cell, plant, true, true))
+                    }
                     _ => (!occupied && placement_clear(core, x, z, layer))
                         .then_some((cell, plant, false, true)),
                 }
@@ -406,16 +552,22 @@ fn paint_at(core: &mut SimCore, pos: Vector2, radius: f32, species: i64) -> usiz
     core.vegetation_edits
         .reserve(changed_cells, layout.reserve_count(radius));
     let mut count = 0;
+    let mut undo = VegetationEditUndo::for_stroke(stroke);
     for (cell, plant, restore, visible) in plans.into_iter().flatten() {
+        // Recorded before the cell is touched, so the journal holds the state this
+        // stroke found rather than the one it leaves behind.
+        undo.record_cell(cell, core.vegetation_edits.snapshot_cell(cell));
         if restore {
             core.vegetation_edits.set_removed(cell, false);
         } else {
             core.vegetation_edits.add(cell, plant);
         }
-        core.vegetation_edits
-            .bump_patch(layout.key(plant.x, plant.z));
+        let key = layout.key(plant.x, plant.z);
+        core.vegetation_edits.bump_patch(key);
+        undo.record_patch(key);
         count += usize::from(visible);
     }
+    core.push_vegetation_undo(undo);
     count
 }
 
@@ -512,6 +664,7 @@ pub(super) fn scatter_layer(
                 yaw,
                 scale,
                 species,
+                variant,
             } = plant;
             if !clear {
                 continue;
@@ -526,7 +679,7 @@ pub(super) fn scatter_layer(
                 z - origin.y,
                 yaw,
                 scale,
-                species as f32,
+                pack_species_variant(species, variant),
             ]);
         }
     }
@@ -576,6 +729,9 @@ fn evaluate_cell(core: &SimCore, cell: VegetationCell, cell_m: f32, salt: u32) -
         yaw,
         scale,
         species: species as u8,
+        // The generator names a species and leaves the modelled tree inside it to the
+        // renderer, which is what every scattered plant did before the brush could pin one.
+        variant: VARIANT_FROM_SEED,
     })
 }
 
@@ -589,7 +745,7 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
         return false;
     }
     let (radius, max_relief) = if layer == VegetationLayer::Canopy {
-        (6.0, 3.0)
+        (CANOPY_CLEAR_RADIUS_M, 3.0)
     } else {
         (2.5, 1.6)
     };
@@ -598,6 +754,9 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
     // and built surfaces. Check native terrain samples, not a global sea level.
     if !clear_footprint(x, z, y, radius, max_relief, |sx, sz| {
         let p = Vector2::new(sx, sz);
+        // A committed field is worked land, so it clears plants exactly as a road deck or a
+        // building pad does: the test is the same predicate, and nothing is destroyed, so the
+        // stand returns if the field is redrawn or the farm is removed.
         if core.watermap.visible_depth_world(p.x, p.y) > 0.001
             || core
                 .transit_network
@@ -605,6 +764,7 @@ fn placement_clear(core: &SimCore, x: f32, z: f32, layer: VegetationLayer) -> bo
                 .sample_visible_surface_height(&core.region_graph, &core.heightmap, p.x, p.y)
                 .is_some()
             || core.allocator.sample_building_site_height(p).is_some()
+            || core.allocator.field_clearance.covers_point(p)
         {
             return None;
         }

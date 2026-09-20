@@ -38,6 +38,9 @@ use crate::simulation::network::types::{
 use crate::simulation::resources::{COAL_RESOURCE_ID, ResourceDepositSystem};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::vegetation::VegetationConfig;
+use crate::simulation::vegetation::edits::{
+    AuthoredPlant, VARIANT_FROM_SEED, VegetationCell, VegetationEdits, VegetationLayer,
+};
 use crate::simulation::water::WaterSystem;
 use crate::simulation::zoning::{ZoneType, ZoningSystem};
 use godot::prelude::{Vector2, Vector3};
@@ -647,6 +650,25 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         distance: 235.0,
         orthogonal: false,
     };
+    // One pinned and one unpinned authored plant, so the vegetation delta travels the real
+    // save path rather than the empty default, and the format bump that added the pin is
+    // exercised end to end instead of only against a hand-built connection.
+    let planted = VegetationCell {
+        layer: VegetationLayer::Canopy,
+        x: 2,
+        z: -5,
+    };
+    let authored = |variant: u8| AuthoredPlant {
+        x: 34.5,
+        z: -76.25,
+        yaw: 0.5,
+        scale: 1.125,
+        species: 0,
+        variant,
+    };
+    let mut vegetation_edits = VegetationEdits::default();
+    vegetation_edits.add(planted, authored(6));
+    vegetation_edits.add(planted, authored(VARIANT_FROM_SEED));
     let save_snapshot = |allocator: &BuildingAllocator,
                          resource_extraction: &ResourceExtractionSystem| {
         save_to_sqlite(
@@ -654,7 +676,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             SaveGameView {
                 camera: Some(camera),
                 config: &config,
-                vegetation_edits: &Default::default(),
+                vegetation_edits: &vegetation_edits,
                 vegetation: &vegetation,
                 time: &time,
                 terrain: &terrain,
@@ -715,6 +737,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     assert_eq!(loaded.camera, Some(camera));
     assert_eq!(loaded.vegetation, vegetation);
+    let (_, loaded_plants) = loaded.vegetation_edits.cell(planted);
+    assert_eq!(
+        loaded_plants,
+        [authored(6), authored(VARIANT_FROM_SEED)],
+        "the authored delta and its pins must survive the current format in authored order"
+    );
     let paid = loaded
         .households
         .daily_ledgers()
@@ -824,6 +852,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         conn.execute(&format!("UPDATE households SET {column} = ?1"), [original])
             .unwrap();
     }
+    // A save written before the pin has no `variant` column at all. Reading one must not name
+    // it, or every existing city fails to open on the format that added it.
+    conn.execute("UPDATE save_meta SET version = 62", []).unwrap();
+    conn.execute("ALTER TABLE vegetation_additions DROP COLUMN variant", [])
+        .unwrap();
+    let legacy = load_from_sqlite(&path, &allocator.registry).expect("load a pre-pin save");
+    let (_, added) = legacy.vegetation_edits.cell(planted);
+    assert_eq!(
+        added,
+        [authored(VARIANT_FROM_SEED), authored(VARIANT_FROM_SEED)],
+        "a plant authored before the pin existed keeps the renderer's own choice"
+    );
+
     for (column, _) in payment_fields {
         conn.execute(&format!("ALTER TABLE households DROP COLUMN {column}"), [])
             .unwrap();

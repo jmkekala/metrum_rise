@@ -10,6 +10,7 @@ const UIStyle = preload("res://scripts/ui/ui_style.gd")
 const EditorTheme = preload("res://scripts/ui/editor_theme.gd")
 const EconomyOverviewWindow = preload("res://scripts/ui/economy_overview.gd")
 const OptionsWindow = preload("res://scripts/ui/options_window.gd")
+const DayCycleConfig = preload("res://scripts/core/day_cycle.gd")
 const WindowResizeHandles = preload("res://scripts/ui/window_resize_handles.gd")
 
 const BAR_HEIGHT := 28
@@ -49,6 +50,10 @@ enum ActionId {
 	ASSET_RESET_LAYOUT = 52,
 	ECONOMY_RELOAD = 60,
 	ECONOMY_RUN_SANDBOX = 61,
+	TOOLS_TIME_OF_DAY_CYCLE = 80,
+	# One id per DayCycleConfig.PRESET_HOURS entry, in table order, so the menu never has to
+	# keep a hand-written enum in step with the hours themselves.
+	TOOLS_TIME_OF_DAY_FIRST = 81,
 }
 
 var scene_kind: String = SCENE_GAMEPLAY
@@ -60,6 +65,7 @@ var _shell: PanelContainer
 var _bar_margin: MarginContainer
 var _bar_row: HBoxContainer
 var _menu_bar: MenuBar
+var _time_of_day_popup: PopupMenu
 var _theme_switch: CheckButton
 var _theme_mode: String = EditorTheme.MODE_DARK
 var _syncing_theme_switch: bool = false
@@ -186,9 +192,13 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	city_popup.id_pressed.connect(_on_city_menu_pressed)
 
 	var tools_popup := _add_menu_popup(menu_bar, "Tools")
+	_time_of_day_popup = _create_popup_menu("Time of Day")
+	tools_popup.add_submenu_node_item("Time of Day", _time_of_day_popup)
+	tools_popup.add_separator()
 	tools_popup.add_item("Open Asset Editor", ActionId.TOOLS_OPEN_ASSET_EDITOR)
 	tools_popup.add_item("Open Economy Editor", ActionId.TOOLS_OPEN_ECONOMY_EDITOR)
 	tools_popup.id_pressed.connect(_on_tools_menu_pressed)
+	_build_time_of_day_menu(_time_of_day_popup)
 
 	var help_popup := _add_menu_popup(menu_bar, "Help")
 	help_popup.add_item("Keyboard Shortcuts", ActionId.HELP_SHORTCUTS)
@@ -352,7 +362,37 @@ func _on_city_menu_pressed(id: int) -> void:
 				Vector2i(440, 220)
 			))
 
+# The clock and the daylight are separate: pinning an hour holds the sky and the sun while the
+# simulation keeps running, so a player who dislikes night can keep the city moving through it.
+func _build_time_of_day_menu(popup: PopupMenu) -> void:
+	popup.add_radio_check_item("Follow Clock", ActionId.TOOLS_TIME_OF_DAY_CYCLE)
+	# The separator carries the distinction the labels no longer spell out: above it the light
+	# tracks the clock, below it the light is pinned to one hour.
+	popup.add_separator()
+	var labels: Array = DayCycleConfig.PRESET_HOURS.keys()
+	for index in range(labels.size()):
+		popup.add_radio_check_item(labels[index], ActionId.TOOLS_TIME_OF_DAY_FIRST + index)
+	# Checked directly rather than through _select_time_of_day: dispatching here would release
+	# a METRUM_TIME_OF_DAY pin the scene was deliberately started with.
+	popup.set_item_checked(0, true)
+	popup.id_pressed.connect(_on_tools_menu_pressed)
+
+func _select_time_of_day(id: int) -> void:
+	for index in range(_time_of_day_popup.item_count):
+		_time_of_day_popup.set_item_checked(index, _time_of_day_popup.get_item_id(index) == id)
+	if not _scene_root or not _scene_root.has_method("menu_set_time_of_day"):
+		return
+	if id == ActionId.TOOLS_TIME_OF_DAY_CYCLE:
+		_scene_root.menu_set_time_of_day(-1.0)
+		return
+	var hours: Array = DayCycleConfig.PRESET_HOURS.values()
+	_scene_root.menu_set_time_of_day(float(hours[id - ActionId.TOOLS_TIME_OF_DAY_FIRST]))
+
 func _on_tools_menu_pressed(id: int) -> void:
+	var presets: int = DayCycleConfig.PRESET_HOURS.size()
+	if id >= ActionId.TOOLS_TIME_OF_DAY_CYCLE and id < ActionId.TOOLS_TIME_OF_DAY_FIRST + presets:
+		_select_time_of_day(id)
+		return
 	match id:
 		ActionId.TOOLS_OPEN_ASSET_EDITOR:
 			if _scene_root and _scene_root.has_method("menu_open_asset_editor"):

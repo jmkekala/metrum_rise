@@ -177,7 +177,7 @@ mod terrain_api;
 #[cfg(test)]
 mod tests;
 mod variant_export;
-mod vegetation_api;
+pub(crate) mod vegetation_api;
 mod water_api;
 mod world_api;
 mod zoning_api;
