@@ -65,7 +65,7 @@ Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Su
 ### Nightview
 ![Main view](/screenshots/moon.png)
 ### Asset editor
-![Asset Editor](/screenshots/asset_editor_01.png)
+![Asset Editor](/screenshots/asset_editor_03.png)
 ### My First attempt to do t-junction
 ![First attempt to make a t-junction](/screenshots/t-junction.png)
 
