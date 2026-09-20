@@ -513,6 +513,8 @@ The building authoring view is WYSIWYG for the local flat lot:
 - The editor preview shows a flat lot plane with the authored `lot_width_cells` and
   `lot_depth_cells`, not an abstract infinite grid as the main authoring reference.
 - The lot boundary is the runtime site footprint.
+- Unpainted preview lot areas use the same grass terrain material as the surrounding ground,
+  independent of UI theme. Authored yard surfaces cover only their polygons.
 - Mesh parts, anchors, and `[[site_surfaces]]` share the same local coordinate system.
 - Authored site-surface materials preview on the flat lot as the runtime site client will render
   them.
@@ -1523,7 +1525,14 @@ Editor layout:
 
 Current preview (`TOOLS-04`):
 
-- Ground grid/lot, a selectable 1.8 m scale reference and explicit asset comparison ghost.
+- Flat, shadow-receiving terrain beneath the preview with a 10 m × 10 m grid aligned
+  to the lot cells, a selectable 1.8 m scale reference and explicit asset comparison ghost.
+  The terrain is preview-only, below the lot surface, and never enters exported assets.
+  `WorldMaterials.flat_terrain_material()` reuses the game's terrain shader and cached grass
+  albedo/height textures with a constant zero heightmap and no water. World-space grass detail
+  and day/night shading come from that shader; the grid is a transparent overlay.
+  One static two-triangle plane uses two material passes: O(1) geometry/storage,
+  no per-frame CPU updates or allocations, and constant work per visible fragment.
   Enable Scale reference, then click its figure or 10-logical-pixel circular handle and left-drag.
   Movement is free on the ground XZ plane, including across yards/anchors/meshes and outside the lot;
   it preserves the grab offset, does not snap to geometry, and never changes the asset or undo history.
@@ -1575,6 +1584,9 @@ Planned quality-of-life features (not shipped):
 Thumbnail generation rules:
 
 - Overview captures the visible preview pane, excluding editor chrome. This is an explicit authoring command with undo/redo.
+- Captures omit anchor/yard guides and labels, frontage/lot/grid lines, selection/hover handles,
+  the scale reference and comparison assets. The model, terrain and authored yard surfaces remain.
+  Helper visibility and interaction are restored after the captured frame, before saving the image.
 - Captures live beside editor drafts, are packaged as `thumbnail.png` on runtime export, and survive draft and published-asset reopening.
 - Capture requires a rendered window; headless validation/export still works with existing thumbnail files.
 - Standardized per-class catalog-thumbnail rigs remain later work; current captures use the author's preview camera and lighting.
@@ -2440,7 +2452,10 @@ screen-size LOD policy and staged package publisher. The shipped contract is:
   including explicit-work-area staffing density; authors cannot edit a competing worker value.
 - Widget-independent documents, saveable incomplete drafts, open/save/save-as, bounded grouped
   undo/redo (including geometry and type changes), and unsaved-change guards for document replacement,
-  leaving the editor and closing the window. Runtime export is separate from draft save.
+  leaving the editor and closing the window. A successful runtime export establishes the clean
+  revision, so New/Open/Close do not request a draft save until further edits. Undo/redo compares
+  against that revision; rejected exports leave changes unsaved. Export remains separate from
+  draft save and never writes or changes the associated draft path.
 - Inline validation has field/task destinations, including a missing main entrance. Export uses
   the same Rust validation as preflight and remains staged/rollback-safe. Toolbar/File Export asset
   opens the destination/validation review and expands a collapsed inspector; publishing still requires

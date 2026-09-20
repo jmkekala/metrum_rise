@@ -162,6 +162,7 @@ func _run() -> void:
 	var asset_dir := _output.path_join("assets/building.residential.preview_test")
 	var manifest_path := asset_dir.path_join("asset.toml")
 	_expect(FileAccess.file_exists(manifest_path), "real Rust export must publish manifest")
+	await _test_export_savepoint(editor, manifest_path)
 	for level in 4:
 		_expect(FileAccess.file_exists(asset_dir.path_join("model_lod%d.glb" % level)), "every LOD must be copied")
 		_expect(FileAccess.file_exists(asset_dir.path_join("window_%d.png" % level)), "each tier's dependencies must be copied")
@@ -218,6 +219,41 @@ func _run() -> void:
 	_remove_fixture_directory(_source)
 	print("asset_editor_preview_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
+
+func _test_export_savepoint(editor: Node3D, manifest_path: String) -> void:
+	var session = editor._session
+	var document = session.document
+	_expect(not document.is_dirty() and document.draft_path().is_empty(), "export is clean without requiring a draft")
+	_expect(not editor.get_window().title.begins_with("* "), "export clears the title's unsaved marker")
+	session.new_asset_dialog()
+	_expect(is_instance_valid(session._creation) and session._creation.visible, "New asset opens immediately after export")
+	_expect(not is_instance_valid(session._guard), "unchanged export does not ask to save a draft")
+	session._creation.hide()
+	await process_frame
+	session.set_field("display_name", "Edited after export")
+	session.new_asset_dialog()
+	_expect(is_instance_valid(session._guard) and session._guard.visible, "edits after export still require the unsaved-change guard")
+	session._guard.canceled.emit()
+	session._guard.hide()
+	await process_frame
+	session.undo()
+	_expect(not document.is_dirty(), "undo to the exported revision is clean")
+	session.redo()
+	_expect(document.is_dirty(), "redo of a later edit is dirty")
+	var draft_path := _source.path_join("export-savepoint.metrum-draft")
+	session._save_to(draft_path)
+	var draft_bytes := FileAccess.get_file_as_bytes(draft_path)
+	session.set_field("display_name", "Exported after draft")
+	editor._export_asset(false)
+	_expect(not document.is_dirty() and document.draft_path() == draft_path, "export retains the draft path while marking the current revision clean")
+	_expect(FileAccess.get_file_as_bytes(draft_path) == draft_bytes, "export never overwrites a saved draft")
+	var manifest_bytes := FileAccess.get_file_as_bytes(manifest_path)
+	session.set_field("household_capacity", 0)
+	editor._export_asset(false)
+	_expect(document.is_dirty() and not session._issues.is_empty(), "rejected export must leave edits dirty")
+	_expect(FileAccess.get_file_as_bytes(manifest_path) == manifest_bytes, "rejected export keeps the installed asset")
+	session.undo()
+	_expect(not document.is_dirty(), "failed export does not replace the successful export savepoint")
 
 func _expect_emission(editor: Node3D, enabled: bool, message: String) -> void:
 	var materials: PreviewMaterials = editor._preview.mesh_part_materials(0)
@@ -357,6 +393,46 @@ func _capture_comparison(editor: Node3D) -> void:
 				await process_frame
 				await RenderingServer.frame_post_draw
 				_expect(root.get_texture().get_image().save_png(directory.path_join("comparison-%s-%s.png" % [theme, preset.to_lower()])) == OK, "rendered textured comparison capture")
+		await _test_thumbnail_capture(editor, directory)
+
+func _test_thumbnail_capture(editor: Node3D, directory: String) -> void:
+	var preview = editor._preview
+	var view = editor._view
+	view._preview_panel.set_lighting(10.5)
+	preview.set_scale_reference_visible(true)
+	var helpers := [preview._site_anchor_overlay, preview._site_anchor_label_root,
+		preview._site_surface_overlay, preview._site_surface_label_root,
+		preview._frontage_label, preview._frontage_arrow, preview._lot_overlay,
+		preview._ground_grid, preview._selection_overlay, preview._hover_outline,
+		preview._scale_reference, preview._ghost_root, view.picking_overlay,
+		view.hover_label, view._selection_rect_overlay]
+	var visibility := {}
+	for helper in helpers:
+		visibility[helper] = helper.visible
+	var grid: Material = preview._ground.material_overlay
+	var mode := editor.process_mode
+	var before: Dictionary = editor._session.document.snapshot()
+	var captured_frames: Array = []
+	RenderingServer.frame_pre_draw.connect(func():
+		captured_frames.append(true)
+		for helper in helpers:
+			_expect(not helper.is_visible_in_tree(), "thumbnail render excludes " + str(helper))
+		_expect(preview._ground.material_overlay == null, "thumbnail render excludes the terrain grid")
+		_expect(preview._mesh_instance.is_visible_in_tree() and preview._site_surface_fill.is_visible_in_tree()
+			and preview._ground.is_visible_in_tree() and preview._lot_plane.is_visible_in_tree(), "thumbnail retains authored geometry and ground")
+	, CONNECT_ONE_SHOT)
+	await editor._session.capture_thumbnail()
+	_expect(captured_frames.size() == 1, "capture waits for a rendered frame with hidden helpers")
+	for helper in helpers:
+		_expect(helper.visible == visibility[helper], "capture restores helper visibility")
+	_expect(preview._ground.material_overlay == grid and editor.process_mode == mode, "capture restores grid and interaction")
+	var captured: Dictionary = editor._session.document.snapshot()
+	var thumbnail := Image.load_from_file(captured.thumbnail_source)
+	_expect(thumbnail != null and thumbnail.get_size() == Vector2i(view._preview_view_rect.size), "saved thumbnail crops to the preview pane")
+	_expect(thumbnail.save_png(directory.path_join("thumbnail-clean.png")) == OK, "save clean thumbnail verification artifact")
+	editor._session.undo()
+	_expect(editor._session.document.snapshot() == before, "thumbnail capture is one undoable command and does not edit geometry")
+	preview.set_scale_reference_visible(false)
 
 func _test_automatic_emission(editor: Node3D) -> void:
 	var panel = editor._view._preview_panel

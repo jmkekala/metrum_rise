@@ -13,6 +13,7 @@ const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geom
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const PreviewMaterials = preload("res://scripts/editors/asset_editor/preview_materials.gd")
 const PickGeometry = preload("res://scripts/editors/asset_editor/mesh_pick_geometry.gd")
+const GroundShader = preload("res://scripts/editors/asset_editor/preview_ground.gdshader")
 
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
@@ -50,6 +51,7 @@ var _authoring_policy := AssetAuthoringPolicy.new()
 var _selection_overlay: MeshInstance3D
 var _hover_outline: MeshInstance3D
 var _lot_plane: MeshInstance3D
+var _ground: MeshInstance3D
 var _site_surface_fill: MeshInstance3D
 var _site_surface_overlay: MeshInstance3D
 var _site_anchor_overlay: MeshInstance3D
@@ -107,6 +109,21 @@ var theme_mode: String = THEME_DARK
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _ready() -> void:
+	# Two static triangles cover the editor camera's range, below the lot and guides.
+	_ground = MeshInstance3D.new()
+	_ground.name = "PreviewGround"
+	_ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var ground_mesh := PlaneMesh.new()
+	ground_mesh.size = Vector2(10000.0, 10000.0)
+	_ground.mesh = ground_mesh
+	_ground.position.y = LOT_PLANE_Y - 0.025
+	_ground.material_override = WorldMaterials.flat_terrain_material()
+	var grid_material := ShaderMaterial.new()
+	grid_material.shader = GroundShader
+	grid_material.set_shader_parameter("cell_m", CELL_M)
+	_ground.material_overlay = grid_material
+	add_child(_ground)
+
 	_lot_plane = MeshInstance3D.new()
 	_lot_plane.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_lot_plane)
@@ -159,6 +176,25 @@ func _ready() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
+
+## Temporarily hide editor-only visuals; fixed helper roots avoid walking every anchor/mesh.
+func begin_thumbnail_capture() -> Dictionary:
+	var visibility := {}
+	for helper in [_selection_overlay, _hover_outline, _site_surface_overlay,
+		_site_anchor_overlay, _lot_overlay, _frontage_arrow, _ground_grid,
+		_scale_reference, _frontage_label, _site_surface_label_root,
+		_site_anchor_label_root, _ghost_root]:
+		visibility[helper] = helper.visible
+		helper.hide()
+	var grid := _ground.material_overlay
+	_ground.material_overlay = null
+	return {"visibility": visibility, "grid": grid}
+
+## Restore exactly the visibility and grid material present before capture.
+func end_thumbnail_capture(state: Dictionary) -> void:
+	for helper: Node3D in state.visibility:
+		helper.visible = state.visibility[helper]
+	_ground.material_overlay = state.grid
 
 ## Add a GLB, GLTF, or FBX as another building mesh part and return its local AABB.
 func add_mesh_part(native_path: String) -> AABB:
@@ -709,9 +745,6 @@ func _is_light_theme() -> bool:
 func _grid_color() -> Color:
 	return Color(0.43, 0.47, 0.51, 0.20) if _is_light_theme() else Color(0.56, 0.60, 0.66, 0.18)
 
-func _lot_plane_color() -> Color:
-	return Color(0.82, 0.86, 0.88, 0.96) if _is_light_theme() else Color(0.12, 0.14, 0.15, 0.98)
-
 func _lot_color() -> Color:
 	return Color(0.35, 0.43, 0.49, 0.9) if _is_light_theme() else Color(0.64, 0.73, 0.79, 0.85)
 
@@ -793,30 +826,20 @@ func _build_lot_plane() -> void:
 	normals.resize(vertices.size())
 	for i in normals.size():
 		normals[i] = Vector3.UP
-	var colors := PackedColorArray()
-	colors.resize(vertices.size())
-	var color := _lot_plane_color()
-	for i in colors.size():
-		colors[i] = color
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = vertices
 	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_COLOR] = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var mat := StandardMaterial3D.new()
-	# The ground participates in lighting; editor guides remain unshaded/readable.
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	mat.roughness = 1.0
-	mat.vertex_color_use_as_albedo = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mesh.surface_set_material(0, mat)
+	# Unpainted lot areas match the surrounding terrain; authored yards render above it.
+	mesh.surface_set_material(0, WorldMaterials.flat_terrain_material())
 	_lot_plane.mesh = mesh
 
 func _build_ground_grid() -> void:
 	var lot_half_w := _width_cells * CELL_M * 0.5
 	var lot_half_d := _depth_cells * CELL_M * 0.5
+	_ground.material_overlay.set_shader_parameter("grid_origin", Vector2(-lot_half_w, -lot_half_d))
 	var start_x := -lot_half_w
 	var start_z := -lot_half_d
 	var end_x := lot_half_w

@@ -128,7 +128,7 @@ impl AssetAuthoringDocument {
         this.emit_signal("changed", &[]);
     }
 
-    /// Whether the current revision differs from the saved draft.
+    /// Whether the current revision differs from the last saved or exported revision.
     #[func]
     pub fn is_dirty(&self) -> bool {
         self.core.is_dirty()
@@ -140,7 +140,8 @@ impl AssetAuthoringDocument {
         self.core.is_editing()
     }
 
-    /// Record the savepoint without adding an undo command.
+    /// Record a persisted revision without adding an undo command.
+    /// After export, pass the existing draft path to leave its association unchanged.
     #[func(gd_self)]
     pub fn mark_saved(mut this: Gd<Self>, path: GString) {
         {

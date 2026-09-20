@@ -36,6 +36,7 @@ const ROAD_FACE_SHADER := "res://scripts/shaders/road_sidewalk_face.gdshader"
 const CONCRETE_SHADER := "res://assets/materials/concrete.gdshader"
 const SITE_SURFACE_SHADER := "res://scripts/shaders/site_surface.gdshader"
 const SITE_GROUND_SHADER := "res://scripts/shaders/site_ground.gdshader"
+const TERRAIN_SHADER := "res://assets/materials/terrain.gdshader"
 const FIELD_OVERLAY_SHADER := "res://scripts/shaders/field_overlay.gdshader"
 
 static var _texture_cache = {}
@@ -45,6 +46,7 @@ static var _road_sidewalk_material: ShaderMaterial
 static var _road_sidewalk_face_material: ShaderMaterial
 static var _road_concrete_material: ShaderMaterial
 static var _site_ground_material: ShaderMaterial
+static var _flat_terrain_material: ShaderMaterial
 static var _site_asphalt_material: ShaderMaterial
 static var _site_concrete_material: ShaderMaterial
 
@@ -145,6 +147,25 @@ static func field_overlay_material(
 	material.set_shader_parameter("albedo_tex", load_texture_or_solid(albedo_path, fallback_color))
 	material.set_shader_parameter("uv_scale", 1.0 / max(texture_tile_m, 0.001))
 	return material
+
+## Preview terrain uses the game's shader/textures with constant zero height and no water.
+static func flat_terrain_material() -> ShaderMaterial:
+	if _flat_terrain_material == null:
+		_flat_terrain_material = ShaderMaterial.new()
+		_flat_terrain_material.resource_name = "flat_terrain_grass"
+		_flat_terrain_material.shader = _load_shader(TERRAIN_SHADER)
+		var flat_image := Image.create(2, 2, false, Image.FORMAT_RF)
+		flat_image.fill(Color.BLACK)
+		var flat_texture := ImageTexture.create_from_image(flat_image)
+		_flat_terrain_material.set_shader_parameter("heightmap", flat_texture)
+		_flat_terrain_material.set_shader_parameter("watermap", flat_texture)
+		_flat_terrain_material.set_shader_parameter("height_is_baked", true)
+		_flat_terrain_material.set_shader_parameter("heightmap_texture_size", Vector2(2.0, 2.0))
+		_flat_terrain_material.set_shader_parameter("inner_sample_offset_texels", Vector2.ZERO)
+		_flat_terrain_material.set_shader_parameter("terrain_grass_albedo", load_texture(GRASS_ALBEDO))
+		_flat_terrain_material.set_shader_parameter("terrain_grass_height", load_texture(GRASS_HEIGHT))
+		SceneLightingConfig.apply_ground_shadow_parameters(_flat_terrain_material)
+	return _flat_terrain_material
 
 static func site_ground_material() -> ShaderMaterial:
 	if _site_ground_material == null:

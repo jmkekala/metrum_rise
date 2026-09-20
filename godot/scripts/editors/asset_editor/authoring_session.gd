@@ -25,6 +25,7 @@ var _after_save: Callable
 var _catalog_error := ""
 var _issues: Array = []
 var _thumbnail_path := ""
+var _thumbnail_capturing := false
 
 func _init(editor: Node) -> void:
 	_editor = editor
@@ -366,7 +367,7 @@ func guard(action: Callable) -> void:
 		return
 	_guard = ConfirmationDialog.new()
 	_guard.title = "Unsaved asset draft"
-	_guard.dialog_text = "Save your draft before continuing? Runtime export does not save the authoring draft."
+	_guard.dialog_text = "Save your changes as a draft before continuing?"
 	_guard.get_ok_button().text = "Discard changes"
 	_guard.add_button("Save draft", false, "save")
 	_guard.confirmed.connect(func():
@@ -465,7 +466,7 @@ func validate() -> void:
 	for issue: Dictionary in _issues:
 		var button: Button = view.button(view.issues_box, str(issue["message"]), func(): resolve_issue(issue))
 		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	view.status.text = "%s\n%s" % ["Unsaved draft" if document.is_dirty() else "Draft unchanged", "Ready to export" if _issues.is_empty() else "%d issue(s) — open Validate & export" % _issues.size()]
+	view.status.text = "%s\n%s" % ["Unsaved changes" if document.is_dirty() else "No unsaved changes", "Ready to export" if _issues.is_empty() else "%d issue(s) — open Validate & export" % _issues.size()]
 	view._apply_editor_theme(view.issues_box)
 
 func resolve_issue(issue: Dictionary) -> void:
@@ -515,19 +516,38 @@ func publish(move_original: bool = false) -> void:
 		state["thumbnail_source"] = asset_directory.path_join(str(params["thumbnail"]))
 	state["origin"] = {"pack_id": params["pack_id"], "asset_id": params["asset_id"]}
 	document.apply(state, "Publish runtime asset")
+	# Publication persists this revision too, while leaving any draft file/path untouched.
+	document.mark_saved(document.draft_path())
 	if move_original:
 		_editor._move_original_asset_after_export(str(origin.get("pack_id", "")), str(origin.get("asset_id", "")), str(params["pack_id"]), str(params["asset_id"]))
 	_editor._refresh_asset_browser()
-	_editor._view.status.text = "Runtime asset exported. Save the draft separately to retain authoring changes."
+	_editor._view.status.text = "Runtime asset exported. No unsaved changes."
 	_editor._log("Runtime asset exported: " + str(params["asset_id"]))
 
 func capture_thumbnail() -> void:
+	if not has_document or _thumbnail_capturing:
+		return
 	if DisplayServer.get_name() == "headless":
 		message("Thumbnail capture needs a rendered preview.")
 		return
+	_thumbnail_capturing = true
+	var process_mode: Node.ProcessMode = _editor.process_mode
+	# Freeze interaction/preview updates for the capture frame so guides cannot reappear.
+	_editor.process_mode = Node.PROCESS_MODE_DISABLED
+	var preview_state: Dictionary = _editor._preview.begin_thumbnail_capture()
+	var visibility := {}
+	for overlay in [_editor._view.picking_overlay, _editor._view.hover_label, _editor._view._selection_rect_overlay]:
+		visibility[overlay] = overlay.visible
+		overlay.hide()
 	await RenderingServer.frame_post_draw
 	var image: Image = _editor.get_viewport().get_texture().get_image()
 	var rect: Rect2i = Rect2i(_editor._view._preview_view_rect.get_global_rect())
+	# Restore before file I/O, including its failure paths, or document-change callbacks.
+	_editor._preview.end_thumbnail_capture(preview_state)
+	for overlay: Control in visibility:
+		overlay.visible = visibility[overlay]
+	_editor.process_mode = process_mode
+	_thumbnail_capturing = false
 	image = image.get_region(rect.intersection(Rect2i(Vector2i.ZERO, image.get_size())))
 	var directory := ProjectSettings.globalize_path("user://asset_drafts/thumbnails")
 	DirAccess.make_dir_recursive_absolute(directory)
