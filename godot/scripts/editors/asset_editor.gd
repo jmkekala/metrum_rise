@@ -21,15 +21,12 @@ const EditorSpacing = preload("res://scripts/editors/asset_editor/editor_spacing
 const AuthoringSession = preload("res://scripts/editors/asset_editor/authoring_session.gd")
 const WorkspaceLayout = preload("res://scripts/editors/asset_editor/workspace_layout.gd")
 const AssetSelection = preload("res://scripts/editors/asset_editor/asset_selection.gd")
+const ContextMenus = preload("res://scripts/editors/asset_editor/context_menus.gd")
 
 const PANEL_GAP := EditorSpacing.CONTROL_GAP
-const ASSET_CONTEXT_USE_AS_GHOST := 1
-const SITE_SURFACE_CONTEXT_ADD_VERTEX := 1
-const SITE_SURFACE_CONTEXT_DELETE_VERTEX := 2
 const PACK_MENU_CREATE_NEW := 1000000
 const PACK_MENU_NO_PACKS := 1000001
 const MESH_ROTATION_DRAG_DEG_PER_PX := 0.35
-const MESH_ROTATION_CARDINAL_SNAP_DEG := 4.0
 const SELECTION_DRAG_THRESHOLD_PX := AssetSelection.DRAG_THRESHOLD
 const SITE_ANCHOR_DRAG_RADIUS_M := 1.25
 const SITE_ANCHOR_DEFAULT_WIDTH_M := {
@@ -37,29 +34,21 @@ const SITE_ANCHOR_DEFAULT_WIDTH_M := {
 	"parking": 2.5,
 	"loading_bay": 3.5,
 }
-const SITE_ANCHOR_DEFAULT_LENGTH_M := {
-	"parking": 5.0,
-	"loading_bay": 8.0,
-}
 const SITE_SURFACE_MATERIALS := [
 	{"id": "asphalt", "label": "Asphalt"},
 	{"id": "concrete", "label": "Concrete"},
 ]
-const SITE_SURFACE_DEFAULT_SIZE_M := {
-	"asphalt": Vector2(5.0, 7.0),
-	"concrete": Vector2(1.4, 6.0),
-}
 
 var _view := EditorView.new()
 var _layout := WorkspaceLayout.new()
 var _selection := AssetSelection.new()
+var _menus := ContextMenus.new()
 var _session: RefCounted
 var _lod_preview := PreviewLod.new()
 
 @onready var sim: SimulationNode = $SimulationNode
 
 # ── UI refs ───────────────────────────────────────────────────────────────────
-var _asset_context_asset_id: String = ""
 var _lighting: Node
 var _top_menu: Node
 
@@ -97,20 +86,12 @@ var _updating_site_anchor_list: bool = false
 var _updating_site_surface_controls: bool = false
 var _updating_site_surface_list: bool = false
 var _site_anchor_drag_start_positions: Array[Vector3] = []
-var _site_anchor_rotate_start_x: float = 0.0
-var _site_anchor_rotate_start_yaw: float = 0.0
 var _site_surface_drag_start_hit: Vector3 = Vector3.ZERO
 var _site_surface_drag_start_vertices: Array = []
 var _site_surface_drag_index: int = -1
 var _site_surface_vertex_drag_index: int = -1
-var _site_surface_context_index: int = -1
-var _site_surface_context_vertex_index: int = -1
-var _site_surface_context_edge_index: int = -1
-var _site_surface_context_insert_point: Vector2 = Vector2.ZERO
 var _mesh_part_drag_start_hit: Vector3 = Vector3.ZERO
 var _mesh_part_drag_start_positions: Array[Vector3] = []
-var _mesh_part_rotate_start_x: float = 0.0
-var _mesh_part_rotate_start_yaw: float = 0.0
 var _selection_start_screen: Vector2 = Vector2.ZERO
 var _selection_end_screen: Vector2 = Vector2.ZERO
 var _selection_additive: bool = false
@@ -149,11 +130,15 @@ func _ready() -> void:
 	_bbcode_strip_regex.compile("\\[/?[^\\]]+\\]")
 	_refresh_asset_browser()
 	_session.initialize()
+	_menus.configure(self)
 	_lighting.pin_hour_of_day(10.5)
 
 func _process(_delta: float) -> void:
 	_lod_preview.update($CameraNode)
-	_selection.update()
+	if _menus.actions != null and not _menus.actions.mode.is_empty() and _cam_input._ui_has_modal_popup():
+		_menus.actions.cancel()
+	if _menus.actions == null or _menus.actions.mode.is_empty():
+		_selection.update()
 
 func _sync_preview_lods() -> void:
 	_lod_preview.sync(_parts, _selected_part_index)
@@ -577,7 +562,6 @@ func _rebuild_asset_tree() -> void:
 		var empty_item := _view._asset_tree.create_item(root)
 		empty_item.set_text(0, "No matching assets")
 		empty_item.set_selectable(0, false)
-		return
 
 	var pack_counts := {}
 	var category_counts := {}
@@ -590,6 +574,14 @@ func _rebuild_asset_tree() -> void:
 
 	var pack_items := {}
 	var category_items := {}
+	if query.is_empty():
+		for known: Dictionary in _known_packs:
+			var pack_id := str(known.pack_id)
+			var item := _view._asset_tree.create_item(root)
+			item.set_text(0, "%s (%d)" % [pack_id, int(pack_counts.get(pack_id, 0))])
+			item.set_selectable(0, false)
+			item.set_metadata(0, {"pack": pack_id})
+			pack_items[pack_id] = item
 	for aid in visible_ids:
 		var pack := _asset_pack_id(aid)
 		var category := _asset_category_id(aid)
@@ -598,6 +590,7 @@ func _rebuild_asset_tree() -> void:
 			pack_item = _view._asset_tree.create_item(root)
 			pack_item.set_text(0, "%s (%d)" % [pack, int(pack_counts.get(pack, 0))])
 			pack_item.set_selectable(0, false)
+			pack_item.set_metadata(0, {"pack": pack})
 			pack_item.set_collapsed(false)
 			pack_items[pack] = pack_item
 
@@ -610,6 +603,7 @@ func _rebuild_asset_tree() -> void:
 				"%s (%d)" % [category, int(category_counts.get(category_key, 0))]
 			)
 			category_item.set_selectable(0, false)
+			category_item.set_metadata(0, {"pack": pack, "type": category.get_slice(" / ", 1)})
 			category_item.set_collapsed(false)
 			category_items[category_key] = category_item
 
@@ -652,19 +646,8 @@ func _asset_browser_label(aid: String) -> String:
 
 # Preview choices never mutate placement bounds, source geometry or material files.
 func _frame_selected_part() -> void:
-	if not _has_selected_mesh_part():
-		return
-	var corners: Array = _preview.mesh_part_world_corners(_selected_part_index)
-	if corners.is_empty():
-		return
-	var bounds := AABB(corners[0], Vector3.ZERO)
-	for corner: Vector3 in corners:
-		bounds = bounds.expand(corner)
-	# The camera renders behind the whole editor; fit to its unobscured center pane.
-	var viewport_size := get_viewport().get_visible_rect().size
-	var preview_size := _view._preview_view_rect.size
-	var pane_scale := maxf(viewport_size.x / maxf(1.0, preview_size.x), viewport_size.y / maxf(1.0, preview_size.y))
-	_cam_input.focus_on(bounds.get_center(), maxf(1.0, bounds.size.length() * 0.5) * pane_scale)
+	if _menus.actions != null:
+		_menus.actions.frame(_menus.actions.selection())
 
 func _on_preview_lod_selected(index: int) -> void:
 	if not _has_selected_mesh_part():
@@ -676,10 +659,11 @@ func _on_add_part_lod_requested() -> void:
 	if not _has_selected_mesh_part():
 		return
 	var part := _parts[_selected_part_index]
+	var revision := _menus.generation
 	var dialog := MeshImportDialog.new()
 	dialog.theme_mode = _view._theme_mode
 	dialog.mesh_selected.connect(func(path: String):
-		if not _parts.has(part):
+		if revision != _menus.generation or not _parts.has(part):
 			return
 		part.append_lod(path)
 		_sync_preview_lods()
@@ -697,40 +681,19 @@ func _on_asset_tree_activated() -> void:
 	_load_selected_asset_from_tree()
 
 func _on_asset_tree_gui_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_DELETE:
+		var item := _view._asset_tree.get_selected()
+		if item != null and item.get_metadata(0) is String:
+			_menus.library.execute("library_trash", {"id": item.get_metadata(0)})
+			_view._asset_tree.accept_event()
+		return
 	if not (event is InputEventMouseButton):
 		return
 	var mb := event as InputEventMouseButton
 	if mb.button_index != MOUSE_BUTTON_RIGHT or not mb.pressed:
 		return
-	if _open_asset_context_menu_at(mb.position):
-		_view._asset_tree.accept_event()
-
-func _open_asset_context_menu_at(mouse_position: Vector2) -> bool:
-	if not _session.has_document:
-		return false
-	if not _view._asset_tree or not _view._asset_context_menu:
-		return false
-	var item := _view._asset_tree.get_item_at_position(mouse_position)
-	if item == null:
-		return false
-	var metadata = item.get_metadata(0)
-	if metadata == null:
-		return false
-	_asset_context_asset_id = str(metadata).strip_edges()
-	if _asset_context_asset_id.is_empty():
-		return false
-	item.select(0)
-	var popup_pos := _view._asset_tree.get_global_mouse_position()
-	_view._asset_context_menu.position = Vector2i(int(round(popup_pos.x)), int(round(popup_pos.y)))
-	_view._asset_context_menu.popup()
-	return true
-
-func _on_asset_context_menu_id_pressed(id: int) -> void:
-	if id != ASSET_CONTEXT_USE_AS_GHOST:
-		return
-	if _asset_context_asset_id.is_empty():
-		return
-	_use_asset_as_ghost(_asset_context_asset_id)
+	_menus.open_library(mb.position)
+	_view._asset_tree.accept_event()
 
 func _load_selected_asset_from_tree() -> void:
 	if not _view._asset_tree:
@@ -739,7 +702,7 @@ func _load_selected_asset_from_tree() -> void:
 	if item == null:
 		return
 	var metadata = item.get_metadata(0)
-	if metadata == null:
+	if not metadata is String:
 		return
 	var aid := str(metadata).strip_edges()
 	if aid.is_empty():
@@ -828,68 +791,17 @@ func _on_import_glb_pressed() -> void:
 	if str(_session.params.get("asset_id", "")).is_empty():
 		_session.new_asset_dialog()
 		return
-	var dialog := MeshImportDialog.new()
-	dialog.theme_mode = _view._theme_mode
-	dialog.mesh_selected.connect(_on_glb_file_selected)
-	add_child(dialog)
-	dialog.open(_last_glb_dir)
+	var generation: int = _menus.generation
+	_menus.actions.import_at(Vector3.ZERO, func(): return generation == _menus.generation)
 
 func _on_glb_file_selected(path: String) -> void:
-	_last_glb_dir = path.get_base_dir()
-	_save_config()
-	var idx := _add_mesh_part_from_path(path, "")
-	if idx >= 0:
-		_select_mesh_part(idx)
-	_log("Added mesh part '%s'." % path.get_file())
-	_session.capture_geometry("Import mesh")
+	_menus.actions.begin_placement("create", [], {"kind": "mesh", "path": path}, Vector3.ZERO)
+	_menus.actions.confirm()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Mesh part management
 # ──────────────────────────────────────────────────────────────────────────────
 
-func _add_mesh_part_from_path(
-	path: String,
-	part_name: String,
-	position: Vector3 = Vector3.ZERO,
-	rotation_y: float = 0.0,
-	scale: float = 1.0,
-	pivot_offset: Vector3 = Vector3.ZERO,
-	auto_pivot: bool = true
-) -> int:
-	if not _preview:
-		return -1
-	var idx := _parts.size()
-	var name := part_name.strip_edges()
-	if name.is_empty():
-		name = "part_%d" % [idx + 1]
-	var aabb: AABB = _preview.add_mesh_part(path)
-	if _preview.mesh_part_count() != idx + 1:
-		_log("[color=red]Mesh import failed: %s[/color]" % path)
-		return -1
-	var stored_pivot := pivot_offset
-	if auto_pivot:
-		stored_pivot = Vector3(
-			-(aabb.position.x + aabb.size.x * 0.5),
-			-aabb.position.y,
-			-(aabb.position.z + aabb.size.z * 0.5)
-		)
-	var part := MeshPart.new(path, name)
-	part.position = position
-	part.rotation_y = rotation_y
-	part.scale = maxf(0.001, scale)
-	part.pivot_offset = stored_pivot
-	part.aabb = aabb
-	_parts.append(part)
-	_view._mesh_part_list.add_item("%s  —  %s" % [name, path.get_file()])
-	_parts[idx].position = _clamp_mesh_part_position_to_lot(idx, position)
-	_preview.set_mesh_part_transform(
-		idx,
-		_parts[idx].position,
-		rotation_y,
-		_parts[idx].scale,
-		stored_pivot
-	)
-	return idx
 
 func _select_mesh_part(index: int, clear_site_anchors: bool = true) -> void:
 	if index < 0 or index >= _parts.size():
@@ -941,34 +853,6 @@ func _set_selected_mesh_parts(indices: Array, primary_index: int = -1) -> void:
 	if _session != null:
 		_session.selection_changed()
 
-func _remove_selected_mesh_parts() -> bool:
-	var remove_indices := _selected_part_indices.duplicate()
-	if remove_indices.is_empty() and _has_selected_mesh_part():
-		remove_indices.append(_selected_part_index)
-	if remove_indices.is_empty():
-		_log("[color=yellow]No mesh part selected to remove.[/color]")
-		return false
-
-	remove_indices.sort()
-	var first_removed := int(remove_indices[0])
-	for i in range(remove_indices.size() - 1, -1, -1):
-		var index := int(remove_indices[i])
-		if index < 0 or index >= _parts.size():
-			continue
-		_parts.remove_at(index)
-		if _view._mesh_part_list and index < _view._mesh_part_list.item_count:
-			_view._mesh_part_list.remove_item(index)
-
-	if _preview and _preview.has_method("remove_mesh_parts"):
-		_preview.remove_mesh_parts(remove_indices)
-
-	var next_index := -1
-	if not _parts.is_empty():
-		next_index = mini(first_removed, _parts.size() - 1)
-	_set_selected_mesh_parts([next_index] if next_index >= 0 else [], next_index)
-	_log("Removed %d mesh part(s)." % remove_indices.size())
-	return true
-
 func _site_surface_material_label(material: String) -> String:
 	match material:
 		"asphalt":
@@ -977,43 +861,6 @@ func _site_surface_material_label(material: String) -> String:
 			return "Concrete"
 		_:
 			return material.capitalize()
-
-func _add_site_surface(material: String) -> void:
-	var size: Vector2 = SITE_SURFACE_DEFAULT_SIZE_M.get(material, Vector2(3.0, 5.0))
-	var center := _default_site_surface_position(material)
-	var half := size * 0.5
-	var surface := {
-		"material": material,
-		"name": "",
-		"y_m": 0.01,
-		"vertices": [
-			[snappedf(center.x - half.x, 0.01), snappedf(center.z - half.y, 0.01)],
-			[snappedf(center.x + half.x, 0.01), snappedf(center.z - half.y, 0.01)],
-			[snappedf(center.x + half.x, 0.01), snappedf(center.z + half.y, 0.01)],
-			[snappedf(center.x - half.x, 0.01), snappedf(center.z + half.y, 0.01)],
-		],
-	}
-	_clamp_site_surface_vertices_to_lot(surface)
-	_site_surfaces_data.append(surface)
-	_set_selected_site_surface(_site_surfaces_data.size() - 1)
-	_log("Added %s site surface." % _site_surface_material_label(material))
-
-func _default_site_surface_position(material: String) -> Vector3:
-	var count := _site_surface_count(material)
-	var side_offset := float((count % 5) - 2) * 2.0
-	var depth_offset := float(count / 5) * 2.0
-	var fwd := _frontage_fwd.normalized()
-	if fwd.length_squared() < 0.001:
-		fwd = Vector3.FORWARD
-	var side := Vector3(-fwd.z, 0.0, fwd.x)
-	return _clamp_anchor_position_to_lot(side * side_offset - fwd * depth_offset)
-
-func _site_surface_count(material: String) -> int:
-	var count := 0
-	for surface in _site_surfaces_data:
-		if str(surface.get("material", "")).strip_edges() == material:
-			count += 1
-	return count
 
 func _refresh_site_surface_list() -> void:
 	if not _view._site_surface_list:
@@ -1065,20 +912,6 @@ func _on_site_surface_selected(index: int) -> void:
 	if _updating_site_surface_list:
 		return
 	_set_selected_site_surface(index)
-
-func _remove_selected_site_surface() -> bool:
-	if _selected_site_surface_index < 0 or _selected_site_surface_index >= _site_surfaces_data.size():
-		_log("[color=yellow]No site surface selected to remove.[/color]")
-		return false
-	var material := str(_site_surfaces_data[_selected_site_surface_index].get("material", ""))
-	_site_surfaces_data.remove_at(_selected_site_surface_index)
-	var next_index := -1
-	if not _site_surfaces_data.is_empty():
-		next_index = mini(_selected_site_surface_index, _site_surfaces_data.size() - 1)
-	_selected_site_surface_index = next_index
-	_refresh_site_surface_list()
-	_log("Removed %s site surface." % _site_surface_material_label(material))
-	return true
 
 func _update_site_surface_controls() -> void:
 	_updating_site_surface_controls = true
@@ -1183,67 +1016,6 @@ func _ensure_main_entrance_anchor() -> int:
 	)
 	return 0
 
-func _add_site_anchor(anchor_type: String) -> void:
-	if anchor_type == "entrance":
-		_select_site_anchor(_ensure_main_entrance_anchor())
-		return
-	var anchor_forward := _frontage_fwd
-	if anchor_type == "driveway":
-		anchor_forward = _driveway_anchor_forward()
-	var anchor := {
-		"anchor_type": anchor_type,
-		"name": "",
-		"position": _vector3_to_array(_default_site_anchor_position(anchor_type), 0.01),
-		"forward": _vector3_to_array(anchor_forward, 0.001),
-		"width_m": float(SITE_ANCHOR_DEFAULT_WIDTH_M.get(anchor_type, 2.0)),
-		"vehicle_class": _default_site_anchor_vehicle_class(anchor_type),
-	}
-	if SITE_ANCHOR_DEFAULT_LENGTH_M.has(anchor_type):
-		anchor["length_m"] = float(SITE_ANCHOR_DEFAULT_LENGTH_M[anchor_type])
-	anchor["position"] = _vector3_to_array(
-		_clamp_site_anchor_position_to_lot(anchor, _anchor_position(anchor)),
-		0.01
-	)
-	_site_anchors_data.append(anchor)
-	_select_site_anchor(_site_anchors_data.size() - 1)
-	_log("Added %s anchor." % _site_anchor_type_label(anchor_type))
-
-func _default_site_anchor_position(anchor_type: String) -> Vector3:
-	var lot_half_w := _view._width_spin.value * 10.0 * 0.5
-	var lot_half_d := _view._depth_spin.value * 10.0 * 0.5
-	var count := _site_anchor_count(anchor_type)
-	var side_offset := float((count % 5) - 2) * 2.5
-	var depth_offset := float(count / 5) * 2.0
-	var fwd := _frontage_fwd.normalized()
-	if fwd.length_squared() < 0.001:
-		fwd = Vector3.FORWARD
-	var side := Vector3(-fwd.z, 0.0, fwd.x)
-	var edge_distance := lot_half_d if absf(fwd.z) >= absf(fwd.x) else lot_half_w
-	if anchor_type == "driveway":
-		var outward := _frontage_edge_outward()
-		var driveway_side := Vector3(-outward.z, 0.0, outward.x)
-		var driveway_edge_distance := lot_half_w if absf(outward.x) > 0.5 else lot_half_d
-		return _clamp_anchor_position_to_lot(
-			outward * driveway_edge_distance + driveway_side * side_offset
-		)
-	var inward := -fwd
-	var base := fwd * maxf(0.0, edge_distance - 2.0 - depth_offset) + side * side_offset
-	if anchor_type == "parking":
-		base += inward * 2.5
-	elif anchor_type == "loading_bay":
-		base += inward * 4.0
-	return _clamp_anchor_position_to_lot(Vector3(base.x, 0.0, base.z))
-
-func _site_anchor_count(anchor_type: String) -> int:
-	var count := 0
-	for anchor in _site_anchors_data:
-		if str(anchor.get("anchor_type", "")).strip_edges() == anchor_type:
-			count += 1
-	return count
-
-func _default_site_anchor_vehicle_class(anchor_type: String) -> String:
-	return "freight" if anchor_type == "loading_bay" else "car"
-
 func _refresh_site_anchor_list() -> void:
 	if not _view._site_anchor_list:
 		return
@@ -1331,35 +1103,6 @@ func _on_site_anchor_multi_selected(index: int, _selected: bool) -> void:
 	if not Input.is_key_pressed(KEY_CTRL):
 		_set_selected_mesh_parts([], -1)
 		_set_selected_site_surface(-1)
-
-func _remove_selected_site_anchor() -> bool:
-	var remove_indices := _selected_site_anchor_indices.duplicate()
-	if remove_indices.is_empty() and _selected_site_anchor_index >= 0:
-		remove_indices.append(_selected_site_anchor_index)
-	if remove_indices.is_empty():
-		_log("[color=yellow]No site anchor selected to remove.[/color]")
-		return false
-	remove_indices.sort()
-	var first_removed := int(remove_indices[0])
-	var removed_labels: Array[String] = []
-	for i in range(remove_indices.size() - 1, -1, -1):
-		var index := int(remove_indices[i])
-		if index < 0 or index >= _site_anchors_data.size():
-			continue
-		var removed_type := str(_site_anchors_data[index].get("anchor_type", ""))
-		removed_labels.append(_site_anchor_type_label(removed_type))
-		_site_anchors_data.remove_at(index)
-	if removed_labels.is_empty():
-		return false
-	var next_index := -1
-	if not _site_anchors_data.is_empty():
-		next_index = mini(first_removed, _site_anchors_data.size() - 1)
-	_set_selected_site_anchors([next_index] if next_index >= 0 else [], next_index)
-	if removed_labels.size() == 1:
-		_log("Removed %s anchor." % removed_labels[0])
-	else:
-		_log("Removed %d site anchors." % removed_labels.size())
-	return true
 
 func _update_site_anchor_controls() -> void:
 	_updating_site_anchor_controls = true
@@ -1919,6 +1662,9 @@ func _on_clear_ghost_pressed() -> void:
 	_view.update_context_actions()
 
 func _input(event: InputEvent) -> void:
+	if _menus.actions != null and (_menus.actions.handle_input(event) or _menus.handle_right(event)):
+		get_viewport().set_input_as_handled()
+		return
 	if _selection.handle_input(event):
 		get_viewport().set_input_as_handled()
 
@@ -1974,93 +1720,6 @@ func _drag_site_surface_vertex_from_mouse(mouse_pos: Vector2) -> bool:
 	_update_site_surface_controls()
 	_update_site_surface_preview()
 	return true
-
-func _try_open_site_surface_context_menu(mouse_pos: Vector2) -> bool:
-	if not _view._site_surface_context_menu or _selected_site_surface_index < 0:
-		return false
-	var vertex_hit := {}
-	for candidate in _selection.hits:
-		if candidate["kind"] == "vertex":
-			vertex_hit = candidate
-			break
-	var edge_hit := {}
-	if vertex_hit.is_empty():
-		edge_hit = _selection.picker.surface_edge(mouse_pos, $CameraNode)
-	if vertex_hit.is_empty() and edge_hit.is_empty():
-		return false
-
-	_view._site_surface_context_menu.clear()
-	_site_surface_context_index = -1
-	_site_surface_context_vertex_index = -1
-	_site_surface_context_edge_index = -1
-	if not vertex_hit.is_empty():
-		_site_surface_context_index = int(vertex_hit["index"])
-		_site_surface_context_vertex_index = int(vertex_hit["vertex"])
-		_set_selected_site_surface(_site_surface_context_index)
-		var vertices := _site_surface_vertices(_site_surfaces_data[_site_surface_context_index])
-		_view._site_surface_context_menu.add_item("Delete Vertex", SITE_SURFACE_CONTEXT_DELETE_VERTEX)
-		_view._site_surface_context_menu.set_item_disabled(0, vertices.size() <= 3)
-	else:
-		_site_surface_context_index = int(edge_hit["surface"])
-		_site_surface_context_edge_index = int(edge_hit["edge"])
-		_site_surface_context_insert_point = edge_hit["point"] as Vector2
-		_set_selected_site_surface(_site_surface_context_index)
-		_view._site_surface_context_menu.add_item("Add Vertex", SITE_SURFACE_CONTEXT_ADD_VERTEX)
-	var popup_pos := get_viewport().get_mouse_position()
-	_view._site_surface_context_menu.position = Vector2i(int(round(popup_pos.x)), int(round(popup_pos.y)))
-	_view._site_surface_context_menu.popup()
-	return true
-
-func _on_site_surface_context_menu_id_pressed(id: int) -> void:
-	match id:
-		SITE_SURFACE_CONTEXT_ADD_VERTEX:
-			_add_site_surface_vertex_from_context()
-		SITE_SURFACE_CONTEXT_DELETE_VERTEX:
-			_delete_site_surface_vertex_from_context()
-	_session.capture_geometry("Edit surface vertices")
-	_session.document.commit_transaction()
-
-func _add_site_surface_vertex_from_context() -> void:
-	var surface_index := _site_surface_context_index
-	if surface_index < 0 or surface_index >= _site_surfaces_data.size():
-		return
-	var edge_index := _site_surface_context_edge_index
-	var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
-	if edge_index < 0 or edge_index >= vertices.size():
-		return
-	vertices.insert(edge_index + 1, _clamp_site_surface_vertex_to_lot(_site_surface_context_insert_point))
-	if not _site_surface_polygon_is_valid(vertices):
-		_log("[color=yellow]Cannot add vertex there; it would create an invalid yard polygon.[/color]")
-		return
-	_site_surfaces_data[surface_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
-	_set_selected_site_surface(surface_index)
-	_log("Added yard vertex.")
-
-func _delete_site_surface_vertex_from_context() -> void:
-	var surface_index := _site_surface_context_index
-	if surface_index < 0 or surface_index >= _site_surfaces_data.size():
-		return
-	var vertex_index := _site_surface_context_vertex_index
-	var vertices := _site_surface_vertices(_site_surfaces_data[surface_index])
-	if vertices.size() <= 3:
-		_log("[color=yellow]Yard polygons need at least three vertices.[/color]")
-		return
-	if vertex_index < 0 or vertex_index >= vertices.size():
-		return
-	vertices.remove_at(vertex_index)
-	if not _site_surface_polygon_is_valid(vertices):
-		_log("[color=yellow]Cannot delete that vertex; it would create an invalid yard polygon.[/color]")
-		return
-	_site_surfaces_data[surface_index]["vertices"] = _site_surface_vertices_to_arrays(vertices)
-	_set_selected_site_surface(surface_index)
-	_log("Deleted yard vertex.")
-
-func _rotate_site_anchor_from_mouse(mouse_pos: Vector2) -> void:
-	if _selected_site_anchor_index < 0 or _selected_site_anchor_index >= _site_anchors_data.size():
-		return
-	var delta_px := mouse_pos.x - _site_anchor_rotate_start_x
-	var raw_rotation := _site_anchor_rotate_start_yaw + delta_px * MESH_ROTATION_DRAG_DEG_PER_PX
-	_set_site_anchor_yaw(_selected_site_anchor_index, raw_rotation)
 
 func _site_surface_contains_world_xz(index: int, world_pos: Vector3) -> bool:
 	if index < 0 or index >= _site_surfaces_data.size():
@@ -2304,26 +1963,8 @@ func _toggle_mesh_part_selection(index: int) -> void:
 		selected.append(index)
 		_set_selected_mesh_parts(selected, index)
 
-func _rotate_mesh_part_from_mouse(mouse_pos: Vector2) -> void:
-	if not _has_selected_mesh_part():
-		return
-	var delta_px := mouse_pos.x - _mesh_part_rotate_start_x
-	var raw_rotation := _mesh_part_rotate_start_yaw + delta_px * MESH_ROTATION_DRAG_DEG_PER_PX
-	_set_selected_mesh_part_rotation_y(_snap_rotation_y_to_cardinal_if_close(raw_rotation))
-
 func _has_selected_mesh_part() -> bool:
 	return _selected_part_index >= 0 and _selected_part_index < _parts.size()
-
-func _set_selected_mesh_part_rotation_y(rotation_y: float) -> void:
-	if not _has_selected_mesh_part():
-		return
-	_parts[_selected_part_index].rotation_y = rotation_y
-	_parts[_selected_part_index].position = _clamp_mesh_part_position_to_lot(
-		_selected_part_index,
-		_parts[_selected_part_index].position
-	)
-	_sync_selected_mesh_part_controls()
-	_apply_selected_part_transform_from_state()
 
 func _sync_selected_mesh_part_controls() -> void:
 	if not _has_selected_mesh_part():
@@ -2341,7 +1982,7 @@ func _apply_selected_part_transform_from_state() -> void:
 		return
 	_apply_mesh_part_transform_from_state(_selected_part_index)
 
-func _apply_mesh_part_transform_from_state(index: int) -> void:
+func _apply_mesh_part_transform_from_state(index: int, refresh_selection: bool = true) -> void:
 	if index < 0 or index >= _parts.size():
 		return
 	_preview.set_mesh_part_transform(
@@ -2349,7 +1990,8 @@ func _apply_mesh_part_transform_from_state(index: int) -> void:
 		_parts[index].position,
 		_parts[index].rotation_y,
 		_parts[index].scale,
-		_parts[index].pivot_offset
+		_parts[index].pivot_offset,
+		refresh_selection
 	)
 
 func _normalize_degrees(value: float) -> float:
@@ -2361,12 +2003,7 @@ func _normalize_degrees(value: float) -> float:
 	return snappedf(result, 0.1)
 
 func _snap_rotation_y_to_cardinal_if_close(value: float) -> float:
-	var normalized := _normalize_degrees(value)
-	var nearest_cardinal := _normalize_degrees(roundf(normalized / 90.0) * 90.0)
-	var distance := absf(_normalize_degrees(normalized - nearest_cardinal))
-	if distance <= MESH_ROTATION_CARDINAL_SNAP_DEG:
-		return nearest_cardinal
-	return normalized
+	return AssetAuthoringPolicy.rotation_degrees(value)
 
 func _project_mouse_to_horizontal_plane(mouse_pos: Vector2, plane_y: float):
 	var cam := get_viewport().get_camera_3d()

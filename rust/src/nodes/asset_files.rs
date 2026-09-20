@@ -18,6 +18,130 @@ pub struct AssetAuthoringFiles;
 
 #[godot_api]
 impl AssetAuthoringFiles {
+    /// Resolve a user asset directory without permitting links or escaping the asset root.
+    #[func]
+    pub fn asset_location(mods: GString, pack: GString, asset: GString) -> VarDictionary {
+        match files::asset_directory(&native_path(mods), &pack.to_string(), &asset.to_string()) {
+            Ok(path) => vdict! { "path": path.to_string_lossy().as_ref() },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Check trash eligibility without changing the filesystem; repeat immediately before trash.
+    #[func]
+    pub fn inspect_trash(
+        mods: GString,
+        pack: GString,
+        asset: GString,
+        protected: PackedStringArray,
+    ) -> VarDictionary {
+        let protected = protected
+            .as_slice()
+            .iter()
+            .map(|p| native_path(p.clone()))
+            .collect::<Vec<_>>();
+        match files::trash_target(
+            &native_path(mods),
+            &pack.to_string(),
+            &asset.to_string(),
+            &protected,
+        ) {
+            Ok(path) => vdict! { "path": path.to_string_lossy().as_ref() },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
+    /// Prepare independent source files and an unpublished copy, preserving unknown metadata.
+    #[func]
+    pub fn copy_for_editing(
+        mods: GString,
+        manifest: VarDictionary,
+        destination: VarDictionary,
+        id: GString,
+        name: GString,
+        workspace: GString,
+    ) -> VarDictionary {
+        let result = (|| -> Result<VarDictionary, String> {
+            let text = |data: &VarDictionary, key: &str| {
+                data.get(key)
+                    .and_then(|v| v.try_to::<GString>().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            if name.to_string().trim().is_empty() {
+                return Err("Enter a name for the copy".into());
+            }
+            let source = files::asset_directory(
+                &native_path(mods.clone()),
+                &text(&manifest, "pack_id"),
+                &text(&manifest, "asset_id"),
+            )?;
+            let parts: VarArray = manifest
+                .get("mesh_parts")
+                .and_then(|v| v.try_to().ok())
+                .unwrap_or_default();
+            let mut relative_sources = Vec::new();
+            let mut models = Vec::new();
+            for part in parts.iter_shared() {
+                let part: VarDictionary = part.try_to().map_err(|e| e.to_string())?;
+                let lods: VarArray = part
+                    .get("lods")
+                    .and_then(|v| v.try_to().ok())
+                    .unwrap_or_default();
+                let mut paths = Vec::new();
+                for lod in lods.iter_shared() {
+                    let lod: VarDictionary = lod.try_to().map_err(|e| e.to_string())?;
+                    let file = text(&lod, "file");
+                    models.push((file.clone(), source.join(&file)));
+                    paths.push(file);
+                }
+                relative_sources.push(paths);
+            }
+            let thumbnail = text(&manifest, "thumbnail");
+            let extras = if thumbnail.is_empty() {
+                vec![]
+            } else {
+                vec![(thumbnail.clone(), source.join(&thumbnail))]
+            };
+            files::plan(&models, &extras)?;
+            let root = files::working_copy(
+                &native_path(mods),
+                &text(&manifest, "pack_id"),
+                &text(&manifest, "asset_id"),
+                &text(&destination, "pack_id"),
+                &id.to_string(),
+                &native_path(workspace),
+            )?;
+            let mut params = manifest.duplicate_deep();
+            let mut supporting_sources = VarDictionary::new();
+            for (relative, path) in files::attribution_files(&root)? {
+                supporting_sources.set(relative, path.to_string_lossy().as_ref());
+            }
+            params.set("pack_id", text(&destination, "pack_id"));
+            params.set("pack_name", text(&destination, "display_name"));
+            params.set("pack_author", text(&destination, "author"));
+            params.set("asset_id", id);
+            params.set("display_name", name);
+            let sources = relative_sources
+                .into_iter()
+                .map(|paths| {
+                    paths
+                        .into_iter()
+                        .map(|p| root.join(p).to_string_lossy().as_ref().to_variant())
+                        .collect::<VarArray>()
+                        .to_variant()
+                })
+                .collect::<VarArray>();
+            Ok(
+                vdict! { "params": params, "sources": sources, "origin": VarDictionary::new(), "supporting_sources": supporting_sources, "thumbnail_source": if thumbnail.is_empty() { String::new() } else { root.join(thumbnail).to_string_lossy().into_owned() } },
+            )
+        })();
+        match result {
+            Ok(document) => vdict! { "document": document },
+            Err(error) => vdict! { "error": error },
+        }
+    }
+
     /// Create a validated pack without overwriting an existing manifest.
     #[func]
     pub fn create_pack(mods: GString, id: GString, name: GString, author: GString) -> GString {
@@ -59,7 +183,7 @@ impl AssetAuthoringFiles {
                     models.push((lod.file.clone(), PathBuf::from(path)));
                 }
             }
-            let extras: Vec<_> = params
+            let mut extras: Vec<_> = params
                 .thumbnail
                 .iter()
                 .map(|file| {
@@ -69,6 +193,16 @@ impl AssetAuthoringFiles {
                     )
                 })
                 .collect();
+            if let Some(sources) = state.get("supporting_sources") {
+                let sources: std::collections::BTreeMap<String, String> =
+                    serde_json::from_value(sources.clone()).map_err(|e| e.to_string())?;
+                for (relative, path) in sources {
+                    if !relative.starts_with("attribution/") || !files::safe_relative(&relative) {
+                        return Err("Supporting credits must stay within attribution/".into());
+                    }
+                    extras.push((relative, PathBuf::from(path)));
+                }
+            }
             let plan = files::plan(&models, &extras)?;
             files::publish(&native_path(output), &params.asset_id, &plan, &asset, &pack)
         })();

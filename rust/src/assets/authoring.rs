@@ -10,6 +10,7 @@ use crate::simulation::economy::definitions::{
 use serde_json::{Value, json};
 
 pub(crate) mod document;
+pub(crate) mod edits;
 pub(crate) mod files;
 
 /// Editor chains additionally start at zero and use contiguous authored distance bands.

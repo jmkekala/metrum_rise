@@ -104,14 +104,261 @@ func _run() -> void:
 	_test_gestures()
 	_test_mixed_and_ghost_gestures()
 	await _test_scale_reference()
+	_test_context_commands()
+	await _test_context_input()
+	await _test_context_lifecycle()
 	_test_invalidations()
 	await _captures()
+	await _capture_context_menus()
 	_benchmark()
 	editor.free()
 	await process_frame
 	if failures == 0:
 		print("PASS asset_selection_test")
 	quit(0 if failures == 0 else 1)
+
+func _test_context_commands() -> void:
+	_reset()
+	var menus = editor._menus
+	var actions = menus.actions
+	var document = editor._session.document
+	var original: Dictionary = document.snapshot()
+	var mesh: Array[Dictionary] = [{"kind": "mesh", "index": 0}]
+	var entrance: Array[Dictionary] = [{"kind": "anchor", "index": 0}]
+	var prepared: Dictionary = document.prepare_edit("duplicate", mesh, {})
+	expect(prepared.document.params.mesh_parts.size() == 3 and prepared.document.sources[2] == original.sources[0], "Rust duplication retains all source paths")
+	expect(prepared.document.params.mesh_parts[2].name != original.params.mesh_parts[0].name, "duplicates receive a unique deterministic name")
+	expect(document.snapshot() == original and not document.can_undo(), "preparing a command never mutates history")
+	expect(document.prepare_edit("duplicate", entrance, {}).has("error"), "unique entrance cannot be duplicated")
+	expect(document.prepare_edit("rename", entrance, {"name": "Other"}).has("error"), "entrance identity cannot be renamed")
+	var sparse: Dictionary = original.duplicate(true)
+	sparse.params.erase("anchors")
+	sparse.params.erase("site_surfaces")
+	document.reset(sparse)
+	var sparse_copy: Dictionary = document.prepare_edit("duplicate", mesh, {}).document
+	expect(not sparse_copy.params.has("anchors") and not sparse_copy.params.has("site_surfaces"), "mesh commands preserve omitted unrelated collections")
+	document.reset(original)
+	var point := Vector3(15, 0, 12)
+	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	expect(document.snapshot() == original and editor._site_anchors_data.size() == 2, "creation is provisional until confirmed")
+	var parking: Dictionary = editor._site_anchors_data[1]
+	expect(editor._anchor_position(parking).distance_to(point) < 4, "parking creation starts at clicked ground, not origin")
+	actions.cancel()
+	expect(document.snapshot() == original and editor._site_anchors_data.size() == 1 and not document.can_undo(), "cancelled creation restores document and preview")
+	actions.begin_placement("create", [], {"kind": "parking"}, point)
+	actions.confirm()
+	expect(document.snapshot().params.anchors.size() == 2 and document.can_undo(), "confirmed creation is persisted")
+	document.undo()
+	expect(document.snapshot() == original and not document.can_undo(), "one undo removes complete placement")
+	document.redo()
+	expect(document.snapshot().params.anchors.size() == 2, "placement redo retains new object")
+	_reset()
+	actions.begin_placement("duplicate", mesh, {}, point)
+	expect(editor._parts.size() == 3 and document.snapshot() == original, "duplicate mesh placement is provisional")
+	actions.confirm()
+	expect(document.snapshot().params.mesh_parts.size() == 3, "confirmed duplicate includes mesh and source chain")
+	document.undo()
+	expect(document.snapshot() == original, "one undo restores source mapping after duplication")
+	actions.begin_rotation(mesh)
+	actions._rotate(35)
+	expect(editor._parts[0].rotation_y == 35 and document.snapshot() == original, "interactive rotation only affects preview before confirmation")
+	actions.cancel()
+	expect(editor._parts[0].rotation_y == 0 and document.snapshot() == original, "cancelled explicit rotation restores transform")
+	menus._open({"kind": "mesh", "index": 0}, Vector2(200, 200), point)
+	var context: Dictionary = menus.context.duplicate(true)
+	menus.popup.hide()
+	document.set_parameter("display_name", "Changed")
+	menus.dispatch("delete", context)
+	expect(editor._parts.size() == 2, "stale menu cannot delete an object after a document change")
+	_reset()
+	menus._open({}, Vector2(200, 200), point)
+	expect(menus._commands.all(func(command): return command.action != "delete"), "empty-space menu never deletes the previous selection")
+	expect(menus._commands.any(func(command): return command.action == "create"), "empty ground offers creation")
+	menus.popup.hide()
+	actions.begin_placement("create", [], {"kind": "driveway"}, point)
+	var driveway: Dictionary = editor._site_anchors_data.back()
+	expect(editor._anchor_forward(driveway).dot(editor._driveway_anchor_forward()) > 0.99, "created driveway faces inward")
+	expect(not document.selection_actions(entrance).duplicate, "main entrance menu exposes its singleton constraint")
+	actions.confirm()
+	var drive: Array[Dictionary] = [{"kind": "anchor", "index": 1}]
+	var drive_caps: Dictionary = document.selection_actions(drive)
+	expect(not drive_caps.has("error") and not drive_caps.get("rotate", true), "driveway menu cannot advertise ineffective free rotation: " + str(drive_caps))
+	_reset()
+
+func _test_context_input() -> void:
+	_reset()
+	for frame in 4: await process_frame
+	var menus = editor._menus
+	var actions = menus.actions
+	var point := _screen(Vector3(2, 20, 0))
+	for down in [true, false]:
+		var right := InputEventMouseButton.new()
+		right.position = point
+		right.global_position = point
+		right.button_index = MOUSE_BUTTON_RIGHT
+		right.pressed = down
+		root.push_input(right, true)
+	await process_frame
+	expect(menus.popup.visible and editor._selected_part_index == 0, "real right-click selects the visible mesh and opens its context menu: visible=%s selected=%s blocked=%s" % [menus.popup.visible, editor._selected_part_index, selection._blocked()])
+	expect(menus.context.hit.kind == "mesh", "hidden yard and anchor cannot steal the context menu")
+	menus.popup.hide()
+	await process_frame
+	var key := InputEventKey.new()
+	key.keycode = KEY_R
+	key.pressed = true
+	root.push_input(key, true)
+	expect(actions.mode == "rotate", "R enters the same explicit rotation operation as the menu: keyboard=%s blocked=%s" % [menus.keyboard_context(), selection._blocked()])
+	_mouse_motion(point)
+	_mouse_motion(point + Vector2(50, 0))
+	expect(editor._parts[0].rotation_y != 0 and not editor._session.document.is_dirty(), "mouse rotation is provisional")
+	_click(point + Vector2(50, 0))
+	expect(actions.mode.is_empty() and editor._session.document.can_undo(), "left-click confirms rotation without beginning another drag")
+	expect(not selection.pressed, "rotation confirmation cannot fall through to selection")
+	editor._session.undo()
+	for frame in 4: await process_frame
+	var list: ItemList = editor._view._mesh_part_list
+	var right := InputEventMouseButton.new()
+	right.position = list.get_item_rect(1).get_center()
+	right.button_index = MOUSE_BUTTON_RIGHT
+	right.pressed = true
+	list.gui_input.emit(right)
+	expect(menus.popup.visible and menus.context.hit.index == 1, "object-list right-click uses the clicked entry")
+	menus.popup.hide()
+	editor._view.fields["display_name"].grab_focus()
+	root.push_input(key, true)
+	expect(actions.mode.is_empty(), "typing R in a text field never rotates")
+	editor.get_viewport().gui_release_focus()
+	editor._view.library.show()
+	menus.open_library(Vector2(-1, -1))
+	menus.popup.hide()
+	expect(not menus.keyboard_context() and editor.get_viewport().gui_get_focus_owner() == editor._view._asset_tree, "closing a library context menu retains library keyboard ownership")
+	root.push_input(key, true)
+	expect(actions.mode.is_empty(), "library keyboard input never rotates the previous viewport selection")
+	editor._view.library.hide()
+	_reset()
+
+func _test_context_lifecycle() -> void:
+	_reset()
+	var menus = editor._menus
+	var actions = menus.actions
+	var document = editor._session.document
+	var mesh: Array[Dictionary] = [{"kind": "mesh", "index": 0}]
+	var group: Array[Dictionary] = [{"kind": "mesh", "index": 0}, {"kind": "mesh", "index": 1}]
+	var point := Vector3(15, 0, 12)
+	var original: Dictionary = document.snapshot()
+	var imports: int = editor._preview.lod_import_count
+	var builds: int = editor._preview.pick_build_count
+	actions.select(group)
+	menus._open(mesh[0], Vector2(300, 200), point)
+	expect(menus.context.targets == group, "right-click on selected object preserves the complete selection")
+	expect(editor._preview.lod_import_count == imports and editor._preview.pick_build_count == builds, "opening menus never imports or rebuilds mesh picking geometry")
+	var command := -1
+	for index in menus._commands.size():
+		if menus._commands[index].action == "rotate" and menus._commands[index].args.is_empty(): command = index
+	menus._pressed(command)
+	await process_frame
+	expect(actions.mode == "rotate", "menu activation starts the same explicit operation as R")
+	actions._rotate(30)
+	var escape := InputEventKey.new()
+	escape.pressed = true
+	escape.keycode = KEY_ESCAPE
+	root.push_input(escape, true)
+	expect(actions.mode.is_empty() and document.snapshot() == original and not document.can_undo(), "Escape cancels without an undo entry")
+	actions.begin_rotation(group)
+	actions._rotate(30)
+	editor.get_window().focus_exited.emit()
+	expect(actions.mode.is_empty() and editor._parts[0].rotation_y == 0 and not document.is_editing(), "focus loss restores original transforms and leaves no transaction")
+	actions.begin_rotation(group)
+	actions._rotate(30)
+	var modal := AcceptDialog.new()
+	editor.add_child(modal)
+	modal.popup_centered()
+	await process_frame
+	await process_frame
+	expect(actions.mode.is_empty() and editor._parts[0].rotation_y == 0, "opening another modal cancels rotation without pointer input")
+	modal.hide()
+	modal.queue_free()
+	actions.begin_rotation(group)
+	actions._rotate(30)
+	document.reset(fixture)
+	expect(actions.mode.is_empty() and editor._parts[0].rotation_y == 0 and not document.is_editing(), "document replacement invalidates transient rotation")
+	var angled: Dictionary = fixture.duplicate(true)
+	angled.params.mesh_parts[1].rotation_degrees = [0.0, 15.0, 0.0]
+	document.reset(angled)
+	actions.begin_rotation(group, 90.0)
+	expect(editor._parts[0].rotation_y == 90 and editor._parts[1].rotation_y == 105, "group rotation preserves relative angles around individual pivots")
+	expect(editor._parts[0].position == Vector3.ZERO and editor._parts[1].position == Vector3(0, -5, 0), "group rotation does not orbit member positions")
+	document.undo()
+	expect(document.snapshot() == angled and not document.can_undo(), "preset group rotation is exactly one undo operation")
+	_reset()
+	var chain: Dictionary = fixture.duplicate(true)
+	chain.params.mesh_parts[0].future_part_data = {"keep": [1, "two"]}
+	chain.params.mesh_parts[0].lods.append({"file": narrow_path.get_file(), "distance_min_m": 50.0, "future_lod": true})
+	chain.sources[0].append(narrow_path)
+	document.reset(chain)
+	var duplicate: Dictionary = document.prepare_edit("duplicate", mesh, {})
+	var expected: Dictionary = chain.params.mesh_parts[0].duplicate(true)
+	expected.name = duplicate.document.params.mesh_parts[2].name
+	expect(duplicate.document.params.mesh_parts[2] == expected and duplicate.document.sources[2] == chain.sources[0], "duplicate preserves complete LODs, source mappings and unknown metadata")
+	actions.select(mesh)
+	editor._on_preview_lod_selected(1)
+	menus._open(mesh[0], Vector2(300, 200), point)
+	var captured: Dictionary = menus.context.duplicate(true)
+	expect(captured.lod == 1, "LOD replacement captures the inspected tier")
+	menus.popup.hide()
+	editor._select_mesh_part(1)
+	menus.dispatch("lod_replace", captured)
+	var picker = editor.get_child(editor.get_child_count() - 1)
+	expect(picker.title == "Replace LOD1", "replacement dialog labels captured tier even after selection changes")
+	picker.mesh_selected.emit(gap_path)
+	picker.queue_free()
+	await process_frame
+	expect(document.snapshot().sources[0][1] == gap_path and document.snapshot().sources[1][0] == box_path, "LOD replace changes only the captured part and tier")
+	document.undo()
+	actions.edit("delete", mesh)
+	expect(editor._parts.size() == 1 and document.snapshot().sources.size() == 1 and FileAccess.file_exists(narrow_path), "mesh deletion removes all LOD references, never source files")
+	document.undo()
+	expect(document.snapshot() == chain, "whole-part deletion restores every LOD on undo")
+	actions.select(mesh)
+	editor._on_add_part_lod_requested()
+	picker = editor.get_child(editor.get_child_count() - 1)
+	document.set_parameter("display_name", "new revision")
+	picker.mesh_selected.emit(gap_path)
+	picker.queue_free()
+	expect(editor._parts[0].lods.size() == 2, "a delayed LOD picker cannot edit a changed document")
+	_reset()
+	var revision: int = menus.generation
+	actions.import_at(point, func(): return revision == menus.generation)
+	picker = editor.get_child(editor.get_child_count() - 1)
+	picker._on_close_requested()
+	await process_frame
+	expect(document.snapshot() == original and actions.mode.is_empty(), "cancelling an import dialog leaves no provisional or authored mesh")
+	actions.import_at(point, func(): return revision == menus.generation)
+	picker = editor.get_child(editor.get_child_count() - 1)
+	picker.mesh_selected.emit(narrow_path)
+	picker.queue_free()
+	await process_frame
+	expect(actions.mode == "place" and editor._parts.back().position.distance_to(point) < 0.1, "mesh import starts at captured ground after the file picker closes")
+	actions.cancel()
+	menus._open({"kind": "surface", "index": 0}, Vector2(300, 200), point)
+	captured = menus.context.duplicate(true)
+	menus.popup.hide()
+	menus.dispatch("create", captured, {"kind": "loading_bay"})
+	expect(actions.mode == "place" and editor._site_anchors_data.back().anchor_type == "loading_bay", "creation works over a yard covering the lot")
+	actions.cancel()
+	var mixed: Array[Dictionary] = [{"kind": "mesh", "index": 0}, {"kind": "surface", "index": 0}]
+	actions.begin_placement("duplicate", mixed, {}, null)
+	var offset: Vector3 = editor._parts[2].position - Vector3(editor._site_surfaces_data[1].vertices[0][0], 0, editor._site_surfaces_data[1].vertices[0][1])
+	actions._place(Vector3(10, 0, 10))
+	expect((editor._parts[2].position - Vector3(editor._site_surfaces_data[1].vertices[0][0], 0, editor._site_surfaces_data[1].vertices[0][1])).is_equal_approx(offset), "group duplication preserves relative mesh/yard offsets")
+	actions.cancel()
+	expect(document.snapshot() == original, "cancelling mixed duplication restores all members")
+	var yard: Array[Dictionary] = [{"kind": "surface", "index": 0}]
+	expect(actions.edit("insert_vertex", yard, {"vertex": 0, "point": [0.0, -8.0]}), "yard edge insertion uses the shared validated command")
+	expect(editor._site_surfaces_data[0].vertices.size() == 5, "edge insertion adds one vertex")
+	actions.edit("delete_vertex", yard, {"vertex": 1})
+	expect(editor._site_surfaces_data[0].vertices == original.params.site_surfaces[0].vertices, "deleting the inserted vertex restores the outline")
+	_reset()
 
 func _test_list_selection() -> void:
 	_reset()
@@ -542,11 +789,12 @@ func _test_gestures() -> void:
 	selection.press(mouse, MOUSE_BUTTON_RIGHT)
 	selection.motion(mouse + Vector2(2, 0))
 	selection.release(mouse + Vector2(2, 0))
-	expect(not editor._session.document.is_dirty(), "right-click does not rotate without a drag")
-	selection.press(mouse, MOUSE_BUTTON_RIGHT)
+	expect(editor._menus.popup.visible and not editor._session.document.is_dirty(), "right-click opens a menu without editing")
 	selection.motion(mouse + Vector2(40, 0))
-	selection.release(mouse + Vector2(40, 0))
-	expect(editor._parts[0].rotation_y != 0, "right-drag retains mesh rotation")
+	expect(editor._parts[0].rotation_y == 0, "right-button motion never rotates")
+	editor._menus.popup.hide()
+	editor._menus.actions.begin_rotation(editor._menus.actions.selection(), 90)
+	expect(editor._parts[0].rotation_y == 90, "explicit rotation applies the requested angle")
 	editor._session.undo()
 	expect(editor._parts[0].rotation_y == 0, "rotation is undoable")
 	_reset()
@@ -603,9 +851,10 @@ func _test_mixed_and_ghost_gestures() -> void:
 	_reset()
 	editor._set_selected_mesh_parts([0, 1], 1)
 	selection.press(mouse, MOUSE_BUTTON_RIGHT)
-	selection.motion(mouse + Vector2(40, 0))
-	selection.release(mouse + Vector2(40, 0))
-	expect(editor._selected_part_index == 0 and editor._parts[0].rotation_y != 0 and editor._parts[1].rotation_y == 0, "right-drag rotates the clicked mesh within a multi-selection")
+	expect(editor._selected_part_indices == [0, 1], "right-click preserves the selected group")
+	editor._menus.popup.hide()
+	editor._menus.actions.begin_rotation(editor._menus.actions.selection(), 90)
+	expect(editor._parts[0].rotation_y == 90 and editor._parts[1].rotation_y == 90, "explicit rotation turns all selected meshes about their own pivots")
 	_reset()
 	expect(editor._preview.load_ghost(box_path, 1.0, 1, 1), "load comparison geometry")
 	editor._preview.set_ghost_world_position(Vector3(15, 0, 0))
@@ -776,7 +1025,8 @@ func _test_invalidations() -> void:
 	expect(selection.picker.queries == queries + 1 and selection.hovered["index"] == 1, "transform invalidation updates hover without a mouse event")
 	expect(editor._preview.pick_build_count == builds, "transforms never rebuild BVHs")
 	editor._select_mesh_part(1)
-	editor._remove_selected_mesh_parts()
+	editor._session.capture_geometry("Fixture before deletion")
+	editor._menus.actions.edit("delete", editor._menus.actions.selection())
 	editor._session.capture_geometry("Delete fixture part")
 	selection.refresh(mouse)
 	expect(selection.hovered.is_empty(), "removed parts never leave stale pick proxies")
@@ -815,6 +1065,56 @@ func _captures() -> void:
 				await RenderingServer.frame_post_draw
 				expect(root.get_texture().get_image().save_png(directory.path_join(mode + "-" + kind + ".png")) == OK, "selection screenshot")
 				editor.set_process(true)
+
+func _capture_context_menus() -> void:
+	for argument in OS.get_cmdline_user_args():
+		if not argument.begins_with("--capture-selection="): continue
+		var directory := argument.trim_prefix("--capture-selection=")
+		var original_size := root.size
+		root.size = Vector2i(960, 640)
+		_reset()
+		for theme in ["light", "dark"]:
+			editor.set_ui_theme_mode(theme)
+			for frame in 8: await process_frame
+			editor._menus._open({"kind": "mesh", "index": 0}, Vector2(root.size) - Vector2(8, 8), Vector3.ZERO)
+			for frame in 3: await process_frame
+			var menu: PopupMenu = editor._menus.popup
+			expect(menu.get_theme_color("font_color") == editor.EditorTheme.color(theme, "text"), "context menu root follows the editor theme")
+			expect(Rect2i(Vector2i.ZERO, root.size).encloses(Rect2i(menu.position, menu.size)), "context menu stays inside a narrow window at the screen edge")
+			await RenderingServer.frame_post_draw
+			expect(root.get_texture().get_image().save_png(directory.path_join(theme + "-context-menu.png")) == OK, "capture contextual menu theme and padding")
+			var rotate_index := -1
+			for index in menu.item_count:
+				if menu.get_item_text(index) == "Rotate": rotate_index = index
+			menu.set_focused_item(rotate_index)
+			var key := InputEventKey.new()
+			key.pressed = true
+			key.keycode = KEY_RIGHT
+			key.window_id = menu.get_window_id()
+			Input.parse_input_event(key)
+			await process_frame
+			var submenu: PopupMenu = menu.get_node(NodePath(menu.get_item_submenu(rotate_index)))
+			expect(submenu.visible, "keyboard Right opens the Rotate submenu")
+			expect(submenu.get_theme_color("font_color") == editor.EditorTheme.color(theme, "text"), "nested popup follows editor theme")
+			expect(Rect2i(Vector2i.ZERO, root.size).encloses(Rect2i(submenu.position, submenu.size)), "submenu flips inward at the screen edge")
+			await RenderingServer.frame_post_draw
+			expect(root.get_texture().get_image().save_png(directory.path_join(theme + "-rotate-menu.png")) == OK, "capture nested rotation menu")
+			key = InputEventKey.new()
+			key.pressed = true
+			key.keycode = KEY_DOWN
+			key.window_id = submenu.get_window_id()
+			Input.parse_input_event(key)
+			await process_frame
+			expect(submenu.get_focused_item() >= 0, "keyboard navigation selects a rotation command")
+			menu.hide()
+			await process_frame
+			editor._menus.actions.begin_rotation(editor._menus.actions.selection())
+			editor._menus.actions._rotate(35)
+			await RenderingServer.frame_post_draw
+			expect(root.get_texture().get_image().save_png(directory.path_join(theme + "-rotate-preview.png")) == OK, "capture explicit rotation preview")
+			editor._menus.actions.cancel()
+		root.size = original_size
+		_reset()
 
 func _capture_occlusion(directory: String) -> void:
 	var preview = editor._preview
@@ -913,6 +1213,7 @@ func _benchmark() -> void:
 		editor._preview._build_site_anchor_overlay()
 	var anchors := (Time.get_ticks_usec() - start) / 100.0
 	print("asset_guide_measure frontage_rebuild_mean_us=%.3f frontage_iterations=500 frontage_cells=10 anchor_rebuild_mean_us=%.3f anchor_iterations=100 anchors=1" % [frontage, anchors])
+	_measure_context_actions()
 	# Keep setup/BVH construction out of query timing. Shared meshes match repeated imported parts.
 	for segments in [64, 256]:
 		for instances in [1, 16]:
@@ -939,3 +1240,21 @@ func _benchmark() -> void:
 			query = (Time.get_ticks_usec() - start) / 1000.0
 			print("asset_selection_bvh triangles_per_mesh=%d instances=%d build_us=%d query_mean_us=%.3f query_iterations=1000" % [triangles, instances, build_us, query])
 			scene.free()
+
+func _measure_context_actions() -> void:
+	var actions = editor._menus.actions
+	for count in [1, 2]:
+		var objects: Array[Dictionary] = []
+		for index in count: objects.append({"kind": "mesh", "index": index})
+		var start := Time.get_ticks_usec()
+		for iteration in 10000: editor._session.document.selection_actions(objects)
+		var availability := (Time.get_ticks_usec() - start) / 10000.0
+		actions.begin_rotation(objects)
+		start = Time.get_ticks_usec()
+		for iteration in 1000: actions._rotate_transforms(float(iteration % 90))
+		var transforms := (Time.get_ticks_usec() - start) / 1000.0
+		start = Time.get_ticks_usec()
+		for iteration in 1000: actions._refresh_geometry()
+		var refresh := (Time.get_ticks_usec() - start) / 1000.0
+		actions.cancel()
+		print("asset_context_measure selected=%d availability_mean_us=%.3f transform_mean_us=%.3f ui_refresh_mean_us=%.3f snapshot_per_motion=0" % [count, availability, transforms, refresh])

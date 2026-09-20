@@ -15,8 +15,6 @@ var hovered: Dictionary = {}
 var applying_selection := false
 var pressed := false
 var dragging := false
-var rotating := false
-var _button := 0
 var _start := Vector2.ZERO
 var _target: Dictionary = {}
 var _preview_start := Vector3.ZERO
@@ -203,17 +201,15 @@ func handle_input(event: InputEvent) -> bool:
 			else:
 				editor._session.undo()
 			return true
-		if event.keycode == KEY_DELETE:
+		if event.keycode in [KEY_DELETE, KEY_R] and editor._menus.keyboard_context():
 			cancel()
-			var removed: bool = editor._remove_selected_site_surface() if editor._selected_site_surface_index >= 0 else false
-			if not editor._selected_site_anchor_indices.is_empty():
-				removed = editor._remove_selected_site_anchor() or removed
-			if not editor._selected_part_indices.is_empty():
-				removed = editor._remove_selected_mesh_parts() or removed
-			if removed:
-				editor._session.capture_geometry("Delete selection")
-			return removed
-	if event is InputEventMouseButton and event.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+			var objects: Array[Dictionary] = editor._menus.actions.selection()
+			if objects.is_empty(): return false
+			if event.keycode == KEY_R:
+				editor._menus.actions.begin_rotation(objects)
+				return true
+			return editor._menus.actions.edit("delete", objects)
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			if not editor._view._preview_view_rect.get_global_rect().has_point(event.position):
 				return false
@@ -221,7 +217,7 @@ func handle_input(event: InputEvent) -> bool:
 				cycle(event.position)
 				return true
 			return press(event.position, event.button_index, event.ctrl_pressed, event.shift_pressed)
-		if pressed and event.button_index == _button:
+		if pressed:
 			release(event.position)
 			return true
 	if event is InputEventMouseMotion and pressed:
@@ -230,17 +226,15 @@ func handle_input(event: InputEvent) -> bool:
 	return false
 
 func press(mouse: Vector2, button: int, additive: bool = false, box: bool = false) -> bool:
+	if button == MOUSE_BUTTON_RIGHT:
+		editor._menus.open_preview(mouse)
+		return true
 	cancel()
 	# Commit an active inspector edit before beginning a separate viewport gesture.
 	editor.get_viewport().gui_release_focus()
 	refresh(mouse, true)
-	if button == MOUSE_BUTTON_RIGHT and effective_filter() in ["surface", "all"] and editor._try_open_site_surface_context_menu(mouse):
-		return true
 	_target = hovered.duplicate()
-	if button == MOUSE_BUTTON_RIGHT and (_target.is_empty() or _target["kind"] not in ["mesh", "anchor"]):
-		return false
 	_start = mouse
-	_button = button
 	_box = box or _target.is_empty()
 	if _box:
 		editor._preview.set_scale_reference_selected(false)
@@ -250,7 +244,6 @@ func press(mouse: Vector2, button: int, additive: bool = false, box: bool = fals
 		if additive:
 			return true
 	pressed = true
-	rotating = button == MOUSE_BUTTON_RIGHT
 	return true
 
 func motion(mouse: Vector2) -> void:
@@ -265,14 +258,9 @@ func motion(mouse: Vector2) -> void:
 		if not _prepare_drag():
 			return
 		if not _preview_target():
-			editor._session.document.begin_transaction("Rotate selection" if rotating else "Move selection")
+			editor._session.document.begin_transaction("Move selection")
 		dragging = true
-	if rotating:
-		if _target["kind"] == "mesh":
-			editor._rotate_mesh_part_from_mouse(mouse)
-		else:
-			editor._rotate_site_anchor_from_mouse(mouse)
-	elif _target["kind"] == "vertex":
+	if _target["kind"] == "vertex":
 		editor._drag_site_surface_vertex_from_mouse(mouse)
 	elif _preview_target():
 		var hit = editor._project_mouse_to_horizontal_plane(mouse, editor._drag_plane_y)
@@ -310,13 +298,6 @@ func _prepare_drag() -> bool:
 	if editor._site_surface_drag_index >= 0:
 		editor._site_surface_drag_start_vertices = editor._site_surface_vertices(editor._site_surfaces_data[editor._site_surface_drag_index])
 	editor._site_surface_vertex_drag_index = _target.get("vertex", -1)
-	if rotating:
-		if _target["kind"] == "mesh":
-			editor._mesh_part_rotate_start_x = _start.x
-			editor._mesh_part_rotate_start_yaw = editor._parts[_target["index"]].rotation_y
-		else:
-			editor._site_anchor_rotate_start_x = _start.x
-			editor._site_anchor_rotate_start_yaw = editor._yaw_from_forward(editor._anchor_forward(editor._site_anchors_data[_target["index"]]))
 	return true
 
 func _preview_target() -> bool:
@@ -338,7 +319,6 @@ func release(mouse: Vector2) -> void:
 		editor._session.document.commit_transaction()
 	pressed = false
 	dragging = false
-	rotating = false
 	_box = false
 	_revision = -1
 
@@ -354,7 +334,6 @@ func cancel() -> void:
 	editor._view._selection_rect_overlay.clear()
 	pressed = false
 	dragging = false
-	rotating = false
 	_box = false
 	_revision = -1
 

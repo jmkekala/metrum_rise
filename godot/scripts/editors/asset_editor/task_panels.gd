@@ -50,7 +50,7 @@ func _model() -> void:
 	var actions := HFlowContainer.new()
 	box.add_child(actions)
 	v.button(actions, "Import mesh…", e._on_import_glb_pressed)
-	v.remove_part_button = v.geometry_button(actions, "Remove part", e._remove_selected_mesh_parts)
+	v.remove_part_button = v.button(actions, "Delete selection", func(): e._menus.actions.edit("delete", e._menus.actions.selection()))
 	v.model_hint = _label(box, "Import a model to begin. Add its LOD meshes after selecting a part.")
 	v._mesh_part_list = ItemList.new()
 	v._mesh_part_list.custom_minimum_size.y = 72
@@ -99,13 +99,13 @@ func _access(box: Control) -> void:
 	var actions := HFlowContainer.new()
 	box.add_child(actions)
 	for kind in ["entrance", "driveway", "parking", "loading_bay"]:
-		v.geometry_button(actions, kind.capitalize().replace("_", " "), e._add_site_anchor.bind(kind))
+		v.button(actions, kind.capitalize().replace("_", " "), func(): e._menus.actions.create_from_controls(kind))
 	v._site_anchor_list = ItemList.new()
 	v._site_anchor_list.custom_minimum_size.y = 125
 	v._site_anchor_list.select_mode = ItemList.SELECT_MULTI
 	v._site_anchor_list.multi_selected.connect(e._on_site_anchor_multi_selected)
 	box.add_child(v._site_anchor_list)
-	v.remove_anchor_button = v.geometry_button(box, "Remove selected access point", e._remove_selected_site_anchor)
+	v.remove_anchor_button = v.button(box, "Delete selection", func(): e._menus.actions.edit("delete", e._menus.actions.selection()))
 	v.anchor_properties = VBoxContainer.new()
 	box.add_child(v.anchor_properties)
 	var body: Control = v.anchor_properties
@@ -127,12 +127,12 @@ func _surfaces(box: Control) -> void:
 	var actions := HFlowContainer.new()
 	box.add_child(actions)
 	for material in ["asphalt", "concrete"]:
-		v.geometry_button(actions, "Add " + material, e._add_site_surface.bind(material))
+		v.button(actions, "Add " + material, func(): e._menus.actions.create_from_controls(material))
 	v._site_surface_list = ItemList.new()
 	v._site_surface_list.custom_minimum_size.y = 125
 	v._site_surface_list.item_selected.connect(e._on_site_surface_selected)
 	box.add_child(v._site_surface_list)
-	v.remove_surface_button = v.geometry_button(box, "Remove surface", e._remove_selected_site_surface)
+	v.remove_surface_button = v.button(box, "Delete selection", func(): e._menus.actions.edit("delete", e._menus.actions.selection()))
 	v.surface_properties = VBoxContainer.new()
 	box.add_child(v.surface_properties)
 	var body: Control = v.surface_properties
@@ -144,9 +144,6 @@ func _surfaces(box: Control) -> void:
 	v._site_surface_material_btn.item_selected.connect(func(_value): e._session.capture_geometry("Change surface material"))
 	v._site_surface_y_spin = _geometry_number(body, "_surface_y", "Height (m)", -50, 50, 0.01, e._on_site_surface_spin_changed)
 	_label(body, "Drag vertices in the viewport. Right-click an edge to add a vertex, or a vertex to remove it.")
-	v._site_surface_context_menu = PopupMenu.new()
-	v._site_surface_context_menu.id_pressed.connect(e._on_site_surface_context_menu_id_pressed)
-	box.add_child(v._site_surface_context_menu)
 	v.surface_properties.visible = false
 
 func _gameplay() -> void:

@@ -21,6 +21,11 @@ pub struct AssetAuthoringPolicy {
 
 #[godot_api]
 impl AssetAuthoringPolicy {
+    /// Normalize interactive yaw using the shared deterministic cardinal snap rule.
+    #[func]
+    pub fn rotation_degrees(angle: f32) -> f32 {
+        authoring::edits::rotation_degrees(angle)
+    }
     /// Validate authored LOD metadata through the shared Rust manifest rules.
     #[func]
     pub fn lod_chain_error(lods: Array<VarDictionary>) -> GString {

@@ -1383,6 +1383,120 @@ Road authoring remains outside the first importer milestone.
 
 ## User Experience
 
+### Context menus and explicit manipulation — `TOOLS-07`
+
+One on-demand context menu serves the preview, mesh/access/yard lists and library. Right-click
+only opens menus; middle-drag/wheel retain camera navigation and Alt+left-click cycles overlaps.
+The depth-aware picker excludes occluded targets. Right-clicking an unselected object selects it
+and opens its inspector; clicking a selected object preserves the complete mixed selection.
+Empty-space menus preserve selection but offer creation/view actions, never unrelated deletion.
+Captured document generations invalidate stale popups and file-pickers. R/Delete respect text,
+library and modal focus. Toolbar deletion uses the same complete-selection command.
+
+| Target | Context actions |
+|---|---|
+| Mesh | Properties, Frame, Rename, Duplicate, Rotate, LOD, Create, Delete entire part/all LOD references |
+| Parking/loading | Properties, Frame, Rename, Duplicate, Rotate, Create, Delete |
+| Main entrance | Properties, Frame, Rotate, Reset to frontage, Create, Delete; no rename/duplicate |
+| Driveway | Properties, Frame, Rename, Duplicate, Create, Delete; no free rotation |
+| Yard/edge/vertex | Properties, Frame, Rename, Duplicate, Material; valid edge insertion/vertex deletion; Create, Delete |
+| Scale reference / comparison | Frame and reset/hide reference, or clear comparison; preview-only, outside history |
+| Library asset | Open, editable copy, comparison, show folder, copy ID, confirmed Move to Trash |
+| Library pack/category/empty space | Pack-bound/category-prefilled New asset; pack folder/refresh; empty-space New asset/Create pack/Refresh |
+
+Mixed selections expose only shared supported edits: nothing silently omits unsupported members.
+The LOD submenu names the captured replacement tier and actual next/last tiers; preview offers
+Automatic plus every imported tier. Removing a part never removes its model files.
+
+Rotate offers interactive/R, left/right 90° and reverse 180°. Pointer movement starts without a
+popup-to-preview jump and displays the angle and confirmation/cancellation hint. Each object
+rotates around its own pivot with relative angle differences preserved, not a group orbit.
+Existing lot clamps apply in the same edit. Left-click confirms exactly one undo entry without
+selecting/dragging through; Escape, focus loss, another modal or document replacement cancels.
+Right-click cancels the provisional operation before opening the next menu.
+
+Create is available over yards as well as empty ground: mesh, unique main entrance (or Select
+main entrance), driveway, parking, loading, asphalt and concrete. A missing ground intersection
+disables location-based actions with an explanation; no open document offers New asset instead.
+Placement captures the clicked **ground** point, including across a mesh picker, never a roof.
+Driveways remain frontage-pinned and inward-facing. Duplicate reuses placement, retains complete
+LOD/source/unknown metadata, yard polygons/materials and anchor dimensions, assigns deterministic
+unique names and preserves group offsets. Cancellation leaves the document untouched; confirmation
+is one undoable command. Object duplication does not copy source files.
+
+Library Open and editable Copy use the unsaved-change guard. Copy asks for a new identity/name
+and existing writable destination pack, preserves attribution and creates independent files under
+`user://asset_editor/copies/`; the document remains unpublished until explicit export. Original
+pack author/licence metadata and any inherited credits are retained under `attribution/`, referenced
+by the draft's optional `supporting_sources` map and included in staged export. Runtime manifests
+are unchanged, and destination pack authorship does not replace original model credits. Trash checks
+validated user-root containment, symlinks, writability, the active publication origin and source
+references retained by the working document, savepoint and undo/redo history. Confirmation names
+the asset/ID/path and warns that existing saves may reference it. The target is revalidated before
+native recoverable Trash; failure never falls back to permanent deletion and only success refreshes
+the library. Recovery uses system Trash, not document Undo. Pack removal is not provided.
+
+Rust owns lossless command preparation, capabilities, naming, angle/lot/polygon rules, document
+history and file validation/copying. GDScript owns popup/dialog presentation, pointer projection
+and transient preview transforms. Old library/vertex popups, right-drag state and duplicate
+create/delete implementations are removed. Appending/removing parts retains surviving preview
+resources and LOD state. Menus do not import meshes, rebuild mesh BVHs or snapshot the whole
+document. Availability/rotation calculations are O(selected objects); yard placement additionally
+visits selected vertices. Immutable document copies occur at operation/commit boundaries, never
+per pointer motion. Selection outlines rebuild once per group update, not once per member.
+Existing affected-domain guide rebuilds remain O(domain geometry), measured separately from
+transform calculations; mesh-only gestures skip anchor/yard rebuilds. File planning is O(F log F)
+for deterministic ordering; copying is O(files + bytes), unrelated to city size.
+
+Hide/isolate/lock, group-pivot rotation, general clipboard and bulk pack operations remain outside
+this milestone; no placeholder entries are shown.
+
+Acceptance — 2026-09-20:
+
+- `cargo test --manifest-path rust/Cargo.toml --lib assets::authoring`: 19 passed.
+  Release build, `cargo fmt --check`, `cargo doc --no-deps` (no warnings) and `git diff --check` pass.
+- All six headless suites pass: `asset_document_test`, `asset_authoring_test`,
+  `asset_workspace_test`, `asset_layout_test`, `asset_selection_test`, `asset_editor_preview_test`.
+  Coverage includes real input, cancellation/focus/modal/document changes, group pivots/offsets,
+  visible-tier relinking, stale dialogs, full-chain undo, copied credits/export, source/undo
+  protections, symlinks, read-only destinations, failed Trash and synthetic native Trash recovery.
+- Rendered selection/workspace suites pass on stock Godot 4.7.2, X11 / Forward+, RX 7900 XTX:
+  light/dark root and nested menus, keyboard navigation, 960×640 screen-edge placement,
+  rotation feedback, depth-aware picking, library rows, independent copy and export.
+- Unprofiled release comparison: HEAD `42a0ed85` versus this change, i9-12900K,
+  Rust 1.98.1, `RAYON_NUM_THREADS=4`, three fresh isolated processes per fixture/build.
+  Runs are serial, with no concurrent builds or rendered checks. Existing synthetic workloads:
+  selection = two meshes/one anchor/one yard (10,000 idle + 1,000 query iterations);
+  workspace = 100 metadata edits + 10,000 idle updates; preview = one part/four LODs,
+  40 cached switches + 2,000 automatic transitions. Median of the three process means:
+
+| Measurement | Baseline | Context menus |
+|---|---:|---:|
+| Idle picking (µs) | 0.730 | 0.744 |
+| Pointer query (µs) | 27.818 | 27.658 |
+| Metadata edit (µs) | 280.170 | 292.380 |
+| Idle workspace update (µs) | 1.616 | 1.549 |
+| Cached LOD switch (ms) | 0.002 | 0.002 |
+| Automatic LOD transition (µs) | 10.257 | 10.193 |
+
+Metadata notifications add about 12 µs per document edit; idle/picking/LOD costs remain comparable.
+Measured queries and warmed LOD transitions perform zero imports/BVH rebuilds. New-operation
+timing separates transform calculation from outline/UI rebuild: one/two selected meshes cost
+3.423/6.583 µs for transforms and 38.627/66.531 µs for rebuilds; capability lookup is
+1.859/2.445 µs. Group outlines rebuild once per update; pointer motion takes no document snapshots.
+
+Reproduce with a release `.so` and a fresh `XDG_DATA_HOME`/`XDG_CONFIG_HOME` for **each** process:
+`RAYON_NUM_THREADS=4 godot --headless --path <project> --script res://tests/asset_selection_test.gd -- --asset-editor --benchmark-asset-selection`;
+substitute `asset_workspace_test.gd` / `--benchmark-asset-workspace` or
+`asset_editor_preview_test.gd` / `--benchmark-asset-preview`. Render checks use
+`--display-driver x11 --rendering-method forward_plus` instead of `--headless`, with
+`--capture-selection=<directory>` or `--capture-workspace=<directory>`.
+Local artifacts: `/tmp/metrum-context.16ONJ5/`; `complete-*.log`, `rust-complete.log`,
+`rustdoc-complete.log`, `render-accepted-*`, `accept-bench-baseline-*.log` and
+`accepted-current-*.log`. Baseline/current library SHA-256 prefixes: `ca964f35eb0f` /
+`fe522773cce90`. Timed production diff: `production.diff` (`2590f3844968`), plus new-file
+hashes in `new-source-sha256.txt` (`af397e428b45`). Earlier exploratory runs are not acceptance data.
+
 Start flow:
 
 1. Choose `New asset…` or open a published asset from the collapsible library. Resume unfinished work through `File → Open Draft`.
@@ -1511,7 +1625,7 @@ V1 inspector and viewport contract:
   drag restores preview geometry and does not undo a preceding inspector edit. Only the selected
   yard exposes vertex and edge editing, with an 8-pixel edge target for its context menu.
 - Building mesh parts can be moved on the X/Z plane by left-dragging the part in the preview
-  viewport and rotated freely around Y by right-dragging it horizontally, with a light snap when the
+  viewport and rotated around Y with Rotate / R followed by horizontal pointer movement, with a light snap when the
   rotation is close to a 90-degree cardinal angle; the clicked part becomes the selected part and
   the inspector transform fields mirror the live manipulation. Selected mesh parts use corner
   handles; the current hover target additionally has a bounding-box outline. The editor clamps the transformed X/Z footprint of
@@ -1523,15 +1637,14 @@ V1 inspector and viewport contract:
   active filter. Holding `Shift` while left-dragging forces rectangle selection even when the drag
   begins over a mesh part or anchor. Holding `Ctrl` while clicking toggles individual mesh parts,
   the main entrance, site anchors, or one yard into the current selection. Dragging a selected object
-  moves the whole selected mesh/anchor/yard group on the X/Z plane; right-drag rotates only the clicked mesh/anchor. The
+  moves the whole selected mesh/anchor/yard group on the X/Z plane; Rotate / R rotates the complete eligible selection. The
   main entrance can be moved or removed in a draft; runtime export requires a valid `entrance/main`.
-- Model provides `Remove part`, and the keyboard `Delete` key performs the same action
-  when mesh parts are selected and text input is not active. Removal deletes all selected mesh parts
-  from the active asset draft and preview scene.
+- Model/Site provide `Delete selection`; keyboard Delete and context menus use the same command.
+  Removal deletes the complete authored selection from the draft and preview, never source files.
 - Site / Access points provides `Entrance`, `Driveway`, `Parking`, and `Loading Bay` add actions plus a remove action
   for the selected site anchor. Site anchors are selectable in the list or viewport, movable on the
-  X/Z plane with left-drag, and rotatable around Y with right-drag using the same light 90-degree
-  snap as mesh-part rotation. `Delete` removes the selected site anchor when text input is not active.
+  X/Z plane with left-drag, and (except frontage-bound driveways) rotatable around Y with Rotate / R
+  using the same light cardinal snap as meshes. Delete respects the active editing context.
 - The task selector stays above independently scrolling task pages. Model and Site disclose one
   relevant sub-section at a time. Changing tasks does not resize the inspector sidebar.
 - Overview uses a single `Choose / manage pack…` command plus a compact selected-pack summary instead of
@@ -1556,11 +1669,19 @@ V1 inspector and viewport contract:
   readable in both themes during day/night preview. These are preview-only visuals; authored
   frontage, footprints, materials, picking priority, dragging and Alt+click are unchanged.
 - The comparison ghost is explicit, not automatic. Right-clicking an asset browser row opens an
-  asset context menu with `Use as Ghost`; that asset remains as the viewport ghost until it is
+  asset context menu with `Use as comparison`; that asset remains as the viewport comparison until it is
   replaced or cleared.
 - The comparison ghost uses the selected asset's first mesh part and authored part scale.
   Loading another asset into the inspector must not replace the ghost. Assets from packs with
   different source-unit conventions must compare in exported/game-space meters.
+- Comparison materials retain source textures, shading, depth testing and opacity, with a subtle
+  cool albedo tint on preview-owned copies. Opaque walls/roofs stay solid; authored glass/cutouts
+  retain their transparency. No unlit translucent blueprint override is applied. Supported windows
+  follow the same automatic/manual emission controls as the edited asset, including loading during
+  Night. Neither tint nor emission changes source resources, exports or document history.
+  Material setup walks N scene nodes and S surfaces in O(N + S) on load; emission changes reuse the
+  existing preview-material controller and cached overrides in O(E) for E emission surfaces, with
+  O(1) unchanged-state checks. Textures remain shared; clearing/replacing releases material state.
 - In the All selection filter, the comparison ghost can be repositioned by dragging it with the left mouse
   button.
 - The following prop/vehicle/character modes are future contracts, not selectable placeholders in the current building editor.
@@ -2744,6 +2865,18 @@ Run with `godot --headless --path <isolated-project> --script res://emission_mea
 and isolated XDG data/config paths. These are input-handler timings, not GPU/frame timings:
 the added solar lookup is O(1); applying emission remains O(parts + emissive surfaces) on input
 only, with no idle-frame work, new material copies or simulation changes.
+
+Comparison readability follow-up (2026-09-20): fresh `asset_editor_preview_test` and
+`asset_selection_test` headless runs pass. The preview test generates a textured wall/roof GLB,
+checks opacity/shading, source isolation, authored glass/cutouts, load-during-night emission and
+clear/reload; X11/Forward+ captures pass in both UI themes at Day/Night. Artifacts:
+`/tmp/metrum-comparison.STBDZK/{accepted.log,selection.log,render-accepted.log,captures-accepted/}`.
+Using the isolated project, fresh XDG profiles, `RAYON_NUM_THREADS=4`, Godot 4.7.2 and the existing
+release extension (`d8ce9d24c17ded8c`), `--benchmark-asset-preview` on i9-12900K measures 1.371 ms
+mean comparison load (10 loads, two surfaces; import/material/pick-cache setup, excluding deferred
+scene cleanup) and 80.678 µs per cached emission change (2,000 changes, one surface). Renderer
+digest: `f4aff8e81fc3b960`. These are current-build CPU checks, not before/after or GPU timings;
+no simulation code changed. The optional capture/benchmark flags extend the existing command above.
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 

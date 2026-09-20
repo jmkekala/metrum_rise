@@ -40,6 +40,16 @@ impl<T: Default + PartialEq> Document<T> {
     pub(crate) fn data(&self) -> &T {
         &self.data
     }
+    pub(crate) fn revisions(&self) -> impl Iterator<Item = &T> {
+        std::iter::once(self.data.as_ref())
+            .chain(std::iter::once(self.saved.as_ref()))
+            .chain(
+                self.history
+                    .iter()
+                    .flat_map(|command| [command.before.as_ref(), command.after.as_ref()]),
+            )
+            .chain(self.transaction.iter().map(|(before, _)| before.as_ref()))
+    }
     pub(crate) fn is_dirty(&self) -> bool {
         self.data != self.saved
     }

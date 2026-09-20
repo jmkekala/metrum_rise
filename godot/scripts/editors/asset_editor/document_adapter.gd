@@ -23,12 +23,15 @@ func render(state: Dictionary) -> void:
 	var params: Dictionary = state.get("params", {})
 	var sources: Array = state.get("sources", [])
 	var entries: Array = params.get("mesh_parts", [])
+	_prune_removed_parts(entries, sources)
 	var reload_meshes: bool = sources != _sources or entries.size() != _editor._parts.size()
 	var selected: int = _editor._selected_part_index
 	if reload_meshes:
-		_editor._clear_mesh_parts()
+		var append_only: bool = sources.size() >= _sources.size() and sources.slice(0, _sources.size()) == _sources and _sources.size() == _editor._parts.size()
+		if not append_only:
+			_editor._clear_mesh_parts()
 		_sources = sources.duplicate(true)
-		for index in entries.size():
+		for index in range(_editor._parts.size(), entries.size()):
 			var entry: Dictionary = entries[index]
 			var paths: Array = sources[index] if index < sources.size() else []
 			var first := str(paths[0]) if not paths.is_empty() else ""
@@ -71,6 +74,24 @@ func render(state: Dictionary) -> void:
 	_editor._sync_preview_lods()
 	_rendered = geometry()
 
+func _prune_removed_parts(entries: Array, sources: Array) -> void:
+	# Deletion preserves survivor scene resources, BVHs and per-part LOD inspection state.
+	# Ordered subsequence matching is O(parts), and only runs at a document boundary.
+	var old: Array = _rendered.get("mesh_parts", [])
+	if entries.size() >= old.size() or old.size() != _editor._parts.size() or sources.size() != entries.size() or _sources.size() != old.size(): return
+	var removed: Array[int] = []
+	var next := 0
+	for index in old.size():
+		if next < entries.size() and entries[next] == old[index] and sources[next] == _sources[index]:
+			next += 1
+		else:
+			removed.append(index)
+	if next != entries.size(): return
+	_editor._preview.remove_mesh_parts(removed)
+	for index in range(removed.size() - 1, -1, -1):
+		_editor._parts.remove_at(removed[index])
+	_sources = sources.duplicate(true)
+
 func geometry() -> Dictionary:
 	var parts: Array = []
 	var sources: Array = []
@@ -102,6 +123,11 @@ func capture(state: Dictionary) -> Dictionary:
 func forget_sources() -> void:
 	_sources = [null]
 	_render_input = {}
+
+## Restore transient transforms even when the authoritative document did not change.
+func restore(state: Dictionary) -> void:
+	_render_input = {}
+	render(state)
 
 func _geometry_input(state: Dictionary) -> Dictionary:
 	var input := {"sources": state.get("sources", [])}

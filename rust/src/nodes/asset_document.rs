@@ -6,6 +6,8 @@
 use crate::assets::authoring::document::{Document, HISTORY_LIMIT};
 use godot::prelude::*;
 
+mod commands;
+
 /// Asset document and command history, independent of widgets and preview resources.
 #[derive(GodotClass)]
 #[class(init, base = RefCounted)]
@@ -36,6 +38,78 @@ impl AssetAuthoringDocument {
     #[func]
     pub fn snapshot(&self) -> VarDictionary {
         self.core.data().duplicate_deep()
+    }
+
+    /// Inspect only selected entries, without copying the document or importing resources.
+    #[func]
+    pub fn selection_actions(&self, targets: Array<VarDictionary>) -> VarDictionary {
+        commands::capabilities(self.core.data(), &targets)
+    }
+
+    /// Compare the current publication origin without copying the document for a library menu.
+    #[func]
+    pub fn has_publication_origin(&self, pack: GString, asset: GString) -> bool {
+        self.core
+            .data()
+            .get("origin")
+            .and_then(|v| v.try_to::<VarDictionary>().ok())
+            .is_some_and(|origin| {
+                origin.get("pack_id") == Some(pack.to_variant())
+                    && origin.get("asset_id") == Some(asset.to_variant())
+            })
+    }
+
+    /// Working and undo-retained file references that library trash must not invalidate.
+    #[func]
+    pub fn protected_sources(&self) -> PackedStringArray {
+        let mut paths = std::collections::BTreeSet::new();
+        for state in self.core.revisions() {
+            if let Some(sources) = state
+                .get("supporting_sources")
+                .and_then(|v| v.try_to::<VarDictionary>().ok())
+            {
+                for (_, path) in sources.iter_shared() {
+                    if let Ok(path) = path.try_to::<GString>() {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+            if let Some(sources) = state
+                .get("sources")
+                .and_then(|v| v.try_to::<VarArray>().ok())
+            {
+                for part in sources
+                    .iter_shared()
+                    .filter_map(|v| v.try_to::<VarArray>().ok())
+                {
+                    for path in part
+                        .iter_shared()
+                        .filter_map(|v| v.try_to::<GString>().ok())
+                    {
+                        paths.insert(path.to_string());
+                    }
+                }
+            }
+            if let Some(path) = state
+                .get("thumbnail_source")
+                .and_then(|v| v.try_to::<GString>().ok())
+            {
+                paths.insert(path.to_string());
+            }
+        }
+        PackedStringArray::from_iter(paths.iter().map(|p| GString::from(p.as_str())))
+    }
+
+    /// Prepare one reversible authored edit; callers preview placement before applying it.
+    /// Copies the document once at a command boundary, never on pointer motion.
+    #[func]
+    pub fn prepare_edit(
+        &self,
+        action: GString,
+        targets: Array<VarDictionary>,
+        args: VarDictionary,
+    ) -> VarDictionary {
+        commands::prepare(self.core.data(), &action.to_string(), &targets, &args)
     }
 
     /// Replace the document and discard old history, preserving unknown metadata.

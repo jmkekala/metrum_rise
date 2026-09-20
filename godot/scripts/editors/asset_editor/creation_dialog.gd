@@ -104,6 +104,13 @@ func set_packs(packs: Array, selected_pack: String) -> void:
 		if id == selected_pack:
 			_pack.select(_pack.item_count - 1)
 
+func select_type(id: String) -> void:
+	for index in _type.item_count:
+		if _type.get_item_metadata(index) == id:
+			_type.select(index)
+			_update_type()
+			return
+
 func selection() -> Dictionary:
 	return {
 		"type": _selected_id(_type), "subtype": _selected_id(_subtype) if _subtype_row.visible else "",

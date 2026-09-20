@@ -16,7 +16,6 @@ var _log_label: RichTextLabel
 var _asset_tree: Tree
 var _asset_search_edit: LineEdit
 var _asset_count_lbl: Label
-var _asset_context_menu: PopupMenu
 var _preview_panel: PreviewPanel
 var _main_vsplit: VSplitContainer
 var _left_split: HSplitContainer
@@ -55,7 +54,6 @@ var _site_surface_list: ItemList
 var _site_surface_name_edit: LineEdit
 var _site_surface_material_btn: OptionButton
 var _site_surface_y_spin: SpinBox
-var _site_surface_context_menu: PopupMenu
 var _preview_scale_spin: SpinBox
 var _part_x_spin: SpinBox
 var _part_y_spin: SpinBox
@@ -159,7 +157,7 @@ func _build_ui() -> void:
 	selection_filter = OptionButton.new()
 	for title in ["Select: all objects", "Select: meshes only", "Select: anchors only", "Select: yards only"]:
 		selection_filter.add_item(title)
-	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-drag rotates. Alt+click cycles overlaps. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels a drag."
+	selection_filter.tooltip_text = "All objects is the default: click a mesh, anchor or yard to open its settings. These optional filters restrict selection only when explicitly chosen.\nClick selects; drag moves; right-click opens actions; R rotates. Alt+click cycles overlaps. Ctrl+click adds/removes; Shift+drag box-selects. Escape cancels an operation."
 	selection_filter.item_selected.connect(_editor._selection.set_filter)
 	preview_bar.add_child(selection_filter)
 	_build_welcome(center)
@@ -255,8 +253,8 @@ func set_document_open(active: bool) -> void:
 	update_context_actions()
 
 func update_context_actions() -> void:
-	frame_button.visible = _document_open and _editor._has_selected_mesh_part()
-	remove_part_button.visible = frame_button.visible
+	frame_button.visible = _document_open and (_editor._has_selected_mesh_part() or _editor._selected_site_anchor_index >= 0 or _editor._selected_site_surface_index >= 0)
+	remove_part_button.visible = _document_open and _editor._has_selected_mesh_part()
 	remove_anchor_button.visible = _document_open and _editor._selected_site_anchor_index >= 0
 	remove_surface_button.visible = _document_open and _editor._selected_site_surface_index >= 0
 	_mesh_part_list.visible = not _editor._parts.is_empty()
@@ -296,10 +294,6 @@ func _build_library(parent: Node) -> void:
 	_asset_tree.item_activated.connect(_editor._on_asset_tree_activated)
 	_asset_tree.gui_input.connect(_editor._on_asset_tree_gui_input)
 	body.add_child(_asset_tree)
-	_asset_context_menu = PopupMenu.new()
-	_asset_context_menu.add_item("Use as comparison", _editor.ASSET_CONTEXT_USE_AS_GHOST)
-	_asset_context_menu.id_pressed.connect(_editor._on_asset_context_menu_id_pressed)
-	body.add_child(_asset_context_menu)
 
 func _update_top_inset() -> void:
 	_theme_root.offset_top = maxf(TopMenu.BAR_HEIGHT, _editor._top_menu._shell.size.y) + (Spacing.CONTROL_GAP if _document_open else 0)
@@ -467,7 +461,7 @@ func _apply_editor_theme(root: Node) -> void:
 	for state in ["normal", "hover", "pressed", "hover_pressed", "focus", "disabled"]:
 		scale_reference_button.add_theme_stylebox_override(state, frame_button.get_theme_stylebox("pressed" if state == "hover_pressed" else state))
 	scale_reference_button.add_theme_color_override("font_hover_pressed_color", EditorTheme.color(_theme_mode, "text"))
-	for extra in [_asset_context_menu, _site_surface_context_menu, _pack_select_menu, _pack_create_window, _retarget_export_window, preview_popup]:
+	for extra in [_editor._menus.popup, _pack_select_menu, _pack_create_window, _retarget_export_window, preview_popup]:
 		if is_instance_valid(extra):
 			if extra is AcceptDialog:
 				_theme_dialog(extra)

@@ -164,7 +164,8 @@ func _run() -> void:
 	_expect(not editor._view.inspector.visible and editor._view._preview_view_rect.size.x > 1800, "collapse gives the viewport the freed space")
 	await _capture("inspector-collapsed")
 	editor._session._save_to("user://layout-test.metrum-draft")
-	editor._add_site_anchor("entrance")
+	editor._menus.actions.create_from_controls("entrance")
+	editor._menus.actions.confirm()
 	editor._session.capture_geometry("Add entrance")
 	await _test_export_navigation(editor)
 	editor._view.toggle_inspector()
@@ -212,7 +213,7 @@ func _run() -> void:
 	editor._view._asset_search_edit.text = "Layout house"
 	editor._on_asset_search_changed("Layout house")
 	var item: TreeItem = editor._view._asset_tree.get_root().get_first_child()
-	while item != null and item.get_metadata(0) == null:
+	while item != null and not item.get_metadata(0) is String:
 		item = item.get_first_child()
 	_expect(item != null, "published fixture appears in welcome library")
 	if item != null:

@@ -105,14 +105,16 @@ func _run() -> void:
 		_expect(margin.get_node("Content").get_theme_constant("separation") >= 8, "preview controls need vertical breathing room")
 	_test_editor_spacing(editor)
 	editor._session.create_asset({"type": "residential", "name": "Preview test", "pack": {"pack_id": _pack, "display_name": "Editor test", "author": "Test"}})
-	editor._add_site_anchor("entrance")
+	editor._menus.actions.create_from_controls("entrance")
+	editor._menus.actions.confirm()
 	editor._view._asset_id_edit.text = "building.residential.preview_test"
 	editor._view._display_name_edit.text = "Preview test"
 	editor._view._residents_spin.value = 1
 	var panel = editor._view._preview_panel
 	_expect(panel._emission.selected == 0, "emission follows the preview clock by default")
 	panel.find_child("Night", true, false).pressed.emit()
-	var index: int = editor._add_mesh_part_from_path(_source.path_join("model_lod0.glb"), "house")
+	editor._on_glb_file_selected(_source.path_join("model_lod0.glb"))
+	var index: int = editor._selected_part_index
 	_expect(index == 0, "LOD0 must create one part")
 	_expect_emission(editor, true, "meshes imported during Night are lit automatically")
 	_test_automatic_emission(editor)
@@ -188,11 +190,14 @@ func _run() -> void:
 	invalid_part.lods[1].distance_max_m = INF
 	_expect(not invalid_part.validation_error().is_empty(), "typed Rust LOD validation rejects infinity instead of treating it as an unbounded tier")
 	# Exercise the existing editing actions after the state/view split.
-	editor._add_site_anchor("parking")
+	editor._menus.actions.create_from_controls("parking")
+	editor._menus.actions.confirm()
 	_expect(editor._site_anchors_data.size() == 2, "parking tools remain functional")
-	editor._add_site_surface("asphalt")
+	editor._menus.actions.create_from_controls("asphalt")
+	editor._menus.actions.confirm()
 	_expect(editor._site_surfaces_data.size() == 1, "yard tools remain functional")
-	editor._remove_selected_site_surface()
+	editor._session.capture_geometry("Fixture before deletion")
+	editor._menus.actions.edit("delete", editor._menus.actions.selection())
 	_expect(editor._site_surfaces_data.is_empty(), "yard removal remains functional")
 	# Container layout is deferred; frame only after the newly opened workspace is sized.
 	editor._select_mesh_part(0)
@@ -202,6 +207,7 @@ func _run() -> void:
 	editor._lod_preview.update(camera)
 	_expect(editor._lod_preview.states[editor._parts[0]].pixels >= 100.0, "frame selection makes the fixture clearly visible")
 	await _optional_capture_and_measure(editor)
+	await _test_comparison_preview(editor)
 	editor._session.create_asset({"type": "residential", "name": "New fixture", "pack": {"pack_id": _pack}})
 	_expect(editor._parts.is_empty(), "new asset clears document and preview selection")
 	_expect(editor._lod_preview.states.is_empty(), "new asset releases all LOD preview state")
@@ -222,6 +228,135 @@ func _expect_emission(editor: Node3D, enabled: bool, message: String) -> void:
 		if enabled:
 			_expect(active.emission.get_luminance() > 0.0 and active.emission_energy_multiplier > 0.0,
 				"night emission must have nonzero tint and intensity")
+
+func _test_comparison_preview(editor: Node3D) -> void:
+	# A textured wall and contrasting roof expose the old flat, translucent override.
+	var scene := Node3D.new()
+	var albedo := Image.create(96, 96, false, Image.FORMAT_RGB8)
+	albedo.fill(Color(0.55, 0.25, 0.12))
+	var emission := Image.create(96, 96, false, Image.FORMAT_RGB8)
+	emission.fill(Color.BLACK)
+	for y in 96:
+		for x in 96:
+			if y % 8 == 0:
+				albedo.set_pixel(x, y, Color(0.75, 0.65, 0.55))
+			elif x % 16 >= 4 and x % 16 <= 11 and y % 16 >= 4 and y % 16 <= 11:
+				albedo.set_pixel(x, y, Color(0.2, 0.25, 0.3))
+				emission.set_pixel(x, y, Color.WHITE)
+	for roof in [false, true]:
+		var instance := MeshInstance3D.new()
+		instance.name = "Roof" if roof else "Walls"
+		instance.mesh = PrismMesh.new() if roof else BoxMesh.new()
+		instance.mesh.size = Vector3(3.4, 1.4, 3.0) if roof else Vector3(3, 3, 2.6)
+		instance.position.y = 3.7 if roof else 1.5
+		var material := StandardMaterial3D.new()
+		material.albedo_color = Color(0.15, 0.18, 0.22) if roof else Color.WHITE
+		material.roughness = 0.8
+		if not roof:
+			material.albedo_texture = ImageTexture.create_from_image(albedo)
+			material.emission_enabled = true
+			material.emission = Color.WHITE
+			material.emission_texture = ImageTexture.create_from_image(emission)
+		instance.mesh.surface_set_material(0, material)
+		scene.add_child(instance)
+	var path := _source.path_join("comparison.glb")
+	var gltf := GLTFDocument.new()
+	var state := GLTFState.new()
+	_expect(gltf.append_from_scene(scene, state) == OK, "comparison scene export")
+	_expect(gltf.write_to_filesystem(state, path) == OK, "comparison GLB export")
+	scene.free()
+	var source_bytes := FileAccess.get_file_as_bytes(path)
+	var snapshot: Dictionary = editor._session.document.snapshot()
+	var panel = editor._view._preview_panel
+	var preview = editor._preview
+	panel._emission.select(0)
+	panel._emission.item_selected.emit(0)
+	panel._strength.value = 1.8
+	panel.find_child("Night", true, false).pressed.emit()
+	_expect(preview.load_ghost(path, 1.0, 1, 1), "load textured comparison at night")
+	_expect(preview._ghost_materials.surface_count() == 1, "comparison retains the window emission binding")
+	for entry in preview._ghost_materials._surfaces:
+		var active: BaseMaterial3D = entry.instance.get_active_material(entry.surface)
+		_expect(active.emission_enabled and is_equal_approx(active.emission_energy_multiplier, 1.8)
+			and active.emission.is_equal_approx(PreviewMaterials.REFERENCE_COLOR.linear_to_srgb()),
+			"new comparisons immediately inherit the current night emission tint and strength")
+	for preset in ["Night", "Day", "Night"]:
+		panel.find_child(preset, true, false).pressed.emit()
+		for instance: MeshInstance3D in preview._ghost_root.find_children("*", "MeshInstance3D", true, false):
+			var source: BaseMaterial3D = instance.mesh.surface_get_material(0)
+			var active: BaseMaterial3D = instance.get_active_material(0)
+			_expect(active != source, "comparison tint and lighting use preview-owned material copies")
+			_expect(active.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and active.albedo_color.a == 1.0,
+				"opaque comparison walls and roof stay solid")
+			_expect(active.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL and not active.no_depth_test,
+				"comparison retains lighting and depth testing")
+			_expect(active.albedo_texture == source.albedo_texture and active.emission_texture == source.emission_texture
+				and active.roughness == source.roughness, "comparison retains source textures and roughness")
+			_expect(active.albedo_color.is_equal_approx(source.albedo_color * preview.GHOST_TINT), "comparison has a subtle non-cumulative tint")
+			if instance.name == "Walls":
+				_expect(source.albedo_color == Color.WHITE and source.emission == Color.WHITE, "comparison leaves imported source colors intact")
+				_expect(active.emission_enabled == (preset == "Night"), "comparison windows follow day/night")
+	# Intentional source glass/cutouts must not be flattened into opaque walls either.
+	var glass := MeshInstance3D.new()
+	glass.mesh = BoxMesh.new()
+	var glass_source := StandardMaterial3D.new()
+	glass_source.albedo_color = Color(0.8, 0.9, 1.0, 0.4)
+	glass.mesh.surface_set_material(0, glass_source)
+	for transparency in [BaseMaterial3D.TRANSPARENCY_ALPHA, BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR]:
+		glass_source.transparency = transparency
+		glass.set_surface_override_material(0, null)
+		preview._apply_ghost_material(glass)
+		var active: BaseMaterial3D = glass.get_active_material(0)
+		_expect(active.transparency == transparency and active.albedo_color.a == glass_source.albedo_color.a,
+			"comparison preserves authored glass/cutout transparency")
+	glass.free()
+	await _capture_comparison(editor)
+	preview.clear_ghost()
+	_expect(not preview.has_ghost() and preview._ghost_materials == null, "clearing comparison releases material state")
+	preview.set_preview_emission(PreviewMaterials.Mode.ON, 1.0)
+	_expect(preview.load_ghost(path, 1.0, 1, 1), "comparison can be replaced after clearing")
+	preview.set_preview_emission(PreviewMaterials.Mode.AUTHORED, 1.0)
+	for entry in preview._ghost_materials._surfaces:
+		_expect(entry.instance.get_active_material(entry.surface) == entry.source, "Authored restores the tinted comparison's source emission")
+	if "--benchmark-asset-preview" in OS.get_cmdline_user_args():
+		var load_usec := 0
+		for iteration in 10:
+			var started := Time.get_ticks_usec()
+			_expect(preview.load_ghost(path, 1.0, 1, 1), "measured comparison load")
+			load_usec += Time.get_ticks_usec() - started
+			# Retire replaced scenes outside the import/material/pick-cache measurement.
+			await process_frame
+		print("asset_preview_measure comparison_load_mean_ms=%.3f iterations=10 surfaces=2" % (load_usec / 10000.0))
+		var cached: Material = preview._ghost_materials._surfaces[0].preview
+		var started := Time.get_ticks_usec()
+		for iteration in 2000:
+			preview._ghost_materials.apply(PreviewMaterials.Mode.ON if iteration % 2 == 0 else PreviewMaterials.Mode.OFF, 1.0)
+		print("asset_preview_measure comparison_emission_mean_us=%.3f iterations=2000 surfaces=1" % ((Time.get_ticks_usec() - started) / 2000.0))
+		_expect(preview._ghost_materials._surfaces[0].preview == cached, "comparison emission reuses its material instead of allocating on changes")
+	preview.clear_ghost()
+	_expect(editor._session.document.snapshot() == snapshot, "comparison rendering does not change the asset document")
+	_expect(FileAccess.get_file_as_bytes(path) == source_bytes, "comparison rendering never rewrites source files")
+
+func _capture_comparison(editor: Node3D) -> void:
+	for argument in OS.get_cmdline_user_args():
+		if not argument.begins_with("--capture-preview="):
+			continue
+		var directory := argument.trim_prefix("--capture-preview=")
+		editor._preview.set_ghost_world_position(Vector3(-5, 0, 0))
+		if not editor._layout.inspector_collapsed:
+			editor._view.toggle_inspector()
+		editor._cam_input.set_process(false)
+		editor._cam_input.set_process_input(false)
+		var camera: Camera3D = editor.get_node("CameraNode")
+		camera.look_at_from_position(Vector3(-14, 9, 15), Vector3(-2, 1.5, 0))
+		for theme in ["light", "dark"]:
+			editor.set_ui_theme_mode(theme)
+			for preset in ["Day", "Night"]:
+				editor._view._preview_panel.find_child(preset, true, false).pressed.emit()
+				await process_frame
+				await process_frame
+				await RenderingServer.frame_post_draw
+				_expect(root.get_texture().get_image().save_png(directory.path_join("comparison-%s-%s.png" % [theme, preset.to_lower()])) == OK, "rendered textured comparison capture")
 
 func _test_automatic_emission(editor: Node3D) -> void:
 	var panel = editor._view._preview_panel
@@ -449,12 +584,15 @@ func _test_automatic_lod(editor: Node3D, camera: Camera3D, part: MeshPart) -> vo
 	_expect(part.aabb == original_bounds, "automatic selection never changes LOD0 bounds")
 	_expect(JSON.stringify(part.to_manifest()) == authored, "preview modes/quality do not change export metadata")
 	# A second part owns independent automatic/forced history; index removal must not transfer it.
-	var extra: int = editor._add_mesh_part_from_path(_source.path_join("model_lod0.glb"), "annex")
+	editor._on_glb_file_selected(_source.path_join("model_lod0.glb"))
+	var extra: int = editor._selected_part_index
 	editor._select_mesh_part(extra)
 	_expect(preview.states.size() == 2 and preview.states[editor._parts[extra]].active == 0, "single-tier part stays visible beside a multi-tier part")
 	editor._on_preview_lod_selected(0)
-	editor._remove_selected_mesh_parts()
+	editor._session.capture_geometry("Fixture before deletion")
+	editor._menus.actions.edit("delete", editor._menus.actions.selection())
 	_expect(preview.states.size() == 1 and preview.states.has(part), "removing a part releases only its own LOD history")
+	editor._select_mesh_part(0)
 	# Chain edits prune cached tiers and clamp a removed forced level to the new last tier.
 	editor._on_preview_lod_selected(3)
 	panel._remove_last()

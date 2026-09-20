@@ -6,6 +6,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Asset context menus (`TOOLS-07`, done)**: unified preview/list/library actions; explicit Rotate / R;
+  cancellable creation/duplication, full-chain LOD edits and one-step undo. Rust prepares lossless
+  commands and safe independent copies; original pack credits survive export, and recoverable
+  Trash protects active/undo sources. Legacy handlers removed; group outlines rebuild once.
+  Fresh acceptance: 19 Rust tests, all six editor suites, rendered light/dark/keyboard checks and
+  matched release measurements pass; idle/picking/LOD costs remain comparable.
+  See [the context-menu contract](asset_editor.md#context-menus-and-explicit-manipulation--tools-07).
+
 - **Task-oriented asset authoring (`TOOLS-06`)**: type-first creation for seven building presets;
   Overview / Model / Site / Gameplay / Validate & export; contextual fields and read-only profile
   staffing; independent incomplete drafts, grouped undo/redo, dirty guards and confirmed conversions.
@@ -41,6 +49,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Asset previews (`TOOLS-04`)**: placeholder scene templates are replaced by working day/night,
   emission and authored-LOD inspection. Window emission now follows preview time by default:
   Night lights supported windows automatically; manual material overrides remain preview-only.
+  Comparison buildings retain textured, lit source materials with a subtle cool tint instead of
+  the translucent blueprint override; their supported windows follow the same night controls.
   Mesh-part state, editor views and package I/O have separate
   owners; staged saves preserve complete LOD chains and external dependencies. Frontage/access guides
   share compact filled arrows, softer colors, fine outlines and lighter labels/handles. Roadside/traffic

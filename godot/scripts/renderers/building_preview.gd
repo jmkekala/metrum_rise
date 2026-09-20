@@ -16,8 +16,7 @@ const PickGeometry = preload("res://scripts/editors/asset_editor/mesh_pick_geome
 
 # Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
-const GHOST_TINT := Color(0.16, 0.38, 0.95, 0.58)
-const GHOST_ORIGINAL_COLOR_BLEND := 0.55
+const GHOST_TINT := Color(0.80, 0.90, 1.0)
 const SELECTED_PART_COLOR := Color(0.05, 0.85, 1.0, 0.88)
 const ACTIVE_PART_COLOR := Color(1.0, 0.85, 0.12, 0.92)
 const THEME_DARK := "dark"
@@ -90,13 +89,14 @@ var _selected_site_anchor_indices: Array[int] = []
 var _selected_site_anchor_index: int = -1
 var _selected_site_surface_index: int = -1
 
-# Ghost: explicitly selected comparison mesh shown semi-transparent.
+# Ghost: preview-only comparison with source shading and a subtle cool tint.
 var _ghost_root: Node3D
 var _ghost_lot_width: float = 0.0
 var _ghost_lot_depth: float = 0.0
 var _ghost_aabb: AABB = AABB()
 var _ghost_has_mesh: bool = false
 var _ghost_pick: RefCounted
+var _ghost_materials: PreviewMaterials
 
 var _width_cells: int = 1
 var _depth_cells: int = 1
@@ -326,6 +326,8 @@ func set_preview_emission(mode: int, strength: float) -> void:
 		var materials := mesh_part_materials(index)
 		if materials != null:
 			materials.apply(mode, strength)
+	if _ghost_materials != null:
+		_ghost_materials.apply(mode, strength)
 
 func mesh_part_count() -> int:
 	return _mesh_parts.size()
@@ -349,13 +351,14 @@ func _load_part_scene(native_path: String) -> Node:
 		return null
 	return doc.generate_scene(state)
 
-## Update one mesh part's local transform.
+## Update one mesh part's local transform; batches rebuild selection once after all members.
 func set_mesh_part_transform(
 	part_index: int,
 	position: Vector3,
 	yaw_degrees: float,
 	scale_value: float,
-	pivot_offset: Vector3 = Vector3.ZERO
+	pivot_offset: Vector3 = Vector3.ZERO,
+	refresh_selection: bool = true
 ) -> void:
 	if part_index < 0 or part_index >= _mesh_parts.size():
 		return
@@ -368,7 +371,8 @@ func set_mesh_part_transform(
 	lod_revision += 1
 	pick_revision += 1
 	visibility_revision += 1
-	_build_selection_overlay()
+	if refresh_selection:
+		_build_selection_overlay()
 
 ## Mark the selected mesh parts with corner handles in the preview.
 func set_selected_mesh_parts(indices: Array, active_index: int = -1) -> void:
@@ -589,6 +593,9 @@ func load_ghost(native_path: String, scale_value: float, width_cells: int, depth
 	_ghost_pick = _build_pick_geometry(scene)
 	pick_revision += 1
 	_apply_ghost_material(scene)
+	_ghost_materials = PreviewMaterials.new()
+	_ghost_materials.capture(scene)
+	_ghost_materials.apply(_emission_mode, _emission_strength)
 	_position_ghost()
 	return true
 
@@ -609,6 +616,7 @@ func has_ghost() -> bool:
 ## Clear the explicit comparison ghost.
 func clear_ghost() -> void:
 	_ghost_pick = null
+	_ghost_materials = null
 	pick_revision += 1
 	for child in _ghost_root.get_children():
 		child.queue_free()
@@ -624,25 +632,17 @@ func _position_ghost() -> void:
 	var offset_x := -(_ghost_lot_width * 0.5 + gap + _width_cells * CELL_M * 0.5)
 	_ghost_root.position = Vector3(offset_x, 0.0, 0.0)
 
-# Walk the ghost subtree and replace every surface material with a stronger
-# blueprint tint that remains legible in both light and dark editor themes.
+# Tint preview-owned copies; keep textures, lighting, depth and authored glass/cutouts.
+# Multiplication preserves albedo contrast and alpha instead of adding a translucent veil.
 func _apply_ghost_material(node: Node) -> void:
 	if node is MeshInstance3D:
 		var mi := node as MeshInstance3D
 		for surf in mi.get_surface_override_material_count():
 			var orig: Material = mi.get_active_material(surf)
-			var mat := StandardMaterial3D.new()
-			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			mat.albedo_color = GHOST_TINT
-			if orig is StandardMaterial3D:
-				# Tint the original albedo rather than replacing it entirely.
-				var orig_color: Color = (orig as StandardMaterial3D).albedo_color
-				mat.albedo_color = Color(
-					lerpf(orig_color.r, GHOST_TINT.r, GHOST_ORIGINAL_COLOR_BLEND),
-					lerpf(orig_color.g, GHOST_TINT.g, GHOST_ORIGINAL_COLOR_BLEND),
-					lerpf(orig_color.b, GHOST_TINT.b, GHOST_ORIGINAL_COLOR_BLEND),
-					GHOST_TINT.a)
+			if orig != null and not orig is BaseMaterial3D:
+				continue
+			var mat: BaseMaterial3D = orig.duplicate() if orig != null else StandardMaterial3D.new()
+			mat.albedo_color *= GHOST_TINT
 			mi.set_surface_override_material(surf, mat)
 	for child in node.get_children():
 		_apply_ghost_material(child)

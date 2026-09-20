@@ -73,13 +73,15 @@ func _run() -> void:
 	if entrance_issue != null:
 		entrance_issue.pressed.emit()
 		_expect(view.task_picker.selected == 2 and view.site_picker.selected == 1, "entrance issue opens access-point authoring")
-	editor._add_site_anchor("entrance")
+	editor._menus.actions.create_from_controls("entrance")
+	editor._menus.actions.confirm()
 	session.capture_geometry("Add main entrance")
 	_expect(session.params["anchors"].size() == 1, "access point edits enter the document")
 	session.undo()
 	_expect(editor._site_anchors_data.is_empty(), "undo does not auto-repair a missing entrance")
 	session.redo()
-	editor._add_site_anchor("parking")
+	editor._menus.actions.create_from_controls("parking")
+	editor._menus.actions.confirm()
 	session.capture_geometry("Add parking")
 	_expect(view.anchor_properties.visible and view.rows["_anchor_length"].is_visible_in_tree(), "parking opens its own size properties")
 	session.document.begin_transaction("Move parking")
@@ -92,16 +94,18 @@ func _run() -> void:
 	_expect(session.document.snapshot() != moved, "one undo reverses the entire drag")
 	session.redo()
 	_expect(session.document.snapshot() == moved, "redo restores the final drag")
-	editor._add_site_surface("asphalt")
+	editor._menus.actions.create_from_controls("asphalt")
+	editor._menus.actions.confirm()
 	session.capture_geometry("Add surface")
 	_expect(session.params["site_surfaces"].size() == 1, "surface command is persisted")
 	session.undo()
 	_expect(editor._site_surfaces_data.is_empty(), "surface creation is reversible")
 	session.redo()
 	var surface_before: Dictionary = session.document.snapshot()
-	editor._site_surface_context_index = 0
-	editor._site_surface_context_vertex_index = 0
-	editor._on_site_surface_context_menu_id_pressed(editor.SITE_SURFACE_CONTEXT_DELETE_VERTEX)
+	var vertex_targets: Array[Dictionary] = [{"kind": "surface", "index": 0}]
+	var vertex_result: Dictionary = session.document.prepare_edit("delete_vertex", vertex_targets, {"vertex": 0})
+	_expect(not vertex_result.has("error"), "vertex command accepted: " + str(vertex_result.get("error", "")))
+	editor._menus.actions.edit("delete_vertex", [{"kind": "surface", "index": 0}], {"vertex": 0})
 	_expect(session.params["site_surfaces"][0]["vertices"].size() == 3, "surface context-menu edits update the document")
 	session.undo()
 	_expect(session.document.snapshot() == surface_before, "surface vertex edits support undo")
@@ -149,6 +153,7 @@ func _run() -> void:
 	_test_preserved_profile(editor)
 	_test_save_guard(editor)
 	_test_model_and_publication(editor)
+	await _test_library_actions(editor)
 	_measure_document_work(editor)
 	await _capture_layouts(editor)
 	editor.free()
@@ -156,6 +161,105 @@ func _run() -> void:
 	if _failures == 0:
 		print("PASS asset_workspace_test")
 	quit(0 if _failures == 0 else 1)
+
+func _test_library_actions(editor: Node) -> void:
+	var session = editor._session
+	var before: Dictionary = session.document.snapshot()
+	var library = editor._menus.library
+	var pack_id := "workspace-publish-%d" % OS.get_process_id()
+	var id := pack_id + ":building.residential.residential"
+	var manifest: Dictionary = editor._asset_manifest(id)
+	manifest["future_metadata"] = {"attribution": "keep me", "values": [null, 3, "four"]}
+	var pack := {"pack_id": pack_id, "display_name": "Publication fixtures", "author": "Fixture"}
+	var result: Dictionary = AssetAuthoringFiles.copy_for_editing("user://mods", manifest, pack, "building.residential.copy", "Editable copy", "user://asset_editor/copies")
+	_expect(not result.has("error"), "independent editable copy: " + str(result.get("error", "")))
+	if result.has("error"): return
+	var copy: Dictionary = result.document
+	_expect(copy.params.future_metadata == manifest.future_metadata and copy.origin.is_empty(), "copy preserves metadata but not publication origin")
+	_expect(copy.params.asset_id == "building.residential.copy" and copy.params.pack_id == pack_id, "copy has a new explicit identity")
+	var credit: String = copy.supporting_sources.values()[0]
+	var pack_bytes := FileAccess.get_file_as_bytes("user://mods/" + pack_id + "/pack.toml")
+	_expect(FileAccess.get_file_as_bytes(credit) == pack_bytes, "copy preserves original pack author and licence verbatim")
+	var source: Dictionary = library.location(id)
+	editor._view.library.show()
+	editor._layout.request_layout()
+	for frame in 5: await process_frame
+	var tree: Tree = editor._view._asset_tree
+	var item := tree.get_root().get_first_child()
+	while item != null and not (item.get_metadata(0) is String and item.get_metadata(0) == id): item = item.get_next_in_tree()
+	_expect(item != null, "published synthetic asset has a library entry")
+	if item != null:
+		for target in [item, item.get_parent(), item.get_parent().get_parent()]:
+			tree.scroll_to_item(target, true)
+			await process_frame
+			editor._menus.open_library(tree.get_item_area_rect(target, 0).get_center())
+			_expect(not editor._menus.context.library.is_empty(), "asset, category and pack rows retain captured metadata: %s rect=%s tree=%s" % [target.get_metadata(0), tree.get_item_area_rect(target, 0), tree.size])
+			editor._menus.popup.hide()
+		for argument in OS.get_cmdline_user_args():
+			if not argument.begins_with("--capture-workspace="): continue
+			var directory := argument.trim_prefix("--capture-workspace=")
+			DirAccess.make_dir_recursive_absolute(directory)
+			for theme in ["light", "dark"]:
+				editor.set_ui_theme_mode(theme)
+				tree.scroll_to_item(item, true)
+				await process_frame
+				editor._menus.open_library(tree.get_item_area_rect(item, 0).get_center())
+				await process_frame
+				_expect(editor._menus.popup.visible and editor._menus.context.library.get("id") == id, "rendered library menu targets the visible asset row")
+				await RenderingServer.frame_post_draw
+				_expect(root.get_texture().get_image().save_png(directory.path_join(theme + "-library-context.png")) == OK, "capture library context actions")
+				editor._menus.popup.hide()
+	editor._view.library.hide()
+	editor._layout.request_layout()
+	var native: String = copy.sources[0][0]
+	_expect(FileAccess.file_exists(native) and not native.begins_with(source.path), "copy source files do not depend on the original asset")
+	_expect(not DirAccess.dir_exists_absolute("user://mods/" + pack_id + "/assets/building.residential.copy"), "working copy is not published")
+	session.document.reset(before, false)
+	library.execute("library_copy", {"id": id})
+	_expect(session._guard.visible, "editable copy protects a dirty document before opening its dialog")
+	session._guard.confirmed.emit()
+	var dialog: ConfirmationDialog = editor.get_child(editor.get_child_count() - 1)
+	var fields := dialog.find_children("*", "LineEdit", true, false)
+	fields[0].text = "UI copy"
+	fields[1].text = "building.residential.ui_copy"
+	var destinations: OptionButton = dialog.find_children("*", "OptionButton", true, false)[0]
+	for index in destinations.item_count:
+		if destinations.get_item_metadata(index).pack_id == pack_id: destinations.select(index)
+	dialog.confirmed.emit()
+	await process_frame
+	_expect(session.params.asset_id == "building.residential.ui_copy" and session.document.is_dirty() and session.document.snapshot().origin.is_empty(), "confirmed copy dialog opens an independent unpublished document")
+	var ui_copy: Dictionary = session.document.snapshot()
+	var export_error := AssetAuthoringFiles.publish_document(JSON.stringify(ui_copy), "user://mods/" + pack_id)
+	_expect(export_error.is_empty(), "copied asset can be exported with retained credits: " + export_error)
+	var relative: String = ui_copy.supporting_sources.keys()[0]
+	_expect(FileAccess.get_file_as_bytes("user://mods/" + pack_id + "/assets/building.residential.ui_copy/" + relative) == pack_bytes, "export includes original pack credits without changing the gameplay manifest")
+	session.load_manifest(manifest)
+	_expect(library.trash_check(id).has("error"), "currently open asset cannot be trashed")
+	session.document.apply(copy, "Switch sources")
+	_expect(library.trash_check(id).has("error"), "undo-retained source references prevent trash")
+	session.document.reset(copy, false)
+	_expect(not library.trash_check(id).has("error"), "independent working copy does not block removal of original")
+	var original_bytes := FileAccess.get_file_as_bytes(source.path.path_join("asset.toml"))
+	library.trash_operation = func(_path): return ERR_UNAVAILABLE
+	_expect(not library.move_to_trash(id).is_empty(), "native trash failure is surfaced")
+	_expect(FileAccess.get_file_as_bytes(source.path.path_join("asset.toml")) == original_bytes, "trash failure never falls back to permanent deletion")
+	library.trash_operation = OS.move_to_trash
+	var collision: Dictionary = AssetAuthoringFiles.copy_for_editing("user://mods", manifest, pack, manifest.asset_id, "Collision", "user://asset_editor/copies")
+	_expect(collision.has("error"), "editable copy cannot reuse an existing asset ID")
+	var error: String = library.move_to_trash(id)
+	_expect(error.is_empty(), "fixture uses recoverable native Trash: " + error)
+	_expect(not DirAccess.dir_exists_absolute(source.path) and FileAccess.file_exists(native), "trashing original leaves independent copy files intact")
+	_expect(not editor._asset_ids.has(id), "library refresh follows successful trash")
+	_expect(session.document.snapshot() == copy and session.document.is_dirty(), "library operations do not publish or mutate the open copy")
+	session.document.reset({})
+	editor._menus.open_library(Vector2(-1, -1))
+	_expect(editor._menus._commands.any(func(command): return command.action == "library_new"), "library context menu works without an open document")
+	editor._menus.popup.hide()
+	library.execute("library_new", {"pack": pack_id, "type": "industrial"})
+	_expect(session._creation.selection().type == "industrial" and session._creation.selection().pack.pack_id == pack_id, "category creation prefills both building type and destination pack")
+	session._creation.hide()
+	await process_frame
+	session.document.reset(before)
 
 func _test_preserved_profile(editor: Node) -> void:
 	var session = editor._session
@@ -252,7 +356,8 @@ func _test_model_and_publication(editor: Node) -> void:
 	_make_model(replacement, 5)
 	for kind in ["residential", "commercial", "industrial", "extractor", "farm", "service", "explicit"]:
 		session.create_asset({"type": kind, "subtype": "power", "name": kind, "pack": pack, "model": _model_path})
-		editor._add_site_anchor("entrance")
+		editor._menus.actions.create_from_controls("entrance")
+		editor._menus.actions.confirm()
 		session.capture_geometry("Add entrance")
 		var profile: String = {"commercial": "grocery_basic", "industrial": "machinery_factory_basic", "extractor": "coal_mine_basic", "farm": "grain_farm_basic", "service": "power_plant_basic"}.get(kind, "")
 		if not profile.is_empty():
@@ -326,7 +431,8 @@ func _capture_layouts(editor: Node) -> void:
 		root.size = Vector2i(1280, 900)
 		await process_frame
 		editor._session.create_asset({"type": "residential", "name": "Residential house", "pack": {"pack_id": "workspace-test", "display_name": "Workspace test"}, "model": _model_path})
-		editor._add_site_anchor("entrance")
+		editor._menus.actions.create_from_controls("entrance")
+		editor._menus.actions.confirm()
 		editor._session.capture_geometry("Add entrance")
 		editor._select_mesh_part(0)
 		editor._frame_selected_part()

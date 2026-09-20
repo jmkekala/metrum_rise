@@ -87,7 +87,9 @@ static func preview_environment(mode: String) -> Environment:
 	return environment
 
 static func apply_to_tree(root: Node, mode: String) -> void:
-	if root is Control:
+	if root is PopupMenu:
+		style_popup_menu(root as PopupMenu, mode)
+	elif root is Control:
 		style_control(root as Control, mode)
 	for child in root.find_children("*", "", true, false):
 		if child is Control:
@@ -134,6 +136,7 @@ static func style_popup_menu(popup: PopupMenu, mode: String) -> void:
 	popup.add_theme_color_override("font_color", color(mode, "text"))
 	popup.add_theme_color_override("font_hover_color", color(mode, "text"))
 	popup.add_theme_color_override("font_disabled_color", color(mode, "text_disabled"))
+	popup.add_theme_color_override("font_separator_color", color(mode, "text_dim"))
 
 static func _style_panel_container(panel: PanelContainer, mode: String) -> void:
 	panel.add_theme_stylebox_override("panel", style_box(mode, "panel", 0, 1))

@@ -47,6 +47,163 @@ fn token() -> String {
     )
 }
 
+pub(crate) fn asset_directory(mods: &Path, pack: &str, asset: &str) -> Result<PathBuf, String> {
+    if !crate::assets::is_valid_pack_id(pack) || !crate::assets::is_valid_asset_id(asset) {
+        return Err("Invalid asset identity".into());
+    }
+    let mut path = mods.to_owned();
+    for component in ["", pack, "assets", asset] {
+        path.push(component);
+        if path.is_symlink() || !path.is_dir() {
+            return Err("Asset location is missing or uses a symbolic link".into());
+        }
+    }
+    let root = mods.canonicalize().map_err(|e| e.to_string())?;
+    let target = path.canonicalize().map_err(|e| e.to_string())?;
+    if !target.starts_with(root)
+        || !target.join("asset.toml").is_file()
+        || target.join("asset.toml").is_symlink()
+    {
+        return Err("Not a user asset directory".into());
+    }
+    Ok(target)
+}
+
+pub(crate) fn trash_target(
+    mods: &Path,
+    pack: &str,
+    asset: &str,
+    protected: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let target = asset_directory(mods, pack, asset)?;
+    if target
+        .metadata()
+        .map_err(|e| e.to_string())?
+        .permissions()
+        .readonly()
+        || target
+            .parent()
+            .ok_or("Missing asset parent")?
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .readonly()
+    {
+        return Err("This asset is read-only".into());
+    }
+    for source in protected {
+        if source.starts_with(&target)
+            || source.canonicalize().is_ok_and(|p| p.starts_with(&target))
+        {
+            return Err("This asset is used by the open document or its undo history. Close that document before moving it to Trash.".into());
+        }
+    }
+    Ok(target)
+}
+
+pub(crate) fn working_copy(
+    mods: &Path,
+    pack: &str,
+    asset: &str,
+    destination_pack: &str,
+    id: &str,
+    workspace: &Path,
+) -> Result<PathBuf, String> {
+    let source = asset_directory(mods, pack, asset)?;
+    if !crate::assets::is_valid_pack_id(destination_pack) || !crate::assets::is_valid_asset_id(id) {
+        return Err("Invalid destination identity".into());
+    }
+    let destination = mods.join(destination_pack);
+    if destination.is_symlink()
+        || destination.join("assets").is_symlink()
+        || !destination.join("pack.toml").is_file()
+        || destination.join("pack.toml").is_symlink()
+    {
+        return Err("Choose an existing writable user pack".into());
+    }
+    if destination
+        .metadata()
+        .map_err(|e| e.to_string())?
+        .permissions()
+        .readonly()
+        || (destination.join("assets").exists()
+            && destination
+                .join("assets")
+                .metadata()
+                .map_err(|e| e.to_string())?
+                .permissions()
+                .readonly())
+    {
+        return Err("The destination pack is read-only".into());
+    }
+    let proposed = destination.join("assets").join(id);
+    if proposed.exists() || proposed.is_symlink() {
+        return Err("The destination asset ID is already in use".into());
+    }
+    if workspace.ancestors().any(Path::is_symlink) {
+        return Err("Working-copy storage cannot use symbolic links".into());
+    }
+    fs::create_dir_all(workspace).map_err(|e| e.to_string())?;
+    let mut stage = Stage {
+        path: workspace.join(format!("copy-{}", token())),
+        preserve: true,
+    };
+    fs::create_dir(&stage.path).map_err(|e| e.to_string())?;
+    stage.preserve = false;
+    copy_directory(&source, &stage.path)?;
+    // Pack-level author/licence data must travel with a copy into a different pack.
+    let pack_manifest = mods.join(pack).join("pack.toml");
+    if pack_manifest.is_symlink() {
+        return Err("Source pack manifest cannot be a symbolic link".into());
+    }
+    let credits = stage.path.join("attribution");
+    fs::create_dir_all(&credits).map_err(|e| e.to_string())?;
+    let mut credit = credits.join(format!("{pack}.toml"));
+    while credit.exists() {
+        if credit.is_file() && same_contents(&pack_manifest, &credit)? {
+            break;
+        }
+        credit = credits.join(format!("{pack}-{}.toml", token()));
+    }
+    if !credit.exists() {
+        fs::copy(pack_manifest, credit).map_err(|e| e.to_string())?;
+    }
+    stage.preserve = true;
+    Ok(stage.path.clone())
+}
+
+/// Enumerate copied credits deterministically for draft references and staged publication.
+pub(crate) fn attribution_files(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    fn collect(
+        root: &Path,
+        directory: &Path,
+        files: &mut Vec<(String, PathBuf)>,
+    ) -> Result<(), String> {
+        for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_symlink() {
+                return Err("Attribution cannot use symbolic links".into());
+            }
+            if path.is_dir() {
+                collect(root, &path, files)?;
+            } else if path.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.push((relative, path));
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    collect(root, &root.join("attribution"), &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(files)
+}
+
 pub(crate) fn safe_relative(path: &str) -> bool {
     !path.is_empty()
         && !path.contains([':', '\\'])
@@ -458,6 +615,125 @@ mod tests {
         assert!(plan(&models, &[]).unwrap_err().contains("inside"));
         fs::write(&model, r#"{"images":[{"uri":"missing.png"}]}"#).unwrap();
         assert!(plan(&models, &[]).unwrap_err().contains("Missing"));
+    }
+
+    #[test]
+    fn library_copy_is_independent_and_trash_targets_are_scoped() {
+        let fixture = Fixture::new();
+        let mods = fixture.0.join("mods");
+        fixture.write("mods/source/pack.toml", "pack");
+        fixture.write("mods/source/assets/building.test/asset.toml", "asset");
+        let model = fixture.write("mods/source/assets/building.test/model.glb", "mesh");
+        fixture.write("mods/dest/pack.toml", "pack");
+        let source = asset_directory(&mods, "source", "building.test").unwrap();
+        assert!(asset_directory(&mods, "../source", "building.test").is_err());
+        assert!(
+            trash_target(
+                &mods,
+                "source",
+                "building.test",
+                std::slice::from_ref(&model)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            trash_target(&mods, "source", "building.test", &[]).unwrap(),
+            source
+        );
+        let copy = working_copy(
+            &mods,
+            "source",
+            "building.test",
+            "dest",
+            "building.copy",
+            &fixture.0.join("workspace"),
+        )
+        .unwrap();
+        fs::write(&model, "changed").unwrap();
+        assert_eq!(fs::read_to_string(copy.join("model.glb")).unwrap(), "mesh");
+        assert_eq!(
+            fs::read_to_string(copy.join("attribution/source.toml")).unwrap(),
+            "pack"
+        );
+        assert_eq!(attribution_files(&copy).unwrap().len(), 1);
+        assert!(!mods.join("dest/assets/building.copy").exists());
+        fixture.write("mods/dest/assets/building.copy/asset.toml", "existing");
+        assert!(
+            working_copy(
+                &mods,
+                "source",
+                "building.test",
+                "dest",
+                "building.copy",
+                &fixture.0.join("workspace")
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn library_rejects_read_only_packs_and_linked_copy_resources() {
+        use std::os::unix::{fs::PermissionsExt, fs::symlink};
+        let fixture = Fixture::new();
+        let mods = fixture.0.join("mods");
+        fixture.write("mods/source/pack.toml", "pack");
+        fixture.write("mods/source/assets/building.test/asset.toml", "asset");
+        fixture.write("mods/dest/pack.toml", "pack");
+        let workspace = fixture.0.join("workspace");
+        let dest = mods.join("dest");
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(
+            working_copy(
+                &mods,
+                "source",
+                "building.test",
+                "dest",
+                "building.copy",
+                &workspace
+            )
+            .is_err()
+        );
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755)).unwrap();
+        let source = asset_directory(&mods, "source", "building.test").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(trash_target(&mods, "source", "building.test", &[]).is_err());
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        let outside = fixture.write("outside.bin", "untouched");
+        symlink(&outside, source.join("model.bin")).unwrap();
+        assert!(
+            working_copy(
+                &mods,
+                "source",
+                "building.test",
+                "dest",
+                "building.copy",
+                &workspace
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
+        assert_eq!(fs::read_dir(workspace).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn library_never_follows_asset_symlinks() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        fixture.write("outside/asset.toml", "untouched");
+        fixture.write("mods/pack/pack.toml", "pack");
+        fs::create_dir(fixture.0.join("mods/pack/assets")).unwrap();
+        symlink(
+            fixture.0.join("outside"),
+            fixture.0.join("mods/pack/assets/building.link"),
+        )
+        .unwrap();
+        assert!(asset_directory(&fixture.0.join("mods"), "pack", "building.link").is_err());
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("outside/asset.toml")).unwrap(),
+            "untouched"
+        );
     }
 
     #[test]

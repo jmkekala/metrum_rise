@@ -178,11 +178,12 @@ func relink_selected_part(lod_index: int = 0) -> void:
 	if index < 0:
 		return
 	var part = _editor._parts[index]
+	var revision: int = _editor._menus.generation
 	var dialog := MeshImportDialog.new()
 	dialog.theme_mode = _editor._view._theme_mode
 	dialog.mesh_selected.connect(func(path):
 		var current_index: int = _editor._parts.find(part)
-		if current_index < 0:
+		if revision != _editor._menus.generation or current_index < 0:
 			return
 		replace_part_source(current_index, path, lod_index)
 		_editor._select_mesh_part(current_index)
@@ -234,13 +235,14 @@ func selection_changed() -> void:
 		elif view.part_properties.visible:
 			view.show_task("model")
 
-func new_asset_dialog() -> void:
+func new_asset_dialog(pack_id: String = "", type_id: String = "") -> void:
 	guard(func():
 		_creation = CreationDialog.new()
 		_creation.theme_mode = _editor._view._theme_mode
 		_editor.add_child(_creation)
 		_release_on_hide(_creation)
-		_creation.configure(JSON.parse_string(policy.types_json()), _editor._known_packs, str(params.get("pack_id", "")))
+		_creation.configure(JSON.parse_string(policy.types_json()), _editor._known_packs, pack_id if not pack_id.is_empty() else str(params.get("pack_id", "")))
+		_creation.select_type(type_id)
 		_creation.create_requested.connect(create_asset)
 		_creation.create_pack_requested.connect(_editor._open_new_pack_dialog)
 		_editor._view._apply_editor_theme(_creation)
@@ -353,6 +355,8 @@ func _review_conversion(target: String, subtype: String) -> void:
 	confirm.popup_centered()
 
 func guard(action: Callable) -> void:
+	if _editor._menus.actions != null:
+		_editor._menus.actions.cancel()
 	document.commit_transaction()
 	if is_instance_valid(_guard) and _guard.visible:
 		return
