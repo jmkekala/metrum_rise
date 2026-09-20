@@ -1073,7 +1073,7 @@ Default LOD tiers:
   and do not influence automatic selection. Schema migration follows threshold calibration.
 - Review thresholds with actual asset bounds, camera projection/FOV, resolution and viewing angles.
   Runtime culling, farther skyline representations and shadow budgets require separate measurements.
-  Current gameplay still renders building LOD0; editor support does not implement runtime switching.
+  Gameplay building switching uses this shared policy through spatial batches (`RENDER-07`, below).
 - Authoring rules:
   - model the silhouette, roofline, and major recesses
   - bake windows, facade repetition, and small trim into textures instead of geometry
@@ -1572,7 +1572,7 @@ Current preview (`TOOLS-04`):
   lighting changes preserve inspection. Failed automatic switches keep inspection on the retained visible
   mesh; explicitly selecting a failed tier keeps that tier selected for source repair.
   Switching tiers preserves transforms, origins, camera and LOD0 placement bounds.
-  This uses the shared selection policy; gameplay building switching is not integrated yet.
+  Gameplay building switching uses the same selection policy through separate spatial batches.
 - Roadside, lane/sidewalk and traffic comparison scenes are deferred and are not exposed as controls.
 
 Planned quality-of-life features (not shipped):
@@ -2893,11 +2893,121 @@ scene cleanup) and 80.678 µs per cached emission change (2,000 changes, one sur
 digest: `f4aff8e81fc3b960`. These are current-build CPU checks, not before/after or GPU timings;
 no simulation code changed. The optional capture/benchmark flags extend the existing command above.
 
+### Gameplay building LODs — RENDER-07
+
+Implemented and verified 2026-09-20. The runtime contract is:
+
+- Creators supply ordered variable-length per-part chains, including LOD0-only assets;
+  the engine selects tiers with the same `assets/lod_policy.rs` used by the editor.
+  Balanced boundaries remain provisional 512/256/128/64/... render pixels of the placed
+  LOD0 bounds. Perspective/orthographic projection, render scale, global detail quality,
+  10% hysteresis and direct large-zoom transitions have one implementation.
+- `nodes/sim/render/building_lod` owns presentation-only history and reusable packed
+  batches. The existing 512 m building center index supplies candidates; conservative
+  geometry margins and directional-shadow caster bounds prevent premature retirement.
+  Disconnected buildings remain renderable but do not enter economy candidate queries.
+- Batch identity is chunk/asset-part/tier/normal-or-deserted. Only occupied groups draw.
+  Independent chunks use Rayon; stable chunk/group/instance ordering makes publication
+  deterministic. Two packed buffers plus counting scatter avoid per-instance allocation
+  during warmed transitions. Cost is O(queried chunks + candidate parts + batch groups),
+  plus copying/uploading changed group contents. It is not O(total city × asset parts).
+- Godot imports complete tier chains during loading/explicit reload and shares cached
+  meshes/materials between instances and chunks. Camera movement never imports resources.
+  Failed tiers retain authored ordinals and fall back to a valid mesh with a diagnostic.
+- Stationary views with unchanged relevant state perform no repeated LOD evaluation or
+  transform upload. Construction animation still advances; completion and abandonment
+  have appearance revisions. Reference revisions and world replacement invalidate reused
+  building indices. Pack generation changes invalidate resource slots and pending output.
+- Updates are applied coherently before drawing; no crossfade, duplicate or missing
+  instances during a transition. Godot buffers retain peak power-of-two capacity while
+  a chunk is resident; leaving residency releases its groups, including cached empty tiers.
+  Explicit bounds contain active transforms and the union of all imported tiers; padded
+  capacity cannot pull the bounds toward the world origin. Valid meshless sites remain
+  meshless; missing/broken assets retain the existing visible error marker.
+- Graphics exposes Performance/Balanced/Quality, persisted separately from assets/saves.
+  LOD selection neither culls buildings nor changes simulation, picking identity or saves.
+  Shadows retain their separate policy. Source emission survives all tiers; automatic
+  gameplay window-light activation is separate work. Existing serialized metre bands
+  remain loadable and do not override screen-size selection; schema removal is a separate
+  explicit migration rather than silently reinterpreting metres as pixels.
+
+Fresh correctness: `cargo test` passed **1,849 tests**, 65 opt-in tests ignored;
+`cargo doc --no-deps` completed without warnings. Pure tests cover variable chains,
+hysteresis/direct jumps, stable capacity, invalid tiers, remapping, construction,
+abandonment, disconnected/meshless sites, oversized geometry and shadow-caster bounds.
+The generated Godot fixture loads 2,048 buildings / 2,731 parts with one/four/five tiers;
+checks actual cached imports and batches across zoom/rotation/render-scale/quality,
+selection identity, save replacement/removal, deserted materials and failed-tier recovery.
+Pack reload, graphics settings, camera save/load and all six editor regression suites pass.
+`run.sh --test` generates its saves and runs the gameplay test in an isolated asset-test
+profile. Its deliberately corrupted lower tier emits an expected importer error; assertions
+verify fallback and no repeated import. No personal pack is a regression dependency.
+
+Manual Kuopio review through the gameplay importer: all four installed houses' LOD0–3
+load with consistent tier bounds, recognizable silhouettes, source textures and emission
+maps. Roof shading changes between authored tiers remain visible in the comparison;
+thresholds are provisional, not universal art-quality acceptance. These exports have black
+authored emission factors; enabling their windows at night is a separate runtime feature.
+Review image/log: `/tmp/metrum-building-lod.A51PQh/kuopio-review.{png,log}`.
+
+Matched unprofiled release acceptance: i9-12900K, RX 7900 XTX/RADV, stock Godot 4.7.2,
+Forward+/X11, 1280×720, render scale 1, vsync off, `RAYON_NUM_THREADS=4`.
+Generated 32×64 grid, shared sphere tiers and one multipart asset; simulation paused,
+shadow distance 420 m. Each trial has 60 warmup + 300 measured frames; loading/save
+preparation is excluded. Baseline retains its original every-30-frame refresh. Final pairs
+ran baseline→candidate and candidate→baseline; GPU means were stable within ~1%.
+
+| Trial | GPU mean ms, old → new | Update CPU mean µs, old → new¹ | Draw calls, old → new² | Transform upload bytes, old → new³ |
+|---|---:|---:|---:|---:|
+| Wide stationary | 0.854 → 0.452 | 11.7 → 17.2 | 15 → 70 | 2,293,920 → 0 |
+| Street stationary | 2.480 → 0.224 | 13.0 → 16.7 | 21 → 51 | 2,293,920 → 0 |
+| Street pan | 2.478 → 0.222 | 11.5 → 34.5 | 21 → 54 | 2,293,920 → 0 |
+| Continuous zoom | 1.941 → 0.261 | 14.1 → 167.4 | 21 → 30 | 2,293,920 → 8,104,128 |
+
+¹ Reversed-order pair; CPU wall time varied between processes. Final-pair candidate zoom
+means were 158–167 µs, p95 377–398 µs. The old renderer performs no tier selection;
+switching adds bounded CPU/upload work, not a CPU-speedup claim. ² End-of-trial counters,
+not averages; chunking increases draws while reducing submitted geometry (street:
+57,686,912 → 4,088,000 primitives, including shadow passes). ³ Total over 300 frames,
+including retained capacity padding. The pan stays inside existing tier bands; zoom
+exercises actual switches. Stationary candidate evaluation count is zero.
+
+Reversed-order pair memory: process RSS ~525.2 → 526.7 MB at zoom end; Godot static
+allocation ~53.1 → 53.5 MB; reported video allocation ~334.9 → 334.6 MB. Preloading
+all tiers trades resource memory for import-free switching; tiny generated textures do not
+establish a production texture budget. These are building-renderer measurements, not a
+full-city/one-million-population FPS claim. Existing site/plot/construction auxiliary buffers
+remain revision-gated city-wide batches; their topology rebuild cost is not the LOD hot path.
+
+Artifacts: `/tmp/metrum-building-lod.A51PQh/`, including `final-bench-*.log`,
+`repeat-bench-*.log`, `fixtures/{baseline,candidate}.{json,png}` and locality logs.
+Baseline scripts/deployed release library were preserved from pre-change `3efc2ff8842d`;
+library SHA-256 prefixes: baseline `e831effca05b813d`, candidate `463fa4724b55dfee`.
+Harness prefix `680f2bd4101e4901`. Fixed-neighbourhood locality holds 32 candidate parts
+in one chunk while adding 0/1,024/65,536 background buildings; setup and index construction
+are excluded. Final release medians were **3.078 / 3.111 / 4.080 µs** respectively
+(`accepted-locality.log`); every query still evaluates exactly 32 parts in one chunk.
+Warmed camera transitions retain the same output and buffer capacities.
+
+Reproduce after deploying the rebuilt extension, using an isolated user profile:
+
+```bash
+lod_artifacts=$(mktemp -d -t metrum-building-lod.XXXXXX)
+export METRUM_BUILDING_LOD_FIXTURE_DIR="$lod_artifacts/saves"
+(cd rust && RAYON_NUM_THREADS=4 cargo test --lib generate_building_lod_fixtures -- --ignored)
+XDG_DATA_HOME="$lod_artifacts/data" XDG_CONFIG_HOME="$lod_artifacts/config" \
+  RAYON_NUM_THREADS=4 godot --headless --path godot \
+  --script res://tests/building_lod_test.gd -- --asset-editor
+# Render measurement: replace --headless with --display-driver x11 --rendering-method forward_plus
+# and append --benchmark-building-lod after --asset-editor (requires a working GPU/display).
+(cd rust && RAYON_NUM_THREADS=4 cargo test --release --lib benchmark_building_lod_locality -- --ignored --nocapture)
+```
+
 ### Shared LOD policy and automatic inspection — TOOLS-05
 
 `rust/src/assets/lod_policy.rs` owns the allocation-free projection and selection functions;
 `AssetLodPolicy` is a stateless Godot bridge. `asset_editor/preview_lod.gd` coordinates editor
-nodes, not game state. Future spatial building rendering must call the same Rust policy.
+nodes, not game state. Gameplay's spatial building renderer calls the same Rust policy.
 
 - Project all eight corners of each part's **LOD0** bounds through its placed transform and
   the camera matrix. The metric is the larger projected width/height in render pixels,
@@ -2907,8 +3017,8 @@ nodes, not game state. Future spatial building rendering must call the same Rust
   invalid projection inputs retain LOD0; visibility/culling is a separate responsibility.
 - Provisional Balanced boundaries are 512 / 256 / 128 px for four tiers; each additional
   tier halves the boundary. Equality keeps the finer tier. Performance multiplies effective
-  pixels by 0.5, Quality by 2.0. These are global preview presets, not asset-authored overrides
-  or shipped player graphics settings. Screen extent measures size, **not mesh approximation
+  pixels by 0.5, Quality by 2.0. The editor preview and player Graphics settings use these same
+  presets; they are not asset-authored overrides. Screen extent measures size, **not mesh approximation
   error**; representative art still needs silhouette/material/emission transition review.
 - Hysteresis uses a 10% margin: coarsen below 90% of a boundary, refine above 110% (equality
   refines). Large camera changes can skip directly to the appropriate tier. Explicit quality
@@ -2929,8 +3039,8 @@ nodes, not game state. Future spatial building rendering must call the same Rust
 
 Schema scope: this step preserves the existing metre-band fields and does not silently reinterpret
 them as pixels. Retire them in a coordinated manifest/editor/validator migration after art
-calibration. Gameplay spatial batching/LOD groups, scene-scale GPU acceptance, culling and
-shadow policy integration remain separate work. Existing meshes need not be remade for this step.
+calibration. Gameplay spatial batching/LOD groups and rendering acceptance are owned by
+`RENDER-07` above. Existing meshes need not be remade for this step.
 
 Verification commands:
 

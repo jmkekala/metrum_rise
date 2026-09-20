@@ -60,18 +60,18 @@ impl BuildingAllocator {
         self.vacancy_pos.clear();
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
         self.building_chunks.clear();
+        self.building_chunk_bounds = None;
+        self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
 
         for (idx, b) in self.buildings.iter().enumerate() {
-            if b.edge_idx != usize::MAX {
-                let chunk =
-                    RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
-                self.building_chunks.entry(chunk).or_default().push(idx);
-                let half_width = b.width_cells as f32 * 0.5;
-                let half_depth = b.depth_cells as f32 * 0.5;
-                self.max_lot_radius_cells =
-                    self.max_lot_radius_cells.max(half_width.hypot(half_depth));
-            }
+            let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+            self.building_chunks.entry(chunk).or_default().push(idx);
+            include_chunk(&mut self.building_chunk_bounds, chunk);
+            self.max_building_support_m = self.max_building_support_m.max(b.support_height_m);
+            let half_width = b.width_cells as f32 * 0.5;
+            let half_depth = b.depth_cells as f32 * 0.5;
+            self.max_lot_radius_cells = self.max_lot_radius_cells.max(half_width.hypot(half_depth));
             if b.is_under_construction() {
                 continue;
             }
@@ -101,16 +101,16 @@ impl BuildingAllocator {
 
         self.vacancy_pos.push(usize::MAX);
         let b = &self.buildings[building_idx];
-        if b.edge_idx != usize::MAX {
-            let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
-            self.building_chunks
-                .entry(chunk)
-                .or_default()
-                .push(building_idx);
-            let half_width = b.width_cells as f32 * 0.5;
-            let half_depth = b.depth_cells as f32 * 0.5;
-            self.max_lot_radius_cells = self.max_lot_radius_cells.max(half_width.hypot(half_depth));
-        }
+        let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+        self.building_chunks
+            .entry(chunk)
+            .or_default()
+            .push(building_idx);
+        include_chunk(&mut self.building_chunk_bounds, chunk);
+        self.max_building_support_m = self.max_building_support_m.max(b.support_height_m);
+        let half_width = b.width_cells as f32 * 0.5;
+        let half_depth = b.depth_cells as f32 * 0.5;
+        self.max_lot_radius_cells = self.max_lot_radius_cells.max(half_width.hypot(half_depth));
         if !b.is_under_construction() {
             if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(building_idx);
@@ -167,6 +167,7 @@ impl BuildingAllocator {
     /// Latches abandonment and immediately withdraws the home from admission and rehousing. O(1).
     pub(crate) fn mark_building_deserted(&mut self, building_idx: usize) {
         self.buildings[building_idx].is_deserted = true;
+        self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
         self.remove_housing_vacancy(building_idx);
         self.dirty = true;
     }
@@ -306,5 +307,16 @@ impl BuildingAllocator {
         }
 
         sources
+    }
+}
+
+fn include_chunk(bounds: &mut Option<[i32; 4]>, (x, z): (i32, i32)) {
+    if let Some(bounds) = bounds {
+        bounds[0] = bounds[0].min(x);
+        bounds[1] = bounds[1].min(z);
+        bounds[2] = bounds[2].max(x);
+        bounds[3] = bounds[3].max(z);
+    } else {
+        *bounds = Some([x, z, x, z]);
     }
 }

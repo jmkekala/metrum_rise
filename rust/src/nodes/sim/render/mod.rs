@@ -7,6 +7,7 @@
 
 /// Agent-specific rendering (pedestrians, cars, path debug).
 pub mod agents;
+pub(crate) mod building_lod;
 /// Building-specific rendering (asset transforms, plots).
 pub mod buildings;
 /// Shared lane pose sampling for render transforms.

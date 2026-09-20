@@ -21,5 +21,6 @@ mod entrances;
 mod indexing;
 mod lifecycle;
 mod placement;
+mod render_lod;
 mod runtime;
 pub(super) mod support;

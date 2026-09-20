@@ -145,8 +145,12 @@ scale-aware procedural UI labels/buttons, including gameplay HUD, Options, Build
 and Economy Overview detail surfaces. Scale-aware floating windows also declare base/default
 sizes through `UIStyle`, so window defaults and minimums grow with Accessibility scale and
 gently grow on high-resolution viewports while preserving user-resized larger windows and restored
-layout values. `Graphics` owns the Apply-based `Fullscreen` display toggle, persisted through
-`user://settings.cfg` and applied through the Options footer and on boot. `Mods` embeds the content-pack manager from
+layout values. `Graphics` owns Apply-based `Fullscreen` and `Building detail`
+(Performance/Balanced/Quality; default Balanced), persisted through `user://settings.cfg`.
+Applying building detail updates live building renderers without reimporting assets; Cancel
+discards pending edits and Reset proposes defaults. Detail uses the shared screen-size LOD
+policy, not asset-authored distance bands; it changes neither simulation nor visibility.
+Display settings apply through the Options footer and on boot. `Mods` embeds the content-pack manager from
 `scripts/ui/pack_manager.gd`; pack selection changes are persisted through
 `user://active_packs.cfg` and take effect after restart. The previous gameplay toolbar `Mods`
 button is intentionally removed so content-pack management lives under global options rather than
@@ -395,7 +399,7 @@ its close button is used.
 | Window | Launcher | Script / status | Content |
 |--------|----------|-----------------|---------|
 | Options | MainMenu `Options` or gameplay `File -> Options...` | `scripts/ui/options_window.gd` *(implemented)* | Shared options shell with category rail, content pane, footer-level apply/reset/cancel actions, and persisted window state through `user://settings.cfg`. |
-| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Embedded fullscreen/windowed display toggle, persisted through `user://settings.cfg` and applied through the Options footer. |
+| Graphics | Options → Graphics | `scripts/ui/graphics_options.gd` *(implemented)* | Fullscreen/windowed and building-detail presets, persisted through `user://settings.cfg` and applied through the Options footer. |
 | Accessibility | Options → Accessibility | `scripts/ui/accessibility_options.gd` *(implemented)* | Embedded UI Scale control, persisted through `user://settings.cfg` and applied immediately to scale-aware procedural UI fonts and eligible floating-window sizes. |
 | Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, extraction-pit reserve/depletion, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
 | Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |

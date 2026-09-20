@@ -100,7 +100,8 @@ impl SimulationNode {
         self.lock_terrain_patch_payload_jobs().clear();
     }
 
-    pub(in crate::nodes::simulation_node) fn clear_runtime_render_async_jobs(&self) {
+    pub(in crate::nodes::simulation_node) fn clear_runtime_render_async_jobs(&mut self) {
+        self.building_lods.invalidate_world();
         self.clear_terrain_patch_payload_jobs();
         self.lock_water_patch_payload_jobs().clear();
         self.lock_water_patch_mesh_jobs().clear();

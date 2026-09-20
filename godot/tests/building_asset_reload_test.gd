@@ -92,10 +92,10 @@ license = "CC0"
 	renderer.simulation_node = simulation
 	renderer.reload_asset_packs()
 	var asset_id := pack_id + ":building.residential.reload_test"
-	var key := renderer._part_key(asset_id, 0)
-	var removed_key := renderer._part_key(asset_id, 1)
 	_expect(simulation.get_registered_asset_ids() == PackedStringArray([asset_id]), "only the enabled fixture pack must load")
-	_expect(renderer.multimeshes.size() == 3, "two asset parts and the broken placeholder must render")
+	_expect(renderer.lod_renderer.catalog.size() == 3, "two asset parts and the broken placeholder must render")
+	_expect(renderer.lod_renderer.resources.imports == 1, "shared paths must import once")
+	_expect(renderer.lod_renderer.batches.is_empty(), "unplaced assets need no batches")
 	var original_mesh: Mesh = renderer.get_building_mesh_for_asset_part(asset_id, 0)
 	_expect(original_mesh.get_aabb().size.is_equal_approx(Vector3(1, 2, 3)), "initial mesh must come from the fixture GLB")
 	_write_model(model_path, Vector3(2, 4, 6))
@@ -103,16 +103,16 @@ license = "CC0"
 	renderer.reload_asset_packs()
 	var changed_mesh: Mesh = renderer.get_building_mesh_for_asset_part(asset_id, 0)
 	_expect(changed_mesh.get_aabb().size.is_equal_approx(Vector3(2, 4, 6)), "reload must replace geometry at the same asset ID and path")
-	_expect(not renderer.multimeshes.has(removed_key) and not renderer.deserted_multimeshes.has(removed_key), "reload must remove deleted normal and deserted parts")
-	_expect(renderer.deserted_multimeshes[key].multimesh.mesh == changed_mesh, "deserted rendering must use the reloaded geometry")
+	_expect(renderer.get_building_mesh_for_asset_part(asset_id, 1) == null, "reload must remove deleted part resources")
+	_expect(renderer.lod_renderer.catalog.size() == 2, "reloaded catalog has only surviving part and placeholder")
 	var child_count := renderer.get_child_count()
-	_expect(child_count == 3, "removed mesh nodes must be freed, leaving two normal instances and one deserted instance")
+	_expect(child_count == 1, "unplaced assets need only the LOD coordinator")
 	renderer.reload_asset_packs()
 	_expect(renderer.get_child_count() == child_count, "repeated reload must not accumulate renderer nodes")
 	_expect(ModPackConfig.save_enabled_pack_ids([]) == OK, "empty selection must save")
 	renderer.reload_asset_packs()
 	_expect(simulation.get_registered_asset_ids().is_empty(), "disabling every pack must clear the registry")
-	_expect(renderer.multimeshes.size() == 1 and renderer.deserted_multimeshes.is_empty(), "disabled packs must leave only the broken placeholder")
+	_expect(renderer.lod_renderer.catalog.size() == 1 and renderer.lod_renderer.batches.is_empty(), "disabled packs must leave only the broken placeholder")
 	var mods_dir := ProjectSettings.globalize_path("user://mods/")
 	simulation.load_all_asset_packs(mods_dir)
 	_expect(simulation.get_registered_asset_ids().has(asset_id), "authoring must load installed assets even when gameplay packs are disabled")
@@ -126,11 +126,14 @@ license = "CC0"
 		var previous_refreshes := renderer.refreshes
 		for frame in 60:
 			await process_frame
-			renderer._process(1.0 / 60.0)
-		_expect(renderer.refreshes - previous_refreshes == 2, "60 process frames must refresh buildings twice, including headless mode")
+			renderer._update_building_render_frame()
+			var idle: Dictionary = simulation.try_get_building_site_frame(renderer._zone_ids, renderer.building_site_revision, renderer.building_visual_revision)
+			if not idle.get("busy", true):
+				_expect(not idle.has("plot_transforms") and not idle.has("site_mesh_data"), "idle requests must not rebuild site buffers")
+		_expect(renderer.refreshes - previous_refreshes == 60, "requests are state-driven rather than a 30-frame timer")
 	DirAccess.remove_absolute(manifest_path)
 	renderer.reload_asset_packs()
-	_expect(simulation.get_registered_asset_ids().is_empty() and renderer.multimeshes.size() == 1, "deleting a manifest must remove its registry and renderer entries")
+	_expect(simulation.get_registered_asset_ids().is_empty() and renderer.lod_renderer.catalog.size() == 1, "deleting a manifest must remove its registry and renderer entries")
 	renderer.free()
 	simulation.free()
 	for filename in ["model.glb", "pack.toml"]:
@@ -150,7 +153,7 @@ func _benchmark(renderer: ObservedRenderer, manifest_path: String) -> void:
 	for parts in [2, 128, 1024]:
 		_write_manifest(manifest_path, parts)
 		renderer.reload_asset_packs()
-		_expect(renderer.multimeshes.size() == parts + 1, "benchmark must request every authored part plus the broken placeholder")
+		_expect(renderer.lod_renderer.catalog.size() == parts + 1, "benchmark must request every authored part plus the broken placeholder")
 		for warmup in 3:
 			renderer._update_building_render_frame()
 		var samples: Array[float] = []

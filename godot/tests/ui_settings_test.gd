@@ -40,6 +40,7 @@ func _run() -> void:
 		_expect(Settings.load_config().has_section("layout/probe"), "Valid config loads must preserve unrelated layout state")
 		_expect(Settings.save_ui_scale(NAN) == OK and Settings.get_ui_scale() == Settings.DEFAULT_UI_SCALE, "Saving an invalid scale must never persist NaN")
 		_test_refresh(style)
+		_test_building_quality()
 	if had_config:
 		var file := FileAccess.open(Settings.CFG_PATH, FileAccess.WRITE)
 		file.store_buffer(original)
@@ -48,6 +49,22 @@ func _run() -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(Settings.CFG_PATH))
 	print("ui_settings_test: %s" % ("PASS" if _failures == 0 else "FAIL"))
 	quit(_failures)
+
+func _test_building_quality() -> void:
+	for value in [-1, 0, 1, 2, 9]:
+		Settings.set_value(Settings.SECTION_GRAPHICS, Settings.KEY_BUILDING_LOD_QUALITY, value)
+		_expect(Settings.get_building_lod_quality() == (value if value >= 0 and value <= 2 else 1), "Quality IDs normalize to the shared Balanced default")
+	var panel := preload("res://scripts/ui/graphics_options.gd").new()
+	root.add_child(panel)
+	panel._lod_quality.item_selected.emit(2)
+	_expect(panel.has_pending_changes() and Settings.get_building_lod_quality() == 1, "Pending quality must not change persisted settings")
+	panel.refresh()
+	_expect(not panel.has_pending_changes() and panel._lod_quality.selected == 1, "Discard restores persisted quality")
+	panel._lod_quality.item_selected.emit(0)
+	_expect(panel.apply_changes() == OK and Settings.get_building_lod_quality() == 0, "Apply persists quality")
+	panel.reset_defaults()
+	_expect(panel.has_pending_changes() and panel._lod_quality.selected == 1, "Reset proposes Balanced without applying it")
+	panel.free()
 
 func _test_refresh(style: Script) -> void:
 	var viewport := SubViewport.new()

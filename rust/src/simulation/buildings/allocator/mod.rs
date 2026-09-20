@@ -315,8 +315,12 @@ pub struct BuildingAllocator {
     pub vacancy_index: [Vec<usize>; 3],
     /// Position of each building in its respective `vacancy_index` list for O(1) removal.
     pub vacancy_pos: Vec<usize>,
-    /// Coarse 512 m chunk index of building centers for bounded nearby-economy queries.
+    /// Coarse 512 m chunk index of all building centers for bounded rendering/site/economy queries.
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
+    /// Inclusive occupied chunk bounds, maintained with the existing center index.
+    pub(crate) building_chunk_bounds: Option<[i32; 4]>,
+    /// Highest indexed support plane, for conservative directional-shadow caster queries.
+    pub(crate) max_building_support_m: f32,
     /// Derived full-field reservations rebuilt from AgricultureSystem on load and undo.
     pub(crate) field_clearance: FieldClearanceIndex,
     /// Ordered swap removals awaiting production-site owner remapping in SimCore.
@@ -333,6 +337,8 @@ pub struct BuildingAllocator {
     pub(crate) entrances_dirty: bool,
     /// Revision bumped whenever building indices may have become stale for external systems.
     pub(crate) building_ref_revision: u64,
+    /// Appearance-only revision; does not invalidate routing or entrance references.
+    pub(crate) building_visual_revision: u64,
     /// Revision bumped whenever derived building entrance/access data changes.
     pub(crate) entrance_ref_revision: u64,
     /// Derived building entrance/access cache keyed by building index.
@@ -571,6 +577,8 @@ impl BuildingAllocator {
             vacancy_index: [const { Vec::new() }; 3],
             vacancy_pos: Vec::new(),
             building_chunks: HashMap::new(),
+            building_chunk_bounds: None,
+            max_building_support_m: f32::NEG_INFINITY,
             field_clearance: FieldClearanceIndex::default(),
             pending_production_site_removals: Vec::new(),
             max_lot_radius_cells: 0.0,
@@ -579,6 +587,7 @@ impl BuildingAllocator {
             dirty_zones: [false; 3],
             entrances_dirty: false,
             building_ref_revision: 0,
+            building_visual_revision: 0,
             entrance_ref_revision: 0,
             entrances: Vec::new(),
             building_sites: Vec::new(),
@@ -671,12 +680,14 @@ impl BuildingAllocator {
     /// Advances private construction sites by one operational hour.
     pub(crate) fn advance_construction_hour(&mut self) {
         let mut completed_any = false;
+        let mut progressed = false;
         let mut completed_zone_dirty = [false; BASELINE_PRIVATE_ZONES.len()];
         for building in &mut self.buildings {
             if building.construction_remaining_hours == 0 {
                 continue;
             }
             building.construction_remaining_hours -= 1;
+            progressed = true;
             if building.construction_remaining_hours == 0 {
                 completed_any = true;
                 building.construction_total_hours = 0;
@@ -691,6 +702,9 @@ impl BuildingAllocator {
                     building.level
                 );
             }
+        }
+        if progressed {
+            self.building_visual_revision = self.building_visual_revision.wrapping_add(1);
         }
         if completed_any {
             self.dirty = true;
@@ -721,6 +735,8 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.building_chunks.clear();
+        self.building_chunk_bounds = None;
+        self.max_building_support_m = f32::NEG_INFINITY;
         self.max_lot_radius_cells = 0.0;
         self.max_site_radius_m = 0.0;
         self.building_site_dirty_bounds = None;
@@ -909,7 +925,11 @@ impl BuildingAllocator {
                         if idx >= self.buildings.len() {
                             continue;
                         }
-                        if eligible(idx, &self.buildings[idx]) {
+                        // Disconnected buildings remain renderable/pickable, but are
+                        // not new economy candidates merely because the index covers them.
+                        if self.buildings[idx].edge_idx != usize::MAX
+                            && eligible(idx, &self.buildings[idx])
+                        {
                             candidates.push(idx);
                         }
                     }

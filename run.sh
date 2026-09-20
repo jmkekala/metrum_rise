@@ -965,6 +965,17 @@ if [ $TEST -eq 1 ]; then
     printf '[application]\nconfig/name="MetrumAssetTests-%s"\nconfig/use_custom_user_dir=false\n' \
         "${asset_test_profile##*/}" > "$asset_test_project/override.cfg" || exit 1
     echo "Asset regression fixtures and logs: $asset_test_profile"
+    export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
+    if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib generate_building_lod_fixtures -- --ignored); then
+        exit 1
+    fi
+    # Intentional bad-tier import exercises fallback and emits an expected importer error.
+    # The test's exit status owns its assertions; ordinary asset tests below forbid errors.
+    if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \
+        godot --headless --path "$asset_test_project" --script res://tests/building_lod_test.gd \
+        --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor; then
+        exit 1
+    fi
     if [ "$METRUM_PLATFORM" = "darwin" ]; then
         echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/MetrumAssetTests-${asset_test_profile##*/}"
     fi

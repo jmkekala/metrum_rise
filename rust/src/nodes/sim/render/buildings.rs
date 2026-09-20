@@ -33,77 +33,6 @@ const CONSTRUCTION_RISE_INITIAL_MAX_OFFSET_M: f32 = 12.0;
 impl SimCore {
     // ── Building Renderer ──
 
-    /// Returns the 12-float transforms for all placed buildings with the given asset part.
-    pub fn get_building_transforms_for_asset_part_internal(
-        &self,
-        asset_id: &str,
-        part_index: i32,
-    ) -> PackedFloat32Array {
-        if part_index < 0 {
-            return PackedFloat32Array::new();
-        }
-        let mut buffer = Vec::new();
-        let entry = self.allocator.registry.get(asset_id);
-        let part = entry.and_then(|entry| entry.manifest.mesh_parts.get(part_index as usize));
-
-        for b in &self.allocator.buildings {
-            if asset_id == "broken:error" {
-                if part_index != 0 || !b.broken || b.is_under_construction() {
-                    continue;
-                }
-            } else {
-                // Skip broken buildings (handled by broken:error group) and deserted buildings
-                // (handled by the parallel deserted multimesh via get_deserted_building_transforms_for_asset_internal).
-                if b.broken || b.is_deserted || b.asset_id != asset_id {
-                    continue;
-                }
-            }
-
-            let mut world_y = b.support_height_m;
-            if b.is_under_construction() {
-                let progress = construction_visual_progress(b, self.operational_hour_fraction());
-                world_y -= construction_rise_offset_m(b, progress);
-            }
-            if let Some(part) = part {
-                push_building_part_transform(&mut buffer, b, entry, part, world_y);
-            } else if asset_id == "broken:error" {
-                push_broken_building_transform(&mut buffer, b, world_y);
-            }
-        }
-
-        PackedFloat32Array::from_iter(buffer)
-    }
-
-    /// Returns the 12-float transforms for all deserted buildings with the given asset part.
-    ///
-    /// Deserted buildings render in a parallel multimesh with a gray material override.
-    pub fn get_deserted_building_transforms_for_asset_part_internal(
-        &self,
-        asset_id: &str,
-        part_index: i32,
-    ) -> PackedFloat32Array {
-        if part_index < 0 {
-            return PackedFloat32Array::new();
-        }
-        let mut buffer = Vec::new();
-        let entry = self.allocator.registry.get(asset_id);
-        let part = entry.and_then(|entry| entry.manifest.mesh_parts.get(part_index as usize));
-        let Some(part) = part else {
-            return PackedFloat32Array::new();
-        };
-
-        for b in &self.allocator.buildings {
-            if b.broken || b.is_under_construction() || !b.is_deserted || b.asset_id != asset_id {
-                continue;
-            }
-
-            let world_y = b.support_height_m;
-            push_building_part_transform(&mut buffer, b, entry, part, world_y);
-        }
-
-        PackedFloat32Array::from_iter(buffer)
-    }
-
     pub(crate) fn get_service_building_preview_part_transforms_internal(
         &self,
         asset_id: &str,
@@ -367,7 +296,8 @@ impl SimCore {
         PackedFloat32Array::from_iter(buffer)
     }
 
-    fn operational_hour_fraction(&self) -> f32 {
+    /// Fraction within the current discrete operational hour, for presentation interpolation.
+    pub(crate) fn operational_hour_fraction(&self) -> f32 {
         let seconds_per_minute = self.time.seconds_per_minute().max(f64::EPSILON);
         let minute_fraction = (self.time.time_elapsed / seconds_per_minute).clamp(0.0, 1.0);
         (f64::from(self.time.minute_of_day % 60) + minute_fraction) as f32 / 60.0
@@ -964,23 +894,6 @@ fn site_surface_material_label(material: SiteSurfaceMaterial) -> &'static str {
     }
 }
 
-fn push_building_part_transform(
-    buffer: &mut Vec<f32>,
-    building: &Building,
-    entry: Option<&AssetEntry>,
-    part: &MeshPart,
-    world_y: f32,
-) {
-    push_building_part_transform_for_pose(
-        buffer,
-        Vector2::new(building.center_x, building.center_y),
-        world_y,
-        building.facing_dir,
-        entry,
-        part,
-    );
-}
-
 fn push_building_part_transform_for_pose(
     buffer: &mut Vec<f32>,
     center_2d: Vector2,
@@ -989,51 +902,36 @@ fn push_building_part_transform_for_pose(
     entry: Option<&AssetEntry>,
     part: &MeshPart,
 ) {
+    buffer.extend_from_slice(&super::building_lod::pack_transform(building_part_pose(
+        center_2d, world_y, facing_dir, entry, part,
+    )));
+}
+
+/// Shared placed mesh transform for gameplay batches and service-placement previews.
+pub(super) fn building_part_pose(
+    center_2d: Vector2,
+    world_y: f32,
+    facing_dir: Vector2,
+    entry: Option<&AssetEntry>,
+    part: &MeshPart,
+) -> glam::Mat4 {
     let (basis_x, basis_z) = building_local_xz_basis(facing_dir, building_frontage_forward(entry));
     let local = part.local_transform();
     let part_x_axis = basis_x * local.matrix3.x_axis.x + basis_z * local.matrix3.x_axis.z;
     let part_z_axis = basis_x * local.matrix3.z_axis.x + basis_z * local.matrix3.z_axis.z;
     let translation = center_2d + basis_x * local.translation.x + basis_z * local.translation.z;
 
-    buffer.push(part_x_axis.x);
-    buffer.push(0.0);
-    buffer.push(part_z_axis.x);
-    buffer.push(translation.x);
-
-    buffer.push(0.0);
-    buffer.push(local.matrix3.y_axis.y);
-    buffer.push(0.0);
-    buffer.push(world_y + local.translation.y);
-
-    buffer.push(part_x_axis.y);
-    buffer.push(0.0);
-    buffer.push(part_z_axis.y);
-    buffer.push(translation.y);
-}
-
-fn push_broken_building_transform(buffer: &mut Vec<f32>, building: &Building, world_y: f32) {
-    let s = crate::config::BUILDING_VISUAL_SCALE;
-    let front = if building.facing_dir.length_squared() > 1e-12 {
-        building.facing_dir.normalized()
-    } else {
-        Vector2::new(0.0, 1.0)
-    };
-    let right = Vector2::new(front.y, -front.x);
-
-    buffer.push(right.x * s);
-    buffer.push(0.0);
-    buffer.push(front.x * s);
-    buffer.push(building.center_x);
-
-    buffer.push(0.0);
-    buffer.push(s);
-    buffer.push(0.0);
-    buffer.push(world_y);
-
-    buffer.push(right.y * s);
-    buffer.push(0.0);
-    buffer.push(front.y * s);
-    buffer.push(building.center_y);
+    glam::Mat4::from_cols(
+        glam::Vec4::new(part_x_axis.x, 0.0, part_x_axis.y, 0.0),
+        glam::Vec4::new(0.0, local.matrix3.y_axis.y, 0.0, 0.0),
+        glam::Vec4::new(part_z_axis.x, 0.0, part_z_axis.y, 0.0),
+        glam::Vec4::new(
+            translation.x,
+            world_y + local.translation.y,
+            translation.y,
+            1.0,
+        ),
+    )
 }
 
 fn push_scaffold_transforms(
@@ -1206,7 +1104,8 @@ fn building_lot_size_m(cell_size_m: f32, building: &Building) -> (f32, f32) {
     )
 }
 
-fn construction_rise_offset_m(building: &Building, progress: f32) -> f32 {
+/// Existing construction animation's vertical offset below the authored support plane.
+pub(super) fn construction_rise_offset_m(building: &Building, progress: f32) -> f32 {
     let t = progress.clamp(0.0, 1.0);
     (1.0 - t) * construction_initial_rise_offset_m(building)
 }
@@ -1224,7 +1123,11 @@ fn construction_initial_rise_offset_for_height_m(scaffold_height_m: f32) -> f32 
         )
 }
 
-fn construction_visual_progress(building: &Building, operational_hour_fraction: f32) -> f32 {
+/// Continuous presentation progress without changing discrete construction simulation state.
+pub(super) fn construction_visual_progress(
+    building: &Building,
+    operational_hour_fraction: f32,
+) -> f32 {
     construction_visual_progress_from_hours(
         building.construction_total_hours,
         building.construction_remaining_hours,

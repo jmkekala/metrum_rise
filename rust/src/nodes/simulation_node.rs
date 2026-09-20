@@ -170,6 +170,7 @@ use std::time::Instant;
 
 mod asset_api;
 mod async_terrain;
+mod building_lod_api;
 mod economy_api;
 mod network_api;
 mod system_api;
@@ -275,6 +276,8 @@ pub struct SimulationNode {
     pub(crate) road_tool_query_snapshot: Arc<RwLock<RoadToolQuerySnapshot>>,
     /// Water mesh jobs currently being prepared outside the Godot frame.
     pub(crate) water_patch_mesh_jobs: Arc<Mutex<WaterPatchMeshAsyncState>>,
+    /// Main-thread presentation cache; never serialized or used by simulation decisions.
+    pub(crate) building_lods: crate::nodes::sim::render::building_lod::spatial::SpatialBatches,
     terrain_patch_payload_jobs: Arc<Mutex<TerrainPatchPayloadAsyncState>>,
     water_patch_payload_jobs: Arc<Mutex<WaterPatchPayloadAsyncState>>,
     /// Monotonic ids for stale-safe asynchronous road preview requests.
@@ -558,6 +561,7 @@ impl INode3D for SimulationNode {
             road_preview_result,
             road_tool_query_snapshot,
             water_patch_mesh_jobs,
+            building_lods: Default::default(),
             terrain_patch_payload_jobs,
             water_patch_payload_jobs,
             road_preview_request_counter: AtomicU64::new(0),

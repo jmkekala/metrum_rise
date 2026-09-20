@@ -52,7 +52,8 @@ impl AssetLodPolicy {
     }
 }
 
-fn quality_from_id(id: i32) -> LodQuality {
+/// Shared player/preview quality IDs; unknown values use Balanced.
+pub(crate) fn quality_from_id(id: i32) -> LodQuality {
     match id {
         0 => LodQuality::Performance,
         2 => LodQuality::Quality,

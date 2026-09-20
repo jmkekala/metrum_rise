@@ -1,39 +1,19 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Building renderer — maintains one MultiMeshInstance3D per registered building asset part.
-##
-## Rust methods called:
-##   load_asset_packs(dir_path: String, enabled_pack_ids: PackedStringArray) -> String
-##   get_registered_asset_ids() -> PackedStringArray
-##   get_building_mesh_part_count(asset_id: String) -> int
-##   get_building_mesh_part_lod0_native_path(asset_id: String, part_index: int) -> String
-##   try_get_building_render_frame(asset_ids, part_indices, zone_ids, site_revision) -> Dictionary
-##
-## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
-## passes the mods directory and selection to Rust for manifest scanning. Missing config
-## enables the bundled starter pack; packs not listed in saved config are ignored.
-## Rust parses the manifests; GDScript loads the corresponding mesh files and maintains
-## one MultiMeshInstance3D per asset_id/part.
-## Building transforms are polled every 30 process frames, using cached asset-part requests.
-## A parallel deserted_multimeshes dict renders economically dead buildings in gray.
+## Building scene coordinator: pack activation, spatial LOD resources and site visuals.
+## Rust selects/batches building tiers; building_lods.gd owns mesh resources and GPU uploads.
 extends Node3D
 
 const ModPackConfig = preload("res://scripts/core/mod_pack_config.gd")
-const PART_KEY_SEP := "|part:"
+const BuildingLods := preload("res://scripts/renderers/building_lods.gd")
 const WorldMaterials = preload("res://scripts/renderers/world_materials.gd")
 const SceneLightingConfig := preload("res://scripts/core/scene_lighting.gd")
 const PerfDebug := preload("res://scripts/core/perf_debug.gd")
 
 @onready var simulation_node = $"../SimulationNode"
 
-## multimeshes[asset_part_key] = MultiMeshInstance3D
-var multimeshes: Dictionary = {}
-## deserted_multimeshes[asset_part_key] = MultiMeshInstance3D — gray material override for deserted state
-var deserted_multimeshes: Dictionary = {}
-## Parallel request arrays, rebuilt with asset instances and reused by periodic refreshes.
-var _render_keys: Array[String] = []
-var _render_asset_ids := PackedStringArray()
-var _render_part_indices := PackedInt32Array()
+var lod_renderer: Node3D
+var building_visual_revision: int = -1
 ## foundation_multimeshes[zone_id] = MultiMeshInstance3D
 var foundation_multimeshes: Dictionary = {}
 ## construction_site_multimeshes[zone_id] = MultiMeshInstance3D
@@ -56,12 +36,21 @@ var _zone_ids := PackedInt32Array([1, 2, 3, 4, 5])
 
 func reload_asset_packs() -> void:
 	_load_enabled_packs()
-	# The same qualified ID can now point to changed geometry or fewer mesh parts.
-	for instances in [multimeshes, deserted_multimeshes]:
-		for instance in instances.values():
-			instance.free()
-		instances.clear()
+	if lod_renderer == null:
+		_create_lod_renderer()
+	else:
+		lod_renderer.reload_resources()
 	update_all_buildings()
+
+func _create_lod_renderer() -> void:
+	lod_renderer = BuildingLods.new()
+	add_child(lod_renderer)
+	var placeholder := _create_fallback_mesh()
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color.MAGENTA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	placeholder.surface_set_material(0, material)
+	lod_renderer.configure(simulation_node, placeholder)
 
 func _load_enabled_packs() -> void:
 	var enabled: Array = ModPackConfig.load_enabled_pack_ids()
@@ -97,173 +86,18 @@ func _ready() -> void:
 		_setup_construction_scaffold(zone_id)
 	_setup_building_site_surfaces()
 
-	# Build one MultiMeshInstance3D for each registered building asset.
-	_ensure_asset_multimeshes()
+	_create_lod_renderer()
 	_update_building_render_frame(true)
 
 func update_all_buildings() -> void:
-	_ensure_asset_multimeshes()
 	building_site_revision = -1
+	building_visual_revision = -1
 	_update_building_render_frame(true)
-
-func _ensure_asset_multimeshes() -> void:
-	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
-	if not asset_ids.has("broken:error"):
-		asset_ids.append("broken:error")
-	asset_ids.sort()
-	_render_keys.clear()
-	_render_asset_ids.clear()
-	_render_part_indices.clear()
-	for aid in asset_ids:
-		var part_count: int = 1 if aid == "broken:error" else simulation_node.get_building_mesh_part_count(aid)
-		for part_index in part_count:
-			var key := _part_key(aid, part_index)
-			if not multimeshes.has(key):
-				_setup_multimesh_for_asset_part(aid, part_index)
-			_render_keys.append(key)
-			_render_asset_ids.append(aid)
-			_render_part_indices.append(part_index)
-
-func _part_key(asset_id: String, part_index: int) -> String:
-	return "%s%s%d" % [asset_id, PART_KEY_SEP, part_index]
+	if lod_renderer != null and is_inside_tree():
+		lod_renderer.update(get_viewport().get_camera_3d())
 
 func get_building_mesh_for_asset_part(asset_id: String, part_index: int) -> Mesh:
-	var key := _part_key(asset_id, part_index)
-	if multimeshes.has(key):
-		var mmi: MultiMeshInstance3D = multimeshes[key]
-		if mmi.multimesh and mmi.multimesh.mesh:
-			return mmi.multimesh.mesh
-	return _load_mesh_for_asset_part(asset_id, part_index)
-
-func _setup_multimesh_for_asset_part(asset_id: String, part_index: int) -> void:
-	var key := _part_key(asset_id, part_index)
-	var mesh := _load_mesh_for_asset_part(asset_id, part_index)
-	var is_broken := asset_id == "broken:error"
-	var mmi := MultiMeshInstance3D.new()
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.instance_count = 0
-	if mesh:
-		mm.mesh = mesh
-	else:
-		mm.mesh = _create_fallback_mesh()
-		if is_broken:
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = Color.MAGENTA
-			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED # Glow!
-			mm.mesh.surface_set_material(0, mat)
-
-	mmi.multimesh = mm
-	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
-	SceneLightingConfig.apply_shadow_policy(
-		mmi,
-		SceneLightingConfig.SHADOW_STATIC_CASTER,
-		"buildings"
-	)
-	add_child(mmi)
-	multimeshes[key] = mmi
-	# Deserted variant: same mesh geometry, warm gray material override.
-	if not is_broken:
-		_setup_deserted_multimesh_for_asset_part(asset_id, part_index, mesh)
-
-func _setup_deserted_multimesh_for_asset_part(asset_id: String, part_index: int, mesh: Mesh) -> void:
-	var key := _part_key(asset_id, part_index)
-	var mmi := MultiMeshInstance3D.new()
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.instance_count = 0
-	# Use the same mesh; if none loaded yet use the fallback (no special broken tint for deserted).
-	mm.mesh = mesh if mesh else _create_fallback_mesh()
-	var mat := StandardMaterial3D.new()
-	# Warm gray, slightly desaturated — visually distinct from the live color palette.
-	mat.albedo_color = Color(0.45, 0.42, 0.38, 1.0)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	# material_override on the node, not surface_set_material on the mesh — avoids mutating
-	# the shared Mesh resource that the normal multimesh also references.
-	mmi.material_override = mat
-	mmi.multimesh = mm
-	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
-	SceneLightingConfig.apply_shadow_policy(
-		mmi,
-		SceneLightingConfig.SHADOW_STATIC_CASTER,
-		"buildings"
-	)
-	add_child(mmi)
-	deserted_multimeshes[key] = mmi
-
-func _load_mesh_for_asset_part(asset_id: String, part_index: int) -> Mesh:
-	if asset_id == "broken:error":
-		return null
-	# Ask Rust for the native path to the LOD0 file for this asset part.
-	var native_path: String = simulation_node.get_building_mesh_part_lod0_native_path(asset_id, part_index)
-	if native_path.is_empty():
-		return null
-	# Convert native path to a Godot res:// or user:// path via globalize/localize.
-	# Since the file is under user://, we derive the user:// path from the native path.
-	var user_native := ProjectSettings.globalize_path("user://")
-	var godot_path: String
-	if native_path.begins_with(user_native):
-		godot_path = "user://" + native_path.substr(user_native.length())
-	else:
-		godot_path = native_path  # fallback: use native path directly
-	if not FileAccess.file_exists(godot_path):
-		push_warning("Buildings: LOD0 file not found for '%s' part %d: %s" % [asset_id, part_index, godot_path])
-		return null
-	var ext := native_path.get_extension().to_lower()
-	var doc: Resource
-	var state: Resource
-	if ext == "fbx":
-		doc = FBXDocument.new()
-		state = FBXState.new()
-	else:
-		doc = GLTFDocument.new()
-		state = GLTFState.new()
-	if doc.append_from_file(native_path, state) != OK:
-		push_warning("Buildings: failed to load mesh for '%s' part %d: %s" % [asset_id, part_index, native_path])
-		return null
-	var scene: Node = doc.generate_scene(state)
-	if not scene:
-		return null
-	var mesh := _bake_scene_to_mesh(scene)
-	scene.queue_free()
-	return mesh
-
-# Bakes all MeshInstance3D nodes in the scene into a single ArrayMesh,
-# applying each node's transform relative to the scene root so the result
-# is correctly positioned and scaled at the scene origin.
-func _bake_scene_to_mesh(root: Node) -> ArrayMesh:
-	var result := ArrayMesh.new()
-	_bake_node(root, root, Transform3D.IDENTITY, result)
-	return result if result.get_surface_count() > 0 else null
-
-func _bake_node(node: Node, root: Node, parent_xform: Transform3D, result: ArrayMesh) -> void:
-	var xform := parent_xform
-	if node is Node3D and node != root:
-		xform = parent_xform * (node as Node3D).transform
-	if node is MeshInstance3D:
-		var mi := node as MeshInstance3D
-		if mi.mesh:
-			var normal_xform := xform.basis.inverse().transposed()
-			for surf in mi.mesh.get_surface_count():
-				var arrays := mi.mesh.surface_get_arrays(surf)
-				# Transform vertex positions and normals into root space.
-				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-				for i in verts.size():
-					verts[i] = xform * verts[i]
-				arrays[Mesh.ARRAY_VERTEX] = verts
-				if arrays[Mesh.ARRAY_NORMAL] is PackedVector3Array:
-					var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
-					for i in normals.size():
-						normals[i] = (normal_xform * normals[i]).normalized()
-					arrays[Mesh.ARRAY_NORMAL] = normals
-				var prim: Mesh.PrimitiveType = mi.mesh.surface_get_primitive_type(surf)
-				var mat := mi.mesh.surface_get_material(surf)
-				var surf_idx := result.get_surface_count()
-				result.add_surface_from_arrays(prim, arrays)
-				if mat:
-					result.surface_set_material(surf_idx, mat)
-	for child in node.get_children():
-		_bake_node(child, root, xform, result)
+	return lod_renderer.get_source_mesh(asset_id, part_index) if lod_renderer != null else null
 
 func _create_fallback_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()
@@ -400,25 +234,16 @@ func _setup_building_site_surfaces() -> void:
 	add_child(building_site_surface_instance)
 
 func _process(_delta: float) -> void:
-	var rebuild_due := Engine.get_process_frames() % 30 == 0
-	if not PerfDebug.is_enabled():
-		if rebuild_due:
-			_update_building_render_frame()
-		return
-
-	var frame_start_us := Time.get_ticks_usec()
-	var update_elapsed_ms := 0.0
-	if rebuild_due:
-		var update_start_us := Time.get_ticks_usec()
-		_update_building_render_frame()
-		update_elapsed_ms = float(Time.get_ticks_usec() - update_start_us) / 1000.0
-	PerfDebug.record(
-		"buildings",
-		float(Time.get_ticks_usec() - frame_start_us) / 1000.0,
-		{
-			"update": update_elapsed_ms,
-		}
-	)
+	var frame_start_us := Time.get_ticks_usec() if PerfDebug.is_enabled() else 0
+	if lod_renderer != null:
+		lod_renderer.update(get_viewport().get_camera_3d())
+	_update_building_render_frame()
+	if PerfDebug.is_enabled():
+		PerfDebug.record("buildings", float(Time.get_ticks_usec() - frame_start_us) / 1000.0, {
+			"lod_parts": lod_renderer.evaluated_parts if lod_renderer else 0,
+			"lod_chunks": lod_renderer.queried_chunks if lod_renderer else 0,
+			"upload_bytes": lod_renderer.uploaded_bytes if lod_renderer else 0,
+		})
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -429,29 +254,14 @@ func _input(event: InputEvent) -> void:
 
 func _update_building_render_frame(force_site_mesh: bool = false) -> bool:
 	var known_site_revision := -1 if force_site_mesh else building_site_revision
-	var frame: Dictionary = simulation_node.try_get_building_render_frame(
-		_render_asset_ids,
-		_render_part_indices,
-		_zone_ids,
-		known_site_revision
+	var frame: Dictionary = simulation_node.try_get_building_site_frame(
+		_zone_ids, known_site_revision, building_visual_revision
 	)
 	if bool(frame.get("busy", true)):
 		return false
-
-	var building_buffers: Array = frame.get("building_transforms", []) as Array
-	var deserted_buffers: Array = frame.get("deserted_transforms", []) as Array
-	for index in _render_keys.size():
-		var key := _render_keys[index]
-		if index < building_buffers.size() and multimeshes.has(key):
-			_set_multimesh_buffer(
-				multimeshes[key] as MultiMeshInstance3D,
-				building_buffers[index] as PackedFloat32Array
-			)
-		if index < deserted_buffers.size() and deserted_multimeshes.has(key):
-			_set_multimesh_buffer(
-				deserted_multimeshes[key] as MultiMeshInstance3D,
-				deserted_buffers[index] as PackedFloat32Array
-			)
+	building_visual_revision = int(frame.get("visual_revision", building_visual_revision))
+	if not frame.has("plot_transforms"):
+		return true
 
 	var plot_buffers: Array = frame.get("plot_transforms", []) as Array
 	var site_buffers: Array = frame.get("construction_site_transforms", []) as Array

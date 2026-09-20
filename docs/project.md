@@ -6,6 +6,15 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated
+  per-asset city scans; Rust shares the editor's screen-size policy, variable chains and hysteresis.
+  Graphics → Building detail applies Performance/Balanced/Quality live. Tier resources are
+  cached; unchanged views perform no LOD evaluation/upload. Lifecycle/fallback/selection checks,
+  1,849 Rust tests, Godot regressions and rendered Kuopio review pass. Generated release GPU
+  trials improved ~0.854→0.452 ms wide and ~2.480→0.224 ms street; switching adds bounded
+  CPU/upload work. Automatic gameplay night windows and metre-field migration remain separate.
+  See [the contract, measurements and limits](asset_editor.md#gameplay-building-lods--render-07).
+
 - **Asset context menus (`TOOLS-07`, done)**: unified preview/list/library actions; explicit Rotate / R;
   cancellable creation/duplication, full-chain LOD edits and one-step undo. Rust prepares lossless
   commands and safe independent copies; original pack credits survive export, and recoverable
@@ -54,12 +63,14 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   Mesh-part state, editor views and package I/O have separate
   owners; staged saves preserve complete LOD chains and external dependencies. Frontage/access guides
   share compact filled arrows, softer colors, fine outlines and lighter labels/handles. Roadside/traffic
-  scenes and gameplay building LOD switching remain deferred. See [the editor contract and checks](asset_editor.md#working-building-previews-and-safe-packaging--tools-04).
+  scenes remain deferred; gameplay building LOD switching is owned by `RENDER-07`.
+  See [the editor contract and checks](asset_editor.md#working-building-previews-and-safe-packaging--tools-04).
 
 - **Automatic asset LOD inspection (`TOOLS-05`)**: a shared Rust screen-size policy now drives
   cached automatic preview tiers, quality presets and temporary per-part inspection. Pixel/triangle
   readouts expose the decision; saved metre bands are preserved but do not drive the preview.
-  Art calibration, schema migration and spatial gameplay integration remain separate work.
+  Art calibration and schema migration remain separate work; spatial gameplay integration is
+  owned by `RENDER-07`.
   See [the policy and verification scope](asset_editor.md#shared-lod-policy-and-automatic-inspection--tools-05).
 
 - **Vegetation LOD material candidate (`RENDER-02`, partial)**: the distant shader now thins and darkens wood and filters its deterministic mask across derivative-selected octaves, because a lit trunk at a kilometre was the brightest thing on the mesh. A new apparent-height sweep from 64 down to 2 px then found the larger defect underneath: the near crown filled only 14.2% and 15.3% of its own silhouette, against 55.3% and 65.6% for the same meshes with opaque cards, so the baked foliage mask and not the geometry was removing three quarters of the canopy, and the mean near conifer read redder than it read green. Near fill also fell with distance, because a card's cluster vanished outright once a mip held one texel per cell. The mask now fills its atlas cell, carries denser clusters, and fills rather than vanishes when it stops resolving: near fill becomes 41.6% and 50.0% and no longer falls as a tree shrinks, which is the measured form of a forest that stopped gaining weight with every step the camera takes toward it. Those coverage steps then turned out to be measured through a blind spot: coverage is the fill of a crown's own bounding box and every level is rastered at one apparent height, so both of a crown's size terms are divided out, and the distant crowns were built at half the near crown's width because the lathe used the branch base radius where the near crown reaches past it and hangs cards beyond that. The distant lathe is now sized from the measured near foliage envelope, and the harness records `footprint` beside `coverage`. Ground cover at the switch, against the near crown, moves from 52.8%/47.1% to 101.7%/93.0% for conifer and from 47.2%/57.6% to 103.9%/88.4% for broadleaf. No triangle was added at any level for either species, and no range, instance, material or atlas changed anywhere in this work. Paired `E13` GPU captures on a GTX 1060 3GB then priced it: scatter cost moves by `-0.098` to `+0.224 ms` across five views, three of them negative, against a `5.8-6.9 ms` scatter and a `0.25 ms` within-trial spread, so the change is below the noise floor; the fill-bound 1.5x render-scale trial went down. Two of five views gained one draw call and at most `0.131%` primitives, from one more patch clearing frustum culling with the wider crown bounds, and video memory is unchanged. On screen the distant canopy darkens the ground it stands on by `42%` more than before. Patch granularity, distant wind and pine/variant collapse remain open. See [the measurements and verification limits](terrain.md#vegetation-lod-reference-measurements--render-02-2026-09-13).

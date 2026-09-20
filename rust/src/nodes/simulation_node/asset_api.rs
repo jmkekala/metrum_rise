@@ -52,28 +52,14 @@ impl SimulationNode {
         get_building_mesh_part_count(&self.lock_core(), qualified_id)
     }
 
-    /// Returns the native filesystem path to one building mesh part's LOD0 mesh file.
+    /// Returns changed site/construction visuals independently of camera-driven mesh LODs.
+    /// Unchanged revisions return no buffers; the former all-city per-asset scan is removed.
     #[func]
-    pub fn get_building_mesh_part_lod0_native_path(
+    pub fn try_get_building_site_frame(
         &self,
-        qualified_id: GString,
-        part_index: i32,
-    ) -> GString {
-        use crate::nodes::sim::bridge::assets::get_building_mesh_part_lod0_native_path;
-        get_building_mesh_part_lod0_native_path(&self.lock_core(), qualified_id, part_index)
-    }
-
-    /// Returns one coherent building-render frame, or `busy = true` without waiting for SimCore.
-    ///
-    /// Asset-part and zone outputs preserve the order of the supplied request arrays. Site mesh
-    /// buffers are included only when their revision differs from `known_site_revision`.
-    #[func]
-    pub fn try_get_building_render_frame(
-        &self,
-        asset_ids: PackedStringArray,
-        part_indices: PackedInt32Array,
         zone_ids: PackedInt32Array,
         known_site_revision: i64,
+        known_visual_revision: i64,
     ) -> VarDictionary {
         let mut frame = VarDictionary::new();
         frame.set("busy", true);
@@ -81,22 +67,15 @@ impl SimulationNode {
             return frame;
         };
 
-        let part_count = asset_ids.len().min(part_indices.len());
-        let mut building_transforms = VarArray::new();
-        let mut deserted_transforms = VarArray::new();
-        for index in 0..part_count {
-            let asset_id = asset_ids[index].to_string();
-            let part_index = part_indices[index];
-            building_transforms.push(
-                &core
-                    .get_building_transforms_for_asset_part_internal(&asset_id, part_index)
-                    .to_variant(),
-            );
-            deserted_transforms.push(
-                &core
-                    .get_deserted_building_transforms_for_asset_part_internal(&asset_id, part_index)
-                    .to_variant(),
-            );
+        let site_revision = core.get_building_site_revision_internal();
+        let visual_revision = core.allocator.building_visual_revision;
+        frame.set("busy", false);
+        frame.set("site_revision", site_revision as i64);
+        frame.set("visual_revision", visual_revision as i64);
+        if known_site_revision == site_revision as i64
+            && known_visual_revision == visual_revision as i64
+        {
+            return frame;
         }
 
         let mut plot_transforms = VarArray::new();
@@ -127,10 +106,6 @@ impl SimulationNode {
             );
         }
 
-        let site_revision = core.get_building_site_revision_internal();
-        frame.set("busy", false);
-        frame.set("building_transforms", building_transforms.to_variant());
-        frame.set("deserted_transforms", deserted_transforms.to_variant());
         frame.set("plot_transforms", plot_transforms.to_variant());
         frame.set(
             "construction_site_transforms",
@@ -144,12 +119,7 @@ impl SimulationNode {
             "construction_scaffold_transforms",
             construction_scaffold_transforms.to_variant(),
         );
-        frame.set(
-            "site_revision",
-            i64::try_from(site_revision).unwrap_or(i64::MAX),
-        );
-        if known_site_revision < 0 || u64::try_from(known_site_revision).ok() != Some(site_revision)
-        {
+        if known_site_revision != site_revision as i64 {
             frame.set(
                 "site_mesh_data",
                 core.get_building_site_mesh_data_internal().to_variant(),

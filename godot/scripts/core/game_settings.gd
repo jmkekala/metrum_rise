@@ -19,6 +19,7 @@ const KEY_WINDOW_HEIGHT := "window_height"
 const KEY_WINDOW_X := "window_x"
 const KEY_WINDOW_Y := "window_y"
 const KEY_FULLSCREEN := "fullscreen"
+const KEY_BUILDING_LOD_QUALITY := "building_lod_quality"
 const KEY_UI_SCALE := "ui_scale"
 const KEY_HAS_POSITION := "has_position"
 
@@ -26,6 +27,7 @@ const DEFAULT_OPTIONS_CATEGORY := "mods"
 const DEFAULT_OPTIONS_WINDOW_WIDTH := 820
 const DEFAULT_OPTIONS_WINDOW_HEIGHT := 540
 const DEFAULT_FULLSCREEN := false
+const DEFAULT_BUILDING_LOD_QUALITY := 1
 const DEFAULT_UI_SCALE := 1.0
 const MIN_UI_SCALE := 0.8
 const MAX_UI_SCALE := 1.5
@@ -73,6 +75,10 @@ static func get_fullscreen_enabled() -> bool:
 
 static func save_fullscreen_enabled(enabled: bool) -> Error:
 	return set_value(SECTION_GRAPHICS, KEY_FULLSCREEN, enabled)
+
+static func get_building_lod_quality() -> int:
+	var value := int(get_value(SECTION_GRAPHICS, KEY_BUILDING_LOD_QUALITY, DEFAULT_BUILDING_LOD_QUALITY))
+	return value if value >= 0 and value <= 2 else DEFAULT_BUILDING_LOD_QUALITY
 
 static func apply_display_settings() -> void:
 	apply_fullscreen_enabled(get_fullscreen_enabled())
@@ -201,6 +207,7 @@ static func _write_defaults(cfg: ConfigFile) -> void:
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_WIDTH, DEFAULT_OPTIONS_WINDOW_WIDTH)
 	cfg.set_value(SECTION_OPTIONS_WINDOW, KEY_WINDOW_HEIGHT, DEFAULT_OPTIONS_WINDOW_HEIGHT)
 	cfg.set_value(SECTION_GRAPHICS, KEY_FULLSCREEN, DEFAULT_FULLSCREEN)
+	cfg.set_value(SECTION_GRAPHICS, KEY_BUILDING_LOD_QUALITY, DEFAULT_BUILDING_LOD_QUALITY)
 	cfg.set_value(SECTION_ACCESSIBILITY, KEY_UI_SCALE, DEFAULT_UI_SCALE)
 
 static func _layout_section(layout_id: String) -> String:

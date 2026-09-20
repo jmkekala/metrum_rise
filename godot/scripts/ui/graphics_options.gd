@@ -15,6 +15,9 @@ var _initial_fullscreen := GameSettings.DEFAULT_FULLSCREEN
 var _pending_fullscreen := GameSettings.DEFAULT_FULLSCREEN
 var _syncing := false
 var _fullscreen_check: CheckBox
+var _initial_lod_quality := GameSettings.DEFAULT_BUILDING_LOD_QUALITY
+var _pending_lod_quality := GameSettings.DEFAULT_BUILDING_LOD_QUALITY
+var _lod_quality: OptionButton
 
 func _ready() -> void:
 	_build_ui()
@@ -37,26 +40,48 @@ func _build_ui() -> void:
 	_fullscreen_check.toggled.connect(_on_fullscreen_toggled)
 	add_child(_fullscreen_check)
 
+	var detail_label := Label.new()
+	detail_label.text = "Building detail"
+	add_child(detail_label)
+	_lod_quality = OptionButton.new()
+	for label in ["Performance", "Balanced", "Quality"]:
+		_lod_quality.add_item(label)
+	_lod_quality.tooltip_text = "Controls when buildings switch to simpler meshes. Does not affect simulation or remove distant buildings."
+	_lod_quality.item_selected.connect(func(index: int):
+		if not _syncing:
+			_pending_lod_quality = index
+			_emit_dirty_state()
+	)
+	add_child(_lod_quality)
+
 func refresh() -> void:
 	_initial_fullscreen = GameSettings.get_fullscreen_enabled()
 	_pending_fullscreen = _initial_fullscreen
+	_initial_lod_quality = GameSettings.get_building_lod_quality()
+	_pending_lod_quality = _initial_lod_quality
 	_sync_controls()
 	_emit_dirty_state()
 
 func has_pending_changes() -> bool:
-	return _pending_fullscreen != _initial_fullscreen
+	return _pending_fullscreen != _initial_fullscreen or _pending_lod_quality != _initial_lod_quality
 
 func apply_changes() -> Error:
-	var err := GameSettings.save_fullscreen_enabled(_pending_fullscreen)
+	var config := GameSettings.load_config()
+	config.set_value(GameSettings.SECTION_GRAPHICS, GameSettings.KEY_FULLSCREEN, _pending_fullscreen)
+	config.set_value(GameSettings.SECTION_GRAPHICS, GameSettings.KEY_BUILDING_LOD_QUALITY, _pending_lod_quality)
+	var err := GameSettings.save_config(config)
 	if err != OK:
 		return err
 	_initial_fullscreen = _pending_fullscreen
+	_initial_lod_quality = _pending_lod_quality
 	GameSettings.apply_fullscreen_enabled(_pending_fullscreen)
+	get_tree().call_group("building_lod_renderers", "set_quality", _pending_lod_quality)
 	_emit_dirty_state()
 	return OK
 
 func reset_defaults() -> void:
 	_pending_fullscreen = GameSettings.DEFAULT_FULLSCREEN
+	_pending_lod_quality = GameSettings.DEFAULT_BUILDING_LOD_QUALITY
 	_sync_controls()
 	_emit_dirty_state()
 
@@ -70,6 +95,8 @@ func _sync_controls() -> void:
 	_syncing = true
 	if _fullscreen_check:
 		_fullscreen_check.button_pressed = _pending_fullscreen
+	if _lod_quality:
+		_lod_quality.select(_pending_lod_quality)
 	_syncing = false
 
 func _emit_dirty_state() -> void:
