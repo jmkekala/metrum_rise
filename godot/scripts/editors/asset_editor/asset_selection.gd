@@ -213,6 +213,11 @@ func handle_input(event: InputEvent) -> bool:
 		if event.pressed:
 			if not editor._view._preview_view_rect.get_global_rect().has_point(event.position):
 				return false
+			# Controls inside the pane, such as the thumbnail framing actions, own their clicks:
+			# _input runs ahead of the GUI layer, so claiming the press here would swallow them.
+			var gui_control := editor.get_viewport().gui_get_hovered_control()
+			if gui_control != null and gui_control.mouse_filter == Control.MOUSE_FILTER_STOP:
+				return false
 			if event.alt_pressed and event.button_index == MOUSE_BUTTON_LEFT:
 				cycle(event.position)
 				return true

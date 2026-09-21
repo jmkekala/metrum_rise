@@ -9,6 +9,7 @@ const CreationDialog = preload("res://scripts/editors/asset_editor/creation_dial
 const MeshImportDialog = preload("res://scripts/editors/mesh_import_dialog.gd")
 const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geometry.gd")
 const ColourSchemes = preload("res://scripts/editors/asset_editor/colour_schemes.gd")
+const ThumbnailCapture = preload("res://scripts/editors/asset_editor/thumbnail_capture.gd")
 
 var document := AssetAuthoringDocument.new()
 var policy := AssetAuthoringPolicy.new()
@@ -18,6 +19,7 @@ var rendering := false
 var ready := false
 var has_document := false
 var colours: RefCounted
+var thumbnails: RefCounted
 var _editor: Node
 var _adapter: RefCounted
 var _capturing := false
@@ -26,13 +28,12 @@ var _guard: ConfirmationDialog
 var _after_save: Callable
 var _catalog_error := ""
 var _issues: Array = []
-var _thumbnail_path := ""
-var _thumbnail_capturing := false
 
 func _init(editor: Node) -> void:
 	_editor = editor
 	_adapter = Adapter.new(editor)
 	colours = ColourSchemes.new(editor)
+	thumbnails = ThumbnailCapture.new(editor)
 
 func initialize() -> void:
 	_catalog_error = policy.reload_catalog()
@@ -133,8 +134,8 @@ func _document_changed() -> void:
 	view._economy_profile_status_lbl.visible = not view._economy_profile_status_lbl.text.is_empty()
 	view.catalog_refresh.visible = descriptor.get("fields", []).has("economy_profile")
 	var thumbnail_source := str(state.get("thumbnail_source", ""))
-	if thumbnail_source != _thumbnail_path:
-		_load_thumbnail(thumbnail_source)
+	if thumbnail_source != thumbnails.path():
+		thumbnails.load_image(thumbnail_source)
 	if not _capturing:
 		_adapter.render(state)
 	colours.refresh(state)
@@ -287,7 +288,7 @@ func load_manifest(data: Dictionary) -> void:
 	_adapter.forget_sources()
 	var colour_sources: Dictionary = JSON.parse_string(AssetAuthoringPolicy.colour_sources_json(JSON.stringify(metadata), directory))
 	document.reset({"params": metadata, "sources": sources, "colour_sources": colour_sources.get("sources", {}), "origin": {"pack_id": pack_id, "asset_id": data.get("asset_id", "")}, "thumbnail_source": thumbnail_source})
-	_load_thumbnail(thumbnail_source)
+	thumbnails.load_image(thumbnail_source)
 	_editor._view.show_task("model")
 
 func choose_pack(pack: Dictionary) -> void:
@@ -446,7 +447,7 @@ func load_draft(path: String) -> void:
 		return
 	_adapter.forget_sources()
 	document.reset(result["document"], true, path)
-	_load_thumbnail(str(result["document"].get("thumbnail_source", "")))
+	thumbnails.load_image(str(result["document"].get("thumbnail_source", "")))
 	_editor._view.show_task("model")
 
 func validate() -> void:
@@ -533,51 +534,13 @@ func publish(move_original: bool = false) -> void:
 	_editor._view.status.text = "Runtime asset exported. No unsaved changes."
 	_editor._log("Runtime asset exported: " + str(params["asset_id"]))
 
-func capture_thumbnail() -> void:
-	if not has_document or _thumbnail_capturing:
-		return
-	if DisplayServer.get_name() == "headless":
-		message("Thumbnail capture needs a rendered preview.")
-		return
-	_thumbnail_capturing = true
-	var process_mode: Node.ProcessMode = _editor.process_mode
-	# Freeze interaction/preview updates for the capture frame so guides cannot reappear.
-	_editor.process_mode = Node.PROCESS_MODE_DISABLED
-	var preview_state: Dictionary = _editor._preview.begin_thumbnail_capture()
-	var visibility := {}
-	for overlay in [_editor._view.picking_overlay, _editor._view.hover_label, _editor._view._selection_rect_overlay]:
-		visibility[overlay] = overlay.visible
-		overlay.hide()
-	await RenderingServer.frame_post_draw
-	var image: Image = _editor.get_viewport().get_texture().get_image()
-	var rect: Rect2i = Rect2i(_editor._view._preview_view_rect.get_global_rect())
-	# Restore before file I/O, including its failure paths, or document-change callbacks.
-	_editor._preview.end_thumbnail_capture(preview_state)
-	for overlay: Control in visibility:
-		overlay.visible = visibility[overlay]
-	_editor.process_mode = process_mode
-	_thumbnail_capturing = false
-	image = image.get_region(rect.intersection(Rect2i(Vector2i.ZERO, image.get_size())))
-	var directory := ProjectSettings.globalize_path("user://asset_drafts/thumbnails")
-	DirAccess.make_dir_recursive_absolute(directory)
-	var path := directory.path_join("%d-%d.png" % [OS.get_process_id(), Time.get_ticks_usec()])
-	var error := image.save_png(path)
-	if error != OK:
-		message("Could not save thumbnail: " + error_string(error))
-		return
-	var next := document.snapshot()
-	next["params"]["thumbnail"] = "thumbnail.png"
-	next["thumbnail_source"] = path
-	document.apply(next, "Capture thumbnail")
-	_load_thumbnail(path)
+## Show the capture frame so the shot can be composed before it is taken.
+func begin_thumbnail_framing() -> void:
+	thumbnails.begin()
 
-func _load_thumbnail(path: String) -> void:
-	_thumbnail_path = path
-	_editor._view.thumbnail.texture = null
-	if not path.is_empty() and FileAccess.file_exists(path):
-		var image := Image.load_from_file(path)
-		if image != null:
-			_editor._view.thumbnail.texture = ImageTexture.create_from_image(image)
+## Capture immediately at the fixed output size, skipping the framing step.
+func capture_thumbnail() -> void:
+	await thumbnails.capture()
 
 func message(text: String) -> void:
 	var dialog := AcceptDialog.new()

@@ -184,6 +184,7 @@ func _build_ui() -> void:
 	_selection_rect_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_selection_rect_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_preview_view_rect.add_child(_selection_rect_overlay)
+	_editor._session.thumbnails.build(_preview_view_rect)
 	_editor._cam_input.viewport_rect_control = _preview_view_rect
 	_build_preview_popup(canvas)
 	inspector = PanelContainer.new()

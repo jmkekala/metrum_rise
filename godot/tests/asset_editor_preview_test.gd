@@ -7,6 +7,7 @@ extends SceneTree
 const Editor = preload("res://scripts/editors/asset_editor.gd")
 const MeshPart = preload("res://scripts/editors/asset_editor/mesh_part.gd")
 const PreviewMaterials = preload("res://scripts/editors/asset_editor/preview_materials.gd")
+const ThumbnailCapture = preload("res://scripts/editors/asset_editor/thumbnail_capture.gd")
 
 class TestEditor extends Editor:
 	func _save_config() -> void:
@@ -395,6 +396,7 @@ func _capture_comparison(editor: Node3D) -> void:
 				await process_frame
 				await RenderingServer.frame_post_draw
 				_expect(root.get_texture().get_image().save_png(directory.path_join("comparison-%s-%s.png" % [theme, preset.to_lower()])) == OK, "rendered textured comparison capture")
+		await _test_framing_click(editor)
 		await _test_thumbnail_capture(editor, directory)
 
 func _test_thumbnail_capture(editor: Node3D, directory: String) -> void:
@@ -407,7 +409,8 @@ func _test_thumbnail_capture(editor: Node3D, directory: String) -> void:
 		preview._frontage_label, preview._frontage_arrow, preview._lot_overlay,
 		preview._ground_grid, preview._selection_overlay, preview._hover_outline,
 		preview._scale_reference, preview._ghost_root, view.picking_overlay,
-		view.hover_label, view._selection_rect_overlay]
+		view.hover_label, view._selection_rect_overlay,
+		editor._session.thumbnails._overlay, editor._session.thumbnails._actions]
 	var visibility := {}
 	for helper in helpers:
 		visibility[helper] = helper.visible
@@ -430,7 +433,9 @@ func _test_thumbnail_capture(editor: Node3D, directory: String) -> void:
 	_expect(preview._ground.material_overlay == grid and editor.process_mode == mode, "capture restores grid and interaction")
 	var captured: Dictionary = editor._session.document.snapshot()
 	var thumbnail := Image.load_from_file(captured.thumbnail_source)
-	_expect(thumbnail != null and thumbnail.get_size() == Vector2i(view._preview_view_rect.size), "saved thumbnail crops to the preview pane")
+	# Output must not follow the window: one size backs both the editor list and in-game details.
+	_expect(thumbnail != null and thumbnail.get_size() == ThumbnailCapture.OUTPUT_SIZE, "saved thumbnail normalises to the fixed output size")
+	_expect(str(captured.params.thumbnail) == ThumbnailCapture.FILE_NAME, "capture publishes the compressed thumbnail name")
 	_expect(thumbnail.save_png(directory.path_join("thumbnail-clean.png")) == OK, "save clean thumbnail verification artifact")
 	editor._session.undo()
 	_expect(editor._session.document.snapshot() == before, "thumbnail capture is one undoable command and does not edit geometry")
@@ -757,3 +762,40 @@ func _optional_capture_and_measure(editor: Node3D) -> void:
 			await process_frame
 			await RenderingServer.frame_post_draw
 			_expect(root.get_texture().get_image().save_png(directory.path_join("inspector-%s.png" % tab)) == OK, "rendered inspector spacing")
+
+# Drives the framing button through the real input pipeline. The editor's _input runs ahead of the
+# GUI layer and claims left-clicks inside the preview pane, so a regression there swallows the
+# press while still showing hover feedback — which looks like a dead button, not a broken handler.
+func _test_framing_click(editor: Node3D) -> void:
+	var thumbs = editor._session.thumbnails
+	var before := str(thumbs.path())
+	editor._session.begin_thumbnail_framing()
+	await process_frame
+	_expect(thumbs._actions.visible, "framing mode shows its actions")
+	var take: Button = thumbs._actions.get_child(0)
+	_expect(take.text == "Take snapshot", "first action is the snapshot button")
+	var at: Vector2 = take.get_global_rect().get_center()
+	var motion := InputEventMouseMotion.new()
+	motion.position = at
+	motion.global_position = at
+	Input.parse_input_event(motion)
+	await process_frame
+	_expect(editor.get_viewport().gui_get_hovered_control() == take, "pointer hovers the snapshot button")
+	for is_down in [true, false]:
+		var click := InputEventMouseButton.new()
+		click.button_index = MOUSE_BUTTON_LEFT
+		click.pressed = is_down
+		click.position = at
+		click.global_position = at
+		Input.parse_input_event(click)
+		await process_frame
+	# The capture awaits a drawn frame before it writes, so settle before asserting on the result.
+	for frame in 4:
+		await RenderingServer.frame_post_draw
+		await process_frame
+	_expect(str(thumbs.path()) != before and not str(thumbs.path()).is_empty(), "clicking Take snapshot captures a thumbnail")
+	_expect(not thumbs._actions.visible, "capturing leaves framing mode")
+	var state: Dictionary = editor._session.document.snapshot()
+	_expect(str(state.params.thumbnail) == thumbs.FILE_NAME, "click capture writes the compressed thumbnail")
+	editor._session.undo()
+	await process_frame

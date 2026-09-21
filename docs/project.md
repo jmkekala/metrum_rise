@@ -131,7 +131,9 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   Further edits remain guarded; failed exports preserve the dirty state and existing drafts
   remain untouched. See [`asset_editor.md`](asset_editor.md#task-oriented-building-authoring--tools-06).
 
-- **Asset thumbnails (`TOOLS-06`)**: captures retain the model, terrain and yard surfaces while
+- **Asset thumbnails (`TOOLS-06`)**: capture opens a framing mode that dims everything outside the
+  crop, then writes a fixed 1024×768 WebP regardless of window size, so one image serves the editor
+  list and in-game asset details. Captures retain the model, terrain and yard surfaces while
   omitting editor guides, labels, selection overlays, grids and comparison helpers. Visibility
   and interaction are restored after capture. See [`asset_editor.md`](asset_editor.md).
 

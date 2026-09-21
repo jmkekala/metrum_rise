@@ -38,7 +38,7 @@ func _overview() -> void:
 	v.thumbnail.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	v.thumbnail.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	box.add_child(v.thumbnail)
-	v.button(box, "Capture thumbnail from preview", e._session.capture_thumbnail)
+	v.button(box, "Capture thumbnail from preview…", e._session.begin_thumbnail_framing)
 	v.status = _label(box, "")
 	var advanced: Control = v.advanced(box, "identity")
 	v._asset_id_edit = v.text_field(advanced, "asset_id", "Asset ID · authored")

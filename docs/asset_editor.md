@@ -1611,11 +1611,20 @@ Planned quality-of-life features (not shipped):
 
 Thumbnail generation rules:
 
-- Overview captures the visible preview pane, excluding editor chrome. This is an explicit authoring command with undo/redo.
+- Overview starts a framing mode that dims everything outside the capture rectangle and shows the
+  output size, so the shot is composed against the real crop before it is taken. The camera stays
+  live while framing. Taking the snapshot is an explicit authoring command with undo/redo.
+- Output is always 1024×768. Capture crops the largest 4:3 rectangle that fits the preview pane and
+  resizes once to that size, so thumbnails never vary with window or monitor size. The same image
+  backs the editor list and in-game asset detail views, which makes the size a content contract
+  rather than a display detail; a pane narrower than the output reports that it was upscaled.
 - Captures omit anchor/yard guides and labels, frontage/lot/grid lines, selection/hover handles,
-  the scale reference and comparison assets. The model, terrain and authored yard surfaces remain.
-  Helper visibility and interaction are restored after the captured frame, before saving the image.
-- Captures live beside editor drafts, are packaged as `thumbnail.png` on runtime export, and survive draft and published-asset reopening.
+  the scale reference, comparison assets and the framing overlay itself. The model, terrain and
+  authored yard surfaces remain. Helper visibility and interaction are restored after the captured
+  frame, before saving the image.
+- Captures live beside editor drafts, are packaged as `thumbnail.webp` (lossy, quality 0.9) on
+  runtime export, and survive draft and published-asset reopening. Publication is additive, so an
+  asset previously exported with `thumbnail.png` keeps that file until it is removed by hand.
 - Capture requires a rendered window; headless validation/export still works with existing thumbnail files.
 - Standardized per-class catalog-thumbnail rigs remain later work; current captures use the author's preview camera and lighting.
 
@@ -1626,6 +1635,11 @@ V1 inspector and viewport contract:
   of assets and long authored IDs.
 - Dense editor shells support dark and light UI themes from a top-right chrome switch. The selected
   mode is a local editor preference and applies to editor-owned dialogs such as mesh import.
+- Viewport selection runs in `_input`, ahead of Godot's GUI layer, and claims left-clicks landing
+  inside the preview pane. Controls placed inside that pane, such as the thumbnail framing actions,
+  must therefore be released explicitly: selection skips the press when a `MOUSE_FILTER_STOP`
+  control is hovered. Without that check a pane control still shows hover feedback while its press
+  is swallowed, which presents as a dead button rather than a broken handler.
 - Resizable editor UI state is local and persistent. The asset editor stores its window size and
   position, browser/inspector/log split sizes, and editor-owned dialog positions/sizes/splits so
   restarts preserve the working layout. Restored dialog geometry must be clamped to the current
