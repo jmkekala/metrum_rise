@@ -937,7 +937,8 @@ if [ $TEST -eq 1 ]; then
         vehicle_ground_support_test selection_gesture_test ui_settings_test \
         network_tool_chunk_renderer_test road_benchmark_metrics_test \
         road_junction_preview_test road_preview_stream_test vegetation_invalidation_test \
-        vegetation_edit_test new_game_dialog_test day_cycle_test camera_save_load_test \
+        vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
+        new_game_dialog_test day_cycle_test camera_save_load_test \
         zoning_road_tool_test; do
         bridge_test_command=(godot --headless --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
@@ -996,10 +997,32 @@ if [ $TEST -eq 1 ]; then
             --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
             exit 1
         fi
+    elif [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
+        echo "Running rendered terrain shader tests on $DISPLAY..."
+        if ! godot --display-driver x11 --rendering-method gl_compatibility \
+            --audio-driver Dummy --resolution 128x128 --script res://tests/terrain_overlay_shader_test.gd; then
+            exit 1
+        fi
     elif [ "$METRUM_PLATFORM" = "linux" ]; then
-        echo "Rendered terrain shader tests skipped: xvfb-run is unavailable."
+        echo "Rendered terrain shader tests skipped: no xvfb-run and no DISPLAY."
     else
         echo "Rendered terrain shader tests skipped on macOS: the Xvfb/X11 path is Linux-only and a direct macOS renderer path is not yet validated."
+    fi
+    # Forward+ only: both compare what the shipped renderer draws, and the compatibility
+    # backend does not draw it. There is no Xvfb path for Vulkan here.
+    if [ "$METRUM_PLATFORM" = "linux" ] && [ -n "$DISPLAY" ]; then
+        echo "Running rendered vegetation level match test on $DISPLAY..."
+        if ! godot --audio-driver Dummy --resolution 640x480 \
+            --script res://tests/vegetation_level_match_test.gd; then
+            exit 1
+        fi
+        echo "Running rendered vegetation wind gate test on $DISPLAY..."
+        if ! godot --audio-driver Dummy --resolution 640x480 \
+            --script res://tests/vegetation_wind_gate_test.gd; then
+            exit 1
+        fi
+    else
+        echo "Rendered vegetation tests skipped: they need a Forward+ display."
     fi
     exit 0
 fi

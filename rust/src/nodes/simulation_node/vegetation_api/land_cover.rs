@@ -11,7 +11,8 @@ const TEXEL_M: f32 = 8.0;
 const SAMPLES: usize = 8;
 // Species-level crown radii, scaled by the accepted stem's saved/generated size. These are
 // substrate footprints, independent of cosmetic mesh variant, wind and distance level.
-const CROWN_RADII_M: [f32; 2] = [3.0, 3.5];
+/// Unscaled conifer and broadleaf crown radii, also used by the bulldoze preview.
+pub(super) const CROWN_RADII_M: [f32; 2] = [3.0, 3.5];
 const MAX_CROWN_M: f32 = 3.5 * 1.35;
 
 /// A single patch allocation shared by the parallel candidate walk.
@@ -237,7 +238,7 @@ mod tests {
             (layout.half_h / layout.span) as i32,
         );
         let revisions = generations(&core, key);
-        assert!(remove_at(&mut core, Vector2::ZERO, 40.0) > 0);
+        assert!(remove_at(&mut core, Vector2::ZERO, 40.0, 0) > 0);
         assert!(add_at(&mut core, Vector2::new(0.25, 1.0), 0));
         assert!(add_at(&mut core, Vector2::new(-0.25, 1.0), 1));
         assert!(add_at(&mut core, Vector2::new(0.0, 15.0), 3));
@@ -268,7 +269,7 @@ mod tests {
         for (a, b) in edited.iter().zip(&restored) {
             assert!((0..a.samples.len()).all(|i| a.byte(i) == b.byte(i)));
         }
-        assert!(remove_at(&mut core, Vector2::ZERO, 1024.0) > 0);
+        assert!(remove_at(&mut core, Vector2::ZERO, 1024.0, 0) > 0);
         assert!(
             check_products(&core)
                 .iter()

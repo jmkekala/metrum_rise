@@ -59,6 +59,20 @@ const SHADOW_BLUR := 1.80
 const GROUND_SHADOW_AMBIENT := 0.50
 const GROUND_SHADOW_SUN_STRENGTH := 0.50
 const GROUND_SHADOW_MIN_VISIBILITY := 0.02
+# Share of its open-ground brightness a fully covered forest floor keeps once the shadow
+# cascades stop reaching it. The crowns past the cascade edge already replace the shadow their
+# neighbours stop casting; the ground they stand on did not, so a distant stand read as lit
+# field with dark specks on it. This is the receiver half of the same term.
+#
+# The value is derived and not chosen. Terrain ground takes the key light at
+# GROUND_SHADOW_SUN_STRENGTH and the sky at GROUND_SHADOW_AMBIENT, and a fragment the cascades
+# put in shadow keeps GROUND_SHADOW_MIN_VISIBILITY of the key term. Where sun and sky are of
+# comparable strength, that is the ratio below, so ground outside the cascades holds what the
+# same ground held inside them.
+const CANOPY_FLOOR_SHADE_FLOOR := (
+	(GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH * GROUND_SHADOW_MIN_VISIBILITY)
+	/ (GROUND_SHADOW_AMBIENT + GROUND_SHADOW_SUN_STRENGTH)
+)
 const STATIC_CASTER_EXTRA_CULL_MARGIN_M := 32.0
 const DYNAMIC_CASTER_EXTRA_CULL_MARGIN_M := 12.0
 const RECEIVER_EXTRA_CULL_MARGIN_M := 2.0
@@ -85,11 +99,20 @@ var _pinned_day_fraction := -1.0
 var _sky_applied_elevation_deg := INF
 var _sky_applied_azimuth_deg := INF
 
+## Shadow range in effect, in metres. `METRUM_SHADOW_FAR` replaces the authored range, so a
+## probe can separate the two discontinuities that sit near each other in a forest view: the
+## end of shadow at SHADOW_MAX_DISTANCE_M, and the vegetation mesh change further out. Values
+## at or below zero keep the authored range.
+static func shadow_max_distance_m() -> float:
+	var override := OS.get_environment("METRUM_SHADOW_FAR").strip_edges().to_float()
+	return override if override > 0.0 else SHADOW_MAX_DISTANCE_M
+
 static func shadow_split_distances() -> Vector3:
+	var far_m := shadow_max_distance_m()
 	return Vector3(
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_1,
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_2,
-		SHADOW_MAX_DISTANCE_M * SHADOW_SPLIT_3
+		far_m * SHADOW_SPLIT_1,
+		far_m * SHADOW_SPLIT_2,
+		far_m * SHADOW_SPLIT_3
 	)
 
 static func is_lighting_debug_enabled() -> bool:
@@ -102,6 +125,27 @@ static func apply_ground_shadow_parameters(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("ground_shadow_ambient", GROUND_SHADOW_AMBIENT)
 	material.set_shader_parameter("ground_shadow_sun_strength", GROUND_SHADOW_SUN_STRENGTH)
 	material.set_shader_parameter("ground_shadow_min_visibility", GROUND_SHADOW_MIN_VISIBILITY)
+
+## Probe override for the canopy shading strength, which scales both halves of the term: the
+## shade on the crowns and the shade on the ground under them. Zero removes it without an edit
+## to a shader, which is what a paired look at the same stand needs; one is the derived default,
+## and values above it extrapolate past the floor for a stand that still reads too bright. An
+## unset or unparsable value keeps the default.
+static func canopy_shade_strength() -> float:
+	var raw := OS.get_environment("METRUM_CANOPY_SHADE").strip_edges()
+	return clampf(raw.to_float(), 0.0, 2.0) if raw.is_valid_float() else 1.0
+
+## Ties the forest-floor shading ramp to the shadow cascades, exactly as the canopy half in
+## `tree_species.gd` is tied to them. The term begins where the cascades begin to fade and
+## reaches full strength where they end, so no ground inside shadow range changes at all.
+static func apply_canopy_floor_shading(material: ShaderMaterial) -> void:
+	if material == null:
+		return
+	var far_m := shadow_max_distance_m()
+	material.set_shader_parameter("canopy_floor_shade_begin_m", far_m * SHADOW_FADE_START)
+	material.set_shader_parameter("canopy_floor_shade_end_m", far_m)
+	material.set_shader_parameter("canopy_floor_shade_floor", CANOPY_FLOOR_SHADE_FLOOR)
+	material.set_shader_parameter("canopy_floor_shade", canopy_shade_strength())
 
 static func apply_shadow_policy(
 	instance: GeometryInstance3D,
@@ -452,7 +496,7 @@ func _configure_sun(scene_root: Node) -> void:
 	sun.shadow_normal_bias = SHADOW_NORMAL_BIAS
 	sun.shadow_blur = SHADOW_BLUR
 	sun.set("directional_shadow_mode", 2)
-	sun.set("directional_shadow_max_distance", SHADOW_MAX_DISTANCE_M)
+	sun.set("directional_shadow_max_distance", shadow_max_distance_m())
 	sun.set("directional_shadow_split_1", SHADOW_SPLIT_1)
 	sun.set("directional_shadow_split_2", SHADOW_SPLIT_2)
 	sun.set("directional_shadow_split_3", SHADOW_SPLIT_3)
@@ -482,7 +526,7 @@ func _print_debug_if_requested(scene_root: Node) -> void:
 			str(_day_sample.fog_color),
 			_day_sample.ambient_energy,
 			str(_day_sample.ambient_light_scale),
-			SHADOW_MAX_DISTANCE_M,
+			shadow_max_distance_m(),
 			splits.x,
 			splits.y,
 			splits.z,

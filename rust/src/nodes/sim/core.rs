@@ -36,8 +36,8 @@ pub(crate) use road_preview::{
     run_road_preview_worker,
 };
 pub(crate) use snapshot::{
-    BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, WaterRuntimeSnapshot,
-    access_phase_target,
+    BuildingRemovalUndo, SimulationRuntimeSnapshot, SimulationSnapshot, VegetationEditUndo,
+    WaterRuntimeSnapshot, access_phase_target,
 };
 pub(crate) use state::PendingDemandSpawnAction;
 pub(crate) use terrain_payloads::{

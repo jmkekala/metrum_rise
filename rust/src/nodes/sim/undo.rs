@@ -4,11 +4,11 @@
 
 use crate::nodes::sim::core::{
     BuildingRemovalUndo, SimCore, SimulationRuntimeSnapshot, SimulationSnapshot,
-    WaterRuntimeSnapshot,
+    VegetationEditUndo, WaterRuntimeSnapshot,
 };
 use crate::simulation::network::graph::RegionGraphUndoDelta;
 use crate::simulation::zoning::ZoningParcelRemovalUndo;
-use godot::prelude::Vector3;
+use godot::prelude::{Vector2, Vector3};
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -122,6 +122,37 @@ impl SimCore {
             road_surface_topology,
             zoning,
             runtime: None,
+        });
+    }
+
+    /// Records one vegetation brush stamp, folding it into its own stroke's open entry.
+    ///
+    /// The journal carries the gesture that produced it, and a stamp folds in only when the
+    /// entry on top of the stack belongs to that same gesture. A stamp that changed nothing
+    /// journals nothing and pushes nothing, so the entry on top can be an older action, and
+    /// merging on "not the first stamp" alone would attach a clear to the planting under it.
+    /// Merging is expected O(1) per changed cell and never grows the stack.
+    pub(crate) fn push_vegetation_undo(&mut self, journal: VegetationEditUndo) {
+        if journal.is_empty() {
+            return;
+        }
+        if let Some(SimulationSnapshot {
+            runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(open)),
+            ..
+        }) = self.undo_stack.back_mut()
+            && open.accepts(journal.stroke())
+        {
+            open.merge(journal);
+            return;
+        }
+        self.push_undo_snapshot(SimulationSnapshot {
+            road_visual_terrain: None,
+            terrain: None,
+            water: None,
+            trans_graph: None,
+            road_surface_topology: None,
+            zoning: None,
+            runtime: Some(SimulationRuntimeSnapshot::VegetationEdit(journal)),
         });
     }
 
@@ -381,6 +412,18 @@ impl SimCore {
                     SimulationRuntimeSnapshot::BuildingRemoval(removal) => {
                         self.restore_building_removal_undo(removal);
                     }
+                    SimulationRuntimeSnapshot::VegetationEdit(journal) => {
+                        // Every cell restores independently and every patch revision only has
+                        // to change, so the hashed iteration order below cannot alter the
+                        // resulting state.
+                        let (cells, patch_keys) = journal.into_parts();
+                        for (cell, prior) in cells {
+                            self.vegetation_edits.restore_cell(cell, prior);
+                        }
+                        for key in patch_keys {
+                            self.vegetation_edits.bump_patch(key);
+                        }
+                    }
                 }
             }
 
@@ -615,12 +658,22 @@ impl SimCore {
                 last_idx,
                 undo.extractor_sites,
             );
+        // Read before the move: undoing the removal puts the fields back, so the plants they
+        // hide have to go again, exactly as committing those fields did.
+        let restored_field_bounds: Vec<(Vector2, Vector2)> = undo
+            .field_sites
+            .iter()
+            .filter_map(|site| super::editing::polygon_world_bounds(&site.polygon_world))
+            .collect();
         self.agriculture.restore_sites_after_building_removal_undo(
             building_idx,
             last_idx,
             undo.field_sites,
             &mut self.allocator,
         );
+        for bounds in restored_field_bounds {
+            self.invalidate_vegetation_over(bounds);
+        }
 
         for (carrier_idx, carrier) in undo.removed_carriers {
             let current_len = self.agents.agents.len();

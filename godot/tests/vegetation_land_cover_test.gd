@@ -25,7 +25,7 @@ func _run() -> void:
 	root.add_child(simulation)
 	simulation.set_simulation_speed(0.0)
 	_expect(simulation.create_blank_world(1020.0, 1020.0, 10.0, 510.0, 20.0), "create coverage fixture")
-	simulation.remove_vegetation_at(Vector2.ZERO, 1024.0)
+	simulation.remove_vegetation_at(Vector2.ZERO, 1024.0, 0)
 	# Exercise the real upload helpers without starting terrain residency or the game scene.
 	var terrain := TerrainScript.new()
 	terrain.simulation_node = simulation
@@ -55,7 +55,7 @@ func _run() -> void:
 		_expect(cover["image"].get_format() == Image.FORMAT_R8, "coverage must upload as R8")
 		_expect(_nonzero(cover["image"].get_data()), "crown must contribute across the patch boundary")
 		_expect(simulation.is_vegetation_land_cover_current(key, cover["generations"]), "both edited patches must refresh")
-	_expect(simulation.remove_vegetation_at(target, 0.01) == 1, "remove boundary tree")
+	_expect(simulation.remove_vegetation_at(target, 0.01, 0) == 1, "remove boundary tree")
 	terrain._sync_land_cover()
 	terrain._sync_land_cover()
 	_expect(left["land_cover"]["texture"] == original_texture, "third upload must reuse original ImageTexture")

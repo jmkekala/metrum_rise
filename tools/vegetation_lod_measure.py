@@ -109,10 +109,11 @@ def filtered_sample(position, footprint):
                     np.where(x > a, 1-(1-x)**2/(2*a*b), (x-.5*b)/a))
 
 
-def raster(mesh, yaw, height, offset, mode, mips):
-    # Right/up/toward-camera basis at 45 degrees elevation. Light stays world-fixed.
+def raster(mesh, yaw, height, offset, mode, mips, elevation=45.):
+    # Right/up/toward-camera basis at the given elevation. Light stays world-fixed.
     angle = math.radians(yaw)
-    view = np.array([math.sin(angle), 1., math.cos(angle)]) / math.sqrt(2)
+    tilt = math.radians(elevation)
+    view = np.array([math.sin(angle)*math.cos(tilt), math.sin(tilt), math.cos(angle)*math.cos(tilt)])
     right = np.array([math.cos(angle), 0., -math.sin(angle)])
     up = np.cross(view, right)
     basis = np.array([right, up, view]).T
@@ -207,7 +208,7 @@ def raster(mesh, yaw, height, offset, mode, mips):
             "covered_pixels": int(covered.sum()), "bbox_pixels": int(in_box.sum())}, covered, image
 
 
-def measure(meshes, height, mips):
+def measure(meshes, height, mips, elevation=45.):
     rows = []
     for mesh in meshes:
         vertices = sum(len(s["vertices"]) for s in mesh["surfaces"])
@@ -216,7 +217,7 @@ def measure(meshes, height, mips):
             for offset in ((0., 0.), (.5, .5)):
                 reference = None
                 for mode in MODES:
-                    row, mask, image = raster(mesh, yaw, height, np.array(offset), mode, mips)
+                    row, mask, image = raster(mesh, yaw, height, np.array(offset), mode, mips, elevation)
                     if reference is None:
                         reference = mask, image
                     row.update(species=mesh["species"], variant=mesh["variant"], lod=mesh["lod"],
@@ -276,10 +277,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--height", type=int, default=16)
+    parser.add_argument("--elevation", type=float, default=45.,
+                        help="Camera elevation above the horizon in degrees, 5..89. The near crown "
+                             "spreads its foliage sideways and the distant lathe is a solid of "
+                             "revolution, so the two agree on footprint at one elevation and not at "
+                             "another; a canopy seen from a high camera is the steep end of that.")
     parser.add_argument("--height-sweep", type=height_sweep, default="64,48,32,24,16,12,8,6,4,3,2",
                         help="Comma-separated crown heights, 2..64 pixels (64-pixel frame)")
     parser.add_argument("--reuse-export", action="store_true", help="Reuse the named export; never validates current sources")
     args = parser.parse_args()
+    if not 5. <= args.elevation <= 89.:
+        raise SystemExit("elevation must be between 5 and 89 degrees")
     args.output.mkdir(parents=True, exist_ok=True)
     export = args.output / "meshes.json"
     if not args.reuse_export:
@@ -304,10 +312,11 @@ def main():
         for surface in mesh["surfaces"]:
             if surface["shader"] == "vegetation_distant.gdshader":
                 surface["coverage"] = surface.get("parameters", {}).get("crown_coverage", distant_coverage())
-    rows = measure(meshes, args.height, atlas_mips())
+    rows = measure(meshes, args.height, atlas_mips(), args.elevation)
     summary = summarize(rows)
     deltas = transitions(summary)
-    (args.output / "measurements.json").write_text(json.dumps(dict(height=args.height, source_sha256=hashes,
+    (args.output / "measurements.json").write_text(json.dumps(dict(height=args.height,
+        elevation=args.elevation, source_sha256=hashes,
         reused_export=args.reuse_export, export_sha256=hashlib.sha256(export.read_bytes()).hexdigest(),
         build_us=data["build_us"], summary=summary, transitions=deltas, samples=rows), indent=2)+"\n")
     with (args.output / "summary.csv").open("w") as stream:
@@ -321,7 +330,7 @@ def main():
     # Spawn avoids inheriting NumPy's thread state; ordered futures keep CSV deterministic.
     with ProcessPoolExecutor(max_workers=min(4, len(set(args.height_sweep))),
                              mp_context=get_context("spawn")) as pool, (args.output / "sweep.csv").open("w") as stream:
-        pending = {height: pool.submit(measure, meshes, height, atlas_mips())
+        pending = {height: pool.submit(measure, meshes, height, atlas_mips(), args.elevation)
                    for height in dict.fromkeys(args.height_sweep) if height != args.height}
         fields = ["species", "lod", "mode", "height", "coverage", "footprint", "rgb", "covered_pixels", "bbox_pixels"]
         writer = csv.DictWriter(stream, fieldnames=fields)

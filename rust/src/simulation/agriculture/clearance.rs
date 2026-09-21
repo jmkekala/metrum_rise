@@ -58,6 +58,35 @@ impl PolygonFootprint {
                 .is_empty()
     }
 
+    /// Tests one world position against the polygon interior, under the same even-odd rule the
+    /// area overlay above uses. O(V) in this polygon's own vertices, and allocation-free.
+    pub(crate) fn contains_point(&self, point: Vector2) -> bool {
+        if self.points.len() < 3
+            || point.x < self.min.x
+            || point.x > self.max.x
+            || point.y < self.min.y
+            || point.y > self.max.y
+        {
+            return false;
+        }
+        let (x, z) = (f64::from(point.x), f64::from(point.y));
+        // Crossing count of a ray cast along -x. Each edge is counted from the vertex with the
+        // lower z, so a ray through a shared vertex crosses the two edges meeting there once.
+        let mut inside = false;
+        let mut previous = self.points.len() - 1;
+        for current in 0..self.points.len() {
+            let a = self.points[current];
+            let b = self.points[previous];
+            if (a[1] > z) != (b[1] > z)
+                && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0]
+            {
+                inside = !inside;
+            }
+            previous = current;
+        }
+        inside
+    }
+
     fn from_road(polygon: &RoadSurfaceVisualPolygon) -> Self {
         Self::from_points(
             polygon
@@ -205,6 +234,24 @@ impl FieldClearanceIndex {
         }
     }
 
+    /// Tests one world position against committed fields, with no work on a field-free map.
+    /// One chunk lookup, then O(V) per field indexed in that chunk.
+    pub(crate) fn covers_point(&self, point: Vector2) -> bool {
+        if self.footprints.is_empty() {
+            return false;
+        }
+        let cell = (point / RegionGraph::CHUNK_SIZE).floor();
+        self.chunks
+            .get(&(cell.x as i32, cell.y as i32))
+            .is_some_and(|bucket| {
+                bucket.iter().any(|id| {
+                    self.footprints
+                        .get(id)
+                        .is_some_and(|field| field.contains_point(point))
+                })
+            })
+    }
+
     /// Tests one compiled road polygon using its actual carrier geometry.
     pub(crate) fn overlaps_road_polygon(&self, polygon: &RoadSurfaceVisualPolygon) -> bool {
         !self.footprints.is_empty() && self.overlaps(&PolygonFootprint::from_road(polygon), None)
@@ -291,6 +338,31 @@ mod tests {
         assert!(!field.overlaps(&PolygonFootprint::new(&rectangle(15.0, 15.0, 5.0, 5.0))));
         assert!(!field.overlaps(&PolygonFootprint::new(&rectangle(30.0, 0.0, 5.0, 5.0))));
         assert!(field.overlaps(&PolygonFootprint::new(&rectangle(29.0, 0.0, 5.0, 5.0))));
+    }
+
+    #[test]
+    fn point_coverage_follows_concavity_and_the_chunk_index() {
+        let concave = [
+            Vector2::new(0.0, 0.0),
+            Vector2::new(30.0, 0.0),
+            Vector2::new(30.0, 10.0),
+            Vector2::new(10.0, 10.0),
+            Vector2::new(10.0, 30.0),
+            Vector2::new(0.0, 30.0),
+        ];
+        let mut index = FieldClearanceIndex::default();
+        assert!(!index.covers_point(Vector2::new(5.0, 5.0)));
+        index.set(3, &concave);
+        assert!(index.covers_point(Vector2::new(5.0, 5.0)));
+        assert!(index.covers_point(Vector2::new(5.0, 25.0)));
+        // The notch the concave polygon cuts out, and a point beyond its bounds entirely.
+        assert!(!index.covers_point(Vector2::new(20.0, 20.0)));
+        assert!(!index.covers_point(Vector2::new(-5.0, 5.0)));
+        // A field wider than one 512 m index chunk still answers in its far chunks.
+        index.set(3, &rectangle(-1000.0, -1000.0, 2000.0, 2000.0));
+        assert!(index.covers_point(Vector2::new(800.0, 800.0)));
+        index.remove_and_remap(3, 3);
+        assert!(!index.covers_point(Vector2::new(800.0, 800.0)));
     }
 
     #[test]

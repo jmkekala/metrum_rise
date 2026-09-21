@@ -27,6 +27,20 @@ const HOUR_ANGLE_PER_HOUR_DEG := 15.0
 ## Hour used by scenes that have no simulation clock to read, such as the asset editor.
 const FALLBACK_HOUR := 10.5
 
+## Named hours the player can hold the rendered daylight at, in menu order.
+##
+## The labels describe these hours only because the sun follows [constant LATITUDE_DEG] and
+## [constant SOLAR_DECLINATION_DEG]: noon reaches 45 degrees, sunset falls near 19.8, evening
+## catches the sun at about 2 degrees, and midnight sits 15 degrees under the horizon.
+## Retuning either constant changes the light these hours produce, so they live beside it.
+const PRESET_HOURS := {
+	"Morning": 6.0,
+	"Midday": 12.0,
+	"Afternoon": 16.0,
+	"Evening": 19.5,
+	"Midnight": 0.0,
+}
+
 # The moon is treated as full and antisolar: it rises as the sun sets. That is the cheapest
 # believable model, it needs no second orbit, and it keeps night shadowed instead of flat.
 const MOON_COLOR := Color(0.58, 0.70, 1.00, 1.0)

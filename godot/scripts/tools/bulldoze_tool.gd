@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Dedicated bulldoze tool for deleting one building or road target per click.
+## Dedicated bulldoze tool for deleting one building, road or vegetation target per click.
 ##
 ## Rust methods called: get_bulldoze_target_at(), bulldoze_at(), intersect_world_surface()
 extends Node3D
@@ -73,6 +73,8 @@ func _build_hover_mesh(target: Dictionary) -> Mesh:
 	if points.size() < 2:
 		return null
 	if kind == "building":
+		return _build_polygon_mesh(points)
+	if kind == "vegetation":
 		return _build_polygon_mesh(points)
 	if kind == "road":
 		var width_m := float(target.get("width_m", 0.0))

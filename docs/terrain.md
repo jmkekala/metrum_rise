@@ -1,5 +1,71 @@
 # Terrain / World Terrain Spec
 
+## Crown cohesion candidate — 2026-09-19
+
+`RENDER-06`, visually accepted by the user on 2026-09-19 after in-game testing. Near tree cards now interpolate an outward
+normal at each vertex relative to the crown centre. Solid foliage cores use the same
+normal field; wood retains geometric normals. Independent face/card brightness variation
+is replaced by its former mean (cards `1.105`, cores `1.04975`). Instance tint remains.
+This first slice deliberately leaves silhouette consolidation and the atlas for a separate
+visual comparison: vertex positions, triangle indices, UVs and wind weights match the
+baseline catalogue exactly, as do instance and draw-batch counts.
+
+The card shader also undoes the engine's backface normal reversal. Authored normals describe
+the foliage volume, so turning a card over must not invert its lighting. This applies to
+the shared understory card material as well; understory geometry and authored colours stay
+unchanged. The reversal was verified in the [installed Godot source](https://github.com/godotengine/godot/blob/a13da4feb/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl#L1264).
+Restoring the previous shader in a negative-control run fails the new rendered winding test.
+
+Correct lighting changes the average near radiance, so distant material multipliers are now
+`0.72 / 0.90` (conifer/broadleaf). The existing 900 m GPU fixture measures distant/near
+luminance at `0.999 / 0.994`, within the unchanged 10% tolerance. The wind regression measures
+`0.4408` moved at 55 m and `0.0000` at 300 m. The headless appearance test passes, including
+finite unit foliage normals, smooth lighting and uniform foliage albedo per surface across
+all 24 near variants. These checks validate rendering contracts, not player preference.
+
+Normal construction adds O(vertices) work once at catalogue startup. The fragment correction
+is O(1), with no new texture lookup, vertex attribute, surface or simulation work. Matched
+unprofiled E13 measurements and captures are recorded under `/tmp/metrum-crown-cohesion/`.
+The user confirmed a clear improvement in the forest appearance.
+
+Reproduction (from repository root):
+
+```bash
+godot --headless --path godot --script res://tests/vegetation_appearance_test.gd
+godot --path godot --audio-driver Dummy --resolution 640x480 --script res://tests/vegetation_level_match_test.gd
+godot --path godot --audio-driver Dummy --resolution 640x480 --script res://tests/vegetation_wind_gate_test.gd
+METRUM_GPU_PROBE_EXPERIMENT=E13 METRUM_GPU_PROBE_OUTPUT=/tmp/metrum-crown-cohesion/after/gpu-final godot --path godot --windowed --resolution 1280x720 --script res://tests/local_gpu_probe.gd
+```
+
+The probe requires a fresh output directory. Baseline: `2c278b01`; candidate: the working
+tree patch above that commit. Both use the identical release GDExtension (`590d8b2ac614d989…`),
+Godot `4.7.1`, GTX 1060 3GB, and Kuopio `kuopio_324km2_10m` (`07ae5ff39f9c905e…`).
+Rayon/engine worker settings are inherited defaults (`RAYON_NUM_THREADS` unset). Each E13
+trial warms for four seconds and samples for eight, pairing scatter off/on at four yaws
+and at 1.5x render scale. This prices the shipped default population, not a dense painted stand.
+
+Fresh scatter GPU cost (`full - off`, p50 milliseconds):
+
+| View | Before | Candidate | Change |
+|---|---:|---:|---:|
+| yaw 000 | 6.846 | 6.800 | -0.046 |
+| yaw 090 | 6.353 | 6.282 | -0.071 |
+| yaw 180 | 5.874 | 5.822 | -0.052 |
+| yaw 270 | 5.906 | 5.877 | -0.029 |
+| yaw 180, 1.5x | 5.495 | 5.544 | +0.049 |
+
+No measurable rendering slowdown in this comparison; these small differences do not establish
+a speedup. Draw calls, primitives and resident terrain patch counts match in all ten trials;
+candidate vegetation-pending frames are zero. Final data: `before/gpu/results.json` and
+`after/gpu-final/results.json` beneath the artifact directory. `after/gpu/` is an intermediate
+normal-only experiment, not validation of the final patch. A separate 100 stems/ha synthetic
+low-sun capture is a visual aid only, not a performance or biome acceptance test.
+At 220 m with an 8-degree sun, that diagnostic has a broadleaf distant/near luminance
+ratio of `1.161`; the calibrated 900 m daylight fixture does not establish a match at every
+sun angle or density. This remains a measured lighting limitation despite the accepted overall improvement.
+Single headless catalogue-build observations were `109.7 / 113.3 ms` before/after; these
+are startup observations, not a statistically established timing difference.
+
 ## Local vegetation experiment (V01)
 
 Vegetation adds cosmetic trees to loaded worlds.
@@ -1023,13 +1089,145 @@ modes - plant one species, or clear plants - drawn as a ground ring at the curso
 The radius is the only size control, and it also selects the dispatch: at `MIN_RADIUS_M` a plant
 lands exactly under the cursor through `add_vegetation_at`, and above it the disc fills the
 4 m planting lattice plus generator candidates through `paint_vegetation`. That removes the point/brush mode and the
-radius control from the panel, which leaves a species choice and a clear. Ctrl and the mouse wheel
+radius control from the panel, which leaves a preset choice and a clear. Ctrl and the mouse wheel
 step the radius geometrically, because no fixed step serves both a one-tree cursor and a 1 km
 clear-cut, and stepping down clamps on the minimum so the point dispatch stays reachable. The
-camera must not zoom on that combination, so `_handle_zoom_wheel` refuses a ctrl-held wheel. The
-ring reports both the footprint and the mode, by size and by colour, since the panel shows
-neither. A stroke continues on held-button motion whenever it is a brush or a clear, and restamps
-after half a radius of travel, so it overlaps without issuing a native call per pixel. `vegetation.gd` ORs the independent vegetation revision into `_is_patch_stale` and stamps
+camera must not zoom on that combination, so `_handle_zoom_wheel` refuses a ctrl-held wheel.
+Shift and the wheel cycle the tool-owned ordered brush options (Conifer, Broadleaf, Bush, Rock),
+wrapping in both directions and synchronizing the dropdown without firing its selection handler.
+Each option maps a display label to an existing native species ordinal; adding an option requires
+only extending that list. The popup forwards both wheel gestures; Ctrl takes priority when both
+modifiers are held, and Shift also suppresses camera zoom. `E` toggles planting/erasing while the
+vegetation tool is active, sharing mode state with the Remove toggle. The ring reports footprint
+and mode by size and colour. On option or mode changes, an outlined billboard `Label3D` above its
+centre shows the option name or `Remove`, using `UIStyle.TEXT_PRIMARY` or `TEXT_ALERT`. The label
+holds for one second and fades over 0.25 seconds; projection keeps its size and offset constant
+in pixels, including at the ring's last position during popup input grabs. Navigation and label
+updates are O(1), independent of world population and brush radius; the label is allocated once.
+A stroke continues on held-button motion whenever it is a brush or a clear, and restamps
+after half a radius of travel, so it overlaps without issuing a native call per pixel.
+
+Every one of those stamps is reversible. `add_vegetation_at`, `remove_vegetation_at` and
+`paint_vegetation` each record a bounded inverse journal before they touch a cell: one entry per
+changed cell holding that cell's delta as the stroke found it, plus the render-patch keys whose
+revisions have to advance again on the way back. Storage is O(changed cells), and a cell the
+generator still owned stores `None` and allocates nothing, which is the whole of a clear-cut over
+unedited forest. A dragged stroke would otherwise fill the 30-entry history with fragments of one
+gesture, so the tool mints a stroke id on the press that opens a drag, every stamp of that drag
+carries it, and a stamp merges into the entry on top of the stack only when that entry carries the
+same id, keeping each cell's earliest record. The id is the whole point and a "this is not the
+first stamp" flag is not enough: a stamp that changes nothing journals nothing and pushes no
+entry, so the first stamp of a clear that lands on bare ground leaves the previous action on top
+of the stack, and the stamps after it then attached the clear to the planting underneath. One
+`Ctrl+Z` reversed both. A point placement carries stroke zero, which matches no entry including
+another zero, because one click is one action. Restoring a
+journal is independent per cell and only has to change each patch revision, so the hashed
+iteration order cannot alter the result. `Ctrl+Z` reaches this through the existing global
+`undo_action`, which the vegetation tool does not intercept.
+
+An authored plant can now name the modelled tree it is, not only its species. A species covers
+several meshes that the renderer picks between from the placement's appearance seed - two of
+every three conifer variants are pine and the rest spruce, two of every three broadleaf variants
+birch and the rest aspen - so a conifer planted before this was a lottery the player could not
+call. `AuthoredPlant` carries a `variant` pinned over that choice, biased by one so that zero
+means the seed still decides, which is every generated plant and every plant authored before the
+pin existed. It is persisted in save format 63; a save below that has no column and reads back
+unpinned, which is the behaviour it was written under. A pin past the variants the renderer
+models for that species is rejected at load rather than drawn as nothing.
+
+Lane five of a packed placement carries both, the species ordinal in its low two bits and the
+biased variant above them, because widening the stride from six floats would cost the whole
+scatter buffer a seventh for a field that is zero on nearly every instance. An unpinned plant
+therefore packs to the bare species ordinal exactly as it did before, so the generator's output
+is unchanged bit for bit. The split reads out to `TREE_NEAR_M` and no further: past 800 m every
+plant of a species draws variant zero, so a planted spruce stand reads as spruce up close and as
+generic conifer in the distance.
+
+The brush is now driven by named presets rather than by a bare species ordinal.
+`vegetation_api/brush.rs` owns the table, because a preset decides what is planted and that is
+a simulation decision, not a label: each entry carries the fraction of its lattice it keeps, the
+instance scale band it plants in, and a weighted mix of species and the meshes each may use.
+`paint_vegetation` and `add_vegetation_at` take a preset ordinal, and `BRUSH_OPTIONS` in
+`vegetation_tool.gd` only names the presets and fixes the order the wheel cycles them in. The
+first four ordinals are the species the brush offered before, unpinned and at full density, so
+an unpinned preset produces the same plants it produced before the table existed.
+
+The table holds eleven and the brush offers nine. Four are unpinned species, four are the named
+trees (pine, spruce, birch, aspen), and three are mixes. `Mixed forest 1` keeps 0.85 of the
+lattice at Finnish growing-stock weights - pine 50, spruce 30, birch 15, aspen 5 - which is
+about 530 stems/ha against the real 400-700 of a managed stand. `Mixed forest 2` keeps 0.10,
+about 62 stems/ha, and widens the scale band to `0.95-1.45` because a tree with room around it
+is larger than one that grew up under a canopy. `Mixed forest 3` keeps 0.35, narrows the mix to
+birch and pine, and lowers the band to `0.45-0.75`. The three are numbered rather than named
+because only the first describes a real stand: the other two move the density dial and the size
+dial without yet reading as any particular place.
+
+The brush does not offer the unpinned conifer and broadleaf. Once pine and spruce are both
+nameable, "conifer" is an unnamed two-to-one mix of them, inherited from how the renderer
+numbers its variants rather than chosen, and a mix belongs in a mix preset where its ratio is
+written down. They stay in the table because they are what the generator plants, and therefore
+what a repaint of a cleared cell has to match to collapse back to no stored edit.
+
+Density presets can only thin. The lattice stays at the 4 m `VEG-05` shipped, which is already
+625 points/ha and above a real stand, so a preset subtracts from it rather than tightening it;
+nothing here raises the instance count a stroke can reach. Thinning and the mix are pure
+functions of the lattice cell and the stream's salt, so a stroke thins to the same plants
+however its points are ordered and a repeat of it adds nothing rather than filling its own gaps.
+The mix pick is a scan over a handful of weights and the variant pick is an index, so neither
+allocates per lattice point. A stroke also clears nothing: painting a sparse mix over standing
+forest adds scattered trees to it and does not thin the forest to match.
+
+A preset costs the stroke a little. Matched fresh release runs on four workers, same machine
+and same session, price a 64 m stroke of 862 plants at `738.74 us` without the preset table and
+`793.08 us` with it, which is `+54 us` or `+7.4%`. The per-point work a preset adds is a
+thinning compare, a weighted pick and a scale-band compare, all O(1) and none allocating; a
+single-choice preset skips the weighted pick entirely, which is worth `56 us` of that on its
+own. The path is per stroke and not per tick, and the figure sits against the `112.24 us` a
+50-plant stroke cost before `VEG-05` made the brush dense. The `709.83 us` recorded under
+`VEG-05` is an older build and is not comparable directly: the same commit measures `738.74 us`
+here.
+
+One consequence of the pin reaches back into the tombstone contract. A stroke that repaints a
+cleared cell with the species the generator had chosen still collapses to no stored edit, but
+only while it is unpinned. A player who named the tree gets that tree authored over the
+tombstone instead, because the mesh the generator's own seed would regrow is not the one they
+asked for.
+
+Bulldoze can finally see a tree. `get_bulldoze_target_at` answered `building` and `road` only,
+so the one class of object the vegetation brush had just made addressable was the one the
+bulldoze cursor ignored, and clearing a single tree meant opening the Terrain submenu. It now
+resolves a vegetation target after both of those and never before them, because a plant under a
+building or a road is hidden rather than clickable. The lookup is `plant_at` in
+`vegetation_api.rs` rather than in `editing.rs`, because the lattice arithmetic and
+`evaluate_cell` belong to the module that owns them; it stays immutable, since bulldoze already
+prepares the same building-site query index the brush does. It visits a fixed 4 m cursor disc
+over both layers, which is at most four canopy cells and nine understory cells at the shipped
+spacings, costs O(K + A) in those cells' candidates and additions rather than in world
+population, and allocates nothing per candidate. Ties break by layer, then row-major cell, then
+authored order, so two runs over the same state always pick the same plant.
+
+It targets exactly what the renderer draws, which is why the clearance test is asymmetric: a
+generated candidate was already cleared inside `evaluate_cell`, so only authored plants are put
+through `placement_clear`, the same split `get_decorative_tree_patch` makes when it packs a
+patch. The target id packs the plant's stored `f32` position bits, because the authored vector
+is compacted on removal and an index into it does not survive an unrelated clear in the same
+cell, while the position does; re-resolving at the target's own centre therefore finds that
+plant at zero distance and reproduces its id, which is what `bulldoze_prepared_target_internal`
+checks before it deletes anything.
+
+Deletion adds no mutator. It calls the brush's own `remove_at` at radius zero and stroke zero,
+so a bulldozed plant writes the same tombstone or the same authored removal the tool's clear
+writes, reuses its inverse journal for one undo entry per click, and advances the same render
+patch revision. Radius zero is an exact position match, which is also why a plant sharing an
+exact position with another is refused rather than targeted: that mutator would take both, and
+bulldoze is one target per click. The hover shape is a sixteen-point ring at the plant's crown
+radius scaled by its instance size, so the existing polygon path draws it unchanged and
+`bulldoze_tool.gd` gains only a `kind` branch; bushes and rocks have no entry in the canopy
+crown table and fall back to a metre. The cursor ray still resolves against the ground, so the
+player aims at the trunk rather than the crown and the 4 m pick radius is what makes that
+forgiving.
+
+`vegetation.gd` ORs the independent vegetation revision into `_is_patch_stale` and stamps
 it alongside `surface_generation` at upload, reading both before the placement fetch so an edit
 landing mid-fetch is not stamped as already rendered.
 

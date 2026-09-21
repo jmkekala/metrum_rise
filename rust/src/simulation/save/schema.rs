@@ -6,7 +6,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 62;
+pub const SAVE_VERSION: i64 = 63;
 
 /// First version whose schema carries the vegetation generator parameters and authored edits.
 ///
@@ -14,6 +14,11 @@ pub const SAVE_VERSION: i64 = 62;
 /// above that collision rather than at the number they were first written under. A save below
 /// this version has no vegetation tables and restores the shipped generator defaults.
 pub const VEGETATION_SAVE_VERSION: i64 = 62;
+/// First version whose authored plants carry a pinned renderer mesh variant.
+///
+/// A save below this one has no `variant` column, and every authored plant in it reads back
+/// unpinned, which is the behaviour it was written under.
+pub const VEGETATION_VARIANT_SAVE_VERSION: i64 = 63;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -60,7 +65,8 @@ CREATE TABLE vegetation_config(
 );
 CREATE TABLE vegetation_removals(layer INTEGER, cell_x INTEGER, cell_z INTEGER);
 CREATE TABLE vegetation_additions(layer INTEGER, cell_x INTEGER, cell_z INTEGER,
-                                  x REAL, z REAL, yaw REAL, scale REAL, species INTEGER);
+                                  x REAL, z REAL, yaw REAL, scale REAL, species INTEGER,
+                                  variant INTEGER);
 CREATE TABLE time_state(
     time_elapsed REAL NOT NULL,
     speed_multiplier REAL NOT NULL,

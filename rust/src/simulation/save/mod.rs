@@ -518,7 +518,7 @@ pub(crate) fn load_from_sqlite(
         VegetationConfig::default()
     };
     let vegetation_edits = if version >= VEGETATION_SAVE_VERSION {
-        vegetation::load(&conn)?
+        vegetation::load(&conn, version)?
     } else {
         VegetationEdits::default()
     };

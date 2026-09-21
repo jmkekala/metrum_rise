@@ -159,6 +159,10 @@ func _unhandled_input(event):
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_B: _toggle_tool(Tool.BULLDOZE)
+			KEY_E:
+				if current_tool == Tool.VEGETATION:
+					vegetation_tool.toggle_mode()
+					get_viewport().set_input_as_handled()
 			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
@@ -206,8 +210,8 @@ func _unhandled_input(event):
 func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
 	if not event.pressed:
 		return
-	# Ctrl and the wheel size the active tool, so the camera must not also zoom on it.
-	if event.ctrl_pressed:
+	# Ctrl sizes the brush and Shift cycles its options; neither gesture also zooms.
+	if event.ctrl_pressed or event.shift_pressed:
 		return
 
 	var zoom_delta := 0.0

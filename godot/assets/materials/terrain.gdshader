@@ -52,6 +52,12 @@ uniform vec3 scene_shadow_split_distances_m = vec3(144.0, 396.0, 900.0);
 uniform float ground_shadow_ambient = 0.64;
 uniform float ground_shadow_sun_strength = 0.36;
 uniform float ground_shadow_min_visibility = 0.10;
+// Forest-floor shading past the shadow cascades. See CANOPY_FLOOR_SHADE_FLOOR in
+// scene_lighting.gd; the crown half of the same term lives in vegetation_wind.gdshaderinc.
+uniform float canopy_floor_shade_begin_m = 327.6;
+uniform float canopy_floor_shade_end_m = 420.0;
+uniform float canopy_floor_shade_floor : hint_range(0.0, 1.0) = 0.51;
+uniform float canopy_floor_shade : hint_range(0.0, 2.0) = 1.0;
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
 uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
@@ -873,12 +879,28 @@ void fragment() {
 		SPECULAR = 0.0;
 	} else {
 		color = apply_grass_detail(color, var_world_pos, clamp(grass_detail_mask, 0.0, 1.0));
-		// Litter, moss and duff replace grass hue at the same albedo luminance. Only actual
-		// tree shadows occlude light; coverage never changes the lighting or adds darkness.
+		// Litter, moss and duff replace grass hue at the same albedo luminance. Inside shadow
+		// range the trees themselves supply every bit of the darkness, so coverage changes
+		// hue only and never adds any of its own.
 		vec3 forest_floor = mix(vec3(0.46, 0.40, 0.28), vec3(0.38, 0.45, 0.30), macro_mask);
 		vec3 luminance_weights = vec3(0.2126, 0.7152, 0.0722);
 		forest_floor *= dot(color, luminance_weights) / dot(forest_floor, luminance_weights);
 		color = mix(color, forest_floor, land_cover);
+		// Past the cascades there are no tree shadows left to supply it, and the floor of a
+		// closed stand returned to open-meadow brightness while the crowns standing on it kept
+		// their own replacement term. That is the pale far field: lit field with dark specks,
+		// where the near side of the same stand is closed and dark. The ramp fades in exactly
+		// where the cascades fade out, so nothing inside shadow range changes, and it scales
+		// with accepted crown coverage, so a lone tree on a meadow darkens nearly nothing and
+		// only ground a crown actually stands over goes dark. Coverage comes from the accepted
+		// population and never from the stand field.
+		float floor_shade_ramp = smoothstep(
+			canopy_floor_shade_begin_m,
+			canopy_floor_shade_end_m,
+			var_view_distance_m
+		) * canopy_floor_shade;
+		float floor_shade = mix(1.0, canopy_floor_shade_floor, land_cover);
+		color *= clamp(mix(1.0, floor_shade, floor_shade_ramp), 0.0, 1.0);
 		vec2 world_uv = clamp(
 			vec2(
 				var_world_pos.x / max(world_size.x, 0.001),
