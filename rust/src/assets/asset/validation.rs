@@ -45,6 +45,11 @@ impl AssetManifest {
         }
 
         if let Some(b) = &self.building {
+            if let Some(appearance) = &b.appearance {
+                appearance
+                    .validate(&self.mesh_parts)
+                    .map_err(ManifestError::Validation)?;
+            }
             if !self.lods.is_empty() {
                 return Err(ManifestError::Validation(format!(
                     "asset_id '{}': building assets use [[mesh_parts]] with [[mesh_parts.lods]]; top-level [[lods]] is not valid",

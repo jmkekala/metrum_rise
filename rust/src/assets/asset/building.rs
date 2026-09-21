@@ -44,6 +44,9 @@ pub enum PlacementMode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildingData {
+    /// Optional coordinated texture schemes shared by all parts and LODs.
+    #[serde(default)]
+    pub appearance: Option<super::BuildingAppearance>,
     /// How this building enters the world.
     #[serde(default = "default_placement_mode")]
     pub placement_mode: PlacementMode,

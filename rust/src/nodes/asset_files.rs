@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 //! File-service bridge for asset authoring. Rust owns dependency planning, staging and drafts.
-//! Godot is used only for native Variant serialization and user:// path resolution.
+//! Godot supplies Variant serialization, user:// resolution and texture decoding validation.
 
-use crate::assets::authoring::files;
+use crate::assets::authoring::{colours, files};
 use crate::nodes::sim::asset_export::{ExportParams, validated_tomls};
 use godot::builtin::vdict;
-use godot::classes::{Json, ProjectSettings};
+use godot::classes::{Image, Json, ProjectSettings};
 use godot::prelude::*;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,14 @@ pub struct AssetAuthoringFiles;
 
 #[godot_api]
 impl AssetAuthoringFiles {
+    /// Validate source material mappings and decode all distinct scheme textures without writes.
+    #[func]
+    pub fn colour_document_error(document: GString) -> GString {
+        let result = serde_json::from_str::<Value>(&document.to_string())
+            .map_err(|error| error.to_string())
+            .and_then(|state| colour_dependencies(&state).map(|_| ()));
+        result.err().unwrap_or_default().as_str().into()
+    }
     /// Resolve a user asset directory without permitting links or escaping the asset root.
     #[func]
     pub fn asset_location(mods: GString, pack: GString, asset: GString) -> VarDictionary {
@@ -122,6 +130,12 @@ impl AssetAuthoringFiles {
             params.set("pack_author", text(&destination, "author"));
             params.set("asset_id", id);
             params.set("display_name", name);
+            let colour_params: Value =
+                serde_json::from_str(&Json::stringify(&params.to_variant()).to_string())
+                    .map_err(|error| error.to_string())?;
+            let colour_sources = colours::exported_sources(&colour_params, &root)?;
+            let colour_sources =
+                Json::parse_string(&GString::from(colour_sources.to_string().as_str()));
             let sources = relative_sources
                 .into_iter()
                 .map(|paths| {
@@ -133,7 +147,7 @@ impl AssetAuthoringFiles {
                 })
                 .collect::<VarArray>();
             Ok(
-                vdict! { "params": params, "sources": sources, "origin": VarDictionary::new(), "supporting_sources": supporting_sources, "thumbnail_source": if thumbnail.is_empty() { String::new() } else { root.join(thumbnail).to_string_lossy().into_owned() } },
+                vdict! { "params": params, "sources": sources, "colour_sources": colour_sources, "origin": VarDictionary::new(), "supporting_sources": supporting_sources, "thumbnail_source": if thumbnail.is_empty() { String::new() } else { root.join(thumbnail).to_string_lossy().into_owned() } },
             )
         })();
         match result {
@@ -203,6 +217,7 @@ impl AssetAuthoringFiles {
                     extras.push((relative, PathBuf::from(path)));
                 }
             }
+            extras.extend(colour_dependencies(&state)?);
             let plan = files::plan(&models, &extras)?;
             files::publish(&native_path(output), &params.asset_id, &plan, &asset, &pack)
         })();
@@ -264,6 +279,20 @@ impl AssetAuthoringFiles {
             .as_str()
             .into()
     }
+}
+
+fn colour_dependencies(state: &Value) -> Result<Vec<(String, PathBuf)>, String> {
+    let dependencies = colours::dependencies(state)?;
+    for (_, path) in &dependencies {
+        let image = Image::load_from_file(&GString::from(path.to_string_lossy().as_ref()));
+        if image.is_none_or(|image| image.is_empty()) {
+            return Err(format!(
+                "Unreadable colour scheme texture: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(dependencies)
 }
 
 fn native_path(path: GString) -> PathBuf {

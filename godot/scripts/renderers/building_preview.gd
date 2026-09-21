@@ -329,6 +329,28 @@ func mesh_part_lod_path(index: int) -> String:
 func mesh_part_materials(index: int) -> PreviewMaterials:
 	return _part_lod_cache[index].get(_active_lod_paths[index], {}).get("materials")
 
+## Apply resolved scheme bindings to every cached tier without touching geometry or picking.
+func set_colour_scheme(key: String, bindings: Array, textures: Dictionary, invalidate: bool = false) -> void:
+	var grouped := {}
+	for binding: Dictionary in bindings:
+		var target := int(binding["part"])
+		var path := str(binding["path"])
+		if not grouped.has(target):
+			grouped[target] = {}
+		if not grouped[target].has(path):
+			grouped[target][path] = {}
+		var channels := {}
+		for channel: String in binding["textures"]:
+			channels[channel] = textures[str(binding["textures"][channel])]
+		grouped[target][path][str(binding["material"])] = channels
+	for index in _part_lod_cache.size():
+		for path: String in _part_lod_cache[index]:
+			var materials: PreviewMaterials = _part_lod_cache[index][path]["materials"]
+			if invalidate:
+				materials.clear_schemes()
+			materials.set_scheme(key, grouped.get(index, {}).get(path, {}))
+			materials.apply(_emission_mode, _emission_strength)
+
 func mesh_part_triangles(index: int) -> int:
 	var cache := _part_lod_cache[index]
 	return int(cache[_active_lod_paths[index]]["triangles"]) if cache.has(_active_lod_paths[index]) else 0

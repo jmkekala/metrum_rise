@@ -8,6 +8,7 @@ const Adapter = preload("res://scripts/editors/asset_editor/document_adapter.gd"
 const CreationDialog = preload("res://scripts/editors/asset_editor/creation_dialog.gd")
 const MeshImportDialog = preload("res://scripts/editors/mesh_import_dialog.gd")
 const PreviewGeometry = preload("res://scripts/editors/asset_editor/preview_geometry.gd")
+const ColourSchemes = preload("res://scripts/editors/asset_editor/colour_schemes.gd")
 
 var document := AssetAuthoringDocument.new()
 var policy := AssetAuthoringPolicy.new()
@@ -16,6 +17,7 @@ var descriptor: Dictionary = {}
 var rendering := false
 var ready := false
 var has_document := false
+var colours: RefCounted
 var _editor: Node
 var _adapter: RefCounted
 var _capturing := false
@@ -30,6 +32,7 @@ var _thumbnail_capturing := false
 func _init(editor: Node) -> void:
 	_editor = editor
 	_adapter = Adapter.new(editor)
+	colours = ColourSchemes.new(editor)
 
 func initialize() -> void:
 	_catalog_error = policy.reload_catalog()
@@ -79,6 +82,7 @@ func _document_changed() -> void:
 	has_document = not state.is_empty()
 	_editor._view.set_document_open(has_document)
 	if not has_document:
+		colours.refresh(state)
 		descriptor = {}
 		_issues.clear()
 		_editor.get_window().title = "Asset editor — Metrum Rise"
@@ -133,6 +137,7 @@ func _document_changed() -> void:
 		_load_thumbnail(thumbnail_source)
 	if not _capturing:
 		_adapter.render(state)
+	colours.refresh(state)
 	selection_changed()
 	view.undo_button.disabled = not document.can_undo()
 	view.redo_button.disabled = not document.can_redo()
@@ -280,7 +285,8 @@ func load_manifest(data: Dictionary) -> void:
 		sources.append(paths)
 	var thumbnail_source := directory.path_join(str(metadata["thumbnail"])) if metadata.get("thumbnail") != null else ""
 	_adapter.forget_sources()
-	document.reset({"params": metadata, "sources": sources, "origin": {"pack_id": pack_id, "asset_id": data.get("asset_id", "")}, "thumbnail_source": thumbnail_source})
+	var colour_sources: Dictionary = JSON.parse_string(AssetAuthoringPolicy.colour_sources_json(JSON.stringify(metadata), directory))
+	document.reset({"params": metadata, "sources": sources, "colour_sources": colour_sources.get("sources", {}), "origin": {"pack_id": pack_id, "asset_id": data.get("asset_id", "")}, "thumbnail_source": thumbnail_source})
 	_load_thumbnail(thumbnail_source)
 	_editor._view.show_task("model")
 
@@ -448,6 +454,8 @@ func validate() -> void:
 		return
 	var result: Dictionary = JSON.parse_string(policy.inspect_json(JSON.stringify(params)))
 	_issues = result.get("issues", [])
+	if not colours.error().is_empty():
+		_issues.append({"section": "model", "field": "appearance", "message": colours.error()})
 	for part in _editor._parts:
 		var error: String = part.validation_error()
 		if not error.is_empty():
@@ -509,6 +517,7 @@ func publish(move_original: bool = false) -> void:
 		return
 	var origin: Dictionary = state.get("origin", {})
 	var asset_directory := output.path_join("assets").path_join(str(params["asset_id"]))
+	state["colour_sources"] = JSON.parse_string(AssetAuthoringPolicy.colour_sources_json(JSON.stringify(params), asset_directory)).get("sources", {})
 	for index in _editor._parts.size():
 		for tier in _editor._parts[index].lods.size():
 			state["sources"][index][tier] = asset_directory.path_join(_editor._parts[index].lods[tier].file)

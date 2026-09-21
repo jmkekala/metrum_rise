@@ -1325,6 +1325,7 @@ fn register_test_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: household_capacity.map(|_| 80.0),
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone_class),

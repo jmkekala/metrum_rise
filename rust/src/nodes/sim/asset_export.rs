@@ -98,6 +98,9 @@ pub struct MeshPartParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportParams {
+    /// Coordinated building appearance metadata; omitted for source-only materials.
+    #[serde(default)]
+    pub appearance: Option<crate::assets::asset::BuildingAppearance>,
     /// Pack identifier string (e.g. `"kenney"`).
     pub pack_id: String,
     /// Human-readable pack name shown in the pack manager.
@@ -248,7 +251,7 @@ fn build_pack_toml(p: &ExportParams) -> String {
     )
 }
 
-fn build_asset_toml(p: &ExportParams) -> String {
+fn build_asset_toml(p: &ExportParams) -> Result<String, String> {
     let mut out = String::new();
     out.push_str(&format!("asset_id = {}\n", toml_string(&p.asset_id)));
     out.push_str(&format!(
@@ -402,7 +405,17 @@ fn build_asset_toml(p: &ExportParams) -> String {
         out.push_str("]\n");
     }
 
-    out
+    if let Some(appearance) = &p.appearance {
+        // Serialize the nested contract through serde, retaining proper TOML escaping.
+        let table = std::collections::BTreeMap::from([(
+            "building",
+            std::collections::BTreeMap::from([("appearance", appearance)]),
+        )]);
+        let encoded = toml::to_string(&table).map_err(|error| error.to_string())?;
+        out.push('\n');
+        out.push_str(&encoded);
+    }
+    Ok(out)
 }
 
 fn validate_against_builtin_zoning(params: &ExportParams) -> Result<(), String> {
@@ -792,7 +805,7 @@ pub(crate) fn validated_tomls(params: &ExportParams) -> Result<(String, String),
         ));
     }
     validate_building_export_contract(params)?;
-    let asset_toml = build_asset_toml(params);
+    let asset_toml = build_asset_toml(params)?;
     asset_toml
         .parse::<AssetManifest>()
         .map_err(|error| format!("validation error: {error}"))?;
@@ -861,6 +874,7 @@ pub fn get_asset_manifest_json_internal(
     });
 
     if let Some(b) = &m.building {
+        obj["appearance"] = serde_json::json!(b.appearance);
         obj["placement_mode"] = serde_json::json!(match b.placement_mode {
             PlacementMode::ZonedPrivate => "zoned_private",
             PlacementMode::Explicit => "explicit",
@@ -1004,12 +1018,22 @@ mod tests {
         let mut data: serde_json::Value =
             serde_json::from_str(&minimal_building_json("building.residential.precise")).unwrap();
         data["thumbnail"] = serde_json::json!("preview.png");
+        data["appearance"] = serde_json::json!({
+            "default_scheme": "red", "spawn": "random_scheme",
+            "schemes": [{"id": "red", "name": "Red", "overrides": [{
+                "part": "main", "materials": ["walls"], "albedo": "red.png"
+            }]}]
+        });
         data["flat_size_m2"] = serde_json::json!(60.125);
         data["min_zone_width_cells"] = serde_json::json!(2);
         data["mesh_parts"][0]["pivot_offset"] = serde_json::json!([0.00001, 0.0, 0.0]);
         let params: ExportParams = serde_json::from_value(data).unwrap();
         let (toml, _) = validated_tomls(&params).unwrap();
         let manifest = AssetManifest::from_str(&toml).unwrap();
+        assert_eq!(
+            manifest.building.as_ref().unwrap().appearance,
+            params.appearance
+        );
         assert_eq!(manifest.thumbnail.as_deref(), Some("preview.png"));
         assert_eq!(
             manifest.building.as_ref().unwrap().flat_size_m2,
@@ -1310,7 +1334,7 @@ mod tests {
             json["flat_size_m2"] = serde_json::json!(area);
             let params: ExportParams = serde_json::from_value(json).unwrap();
             validate_building_export_contract(&params).unwrap();
-            let manifest = AssetManifest::from_str(&build_asset_toml(&params)).unwrap();
+            let manifest = AssetManifest::from_str(&build_asset_toml(&params).unwrap()).unwrap();
             let building = manifest.building.as_ref().unwrap();
             assert_eq!(building.household_capacity, Some(9));
             assert_eq!(building.flat_size_m2, area);

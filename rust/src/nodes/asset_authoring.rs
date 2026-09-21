@@ -21,6 +21,94 @@ pub struct AssetAuthoringPolicy {
 
 #[godot_api]
 impl AssetAuthoringPolicy {
+    /// Resolve source-file paths when opening an exported asset or rebasing after publication.
+    #[func]
+    pub fn colour_sources_json(params: GString, directory: GString) -> GString {
+        let result = serde_json::from_str::<Value>(&params.to_string())
+            .map_err(|e| e.to_string())
+            .and_then(|params| {
+                authoring::colours::exported_sources(
+                    &params,
+                    std::path::Path::new(&directory.to_string()),
+                )
+            });
+        match result {
+            Ok(sources) => json!({"sources":sources}),
+            Err(error) => json!({"error":error}),
+        }
+        .to_string()
+        .as_str()
+        .into()
+    }
+
+    /// Resolve an authored scheme into explicit preview bindings without changing geometry.
+    #[func]
+    pub fn colour_preview_json(document: GString, selected: GString) -> GString {
+        let result = serde_json::from_str::<Value>(&document.to_string())
+            .map_err(|e| e.to_string())
+            .and_then(|state| authoring::colours::preview_plan(&state, &selected.to_string()));
+        match result {
+            Ok(plan) => json!({"plan":plan}),
+            Err(error) => json!({"error":error}),
+        }
+        .to_string()
+        .as_str()
+        .into()
+    }
+
+    /// Inspect named source materials without loading or modifying preview geometry.
+    #[func]
+    pub fn colour_materials_json(path: GString) -> GString {
+        let result = authoring::colours::materials(std::path::Path::new(&path.to_string()));
+        let value = match result {
+            Ok(materials) => json!({"materials": materials}),
+            Err(error) => json!({"error": error}),
+        };
+        value.to_string().as_str().into()
+    }
+
+    /// List texture candidates for review only; this never edits the document.
+    #[func]
+    pub fn discover_colours_json(albedo: GString) -> GString {
+        let result = authoring::colours::discover(std::path::Path::new(&albedo.to_string()));
+        let value = match result {
+            Ok(candidates) => json!({"candidates": candidates}),
+            Err(error) => json!({"error": error}),
+        };
+        value.to_string().as_str().into()
+    }
+
+    /// List candidates for `albedo`'s base name inside another folder; review only.
+    #[func]
+    pub fn discover_colours_in_json(albedo: GString, folder: GString) -> GString {
+        let albedo = std::path::PathBuf::from(albedo.to_string());
+        let folder = folder.to_string();
+        let value = match albedo.file_name() {
+            // Publication keeps only the referenced albedo, so the alternatives still live
+            // beside the original model rather than in the asset's own directory.
+            Some(name) => {
+                match authoring::colours::discover(&std::path::Path::new(&folder).join(name)) {
+                    Ok(candidates) => json!({"candidates": candidates}),
+                    Err(error) => json!({"error": error}),
+                }
+            }
+            None => json!({"error": "Choose a source albedo texture first"}),
+        };
+        value.to_string().as_str().into()
+    }
+
+    /// Resolve an exact material name; missing and duplicate definitions are errors.
+    #[func]
+    pub fn colour_material_error(name: GString, inventory: GString) -> GString {
+        let result =
+            serde_json::from_str::<Vec<authoring::colours::MaterialSource>>(&inventory.to_string())
+                .map_err(|error| error.to_string())
+                .and_then(|materials| {
+                    authoring::colours::resolve(&name.to_string(), &materials).map(|_| ())
+                });
+        result.err().unwrap_or_default().as_str().into()
+    }
+
     /// Normalize interactive yaw using the shared deterministic cardinal snap rule.
     #[func]
     pub fn rotation_degrees(angle: f32) -> f32 {

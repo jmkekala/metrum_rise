@@ -248,7 +248,7 @@ pub(crate) fn read_gltf(path: &Path) -> Result<Value, String> {
         })
 }
 
-fn decode_uri(uri: &str) -> Result<String, String> {
+pub(crate) fn decode_uri(uri: &str) -> Result<String, String> {
     let mut bytes = Vec::with_capacity(uri.len());
     let mut input = uri.bytes();
     while let Some(byte) = input.next() {
@@ -578,6 +578,77 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn colour_scheme_discovery_is_read_only_and_sorted() {
+        use crate::assets::authoring::colours;
+        let fixture = Fixture::new();
+        let red = fixture.write("house_albedo_red.png", "candidate only");
+        fixture.write("house_albedo_blue.png", "candidate only");
+        fixture.write("other_albedo_green.png", "unrelated");
+        let model = fixture.write(
+            "house.gltf",
+            r#"{
+            "materials": [{"name":"walls","pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],
+            "textures":[{"source":0}], "images":[{"uri":"house_albedo_red.png"}]
+        }"#,
+        );
+        let before = fs::read_to_string(&model).unwrap();
+        let materials = colours::materials(&model).unwrap();
+        assert_eq!(
+            colours::resolve("walls", &materials)
+                .unwrap()
+                .albedo
+                .as_ref(),
+            Some(&red)
+        );
+        let candidates = colours::discover(&red).unwrap();
+        assert_eq!(
+            candidates.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["blue", "red"]
+        );
+        assert_eq!(fs::read_to_string(&model).unwrap(), before);
+        assert_eq!(plan(&[("house.gltf".into(), model)], &[]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn colour_scheme_dependencies_cover_parts_and_lods_without_duplicate_textures() {
+        use crate::assets::authoring::colours;
+        let fixture = Fixture::new();
+        let model = fixture.write("near.gltf", r#"{"materials":[{"name":"walls"}]}"#);
+        let far = fixture.write("far.gltf", r#"{"materials":[{"name":"simplified"}]}"#);
+        let red = fixture.write("red.png", "dependency fixture; decoding is a bridge test");
+        let mut state = serde_json::json!({
+            "params": {
+                "mesh_parts": [
+                    {"name":"house", "lods":[{"file":"near.gltf","distance_min_m":0}, {"file":"far.gltf","distance_min_m":30}]},
+                    {"name":"garage", "lods":[{"file":"near.gltf","distance_min_m":0}]}
+                ],
+                "appearance": {"default_scheme":"red", "schemes":[{
+                    "id":"red", "name":"Red", "overrides":[
+                        {"part":"house", "materials":["walls","simplified"], "albedo":"red.png"},
+                        {"part":"garage", "materials":["walls"], "albedo":"red.png"}
+                    ]
+                }]}
+            },
+            "sources":[[model, far], [model]], "colour_sources":{"red.png":red}
+        });
+        assert_eq!(
+            colours::dependencies(&state).unwrap(),
+            vec![("red.png".into(), red)]
+        );
+        state["params"]["appearance"]["schemes"][0]["overrides"][0]["materials"][1] =
+            serde_json::json!("walls");
+        assert!(colours::dependencies(&state).unwrap_err().contains("LOD1"));
+        state["params"]["appearance"]["schemes"][0]["overrides"][0]["materials"][1] =
+            serde_json::json!("simplified");
+        state["colour_sources"] = serde_json::json!({});
+        assert!(
+            colours::dependencies(&state)
+                .unwrap_err()
+                .contains("Relink")
+        );
     }
 
     #[test]

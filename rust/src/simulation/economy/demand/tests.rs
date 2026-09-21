@@ -76,6 +76,7 @@ fn register_test_utility_asset(
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
+                appearance: None,
                 flat_size_m2: None,
                 placement_mode: PlacementMode::Explicit,
                 zone_type: None,
@@ -128,6 +129,7 @@ fn register_explicit_profile_asset(
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
+                appearance: None,
                 flat_size_m2: None,
                 placement_mode: PlacementMode::Explicit,
                 zone_type: None,
@@ -231,6 +233,7 @@ fn register_family_asset_with_economy_profile_and_flat_size(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: if matches!(zone_type, ZoneType::Residential | ZoneType::Mixed) {
                 Some(flat_size_m2.unwrap_or(80.0))
             } else {

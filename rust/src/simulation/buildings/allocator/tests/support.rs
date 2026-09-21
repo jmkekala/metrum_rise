@@ -188,6 +188,7 @@ pub(super) fn register_test_asset_with_family_level(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: if matches!(zone, ZoneClass::Residential | ZoneClass::Mixed) {
                 Some(80.0)
             } else {
@@ -247,6 +248,7 @@ pub(super) fn register_test_power_service_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,
             zone_type: None,

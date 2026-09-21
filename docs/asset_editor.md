@@ -24,6 +24,34 @@ Terminology note:
 - `plot` in this document means an editor preview footprint or buildable rectangle.
 - `category` in this document means asset-catalog grouping unless a section explicitly talks about `zone_type`.
 
+## Building colour schemes
+
+Model exposes asset-wide named schemes, separate preview selection and default selection,
+confirmed source-folder discovery, manual texture selection, and Default only / Random scheme
+spawn metadata. Runtime randomization is separate work; authoring the policy does not activate it.
+
+The manifest contract is optional `building.appearance`: `default_scheme`, `spawn`
+(`default_only` / `random_scheme`, defaulting to `random_scheme` because authoring several
+schemes usually means a varied street), and `schemes`. Each scheme has a stable lowercase
+`id`, editable `name`, and material `overrides`. An override identifies a unique mesh-part
+`part` name and an explicit `materials` name for every LOD, nearest first. Optional `albedo`,
+`orm`, `normal`, and `emission` paths are asset-relative; omitted channels retain source values.
+Repeated primitives may share one source material, but duplicate named material definitions
+are ambiguous and must be corrected. No material-slot-order inference is allowed.
+
+Discovery lists matching `<base>_albedo_<id>.<extension>` siblings for confirmation only;
+it never edits models or adds schemes silently. Arbitrary filenames remain manually authorable.
+The workflow preserves schemes through draft history, export and reopening, deduplicates
+texture dependencies, and previews all LODs/day/night without rebuilding geometry.
+
+Publication copies only the textures a model references, so an asset reopened from the library
+sees just its own albedo. Discovery therefore scans the folder holding the resolved albedo and
+offers `Scan another folder…`, which re-runs the same read-only candidate search against the
+original modelling export. Confirmed candidates become ordinary scheme dependencies and are
+copied on the next publish. The per-LOD material mapping stays explicit in the document, but
+the dialog preselects a tier that has a single source material and otherwise matches LOD0's
+chosen name; only a genuinely ambiguous tier is left for the author to resolve.
+
 ## V1 Design Constraints
 
 The first implementation must stay narrow. The asset editor is a packaging, validation, preview, and metadata-authoring tool, not a general-purpose content pipeline for every asset type or every possible runtime behavior.

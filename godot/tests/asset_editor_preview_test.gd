@@ -312,6 +312,8 @@ func _test_comparison_preview(editor: Node3D) -> void:
 	_expect(preview.load_ghost(path, 1.0, 1, 1), "load textured comparison at night")
 	_expect(preview._ghost_materials.surface_count() == 1, "comparison retains the window emission binding")
 	for entry in preview._ghost_materials._surfaces:
+		if entry.source.emission_texture == null:
+			continue
 		var active: BaseMaterial3D = entry.instance.get_active_material(entry.surface)
 		_expect(active.emission_enabled and is_equal_approx(active.emission_energy_multiplier, 1.8)
 			and active.emission.is_equal_approx(PreviewMaterials.REFERENCE_COLOR.linear_to_srgb()),

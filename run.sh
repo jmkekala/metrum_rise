@@ -980,7 +980,7 @@ if [ $TEST -eq 1 ]; then
     if [ "$METRUM_PLATFORM" = "darwin" ]; then
         echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/MetrumAssetTests-${asset_test_profile##*/}"
     fi
-    for asset_test_script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test; do
+    for asset_test_script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test; do
         if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \
             godot --headless --path "$asset_test_project" --script "res://tests/${asset_test_script}.gd" \
             --log-file "$asset_test_profile/${asset_test_script}.log" -- --asset-editor; then

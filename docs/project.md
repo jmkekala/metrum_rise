@@ -6,6 +6,12 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
+- **Building colour schemes (authoring done)**: optional manifest schema, confirmed read-only
+  discovery, explicit per-LOD material mapping, live preview across LODs and day/night, and
+  draft/export/reopen round trips. Discovery can scan the original modelling folder, because
+  publication copies only the albedo a model references. Gameplay randomization is separate and
+  not implemented. See [the authoring contract](asset_editor.md#building-colour-schemes).
+
 - **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated
   per-asset city scans; Rust shares the editor's screen-size policy, variable chains and hysteresis.
   Graphics → Building detail applies Performance/Balanced/Quality live. Tier resources are

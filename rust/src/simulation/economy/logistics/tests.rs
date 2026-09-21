@@ -523,6 +523,7 @@ fn register_test_asset_with_profile(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone),
@@ -576,6 +577,7 @@ fn register_test_city_service_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,
             zone_type: None,
@@ -627,6 +629,7 @@ fn register_test_field_asset(
         }],
         site_surfaces: vec![],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,
             zone_type: None,

@@ -672,6 +672,7 @@ mod tests {
             }],
             site_surfaces: vec![],
             building: Some(BuildingData {
+                appearance: None,
                 flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(ZoneClass::Residential),

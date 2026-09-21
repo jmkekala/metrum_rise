@@ -575,6 +575,7 @@ fn required_support_footprint_keeps_driveway_clear_of_road_boundary() {
         ],
         site_surfaces: Vec::new(),
         building: Some(BuildingData {
+            appearance: None,
             placement_mode: PlacementMode::Explicit,
             zone_type: None,
             density: None,

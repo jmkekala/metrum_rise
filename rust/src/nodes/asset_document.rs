@@ -64,13 +64,15 @@ impl AssetAuthoringDocument {
     pub fn protected_sources(&self) -> PackedStringArray {
         let mut paths = std::collections::BTreeSet::new();
         for state in self.core.revisions() {
-            if let Some(sources) = state
-                .get("supporting_sources")
-                .and_then(|v| v.try_to::<VarDictionary>().ok())
-            {
-                for (_, path) in sources.iter_shared() {
-                    if let Ok(path) = path.try_to::<GString>() {
-                        paths.insert(path.to_string());
+            for key in ["supporting_sources", "colour_sources"] {
+                if let Some(sources) = state
+                    .get(key)
+                    .and_then(|v| v.try_to::<VarDictionary>().ok())
+                {
+                    for (_, path) in sources.iter_shared() {
+                        if let Ok(path) = path.try_to::<GString>() {
+                            paths.insert(path.to_string());
+                        }
                     }
                 }
             }

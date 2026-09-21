@@ -9,6 +9,7 @@ use crate::simulation::economy::definitions::{
 };
 use serde_json::{Value, json};
 
+pub(crate) mod colours;
 pub(crate) mod document;
 pub(crate) mod edits;
 pub(crate) mod files;

@@ -6,6 +6,7 @@
 //! meshes, anchors, and class-specific gameplay metadata. The implementation is
 //! split by ownership while this module preserves the established public API.
 
+mod appearance;
 mod building;
 mod character;
 pub(crate) mod geometry;
@@ -13,6 +14,7 @@ mod model;
 pub(crate) mod validation;
 mod vehicle;
 
+pub use appearance::{BuildingAppearance, ColourScheme, MaterialOverride, SpawnAppearance};
 pub use building::{
     BuildingData, BuildingExtractorData, BuildingFieldData, PlacementMode, ZoneClass,
 };
