@@ -241,6 +241,17 @@ fn test_building_removal_clears_zoning_occupancy() {
     let mut logistics = ShipmentSystem::new();
     let parcel_id = allocator.buildings[0].parcel_id;
     let surviving_parcel_id = allocator.buildings[1].parcel_id;
+    let removed_appearance = allocator.buildings[0].appearance_key();
+    let surviving_appearance = allocator.buildings[1].appearance_key();
+    let generation_before = zoning
+        .parcel_by_raw_id(parcel_id)
+        .unwrap()
+        .build_generation();
+    let removed_building = allocator.buildings[0].clone();
+    assert_ne!(
+        removed_appearance, surviving_appearance,
+        "distinct parcels must not share one appearance key"
+    );
     let center = zoning.parcel_by_raw_id(parcel_id).unwrap().center();
     let commercial_profile = zoning
         .profiles
@@ -289,6 +300,42 @@ fn test_building_removal_clears_zoning_occupancy() {
         None
     );
     assert_eq!(allocator.buildings[0].parcel_id, surviving_parcel_id);
+    assert_eq!(
+        allocator.buildings[0].appearance_key(),
+        surviving_appearance,
+        "the swap-removed ordinal must not recolour the surviving building"
+    );
+    // Redeveloping the cleared plot must be able to draw a different asset and colour rather
+    // than deterministically rebuilding exactly what the player just demolished.
+    let cleared = zoning.parcel_by_raw_id(parcel_id).unwrap();
+    assert_eq!(
+        cleared.build_generation(),
+        generation_before + 1,
+        "clearing a parcel advances its redevelopment generation"
+    );
+    let mut rebuilt = removed_building.clone();
+    rebuilt.build_generation = cleared.build_generation();
+    assert_ne!(
+        rebuilt.appearance_key(),
+        removed_appearance,
+        "a rebuilt plot must not reuse the demolished building's colour key"
+    );
+    let profile = rebuilt.zone_profile_runtime_id;
+    assert_ne!(
+        super::super::placement::stable_parcel_selection_hash(
+            profile,
+            parcel_id,
+            generation_before,
+            "base:b.res.house"
+        ),
+        super::super::placement::stable_parcel_selection_hash(
+            profile,
+            parcel_id,
+            cleared.build_generation(),
+            "base:b.res.house"
+        ),
+        "spawn asset selection must see the new generation too"
+    );
     assert_eq!(
         zoning
             .parcel_by_raw_id(surviving_parcel_id)

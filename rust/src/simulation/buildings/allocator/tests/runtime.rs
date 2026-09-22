@@ -9,6 +9,7 @@ use super::*;
 fn reset_daily_accumulators_rolls_power_output_for_summaries() {
     let mut allocator = BuildingAllocator::new();
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,
@@ -170,6 +171,7 @@ fn repair_road_attachments_reprojects_far_stored_edge() {
     let center = frontage_center + outward * (depth_cells as f32 * zone_cell_m * 0.5);
 
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: center.x,
         center_y: center.y,
         support_height_m: 0.0,
@@ -274,6 +276,7 @@ fn repair_road_attachments_reprojects_stale_parcel_attachment() {
     let center = frontage_center + outward * (depth_cells as f32 * zone_cell_m * 0.5);
 
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: center.x,
         center_y: center.y,
         support_height_m: 0.0,

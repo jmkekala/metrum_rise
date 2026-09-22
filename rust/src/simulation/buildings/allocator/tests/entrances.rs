@@ -37,6 +37,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
     network.lane_system.rebuild(&mut graph);
 
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: 10.0,
         center_y: -10.0,
         support_height_m: 0.0,
@@ -173,6 +174,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
     network.lane_system.rebuild(&mut graph);
 
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: 10.0,
         center_y: -10.0,
         support_height_m: 0.0,

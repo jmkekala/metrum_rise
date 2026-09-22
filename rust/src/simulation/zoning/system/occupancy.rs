@@ -39,6 +39,15 @@ impl ZoningSystem {
         }
     }
 
+    /// Restores a parcel's redevelopment generation when loading a save.
+    ///
+    /// Loading must not advance the counter, so this assigns rather than bumps.
+    pub fn restore_parcel_build_generation(&mut self, parcel_id: u64, generation: u32) {
+        if let Some(parcel) = self.parcels.get_mut(ParcelId::from_raw(parcel_id)) {
+            parcel.set_build_generation(generation);
+        }
+    }
+
     /// Clears every parcel occupancy claim.
     pub fn clear_all_parcel_occupancy(&mut self) {
         if self.parcels.clear_all_occupancy() {

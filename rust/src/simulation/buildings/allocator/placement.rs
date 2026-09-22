@@ -210,6 +210,7 @@ impl BuildingAllocator {
         accepts: impl Fn(&str) -> bool,
     ) -> Option<ResolvedPlacement> {
         let profile_runtime_id = parcel.zone_profile_runtime_id();
+        let build_generation = parcel.build_generation();
 
         let mut best = None;
         for candidate in &profile_candidates.candidates {
@@ -233,12 +234,14 @@ impl BuildingAllocator {
                     stable_parcel_selection_hash(
                         profile_runtime_id,
                         parcel.id().raw(),
+                        build_generation,
                         &candidate.family_key,
                     ),
                     candidate.family_key.as_str(),
                     stable_parcel_selection_hash(
                         profile_runtime_id,
                         parcel.id().raw(),
+                        build_generation,
                         &candidate.qualified_id,
                     ),
                     candidate.qualified_id.as_str(),
@@ -385,6 +388,7 @@ impl BuildingAllocator {
         let placement = ResolvedPlacement {
             replaced_building,
             asset_id: asset_id.to_owned(),
+            build_generation: parcel.build_generation(),
             zone_profile_runtime_id: frontage_profile_runtime_id,
             zone_type: params.zone_type,
             initial_level: params.initial_level,
@@ -753,6 +757,7 @@ impl BuildingAllocator {
         Ok(ResolvedPlacement {
             replaced_building: None,
             asset_id: asset_id.to_owned(),
+            build_generation: 0,
             zone_profile_runtime_id: 0,
             zone_type: params.zone_type,
             initial_level: params.initial_level,
@@ -1070,6 +1075,7 @@ impl BuildingAllocator {
         let mut placement = ResolvedPlacement {
             replaced_building: Some(building_idx),
             asset_id: asset_id.to_owned(),
+            build_generation: building.build_generation,
             zone_profile_runtime_id: building.zone_profile_runtime_id,
             zone_type: building.zone_type,
             initial_level: building.level,
@@ -1607,6 +1613,7 @@ impl BuildingAllocator {
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             parcel_id: placement.parcel_id,
+            build_generation: placement.build_generation,
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,
             frontage_t: placement.frontage_t,
@@ -1837,15 +1844,21 @@ fn road_collision_half_width_m(edge: &crate::simulation::network::graph::Edge) -
     (edge.width * 0.5 + sidewalk_m).max(0.0)
 }
 
-/// Hashes a parcel's profile, stable ID and family/variant key with fixed field delimiters.
+/// Hashes a parcel's profile, stable ID, redevelopment generation and family/variant key
+/// with fixed field delimiters.
+///
+/// Including the generation is what lets a demolished plot draw a different valid asset and
+/// colour rather than deterministically repeating the one the player just removed.
 pub(super) fn stable_parcel_selection_hash(
     profile_runtime_id: u16,
     parcel_id: u64,
+    build_generation: u32,
     key: &str,
 ) -> u64 {
     let mut hasher = StableHasher::new();
     hasher.write_u16(profile_runtime_id);
     hasher.write_u64(parcel_id);
+    hasher.write_u32(build_generation);
     hasher.write_str(key);
     hasher.finish()
 }
@@ -1871,6 +1884,10 @@ impl StableHasher {
     }
 
     fn write_u16(&mut self, value: u16) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_u32(&mut self, value: u32) {
         self.write_bytes(&value.to_le_bytes());
     }
 
@@ -1923,6 +1940,9 @@ struct SpawnProfileAssetCandidates {
 
 struct ResolvedPlacement {
     replaced_building: Option<usize>,
+    // Redevelopment generation of the claimed parcel, carried so the placed building and the
+    // asset selection that chose it agree on one value.
+    build_generation: u32,
     asset_id: String,
     zone_profile_runtime_id: u16,
     zone_type: ZoneType,
@@ -2029,20 +2049,35 @@ mod tests {
 
     #[test]
     fn parcel_selection_hash_preserves_field_encoding() {
+        // The generation participates in the encoding, so a redeveloped parcel cannot
+        // collide with the same parcel's previous build.
         let cases = [
-            (0, 0, "", 0xcf1a035b04a52f3c),
-            (1, 1, "family_a", 0xba7ca32da6a0c2ea),
+            (0, 0, 0u32, "", 0xdf419e61fd2a7009u64),
+            (1, 1, 0, "family_a", 0x861268443d587967),
             (
                 0x1234,
                 0x0102030405060708,
+                0,
                 "base:b.res.house",
-                0x838c2a9661567ce3,
+                0x1caaaaada4904852,
             ),
-            (u16::MAX, u64::MAX, "factory.machinery", 0xf76ae02402365cc0),
-            (7, 42, "métal\0", 0x69c38c8aff64da57),
+            (
+                u16::MAX,
+                u64::MAX,
+                0,
+                "factory.machinery",
+                0xb5dfc694a3ce7827,
+            ),
+            (7, 42, 0, "métal\0", 0x798f96733a5bf452),
+            (1, 1, 1, "family_a", 0x8bc9a332a2025d56),
+            (1, 1, u32::MAX, "family_a", 0xda82409414adfd03),
         ];
-        for (profile, parcel, key, expected) in cases {
-            assert_eq!(stable_parcel_selection_hash(profile, parcel, key), expected);
+        for (profile, parcel, generation, key, expected) in cases {
+            assert_eq!(
+                stable_parcel_selection_hash(profile, parcel, generation, key),
+                expected,
+                "profile={profile} parcel={parcel} generation={generation} key={key:?}"
+            );
         }
     }
 
@@ -2107,6 +2142,7 @@ mod tests {
                 surfaces: Vec::new(),
             });
         let touching = ResolvedPlacement {
+            build_generation: 0,
             replaced_building: None,
             asset_id: "test:asset".to_owned(),
             zone_profile_runtime_id: 1,
@@ -2126,6 +2162,7 @@ mod tests {
             edge_width: 8.0,
         };
         let overlapping = ResolvedPlacement {
+            build_generation: 0,
             replaced_building: None,
             asset_id: "test:asset".to_owned(),
             zone_profile_runtime_id: 1,

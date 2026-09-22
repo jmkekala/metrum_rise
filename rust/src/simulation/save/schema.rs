@@ -6,7 +6,13 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 63;
+pub const SAVE_VERSION: i64 = 64;
+
+/// First version whose parcels and buildings carry the redevelopment generation.
+///
+/// A save below this one reads back at generation `0`, which reproduces the asset and
+/// colour choices it was written under instead of shuffling an existing city on load.
+pub const REDEVELOPMENT_SAVE_VERSION: i64 = 64;
 
 /// First version whose schema carries the vegetation generator parameters and authored edits.
 ///
@@ -198,7 +204,8 @@ CREATE TABLE zoning_parcels(
     frontage_t REAL NOT NULL,
     frontage_m REAL NOT NULL,
     depth_m REAL NOT NULL,
-    profile_runtime_id INTEGER NOT NULL
+    profile_runtime_id INTEGER NOT NULL,
+    build_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,
@@ -234,7 +241,8 @@ CREATE TABLE buildings(
     recent_power_service_units REAL NOT NULL,
     recent_power_served_units REAL NOT NULL,
     recent_household_sales_value REAL NOT NULL,
-    support_height_m REAL NOT NULL
+    support_height_m REAL NOT NULL,
+    build_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,

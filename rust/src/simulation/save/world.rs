@@ -258,7 +258,7 @@ pub(super) fn save_world(
 
     // Zoning parcels
     {
-        let mut parcel_stmt = tx.prepare("INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
+        let mut parcel_stmt = tx.prepare("INSERT INTO zoning_parcels(parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, build_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")?;
         for parcel in zoning.parcels() {
             let saved_eid = maps
                 .edge_old_to_new
@@ -274,12 +274,13 @@ pub(super) fn save_world(
                 parcel.frontage_m(),
                 parcel.depth_m(),
                 i64::from(parcel.zone_profile_runtime_id()),
+                i64::from(parcel.build_generation()),
             ])?;
         }
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, build_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -325,7 +326,8 @@ pub(super) fn save_world(
             b.recent_power_service_units,
             b.recent_power_served_units,
             b.recent_household_sales_value,
-            b.support_height_m
+            b.support_height_m,
+            i64::from(b.build_generation)
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -705,10 +707,23 @@ pub(super) fn load_pending_demand_spawns(
     Ok(pending)
 }
 
+/// Column expression for the redevelopment generation, or a literal `0` for older saves.
+///
+/// An existing city must read back at the generation it was written under; substituting the
+/// column keeps one query per table instead of two spellings that could drift apart.
+fn generation_column(version: i64) -> &'static str {
+    if version >= crate::simulation::save::schema::REDEVELOPMENT_SAVE_VERSION {
+        "build_generation"
+    } else {
+        "0"
+    }
+}
+
 pub(super) fn load_zoning(
     conn: &Connection,
     config: &WorldConfig,
     graph: &RegionGraph,
+    version: i64,
 ) -> SaveLoadResult<(ZoningSystem, Vec<u64>)> {
     let mut zoning = ZoningSystem::new(config);
     let mut quarantined_parcels = Vec::new();
@@ -716,7 +731,10 @@ pub(super) fn load_zoning(
     let mut existing_overlap_count = 0usize;
     let mut frontage_out_of_bounds_count = 0usize;
     let mut stmt = conn.prepare(
-        "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id FROM zoning_parcels ORDER BY parcel_id",
+        &format!(
+            "SELECT parcel_id, edge_id, side, frontage_t, frontage_m, depth_m, profile_runtime_id, {} FROM zoning_parcels ORDER BY parcel_id",
+            generation_column(version)
+        ),
     )?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
@@ -727,6 +745,7 @@ pub(super) fn load_zoning(
         let frontage_m: f32 = row.get(4)?;
         let depth_m: f32 = row.get(5)?;
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
+        let build_generation = i64_to_u32(row.get(7)?)?;
         let restored = zoning.restore_saved_parcel_from_attachment(
             parcel_id,
             edge_idx,
@@ -752,6 +771,7 @@ pub(super) fn load_zoning(
                 )));
             }
         };
+        zoning.restore_parcel_build_generation(parcel_id, build_generation);
         if overlaps_road || overlaps_existing {
             quarantined_parcels.push(parcel_id);
         }
@@ -776,6 +796,7 @@ pub(super) fn load_buildings(
     conn: &Connection,
     registry: &crate::assets::AssetRegistry,
     profiles: &crate::simulation::zoning::profiles::ZoningProfileRegistry,
+    version: i64,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
     let catalog = load_runtime_economy_catalog().map_err(SaveLoadError::custom)?;
@@ -789,7 +810,8 @@ pub(super) fn load_buildings(
     //      26=budget_distress 27=daily_household_sales_value 28=daily_power_service_units
     //      29=daily_power_served_units 30=recent_power_service_units
     //      31=recent_power_served_units 32=recent_household_sales_value 33=support_height_m
-    let mut stmt = conn.prepare("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m FROM buildings ORDER BY building_id")?;
+    //      34=build_generation
+    let mut stmt = conn.prepare(&format!("SELECT building_id, parcel_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, service_funding_override, revenue, operating_budget, profit_tax_budget_baseline, last_day_profit, shipment_cooldown_hours, width, depth, asset_id, level, construction_total_hours, construction_remaining_hours, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress, daily_household_sales_value, daily_power_service_units, daily_power_served_units, recent_power_service_units, recent_power_served_units, recent_household_sales_value, support_height_m, {} FROM buildings ORDER BY building_id", generation_column(version)))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -805,6 +827,7 @@ pub(super) fn load_buildings(
             .profile_by_runtime_id(economy_binding.runtime_id)
             .map(|profile| profile.kind);
         allocator.buildings.push(Building {
+            build_generation: i64_to_u32(row.get(34)?)?,
             center_x: 0.0,
             center_y: 0.0,
             support_height_m: row.get(33)?,

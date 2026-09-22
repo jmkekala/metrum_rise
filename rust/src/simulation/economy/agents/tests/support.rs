@@ -93,6 +93,7 @@ pub(super) fn create_test_edge(n0: u32, n1: u32) -> Edge {
 
 pub(super) fn create_test_building(edge_idx: usize, side: i8) -> Building {
     Building {
+        build_generation: 0,
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,

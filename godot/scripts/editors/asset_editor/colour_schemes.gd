@@ -46,7 +46,7 @@ func build(parent: Control) -> void:
 	_spawn = OptionButton.new()
 	_spawn.add_item("Spawn appearance: Default only")
 	_spawn.add_item("Spawn appearance: Random scheme")
-	_spawn.tooltip_text = "Authored policy only. Gameplay randomization is a separate feature."
+	_spawn.tooltip_text = "Gameplay picks a scheme per parcel, so a street varies but one building never changes."
 	_spawn.item_selected.connect(func(index):
 		var next := _state.duplicate(true)
 		next["params"]["appearance"]["spawn"] = "random_scheme" if index == 1 else "default_only"

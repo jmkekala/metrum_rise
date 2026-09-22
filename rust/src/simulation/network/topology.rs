@@ -1329,6 +1329,7 @@ mod tests {
         allocator
             .buildings
             .push(crate::simulation::buildings::allocator::Building {
+                build_generation: 0,
                 center_x: 80.0,
                 center_y: 10.0,
                 support_height_m: 0.0,

@@ -731,6 +731,7 @@ mod tests {
         occupancy: u32,
     ) -> Building {
         Building {
+            build_generation: 0,
             center_x,
             center_y: 8.0,
             support_height_m: 0.0,

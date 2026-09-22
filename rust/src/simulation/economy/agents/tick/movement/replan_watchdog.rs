@@ -418,6 +418,7 @@ mod tests {
 
     fn test_building(center_x: f32, center_y: f32) -> Building {
         Building {
+            build_generation: 0,
             center_x,
             center_y,
             support_height_m: 0.0,

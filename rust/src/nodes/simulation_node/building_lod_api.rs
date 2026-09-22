@@ -28,6 +28,7 @@ impl SimulationNode {
                     part.paths.iter().map(|path| GString::from(path.as_str())),
                 ),
             );
+            item.set("schemes", scheme_bindings(part));
             parts.push(&item.to_variant());
         }
         let mut result = VarDictionary::new();
@@ -205,5 +206,41 @@ fn batch_identity(
     item.set("part", batch.part as i64);
     item.set("lod", batch.lod as i64);
     item.set("deserted", batch.deserted);
+    item.set("scheme", batch.scheme as i64);
     item
+}
+
+/// Publish one part's scheme table in manifest order; Godot binds the named source
+/// materials without deciding which textures belong to which tier.
+fn scheme_bindings(
+    part: &crate::nodes::sim::render::building_lod::spatial::CatalogPart,
+) -> VarArray {
+    let mut schemes = VarArray::new();
+    for scheme in &part.schemes {
+        let mut lods = VarArray::new();
+        for bindings in &scheme.lods {
+            let mut materials = VarArray::new();
+            for binding in bindings {
+                let mut item = VarDictionary::new();
+                item.set("material", binding.material.as_str());
+                for (channel, path) in [
+                    ("albedo", &binding.albedo),
+                    ("orm", &binding.orm),
+                    ("normal", &binding.normal),
+                    ("emission", &binding.emission),
+                ] {
+                    if let Some(path) = path {
+                        item.set(channel, path.as_str());
+                    }
+                }
+                materials.push(&item.to_variant());
+            }
+            lods.push(&materials.to_variant());
+        }
+        let mut item = VarDictionary::new();
+        item.set("id", scheme.id.as_str());
+        item.set("lods", lods);
+        schemes.push(&item.to_variant());
+    }
+    schemes
 }

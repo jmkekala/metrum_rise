@@ -135,6 +135,11 @@ pub struct Building {
     pub zone_profile_runtime_id: u16,
     /// Stable authored parcel id claimed by this private zoned building; `0` means no parcel.
     pub parcel_id: u64,
+    /// Redevelopment counter of the claimed parcel when this building was placed.
+    ///
+    /// Captured rather than read live so the render path needs no zoning lookup, and so the
+    /// colour cannot shift under a standing building when its parcel is later cleared.
+    pub build_generation: u32,
     /// Cached broad baseline family derived from [`Self::zone_profile_runtime_id`].
     ///
     /// Kept as a hot-path cache for broad R/C/I grouping and economy lookups. Legality comes
@@ -365,6 +370,35 @@ pub(crate) struct EconomyProfileBinding {
 }
 
 impl Building {
+    /// Stable key selecting this instance's authored colour scheme.
+    ///
+    /// Keyed on the claimed parcel and its redevelopment generation, never on the allocator
+    /// ordinal: [`BuildingAllocator`] swap-removes and remaps buildings, so an ordinal-keyed
+    /// scheme would recolour surviving neighbours whenever one building was demolished. The
+    /// generation is what makes a rebuilt plot draw a fresh colour instead of repeating the
+    /// one the player demolished. Explicit sites hold no parcel, so they fall back to their
+    /// placed centre, which is fixed at placement and round-trips through saves.
+    pub fn appearance_key(&self) -> u64 {
+        if self.parcel_id != 0 {
+            return placement::stable_parcel_selection_hash(
+                self.zone_profile_runtime_id,
+                self.parcel_id,
+                self.build_generation,
+                "appearance",
+            );
+        }
+        // Millimetre quantisation keeps the key independent of float formatting while
+        // staying far finer than the smallest distance between two placed footprints.
+        let x = (self.center_x * 1000.0).round() as i64 as u64;
+        let z = (self.center_y * 1000.0).round() as i64 as u64;
+        placement::stable_parcel_selection_hash(
+            self.zone_profile_runtime_id,
+            x ^ z.rotate_left(32),
+            self.build_generation,
+            "appearance.explicit",
+        )
+    }
+
     /// Returns true while the building exists only as a construction site.
     pub(crate) fn is_under_construction(&self) -> bool {
         self.construction_remaining_hours > 0

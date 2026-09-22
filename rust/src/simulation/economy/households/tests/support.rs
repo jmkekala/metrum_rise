@@ -39,6 +39,7 @@ pub(super) fn make_building(
         resource_inventory[output_port.resource_runtime_id as usize - 1] = stock;
     }
     Building {
+        build_generation: 0,
         center_x,
         center_y: 0.0,
         support_height_m: 0.0,

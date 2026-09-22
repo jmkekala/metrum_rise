@@ -64,6 +64,8 @@ pub(crate) struct Instance {
     pub part: usize,
     /// Whether the gray deserted material replaces source materials.
     pub deserted: bool,
+    /// Authored colour-scheme ordinal; `0` when the asset authors no schemes.
+    pub scheme: u16,
     /// Complete local-mesh to world transform, including construction rise.
     pub transform: Mat4,
 }
@@ -75,6 +77,8 @@ pub(crate) struct BatchKey {
     pub part: usize,
     /// Material override group.
     pub deserted: bool,
+    /// Authored colour-scheme ordinal; surface overrides differ, geometry does not.
+    pub scheme: u16,
     /// Usable authored tier ordinal.
     pub lod: usize,
 }
@@ -121,6 +125,7 @@ impl Chunk {
                 old.instance.building == new.building
                     && old.instance.part == new.part
                     && old.instance.deserted == new.deserted
+                    && old.instance.scheme == new.scheme
             });
         if same_layout {
             for (entry, instance) in self.entries.iter_mut().zip(instances) {
@@ -136,18 +141,19 @@ impl Chunk {
         // Keep vanished groups until the bridge has observed their zero-count update.
         let mut groups = BTreeMap::new();
         for batch in &self.batches {
-            groups.insert((batch.key.part, batch.key.deserted), 0);
+            groups.insert((batch.key.part, batch.key.deserted, batch.key.scheme), 0);
         }
         for instance in instances {
-            groups.insert((instance.part, instance.deserted), 0);
+            groups.insert((instance.part, instance.deserted, instance.scheme), 0);
         }
         let mut batches = Vec::new();
-        for (&(part, deserted), base) in &mut groups {
+        for (&(part, deserted, scheme), base) in &mut groups {
             *base = batches.len();
             for lod in 0..parts[part].fallback.len() {
                 let key = BatchKey {
                     part,
                     deserted,
+                    scheme,
                     lod,
                 };
                 let count = self
@@ -170,7 +176,7 @@ impl Chunk {
         self.entries.clear();
         self.entries.extend(instances.iter().map(|&instance| Entry {
             instance,
-            group: groups[&(instance.part, instance.deserted)],
+            group: groups[&(instance.part, instance.deserted, instance.scheme)],
             previous: None,
             selected: 0,
         }));

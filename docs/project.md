@@ -6,14 +6,21 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 ## Snapshot
 
-- **Building colour schemes (authoring done)**: optional manifest schema, confirmed read-only
-  discovery, explicit per-LOD material mapping, live preview across LODs and day/night, and
-  draft/export/reopen round trips. Discovery can scan the original modelling folder, because
-  publication copies only the albedo a model references. Gameplay randomization is separate and
-  not implemented. See [the authoring contract](asset_editor.md#building-colour-schemes).
+- **Building colour schemes (authoring and gameplay done)**: optional manifest schema, confirmed
+  read-only discovery, explicit per-LOD material mapping, live preview across LODs and day/night,
+  and draft/export/reopen round trips. Discovery can scan the original modelling folder, because
+  publication copies only the albedo a model references. Gameplay selection (`RENDER-08`) derives
+  an instance's scheme from its parcel and that parcel's redevelopment generation, so a street
+  varies, a standing building never changes, and demolishing a plot rerolls both its colour and
+  its spawned asset; spatial batches gain a scheme group, and Godot draws it with a
+  whole-instance override or, for a multi-material tier, its own mesh, built through the same
+  material code as the editor preview. See
+  [the authoring contract](asset_editor.md#building-colour-schemes) and
+  [the runtime contract](asset_editor.md#gameplay-colour-scheme-selection--render-08).
 
 - **Gameplay building LODs (`RENDER-07`, done)**: spatial MultiMesh groups replace repeated
   per-asset city scans; Rust shares the editor's screen-size policy, variable chains and hysteresis.
+  Group identity also carries the colour scheme (`RENDER-08`).
   Graphics → Building detail applies Performance/Balanced/Quality live. Tier resources are
   cached; unchanged views perform no LOD evaluation/upload. Lifecycle/fallback/selection checks,
   1,849 Rust tests, Godot regressions and rendered Kuopio review pass. Generated release GPU

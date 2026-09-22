@@ -25,6 +25,32 @@ pub(crate) struct CatalogPart {
     pub index: usize,
     /// Complete authored tier chain in native filesystem paths.
     pub paths: Vec<String>,
+    /// Texture replacements for each authored scheme, in manifest order so that a
+    /// [`crate::assets::asset::BuildingAppearance::scheme_for`] ordinal indexes it directly.
+    pub schemes: Vec<SchemeBinding>,
+}
+
+/// One scheme's resolved replacements for a single catalog part.
+pub(crate) struct SchemeBinding {
+    /// Authored scheme identifier, published for diagnostics only.
+    pub id: String,
+    /// Replacements for each authored tier, nearest first. An empty tier keeps its source
+    /// materials, which is also what an asset without schemes produces.
+    pub lods: Vec<Vec<MaterialBinding>>,
+}
+
+/// Replacement textures for one source material of one tier.
+pub(crate) struct MaterialBinding {
+    /// Exact source material name inside the imported tier.
+    pub material: String,
+    /// Absolute channel paths; an absent channel retains the source texture.
+    pub albedo: Option<String>,
+    /// Packed occlusion/roughness/metallic replacement.
+    pub orm: Option<String>,
+    /// Tangent-space normal replacement.
+    pub normal: Option<String>,
+    /// Emission replacement.
+    pub emission: Option<String>,
 }
 
 /// Candidate inputs and GPU groups retained while a spatial chunk is resident.
@@ -84,6 +110,7 @@ impl SpatialBatches {
             asset: "broken:error".into(),
             index: 0,
             paths: vec![String::new()],
+            schemes: Vec::new(),
         });
         self.parts.push(
             Part::new(
@@ -118,6 +145,7 @@ impl SpatialBatches {
                                 .into_owned()
                         })
                         .collect(),
+                    schemes: scheme_bindings(entry, part),
                 });
             }
             if self.parts.len() != start {
@@ -239,6 +267,7 @@ impl SpatialBatches {
                                         building: id,
                                         part: 0,
                                         deserted: false,
+                                        scheme: 0,
                                         transform: Mat4::from_scale_rotation_translation(
                                             Vec3::splat(scale),
                                             glam::Quat::from_rotation_y(
@@ -257,6 +286,24 @@ impl SpatialBatches {
                             // Authored meshless sites (for example production fields) are
                             // valid; their ground geometry must not become a missing-asset marker.
                             let Some(range) = range else { continue };
+                            let entry = entry.unwrap();
+                            let deserted =
+                                building.is_deserted && !building.is_under_construction();
+                            // A deserted building draws one flat override material, so a
+                            // scheme group would differ only in bindings nothing samples.
+                            // Collapsing them keeps the extra groups to occupied schemes.
+                            let scheme = if deserted {
+                                0
+                            } else {
+                                entry
+                                    .manifest
+                                    .building
+                                    .as_ref()
+                                    .and_then(|data| data.appearance.as_ref())
+                                    .map_or(0, |appearance| {
+                                        appearance.scheme_for(building.appearance_key())
+                                    }) as u16
+                            };
                             let mut y = building.support_height_m;
                             if building.is_under_construction() {
                                 y -= construction_rise_offset_m(
@@ -265,12 +312,11 @@ impl SpatialBatches {
                                 );
                             }
                             for part in range.clone() {
-                                let entry = entry.unwrap();
                                 chunk.instances.push(Instance {
                                     building: id,
                                     part,
-                                    deserted: building.is_deserted
-                                        && !building.is_under_construction(),
+                                    deserted,
+                                    scheme,
                                     transform: building_part_pose(
                                         Vector2::new(building.center_x, building.center_y),
                                         y,
@@ -307,6 +353,55 @@ impl SpatialBatches {
             chunk.batches.acknowledge();
         }
     }
+}
+
+/// Resolve one part's authored schemes into absolute texture paths. Catalog-time only:
+/// scheme lookup happens once per registry revision, never per frame or per instance.
+fn scheme_bindings(
+    entry: &crate::assets::AssetEntry,
+    part: &crate::assets::asset::MeshPart,
+) -> Vec<SchemeBinding> {
+    let Some(appearance) = entry
+        .manifest
+        .building
+        .as_ref()
+        .and_then(|building| building.appearance.as_ref())
+    else {
+        return Vec::new();
+    };
+    let absolute = |relative: &Option<String>| {
+        relative.as_ref().map(|path| {
+            Path::new(&entry.asset_dir)
+                .join(path)
+                .to_string_lossy()
+                .into_owned()
+        })
+    };
+    appearance
+        .schemes
+        .iter()
+        .map(|scheme| {
+            let mut lods: Vec<Vec<MaterialBinding>> =
+                part.lods.iter().map(|_| Vec::new()).collect();
+            for entry in scheme.overrides.iter().filter(|o| o.part == part.name) {
+                // A stale manifest can name fewer materials than the part has tiers; those
+                // tiers simply keep their source materials rather than failing the catalog.
+                for (lod, material) in entry.materials.iter().enumerate().take(lods.len()) {
+                    lods[lod].push(MaterialBinding {
+                        material: material.clone(),
+                        albedo: absolute(&entry.albedo),
+                        orm: absolute(&entry.orm),
+                        normal: absolute(&entry.normal),
+                        emission: absolute(&entry.emission),
+                    });
+                }
+            }
+            SchemeBinding {
+                id: scheme.id.clone(),
+                lods,
+            }
+        })
+        .collect()
 }
 
 /// Derive a finite conservative chunk rectangle from the view frustum and its directional

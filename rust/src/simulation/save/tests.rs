@@ -204,6 +204,7 @@ fn snapshot_test_building(
     residential_asset: String,
 ) -> Building {
     Building {
+        build_generation: 0,
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,
@@ -855,7 +856,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     }
     // A save written before the pin has no `variant` column at all. Reading one must not name
     // it, or every existing city fails to open on the format that added it.
-    conn.execute("UPDATE save_meta SET version = 62", []).unwrap();
+    conn.execute("UPDATE save_meta SET version = 62", [])
+        .unwrap();
     conn.execute("ALTER TABLE vegetation_additions DROP COLUMN variant", [])
         .unwrap();
     let legacy = load_from_sqlite(&path, &allocator.registry).expect("load a pre-pin save");
@@ -1209,6 +1211,7 @@ fn load_quarantines_invalid_legacy_saved_parcels() {
     );
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
     allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,

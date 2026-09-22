@@ -4,6 +4,8 @@
 ## source materials, shared meshes and exported files retain their authored values.
 extends RefCounted
 
+const SchemeMaterials := preload("res://scripts/renderers/scheme_materials.gd")
+
 const REFERENCE_COLOR := Color(1.0, 0.55, 0.23)
 enum Mode { AUTHORED, OFF, ON }
 
@@ -74,26 +76,7 @@ func set_scheme(key: String, overrides: Dictionary) -> void:
 		var source: BaseMaterial3D = entry["source"]
 		if not overrides.has(source.resource_name) or entry["variants"].has(key):
 			continue
-		var material: BaseMaterial3D = source.duplicate()
-		var textures: Dictionary = overrides[source.resource_name]
-		if textures.has("albedo"):
-			material.albedo_texture = textures["albedo"]
-		if textures.has("normal"):
-			material.normal_enabled = true
-			material.normal_texture = textures["normal"]
-		if textures.has("emission"):
-			material.emission_texture = textures["emission"]
-		if textures.has("orm"):
-			if material is ORMMaterial3D:
-				material.orm_texture = textures["orm"]
-			else:
-				material.ao_enabled = true
-				material.ao_texture = textures["orm"]
-				material.ao_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
-				material.roughness_texture = textures["orm"]
-				material.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GREEN
-				material.metallic_texture = textures["orm"]
-				material.metallic_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_BLUE
+		var material := SchemeMaterials.variant(source, overrides[source.resource_name])
 		entry["variants"][key] = {"base": material, "preview": material.duplicate() if material.emission_texture != null else null}
 	var previous_mode := _mode
 	_mode = -1

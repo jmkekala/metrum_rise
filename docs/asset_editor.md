@@ -28,7 +28,7 @@ Terminology note:
 
 Model exposes asset-wide named schemes, separate preview selection and default selection,
 confirmed source-folder discovery, manual texture selection, and Default only / Random scheme
-spawn metadata. Runtime randomization is separate work; authoring the policy does not activate it.
+spawn metadata. Gameplay applies the authored policy through `RENDER-08` below.
 
 The manifest contract is optional `building.appearance`: `default_scheme`, `spawn`
 (`default_only` / `random_scheme`, defaulting to `random_scheme` because authoring several
@@ -2948,7 +2948,8 @@ Implemented and verified 2026-09-20. The runtime contract is:
   batches. The existing 512 m building center index supplies candidates; conservative
   geometry margins and directional-shadow caster bounds prevent premature retirement.
   Disconnected buildings remain renderable but do not enter economy candidate queries.
-- Batch identity is chunk/asset-part/tier/normal-or-deserted. Only occupied groups draw.
+- Batch identity is chunk/asset-part/tier/normal-or-deserted/colour-scheme (`RENDER-08`).
+  Only occupied groups draw.
   Independent chunks use Rayon; stable chunk/group/instance ordering makes publication
   deterministic. Two packed buffers plus counting scatter avoid per-instance allocation
   during warmed transitions. Cost is O(queried chunks + candidate parts + batch groups),
@@ -3044,6 +3045,50 @@ XDG_DATA_HOME="$lod_artifacts/data" XDG_CONFIG_HOME="$lod_artifacts/config" \
 # and append --benchmark-building-lod after --asset-editor (requires a working GPU/display).
 (cd rust && RAYON_NUM_THREADS=4 cargo test --release --lib benchmark_building_lod_locality -- --ignored --nocapture)
 ```
+
+### Gameplay colour scheme selection — RENDER-08
+
+Implemented 2026-09-21. Authored `building.appearance` now reaches the city. The runtime
+contract is:
+
+- An instance's scheme comes from its parcel and that parcel's redevelopment generation, never
+  from its allocator ordinal. `Building::appearance_key` hashes the zoning-profile runtime id,
+  claimed parcel id and captured generation with the same `stable_parcel_selection_hash` that
+  placement uses to choose an asset. `BuildingAllocator` swap-removes and remaps, so an
+  ordinal-keyed scheme would recolour surviving neighbours whenever one building was
+  demolished. Explicit non-zoned sites hold no parcel and fall back to their placed centre,
+  quantised to millimetres for bit stability.
+- `BuildingAppearance::scheme_for` maps that key onto an authored ordinal. `default_only`
+  ignores the key; `random_scheme` takes the high bits of a multiply, which stays uniform for
+  scheme counts that are not powers of two where a modulo of the weaker low bits would not.
+  The only appearance state is the generation the building captured at placement, so a reloaded
+  city is identical and a standing building never changes colour. Demolishing a plot advances
+  its parcel's generation, so the replacement can draw a different colour and a different valid
+  asset; see
+  [the redevelopment contract](building_allocator.md#redevelopment-rerolls-a-plot-render-08).
+- Batch identity gains the scheme. Only schemes actually present in a resident chunk create
+  groups, and submitted geometry and instance counts are unchanged; the cost is draw calls,
+  bounded by visible chunks × parts × tiers × occupied schemes rather than by city size.
+  Deserted buildings collapse to scheme `0`, because one flat override material already
+  replaces every surface and scheme groups would differ only in bindings nothing samples.
+- Godot exposes per-surface overrides on `MeshInstance3D` only, never on a MultiMesh. A tier
+  with a single surface therefore takes a whole-instance `material_override` and keeps sharing
+  the source mesh, while a multi-material tier gets its own mesh resource with only the named
+  surfaces replaced. Either way a surface the scheme does not name keeps its authored values
+  including emission, and only parts that actually author schemes pay for duplicated geometry.
+  Meshes and overrides are built once per catalog part/tier/scheme and shared by every chunk
+  that draws them; scheme textures decode once per pack generation.
+  `renderers/scheme_materials.gd` is shared with the editor preview, so one scheme cannot look
+  different between authoring and gameplay.
+- Schemes resolve at catalog load, never per frame or per instance. A stale manifest naming
+  fewer materials than a part has tiers leaves those tiers with their source materials, and an
+  unreadable scheme texture drops its channel with a warning instead of failing the asset.
+
+Per-instance albedo was rejected: it would defeat `RENDER-07`'s MultiMesh batching entirely.
+A texture array indexed from per-instance custom data would keep draw calls flat, but requires
+replacing `StandardMaterial3D` with a custom shader — reconstructing every authored material
+parameter — and a same-size/same-format contract the authoring pipeline does not validate.
+That remains the escape hatch if draw calls are ever measured to be the bottleneck.
 
 ### Shared LOD policy and automatic inspection — TOOLS-05
 

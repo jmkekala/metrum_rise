@@ -28,7 +28,7 @@ func write(path: String, content: String) -> void:
 	if file:
 		file.store_string(content)
 
-func make_model(path: String, lod: int) -> void:
+func make_model(path: String, lod: int, surfaces: int = 1) -> void:
 	var scene := Node3D.new()
 	var node := MeshInstance3D.new()
 	var mesh := SphereMesh.new()
@@ -48,18 +48,57 @@ func make_model(path: String, lod: int) -> void:
 	node.mesh = mesh
 	node.position.y = 6.0
 	scene.add_child(node)
+	if surfaces > 1:
+		# A second material on the same part exercises partial scheme coverage, where a
+		# whole-instance override would wrongly repaint the untargeted surface. Kept inside
+		# the sphere so tier bounds and every existing count assertion are unaffected.
+		var trim := MeshInstance3D.new()
+		var box := BoxMesh.new()
+		box.size = Vector3.ONE
+		var trim_material := StandardMaterial3D.new()
+		trim_material.resource_name = "authored_trim"
+		trim_material.albedo_color = Color(0.1, 0.9, 0.2)
+		box.material = trim_material
+		trim.mesh = box
+		trim.position.y = 6.0
+		scene.add_child(trim)
 	var document := GLTFDocument.new()
 	var state := GLTFState.new()
 	expect(document.append_from_scene(scene, state) == OK, "generated model must export")
 	expect(document.write_to_filesystem(state, path) == OK, "generated model must write")
 	scene.free()
 
+# Solid, exactly 8-bit representable colours so a bound scheme texture can be identified
+# by reading one pixel back after the PNG and mipmap round trip.
+const SCHEME_COLORS := {"scheme_a": Color(0.0, 0.0, 1.0, 1.0), "scheme_b": Color(1.0, 1.0, 0.0, 1.0)}
+## Catalog slot of the four-tier asset, the only one authoring schemes.
+const SCHEMED_PART := 3
+const MULTI_SURFACE_TIER := 3
+
+func make_scheme_texture(path: String, color: Color) -> void:
+	var image := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	expect(image.save_png(path) == OK, "scheme texture must write: " + path)
+
+## Authored colour schemes for the four-tier asset. Every tier maps the same source material,
+## so a scheme must follow an instance across tier switches rather than only at LOD0.
+func scheme_manifest(tiers: int) -> String:
+	var text := '\n[building.appearance]\ndefault_scheme = "scheme_a"\nspawn = "random_scheme"\n'
+	for id: String in SCHEME_COLORS:
+		var materials := '"authored_emissive_windows", '.repeat(tiers).trim_suffix(", ")
+		text += '\n[[building.appearance.schemes]]\nid = "%s"\nname = "%s"\n' % [id, id]
+		text += '\n[[building.appearance.schemes.overrides]]\npart = "part_0"\n'
+		text += 'materials = [%s]\nalbedo = "%s.png"\n' % [materials, id]
+	return text
+
 func prepare_pack() -> String:
 	var directory := ProjectSettings.globalize_path("user://mods/test")
 	DirAccess.make_dir_recursive_absolute(directory)
 	write(directory.path_join("pack.toml"), 'pack_id = "test"\nschema_version = 1\ndisplay_name = "Generated LOD fixtures"\nversion = "1.0.0"\nauthor = "Test"\nlicense = "CC0"\n')
 	for lod in 5:
-		make_model(directory.path_join("lod%d.glb" % lod), lod)
+		# Only tier 3 is multi-material, so one run covers both the shared-mesh override
+		# path and the per-scheme mesh path on the same asset.
+		make_model(directory.path_join("lod%d.glb" % lod), lod, 2 if lod == MULTI_SURFACE_TIER else 1)
 	for asset in 3:
 		var asset_dir := directory.path_join("house%d" % asset)
 		DirAccess.make_dir_recursive_absolute(asset_dir)
@@ -86,6 +125,10 @@ forward = [0.0, 0.0, 1.0]
 				manifest += 'scale = 0.2\nposition = [0.0, 14.0, 0.0]\n'
 			for lod in [1, 4, 5][asset]:
 				manifest += '[[mesh_parts.lods]]\nfile = "lod%d.glb"\ndistance_min_m = %d.0\ndistance_max_m = %d.0\n' % [lod, lod * 100, (lod + 1) * 100]
+		if asset == 1:
+			for id: String in SCHEME_COLORS:
+				make_scheme_texture(asset_dir.path_join("%s.png" % id), SCHEME_COLORS[id])
+			manifest += scheme_manifest([1, 4, 5][asset])
 		write(asset_dir.path_join("asset.toml"), manifest)
 	expect(ModPackConfig.save_enabled_pack_ids(["test"]) == OK, "fixture pack selection must save")
 	return directory
@@ -104,16 +147,21 @@ func refresh() -> void:
 		renderer._update_building_render_frame()
 
 func counts() -> Dictionary:
-	var result := {"instances": 0, "tiers": {}, "deserted": 0, "groups": 0}
+	var result := {"instances": 0, "tiers": {}, "deserted": 0, "groups": 0, "schemes": {}}
 	for key: Vector4i in renderer.lod_renderer.batches:
 		var node: MultiMeshInstance3D = renderer.lod_renderer.batches[key]
 		var count := node.multimesh.visible_instance_count
 		result.instances += count
 		if count > 0:
+			var identity: Dictionary = renderer.lod_renderer.batch_identity(key)
 			result.groups += 1
-			result.tiers[key.w / 2] = true
-			if key.w % 2 == 1:
+			result.tiers[identity.lod] = true
+			if identity.deserted:
 				result.deserted += count
+			if not result.schemes.has(identity.part):
+				result.schemes[identity.part] = {}
+			var by_scheme: Dictionary = result.schemes[identity.part]
+			by_scheme[identity.scheme] = by_scheme.get(identity.scheme, 0) + count
 	return result
 
 func _run() -> void:
@@ -179,6 +227,7 @@ func correctness(pack_dir: String) -> void:
 	var far := counts()
 	expect(far.instances == 2731, "all 2048 buildings including multipart instances must draw exactly once")
 	expect(far.tiers.has(0) and far.tiers.has(3) and far.tiers.has(4), "short chains retain their final tier at distant zoom")
+	check_schemes(far)
 	refresh()
 	expect(lods.evaluated_parts == 0 and lods.uploaded_bytes == 0, "stationary view performs no evaluations/uploads")
 	var imports: int = lods.resources.imports
@@ -223,6 +272,54 @@ func correctness(pack_dir: String) -> void:
 	refresh()
 	expect(counts().tiers.has(4), "explicit pack reload recovers a repaired tier")
 	await process_frame
+
+## Colour schemes must split groups without losing, duplicating or recolouring instances,
+## and every authored tier/scheme pair must draw its own albedo. Which tier is on screen
+## depends on camera distance, so the resource checks cover all of them directly.
+func check_schemes(frame: Dictionary) -> void:
+	var lods: Node3D = renderer.lod_renderer
+	var schemed: Dictionary = frame.schemes.get(SCHEMED_PART, {})
+	expect(schemed.size() == SCHEME_COLORS.size(), "every authored scheme draws its own group")
+	for scheme: int in schemed:
+		expect(schemed[scheme] > 0, "an authored scheme must not draw an empty group")
+	for part: int in frame.schemes:
+		if part != SCHEMED_PART:
+			expect(frame.schemes[part].size() == 1, "assets without schemes keep one group per tier")
+	var expected := SCHEME_COLORS.values()
+	for lod in lods.meshes[SCHEMED_PART].size():
+		var source: Mesh = lods.meshes[SCHEMED_PART][lod]
+		for scheme in SCHEME_COLORS.size():
+			var group: Dictionary = lods._scheme_group(SCHEMED_PART, lod, scheme)
+			var painted: BaseMaterial3D
+			if lod == MULTI_SURFACE_TIER:
+				# Partial coverage needs its own mesh; the untargeted surface stays authored.
+				expect(group["override"] == null, "a multi-material tier takes no whole-instance override")
+				expect(group["mesh"] != source, "a multi-material tier needs its own scheme mesh")
+				expect(group["mesh"].get_surface_count() == source.get_surface_count(), "a scheme mesh keeps every authored surface")
+				var trim := group["mesh"].surface_get_material(1) as BaseMaterial3D
+				expect(trim != null and trim.resource_name == "authored_trim" and trim.albedo_texture == null,
+					"a surface the scheme does not name keeps its authored material")
+				painted = group["mesh"].surface_get_material(0) as BaseMaterial3D
+			else:
+				# One surface: an instance override is exact and keeps sharing the source mesh.
+				expect(group["mesh"] == source, "a single-surface tier must not duplicate geometry")
+				painted = group["override"] as BaseMaterial3D
+			expect(painted != null and painted.albedo_texture != null, "tier %d scheme %d must bind a replacement albedo" % [lod, scheme])
+			if painted == null or painted.albedo_texture == null:
+				continue
+			expect(painted.emission_texture != null, "an overridden albedo retains the authored emission")
+			var color := painted.albedo_texture.get_image().get_pixel(0, 0)
+			expect(color.is_equal_approx(expected[scheme]),
+				"tier %d scheme %d must bind its own albedo, got %s" % [lod, scheme, color])
+	# The drawn groups must come from that same cache rather than a second construction.
+	for key: Vector4i in lods.batches:
+		var identity: Dictionary = lods.batch_identity(key)
+		var node: MultiMeshInstance3D = lods.batches[key]
+		if identity.part != SCHEMED_PART or node.multimesh.visible_instance_count == 0:
+			continue
+		var group: Dictionary = lods._scheme_group(SCHEMED_PART, identity.lod, identity.scheme)
+		expect(node.multimesh.mesh == group["mesh"] and node.material_override == group["override"],
+			"a drawn scheme group must use its cached mesh and override")
 
 func benchmark() -> void:
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)

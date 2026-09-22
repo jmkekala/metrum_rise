@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 pub struct BuildingAppearance {
     /// Stable scheme ID used when random selection is disabled.
     pub default_scheme: String,
-    /// Spawn policy metadata; runtime random selection is implemented separately.
+    /// Selection policy applied by [`BuildingAppearance::scheme_for`] at spawn.
     #[serde(default)]
     pub spawn: SpawnAppearance,
     /// Coordinated choices shared by every part and LOD of an instance.
@@ -76,6 +76,34 @@ impl MaterialOverride {
 }
 
 impl BuildingAppearance {
+    /// Position of the authored default, or the first scheme when the ID is unresolvable.
+    pub fn default_index(&self) -> usize {
+        self.schemes
+            .iter()
+            .position(|scheme| scheme.id == self.default_scheme)
+            .unwrap_or(0)
+    }
+
+    /// Scheme ordinal for one instance's stable appearance key.
+    ///
+    /// Allocation-free and O(schemes) at worst, so a renderer derives an instance's scheme
+    /// on demand rather than storing it in simulation state or saves. The caller owns key
+    /// stability; an unstable key would recolour a building whenever it is recomputed.
+    pub fn scheme_for(&self, key: u64) -> usize {
+        if self.schemes.is_empty() {
+            return 0;
+        }
+        match self.spawn {
+            SpawnAppearance::DefaultOnly => self.default_index(),
+            // Multiply-high consumes the well-mixed upper bits of the FNV-style placement
+            // hash and stays uniform for scheme counts that are not powers of two, which a
+            // modulo of the weaker low bits would not.
+            SpawnAppearance::RandomScheme => {
+                ((key as u128 * self.schemes.len() as u128) >> 64) as usize
+            }
+        }
+    }
+
     // Document-change validation only: O(overrides × parts + mappings log mappings).
     pub(crate) fn validate(&self, parts: &[MeshPart]) -> Result<(), String> {
         let mut ids = BTreeSet::new();
@@ -170,5 +198,34 @@ mod tests {
             .push("walls_low".into());
         appearance.schemes[0].overrides[0].albedo = Some("../outside.png".into());
         assert!(appearance.validate(&[part]).is_err());
+    }
+
+    #[test]
+    fn spawn_policy_maps_stable_keys_onto_every_authored_scheme() {
+        let mut appearance: BuildingAppearance = serde_json::from_value(json!({
+            "default_scheme": "blue", "spawn": "default_only",
+            "schemes": [{"id": "red", "name": "Red"}, {"id": "blue", "name": "Blue"},
+                {"id": "green", "name": "Green"}]
+        }))
+        .unwrap();
+        // Golden-ratio stride sweeps the whole key space without needing the placement hash.
+        let keys = || (0..3000u64).map(|step| step.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        assert!(keys().all(|key| appearance.scheme_for(key) == 1));
+
+        appearance.spawn = SpawnAppearance::RandomScheme;
+        assert!(keys().all(|key| appearance.scheme_for(key) < appearance.schemes.len()));
+        // Re-derivation must be stable; the renderer recomputes this instead of storing it.
+        assert_eq!(appearance.scheme_for(7), appearance.scheme_for(7));
+        let mut counts = [0usize; 3];
+        for key in keys() {
+            counts[appearance.scheme_for(key)] += 1;
+        }
+        // A scheme count that is not a power of two must not starve any scheme.
+        assert!(counts.iter().all(|&hits| hits > 900), "{counts:?}");
+
+        appearance.default_scheme = "missing".into();
+        assert_eq!(appearance.default_index(), 0);
+        appearance.schemes.clear();
+        assert_eq!(appearance.scheme_for(7), 0);
     }
 }

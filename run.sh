@@ -931,6 +931,39 @@ if [ $TEST -eq 1 ]; then
     fi
     echo "Running Godot bridge tests..."
     cd ../godot
+    # Every Godot regression runs in a throwaway profile. Several of them install content
+    # packs and rewrite the active pack selection, so pointing them at the player's real
+    # user:// would change which packs their game loads and strand fixture packs behind an
+    # interrupted run. A unique project identity also isolates user:// on macOS, which
+    # ignores XDG. Reuse imported resources without copying assets or changing the project.
+    asset_test_profile=$(mktemp -d -t metrum-godot-tests.XXXXXX) || exit 1
+    asset_test_project="$asset_test_profile/project"
+    mkdir "$asset_test_project" || exit 1
+    for asset_test_entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
+        case "${asset_test_entry##*/}" in project.godot|override.cfg) continue ;; esac
+        [ -e "$asset_test_entry" ] || continue
+        ln -s "$asset_test_entry" "$asset_test_project/" || exit 1
+    done
+    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || exit 1
+    # Some tests reach repo siblings through `res://../<dir>` (economy, maps, benchmarks).
+    # The relocated project makes that resolve to the temporary profile, so mirror every
+    # sibling of the real project directory beside it.
+    for asset_test_sibling in "$PROJECT_ROOT"/*; do
+        [ -e "$asset_test_sibling" ] || continue
+        [ "$asset_test_sibling" = "$GODOT_DIR" ] && continue
+        ln -s "$asset_test_sibling" "$asset_test_profile/" || exit 1
+    done
+    # macOS ignores XDG and derives user:// from this name, so it is the isolation that
+    # matters there; keep one definition so the two cannot drift apart.
+    godot_test_profile_name="MetrumGodotTests-${asset_test_profile##*/}"
+    printf '[application]\nconfig/name="%s"\nconfig/use_custom_user_dir=false\n' \
+        "$godot_test_profile_name" > "$asset_test_project/override.cfg" || exit 1
+    export XDG_DATA_HOME="$asset_test_profile/data"
+    export XDG_CONFIG_HOME="$asset_test_profile/config"
+    echo "Godot regression fixtures and logs: $asset_test_profile"
+    if [ "$METRUM_PLATFORM" = "darwin" ]; then
+        echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/$godot_test_profile_name"
+    fi
     for bridge_test_script in \
         economy_machinery_test field_edit_tool_test building_asset_reload_test \
         environment_overlay_test surface_patch_debug_test simulation_speed_input_test \
@@ -940,7 +973,7 @@ if [ $TEST -eq 1 ]; then
         vegetation_edit_test vegetation_appearance_test vegetation_land_cover_test \
         new_game_dialog_test day_cycle_test camera_save_load_test \
         zoning_road_tool_test; do
-        bridge_test_command=(godot --headless --script "res://tests/${bridge_test_script}.gd")
+        bridge_test_command=(godot --headless --path "$asset_test_project" --script "res://tests/${bridge_test_script}.gd")
         # This regression probes inputs that previously stalled the simulation thread.
         if [ "$bridge_test_script" = simulation_speed_input_test ]; then
             if ! run_with_test_timeout "${bridge_test_command[@]}"; then
@@ -952,20 +985,6 @@ if [ $TEST -eq 1 ]; then
             exit 1
         fi
     done
-    asset_test_profile=$(mktemp -d -t metrum-asset-tests.XXXXXX) || exit 1
-    asset_test_project="$asset_test_profile/project"
-    mkdir "$asset_test_project" || exit 1
-    # A unique project identity also isolates user:// on macOS, which ignores XDG.
-    # Reuse imported resources without copying assets or changing the real project.
-    for asset_test_entry in "$GODOT_DIR"/* "$GODOT_DIR/.godot"; do
-        case "${asset_test_entry##*/}" in project.godot|override.cfg) continue ;; esac
-        [ -e "$asset_test_entry" ] || continue
-        ln -s "$asset_test_entry" "$asset_test_project/" || exit 1
-    done
-    cp "$GODOT_DIR/project.godot" "$asset_test_project/project.godot" || exit 1
-    printf '[application]\nconfig/name="MetrumAssetTests-%s"\nconfig/use_custom_user_dir=false\n' \
-        "${asset_test_profile##*/}" > "$asset_test_project/override.cfg" || exit 1
-    echo "Asset regression fixtures and logs: $asset_test_profile"
     export METRUM_BUILDING_LOD_FIXTURE_DIR="$asset_test_profile/building-lod-saves"
     if ! (cd "$PROJECT_ROOT/rust" && cargo test --lib generate_building_lod_fixtures -- --ignored); then
         exit 1
@@ -976,9 +995,6 @@ if [ $TEST -eq 1 ]; then
         godot --headless --path "$asset_test_project" --script res://tests/building_lod_test.gd \
         --log-file "$asset_test_profile/building_lod_test.log" -- --asset-editor; then
         exit 1
-    fi
-    if [ "$METRUM_PLATFORM" = "darwin" ]; then
-        echo "macOS fixtures: ~/Library/Application Support/Godot/app_userdata/MetrumAssetTests-${asset_test_profile##*/}"
     fi
     for asset_test_script in asset_document_test asset_authoring_test asset_workspace_test asset_layout_test asset_selection_test asset_editor_preview_test asset_colour_schemes_test; do
         if ! XDG_DATA_HOME="$asset_test_profile/data" XDG_CONFIG_HOME="$asset_test_profile/config" \

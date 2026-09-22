@@ -553,6 +553,23 @@ compilation/tests. Before/after executable SHA-256 values are
 Exact commands, four-file diff, source identities and results are in
 `/tmp/metrum-full-audit/lot-query-*`.
 
+## Redevelopment rerolls a plot (`RENDER-08`)
+
+A parcel carries a `build_generation`, advanced whenever a building is cleared from it, and
+`stable_parcel_selection_hash` now writes it between the parcel ID and the key. Spawn asset
+selection and colour scheme choice both read it, so demolishing a building lets the plot draw
+a different valid asset and a different authored colour instead of deterministically rebuilding
+exactly what the player just removed.
+
+The counter is state, not randomness: it is read-only during the parallel candidate sweep, so
+selection stays deterministic and Rayon scheduling cannot influence it. Only the per-parcel
+clear advances it; `clear_all_parcel_occupancy`, which a world reset uses, must not, or loading
+a save would reshuffle an existing city. Each building captures the generation it was placed
+under, so a standing building keeps its asset and colour when a neighbour is cleared, and a
+level upgrade mutates in place and keeps them too. Both values are saved from
+`REDEVELOPMENT_SAVE_VERSION`; older saves read back at generation `0` and reproduce the choices
+they were written under.
+
 ## Parcel-selection hash cleanup (`AUDIT-01-B6`)
 
 Family and variant selection now call one `stable_parcel_selection_hash` implementation. The

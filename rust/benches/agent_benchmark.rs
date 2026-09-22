@@ -135,6 +135,7 @@ fn register_test_asset(
             length_m: None,
         }],
         building: Some(BuildingData {
+            appearance: None,
             flat_size_m2: None,
             placement_mode: PlacementMode::Explicit,
             zone_type: Some(zone),
@@ -322,6 +323,7 @@ fn build_access_shared() -> AccessSharedSetup {
     allocator
         .buildings
         .push(metrum_rise::simulation::buildings::allocator::Building {
+            build_generation: 0,
             center_x: 250.0,
             center_y: -10.0,
             support_height_m: 0.0,

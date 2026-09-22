@@ -1076,6 +1076,7 @@ fn add_test_complete_building(core: &mut SimCore, asset_id: String, zone_type: Z
         .default_runtime_id_for_zone_type(zone_type)
         .expect("test zone profile");
     core.allocator.buildings.push(Building {
+        build_generation: 0,
         center_x: 0.0,
         center_y: 0.0,
         support_height_m: 0.0,

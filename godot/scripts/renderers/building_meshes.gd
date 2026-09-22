@@ -1,11 +1,28 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
-## Pack-generation mesh cache. Imports and root-space baking happen only at loading/reload,
-## never while changing LODs. Authored surface materials, including emission, are preserved.
+## Pack-generation mesh and colour-scheme texture cache. Imports and root-space baking happen
+## only at loading/reload, never while changing LODs or colour schemes. Authored surface
+## materials, including emission, are preserved.
 extends RefCounted
 
 var _meshes: Dictionary = {}
+var _textures: Dictionary = {}
 var imports := 0
+
+## Shared per pack generation, so the same scheme texture is decoded once however many
+## assets, tiers and chunks bind it. A failed decode caches null and is not retried.
+func load_texture(path: String) -> Texture2D:
+	if _textures.has(path):
+		return _textures[path]
+	var texture: Texture2D = null
+	var image := Image.load_from_file(path)
+	if image != null and not image.is_empty():
+		image.generate_mipmaps()
+		texture = ImageTexture.create_from_image(image)
+	else:
+		push_warning("Colour scheme texture could not be read; source material retained: " + path)
+	_textures[path] = texture
+	return texture
 
 func load_mesh(path: String) -> ArrayMesh:
 	if _meshes.has(path):

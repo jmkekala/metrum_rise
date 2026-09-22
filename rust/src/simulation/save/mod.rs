@@ -586,8 +586,8 @@ pub(crate) fn load_from_sqlite(
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;
 
     let mut graph = network::load_graph(&conn)?;
-    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph)?;
-    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
+    let (mut zoning, quarantined_parcels) = world::load_zoning(&conn, &config, &graph, version)?;
+    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles, version)?;
     let mut households = world::load_households(&conn, version)?;
     let mut logistics = world::load_shipments(&conn)?;
     let mut resource_extraction =

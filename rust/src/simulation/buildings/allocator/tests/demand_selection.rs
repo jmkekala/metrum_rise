@@ -87,8 +87,8 @@ fn test_startup_demand_residential_family_selection_uses_parcel_hash_order() {
     );
     let (selected_asset, profile_runtime_id, parcel_id) = startup_residential_selection(allocator);
     let expected_asset_id =
-        if stable_parcel_selection_hash(profile_runtime_id, parcel_id, "family_a")
-            <= stable_parcel_selection_hash(profile_runtime_id, parcel_id, "family_b")
+        if stable_parcel_selection_hash(profile_runtime_id, parcel_id, 0, "family_a")
+            <= stable_parcel_selection_hash(profile_runtime_id, parcel_id, 0, "family_b")
         {
             family_a_id
         } else {
@@ -117,8 +117,8 @@ fn test_startup_demand_residential_variant_selection_uses_parcel_hash_order() {
     );
     let (selected_asset, profile_runtime_id, parcel_id) = startup_residential_selection(allocator);
     let expected_asset_id =
-        if stable_parcel_selection_hash(profile_runtime_id, parcel_id, &variant_a_id)
-            <= stable_parcel_selection_hash(profile_runtime_id, parcel_id, &variant_b_id)
+        if stable_parcel_selection_hash(profile_runtime_id, parcel_id, 0, &variant_a_id)
+            <= stable_parcel_selection_hash(profile_runtime_id, parcel_id, 0, &variant_b_id)
         {
             variant_a_id
         } else {

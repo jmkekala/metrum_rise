@@ -437,6 +437,9 @@ impl ParcelStore {
             return false;
         }
         parcel.set_occupied_building(None);
+        // Demolition only. A world reset clears every claim through `clear_all_occupancy`,
+        // which must not advance the counter or loading a save would recolour the city.
+        parcel.advance_build_generation();
         true
     }
 

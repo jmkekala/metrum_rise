@@ -15,6 +15,7 @@ pub(super) fn flat_test_terrain() -> TerrainSystem {
 /// Creates a completed empty building in the deterministic 16-metre index fixture layout.
 pub(crate) fn indexed_test_building(asset_id: String, zone_type: ZoneType, idx: i32) -> Building {
     Building {
+        build_generation: 0,
         center_x: idx as f32 * 16.0,
         center_y: 0.0,
         support_height_m: 0.0,

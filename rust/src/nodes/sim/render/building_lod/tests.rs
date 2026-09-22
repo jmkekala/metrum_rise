@@ -21,6 +21,7 @@ fn instance(building: usize, part: usize, x: f32) -> Instance {
         building,
         part,
         deserted: false,
+        scheme: 0,
         transform: Mat4::from_translation(Vec3::new(x, 0.0, -10.0)),
     }
 }
@@ -177,4 +178,44 @@ fn failed_tiers_preserve_ordinals_and_fall_back_without_disappearing() {
     chunk.synchronize(&[instance(0, 0, 0.0)], &parts, true);
     chunk.update(&parts, view(80.0), false);
     assert_eq!(active(&chunk), [(0, 2, 1)]);
+}
+
+#[test]
+fn colour_schemes_split_groups_without_splitting_geometry() {
+    let parts = [part(4)];
+    let mut chunk = Chunk::default();
+    let instances: Vec<_> = (0..6)
+        .map(|i| {
+            let mut placed = instance(i, 0, i as f32);
+            placed.scheme = (i % 3) as u16;
+            placed
+        })
+        .collect();
+    chunk.synchronize(&instances, &parts, true);
+    chunk.update(&parts, view(900.0), false);
+    let occupied = |chunk: &Chunk| {
+        chunk
+            .batches
+            .iter()
+            .filter(|batch| batch.count > 0)
+            .map(|batch| (batch.key.scheme, batch.key.lod, batch.count))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(occupied(&chunk), [(0, 0, 2), (1, 0, 2), (2, 0, 2)]);
+    assert_eq!(chunk.batches.iter().map(|b| b.count).sum::<usize>(), 6);
+    assert!(
+        chunk
+            .batches
+            .windows(2)
+            .all(|pair| pair[0].key < pair[1].key),
+        "synchronize binary-searches this list, so scheme must sort ahead of lod"
+    );
+
+    // Recolouring one instance moves it between groups without touching the rest.
+    chunk.acknowledge();
+    let mut recoloured = instances.clone();
+    recoloured[0].scheme = 2;
+    chunk.synchronize(&recoloured, &parts, true);
+    chunk.update(&parts, view(900.0), false);
+    assert_eq!(occupied(&chunk), [(0, 0, 1), (1, 0, 2), (2, 0, 3)]);
 }

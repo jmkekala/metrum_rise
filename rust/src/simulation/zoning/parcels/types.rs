@@ -39,6 +39,10 @@ pub struct ZoningParcel {
     depth_m: f32,
     zone_profile_runtime_id: u16,
     occupied_building: Option<usize>,
+    // Times a building has been cleared from this parcel. Mixed into spawn asset and colour
+    // scheme selection so redeveloping a plot can draw a different valid asset and colour
+    // instead of repeating the one the player just demolished.
+    build_generation: u32,
     front_center: Vector2,
     center: Vector2,
     tangent: Vector2,
@@ -94,6 +98,14 @@ impl ZoningParcel {
         self.occupied_building.is_none()
     }
 
+    /// Returns how many times this parcel has been redeveloped.
+    ///
+    /// Read-only during parallel spawn candidate evaluation, so selection stays deterministic
+    /// without a shared counter. A world reload restores it rather than restarting it.
+    pub fn build_generation(&self) -> u32 {
+        self.build_generation
+    }
+
     /// Returns the world-space center of the parcel frontage line.
     pub fn front_center(&self) -> Vector2 {
         self.front_center
@@ -137,6 +149,14 @@ impl ZoningParcel {
         self.occupied_building = building_idx;
     }
 
+    pub(crate) fn advance_build_generation(&mut self) {
+        self.build_generation = self.build_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn set_build_generation(&mut self, generation: u32) {
+        self.build_generation = generation;
+    }
+
     pub(crate) fn replace_geometry(&mut self, geometry: ParcelGeometry) {
         self.edge_idx = geometry.edge_idx;
         self.side = geometry.side;
@@ -167,6 +187,7 @@ impl ZoningParcel {
             depth_m: geometry.depth_m,
             zone_profile_runtime_id,
             occupied_building: None,
+            build_generation: 0,
             front_center: geometry.front_center,
             center: geometry.center,
             tangent: geometry.tangent,

@@ -77,6 +77,7 @@ mod tests {
         // 1. Add one industrial source at world (0,0)
         // Default gameplay WorldConfig is 20km x 20km, so (0,0) is at the center of the grid.
         let source_building = Building {
+            build_generation: 0,
             center_x: 0.0,
             center_y: 0.0,
             support_height_m: 0.0,
