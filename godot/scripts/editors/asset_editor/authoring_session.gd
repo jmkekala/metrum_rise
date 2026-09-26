@@ -192,6 +192,8 @@ func relink_selected_part(lod_index: int = 0) -> void:
 		var current_index: int = _editor._parts.find(part)
 		if revision != _editor._menus.generation or current_index < 0:
 			return
+		_editor._last_glb_dir = path.get_base_dir()
+		_editor._save_config()
 		replace_part_source(current_index, path, lod_index)
 		_editor._select_mesh_part(current_index)
 		_editor._on_preview_lod_selected(lod_index)

@@ -10,8 +10,9 @@ const PreviewMaterials = preload("res://scripts/editors/asset_editor/preview_mat
 const ThumbnailCapture = preload("res://scripts/editors/asset_editor/thumbnail_capture.gd")
 
 class TestEditor extends Editor:
+	var config_save_count := 0
 	func _save_config() -> void:
-		pass
+		config_save_count += 1
 	func _save_layout_state() -> void:
 		pass
 	func _restore_window_geometry() -> void:
@@ -512,16 +513,17 @@ func _test_editor_spacing(editor: Node3D) -> void:
 	_expect(shared_style.content_margin_left == 8 and shared_style.content_margin_top == 4, "asset editor spacing must not change the shared theme")
 
 func _choose_lod_file(editor: Node3D, button: Button, path: String, title: String) -> void:
-	editor._last_glb_dir = _source
 	button.pressed.emit()
 	var dialog: Window = editor.get_child(editor.get_child_count() - 1)
 	_expect(dialog.visible and dialog.title == title, "LOD action opens the matching file picker")
+	_expect(dialog._current_dir == editor._last_glb_dir, "LOD picker opens in the last selected source directory")
 	await process_frame
 	dialog._selected_path = path
 	dialog._confirm_selection()
 	await process_frame
 
 func _test_lod_authoring(editor: Node3D) -> void:
+	editor._last_glb_dir = _source
 	var panel = editor._view._preview_panel
 	var camera: Camera3D = editor.get_node("CameraNode")
 	var saved_projection := camera.projection
@@ -551,10 +553,20 @@ func _test_lod_authoring(editor: Node3D) -> void:
 	_expect(session.document.snapshot() == before, "redo restores the added LOD exactly")
 	panel._lod_list.item_selected.emit(3)
 	_expect(panel._replace.text == "Replace LOD2…", "clicking a LOD targets that level for replacement")
-	var replacement := _source.path_join("replacement_lod2.glb")
+	var replacement_dir := _source.path_join("replacement")
+	_expect(DirAccess.make_dir_recursive_absolute(replacement_dir) == OK, "replacement fixture directory")
+	var replacement := replacement_dir.path_join("replacement_lod2.glb")
 	_write_model(replacement, 2)
 	var bounds: AABB = editor._parts[0].aabb
+	var saves_before: int = editor.config_save_count
 	await _choose_lod_file(editor, panel._replace, replacement, "Replace LOD2")
+	_expect(editor._last_glb_dir == replacement_dir, "replacing a LOD remembers its source directory")
+	_expect(editor.config_save_count > saves_before, "replacement persists the remembered directory")
+	panel._replace.pressed.emit()
+	var next_picker: Window = editor.get_child(editor.get_child_count() - 1)
+	_expect(next_picker._current_dir == replacement_dir, "next replacement starts in the newly selected directory")
+	next_picker._on_close_requested()
+	await process_frame
 	var expected := before.duplicate(true)
 	expected["params"]["mesh_parts"][0]["lods"][2]["file"] = replacement.get_file()
 	expected["sources"][0][2] = replacement
@@ -564,6 +576,7 @@ func _test_lod_authoring(editor: Node3D) -> void:
 	_expect(state.active == 0 and state.forced == -1 and panel._lod_list.is_selected(1), "replacing a tier cannot leave zoom locked in inspection mode")
 	session.undo()
 	_expect(session.document.snapshot() == before, "replacement is undoable")
+	_expect(editor._last_glb_dir == replacement_dir, "undoing a mesh edit preserves the browse preference")
 	session.redo()
 	_expect(session.document.snapshot() == expected, "replacement is redoable")
 	session.undo()

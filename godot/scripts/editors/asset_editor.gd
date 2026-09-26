@@ -1458,6 +1458,8 @@ func _move_original_asset_after_export(
 
 # Persist local editor preferences, never asset preview lighting/material overrides.
 func _save_config() -> void:
+	# Preserve layout preferences written by the mesh picker since editor startup.
+	_config.load(CONFIG_PATH)
 	_config.set_value("import", "last_glb_dir",    _last_glb_dir)
 	_config.set_value("ui",     "theme_mode",      _view._theme_mode)
 	_config.set_value("ui",     "font_size_header",  _view._font_size_header)

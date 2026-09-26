@@ -570,6 +570,8 @@ func _notification(what: int) -> void:
 func _save_layout_state() -> void:
 	if _layout_restoring:
 		return
+	# The editor may have saved a new import directory while this picker was open.
+	_config.load(CONFIG_PATH)
 	_config.set_value("mesh_import_dialog", "window_width", size.x)
 	_config.set_value("mesh_import_dialog", "window_height", size.y)
 	_config.set_value("mesh_import_dialog", "window_x", position.x)

@@ -1587,6 +1587,8 @@ Current preview (`TOOLS-04`):
   the next mesh to this part and previews it without saving/exporting. `Replace LODn…` replaces
   or relinks the selected tier (the actually visible tier in Automatic); other tiers, placement and authored bands
   are preserved. Removing the last tier is explicit; LOD0 cannot be removed independently.
+  Add/Replace LOD and mesh import share the last selected mesh directory. Replacement updates
+  this saved preference immediately, so the next picker reuses it, including after an editor restart.
   All source/chain edits support undo/redo. The main readout shows the active LOD and triangle count.
   Projected asset size and engine-owned calibration boundaries are under LOD details, collapsed
   by default. The size tooltip explains its stable LOD0-bounds reference; the diagnostic updates

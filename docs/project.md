@@ -54,6 +54,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
   Automatic highlights and targets the actually rendered LOD on mesh selection and zoom, without
   forcing it. Add/Replace and list clicks preview a tier temporarily; camera movement resumes
   Automatic so close-ups cannot stay stuck on an imported coarse tier.
+  Replacing a LOD now updates the shared, saved mesh browse directory for subsequent pickers;
+  picker layout saves preserve the newer directory preference.
   Projected-size diagnostics are tucked into collapsed LOD details; active LOD/triangles stay visible.
   Direct viewport clicks select any object and
   open its settings; visible anchor guides/labels take priority over the yard beneath them. Depth
